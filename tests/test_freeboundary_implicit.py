@@ -116,6 +116,35 @@ def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
     np.testing.assert_allclose(np.asarray(solution), np.zeros(4))
 
 
+def test_host_adjoint_prepared_transpose_tracks_changed_root_data():
+    """Executable reuse must not reuse a previous root's numerical tape."""
+    matrix = jnp.array([[4.0, 0.3, -0.2], [0.1, 3.0, 0.4], [0.2, -0.1, 5.0]])
+
+    def residual(z, params, field, base, rcon, zcon):
+        coefficient = params + field + base + rcon + zcon
+        return matrix @ z + 0.5 * coefficient * z**2
+
+    cfg = SimpleNamespace(adjoint_tol=1.0e-11, adjoint_maxiter=10,
+                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    values = [jnp.array([0.2, 0.3, 0.4]) + 0.1 * i for i in range(6)]
+    rhs = jnp.array([0.4, -0.7, 1.2])
+    reference = None
+    # Change each dynamic input independently, keeping all shapes unchanged.
+    for changed in (None, 0, 1, 2, 3, 4, 5):
+        args = list(values)
+        if changed is not None:
+            args[changed] = args[changed] + 0.25
+        z, params, field, base, rcon, zcon = args
+        jacobian = matrix + jnp.diag((params + field + base + rcon + zcon) * z)
+        expected = np.linalg.solve(np.asarray(jacobian.T), np.asarray(rhs))
+        result = fbi._host_adjoint(residual, *args, rhs, cfg)
+        np.testing.assert_allclose(result, expected, rtol=1e-9, atol=1e-11)
+        if changed is None:
+            reference = expected
+        else:
+            assert np.linalg.norm(expected - reference) > 1e-4
+
+
 def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     """A bad cached state is discarded, but implementation errors are not."""
     inp = dataclasses.replace(

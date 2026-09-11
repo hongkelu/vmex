@@ -860,6 +860,26 @@ def _transpose_matvec(value, z, p, field, base, rcon, zcon, *, residual):
     return ravel_pytree(pullback(unravel(value))[0])[0]
 
 
+@functools.partial(jax.jit, static_argnames=("residual",))
+def _prepare_host_transpose(z, p, field, base, rcon, zcon, *, residual):
+    """Prepare one root's VJP tape, with all numerical data kept dynamic.
+
+    Returning the pullback as a JAX pytree separates nonlinear preparation
+    from the repeated transpose action. Its executable structure is reused
+    across calls, while its array leaves are recomputed for every root.
+    """
+    return jax.vjp(
+        lambda zz: residual(zz, p, field, base, rcon, zcon), z
+    )[1]
+
+
+@jax.jit
+def _prepared_transpose_matvec(value, pullback, template):
+    """Apply a prepared transpose without repeating its nonlinear primal."""
+    _, unravel = ravel_pytree(template)
+    return ravel_pytree(pullback(unravel(value))[0])[0]
+
+
 def _host_adjoint(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0, rhs, cfg,
     *, x0=None, fail="error",
@@ -870,15 +890,18 @@ def _host_adjoint(
     inline that large operator into every Arnoldi loop and greatly increases
     cold compilation memory. SciPy keeps the small Krylov bookkeeping on the
     host and calls one compiled JAX operator; only vectors cross the boundary.
+    The nonlinear VJP tape is prepared once per solve and retained on device.
     """
     rhs_flat, unravel = ravel_pytree(rhs)
 
-    def matvec(value, *dynamic_args):
-        return _transpose_matvec(value, *dynamic_args, residual=residual)
+    pullback = _prepare_host_transpose(
+        z_star, params, field_parameters, frozen, rcon0, zcon0,
+        residual=residual)
 
-    dynamic = (z_star, params, field_parameters, frozen, rcon0, zcon0)
+    def matvec(value):
+        return _prepared_transpose_matvec(value, pullback, rhs)
 
-    matvec(rhs_flat, *dynamic).block_until_ready()
+    matvec(rhs_flat).block_until_ready()
     dtype = np.asarray(rhs_flat).dtype
     shape = rhs_flat.shape
     calls = 0
@@ -886,8 +909,7 @@ def _host_adjoint(
     def apply(value):
         nonlocal calls
         calls += 1
-        return np.asarray(matvec(
-            jnp.asarray(value, dtype=rhs_flat.dtype), *dynamic))
+        return np.asarray(matvec(jnp.asarray(value, dtype=rhs_flat.dtype)))
 
     matrix = LinearOperator((shape[0], shape[0]), matvec=apply, dtype=dtype)
     x0_flat = None if x0 is None else np.asarray(ravel_pytree(x0)[0])

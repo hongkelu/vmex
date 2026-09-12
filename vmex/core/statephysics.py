@@ -620,3 +620,22 @@ def _lgradb_state_tables(state: SpectralState, rt: SolverRuntime) -> dict:
         rmnc=rmnc, zmns=zmns, bsupumnc=bsupumnc, bsupvmnc=bsupvmnc,
         ns=ns, nfp=nfp,
     )
+
+
+def major_radius(state: SpectralState, rt: SolverRuntime) -> Array:
+    """WOUT Rmajor_p [m], using canonical boundary quadrature."""
+    return _aspect_scalars(state, rt)[1]
+
+
+def minor_radius(state: SpectralState, rt: SolverRuntime) -> Array:
+    """WOUT Aminor_p [m], using canonical boundary quadrature."""
+    return _aspect_scalars(state, rt)[0]
+
+
+def on_axis_magnetic_field(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Signed WOUT b0 [T]: rbtor0 / R_axis(theta=0, phi=0)."""
+    from .fields import surface_currents
+    geometry, _, _, fields, _ = _field_chain(state, rt)
+    currents = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv,
+        trig=rt.trig, s=rt.setup.s_full, signgs=rt.setup.signgs)
+    return currents.rbtor0 / geometry.R_even[0, 0, 0]

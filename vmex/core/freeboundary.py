@@ -1619,6 +1619,8 @@ def _solve_free_boundary_stage(
     prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
     jacobian_retries: int = 2,
+    include_edge_in_convergence: bool = False,
+    edge_force_tolerance: float | None = None,
     constraint_continuation: tuple[Array, Array] | None = None,
     reuse_vacuum_cache: bool = False,
     allow_initial_axis_reguess: bool = True,
@@ -1688,6 +1690,15 @@ def _solve_free_boundary_stage(
         prec2d_threshold=prec2d_threshold, prec2d=prec2d,
         use_fft=use_fft,
     )
+    if type(include_edge_in_convergence) is not bool:
+        raise TypeError("include_edge_in_convergence must be bool")
+    if edge_force_tolerance is not None and not include_edge_in_convergence:
+        raise ValueError("edge_force_tolerance requires include_edge_in_convergence")
+    edge_tol = (float(rt.ftol) if edge_force_tolerance is None else float(edge_force_tolerance)) if include_edge_in_convergence else 0.0
+    if include_edge_in_convergence and (not np.isfinite(edge_tol) or edge_tol <= 0):
+        raise ValueError("edge_force_tolerance must be finite and positive")
+    rt = replace(rt, include_edge_in_convergence=include_edge_in_convergence,
+                 edge_force_tolerance=edge_tol)
     if not allow_initial_axis_reguess:
         rt = replace(rt, lmove_axis=False)
     ns = int(resolution.ns)
@@ -2205,6 +2216,8 @@ def _solve_free_boundary_stage(
                 # high-mode recoveries where the FFT selection matters most.
                 use_fft=use_fft,
                 jacobian_retries=int(jacobian_retries) - 1,
+                include_edge_in_convergence=include_edge_in_convergence,
+                edge_force_tolerance=edge_force_tolerance,
                 constraint_continuation=(
                     current_rt.rcon0, current_rt.zcon0
                 ) if fb.turned_on else None,
@@ -2270,6 +2283,8 @@ def solve_free_boundary(
     prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
     jacobian_retries: int = 2,
+    include_edge_in_convergence: bool = False,
+    edge_force_tolerance: float | None = None,
     use_fft: bool | None = None,
 ) -> SolveResult:
     """Single-grid free-boundary solve (``eqsolve.f`` + ``funct3d.f`` IVAC0).
@@ -2311,6 +2326,8 @@ def solve_free_boundary(
             precon_type=precon_type, prec2d_threshold=prec2d_threshold,
             prec2d=prec2d,
             jacobian_retries=jacobian_retries,
+            include_edge_in_convergence=include_edge_in_convergence,
+            edge_force_tolerance=edge_force_tolerance,
             constraint_continuation=None, reuse_vacuum_cache=False,
             use_fft=_resolve_use_fft(use_fft, device, resolution),
         )

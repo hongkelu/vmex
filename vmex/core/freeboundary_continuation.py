@@ -129,8 +129,16 @@ def _solve_point(cfg, parameters, previous, steps):
             initial_state=None if previous is None else previous.state,
             constraint_continuation=None if previous is None else (previous.rcon0, previous.zcon0),
             error_on_no_convergence=False, use_fft=False,
+            include_edge_in_convergence=getattr(solver, "include_edge_in_convergence", False),
+            edge_force_tolerance=getattr(solver, "edge_force_tolerance", None),
         )
         result = stage.result
+        if getattr(solver, "include_edge_in_convergence", False):
+            cfg._runtime.stats['iterations'] += int(result.iterations)
+            accepted = certify_free_boundary_continuation_state(
+                cfg, parameters, result.state, rcon0=stage.rcon0, zcon0=stage.zcon0,
+                result=result, iterations=int(result.iterations))
+            return dataclasses.replace(accepted, continuation_steps=steps)
         cfg._runtime.stats['iterations'] += int(result.iterations)
         forces = np.asarray([result.fsqr, result.fsqz, result.fsql], dtype=float)
         if (not result.converged or not np.all(np.isfinite(forces))
@@ -153,7 +161,7 @@ def _solve_point(cfg, parameters, previous, steps):
             norm, steps, cfg._owner)
 
 
-def make_free_boundary_continuation_config(
+def _make_configuration(
     solver: fbi.FreeBoundaryImplicitConfig, params: im.ImplicitParams,
     parameter_anchor, *, parameter_scales=None, continuation_step: float,
     root_residual_atol: float, max_continuation_steps: int = 32,
@@ -183,9 +191,113 @@ def make_free_boundary_continuation_config(
         _positive(root_residual_atol, 'root_residual_atol'),
         _positive_int(cache_size, 'cache_size'), validate_parameters, None)
     _validate(cfg, anchor)
-    root = _solve_point(cfg, anchor, None, 0)
+    return cfg
+
+
+
+def make_free_boundary_continuation_config(*args, **kwargs):
+    """Solve and certify one cold anchor; use from_state for solve-free import."""
+    cfg = _make_configuration(*args, **kwargs)
+    root = _solve_point(cfg, cfg.parameter_anchor, None, 0)
     return dataclasses.replace(cfg, _anchor=root)
 
+
+def make_free_boundary_continuation_config_from_state(
+    solver, params, parameter_anchor, *, state, rcon0, zcon0, **kwargs,
+):
+    """Import and freshly certify an unchanged state, without equilibrium solves.
+
+    Constraint baselines must be supplied from the state provenance; this
+    function never guesses them or runs an anchor solve to obtain them.
+    """
+    cfg = _make_configuration(solver, params, parameter_anchor, **kwargs)
+    root = certify_free_boundary_continuation_state(
+        cfg, cfg.parameter_anchor, state, rcon0=rcon0, zcon0=zcon0)
+    return dataclasses.replace(cfg, _anchor=root)
+
+
+def certify_free_boundary_continuation_state(
+    cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None,
+):
+    """Evaluate fixed-geometry vacuum/force/root checks; never change state.
+
+    Return an owner-bound accepted record. No relaxation or polishing is
+    called. A failure leaves the previous anchor and memo untouched.
+    """
+    from .solver import evaluate_forces
+    from .wout import wout_from_state
+    from .statephysics import volume
+    solver, icfg = cfg.solver, cfg.solver.implicit
+    if result is not None:
+        if not isinstance(result, SolveResult) or not result.converged:
+            raise VmecError("cannot certify a nonconverged solve")
+        if any(not np.array_equal(np.asarray(a), np.asarray(b))
+               for a,b in zip(jax.tree.leaves(state),jax.tree.leaves(result.state),strict=True)):
+            raise ValueError("result and supplied state differ")
+    point = _vector(parameters, cfg.parameter_anchor.shape)
+    _validate(cfg, point)
+    rt = im.runtime_from_params(cfg.params, icfg)
+    expected = (icfg.resolution.ns, rt.modes.mnmax)
+    if not isinstance(state, SpectralState):
+        raise TypeError("state must be SpectralState")
+    for leaf in jax.tree.leaves(state):
+        array = np.asarray(leaf)
+        if array.shape != expected or array.dtype != np.dtype('float64') or not np.all(np.isfinite(array)):
+            raise ValueError("state must contain finite float64 arrays at the configured resolution")
+    for baseline, reference in ((rcon0, rt.rcon0), (zcon0, rt.zcon0)):
+        array = np.asarray(baseline)
+        if array.shape != reference.shape or array.dtype != np.dtype('float64') or not np.all(np.isfinite(array)):
+            raise ValueError("constraint baselines must be finite float64 arrays of the runtime shape")
+    with im._device_context(icfg):
+        state, rcon0, zcon0 = im._device_pin(icfg, jax.tree.map(jnp.asarray, (state, rcon0, zcon0)))
+        rt = dataclasses.replace(rt, rcon0=rcon0, zcon0=zcon0, lfreeb=True,
+            jmax=int(icfg.resolution.ns),
+            presf_ns_scale=fbi._presf_ns_scale_traceable(cfg.params, icfg.inp, int(icfg.resolution.ns)))
+        external = solver.field_from_parameters(jnp.asarray(point))
+        bsqvac = solver.vacuum_program.bsq(state, rt, external)
+        if not np.all(np.isfinite(np.asarray(bsqvac))):
+            raise VmecError("fresh vacuum evaluation is non-finite")
+        rt = dataclasses.replace(rt, bsqvac_edge=bsqvac)
+        _, forces, diagnostics = evaluate_forces(state, rt)
+        values = {name:float(getattr(forces,name)) for name in ('fsqr','fsqz','fsql','fedge')}
+        if (not all(np.isfinite(v) and v >= 0 for v in values.values())
+                or bool(diagnostics.jacobian_sign_changed)):
+            raise VmecError("fresh force/geometry certification failed")
+        for name in ('fsqr','fsqz','fsql'):
+            if values[name] > float(icfg.ftol):
+                raise VmecError(f"fresh {name}={values[name]:.6e} exceeds {float(icfg.ftol):.6e}")
+        edge_tol = solver.edge_force_tolerance or float(icfg.ftol)
+        if solver.include_edge_in_convergence and values['fedge'] > edge_tol:
+            raise VmecError(f"fresh fedge={values['fedge']:.6e} exceeds {edge_tol:.6e}")
+        mask = im._dof_mask(state, rt, icfg,
+            evaluator=lambda x:evaluate_forces(x, rt)[0], fixed_edge=False)
+        mask = jax.tree.map(jnp.asarray, mask)
+        residual = fbi._projected_residual(solver, mask)
+        project = im._dof_projector(icfg, mask)
+        defect = residual(project(state), cfg.params, jnp.asarray(point), state, rcon0, zcon0)
+        norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
+        if not np.isfinite(norm) or norm > cfg.root_residual_atol:
+            raise VmecError(f"fresh root residual {norm:.6e} exceeds {cfg.root_residual_atol:.6e}")
+        vol = float(volume(state, rt))
+        if not np.isfinite(vol) or vol <= 0:
+            raise VmecError("fresh volume must be finite and positive")
+        if result is None:
+            inp = im.input_with_params(icfg.inp, cfg.params)
+            w = wout_from_state(inp=inp, state=state, niter=iterations,
+                **{n:values[n] for n in ('fsqr','fsqz','fsql')})
+            wb, wp = float(diagnostics.wb), float(diagnostics.wp)
+            result = SolveResult(converged=True, iterations=iterations, ier_flag=0,
+                **values, wb=wb, wp=wp, wmhd=(wb+wp/(float(rt.gamma)-1))*(2*np.pi)**2,
+                r00=float(diagnostics.r00), time_step=0., jacobian_resets=0, state=state,
+                xm=np.asarray(w.xm), xn=np.asarray(w.xn), rmnc=np.asarray(w.rmnc),
+                zmns=np.asarray(w.zmns), rmns=w.rmns, zmnc=w.zmnc,
+                iotaf=np.asarray(w.iotaf), fsq_history=np.empty((0,6)))
+        else:
+            if not result.converged:
+                raise VmecError("cannot certify a nonconverged solve")
+            result = dataclasses.replace(result, state=state, **values)
+        return FreeBoundaryContinuationResult(point, result, mask, rcon0, zcon0,
+                                              norm, 0, cfg._owner)
 
 def _root(parameters, cfg, *, force_recompute=False):
     target = _vector(parameters, cfg.parameter_anchor.shape)
@@ -268,7 +380,7 @@ def reanchor_free_boundary_continuation_config(cfg, accepted):
                                _anchor=anchor, _owner=owner, _runtime=_Runtime())
 
 
-def free_boundary_continuation_state_pullback(accepted, cfg, state_cotangents):
+def free_boundary_continuation_state_pullback(accepted, cfg, state_cotangents, *, diagnostics=None):
     """Shared implicit field-parameter derivatives at the supplied exact root.
 
     Cotangent leaves have a leading RHS axis. This delegates to main's shared
@@ -281,7 +393,7 @@ def free_boundary_continuation_state_pullback(accepted, cfg, state_cotangents):
         cfg.params, jnp.asarray(accepted.parameters), cfg.solver,
         accepted.state, accepted.dof_mask, state_cotangents,
         rcon0=accepted.rcon0, zcon0=accepted.zcon0,
-        root_residual_atol=cfg.root_residual_atol)
+        root_residual_atol=cfg.root_residual_atol, diagnostics=diagnostics)
     return field_bar
 
 
@@ -338,6 +450,8 @@ def solve_free_boundary_continuation(parameters, cfg):
 
 __all__ = [
     'FreeBoundaryContinuationConfig', 'FreeBoundaryContinuationResult',
+    'make_free_boundary_continuation_config_from_state',
+    'certify_free_boundary_continuation_state',
     'make_free_boundary_continuation_config', 'free_boundary_continuation_result',
     'free_boundary_continuation_stats', 'reanchor_free_boundary_continuation_config',
     'free_boundary_continuation_state_pullback', 'solve_free_boundary_continuation',

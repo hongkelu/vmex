@@ -360,6 +360,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "StrongForceLinearSolveError": (
         ".core.errors", "StrongForceLinearSolveError"),
     "MgridNotFoundError": (".core.errors", "MgridNotFoundError"),
+    "make_free_boundary_continuation_config_from_state": (".core.freeboundary_continuation", "make_free_boundary_continuation_config_from_state"),
+    "certify_free_boundary_continuation_state": (".core.freeboundary_continuation", "certify_free_boundary_continuation_state"),
     # modules
     "core": (".core", None),
     "errors": (".core.errors", None),

@@ -218,3 +218,20 @@ def test_default_placement_keeps_saved_state_and_mask_immutable(family,monkeypat
         (accepted.state,accepted.dof_mask,accepted.rcon0,accepted.zcon0)))
     with pytest.raises(TypeError,match='immutable'):
         accepted.dof_mask.R_cos[0]=0.
+
+
+def test_state_constructor_never_solves_and_preserves_state(family,monkeypatch):
+    cfg=family.make()
+    saved=cfg._anchor
+    monkeypatch.setattr(fc,'_solve_point',lambda *a:pytest.fail('cold anchor solve'))
+    seen=[]
+    def certify(new, point, state, **kwargs):
+        seen.append(state)
+        return dataclasses.replace(saved,parameters=point,_owner=new._owner)
+    monkeypatch.setattr(fc,'certify_free_boundary_continuation_state',certify)
+    new=fc.make_free_boundary_continuation_config_from_state(cfg.solver,cfg.params,
+        cfg.parameter_anchor,state=saved.state,rcon0=saved.rcon0,zcon0=saved.zcon0,
+        continuation_step=.1,root_residual_atol=1e-10)
+    assert seen[0] is saved.state
+    assert new._anchor.state is saved.state
+    fc.reanchor_free_boundary_continuation_config(new,new._anchor)

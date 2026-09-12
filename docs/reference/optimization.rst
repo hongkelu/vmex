@@ -458,6 +458,66 @@ The existing scalar custom VJP, traced solver path, and ``boundary_schur``
 interface retain their behavior. Use independent re-solve finite differences
 and root-convergence studies to qualify a new physical response.
 
+Continuation from an accepted free-boundary anchor
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``make_free_boundary_continuation_config`` takes an existing coupled solver
+configuration, fixed ``ImplicitParams``, and a rank-one vector of field
+coordinates. It solves a cold anchor with the solver's FTOL and iteration
+limit. Each target follows a straight path from that fixed anchor, with step
+sizes bounded by the infinity norm of the change divided by
+``parameter_scales``. Every intermediate solve must converge, satisfy FTOL
+in all three reported force components, and pass the explicitly supplied
+projected residual limit before its state can seed the next point.
+
+For example, after constructing a field chart and its reference field::
+
+    solver = vmex.make_free_boundary_config(
+        inp, field, field_from_parameters=field_from_parameters,
+        ftol=1e-17, adjoint_tol=1e-10, device="gpu")
+    continuation = vmex.make_free_boundary_continuation_config(
+        solver, params, parameter_anchor=p0, parameter_scales=scales,
+        continuation_step=0.1, max_continuation_steps=32,
+        root_residual_atol=1e-8)
+    accepted = vmex.free_boundary_continuation_result(p_trial, continuation)
+    state = accepted.state
+    complete_forward_output = accepted.result
+
+The tolerances in this example are starting choices, not universal physical
+accuracy guarantees. Use force/root convergence studies and independent
+gradient checks for the observables and parameter directions of interest.
+This path uses the ordinary forward solver; it does not invoke a root
+polisher. Constraint baselines are carried between points, while the vacuum
+solution is recomputed for the changed field.
+
+The returned ``FreeBoundaryContinuationResult`` binds the state to its exact
+parameter vector, DOF mask and constraint baselines. For several objectives,
+pass that record to
+``free_boundary_continuation_state_pullback(accepted, continuation, rhs_batch)``.
+This reuses the shared coupled-GCROT pullback and returns implicit
+field-coordinate derivatives. Add explicit objective derivatives separately.
+For scalar JAX objectives, use
+``solve_free_boundary_continuation(parameters, continuation)``; its custom VJP
+delegates to the existing scalar adjoint at the saved endpoint. Profiles stay
+fixed in this initial continuation API. Solver iterations and anchor selection
+are not differentiated.
+
+Exact targets use a bounded memo (eight endpoints by default). A failed path
+does not update the memo or anchor. ``force_recompute=True`` requests a fresh
+path from the same anchor; failure preserves a previously accepted endpoint.
+Each new target starts from the common anchor, irrespective of trial order.
+The optional parameter validator runs on memo hits and all path points.
+Keep the solver configuration and field chart immutable during use.
+
+After the optimizer accepts a result under its physical constraints and
+objective criteria, explicitly call
+``reanchor_free_boundary_continuation_config(continuation, accepted)`` to obtain
+a new context. Merely evaluating a trial never promotes it. Use
+``free_boundary_continuation_stats`` for solve/iteration counts, memo hits,
+failures and the last path's accepted-point residuals. This API supersedes the
+local continuation implementation's dependency on the separate projected-root
+response engine; historical design/scalar aliases are not imported.
+
 Use :class:`vmex.core.monitoring.EquilibriumReporter` for the compact physics
 summary shared by the examples.  Each entry accepts either VMEX's
 ``function(equilibrium_state, solver_context)`` convention or a host

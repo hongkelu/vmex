@@ -235,6 +235,22 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.freeboundary_implicit", "solve_free_boundary_implicit_status"),
     "free_boundary_state_pullback_multi_rhs": (
         ".core.freeboundary_implicit", "free_boundary_state_pullback_multi_rhs"),
+    "FreeBoundaryContinuationConfig": (
+        ".core.freeboundary_continuation", "FreeBoundaryContinuationConfig"),
+    "FreeBoundaryContinuationResult": (
+        ".core.freeboundary_continuation", "FreeBoundaryContinuationResult"),
+    "make_free_boundary_continuation_config": (
+        ".core.freeboundary_continuation", "make_free_boundary_continuation_config"),
+    "free_boundary_continuation_result": (
+        ".core.freeboundary_continuation", "free_boundary_continuation_result"),
+    "free_boundary_continuation_stats": (
+        ".core.freeboundary_continuation", "free_boundary_continuation_stats"),
+    "reanchor_free_boundary_continuation_config": (
+        ".core.freeboundary_continuation", "reanchor_free_boundary_continuation_config"),
+    "free_boundary_continuation_state_pullback": (
+        ".core.freeboundary_continuation", "free_boundary_continuation_state_pullback"),
+    "solve_free_boundary_continuation": (
+        ".core.freeboundary_continuation", "solve_free_boundary_continuation"),
     # wout IO
     "WoutData": (".core.wout", "WoutData"),
     "read_wout": (".core.wout", "read_wout"),

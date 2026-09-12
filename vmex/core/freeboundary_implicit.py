@@ -282,6 +282,12 @@ def _host_solve_and_mask_impl(
         )
     _FREE_HOT_CACHE[cfg] = stage.continuation_state
     _FREE_LAST_RESULT[cfg] = stage.result
+    return _linearization_from_stage(cfg, params, stage, inp=inp)
+
+
+def _linearization_from_stage(cfg, params, stage, *, inp):
+    """Bind a completed stage to the canonical mask and constraint baselines."""
+    icfg = cfg.implicit
     state = stage.result.state
     rcon0, zcon0 = stage.rcon0, stage.zcon0
 

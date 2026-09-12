@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import signal
 from pathlib import Path
@@ -20,11 +21,15 @@ def main():
     parser.add_argument('--output-dir',type=Path,required=True)
     parser.add_argument('--device',default='cpu')
     parser.add_argument('--max-wall-hours',type=float,default=4.)
+    parser.add_argument('--checkpoint-every',type=int,default=1,
+        help='Save at absolute step multiples, plus the initial and final accepted state.')
     parser.add_argument('--validate-only',action='store_true')
     parser.add_argument('--validate-tangent-only',action='store_true')
     args = parser.parse_args()
-    if not 0 < args.max_wall_hours <= 4:
-        parser.error('walltime must be in (0,4] hours')
+    if not math.isfinite(args.max_wall_hours) or args.max_wall_hours <= 0:
+        parser.error('walltime must be finite and positive')
+    if args.checkpoint_every < 1:
+        parser.error('checkpoint interval must be positive')
     output = args.output_dir.resolve()
     output.mkdir(parents=True,exist_ok=False)
     for variable, name in [('JAX_COMPILATION_CACHE_DIR','jax'),('MPLCONFIGDIR','mpl'),
@@ -55,6 +60,7 @@ def main():
     events = []
     step = initial_step = None
     status = 'initializing'
+    saved_step = None
     def event(phase, **values):
         record = dict(phase=phase,elapsed_s=time.monotonic()-started,**values)
         events.append(record)
@@ -63,7 +69,8 @@ def main():
         print(json.dumps(record,allow_nan=False),flush=True)
     provenance = dict(jax=jax.__version__,solvax=solvax.__version__,
         payload_sha256=args.payload_sha256,checkpoint_sha256=args.checkpoint_sha256,
-        target_step=args.target_step,root_polishing=False,equilibrium_recompute=False,
+        target_step=args.target_step,checkpoint_every=args.checkpoint_every,
+        max_wall_hours=args.max_wall_hours,root_polishing=False,equilibrium_recompute=False,
         force_tolerance=1e-14,projected_root_atol=2e-6,maximum_coil_step_m=.001)
     try:
         inp,builder,targets,loss_scale,payload = load_case(args.payload,args.payload_sha256)
@@ -116,6 +123,7 @@ def main():
             root_residual=accepted.root_residual_norm,forces={n:float(getattr(accepted.result,n))
             for n in ('fsqr','fsqz','fsql','fedge')},metrics=initial_metrics)
         save(output,accepted,step,targets,float(checkpoint['data']['trust_radius']),provenance)
+        saved_step = step
         if args.validate_tangent_only:
             solver=dataclasses.replace(solver,implicit=dataclasses.replace(
                 solver.implicit,adjoint_tol=2e-6),adjoint_residual_rtol=2e-6)
@@ -163,6 +171,8 @@ def main():
             cfg = dataclasses.replace(cfg,solver=solver)
             event('tolerance_selected',rtol=tolerance,row_errors=errors.tolist(),
                 tight_row_errors=tight_errors.tolist(),proposal_difference_m=motion_errors)
+            provenance['selected_adjoint_rtol'] = tolerance
+            write_json(output/'manifest.json',provenance)
             jac = jacobians[chosen]
             while step < args.target_step:
                 if time.monotonic() >= deadline:
@@ -190,15 +200,21 @@ def main():
                         include_edge_in_convergence=True,edge_force_tolerance=1e-14,
                         error_on_no_convergence=False,jacobian_retries=0,allow_initial_axis_reguess=False,use_fft=False)
                     event('ordinary_correction',seconds=time.monotonic()-t,point=index,points=count,
-                        converged=bool(stage.result.converged),iterations=int(stage.result.iterations))
+                        absolute_step=step+1,converged=bool(stage.result.converged),
+                        iterations=int(stage.result.iterations),
+                        forces={n:float(getattr(stage.result,n)) for n in ('fsqr','fsqz','fsql','fedge')})
                     t=time.monotonic()
                     previous=fc.certify_free_boundary_continuation_state(cfg,point,stage.result.state,
                         rcon0=stage.rcon0,zcon0=stage.zcon0,result=stage.result)
-                    event('certification',seconds=time.monotonic()-t,root_residual=previous.root_residual_norm)
+                    event('certification',seconds=time.monotonic()-t,root_residual=previous.root_residual_norm,
+                        forces={n:float(getattr(previous.result,n)) for n in ('fsqr','fsqz','fsql','fedge')})
                 cfg=fc.reanchor_free_boundary_continuation_config(cfg,previous)
                 accepted=cfg._anchor;step+=1
                 values=np.asarray(rows(accepted.state))
-                record=save(output,accepted,step,targets,float(checkpoint['data']['trust_radius']),provenance)
+                record = None
+                if step % args.checkpoint_every == 0:
+                    record=save(output,accepted,step,targets,float(checkpoint['data']['trust_radius']),provenance)
+                    saved_step = step
                 event('promoted',absolute_step=step,segment_step=step-initial_step,
                     maximum_step_m=float(np.max(np.linalg.norm(displacement(delta),axis=-1))),
                     metrics=metrics(values,targets,loss_scale),checkpoint=record,
@@ -212,6 +228,8 @@ def main():
         summary=dict(status=status,initial_step=initial_step,final_step=step,
             promoted_steps=0 if step is None else step-initial_step,elapsed_s=time.monotonic()-started)
         if accepted is not None:
+            if saved_step != step:
+                save(output,accepted,step,targets,float(checkpoint['data']['trust_radius']),provenance)
             summary['final_metrics']=metrics(np.asarray(rows(accepted.state)),targets,loss_scale)
             summary['root_residual']=accepted.root_residual_norm
             if (output/'latest_checkpoint.json').exists():

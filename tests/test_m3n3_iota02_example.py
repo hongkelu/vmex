@@ -84,3 +84,24 @@ def test_strict_edge_gate_requires_vacuum_and_interior_channels():
         assert not bool(_force_convergence(*channels,jnp.array(1e-16),1e-14,edge_tolerance=1e-14))
     assert not bool(_force_convergence(0.,0.,0.,jnp.array(0.),1e-14,edge_tolerance=1e-14,vacuum_active=False))
     assert bool(_force_convergence(1e-14,1e-14,1e-14,jnp.array(1e-14),1e-14,edge_tolerance=1e-14))
+
+
+def test_strict_force_evaluation_discards_stale_normalization():
+    from vmex.core.input import VmecInput
+    from vmex.core.solver import prepare_runtime, resolution_from_input, _initial_state, evaluate_forces
+    inp = VmecInput.from_file(CASE/'inputs/input.rotating_ellipse_m3n3_maxmode1_iota0p2')
+    inp = dataclasses.replace(inp, ns_array=np.array([4]))
+    rt = prepare_runtime(inp, resolution_from_input(inp))
+    rt = dataclasses.replace(rt, lfreeb=True, jmax=4, presf_ns_scale=1.,
+        bsqvac_edge=jnp.zeros((rt.resolution.ntheta3,rt.resolution.nzeta)))
+    state = _initial_state(rt.setup)
+    _, reference, diagnostics = evaluate_forces(state, rt, iteration=2)
+    assert not bool(diagnostics.jacobian_sign_changed)
+    stale = dataclasses.replace(diagnostics.cache,
+        fnorm=diagnostics.cache.fnorm*.5, fnormL=diagnostics.cache.fnormL*.5)
+    _, default, _ = evaluate_forces(state, rt, cache=stale, iteration=2)
+    _, strict, _ = evaluate_forces(state, dataclasses.replace(rt, include_edge_in_convergence=True),
+        cache=stale, iteration=2)
+    for name in ('fsqr', 'fsqz', 'fsql', 'fedge'):
+        np.testing.assert_allclose(getattr(strict,name), getattr(reference,name), rtol=1e-12, atol=1e-30)
+    assert float(default.fedge) != float(reference.fedge)

@@ -27,7 +27,18 @@ new directories. `--validate-tangent-only` certifies one linear response to a
 1-micron coil coefficient direction at the saved state, without a nonlinear
 solve or optimization update. Set `CUDA_VISIBLE_DEVICES` before starting Python; `cuda:0`
 then names the first visible physical GPU. All caches/logs/temporary files must
-be project-local. The launcher adds an external four-hour walltime bound.
+be project-local. `--max-wall-hours` sets a finite runtime bound (default four
+hours); deployment should also use an external process timeout.
+
+For a long continuation use `--target-step 2000 --checkpoint-every 20` and
+an explicit runtime budget. The target is an absolute accepted-step count.
+Checkpoints are written at multiples of 20, at import, and on exit for the
+last accepted state. Per-step metrics remain in `progress.jsonl`.
+
+Strict edge convergence refreshes the vacuum matrix and force normalization
+on each ordinary iteration, matching the fresh certification definitions.
+The default solver retains its existing refresh cadence. A failed gate still
+stops the run; there is no retry solve or relaxed acceptance threshold.
 
 The initial tolerance study repeats only linear adjoints at the unchanged root
 with 2e-5, 2e-6, and 2e-7 stopping/true-residual tolerances. Predeclared stability

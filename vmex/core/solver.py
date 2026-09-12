@@ -1286,7 +1286,10 @@ def _evaluate(
                 jnp.asarray(new), jnp.shape(old)), fresh, cache_b,
         )
 
-    refresh = (((iteration - iter_last_reset) % NS4) == 0) & (~jac_changed)
+    # Strict acceptance uses current-state normalization and constraint
+    # scaling, matching an independent evaluate_forces(cache=None) call.
+    refresh = ((((iteration - iter_last_reset) % NS4) == 0)
+               | rt.include_edge_in_convergence) & (~jac_changed)
     cache = lax.cond(
         refresh, _fresh_cache, lambda operand: operand[1],
         (state, cache, geometry, jacobian, metrics, fields, energies),

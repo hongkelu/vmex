@@ -1524,7 +1524,9 @@ def _make_vacuum_lane(fused: FusedVacuum, *, use_fft: bool = False):
             (ivac <= 2) | jnp.logical_not(good), jnp.zeros_like(vc.nvacskip),
             (it - c.iter1).astype(vc.nvacskip.dtype) % jnp.maximum(one, vc.nvacskip),
         )
-        full = ivacskip == 0
+        # Strict acceptance uses the current geometry's vacuum matrix, as
+        # fixed-state certification does, rather than a cached skip solve.
+        full = (ivacskip == 0) | rt.include_edge_in_convergence
         # int() truncation toward zero == astype for the positive operand.
         nvacskip = jnp.where(
             full,
@@ -2121,7 +2123,7 @@ def _solve_free_boundary_stage(
                 rt_fixed = replace(rt_fixed, rcon0=0.9 * rt_fixed.rcon0, zcon0=0.9 * rt_fixed.zcon0)
                 rt_freeb = replace(rt_freeb, rcon0=0.9 * rt_freeb.rcon0, zcon0=0.9 * rt_freeb.zcon0)
                 ivacskip = (it - iter1) % max(1, fb.nvacskip)
-                if fb.ivac <= 2 or not jacobian_good:
+                if fb.ivac <= 2 or not jacobian_good or rt_freeb.include_edge_in_convergence:
                     ivacskip = 0
                 if ivacskip == 0:
                     fb.nvacskip = max(fb.nvskip0, int(1.0 / max(1.0e-1, 1.0e11 * fsq_rz)))

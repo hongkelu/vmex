@@ -120,7 +120,7 @@ def _factor_solve(matrix, rhs, backend):
 
 
 def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
-                        rhs_batch, mask, cfg):
+                        rhs_batch, mask, cfg, *, diagnostics=None):
     """Forward assembly and certified transpose solve for scalar or shared callers.
 
     This interface is host-eager even for the JAX matrix backend: the runtime
@@ -160,10 +160,20 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
         norms = np.linalg.norm(np.asarray(solution) @ matrix - np.asarray(rhs),axis=1)
     else:
         norms = jnp.linalg.norm(solution @ matrix - rhs,axis=1)
-    tolerances = im._adjoint_acceptance(cfg.implicit,jnp.linalg.norm(rhs,axis=1))
+    rhs_norms = jnp.linalg.norm(rhs,axis=1)
+    residual_rtol = getattr(cfg, 'adjoint_residual_rtol', None)
+    tolerances = (im._adjoint_acceptance(cfg.implicit,rhs_norms) if residual_rtol is None
+                  else residual_rtol * rhs_norms)
     for row in range(rhs.shape[0]):
         finite = bool(jnp.isfinite(norms[row]) & jnp.all(jnp.isfinite(solution[row])))
-        if not finite or float(norms[row]) > float(tolerances[row]):
+        accepted = finite and float(norms[row]) <= float(tolerances[row])
+        if diagnostics is not None:
+            norm, rhs_norm = float(norms[row]), float(rhs_norms[row])
+            diagnostics.append(dict(row=row,residual_norm=norm,rhs_norm=rhs_norm,
+                relative_residual=norm/rhs_norm if rhs_norm > 0 else (0. if norm == 0 else float('inf')),
+                tolerance=float(tolerances[row]),iterations=1,accepted=accepted,
+                backend=cfg.adjoint_solver))
+        if not accepted:
             if cfg.adjoint_fail != 'best_effort' or not finite:
                 reject(row,norms[row],tolerances[row])
             warnings.warn(f'{cfg.adjoint_solver} row {row} residual exceeds acceptance; '

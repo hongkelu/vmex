@@ -342,7 +342,7 @@ class _LoopCarry:
     state: SpectralState; xcdot: SpectralState; xstore: SpectralState
     cache: PreconditionerCache
     time_step: Array; inv_tau: Array; fsq: Array; res0: Array; res1: Array
-    fsqr: Array; fsqz: Array; fsql: Array
+    fsqr: Array; fsqz: Array; fsql: Array; fedge: Array
     fsqr1: Array; fsqz1: Array; fsql1: Array
     wb: Array; wp: Array; r00: Array
     iteration: Array; iter1: Array; ijacob: Array
@@ -435,6 +435,8 @@ class SolverRuntime:
     # retrace).  `presf_ns_scale` is the static funct3d.f edge-pressure
     # factor pmass(1)/pmass(hs*(ns-1.5)) applied to pres(ns).
     lfreeb: bool = False
+    include_edge_in_convergence: bool = False
+    edge_force_tolerance: float = 0.0
     bsqvac_edge: Array | None = None
     presf_ns_scale: Array | None = None
 
@@ -487,7 +489,7 @@ class SolverRuntime:
 _register(SolverRuntime, meta=(
     "resolution", "gamma", "tcon0", "max_iterations",
     "jmax", "lforbal", "lmove_axis",
-    "lfreeb", "prec2d",
+    "lfreeb", "prec2d", "include_edge_in_convergence", "edge_force_tolerance",
 ))
 
 
@@ -1284,7 +1286,10 @@ def _evaluate(
                 jnp.asarray(new), jnp.shape(old)), fresh, cache_b,
         )
 
-    refresh = (((iteration - iter_last_reset) % NS4) == 0) & (~jac_changed)
+    # Strict acceptance uses current-state normalization and constraint
+    # scaling, matching an independent evaluate_forces(cache=None) call.
+    refresh = ((((iteration - iter_last_reset) % NS4) == 0)
+               | rt.include_edge_in_convergence) & (~jac_changed)
     cache = lax.cond(
         refresh, _fresh_cache, lambda operand: operand[1],
         (state, cache, geometry, jacobian, metrics, fields, energies),
@@ -1525,6 +1530,16 @@ def reguess_initial_axis(
 # -- Iteration body (evolve.f + TimeStepControl + the eqsolve.f checks) ----------------------------------------------
 
 
+
+def _force_convergence(fsqr, fsqz, fsql, fedge, ftol, *,
+                       edge_tolerance=None, vacuum_active=True):
+    """Ordinary stopping rule with an opt-in finite spectral edge gate."""
+    interior = (fsqr <= ftol) & (fsqz <= ftol) & (fsql <= ftol)
+    if edge_tolerance is None:
+        return interior
+    return (interior & vacuum_active & jnp.isfinite(fedge) &
+            (fedge >= 0) & (fedge <= edge_tolerance))
+
 def _make_body(
     rt: SolverRuntime,
     *,
@@ -1570,11 +1585,13 @@ def _make_body(
             fsqr_c = jnp.where(jac1, carry.fsqr, e1.residuals.fsqr)
             fsqz_c = jnp.where(jac1, carry.fsqz, e1.residuals.fsqz)
             fsql_c = jnp.where(jac1, carry.fsql, e1.residuals.fsql)
+            fedge_c = jnp.where(jac1, carry.fedge, e1.residuals.fedge)
             fsq0 = fsqr_c + fsqz_c + fsql_c
 
-            converged = (
-                (~jac1) & (fsqr_c <= ftol) & (fsqz_c <= ftol) & (fsql_c <= ftol)
-            )
+            converged = (~jac1) & _force_convergence(
+                fsqr_c, fsqz_c, fsql_c, fedge_c, ftol,
+                edge_tolerance=rt.edge_force_tolerance if rt.include_edge_in_convergence else None,
+                vacuum_active=rt.lfreeb)
             bad_init = jac1 & (it == 1)
             # funct3d.f/eqsolve.f: LMOVE_AXIS=T and a finite first raw-force
             # sum above 1e2 set irst=4 and return to guess_axis before
@@ -1828,6 +1845,7 @@ def _make_body(
             fsqr=gate(running, fsqr_f, carry.fsqr),
             fsqz=gate(running, fsqz_f, carry.fsqz),
             fsql=gate(running, fsql_f, carry.fsql),
+            fedge=gate(running, jnp.where(restart, e2.residuals.fedge, e1.residuals.fedge), carry.fedge),
             fsqr1=gate(running, fsqr1_f, carry.fsqr1),
             fsqz1=gate(running, fsqz1_f, carry.fsqz1),
             fsql1=gate(running, fsql1_f, carry.fsql1),
@@ -1884,7 +1902,7 @@ def _initial_carry(
         time_step=delt0,
         inv_tau=jnp.full((NDAMP,), DAMPING_CAP, dtype=dtype) / delt0,
         fsq=one, res0=inf, res1=inf,
-        fsqr=fsqr0, fsqz=fsqz0, fsql=fsql0,
+        fsqr=fsqr0, fsqz=fsqz0, fsql=fsql0, fedge=one,
         fsqr1=one, fsqz1=one, fsql1=one,
         wb=zero, wp=zero, r00=zero,
         iteration=int_(1), iter1=int_(1),
@@ -1944,6 +1962,7 @@ class SolveResult:
     strong_force: Any = None
     polish_report: Any = None
     polish_context: Any = None
+    fedge: float = 0.0
 
 
 def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:
@@ -1986,6 +2005,7 @@ def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:
         iterations=iterations,
         ier_flag=int(carry.ier),
         fsqr=float(carry.fsqr), fsqz=float(carry.fsqz), fsql=float(carry.fsql),
+        fedge=float(carry.fedge),
         wb=wb, wp=wp, wmhd=float((wb + wp / (gamma - 1.0)) * _TWO_PI_SQ),
         r00=float(carry.r00),
         time_step=float(carry.time_step),

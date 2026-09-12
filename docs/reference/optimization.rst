@@ -783,8 +783,34 @@ only after budgeting matrix, factorization, and JVP working memory. A
 The parameter count is independent of this active-state dimension.
 
 After factorization, each actual transpose equation is checked against
-main's existing acceptance threshold (10 * adjoint_tol * norm(rhs)).
+main's existing acceptance threshold (10 * adjoint_tol * norm(rhs)), or
+``adjoint_residual_rtol * norm(rhs)`` when explicitly configured. Shared
+pullbacks append per-row residual certificates to an optional ``diagnostics``
+list, matching the strict-continuation interface.
 Singular or nonfinite solutions raise AdjointSolveError. Finite residual
 failures follow the explicit adjoint_fail policy. The root-residual gate
 and independent finite-difference qualification remain necessary. Dense
 methods are optional alternatives; coupled_gcrot remains the default.
+
+
+Strict accepted-state examples
+------------------------------
+
+``example/m=3n=3iota=0p2/run.py`` uses the existing reverse-GCROT backend.
+``make_free_boundary_continuation_config_from_state`` imports an equilibrium
+with explicit constraint baselines and freshly certifies it without invoking
+an equilibrium solver. ``certify_free_boundary_continuation_state`` returns
+an owner-bound record for explicit promotion. Failed certification never
+changes the old anchor or launches a recovery solve.
+
+The free-boundary solver accepts opt-in ``include_edge_in_convergence`` and
+``edge_force_tolerance`` controls; ``SolveResult.fedge`` reports the spectral
+edge-force residual. Fresh certification checks the exact returned state.
+
+For ``reverse_gcrot`` and the dense backends, ``adjoint_residual_rtol``
+optionally specifies a strict
+true-residual acceptance threshold independently of ``adjoint_tol``. Its
+``None`` default retains the existing tenfold acceptance margin. The shared
+pullback accepts an optional ``diagnostics`` list populated with each
+row's residual norm, RHS norm, threshold and iterations. No extra equilibrium
+or linear solve is performed for this reporting.

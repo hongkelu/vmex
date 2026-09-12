@@ -858,3 +858,25 @@ def test_dense_dimension_and_mask_guards():
 def test_dense_config_rejects_invalid_controls(name,value):
     with pytest.raises(ValueError,match=name):
         make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),**{name:value})
+
+
+@pytest.mark.parametrize("backend", ["forward_dense", "forward_dense_jax"])
+def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
+    from vmex.core import _freeboundary_dense as dense
+    cfg=SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-5,
+        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
+        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100,
+        adjoint_residual_rtol=None)
+    monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend:rhs/2+1e-7)
+    def residual(z,*args):return 2*z
+    def call(records):return dense.solve_dense_adjoint(residual,jnp.zeros(3),None,None,None,None,None,
+        jnp.ones((2,3)),jnp.ones(3),cfg,diagnostics=records)
+    diagnostics=[];call(diagnostics)
+    assert len(diagnostics)==2 and all(d['accepted'] for d in diagnostics)
+    cfg.adjoint_residual_rtol=1e-9;diagnostics=[]
+    with pytest.raises(AdjointSolveError):call(diagnostics)
+    assert len(diagnostics)==1 and diagnostics[0]['accepted'] is False
+    np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*np.sqrt(3.))
+    actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),
+        adjoint_solver=backend,adjoint_residual_rtol=1e-9)
+    assert actual.adjoint_residual_rtol==1e-9

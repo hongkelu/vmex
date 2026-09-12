@@ -145,6 +145,82 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data():
             assert np.linalg.norm(expected - reference) > 1e-4
 
 
+def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch):
+    """All rows, including a zero row, match an independent dense derivative."""
+    matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
+    profile_map = jnp.array([[1., 2.], [-1., .2], [.5, -.3]])
+    field_map = jnp.array([[.3], [1.], [-.4]])
+
+    def residual(z, params, field, base, rcon, zcon):
+        return matrix @ z + .2*z**2 - profile_map @ params['drive'] - field_map @ field['scale']
+
+    cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
+                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    z = jnp.array([.2, .4, -.1])
+    params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
+    rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
+    counts = {'state':0, 'parameter':0}
+    prepare_state, prepare_parameter = fbi._prepare_host_transpose, fbi._prepare_parameter_pullback
+    def counted_state(*args, **kwargs):
+        counts['state'] += 1
+        return prepare_state(*args, **kwargs)
+    def counted_parameter(*args, **kwargs):
+        counts['parameter'] += 1
+        return prepare_parameter(*args, **kwargs)
+    monkeypatch.setattr(fbi, '_prepare_host_transpose', counted_state)
+    monkeypatch.setattr(fbi, '_prepare_parameter_pullback', counted_parameter)
+    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg)
+    jacobian = np.asarray(matrix + jnp.diag(.4*z))
+    np.testing.assert_allclose(pb['drive'], np.asarray(rhs) @ np.linalg.solve(jacobian,profile_map), rtol=1e-9, atol=1e-11)
+    np.testing.assert_allclose(fb['scale'], np.asarray(rhs) @ np.linalg.solve(jacobian,field_map), rtol=1e-9, atol=1e-11)
+    assert counts == {'state':1, 'parameter':1}
+
+
+def test_multi_rhs_pullback_rejects_one_failed_row(monkeypatch):
+    """Successful neighboring rows cannot hide a false-success middle row."""
+    cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
+                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    calls = []
+    native = fbi.gcrotmk
+    def faulty(matrix, rhs, **kwargs):
+        calls.append(rhs)
+        return (np.zeros_like(rhs), 0) if len(calls) == 2 else native(matrix,rhs,**kwargs)
+    monkeypatch.setattr(fbi, 'gcrotmk', faulty)
+    def residual(z, p, field, *_):
+        return 2*z-p-field
+    with pytest.raises(AdjointSolveError, match='row 1'):
+        fbi._host_pullback_multi_rhs(residual,jnp.zeros(3),jnp.zeros(3),jnp.zeros(3),
+                                    None,None,None,jnp.eye(3),cfg)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('cotangents', [jnp.zeros((0,3)), jnp.zeros((2,4)), jnp.zeros(3)])
+def test_multi_rhs_pullback_rejects_bad_batch_shape(cotangents):
+    cfg = SimpleNamespace(adjoint_solver='coupled_gcrot')
+    with pytest.raises(ValueError, match='leading RHS axis'):
+        fbi.free_boundary_state_pullback_multi_rhs(None,None,cfg,jnp.zeros(3),
+            jnp.ones(3),cotangents,rcon0=None,zcon0=None)
+
+
+def test_multi_rhs_public_projection_and_root_gate(monkeypatch):
+    import vmex
+    assert vmex.free_boundary_state_pullback_multi_rhs is fbi.free_boundary_state_pullback_multi_rhs
+    controls = SimpleNamespace(device=None, adjoint_tol=1e-11, adjoint_maxiter=10,
+                               adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    cfg = SimpleNamespace(implicit=controls,adjoint_solver='coupled_gcrot',adjoint_fail='error')
+    def residual(z, p, field, *_):
+        return 2*z-p-field
+    monkeypatch.setattr(fbi, '_projected_residual', lambda *_:residual)
+    monkeypatch.setattr(im, '_dof_projector', lambda _,mask:lambda value:value*mask)
+    monkeypatch.setattr(im, 'runtime_from_params', lambda *_:None)
+    zero, mask, rhs = jnp.zeros(3), jnp.array([1.,0.,1.]), jnp.eye(3)
+    pb, fb = fbi.free_boundary_state_pullback_multi_rhs(zero,zero,cfg,zero,mask,rhs,rcon0=None,zcon0=None)
+    np.testing.assert_allclose(pb,np.asarray(rhs*mask/2),atol=1e-12)
+    np.testing.assert_allclose(fb,np.asarray(rhs*mask/2),atol=1e-12)
+    with pytest.raises(ValueError, match='root residual'):
+        fbi.free_boundary_state_pullback_multi_rhs(zero,zero,cfg,jnp.ones(3),mask,rhs,rcon0=None,zcon0=None)
+
+
 def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     """A bad cached state is discarded, but implementation errors are not."""
     inp = dataclasses.replace(

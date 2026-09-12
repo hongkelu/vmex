@@ -892,11 +892,15 @@ def _host_adjoint(
     host and calls one compiled JAX operator; only vectors cross the boundary.
     The nonlinear VJP tape is prepared once per solve and retained on device.
     """
-    rhs_flat, unravel = ravel_pytree(rhs)
-
     pullback = _prepare_host_transpose(
         z_star, params, field_parameters, frozen, rcon0, zcon0,
         residual=residual)
+    return _solve_prepared_host_adjoint(pullback, rhs, cfg, x0=x0, fail=fail)
+
+
+def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", row=None):
+    """Solve and certify one RHS against an already prepared transpose."""
+    rhs_flat, unravel = ravel_pytree(rhs)
 
     def matvec(value):
         return _prepared_transpose_matvec(value, pullback, rhs)
@@ -926,7 +930,8 @@ def _host_adjoint(
         if fail != "best_effort" or not np.isfinite(residual_norm):
             im._raise_adjoint_unconverged(
                 cfg, iterations=calls, residual_norm=residual_norm,
-                tolerance=tolerance, method="host GCROT",
+                tolerance=tolerance,
+                method="host GCROT" if row is None else f"host GCROT row {row}",
             )
         warnings.warn(
             "free-boundary adjoint stalled: residual "
@@ -939,6 +944,97 @@ def _host_adjoint(
     return unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
 
 
+@functools.partial(jax.jit, static_argnames=("residual",))
+def _prepare_parameter_pullback(z, p, field, base, rcon, zcon, *, residual):
+    return jax.vjp(
+        lambda prm, external: residual(z, prm, external, base, rcon, zcon),
+        p, field,
+    )[1]
+
+
+@jax.jit
+def _apply_parameter_pullback(adjoint, pullback):
+    return pullback(jax.tree.map(jnp.negative, adjoint))
+
+
+def _host_pullback_multi_rhs(
+    residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
+    rhs_batch, cfg, *, fail="error",
+):
+    """Share state and parameter tapes; certify each independent host solve."""
+    transpose = _prepare_host_transpose(
+        z_star, params, field_parameters, frozen, rcon0, zcon0,
+        residual=residual)
+    parameter_pullback = _prepare_parameter_pullback(
+        z_star, params, field_parameters, frozen, rcon0, zcon0,
+        residual=residual)
+    rows = []
+    for index in range(jax.tree.leaves(rhs_batch)[0].shape[0]):
+        rhs = jax.tree.map(lambda value: value[index], rhs_batch)
+        adjoint = _solve_prepared_host_adjoint(transpose, rhs, cfg, fail=fail, row=index)
+        rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
+    return jax.tree.map(lambda *values: jnp.stack(values), *rows)
+
+
+def free_boundary_state_pullback_multi_rhs(
+    params, field_parameters, cfg: FreeBoundaryImplicitConfig,
+    state: SpectralState, dof_mask: SpectralState,
+    state_cotangents: SpectralState, *, rcon0, zcon0,
+    root_residual_atol: float = 1e-5,
+):
+    """Pull back several state cotangents at one accepted free-boundary root.
+
+    Each cotangent leaf has shape ``(n_rhs,) + state_leaf.shape``. Return
+    ``(params_bar, field_parameters_bar)`` with that leading RHS dimension.
+    These are implicit state contributions only: callers must add any
+    explicit objective dependence on profiles or field parameters.
+
+    The state, mask and constraint baselines must come from the same solve.
+    ``root_residual_atol`` bounds the norm of the projected preconditioned
+    root residual, separately from each linear adjoint's existing acceptance
+    policy. This numerical check is not a physical accuracy certificate.
+
+    This host-eager helper supports ``coupled_gcrot``. It shares state and
+    parameter preparation, with independent sequential solves and residual
+    checks for every row. It does not recycle between rows or change the
+    scalar custom VJP. For traced scalar calls use the existing solver API.
+    """
+    if cfg.adjoint_solver != "coupled_gcrot":
+        raise ValueError("multi-RHS state pullback requires coupled_gcrot")
+    if not np.isfinite(root_residual_atol) or root_residual_atol <= 0:
+        raise ValueError("root_residual_atol must be finite and positive")
+    values = (params, field_parameters, state, dof_mask, state_cotangents, rcon0, zcon0)
+    if any(isinstance(value, jax.core.Tracer) for value in jax.tree.leaves(values)):
+        raise ValueError("multi-RHS state pullback requires host-eager inputs")
+    if jax.tree.structure(state_cotangents) != jax.tree.structure(state):
+        raise ValueError("state_cotangents must have the state pytree structure")
+    leaves = jax.tree.leaves(state_cotangents)
+    count = leaves[0].shape[0] if leaves and leaves[0].ndim else 0
+    if count < 1 or any(
+        row.shape != (count,) + reference.shape
+        for row, reference in zip(leaves, jax.tree.leaves(state))
+    ):
+        raise ValueError("state_cotangents require a nonempty consistent leading RHS axis")
+    icfg = cfg.implicit
+    with im._device_context(icfg):
+        params, field_parameters, state, dof_mask, state_cotangents, rcon0, zcon0 = im._device_pin(icfg, values)
+        # A deserialized root can enter without a preceding forward callback.
+        # Populate runtime/boundary-table caches outside JAX transformations.
+        im.runtime_from_params(params, icfg)
+        frozen = jax.lax.stop_gradient(state)
+        project = im._dof_projector(icfg, dof_mask)
+        z_star = project(state)
+        residual = _projected_residual(cfg, dof_mask)
+        root = residual(z_star, params, field_parameters, frozen, rcon0, zcon0)
+        root_norm = float(jnp.linalg.norm(ravel_pytree(root)[0]))
+        if not np.isfinite(root_norm) or root_norm > root_residual_atol:
+            raise ValueError(
+                f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
+        return _host_pullback_multi_rhs(
+            residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
+            jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail)
+
+
 solve_free_boundary_implicit.defvjp(_solve_fwd, _solve_bwd)
 solve_free_boundary_implicit_status.defvjp(_solve_status_fwd, _solve_status_bwd)
 
@@ -948,4 +1044,5 @@ __all__ = [
     "make_free_boundary_config",
     "solve_free_boundary_implicit",
     "solve_free_boundary_implicit_status",
+    "free_boundary_state_pullback_multi_rhs",
 ]

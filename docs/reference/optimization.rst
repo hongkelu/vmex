@@ -434,6 +434,30 @@ local-row compilation still keeps it opt-in. ``device="auto"`` uses the CPU
 for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
+Several objectives at one free-boundary root
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Advanced callers that retain an accepted state, its DOF mask, and its
+``rcon0``/``zcon0`` constraint baselines can use
+``vmex.free_boundary_state_pullback_multi_rhs``. Stack state cotangents on a
+leading RHS axis and pass the same profile parameters, field parameters,
+configuration, state, mask, and baselines that define that root. The returned
+pair contains profile-parameter and field-parameter cotangents with the same
+leading RHS axis. Add explicit objective derivatives with respect to those
+parameters separately; this helper supplies only the implicit state response.
+
+The helper prepares one state transpose and one parameter pullback for all
+rows. It runs independent sequential host GCROT solves, retaining the scalar
+tolerances and independently checking every adjoint residual. It does not
+carry recycle spaces between objectives. A projected preconditioned root
+residual check (``root_residual_atol``, default ``1e-5``) precedes the solves;
+this numerical gate does not establish physical gradient accuracy.
+
+This initial interface is host-eager and supports ``coupled_gcrot`` only.
+The existing scalar custom VJP, traced solver path, and ``boundary_schur``
+interface retain their behavior. Use independent re-solve finite differences
+and root-convergence studies to qualify a new physical response.
+
 Use :class:`vmex.core.monitoring.EquilibriumReporter` for the compact physics
 summary shared by the examples.  Each entry accepts either VMEX's
 ``function(equilibrium_state, solver_context)`` convention or a host

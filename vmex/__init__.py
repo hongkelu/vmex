@@ -233,6 +233,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.freeboundary_implicit", "solve_free_boundary_implicit"),
     "solve_free_boundary_implicit_status": (
         ".core.freeboundary_implicit", "solve_free_boundary_implicit_status"),
+    "free_boundary_state_pullback_multi_rhs": (
+        ".core.freeboundary_implicit", "free_boundary_state_pullback_multi_rhs"),
     # wout IO
     "WoutData": (".core.wout", "WoutData"),
     "read_wout": (".core.wout", "read_wout"),

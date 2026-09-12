@@ -272,7 +272,7 @@ def free_boundary_continuation_state_pullback(accepted, cfg, state_cotangents):
     """Shared implicit field-parameter derivatives at the supplied exact root.
 
     Cotangent leaves have a leading RHS axis. This delegates to main's shared
-    coupled/reverse GCROT pullback; add explicit objective field derivatives yourself.
+    selected adjoint backend; add explicit objective field derivatives yourself.
     The saved record prevents a later memo refresh from changing the root.
     """
     if accepted._owner is not cfg._owner:

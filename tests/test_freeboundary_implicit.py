@@ -209,13 +209,14 @@ def test_multi_rhs_pullback_rejects_bad_batch_shape(cotangents):
             jnp.ones(3),cotangents,rcon0=None,zcon0=None)
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"])
 def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
     import vmex
     assert vmex.free_boundary_state_pullback_multi_rhs is fbi.free_boundary_state_pullback_multi_rhs
-    controls = SimpleNamespace(device=None, adjoint_tol=1e-11, adjoint_maxiter=10,
+    controls = SimpleNamespace(device=None, lconm1=False, adjoint_tol=1e-11, adjoint_maxiter=10,
                                adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    cfg = SimpleNamespace(implicit=controls,adjoint_solver=backend,adjoint_fail='error')
+    cfg = SimpleNamespace(implicit=controls,adjoint_solver=backend,adjoint_fail='error',
+                          adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
     def residual(z, p, field, *_):
         return 2*z-p-field
     monkeypatch.setattr(fbi, '_projected_residual', lambda *_:residual)
@@ -769,3 +770,91 @@ def test_reverse_gcrot_independently_rejects_false_success(monkeypatch, bad):
         assert np.all(np.isnan(traced))
     finally:
         fbi._reverse_gcrot_core.clear_cache()
+
+
+@pytest.mark.parametrize("backend", ["forward_dense", "forward_dense_jax"])
+@pytest.mark.parametrize("compiled", [False,True])
+def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(backend, compiled, monkeypatch):
+    from vmex.core import _freeboundary_dense as dense
+    matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
+    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-11,
+        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
+        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
+    def residual(z,p,f,base,rc,zc):return matrix@z+.5*(p+f+base+rc+zc)*z**2
+    if compiled:residual=jax.jit(residual)
+    values = [jnp.array([.2,.3,.4])+.1*i for i in range(6)]
+    rhs=jnp.array([[1.,0.,0.],[.1,.5,1.],[0.,0.,0.]])
+    native=dense._factor_solve;calls=[]
+    def measured(*args):calls.append(1);return native(*args)
+    monkeypatch.setattr(dense,'_factor_solve',measured)
+    for changed in (None,0,1,2,3,4,5):
+        args=list(values)
+        if changed is not None:args[changed]=args[changed]+.25
+        z,p,f,base,rc,zc=args
+        jac=matrix+jnp.diag((p+f+base+rc+zc)*z)
+        actual=dense.solve_dense_adjoint(residual,*args,rhs,jnp.ones(3),cfg)
+        expected=np.linalg.solve(np.asarray(jac.T),np.asarray(rhs).T).T
+        np.testing.assert_allclose(actual,expected,rtol=1e-10,atol=1e-12)
+    assert len(calls)==7  # One factorization per root, not per RHS.
+
+
+@pytest.mark.parametrize("lasym", [False,True])
+def test_dense_active_basis_matches_main_projector_and_pair_signs(monkeypatch,lasym):
+    from vmex.core import _freeboundary_dense as dense
+    from vmex.core.solver import SpectralState
+    cfg=SimpleNamespace(lconm1=True,resolution=SimpleNamespace(ntor=1,lasym=lasym))
+    monkeypatch.setattr(im,'_m1_pair_columns',lambda _:(np.array([1]),np.array([2])))
+    leaves=[jnp.ones((2,3)) for _ in range(6)]
+    leaves[0]=leaves[0].at[0,0].set(0)
+    mask=SpectralState(*leaves)
+    space=dense._active_space(cfg,mask,100)
+    _,unravel=jax.flatten_util.ravel_pytree(mask)
+    vector=unravel(jnp.arange(36,dtype=jnp.float64))
+    compressed=dense._compress(vector,space)
+    expanded=dense._expand(compressed,mask,space)
+    expected=im._dof_projector(cfg,mask)(vector)
+    for a,b in zip(jax.tree.leaves(expanded),jax.tree.leaves(expected)):
+        np.testing.assert_allclose(a,b,rtol=1e-14,atol=1e-14)
+    np.testing.assert_allclose(dense._compress(expanded,space),compressed,rtol=1e-14,atol=1e-14)
+    assert space.left.size==35-(4 if lasym else 2)
+    bad=dataclasses.replace(mask,Z_sin=mask.Z_sin.at[0,1].set(0))
+    with pytest.raises(ValueError,match='unequal'):
+        dense._active_space(cfg,bad,100)
+
+
+@pytest.mark.parametrize("backend", ["forward_dense", "forward_dense_jax"])
+@pytest.mark.parametrize("failure", ['singular','false_success','nonfinite'])
+def test_dense_failure_policy(backend,failure,monkeypatch):
+    from vmex.core import _freeboundary_dense as dense
+    cfg=SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-11,
+        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
+        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
+    def residual(z,*args):return (0. if failure=='singular' else 2.)*z
+    if failure!='singular':
+        monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend:
+                            jnp.full_like(rhs,jnp.nan if failure=='nonfinite' else 0.))
+    def call():return dense.solve_dense_adjoint(residual,jnp.zeros(3),None,None,None,None,None,
+                                              jnp.ones((2,3)),jnp.ones(3),cfg)
+    with pytest.raises(AdjointSolveError):call()
+    cfg.adjoint_fail='best_effort'
+    if failure=='false_success':
+        with pytest.warns(RuntimeWarning,match='best-effort'):call()
+    else:
+        with pytest.raises(AdjointSolveError):call()
+
+
+def test_dense_dimension_and_mask_guards():
+    from vmex.core import _freeboundary_dense as dense
+    cfg=SimpleNamespace(lconm1=False)
+    for mask in (jnp.zeros(3),jnp.ones(4)):
+        with pytest.raises(ValueError,match='active dimension'):
+            dense._active_space(cfg,mask,3)
+    with pytest.raises(ValueError,match='binary'):
+        dense._active_space(cfg,jnp.array([1.,.5]),3)
+
+
+@pytest.mark.parametrize("name", ['adjoint_dense_batch_size','adjoint_dense_max_dofs'])
+@pytest.mark.parametrize("value", [0,True,1.5])
+def test_dense_config_rejects_invalid_controls(name,value):
+    with pytest.raises(ValueError,match=name):
+        make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),**{name:value})

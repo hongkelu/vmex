@@ -446,14 +446,16 @@ pair contains profile-parameter and field-parameter cotangents with the same
 leading RHS axis. Add explicit objective derivatives with respect to those
 parameters separately; this helper supplies only the implicit state response.
 
-The helper prepares one state transpose and one parameter pullback for all
-rows. It runs independent sequential GCROT solves, retaining the scalar
+For the Krylov backends, the helper prepares one state transpose and one
+parameter pullback for all rows. It runs independent sequential GCROT
+solves, retaining the scalar
 tolerances and independently checking every adjoint residual. It does not
 carry recycle spaces between objectives. A projected preconditioned root
 residual check (``root_residual_atol``, default ``1e-5``) precedes the solves;
 this numerical gate does not establish physical gradient accuracy.
 
-This interface is host-eager and supports ``coupled_gcrot`` and ``reverse_gcrot``.
+This interface is host-eager and supports ``coupled_gcrot``, ``reverse_gcrot``,
+``forward_dense``, and ``forward_dense_jax``.
 The existing scalar custom VJP, traced solver path, and ``boundary_schur``
 interface retain their behavior. Use independent re-solve finite differences
 and root-convergence studies to qualify a new physical response.
@@ -747,3 +749,42 @@ linear solve does not replace forward-root or finite-difference checks.
 No separate root-polishing step is required by this interface. Compilation,
 memory use, and speed depend on the case and device; this option does not
 imply a speedup over the default.
+
+
+Dense free-boundary adjoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``make_free_boundary_config(..., adjoint_solver="forward_dense")`` assembles
+an explicit active-state Jacobian with forward JVPs and solves its transpose
+using SciPy LU on the host. ``adjoint_solver="forward_dense_jax"`` keeps
+matrix assembly and LU on the configured JAX device. Neither option
+changes the nonlinear equilibrium or requires a root polisher.
+
+The sparse orthonormal active basis removes masked coefficients and the
+redundant m=1 Z-sine pairs; asymmetric Z-cosine pairs carry opposite signs,
+as required by main's projector. For A = Q.T F_z Q, both methods solve
+A.T lambda_active = Q.T objective_state and lift lambda = Q lambda_active.
+A shared multi-RHS call assembles and factors A once for all rows.
+Parameter derivatives use main's existing residual pullback. Add explicit
+objective dependence on coil/profile parameters to state-only pullbacks.
+
+Both interfaces require float64 and host-eager inputs. An ordinary scalar
+``jax.grad`` and the continuation state pullback are supported; wrapping
+the scalar gradient in an outer ``jax.jit`` raises a clear error because
+the runtime mask determines the active dimension. The JAX backend name
+describes matrix placement, not a fully traced control plane. No Krylov
+fallback is silently substituted.
+
+``adjoint_dense_batch_size`` (default 4) bounds the number of simultaneous
+JVP columns. ``adjoint_dense_max_dofs`` (default 4096) rejects larger active
+systems before allocating the quadratic matrix; increase it explicitly
+only after budgeting matrix, factorization, and JVP working memory. A
+4096-by-4096 float64 matrix alone occupies 128 MiB, excluding workspace.
+The parameter count is independent of this active-state dimension.
+
+After factorization, each actual transpose equation is checked against
+main's existing acceptance threshold (10 * adjoint_tol * norm(rhs)).
+Singular or nonfinite solutions raise AdjointSolveError. Finite residual
+failures follow the explicit adjoint_fail policy. The root-residual gate
+and independent finite-difference qualification remain necessary. Dense
+methods are optional alternatives; coupled_gcrot remains the default.

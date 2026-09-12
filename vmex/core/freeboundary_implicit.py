@@ -57,6 +57,8 @@ class FreeBoundaryImplicitConfig:
     adjoint_fail: str = "error"
     schur_probe_chunk_size: int = 1
     vacuum_program: Any = None
+    adjoint_dense_batch_size: int = 4
+    adjoint_dense_max_dofs: int = 4096
 
     @property
     def resolution(self):
@@ -78,6 +80,8 @@ def make_free_boundary_config(
     adjoint_solver: str = "coupled_gcrot",
     adjoint_fail: str = "error",
     schur_probe_chunk_size: int = 1,
+    adjoint_dense_batch_size: int = 4,
+    adjoint_dense_max_dofs: int = 4096,
     field_from_parameters: Callable[[Any], Any] | None = None,
     device: Any = AUTO,
 ) -> FreeBoundaryImplicitConfig:
@@ -93,6 +97,9 @@ def make_free_boundary_config(
     ``adjoint_solver="coupled_gcrot"`` is the default host Krylov path;
     ``"reverse_gcrot"`` uses JAX/Solvax Krylov iterations on the transpose
     of the linearized projected residual, with the same acceptance policy.
+    ``"forward_dense"`` and ``"forward_dense_jax"`` assemble the active
+    Jacobian with forward JVPs and solve its transpose using SciPy or JAX LU.
+    Both dense backends require float64 host-eager gradients.
     ``"boundary_schur"`` selects the advanced radial-elimination path, which
     stays well conditioned on marginally converged roots where the coupled
     Krylov solve stalls. ``adjoint_fail="best_effort"`` returns the stalled
@@ -112,13 +119,17 @@ def make_free_boundary_config(
     )
     if cfg.resolution != resolution:
         cfg = dataclasses.replace(cfg, resolution=resolution)
-    if adjoint_solver not in {"boundary_schur", "coupled_gcrot", "reverse_gcrot"}:
+    if adjoint_solver not in {"boundary_schur", "coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"}:
         raise ValueError(
-            "adjoint_solver must be 'boundary_schur' or 'coupled_gcrot' or 'reverse_gcrot'")
+            "adjoint_solver must be 'boundary_schur' or 'coupled_gcrot' or 'reverse_gcrot' or 'forward_dense' or 'forward_dense_jax'")
     if adjoint_fail not in {"error", "best_effort"}:
         raise ValueError("adjoint_fail must be 'error' or 'best_effort'")
     if schur_probe_chunk_size < 1:
         raise ValueError("schur_probe_chunk_size must be positive")
+    for name, value in (("adjoint_dense_batch_size", adjoint_dense_batch_size),
+                        ("adjoint_dense_max_dofs", adjoint_dense_max_dofs)):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
     config = FreeBoundaryImplicitConfig(
         implicit=cfg,
         field_from_parameters=(lambda value: value) if field_from_parameters is None
@@ -126,6 +137,8 @@ def make_free_boundary_config(
         adjoint_solver=adjoint_solver,
         adjoint_fail=adjoint_fail,
         schur_probe_chunk_size=int(schur_probe_chunk_size),
+        adjoint_dense_batch_size=int(adjoint_dense_batch_size),
+        adjoint_dense_max_dofs=int(adjoint_dense_max_dofs),
     )
     return dataclasses.replace(config, vacuum_program=_vacuum_program(config))
 
@@ -481,10 +494,24 @@ def _solve_bwd(cfg, saved, state_bar):
 
 def _solve_bwd_impl(cfg, saved, state_bar):
     params, field_parameters, state, mask, rcon0, zcon0 = saved
+    if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"} and any(
+        isinstance(value, jax.core.Tracer) for value in jax.tree.leaves((saved,state_bar))
+    ):
+        raise ValueError("dense free-boundary adjoints require host-eager inputs; "
+                         "do not wrap the scalar gradient in jax.jit")
     frozen = jax.lax.stop_gradient(state)
     project = im._dof_projector(cfg.implicit, mask)
     residual = _projected_residual(cfg, mask)
     z_star = project(state)
+
+    if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"}:
+        from ._freeboundary_dense import solve_dense_adjoint
+        batch = jax.tree.map(lambda x:x[None], project(state_bar))
+        lam = jax.tree.map(lambda x:x[0], solve_dense_adjoint(
+            residual,z_star,params,field_parameters,frozen,rcon0,zcon0,batch,mask,cfg))
+        parameter_pullback = _prepare_parameter_pullback(
+            z_star,params,field_parameters,frozen,rcon0,zcon0,residual=residual)
+        return _apply_parameter_pullback(lam,parameter_pullback)
 
     if cfg.adjoint_solver == "reverse_gcrot":
         transpose = _prepare_reverse_transpose(
@@ -1071,14 +1098,16 @@ def free_boundary_state_pullback_multi_rhs(
     root residual, separately from each linear adjoint's existing acceptance
     policy. This numerical check is not a physical accuracy certificate.
 
-    This host-eager helper supports ``coupled_gcrot`` and ``reverse_gcrot``.
+    This host-eager helper also supports ``forward_dense`` and
+    ``forward_dense_jax`` (one matrix assembly and factorization per batch).
+    The Krylov alternatives are ``coupled_gcrot`` and ``reverse_gcrot``.
     The latter keeps the Krylov iterations in JAX/Solvax. Both share state and
     parameter preparation, with independent sequential solves and residual
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
-    if cfg.adjoint_solver not in {"coupled_gcrot", "reverse_gcrot"}:
-        raise ValueError("multi-RHS state pullback requires coupled_gcrot or reverse_gcrot")
+    if cfg.adjoint_solver not in {"coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"}:
+        raise ValueError("multi-RHS state pullback requires coupled_gcrot, reverse_gcrot, forward_dense, or forward_dense_jax")
     if not np.isfinite(root_residual_atol) or root_residual_atol <= 0:
         raise ValueError("root_residual_atol must be finite and positive")
     values = (params, field_parameters, state, dof_mask, state_cotangents, rcon0, zcon0)
@@ -1108,6 +1137,17 @@ def free_boundary_state_pullback_multi_rhs(
         if not np.isfinite(root_norm) or root_norm > root_residual_atol:
             raise ValueError(
                 f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
+        if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"}:
+            from ._freeboundary_dense import solve_dense_adjoint
+            adjoints = solve_dense_adjoint(
+                residual,z_star,params,field_parameters,frozen,rcon0,zcon0,
+                jax.vmap(project)(state_cotangents),dof_mask,cfg)
+            parameter_pullback = _prepare_parameter_pullback(
+                z_star,params,field_parameters,frozen,rcon0,zcon0,residual=residual)
+            rows = [_apply_parameter_pullback(
+                jax.tree.map(lambda value:value[index],adjoints),parameter_pullback)
+                for index in range(count)]
+            return jax.tree.map(lambda *values:jnp.stack(values),*rows)
         return _host_pullback_multi_rhs(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
             jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail,

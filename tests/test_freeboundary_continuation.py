@@ -32,9 +32,10 @@ def family(monkeypatch):
     matrix = jnp.array([[2., .4], [-.3, 1.5]])
     controls = SimpleNamespace(device=None, inp=object(), ftol=1e-14,
         max_iterations=100, adjoint_tol=1e-11, adjoint_maxiter=20,
-        adjoint_gcrot_m=6, adjoint_gcrot_k=1)
+        adjoint_gcrot_m=6, adjoint_gcrot_k=1, lconm1=False)
     solver = SimpleNamespace(implicit=controls, resolution=object(),
-        adjoint_fail='error', adjoint_solver='coupled_gcrot', field_from_parameters=lambda p:p)
+        adjoint_fail='error', adjoint_solver='coupled_gcrot', field_from_parameters=lambda p:p,
+        adjoint_dense_batch_size=3, adjoint_dense_max_dofs=100)
     calls = []
     mode = {'failure':None, 'shift':0.}
     def stage(inp, **kwargs):
@@ -165,7 +166,7 @@ def test_invalid_controls_do_not_solve_anchor(family,option,value):
     assert not family.calls
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"])
 def test_scalar_custom_vjp_and_shared_pullback_match_analytic_derivative(family, backend):
     cfg=family.make();p=jnp.array([.2,.1])
     cfg.solver.adjoint_solver=backend
@@ -174,7 +175,11 @@ def test_scalar_custom_vjp_and_shared_pullback_match_analytic_derivative(family,
         return jnp.sum(state.R_cos**2)+3*point[0]
     expected=2*family.matrix.T@(family.matrix@np.asarray(p))+np.array([3.,0.])
     np.testing.assert_allclose(jax.grad(objective)(p),expected,rtol=1e-9,atol=1e-10)
-    np.testing.assert_allclose(jax.jit(jax.grad(objective))(p),expected,rtol=1e-9,atol=1e-10)
+    if backend.startswith("forward_dense"):
+        with pytest.raises(ValueError, match="host-eager"):
+            jax.jit(jax.grad(objective))(p)
+    else:
+        np.testing.assert_allclose(jax.jit(jax.grad(objective))(p),expected,rtol=1e-9,atol=1e-10)
     accepted=fc.free_boundary_continuation_result(p,cfg)
     rhs=SpectralState(jnp.eye(2),*(jnp.zeros((2,2)) for _ in range(5)))
     derivative=fc.free_boundary_continuation_state_pullback(accepted,cfg,rhs)

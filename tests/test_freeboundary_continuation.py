@@ -165,8 +165,10 @@ def test_invalid_controls_do_not_solve_anchor(family,option,value):
     assert not family.calls
 
 
-def test_scalar_custom_vjp_and_shared_pullback_match_analytic_derivative(family):
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+def test_scalar_custom_vjp_and_shared_pullback_match_analytic_derivative(family, backend):
     cfg=family.make();p=jnp.array([.2,.1])
+    cfg.solver.adjoint_solver=backend
     def objective(point):
         state=fc.solve_free_boundary_continuation(point,cfg)
         return jnp.sum(state.R_cos**2)+3*point[0]

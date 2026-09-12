@@ -447,13 +447,13 @@ leading RHS axis. Add explicit objective derivatives with respect to those
 parameters separately; this helper supplies only the implicit state response.
 
 The helper prepares one state transpose and one parameter pullback for all
-rows. It runs independent sequential host GCROT solves, retaining the scalar
+rows. It runs independent sequential GCROT solves, retaining the scalar
 tolerances and independently checking every adjoint residual. It does not
 carry recycle spaces between objectives. A projected preconditioned root
 residual check (``root_residual_atol``, default ``1e-5``) precedes the solves;
 this numerical gate does not establish physical gradient accuracy.
 
-This initial interface is host-eager and supports ``coupled_gcrot`` only.
+This interface is host-eager and supports ``coupled_gcrot`` and ``reverse_gcrot``.
 The existing scalar custom VJP, traced solver path, and ``boundary_schur``
 interface retain their behavior. Use independent re-solve finite differences
 and root-convergence studies to qualify a new physical response.
@@ -717,3 +717,33 @@ The main entry points are :func:`vmex.core.optimize.make_problem`,
 :class:`vmex.core.problem.Evaluation`, and
 :class:`vmex.core.monitoring.OptimizationMonitor`, and
 :class:`vmex.core.monitoring.EquilibriumReporter`.
+
+
+Reverse GCROT free-boundary adjoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set ``adjoint_solver="reverse_gcrot"`` in ``make_free_boundary_config`` to
+use JAX/Solvax GCROT on the transpose of the already-linearized projected
+VMEX--NESTOR residual. This ports the local reverse Krylov method onto the
+same root, mask, constraint baselines, and parameter pullback as main.
+The nonlinear linearization is prepared once; Krylov iterations stay on
+the configured JAX device. ``coupled_gcrot`` remains the default and uses
+SciPy for eager Krylov iterations. Device placement is explicit; selecting
+this backend does not itself select a GPU.
+
+Scalar custom VJPs, shared multi-RHS pullbacks, and accepted-state
+continuation all honor this option. Shared calls prepare one state tape
+and one parameter tape, then solve rows sequentially. This port does not
+include parallel RHS batching, cross-row or cross-root recycling, or the
+old response-module API. GCROT still recycles within each solve.
+
+Controls remain ``adjoint_tol``, ``adjoint_gcrot_m``, ``adjoint_gcrot_k``,
+and ``adjoint_maxiter`` (the restart-cycle budget). Each returned adjoint
+is checked with a freshly evaluated transpose residual using main's
+acceptance threshold, ``10 * adjoint_tol * norm(rhs)``. Eager failures
+raise ``AdjointSolveError`` unless finite best-effort results were explicitly
+requested; traced failures produce NaN gradients. Convergence of the
+linear solve does not replace forward-root or finite-difference checks.
+No separate root-polishing step is required by this interface. Compilation,
+memory use, and speed depend on the case and device; this option does not
+imply a speedup over the default.

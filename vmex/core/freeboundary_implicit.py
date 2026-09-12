@@ -24,7 +24,7 @@ import numpy as np
 from jax.flatten_util import ravel_pytree
 from scipy.sparse import bsr_matrix
 from scipy.sparse.linalg import LinearOperator, gcrotmk
-from solvax import SpluFactorization
+from solvax import SpluFactorization, gcrot as _solvax_gcrot
 
 from . import implicit as im
 from .device import AUTO, resolve_implicit_device
@@ -90,7 +90,9 @@ def make_free_boundary_config(
     ``device="auto"`` uses the CPU for the coupled implicit response on an
     accelerator host unless the process already pins JAX placement; pass an
     explicit device to override that measured lower-memory default.
-    ``adjoint_solver="coupled_gcrot"`` is the certified default;
+    ``adjoint_solver="coupled_gcrot"`` is the default host Krylov path;
+    ``"reverse_gcrot"`` uses JAX/Solvax Krylov iterations on the transpose
+    of the linearized projected residual, with the same acceptance policy.
     ``"boundary_schur"`` selects the advanced radial-elimination path, which
     stays well conditioned on marginally converged roots where the coupled
     Krylov solve stalls. ``adjoint_fail="best_effort"`` returns the stalled
@@ -110,9 +112,9 @@ def make_free_boundary_config(
     )
     if cfg.resolution != resolution:
         cfg = dataclasses.replace(cfg, resolution=resolution)
-    if adjoint_solver not in {"boundary_schur", "coupled_gcrot"}:
+    if adjoint_solver not in {"boundary_schur", "coupled_gcrot", "reverse_gcrot"}:
         raise ValueError(
-            "adjoint_solver must be 'boundary_schur' or 'coupled_gcrot'")
+            "adjoint_solver must be 'boundary_schur' or 'coupled_gcrot' or 'reverse_gcrot'")
     if adjoint_fail not in {"error", "best_effort"}:
         raise ValueError("adjoint_fail must be 'error' or 'best_effort'")
     if schur_probe_chunk_size < 1:
@@ -483,6 +485,17 @@ def _solve_bwd_impl(cfg, saved, state_bar):
     project = im._dof_projector(cfg.implicit, mask)
     residual = _projected_residual(cfg, mask)
     z_star = project(state)
+
+    if cfg.adjoint_solver == "reverse_gcrot":
+        transpose = _prepare_reverse_transpose(
+            z_star, params, field_parameters, frozen, rcon0, zcon0,
+            residual=residual)
+        lam = _solve_prepared_reverse_adjoint(
+            transpose, project(state_bar), cfg.implicit, fail=cfg.adjoint_fail)
+        parameter_pullback = _prepare_parameter_pullback(
+            z_star, params, field_parameters, frozen, rcon0, zcon0,
+            residual=residual)
+        return _apply_parameter_pullback(lam, parameter_pullback)
 
     _, state_pullback = jax.vjp(
         lambda z: residual(
@@ -886,6 +899,62 @@ def _prepared_transpose_matvec(value, pullback, template):
     return ravel_pytree(pullback(unravel(value))[0])[0]
 
 
+@functools.partial(jax.jit, static_argnames=("residual",))
+def _prepare_reverse_transpose(z, p, field, base, rcon, zcon, *, residual):
+    """Transpose an already linearized root, as in the local reverse backend.
+
+    Keep numerical tape leaves dynamic, including the frozen state and
+    constraint baselines, so executable reuse cannot reuse an old root.
+    """
+    _, tangent = jax.linearize(
+        lambda zz: residual(zz, p, field, base, rcon, zcon), z)
+    return jax.linear_transpose(tangent, z)
+
+
+@functools.partial(jax.jit, static_argnames=("rtol", "m", "k", "max_restarts"))
+def _reverse_gcrot_core(transpose, rhs, *, rtol, m, k, max_restarts):
+    """Device Krylov loop with an independently recomputed true residual."""
+    flat, unravel = ravel_pytree(rhs)
+
+    def action(value):
+        return _prepared_transpose_matvec(value, transpose, rhs)
+
+    solution = _solvax_gcrot(
+        action, flat, rtol=rtol, atol=0.0,
+        m=min(m, flat.size), k=min(k, flat.size),
+        max_restarts=max_restarts)
+    norm = jnp.linalg.norm(action(solution.x) - flat)
+    return unravel(solution.x), norm, jnp.linalg.norm(flat), solution.iterations
+
+
+def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=None):
+    """Certify Solvax using main's true-residual tolerance and failure policy."""
+    lam, norm, rhs_norm, iterations = _reverse_gcrot_core(
+        transpose, rhs, rtol=cfg.adjoint_tol, m=cfg.adjoint_gcrot_m,
+        k=cfg.adjoint_gcrot_k, max_restarts=cfg.adjoint_maxiter)
+    tolerance = im._adjoint_acceptance(cfg, rhs_norm)
+    finite = jnp.isfinite(norm) & jnp.isfinite(rhs_norm)
+    for leaf in jax.tree.leaves(lam):
+        finite = finite & jnp.all(jnp.isfinite(leaf))
+    accepted = finite & (norm <= tolerance)
+    if isinstance(norm, jax.core.Tracer):
+        # As in main's traced scalar path, poison failed gradients. A traced
+        # call cannot synchronously raise the host's typed solve exception.
+        return jax.tree.map(lambda x: jnp.where(accepted, x, jnp.nan), lam)
+    if not bool(accepted):
+        method = "reverse GCROT" if row is None else f"reverse GCROT row {row}"
+        if fail != "best_effort" or not bool(finite):
+            im._raise_adjoint_unconverged(
+                cfg, iterations=int(iterations), residual_norm=float(norm),
+                tolerance=float(tolerance), method=method)
+        warnings.warn(
+            f"free-boundary {method} stalled: residual {float(norm):.3e} > "
+            f"acceptance {float(tolerance):.3e}; returning the best-effort "
+            "solution because adjoint_fail='best_effort'. The gradient is inaccurate.",
+            RuntimeWarning, stacklevel=2)
+    return lam
+
+
 def _host_adjoint(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0, rhs, cfg,
     *, x0=None, fail="error",
@@ -965,10 +1034,12 @@ def _apply_parameter_pullback(adjoint, pullback):
 
 def _host_pullback_multi_rhs(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-    rhs_batch, cfg, *, fail="error",
+    rhs_batch, cfg, *, fail="error", backend="coupled_gcrot",
 ):
-    """Share state and parameter tapes; certify each independent host solve."""
-    transpose = _prepare_host_transpose(
+    """Share numerical tapes; certify each independent sequential solve."""
+    prepare = _prepare_reverse_transpose if backend == "reverse_gcrot" else _prepare_host_transpose
+    solve = _solve_prepared_reverse_adjoint if backend == "reverse_gcrot" else _solve_prepared_host_adjoint
+    transpose = prepare(
         z_star, params, field_parameters, frozen, rcon0, zcon0,
         residual=residual)
     parameter_pullback = _prepare_parameter_pullback(
@@ -977,7 +1048,7 @@ def _host_pullback_multi_rhs(
     rows = []
     for index in range(jax.tree.leaves(rhs_batch)[0].shape[0]):
         rhs = jax.tree.map(lambda value: value[index], rhs_batch)
-        adjoint = _solve_prepared_host_adjoint(transpose, rhs, cfg, fail=fail, row=index)
+        adjoint = solve(transpose, rhs, cfg, fail=fail, row=index)
         rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
     return jax.tree.map(lambda *values: jnp.stack(values), *rows)
 
@@ -1000,13 +1071,14 @@ def free_boundary_state_pullback_multi_rhs(
     root residual, separately from each linear adjoint's existing acceptance
     policy. This numerical check is not a physical accuracy certificate.
 
-    This host-eager helper supports ``coupled_gcrot``. It shares state and
+    This host-eager helper supports ``coupled_gcrot`` and ``reverse_gcrot``.
+    The latter keeps the Krylov iterations in JAX/Solvax. Both share state and
     parameter preparation, with independent sequential solves and residual
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
-    if cfg.adjoint_solver != "coupled_gcrot":
-        raise ValueError("multi-RHS state pullback requires coupled_gcrot")
+    if cfg.adjoint_solver not in {"coupled_gcrot", "reverse_gcrot"}:
+        raise ValueError("multi-RHS state pullback requires coupled_gcrot or reverse_gcrot")
     if not np.isfinite(root_residual_atol) or root_residual_atol <= 0:
         raise ValueError("root_residual_atol must be finite and positive")
     values = (params, field_parameters, state, dof_mask, state_cotangents, rcon0, zcon0)
@@ -1038,7 +1110,8 @@ def free_boundary_state_pullback_multi_rhs(
                 f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
         return _host_pullback_multi_rhs(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-            jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail)
+            jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail,
+            backend=cfg.adjoint_solver)
 
 
 solve_free_boundary_implicit.defvjp(_solve_fwd, _solve_bwd)

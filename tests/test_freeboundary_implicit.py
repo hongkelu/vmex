@@ -116,7 +116,8 @@ def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
     np.testing.assert_allclose(np.asarray(solution), np.zeros(4))
 
 
-def test_host_adjoint_prepared_transpose_tracks_changed_root_data():
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+def test_host_adjoint_prepared_transpose_tracks_changed_root_data(backend):
     """Executable reuse must not reuse a previous root's numerical tape."""
     matrix = jnp.array([[4.0, 0.3, -0.2], [0.1, 3.0, 0.4], [0.2, -0.1, 5.0]])
 
@@ -137,7 +138,11 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data():
         z, params, field, base, rcon, zcon = args
         jacobian = matrix + jnp.diag((params + field + base + rcon + zcon) * z)
         expected = np.linalg.solve(np.asarray(jacobian.T), np.asarray(rhs))
-        result = fbi._host_adjoint(residual, *args, rhs, cfg)
+        if backend == "reverse_gcrot":
+            tape = fbi._prepare_reverse_transpose(*args, residual=residual)
+            result = fbi._solve_prepared_reverse_adjoint(tape, rhs, cfg)
+        else:
+            result = fbi._host_adjoint(residual, *args, rhs, cfg)
         np.testing.assert_allclose(result, expected, rtol=1e-9, atol=1e-11)
         if changed is None:
             reference = expected
@@ -145,7 +150,8 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data():
             assert np.linalg.norm(expected - reference) > 1e-4
 
 
-def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch):
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, backend):
     """All rows, including a zero row, match an independent dense derivative."""
     matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
     profile_map = jnp.array([[1., 2.], [-1., .2], [.5, -.3]])
@@ -160,16 +166,17 @@ def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch):
     params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
     rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
     counts = {'state':0, 'parameter':0}
-    prepare_state, prepare_parameter = fbi._prepare_host_transpose, fbi._prepare_parameter_pullback
+    state_name = "_prepare_reverse_transpose" if backend == "reverse_gcrot" else "_prepare_host_transpose"
+    prepare_state, prepare_parameter = getattr(fbi, state_name), fbi._prepare_parameter_pullback
     def counted_state(*args, **kwargs):
         counts['state'] += 1
         return prepare_state(*args, **kwargs)
     def counted_parameter(*args, **kwargs):
         counts['parameter'] += 1
         return prepare_parameter(*args, **kwargs)
-    monkeypatch.setattr(fbi, '_prepare_host_transpose', counted_state)
+    monkeypatch.setattr(fbi, state_name, counted_state)
     monkeypatch.setattr(fbi, '_prepare_parameter_pullback', counted_parameter)
-    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg)
+    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg,backend=backend)
     jacobian = np.asarray(matrix + jnp.diag(.4*z))
     np.testing.assert_allclose(pb['drive'], np.asarray(rhs) @ np.linalg.solve(jacobian,profile_map), rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(fb['scale'], np.asarray(rhs) @ np.linalg.solve(jacobian,field_map), rtol=1e-9, atol=1e-11)
@@ -202,12 +209,13 @@ def test_multi_rhs_pullback_rejects_bad_batch_shape(cotangents):
             jnp.ones(3),cotangents,rcon0=None,zcon0=None)
 
 
-def test_multi_rhs_public_projection_and_root_gate(monkeypatch):
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
     import vmex
     assert vmex.free_boundary_state_pullback_multi_rhs is fbi.free_boundary_state_pullback_multi_rhs
     controls = SimpleNamespace(device=None, adjoint_tol=1e-11, adjoint_maxiter=10,
                                adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    cfg = SimpleNamespace(implicit=controls,adjoint_solver='coupled_gcrot',adjoint_fail='error')
+    cfg = SimpleNamespace(implicit=controls,adjoint_solver=backend,adjoint_fail='error')
     def residual(z, p, field, *_):
         return 2*z-p-field
     monkeypatch.setattr(fbi, '_projected_residual', lambda *_:residual)
@@ -733,3 +741,31 @@ def test_free_boundary_root_reproducibility_bounds_the_gradient():
     relative_gap = gap / scale
     # Both are "converged" by the same ftol; neither is wrong.
     assert 1.0e-6 < relative_gap < 1.0e-2, relative_gap
+
+
+@pytest.mark.parametrize("bad", [0., float("nan")])
+def test_reverse_gcrot_independently_rejects_false_success(monkeypatch, bad):
+    """A claimed Krylov success must not hide an incorrect or nonfinite row."""
+    cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
+                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    def residual(z, *args):
+        return 2*z
+    tape = fbi._prepare_reverse_transpose(jnp.zeros(3),None,None,None,None,None,residual=residual)
+    native = fbi._solvax_gcrot
+    def faulty(action, rhs, **kw):
+        return native(action,rhs,**kw)._replace(x=jnp.full_like(rhs,bad),converged=jnp.array(True))
+    fbi._reverse_gcrot_core.clear_cache()
+    monkeypatch.setattr(fbi, '_solvax_gcrot', faulty)
+    try:
+        with pytest.raises(AdjointSolveError, match='reverse GCROT row 1'):
+            fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,row=1)
+        if np.isfinite(bad):
+            with pytest.warns(RuntimeWarning, match='best-effort'):
+                fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,fail='best_effort')
+        else:
+            with pytest.raises(AdjointSolveError):
+                fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,fail='best_effort')
+        traced = jax.jit(lambda rhs:fbi._solve_prepared_reverse_adjoint(tape,rhs,cfg))(jnp.ones(3))
+        assert np.all(np.isnan(traced))
+    finally:
+        fbi._reverse_gcrot_core.clear_cache()

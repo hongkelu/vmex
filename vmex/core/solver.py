@@ -1592,6 +1592,13 @@ def _make_body(
                 fsqr_c, fsqz_c, fsql_c, fedge_c, ftol,
                 edge_tolerance=rt.edge_force_tolerance if rt.include_edge_in_convergence else None,
                 vacuum_active=rt.lfreeb)
+            # Vacuum activation evaluates pre-restart geometry while carry.state
+            # contains the restored state. Its residual cannot certify that
+            # returned state. Strict solves must reach the next ordinary pass,
+            # which rebuilds the vacuum and evaluates the actual evolving state.
+            # Preserve VMEC2000's turn-on ordering in the compatibility lane.
+            if evaluation_state is not None and rt.include_edge_in_convergence:
+                converged = jnp.zeros_like(converged)
             bad_init = jac1 & (it == 1)
             # funct3d.f/eqsolve.f: LMOVE_AXIS=T and a finite first raw-force
             # sum above 1e2 set irst=4 and return to guess_axis before

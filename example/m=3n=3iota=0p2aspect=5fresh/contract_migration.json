@@ -1,0 +1,19 @@
+{
+  "previous_contract_sha256": "ede817af2198c93421804974096398f16eb9c0e17e52c56421f71091ff7601fe",
+  "current_contract_sha256": "b983d4442bee41c613a7f3fb7877b228862e5271fda338c8269c316b0160df83",
+  "changes": {
+    "proposal": {
+      "before": "linear equality restoration plus null-space QA descent; common step fraction <= 1, coil displacement <= 1 mm",
+      "after": "independently capped equality-tangent QA descent when feasible; bounded equality restoration otherwise"
+    },
+    "nonlinear_constraint_acceptance": {
+      "before": "diagnostic; no feasibility claim until residual targets are reached",
+      "after": "1% target tolerances; feasible QA Armijo decrease with feasibility retained, otherwise violation reduction; at most six half-step trials"
+    },
+    "optimizer_policy_sha256": {
+      "before": null,
+      "after": "a2447d17c05bd88a60ef26aec002c7fe5639484c36acad882576d70f34cc3c43"
+    }
+  },
+  "reason": "User requested independent QA sizing, 1% constraint tolerances, separate current cap, actual-result acceptance, finite backtracking and meaningful stopping."
+}

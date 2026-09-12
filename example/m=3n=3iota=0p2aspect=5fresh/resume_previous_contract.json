@@ -1,0 +1,40 @@
+{
+  "schema": "vmex.m3n3-iota02-aspect5-fresh/v1",
+  "mpol": 3,
+  "ntor": 3,
+  "ns": 31,
+  "nfp": 2,
+  "parameter_count": 111,
+  "targets": {
+    "mean_iota": 0.2,
+    "aspect_ratio": 5.0,
+    "b0": "initial_signed_value_T"
+  },
+  "constraint_scales": [
+    0.005,
+    0.05,
+    0.01
+  ],
+  "adjoint_solver": "forward_dense_jax",
+  "adjoint_tol": 2e-05,
+  "adjoint_residual_rtol": 2e-05,
+  "adjoint_fail": "error",
+  "adjoint_dense_batch_size": 4,
+  "adjoint_dense_max_dofs": 4096,
+  "force_tolerance": 1e-10,
+  "edge_force_tolerance": 1e-10,
+  "root_residual_atol": 2e-06,
+  "maximum_coil_step_m": 0.001,
+  "max_continuation_steps": 64,
+  "max_iterations": 12000,
+  "root_polishing": false,
+  "same_coil_retries": 0,
+  "initial_equilibrium_solves": 0,
+  "initialization": "authenticated original zero-parameter step-zero equilibrium, fresh main certification",
+  "initial_constraint_baselines": "zero, as defined by the authenticated legacy evaluator",
+  "objective": "initially normalized QA norm squared / 2",
+  "proposal": "linear equality restoration plus null-space QA descent; common step fraction <= 1, coil displacement <= 1 mm",
+  "nonlinear_constraint_acceptance": "diagnostic; no feasibility claim until residual targets are reached",
+  "default_steps": 10,
+  "max_wall_hours": 1
+}

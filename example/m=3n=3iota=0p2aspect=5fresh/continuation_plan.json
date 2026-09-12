@@ -1,0 +1,22 @@
+{
+  "initial_step": 0,
+  "target_step": 200,
+  "max_wall_hours": 4,
+  "initial_parameters": "all 111 exactly zero",
+  "seed_checkpoint_sha256": "bbc25674652973ccdb2f0e1305216af6016a84c6a4ce9775afe6ca479290d9f1",
+  "targets": {
+    "mean_iota": 0.2,
+    "aspect_ratio": 5.0,
+    "signed_b0_T": -0.17506474574437714
+  },
+  "maximum_current_fraction_step": 0.01,
+  "maximum_coil_step_m": 0.001,
+  "root_polishing": false,
+  "constraint_relative_tolerance": 0.01,
+  "constraint_absolute_tolerances": [
+    0.002,
+    0.05,
+    0.0017506474574437714
+  ],
+  "policy_note": "User confirmed keeping the agreed 1% tolerances throughout; numerical optimizer identical to the verified ten-step case."
+}

@@ -146,3 +146,27 @@ def test_fresh_original_seed_is_authenticated():
     with np.load(CASE/'inputs/seed_checkpoint.npz',allow_pickle=False) as z:
         assert int(z['accepted_step'])==0 and np.all(z['parameters']==0)
         for n in case.STATE_NAMES:np.testing.assert_array_equal(getattr(state,n),z[n])
+
+
+def test_fresh_entry_point_preserves_float64_before_solver_import(tmp_path):
+    import subprocess
+    code = """
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location('case_runner', sys.argv[1])
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+runner.configure_runtime(pathlib.Path(sys.argv[2]))
+import jax
+assert jax.config.x64_enabled
+import vmex
+assert jax.config.x64_enabled
+import jax.numpy as jnp
+assert str(jnp.asarray(1.).dtype) == 'float64'
+"""
+    env = dict(os.environ, JAX_ENABLE_X64='0', JAX_PLATFORMS='cpu',
+               PYTHONDONTWRITEBYTECODE='1', PYTHONPATH=str(CASE.parents[1]))
+    result = subprocess.run([sys.executable, '-B', '-c', code,
+                             str(CASE/'run.py'), str(tmp_path)],
+                            env=env, cwd=CASE.parents[1], capture_output=True,
+                            text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr

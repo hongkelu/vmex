@@ -4,6 +4,13 @@ import argparse,dataclasses,json,os,signal,time
 from pathlib import Path
 
 
+def configure_runtime(output):
+    """Set process-local caches and float64 before importing JAX or VMEX."""
+    for key,name in [('JAX_COMPILATION_CACHE_DIR','jax'),('MPLCONFIGDIR','mpl'),('XDG_CACHE_HOME','xdg'),('TMPDIR','tmp'),('CUDA_CACHE_PATH','cuda')]:
+        p=output/'cache'/name;p.mkdir(parents=True);os.environ[key]=str(p)
+    os.environ.update(JAX_ENABLE_X64='1',XLA_PYTHON_CLIENT_PREALLOCATE='false',PYTHONDONTWRITEBYTECODE='1')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target-step',type=int,default=10)
@@ -18,9 +25,7 @@ def main():
     if not 1<=args.target_step<=200 or not 0<args.max_wall_hours<=4:
         parser.error('bounded to absolute step 200 and at most four hours')
     output=args.output_dir.resolve();output.mkdir(parents=True,exist_ok=False)
-    for key,name in [('JAX_COMPILATION_CACHE_DIR','jax'),('MPLCONFIGDIR','mpl'),('XDG_CACHE_HOME','xdg'),('TMPDIR','tmp'),('CUDA_CACHE_PATH','cuda')]:
-        p=output/'cache'/name;p.mkdir(parents=True);os.environ[key]=str(p)
-    os.environ.update(JAX_ENABLE_X64='True',XLA_PYTHON_CLIENT_PREALLOCATE='false',PYTHONDONTWRITEBYTECODE='1')
+    configure_runtime(output)
     import jax,jax.numpy as jnp,numpy as np,solvax
     from vmex.core import implicit as im,freeboundary_implicit as fbi,freeboundary_continuation as fc
     from vmex.core.freeboundary import _solve_free_boundary_stage

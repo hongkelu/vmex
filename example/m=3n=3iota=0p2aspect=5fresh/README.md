@@ -3,8 +3,9 @@
 This case uses M3/N3, NS31, NFP2, the authenticated original four-coil chart,
 111 coil/current parameters, and the original QA normalization. The VMEX core
 is frozen at main commit `1349135ef90e7bf039a265401ab21c091401397c`.
-The numerical case files and authenticated seed reproduce the tested runtime
-on this core revision. No VMEX core modifications are required.
+The optimizer, physical rows and authenticated seed reproduce the tested
+runtime on this core revision. The portable runner explicitly enables float64
+before importing JAX or VMEX. No VMEX core modifications are required.
 
 ## Targets, feasibility and movement limits
 
@@ -88,7 +89,10 @@ records this fresh initialization and the user-confirmed 1% bands.
 ## Reproduce a fresh run
 
 Use an environment with VMEX from this checkout, ESSOS importable as `essos`,
-and a compatible CUDA JAX installation. The validated GPU environment used
+and a compatible CUDA JAX installation. VMEX declares the coil dependency in
+its `coils` extra (`pip install '.[coils]'` in your own environment). Solvax
+0.20.0 or newer is required; older shared environments must be upgraded in an
+isolated environment before running this case. The validated GPU environment used
 Python 3.12, JAX 0.6.2, Solvax 0.20.0 and NumPy 2.2.6. The runner records the
 ESSOS coil source hash. GPU hardware was an NVIDIA RTX 5090 (32 GB).
 
@@ -128,3 +132,6 @@ launch scripts are not part of this reproducible case distribution.
 The raw QA metric is the squared norm of the campaign residual, not an
 independent Boozer diagnostic. The current run performs no root polishing;
 the authenticated legacy seed itself has historical polishing ancestry.
+
+See [published runner validation](VALIDATION.md) for the independently executed
+one-step CPU smoke test, output verification, and fresh-process startup check.

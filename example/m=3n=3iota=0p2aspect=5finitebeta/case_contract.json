@@ -1,0 +1,42 @@
+{
+  "schema": "vmex.m3n3-iota02-aspect5-finitebeta/v1",
+  "mpol": 3,
+  "ntor": 3,
+  "ns": 31,
+  "nfp": 2,
+  "parameter_count": 111,
+  "targets": {
+    "mean_iota": 0.2,
+    "aspect_ratio": 5.0,
+    "b0": 5.1
+  },
+  "constraint_scales": [
+    0.005,
+    0.05,
+    0.01
+  ],
+  "adjoint_solver": "forward_dense_jax",
+  "adjoint_tol": 2e-05,
+  "adjoint_residual_rtol": 2e-05,
+  "adjoint_fail": "error",
+  "adjoint_dense_batch_size": 4,
+  "adjoint_dense_max_dofs": 4096,
+  "force_tolerance": 1e-10,
+  "edge_force_tolerance": 1e-10,
+  "root_residual_atol": 2e-06,
+  "maximum_coil_step_m": 0.001,
+  "max_continuation_steps": 64,
+  "max_iterations": 12000,
+  "root_polishing": false,
+  "same_coil_retries": 0,
+  "initial_equilibrium_solves": 1,
+  "initialization": "One ordinary free-boundary solve at full reference pressure/current, starting from the scaled vacuum guess; fresh force/root certification before optimization",
+  "initial_constraint_baselines": "zero for ordinary initialization; use returned baselines for certification and subsequent steps",
+  "objective": "initially normalized QA norm squared / 2",
+  "proposal": "independently capped equality-tangent QA descent when feasible; bounded equality restoration otherwise",
+  "nonlinear_constraint_acceptance": "1% target tolerances; feasible QA Armijo decrease with feasibility retained, otherwise violation reduction; at most six half-step trials",
+  "default_steps": 10,
+  "max_wall_hours": 1,
+  "optimizer_policy_sha256": "a2447d17c05bd88a60ef26aec002c7fe5639484c36acad882576d70f34cc3c43",
+  "runtime_commit": "d6910b428841766c04767410e9e9cdc39a6cfb19"
+}

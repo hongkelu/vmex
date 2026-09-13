@@ -1,0 +1,5 @@
+/runs/
+/cache/
+__pycache__/
+.pytest_cache/
+/validation/*.log

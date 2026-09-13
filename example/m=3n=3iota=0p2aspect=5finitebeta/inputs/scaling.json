@@ -1,0 +1,34 @@
+{
+  "status": "prepared inputs; no finite-beta equilibrium certified",
+  "reference_input": "examples/data/input.nfp2_QA_finite_beta",
+  "reference_input_sha256": "90de9afb5a70e764f1f31a56223df8606787c971ce27aa3297c0e4b1986fd405",
+  "parent_input_sha256": {
+    "seed_checkpoint.npz": "bbc25674652973ccdb2f0e1305216af6016a84c6a4ce9775afe6ca479290d9f1",
+    "input.json": "2c9fe39681d1663afd919eafec17520a2bf7f3ac97e4da7475f0830356cb968e",
+    "coils.json": "91c25ce571ff6c6974cd252d74e1c12661c8d8ec2a3ceeaa5a264274c4963e2f"
+  },
+  "original_b0_T": -0.17506474574437714,
+  "target_b0_T": 5.1,
+  "signed_coil_current_and_flux_factor": -29.132078982063156,
+  "length_factor": 1.0,
+  "original_phiedge_Wb": -0.025,
+  "phiedge_Wb": 0.728301974551579,
+  "original_base_coil_currents_A": [
+    -55699.54168484767,
+    -57812.975064036604,
+    -46786.61861327772,
+    -60726.278904786224
+  ],
+  "base_coil_currents_A": [
+    1622643.4476277013,
+    1684212.155753562,
+    1362991.4687456728,
+    1769082.753341028
+  ],
+  "central_pressure_Pa": 720979.4853000008,
+  "total_plasma_current_A": -6133652.330056256,
+  "field_scaling_claim": "5.1 T applies to the uniformly scaled vacuum starting state; finite-beta B0 must be solved and measured",
+  "plasma_profile_scaling": "Reference pressure and plasma current copied exactly; no extra B-scale or length-scale multiplier",
+  "lambda_sign_factor": -1.0,
+  "warm_start": "vacuum_warm_start.npz contains unchanged R/Z and sign-reversed internal lambda for the scaled vacuum guess; it is not an accepted finite-beta checkpoint"
+}

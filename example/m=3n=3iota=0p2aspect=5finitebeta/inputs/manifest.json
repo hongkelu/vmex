@@ -1,0 +1,7 @@
+{
+  "coils.json": "4f62f6d88b5ac133a21e9f94ac19989f6bfeaa68ecff12a68ccf7905749d77f2",
+  "input.json": "638b179d69870736fdc4d93df1b00c76081e615718965f336b5fa6c6cd5a1c19",
+  "original_vacuum_seed.npz": "bbc25674652973ccdb2f0e1305216af6016a84c6a4ce9775afe6ca479290d9f1",
+  "scaling.json": "e759bdd318db3564206604950a634fed456ab6f00110b67934e6d79030cd4f9f",
+  "vacuum_warm_start.npz": "921382a62a531389657807eaf2698b09efecf0136da3ec6d9ea083b67df3cd55"
+}

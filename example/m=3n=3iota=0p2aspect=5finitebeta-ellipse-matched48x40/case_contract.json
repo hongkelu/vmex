@@ -1,0 +1,55 @@
+{
+  "schema": "vmex.finitebeta-pure-rotating-ellipse-target/v1",
+  "runtime_commit": "d6910b428841766c04767410e9e9cdc39a6cfb19",
+  "mpol": 3,
+  "ntor": 3,
+  "nfp": 2,
+  "ns": 50,
+  "major_radius_m": 11.067033897730942,
+  "aspect": 5.0,
+  "mean_iota": 0.2,
+  "b0_T": 5.1,
+  "profile_policy": "Retain NCURR=1 and full QA pressure/current coefficients and amplitudes; iota is solved, never prescribed through AI.",
+  "boundary_family": "R=R0+a*cosh(t)*cos(theta)+a*sinh(t)*cos(theta-h*NFP*phi); Z=a*cosh(t)*sin(theta)-a*sinh(t)*sin(theta-h*NFP*phi), h in {-1,+1}, a=R0/5. No other boundary harmonics.",
+  "calibration_parameters": [
+    "ellipse_log_semiaxis_ratio_half",
+    "positive_phiedge_Wb"
+  ],
+  "ellipse_t_bounds": [
+    0.01,
+    0.9
+  ],
+  "phiedge_bounds_Wb": [
+    50.0,
+    130.0
+  ],
+  "target_tolerances": {
+    "mean_iota": 1e-05,
+    "b0_T": 0.0001,
+    "aspect": 1e-09,
+    "major_radius_m": 1e-08
+  },
+  "final_force_tolerance": 1e-13,
+  "max_equilibrium_evaluations": 24,
+  "max_fixed_wall_seconds": 2400,
+  "coil_dofs": {
+    "shape": 108,
+    "relative_currents": 3,
+    "first_current_fixed": true,
+    "base_coils": 4,
+    "physical_coils": 16,
+    "order": 4
+  },
+  "single_stage_delbsq_limit": 0.01,
+  "root_residual_atol": 2e-06,
+  "adjoint_residual_rtol": 2e-05,
+  "root_polishing": false,
+  "stage2_policy": "Refit the new fixed WOUT with 111 DOFs. Require geometry and VC quadrature checks and actual frozen NESTOR DEL-BSQ <= 0.01 before releasing boundary; normal-field errors remain reported diagnostics under user-approved 1 percent gate.",
+  "ntheta": 48,
+  "nzeta": 40,
+  "radial_ladder": [
+    16,
+    50
+  ],
+  "angular_resolution_policy": "48 full poloidal by 40 toroidal per field period for every fixed/free radial stage and coil target evaluation; VC integration quadrature is separately converged."
+}

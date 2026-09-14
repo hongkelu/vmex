@@ -1,0 +1,20 @@
+{
+  "archive_sha256": "94da42a68540119223f15fdfd357739a59dfaa61f26d1da54014ebc2dd8cd9bf",
+  "files": {
+    "exit.json": "5b98301ed7e32eb369e43c3e8fbea8c91ffebd9bbdb0f0350957175281cd2e14",
+    "tests_passed.json": "165d38194711be48e17e8400532201700c928cd2c489cf6dba51cbdbb51a2f06",
+    "preflight.log": "dfc479c7f5f6101adfa793c3be08e1c8d2f1a28e4f98981a56b6f5d07f6fb9cc",
+    "supervisor.json": "fb79dd6da512d240811dfdb366a1e160afa0f2a35124e709c63dca65e74b3174",
+    "run.log": "36904c45f981e284d5cb6f653a509d847e89f1735bde45dea07f78ff96d6c63f",
+    "supervisor.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests.log": "826c53b252ccd660db55bf6e6992f807e756b7bacd1a606497cd1639d380a4bf",
+    "launch.json": "a69ee17e667455a3c78791796203253170a0ed68e75bd9ea59cc3c4ec9ac1ca8",
+    "child.json": "08d28304d4e4780d7ccc5b79da88141bc42fbe25fa6b461d646e3e2698d08739",
+    "frozen_pressure_observation.json": "c1f13e897b1c9db61b344e9ead63cbce1c9b34a6f9c5e3b746cf5b624d49a5fd",
+    "source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/runs/steps010/summary.json": "0288b36f6ab21f81c88927574f67bbff1878995df7d6613abb28639acb0a122d",
+    "source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/runs/steps010/ordinary_initial_state_uncertified.npz": "9ccc2c59613deacecaf821b71e9b60cf60de9fb28a3124c259cc91c22ce2584e",
+    "source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/runs/steps010/input.effective": "f8062b8252d5735c6de485538384d38b24ccf7501e3ebff503c8986617b74fda",
+    "source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/runs/steps010/progress.jsonl": "c354ec867b3748cfa712e0370d38e9bb9d896d7d77d63a705228b94540253778",
+    "source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/runs/steps010/manifest.json": "d9c1d67b408a35dd6bdda0b88243ca23cd14c9419a8aba49eecab566e7a61202"
+  }
+}

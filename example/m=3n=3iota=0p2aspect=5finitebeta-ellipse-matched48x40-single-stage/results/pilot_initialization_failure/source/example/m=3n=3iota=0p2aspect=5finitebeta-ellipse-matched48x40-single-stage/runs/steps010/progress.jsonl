@@ -1,0 +1,4 @@
+{"phase": "ordinary_initialization_start", "elapsed_s": 12.39171001687646, "forward_solve_tolerance": 1e-13, "force_acceptance_tolerance": 1e-10, "root_polishing": false}
+{"phase": "ordinary_initialization_result", "elapsed_s": 353.36883352324367, "converged": true, "iterations": 4566, "forces": {"fsqr": 9.741349940518054e-14, "fsqz": 2.6200845718355033e-14, "fsql": 2.371513795516768e-16, "fedge": 3.594117802513283e-12}}
+{"phase": "initial_certification_start", "elapsed_s": 353.37677222304046, "absolute_step": 0, "parameters_zero": true, "initial_equilibrium_solves": 1, "resumed": false}
+{"phase": "failure", "elapsed_s": 383.5587369222194, "error_type": "VmecError", "error": "fresh DEL-BSQ 7.045048292e-02 exceeds 1.000000000e-02"}

@@ -1,0 +1,48 @@
+{
+  "completed": true,
+  "virtual_casing_pass": true,
+  "qualified_for_free_boundary_trial": false,
+  "eligible_for_frozen_nestor_check": true,
+  "optimizer_success": false,
+  "optimizer_message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+  "iterations": 12000,
+  "objective_initial": 23.33923179758637,
+  "objective_final": 18.037922798413554,
+  "field_gates_passed": true,
+  "geometry_gates_passed": true,
+  "initial_validation": {
+    "normal_rms": 0.0027941295873328063,
+    "normal_max": 0.009975245267172462,
+    "relative_pressure_jump": 0.005592365982472565,
+    "max_length_m": 70.87330981600414,
+    "max_curvature_per_m": 0.6818450834632639,
+    "min_coil_coil_m": 1.3624287059476683,
+    "min_coil_plasma_m": 2.8798309427333844
+  },
+  "final_validation_256": {
+    "normal_rms": 0.0018414385490529304,
+    "normal_max": 0.0077070904584128205,
+    "relative_pressure_jump": 0.0054616522399414434,
+    "max_length_m": 70.87329591907853,
+    "max_curvature_per_m": 0.683543462659618,
+    "min_coil_coil_m": 1.358720246609382,
+    "min_coil_plasma_m": 3.0654055409857195
+  },
+  "production_validation_75": {
+    "normal_rms": 0.0018414385495739427,
+    "normal_max": 0.007707090459836667,
+    "relative_pressure_jump": 0.0054616522426037305,
+    "max_length_m": 70.87329591908906,
+    "max_curvature_per_m": 0.6835306709871986,
+    "min_coil_coil_m": 1.420733830864782,
+    "min_coil_plasma_m": 3.0725944106610346
+  },
+  "seconds": 162.35866683535278,
+  "free_boundary_validated": false,
+  "base_currents_A": [
+    17747087.05841199,
+    26690396.472257517,
+    21375217.451756556,
+    16429971.100353979
+  ]
+}

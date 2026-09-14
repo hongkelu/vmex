@@ -1,0 +1,15 @@
+{
+  "pid": 52882,
+  "started_unix": 1789416518.1852484,
+  "gpu_uuid": "GPU-0b009025-c499-c2ad-030f-91e852095542",
+  "max_gpu_wait_seconds": 1800,
+  "phase_timeouts_seconds": [
+    3300,
+    240
+  ],
+  "angular_grid": [
+    48,
+    40
+  ],
+  "no_qa_launch": true
+}

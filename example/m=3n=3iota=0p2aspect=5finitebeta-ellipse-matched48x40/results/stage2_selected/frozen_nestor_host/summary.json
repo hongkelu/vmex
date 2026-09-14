@@ -1,0 +1,21 @@
+{
+  "completed": true,
+  "passed": true,
+  "delbsq": 0.009322638562482707,
+  "delbsq_percent": 0.9322638562482708,
+  "limit": 0.01,
+  "numerator": 0.1753332458873033,
+  "denominator": 18.807255554548753,
+  "ntheta": 48,
+  "nzeta": 40,
+  "ns": 50,
+  "vacuum_mf": 4,
+  "vacuum_nf": 3,
+  "coil_segments": 75,
+  "ordinary_equilibrium_solves": 0,
+  "state_unchanged": true,
+  "wout_sha256": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15",
+  "state_sha256": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+  "coil_sha256": "207e5368dace5fea7fb25b52cfcc36a7d8f4d9ee0a41e15271340170b9be14b4",
+  "seconds": 41.67825499922037
+}

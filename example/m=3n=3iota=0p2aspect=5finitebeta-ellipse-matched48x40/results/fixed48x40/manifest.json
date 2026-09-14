@@ -1,0 +1,17 @@
+{
+  "fixed/summary.json": "bc041415da2a6846af209de0428b043e8182c5ff10f74989718631b8d0d66cab",
+  "fixed/input.fixed": "a23bb1f70cb89bfd3290e9f53374240bba484743f8d7ed0160aed1e72c8046b4",
+  "fixed/input.fixed.json": "7a1a05562db04bc341d81f611ede790e9ab4d83044c273fe57214d94141c056d",
+  "fixed/wout.nc": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15",
+  "fixed/state.npz": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+  "fixed_calibration_scan/summary.json": "a524e6af42a37558d4d18f132f285a2dd46e36eaa9b19ead395d98b8b829ffb4",
+  "fixed_calibration_scan/progress.jsonl": "eea21ee61313a1cc0d1e02277b1170d6d820b041068a7f427b1b56fbcfbe0eda",
+  "launch/pipeline_status.json": "6959775b69281502ab60713997560af845b825e617743459eb5b5b5a8c7a764e",
+  "launch/pipeline.log": "636cb919349f2432d01a7b2970f74a158c14bd4a5c4552747ebf8af269c1cc26",
+  "launch/calibration.log": "eea21ee61313a1cc0d1e02277b1170d6d820b041068a7f427b1b56fbcfbe0eda",
+  "launch/coil_fit.log": "39c2e2562ec68045e2c9ea8ed1e3cec4cbce9f86dd10802b07fd8a5b181e523f",
+  "launch/tests.log": "c3015b35bbe497af98bf5a2b3ceb02f809f7f7feb0377d20d0fae299787ed553",
+  "launch/preflight.json": "d85fb61debb7e678f8ea802e69ce629525283711165e22583409571b444b07d0",
+  "launch/quadrature_preflight.json": "85294c6d0070fbbb712c8dd99755d66f137928ac21417bfcb3f41b10b5b08ac2",
+  "launch/quadrature_change.json": "d4e7563c45eafdee13c6aa71960142a62a7241c32d79dba412f358c0f7c1ead7"
+}

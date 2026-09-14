@@ -1,0 +1,5 @@
+{
+  "source": "inputs/coils_seed.json",
+  "sha256": "383d89a894e03030ec1b4316e0dcadf48ff857d233980d43b8dc3f06be7db99e",
+  "changes": "Old best coils provide only the geometric/current seed. Recompute all target fields from the newly solved 48x40 WOUT; preserve 111 DOFs and fixed first current."
+}

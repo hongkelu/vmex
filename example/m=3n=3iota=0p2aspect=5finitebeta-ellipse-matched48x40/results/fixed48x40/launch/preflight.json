@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "jax": "0.6.2",
+  "solvax": "0.20.0",
+  "python": "3.12.3 | packaged by Anaconda, Inc. | (main, May  6 2024, 19:46:43) [GCC 11.2.0]",
+  "coil_field_finite": true,
+  "x64": true
+}

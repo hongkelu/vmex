@@ -1,0 +1,28 @@
+{"phase": "virtual_casing_start", "elapsed_s": 7.351860404014587e-06, "grid": 48, "digits": 5}
+Traceback (most recent call last):
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40/fit_coils.py", line 91, in <module>
+    sd,plasma,weights,bin2=target(48,5,768,128)
+                           ^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40/fit_coils.py", line 79, in target
+    plasma=vc._vc.compute_internal_B(vc.B_total,digits=digits,quad_nt=quad_nt,quad_np=quad_np,chunk_size=128,target_chunk_size=8)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/virtual_casing.py", line 887, in compute_internal_B
+    return self._compute_B_signed(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/virtual_casing.py", line 776, in _compute_B_signed
+    gradG_J = laplace_fxd_u_eval_vec_singular(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/integrals.py", line 1226, in laplace_fxd_u_eval_vec_singular
+    return jax.vmap(
+           ^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/integrals.py", line 1227, in <lambda>
+    lambda dens: laplace_fxd_u_eval_singular(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/integrals.py", line 1069, in laplace_fxd_u_eval_singular
+    X_trg = field_period_target_coords(X_src, trg_nt, trg_np, nfp)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/dependencies/vendor/virtual_casing_jax/integrals.py", line 77, in field_period_target_coords
+    raise ValueError("quad_nt must be divisible by nfp*trg_nt")
+ValueError: quad_nt must be divisible by nfp*trg_nt
+--------------------
+For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.

@@ -1,0 +1,181 @@
+{
+  "ordinary_solves": 0,
+  "coils_changed": false,
+  "ntheta": 48,
+  "nzeta": 40,
+  "ns": 50,
+  "states": {
+    "fixed": {
+      "sha256": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+      "physical": {
+        "mean_iota": 0.20000045001254885,
+        "aspect": 4.9999999999999964,
+        "B0_T": 5.100002498441044,
+        "Rmajor_m": 11.067033897730939
+      },
+      "fresh_delbsq": 0.009322638562482707,
+      "fresh_forces": {
+        "fsqr": 9.972304291802528e-14,
+        "fsqz": 4.8431871066767716e-14,
+        "fsql": 2.9692317861458662e-15,
+        "fedge": 8.507262584421445e-05
+      },
+      "preconditioned_force_norm": 0.0004380667774203057,
+      "pressure_jump_rms": 0.23419388070968453,
+      "pressure_jump_outside_m2_n3_energy_fraction": 0.9905872641481259,
+      "pressure_jump_mean": -0.0031755355261979534,
+      "pressure_jump_top_modes": [
+        {
+          "m": -4,
+          "n": -1,
+          "complex_amplitude_abs": 0.11083358377177059
+        },
+        {
+          "m": 4,
+          "n": 1,
+          "complex_amplitude_abs": 0.11083358377177055
+        },
+        {
+          "m": -5,
+          "n": -1,
+          "complex_amplitude_abs": 0.10094589948563269
+        },
+        {
+          "m": 5,
+          "n": 1,
+          "complex_amplitude_abs": 0.10094589948563268
+        },
+        {
+          "m": -6,
+          "n": -1,
+          "complex_amplitude_abs": 0.0388158986895744
+        },
+        {
+          "m": 6,
+          "n": 1,
+          "complex_amplitude_abs": 0.0388158986895744
+        },
+        {
+          "m": -6,
+          "n": -2,
+          "complex_amplitude_abs": 0.023813808379589456
+        },
+        {
+          "m": 6,
+          "n": 2,
+          "complex_amplitude_abs": 0.023813808379589456
+        },
+        {
+          "m": -5,
+          "n": -2,
+          "complex_amplitude_abs": 0.0223122626918427
+        },
+        {
+          "m": 5,
+          "n": 2,
+          "complex_amplitude_abs": 0.0223122626918427
+        },
+        {
+          "m": 3,
+          "n": 0,
+          "complex_amplitude_abs": 0.02058624850721395
+        },
+        {
+          "m": -3,
+          "n": 0,
+          "complex_amplitude_abs": 0.02058624850721395
+        }
+      ],
+      "axis_R_phi0_m": 12.616291185554797,
+      "pressure_edge_scaled": 9.060095417716288e-05,
+      "constraint_baseline_norm": 0.0
+    },
+    "relaxed": {
+      "sha256": "9ccc2c59613deacecaf821b71e9b60cf60de9fb28a3124c259cc91c22ce2584e",
+      "physical": {
+        "mean_iota": 0.2966739434656518,
+        "aspect": 5.684441028436021,
+        "B0_T": 3.6871582223384056,
+        "Rmajor_m": 14.608093779656285
+      },
+      "fresh_delbsq": 0.07045048292434093,
+      "fresh_forces": {
+        "fsqr": 9.628742444781725e-14,
+        "fsqz": 2.5799265920804276e-14,
+        "fsql": 2.371513890757623e-16,
+        "fedge": 3.605364799174012e-12
+      },
+      "preconditioned_force_norm": 7.67471510592799e-08,
+      "pressure_jump_rms": 1.1950993074614153,
+      "pressure_jump_outside_m2_n3_energy_fraction": 0.9984947609897933,
+      "pressure_jump_mean": -0.005750197746659265,
+      "pressure_jump_top_modes": [
+        {
+          "m": 0,
+          "n": -8,
+          "complex_amplitude_abs": 0.2968797562952038
+        },
+        {
+          "m": 0,
+          "n": 8,
+          "complex_amplitude_abs": 0.2968797562952038
+        },
+        {
+          "m": 1,
+          "n": 8,
+          "complex_amplitude_abs": 0.23867297865072595
+        },
+        {
+          "m": -1,
+          "n": -8,
+          "complex_amplitude_abs": 0.2386729786507259
+        },
+        {
+          "m": 1,
+          "n": -8,
+          "complex_amplitude_abs": 0.2298478493736857
+        },
+        {
+          "m": -1,
+          "n": 8,
+          "complex_amplitude_abs": 0.22984784937368563
+        },
+        {
+          "m": 0,
+          "n": -5,
+          "complex_amplitude_abs": 0.21639203632922654
+        },
+        {
+          "m": 0,
+          "n": 5,
+          "complex_amplitude_abs": 0.21639203632922652
+        },
+        {
+          "m": 1,
+          "n": -5,
+          "complex_amplitude_abs": 0.19814980011029515
+        },
+        {
+          "m": -1,
+          "n": 5,
+          "complex_amplitude_abs": 0.1981498001102951
+        },
+        {
+          "m": -1,
+          "n": -5,
+          "complex_amplitude_abs": 0.1903994002511333
+        },
+        {
+          "m": 1,
+          "n": 5,
+          "complex_amplitude_abs": 0.1903994002511333
+        }
+      ],
+      "axis_R_phi0_m": 17.208327630743504,
+      "pressure_edge_scaled": 9.060095417716288e-05,
+      "constraint_baseline_norm": 0.0
+    }
+  },
+  "completed": true,
+  "seconds": 79.9372315723449
+}

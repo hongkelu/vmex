@@ -1,0 +1,24 @@
+{
+  "completed": true,
+  "seconds": 45.32632246427238,
+  "exact_fixed_state_unchanged": true,
+  "ordinary_equilibrium_solves": 0,
+  "coil_parameters_zero": true,
+  "state_sha256": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+  "coil_sha256": "207e5368dace5fea7fb25b52cfcc36a7d8f4d9ee0a41e15271340170b9be14b4",
+  "phiedge_Wb": 91.09295154228212,
+  "resolution": {
+    "ns": 50,
+    "ntheta": 48,
+    "nzeta": 40
+  },
+  "diagnostic": {
+    "fresh_delbsq": 0.009322638562482707,
+    "fresh_delbsq_percent": 0.9322638562482708,
+    "delbsq_limit": 0.01,
+    "passed": true,
+    "delbsq_numerator": 0.1753332458873033,
+    "delbsq_denominator": 18.807255554548753
+  },
+  "script_sha256": "38928574b6ce78526e8860daf93d0edd17f78a88b8a8417e5c8fa08c0a41c3f2"
+}

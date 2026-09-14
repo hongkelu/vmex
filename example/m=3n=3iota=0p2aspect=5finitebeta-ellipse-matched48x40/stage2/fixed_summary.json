@@ -1,0 +1,33 @@
+{
+  "completed": true,
+  "qualified_fixed_target": true,
+  "mean_iota": 0.20000045001254882,
+  "b0_T": 5.100002498441042,
+  "aspect": 4.9999999999999964,
+  "major_radius_m": 11.067033897730937,
+  "beta": 0.027034308657760003,
+  "forces": {
+    "fsqr": 9.971250423091927e-14,
+    "fsqz": 4.843018039748812e-14,
+    "fsql": 2.9692317720675733e-15
+  },
+  "ns": 50,
+  "ntheta": 48,
+  "nzeta": 40,
+  "geometry": {
+    "major_radius_m": 11.067033897730942,
+    "minor_radius_m": 2.2134067795461885,
+    "aspect": 5.0,
+    "t": 0.2520040644482404,
+    "handedness": -1,
+    "semimajor_m": 2.847771966061761,
+    "semiminor_m": 1.7203517803134307,
+    "semiaxis_ratio": 1.655342819212781
+  },
+  "phiedge_Wb": 91.09295154228212,
+  "profiles_preserved": true,
+  "source_evaluation": "eval_003",
+  "equilibrium_evaluations": 4,
+  "seconds": 81.09745641984046,
+  "wout_sha256": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15"
+}

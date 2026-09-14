@@ -1,0 +1,11 @@
+{
+  "source_case": "example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40",
+  "wout_sha256": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15",
+  "coil_sha256": "207e5368dace5fea7fb25b52cfcc36a7d8f4d9ee0a41e15271340170b9be14b4",
+  "fixed_state_sha256": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+  "phiedge_Wb": 91.09295154228212,
+  "stage2_qualification_sha256": "7097ddcbb715343116f2218b56eeaa6f4a9626b810fdc156e73b9a2efaac8e17",
+  "frozen_nestor_delbsq": 0.009322638562482707,
+  "virtual_casing_pressure_mismatch": 0.0046885601414062335,
+  "free_boundary_equilibrium_qualified": false
+}

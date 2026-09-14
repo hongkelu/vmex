@@ -1,0 +1,12 @@
+{"phase": "waiting_for_gpu", "time_unix": 1789408167.9885275, "max_wait_seconds": 1800, "required_idle_seconds": 60}
+{"phase": "calibration", "time_unix": 1789408228.6998382, "script": "calibrate.py", "max_seconds": 2500}
+{"phase": "coil_fit", "time_unix": 1789408311.9068198, "script": "fit_coils.py", "max_seconds": 3300}
+{"phase": "failed", "time_unix": 1789408325.9537547, "error": "RuntimeError: coil_fit exited 1; subsequent phases not launched"}
+Traceback (most recent call last):
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/pipeline.py", line 49, in <module>
+    try:main()
+        ^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-ellipse-matched48x40-lhk3-6-20260914T174815Z/pipeline.py", line 45, in main
+    if ret:raise RuntimeError(f'{phase} exited {ret}; subsequent phases not launched')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: coil_fit exited 1; subsequent phases not launched

@@ -1,0 +1,27 @@
+{
+  "phase": "frozen_pressure_gate_failed",
+  "time_unix": 1789415028.6697242,
+  "frozen_nestor": {
+    "completed": true,
+    "passed": false,
+    "delbsq": 0.011425474393228871,
+    "delbsq_percent": 1.1425474393228872,
+    "limit": 0.01,
+    "numerator": 0.21488181674540824,
+    "denominator": 18.807255554548753,
+    "ntheta": 48,
+    "nzeta": 40,
+    "ns": 50,
+    "vacuum_mf": 4,
+    "vacuum_nf": 3,
+    "coil_segments": 75,
+    "ordinary_equilibrium_solves": 0,
+    "state_unchanged": true,
+    "wout_sha256": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15",
+    "state_sha256": "c3d29e609133bd850ff44efb1572881dc9e9689532840f8345d801648c1c8d23",
+    "coil_sha256": "1736af209640fea621fbbb2237ebfa4f8d3b92a548560acbca35d2e67950455e",
+    "seconds": 40.93027981929481
+  },
+  "free_boundary_solve_launched": false,
+  "qa_steps": 0
+}

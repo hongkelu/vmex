@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "initial_projected_gradient_norm": null,
+  "last_projected_gradient_norm": null,
+  "gradient_evaluated_at_step": null,
+  "initial_step": 0,
+  "final_step": 0,
+  "target_step": 10,
+  "promoted_steps": 0,
+  "elapsed_s": 383.5590281523764
+}

@@ -1,0 +1,7 @@
+{
+  "virtual_casing_pass": true,
+  "field_pass": true,
+  "geometry_pass": true,
+  "selected": false,
+  "requires_actual_frozen_nestor_check": true
+}

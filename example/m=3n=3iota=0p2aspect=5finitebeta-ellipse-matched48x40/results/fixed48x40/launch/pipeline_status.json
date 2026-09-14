@@ -1,0 +1,5 @@
+{
+  "phase": "failed",
+  "time_unix": 1789408325.9537547,
+  "error": "RuntimeError: coil_fit exited 1; subsequent phases not launched"
+}

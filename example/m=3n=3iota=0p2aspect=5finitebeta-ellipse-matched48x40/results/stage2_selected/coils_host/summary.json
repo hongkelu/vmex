@@ -1,0 +1,51 @@
+{
+  "frozen_nestor_delbsq": 0.009322638562482707,
+  "fixed_state_unchanged": true,
+  "ordinary_equilibrium_solves": 0,
+  "completed": true,
+  "virtual_casing_pass": true,
+  "qualified_for_free_boundary_trial": false,
+  "eligible_for_frozen_nestor_check": true,
+  "optimizer_success": false,
+  "optimizer_message": "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+  "iterations": 1000,
+  "objective_initial": 148.57938790874238,
+  "objective_final": 121.1349413764932,
+  "field_gates_passed": true,
+  "geometry_gates_passed": true,
+  "initial_validation": {
+    "normal_rms": 0.002794129587332805,
+    "normal_max": 0.009975245267172314,
+    "relative_pressure_jump": 0.0055923659824725705,
+    "max_length_m": 70.87330981600414,
+    "max_curvature_per_m": 0.6818450834632639,
+    "min_coil_coil_m": 1.3624287059476683,
+    "min_coil_plasma_m": 2.8798309427333844
+  },
+  "final_validation_256": {
+    "normal_rms": 0.004501250539316804,
+    "normal_max": 0.011473449169234842,
+    "relative_pressure_jump": 0.0046885601414062335,
+    "max_length_m": 70.88229052381125,
+    "max_curvature_per_m": 0.6820448611562551,
+    "min_coil_coil_m": 1.3992017970289528,
+    "min_coil_plasma_m": 2.692862333838182
+  },
+  "production_validation_75": {
+    "normal_rms": 0.004501250542703004,
+    "normal_max": 0.011473449169192044,
+    "relative_pressure_jump": 0.004688560137230468,
+    "max_length_m": 70.88229052381166,
+    "max_curvature_per_m": 0.681961861211158,
+    "min_coil_coil_m": 1.4158386181862503,
+    "min_coil_plasma_m": 2.690739685134893
+  },
+  "seconds": 714.1017865762115,
+  "free_boundary_validated": false,
+  "base_currents_A": [
+    17747087.05841199,
+    26196268.74392231,
+    21573482.42523515,
+    16714065.097581374
+  ]
+}

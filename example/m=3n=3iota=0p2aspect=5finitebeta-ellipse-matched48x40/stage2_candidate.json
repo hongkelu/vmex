@@ -1,0 +1,12 @@
+{
+  "candidate_path": "/Users/luis_lu/.codex/worktrees/1c09/vmex/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40/results/stage2_first/coils_smooth/coils_candidate.json",
+  "fixed_wout_path": "/Users/luis_lu/.codex/worktrees/1c09/vmex/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40/fixed/wout.nc",
+  "candidate_sha256": "1736af209640fea621fbbb2237ebfa4f8d3b92a548560acbca35d2e67950455e",
+  "coil_dofs": 111,
+  "geometry_passed": true,
+  "virtual_casing_pressure_percent": 0.5461652242603731,
+  "frozen_nestor_delbsq_percent": 1.1425474393228872,
+  "delbsq_gate_percent": 1.0,
+  "qualified_for_free_boundary_trial": false,
+  "active_refinement": "host-eager NESTOR derivative with primal and FD consistency guards"
+}

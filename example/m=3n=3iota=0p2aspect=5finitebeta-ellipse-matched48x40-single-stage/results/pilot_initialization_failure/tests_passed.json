@@ -1,0 +1,21 @@
+{
+  "passed": true,
+  "source_manifest_sha256": "c0209f2b3a538449787cfc71a7c681538cd9d292374c68f56593cb0a9ac7263b",
+  "command": [
+    "/root/autodl-tmp/vmex-m3n3-iota02-aspect5-angular48x40-20260914/venv/bin/python",
+    "-B",
+    "-m",
+    "pytest",
+    "-c",
+    "/dev/null",
+    "--confcutdir=/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/tests",
+    "--import-mode=importlib",
+    "-o",
+    "cache_dir=/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/cache/pytest",
+    "--basetemp=/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/cache/test-tmp",
+    "/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/tests/test_case.py",
+    "-q"
+  ],
+  "started_unix": 1789418348.9525616,
+  "finished_unix": 1789418355.850588
+}

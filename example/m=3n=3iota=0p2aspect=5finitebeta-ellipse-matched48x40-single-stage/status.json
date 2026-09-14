@@ -1,0 +1,48 @@
+{
+  "status": "failed_initial_fresh_pressure_gate",
+  "remote_host": "lhk3-6",
+  "remote_root": "/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z",
+  "gpu_uuid": "GPU-0b009025-c499-c2ad-030f-91e852095542",
+  "supervisor_pid": 58199,
+  "target_steps": 10,
+  "max_wall_hours": 1,
+  "tests_passed": 5,
+  "free_boundary_equilibrium_qualified": false,
+  "qa_steps": 0,
+  "frozen_nestor_delbsq": 0.009322638562482707,
+  "frozen_pressure_passed": true,
+  "timeout_pid": 59463,
+  "observed_unix": 1789418518.4960916,
+  "job_running": false,
+  "ordinary_converged": true,
+  "ordinary_iterations": 4566,
+  "ordinary_forces": {
+    "fsqr": 9.741349940518054e-14,
+    "fsqz": 2.6200845718355033e-14,
+    "fsql": 2.371513795516768e-16,
+    "fedge": 3.594117802513283e-12
+  },
+  "final_fresh_delbsq": 0.07045048292,
+  "pressure_gate_passed": false,
+  "root_certification_reached": false,
+  "adjoint_reached": false,
+  "elapsed_s": 383.5590281523764,
+  "returncode": 1,
+  "results_directory": "/Users/luis_lu/.codex/worktrees/1c09/vmex/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/results/pilot_initialization_failure",
+  "results_archive_sha256": "94da42a68540119223f15fdfd357739a59dfaa61f26d1da54014ebc2dd8cd9bf",
+  "updated_utc": "2026-09-14T21:00:16.474768+00:00",
+  "saved_state_audit": {
+    "path": "/Users/luis_lu/.codex/worktrees/1c09/vmex/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/analysis/initialization_failure/FINDINGS.md",
+    "completed": true,
+    "physical": {
+      "mean_iota": 0.2966739434656518,
+      "aspect": 5.684441028436021,
+      "B0_T": 3.6871582223384056,
+      "Rmajor_m": 14.608093779656285
+    },
+    "all_four_constraints_passed": false,
+    "initial_fedge": 8.507262584421445e-05,
+    "final_fedge": 3.605364799174012e-12,
+    "ordinary_solves": 0
+  }
+}

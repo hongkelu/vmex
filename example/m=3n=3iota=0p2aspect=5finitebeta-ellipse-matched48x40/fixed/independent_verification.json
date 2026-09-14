@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "metrics": {
+    "mean_iota": 0.20000045001254882,
+    "b0_T": 5.100002498441042,
+    "aspect": 4.9999999999999964,
+    "major_radius_m": 11.067033897730937,
+    "beta": 0.027034308657760003
+  },
+  "profiles_preserved": true,
+  "ntheta": 48,
+  "nzeta": 40,
+  "wout_sha256": "99ce5881db5c791e37811b651acd2c5590482a88c87d867069b13ea8b53d9b15",
+  "free_boundary_qualified": false
+}

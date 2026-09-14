@@ -1,0 +1,7 @@
+{
+  "relative_field_rms_difference": 2.8004858846869666e-09,
+  "relative_field_max_difference": 5.344900907895907e-09,
+  "rms_limit": 2e-05,
+  "passed": true,
+  "comparison": "Same 48x40 target nodes; digits5 vs digits6 and doubled VC singular quadrature"
+}

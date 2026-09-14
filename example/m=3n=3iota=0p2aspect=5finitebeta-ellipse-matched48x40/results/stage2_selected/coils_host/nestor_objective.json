@@ -1,0 +1,14 @@
+{
+  "initial_delbsq": 0.011425474393228871,
+  "weight": 1.0,
+  "metric": "square of the exact reported DEL-BSQ ratio",
+  "ns": 50,
+  "ntheta": 48,
+  "nzeta": 40,
+  "mf": 4,
+  "nf": 3,
+  "coil_segments": 75,
+  "frozen_state": true,
+  "ordinary_equilibrium_solves": 0,
+  "source_coil_fit_sha256": "c64165d9bd09988ca116b4df90148837d080429ebe150a0c8600ed2d34bbce44"
+}

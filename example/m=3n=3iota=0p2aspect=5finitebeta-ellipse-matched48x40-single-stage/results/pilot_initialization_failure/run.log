@@ -1,0 +1,83 @@
+{"phase": "ordinary_initialization_start", "elapsed_s": 12.39171001687646, "forward_solve_tolerance": 1e-13, "force_acceptance_tolerance": 1e-10, "root_polishing": false}
+
+  NS =   50 NO. FOURIER MODES =   18 FTOLV =  1.000E-13 NITER =  12000
+ FSQR, FSQZ = Normalized Physical Force Residuals
+ -----------------------
+ BEGIN FORCE ITERATIONS
+ -----------------------
+
+  ITER    FSQR      FSQZ      FSQL    RAX(v=0)    DELT        WMHD      DEL-BSQ
+ compiling NS = 50 free-iteration executable...
+    1  9.97E-14  4.84E-14  2.97E-15  1.262E+01  7.00E-01  1.8179E+04  1.000E+00
+ compiling NS = 50 pre-vacuum loop executable...
+ compiling NS = 50 NESTOR full-update executable...
+
+  In VACUUM, np =  2  mf =  4  nf =  3 nu = 48  nv =   40
+
+  2*pi * a * -BPOL(vac) =  -6.14E+00 TOROIDAL CURRENT =  -6.14E+00
+  R * BTOR(vac) =   6.58E+01 R * BTOR(plasma) =   6.58E+01
+
+ compiling NS = 50 vacuum turn-on executable...
+
+  VACUUM PRESSURE TURNED ON AT    2 ITERATIONS
+ compiling NS = 50 steady vacuum loop executable...
+  100  3.92E-07  1.48E-07  1.24E-08  1.262E+01  6.30E-01  1.8178E+04  1.029E-02
+  200  2.59E-07  1.43E-07  6.84E-09  1.268E+01  6.30E-01  1.8174E+04  7.165E-03
+  300  1.32E-07  1.40E-07  1.56E-09  1.281E+01  6.30E-01  1.8163E+04  6.253E-03
+  400  7.93E-08  6.23E-08  1.37E-09  1.304E+01  6.30E-01  1.8143E+04  8.040E-03
+  500  5.32E-08  5.45E-08  2.34E-09  1.336E+01  6.30E-01  1.8110E+04  1.110E-02
+  600  8.85E-08  1.08E-07  3.77E-09  1.384E+01  6.30E-01  1.8061E+04  1.505E-02
+  700  2.31E-07  3.65E-07  5.60E-09  1.455E+01  6.30E-01  1.7988E+04  2.103E-02
+  800  1.57E-06  2.27E-06  2.15E-08  1.557E+01  6.30E-01  1.7877E+04  3.138E-02
+  900  3.42E-06  5.83E-06  1.08E-07  1.659E+01  6.30E-01  1.7755E+04  5.772E-02
+ 1000  3.81E-06  4.70E-06  6.60E-08  1.695E+01  6.30E-01  1.7714E+04  6.276E-02
+ 1100  2.89E-06  2.89E-06  3.56E-08  1.707E+01  6.30E-01  1.7698E+04  5.796E-02
+ 1200  8.33E-07  8.89E-07  2.90E-08  1.711E+01  6.30E-01  1.7693E+04  5.321E-02
+ 1300  5.66E-07  5.58E-07  1.50E-08  1.714E+01  6.30E-01  1.7692E+04  5.311E-02
+ 1400  6.82E-07  2.64E-06  1.71E-08  1.715E+01  6.30E-01  1.7694E+04  5.508E-02
+ 1500  4.51E-07  2.57E-07  1.17E-08  1.716E+01  6.30E-01  1.7697E+04  5.691E-02
+ 1600  2.05E-06  8.53E-07  1.38E-08  1.717E+01  6.30E-01  1.7703E+04  6.051E-02
+ 1700  5.34E-07  1.77E-07  6.13E-09  1.719E+01  6.30E-01  1.7706E+04  6.365E-02
+ 1800  4.27E-07  1.11E-07  2.16E-09  1.720E+01  6.30E-01  1.7707E+04  6.661E-02
+ 1900  1.32E-07  2.65E-08  4.87E-10  1.721E+01  6.30E-01  1.7706E+04  6.850E-02
+ 2000  4.54E-08  7.33E-09  1.69E-10  1.721E+01  6.30E-01  1.7706E+04  6.915E-02
+ 2100  2.36E-08  3.28E-09  7.11E-11  1.721E+01  6.30E-01  1.7705E+04  6.955E-02
+ 2200  1.41E-08  1.95E-09  3.37E-11  1.721E+01  6.30E-01  1.7704E+04  6.981E-02
+ 2300  7.97E-09  1.07E-09  1.89E-11  1.721E+01  6.30E-01  1.7704E+04  6.996E-02
+ 2400  4.63E-09  6.19E-10  1.11E-11  1.721E+01  6.30E-01  1.7704E+04  7.007E-02
+ 2500  2.86E-09  3.82E-10  6.63E-12  1.721E+01  6.30E-01  1.7704E+04  7.015E-02
+ 2600  1.78E-09  2.36E-10  4.02E-12  1.721E+01  6.30E-01  1.7704E+04  7.021E-02
+ 2700  1.10E-09  1.46E-10  2.46E-12  1.721E+01  6.30E-01  1.7704E+04  7.026E-02
+ 2800  6.96E-10  9.20E-11  1.51E-12  1.721E+01  6.30E-01  1.7703E+04  7.030E-02
+ 2900  4.28E-10  5.71E-11  9.22E-13  1.721E+01  6.30E-01  1.7703E+04  7.033E-02
+ 3000  2.65E-10  3.54E-11  5.65E-13  1.721E+01  6.30E-01  1.7703E+04  7.036E-02
+ 3100  1.64E-10  2.20E-11  3.47E-13  1.721E+01  6.30E-01  1.7703E+04  7.038E-02
+ 3200  1.02E-10  1.37E-11  2.14E-13  1.721E+01  6.30E-01  1.7703E+04  7.039E-02
+ 3300  6.30E-11  8.48E-12  1.32E-13  1.721E+01  6.30E-01  1.7703E+04  7.041E-02
+ 3400  3.90E-11  5.26E-12  8.11E-14  1.721E+01  6.30E-01  1.7703E+04  7.042E-02
+ 3500  2.41E-11  3.27E-12  5.00E-14  1.721E+01  6.30E-01  1.7703E+04  7.042E-02
+ 3600  1.49E-11  2.02E-12  3.08E-14  1.721E+01  6.30E-01  1.7703E+04  7.043E-02
+ 3700  9.18E-12  1.25E-12  1.90E-14  1.721E+01  6.30E-01  1.7703E+04  7.043E-02
+ 3800  5.64E-12  7.76E-13  1.16E-14  1.721E+01  6.30E-01  1.7703E+04  7.044E-02
+ 3900  3.46E-12  4.80E-13  7.12E-15  1.721E+01  6.30E-01  1.7703E+04  7.044E-02
+ 4000  2.09E-12  2.97E-13  4.33E-15  1.721E+01  6.30E-01  1.7703E+04  7.044E-02
+ 4100  1.24E-12  1.83E-13  2.65E-15  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+ 4200  7.51E-13  1.11E-13  1.56E-15  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+ 4300  4.45E-13  6.96E-14  9.99E-16  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+ 4400  2.53E-13  4.40E-14  6.05E-16  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+ 4500  1.53E-13  3.13E-14  3.69E-16  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+ 4566  9.74E-14  2.62E-14  2.37E-16  1.721E+01  6.30E-01  1.7703E+04  7.045E-02
+{"phase": "ordinary_initialization_result", "elapsed_s": 353.36883352324367, "converged": true, "iterations": 4566, "forces": {"fsqr": 9.741349940518054e-14, "fsqz": 2.6200845718355033e-14, "fsql": 2.371513795516768e-16, "fedge": 3.594117802513283e-12}}
+{"phase": "initial_certification_start", "elapsed_s": 353.37677222304046, "absolute_step": 0, "parameters_zero": true, "initial_equilibrium_solves": 1, "resumed": false}
+{"phase": "failure", "elapsed_s": 383.5587369222194, "error_type": "VmecError", "error": "fresh DEL-BSQ 7.045048292e-02 exceeds 1.000000000e-02"}
+{"status": "failed", "initial_projected_gradient_norm": null, "last_projected_gradient_norm": null, "gradient_evaluated_at_step": null, "initial_step": 0, "final_step": 0, "target_step": 10, "promoted_steps": 0, "elapsed_s": 383.5590281523764}
+Traceback (most recent call last):
+  File "/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/run.py", line 220, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/run.py", line 111, in main
+    initial_pressure=fresh_pressure_gate(solver,params,p,seed,initial_rcon0,initial_zcon0,contract['delbsq_limit'])
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/vmex-finitebeta-matched48x40-single-stage-20260914T203732Z/source/example/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/gates.py", line 38, in fresh_pressure_gate
+    raise VmecError(f"fresh DEL-BSQ {data['fresh_delbsq']:.9e} exceeds {limit:.9e}")
+vmex.core.errors.VmecError: fresh DEL-BSQ 7.045048292e-02 exceeds 1.000000000e-02

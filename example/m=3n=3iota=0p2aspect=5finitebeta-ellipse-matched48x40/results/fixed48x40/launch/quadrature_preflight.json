@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "target_grid": [
+    48,
+    40
+  ],
+  "quadratures": [
+    [
+      800,
+      144
+    ],
+    [
+      1600,
+      288
+    ]
+  ],
+  "old_invalid_grid_rejected": true
+}

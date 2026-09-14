@@ -132,6 +132,7 @@ from .device import (
     GPU_MAX_SPECTRAL_MODES,
     _placement_device,
     _put_numeric_leaves,
+    commit_to_single_device,
     device_context,
 )
 from .errors import (
@@ -2226,6 +2227,11 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
 
     if mode != "cli":
         raise ValueError(f"unknown mode {mode!r}; expected 'cli' or 'jit'")
+    # Predictors and axis retries mix committed and uncommitted arrays on
+    # the same device. Normalize once to reuse the lane executable, without
+    # changing the selected device or imposing a layout on sharded solves.
+    # Before the copy below, so the copy's own executable sees one commitment.
+    carry, rt = commit_to_single_device((carry, rt))
     # The donated CLI lane (_block_lane, donate_argnums=0) requires every leaf
     # of the input carry to be a distinct buffer; _initial_carry aliases some
     # (xstore=state, shared cache zeros).  One copy to distinct buffers here

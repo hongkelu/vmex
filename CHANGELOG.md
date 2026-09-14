@@ -35,6 +35,10 @@ revision it was measured at, and the pages that cite it.
   raw block factorization: 7 to 16 GMRES iterations instead of about 2,000 to 3,000 Krylov
   iterations on the single-stage and QI example decks, at a certificate at or below today's.
   Decks where that Newton phase stalls replay the previous refinement and keep its anchor.
+- The reverse Jacobian lane (`minimize(objective_terms)`, `implicit_jacobian_method="reverse_adjoint"`)
+  factors the raw block Jacobian once per point instead of once per batch of residual rows, and
+  its scalar gradient pulls back the residual once instead of assembling the Jacobian. The block
+  lane's uncertified-Jacobian fallback in `jax_value_and_grad` pulls back once as well.
 
 ### Fixed
 

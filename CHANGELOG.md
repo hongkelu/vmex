@@ -18,17 +18,45 @@ revision it was measured at, and the pages that cite it.
 
 ### Changed
 
+- The persistent compilation cache keeps entries used within the last 24 hours when it trims to
+  its 1,024-entry bound, up to four times the bound: the QI example's warm run no longer
+  recompiles the 318 programs the trim evicted at every import, and stale caches are trimmed as before.
 - The gyrokinetic flux-tube `epsilon` is the field-line `|B|` modulation depth
   and `R0` the effective major radius, so GKX's minor radius is physical (#271).
 - Optimization seed refinement is a deferred per-configuration executable, on the
   scalar, free-boundary implicit and mirror Newton-Krylov paths (#240, #241).
+- Reverse-mode implicit gradients (`jax.grad` through `solve_implicit`, scalar
+  `VmecProblem` lanes, `minimize()`) differentiate the raw force residual, like
+  the least-squares Jacobian lane, and solve its adjoint in one block
+  factorization instead of 1,100 to 17,000 Krylov iterations. Where the anchor is
+  not an exact root the scalar gradient moves by the formulation difference, up
+  to 1.1e-3 on the QI benchmark objective.
+- A concrete call to `problem.jax_value_and_grad` returns the host lane's pair, and
+  shares its solve memo, warm-start stash and counters; with `jac_solver="block"`
+  forced it raises the typed error instead of falling back. Traced calls are unchanged (#321).
+- The fixed-point refinement every optimizer trial pays finishes with Newton through one
+  raw block factorization: 7 to 16 GMRES iterations instead of about 2,000 to 3,000 Krylov
+  iterations on the single-stage and QI example decks, at a certificate at or below today's.
+  Decks where that Newton phase stalls replay the previous refinement and keep its anchor.
+- The reverse Jacobian lane (`minimize(objective_terms)`, `implicit_jacobian_method="reverse_adjoint"`)
+  factors the raw block Jacobian once per point instead of once per batch of residual rows, and
+  its scalar gradient pulls back the residual once instead of assembling the Jacobian. The block
+  lane's uncertified-Jacobian fallback in `jax_value_and_grad` pulls back once as well.
 
 ### Fixed
 
+- The reverse Jacobian fallback pulls residual rows back in tangent-lane batches, so an
+  uncertified block Jacobian no longer allocates the adjoint basis once per residual row.
 - Polish sizes its force sweep from the deck's own mode table and checkpoints the
   per-point kernel: W7-X standard certifies at 3.0 GiB, not 34 (`benchmarks/polish_memory_w7x.json`).
 - Force-error reporting separates native accuracy from WOUT reconstruction; the
   corrected pair is `benchmarks/polish_force_error_2026-09-03.json` (#280, #282).
+- The summary plot's force panel no longer reads 1 on converged vacuum equilibria. It plots
+  `|J x B - grad p|` over the volume-averaged `|grad(B^2/2mu0)|` on `0.1 <= s <= 0.99`
+  (DESC's normalization) instead of WOUT's `equif`, which is bounded by 1 and equals 1
+  on every surface without pressure or current; `equif` itself is unchanged. The figure
+  metadata from `plotting._summary_figure` (behind `plot_summary`) replaces the key
+  `max_relative_force_error`, a maximum of `equif`, with `force_error`, the volume average.
 
 ### Removed
 

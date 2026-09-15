@@ -87,6 +87,43 @@ def test_free_boundary_config_validates_adjoint_fail():
         make_free_boundary_config(inp, field, adjoint_fail="warn")
 
 
+def test_host_adjoint_refreshes_saved_pullback_at_each_point():
+    """Reusing an executable must not reuse a previous root's linearization."""
+    def residual(z, p, *_args):
+        return jnp.asarray([z[0]**2 + p * z[1], z[0] * z[1] + z[1]**2])
+
+    cfg = SimpleNamespace(
+        adjoint_tol=1e-10, adjoint_gcrot_m=2, adjoint_gcrot_k=1,
+        adjoint_maxiter=10,
+    )
+    rhs = jnp.asarray([1., -2.])
+    for z, p in [(jnp.asarray([2., 3.]), 0.5), (jnp.asarray([3., 2.]), 1.5)]:
+        solved = fbi._host_adjoint(residual, z, p, None, None, None, None, rhs, cfg)
+        jacobian = np.array([[2 * z[0], p], [z[1], z[0] + 2 * z[1]]])
+        np.testing.assert_allclose(solved, np.linalg.solve(jacobian.T, rhs), rtol=1e-9)
+
+
+def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
+    """Under an outer jax.jit the pullback is taken at the root, then staged GCROT."""
+    def residual(z, p, field, *_args):
+        return jnp.asarray([z[0]**2 + p * z[1] + field, z[0] * z[1] + z[1]**2 - p])
+
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_args, **_kwargs: residual)
+    monkeypatch.setattr(im, "_dof_projector", lambda *_args: (lambda tree: tree))
+    cfg = SimpleNamespace(
+        implicit=SimpleNamespace(adjoint_tol=1e-12, adjoint_gcrot_m=2,
+                                 adjoint_gcrot_k=1, adjoint_maxiter=10),
+        adjoint_solver="coupled_gcrot", adjoint_fail="error",
+    )
+    z, p, field = jnp.asarray([2., 3.]), jnp.asarray(0.5), jnp.asarray(0.25)
+    rhs = jnp.asarray([1., -2.])
+    params_bar, field_bar = jax.jit(
+        lambda bar: fbi._solve_bwd_impl(cfg, (p, field, z, None, None, None), bar))(rhs)
+    lam = np.linalg.solve(np.array([[4., 0.5], [3., 8.]]).T, rhs)
+    np.testing.assert_allclose(params_bar, -(np.array([3., -1.]) @ lam), rtol=1e-10)
+    np.testing.assert_allclose(field_bar, -lam[0], rtol=1e-10)
+
+
 def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
     """A stalled Krylov solve is a warning under the opt-in policy, not a stop.
 
@@ -781,7 +818,8 @@ def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(backend, co
         adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
         adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
     def residual(z,p,f,base,rc,zc):return matrix@z+.5*(p+f+base+rc+zc)*z**2
-    if compiled:residual=jax.jit(residual)
+    if compiled:
+        residual=jax.jit(residual)
     values = [jnp.array([.2,.3,.4])+.1*i for i in range(6)]
     rhs=jnp.array([[1.,0.,0.],[.1,.5,1.],[0.,0.,0.]])
     native=dense._factor_solve;calls=[]
@@ -789,7 +827,8 @@ def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(backend, co
     monkeypatch.setattr(dense,'_factor_solve',measured)
     for changed in (None,0,1,2,3,4,5):
         args=list(values)
-        if changed is not None:args[changed]=args[changed]+.25
+        if changed is not None:
+            args[changed]=args[changed]+.25
         z,p,f,base,rc,zc=args
         jac=matrix+jnp.diag((p+f+base+rc+zc)*z)
         actual=dense.solve_dense_adjoint(residual,*args,rhs,jnp.ones(3),cfg)
@@ -835,12 +874,15 @@ def test_dense_failure_policy(backend,failure,monkeypatch):
                             jnp.full_like(rhs,jnp.nan if failure=='nonfinite' else 0.))
     def call():return dense.solve_dense_adjoint(residual,jnp.zeros(3),None,None,None,None,None,
                                               jnp.ones((2,3)),jnp.ones(3),cfg)
-    with pytest.raises(AdjointSolveError):call()
+    with pytest.raises(AdjointSolveError):
+        call()
     cfg.adjoint_fail='best_effort'
     if failure=='false_success':
-        with pytest.warns(RuntimeWarning,match='best-effort'):call()
+        with pytest.warns(RuntimeWarning,match='best-effort'):
+            call()
     else:
-        with pytest.raises(AdjointSolveError):call()
+        with pytest.raises(AdjointSolveError):
+            call()
 
 
 def test_dense_dimension_and_mask_guards():
@@ -874,7 +916,8 @@ def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
     diagnostics=[];call(diagnostics)
     assert len(diagnostics)==2 and all(d['accepted'] for d in diagnostics)
     cfg.adjoint_residual_rtol=1e-9;diagnostics=[]
-    with pytest.raises(AdjointSolveError):call(diagnostics)
+    with pytest.raises(AdjointSolveError):
+        call(diagnostics)
     assert len(diagnostics)==1 and diagnostics[0]['accepted'] is False
     np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*np.sqrt(3.))
     actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),

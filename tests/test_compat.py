@@ -78,7 +78,7 @@ def test_cache_dir_env_precedence(clean_cache_env):
 
 
 def test_cache_default_off_when_deserialize_unsafe(clean_cache_env):
-    """macOS + jaxlib < 0.10 kills the process reading big cache entries
+    """jaxlib < 0.10 kills the process reading big cache entries
     (LLVM ORC materializes per-kernel objects recursively and overflows a
     worker-thread stack inside PyClient::DeserializeExecutable), so the
     cache defaults off there — but explicit user choices always win."""
@@ -98,15 +98,14 @@ def test_cache_default_off_when_deserialize_unsafe(clean_cache_env):
     assert _compat._default_compilation_cache_dir() == "/tmp/vmexcache"
 
 
-def test_cache_deserialize_unsafe_is_darwin_and_jaxlib_scoped(monkeypatch):
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_cache_deserialize_unsafe_is_jaxlib_scoped_on_every_platform(
+        monkeypatch, system):
+    monkeypatch.setattr(_compat.platform, "system", lambda: system)
     monkeypatch.setattr(_compat, "_jaxlib_version_tuple", lambda: (0, 9, 2))
-    monkeypatch.setattr(_compat.platform, "system", lambda: "Linux")
-    assert _compat._cache_deserialize_unsafe() is False  # macOS-only crash
-
-    monkeypatch.setattr(_compat.platform, "system", lambda: "Darwin")
     assert _compat._cache_deserialize_unsafe() is True   # affected jaxlib
     monkeypatch.setattr(_compat, "_jaxlib_version_tuple", lambda: (0, 10, 0))
-    assert _compat._cache_deserialize_unsafe() is False  # fixed in 0.10.0
+    assert _compat._cache_deserialize_unsafe() is False  # fixed in 0.10
     monkeypatch.setattr(_compat, "_jaxlib_version_tuple", lambda: None)
     assert _compat._cache_deserialize_unsafe() is True   # unknown = unsafe
 
@@ -444,6 +443,26 @@ def test_prune_cache_entries_keeps_the_most_recently_used(tmp_path):
     assert len(list(tmp_path.glob("*-atime"))) == 10
     # already inside the bound: no work, no deletions
     assert _compat._prune_cache_entries(str(tmp_path), 10) == 0
+
+
+def test_prune_cache_entries_keeps_recent_entries_up_to_four_times_the_cap(tmp_path):
+    """Recent entries survive the cap; stale ones are pruned to it."""
+    import time
+
+    now = time.time_ns()
+    _seed_cache(tmp_path, 30)  # atimes 0..29: long stale
+    for i in range(25):
+        (tmp_path / f"r{i}-cache").write_bytes(b"x")
+        (tmp_path / f"r{i}-atime").write_bytes((now - i * 1_000_000_000).to_bytes(8, "little"))
+    assert _compat._prune_cache_entries(str(tmp_path), 10) == 30
+    assert sorted(p.name for p in tmp_path.glob("*-cache")) == sorted(f"r{i}-cache" for i in range(25))
+
+    # a workload's recent entries are still bounded, at four times the cap
+    for i in range(25, 50):
+        (tmp_path / f"r{i}-cache").write_bytes(b"x")
+        (tmp_path / f"r{i}-atime").write_bytes((now - i * 1_000_000_000).to_bytes(8, "little"))
+    assert _compat._prune_cache_entries(str(tmp_path), 10) == 10
+    assert sorted(p.name for p in tmp_path.glob("*-cache")) == sorted(f"r{i}-cache" for i in range(40))
 
 
 def test_prune_cache_entries_survives_a_hostile_directory(tmp_path):

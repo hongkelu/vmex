@@ -46,6 +46,7 @@ class FreeBoundaryContinuationResult:
 
     @property
     def state(self):
+        """Return the state of this certified continuation result."""
         return self.result.state
 
 

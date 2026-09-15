@@ -262,11 +262,19 @@ independent resolved grid for reporting:
        inp, max_mode=5, jac="implicit", use_ess=True)
    reported_qi = qi_report.total(result.equilibrium)
 
-Sanity anchors (CI-gated): an analytically QI field scores ``< 1e-24``, the
-bundled ``nfp1_QI`` deck scores 36x below a circular tokamak and 138x below
-the (QA, deliberately non-QI) Landreman–Paul configuration.  The measured
-single-call campaign — seed 4.5e-1 to 1.8e-2 (25x) in 17.3 minutes — is in
-:doc:`/howto/optimize-a-boundary`.  The earlier Goodman-style *wout-lane* residual
+Sanity anchors, asserted for :class:`~vmex.core.omnigenity.QIResidual` in
+``tests/test_omnigenity.py``: an analytically QI field scores ``< 1e-24``;
+the bundled ``nfp1_QI`` deck scores at least 20x below a circular tokamak,
+and lowest of the three when the (QA, deliberately non-QI) Landreman–Paul
+configuration is added.  ``examples/optimization/QI_optimization.py`` starts
+from the near-QI ``input.QI_nfp2_initial`` seed and runs one ``max_mode = 2``
+stage of 20 evaluations: on a 36-core workstation at four threads it reaches
+constructed QI 3.0e-3 (fine-grid validation 2.8e-3) with the ι, mirror and
+elongation limits met in 612 s, where the previous circular-seed example ran
+1,456 s and ended in a final solve that did not converge
+(``benchmarks/qi_optimization_profile_office.json``);
+:doc:`/howto/optimize-a-boundary` describes the workflow.  The
+earlier Goodman-style *wout-lane* residual
 (:func:`~vmex.core.optimize.quasi_isodynamic_residual`, host NumPy,
 ``jac=None``) remains available for diagnostics and cross-checks.
 

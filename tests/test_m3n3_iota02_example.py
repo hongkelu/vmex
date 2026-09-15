@@ -2,7 +2,6 @@
 import dataclasses
 import importlib.util
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 import numpy as np
 import jax

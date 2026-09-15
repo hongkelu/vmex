@@ -29,6 +29,25 @@ links to the module that documents it.
   :func:`~vmex.core.restart.restart_state` — hot restart from any wout
   (also ``solve*(..., restart_from=...)``)
 
+**Free-boundary continuation and shared derivatives**
+
+- :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationConfig` /
+  :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationResult`
+  — continuation controls and a certified endpoint
+- :func:`~vmex.core.freeboundary_continuation.make_free_boundary_continuation_config` /
+  :func:`~vmex.core.freeboundary_continuation.make_free_boundary_continuation_config_from_state`
+  — create a continuation family from a solve or an existing state
+- :func:`~vmex.core.freeboundary_continuation.certify_free_boundary_continuation_state` /
+  :func:`~vmex.core.freeboundary_continuation.reanchor_free_boundary_continuation_config`
+  — certify a state and explicitly replace the continuation anchor
+- :func:`~vmex.core.freeboundary_continuation.solve_free_boundary_continuation` /
+  :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_result` /
+  :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_stats`
+  — differentiable state, endpoint diagnostics, and work counters
+- :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_state_pullback` /
+  :func:`~vmex.core.freeboundary_implicit.free_boundary_state_pullback_multi_rhs`
+  — shared implicit pullbacks at the same certified root
+
 **Outputs and scaling**
 
 - :class:`~vmex.core.wout.WoutData` / :func:`~vmex.core.wout.read_wout` /

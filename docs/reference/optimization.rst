@@ -437,7 +437,7 @@ for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
 Several objectives at one free-boundary root
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Advanced callers that retain an accepted state, its DOF mask, and its
 ``rcon0``/``zcon0`` constraint baselines can use
@@ -463,7 +463,7 @@ interface retain their behavior. Use independent re-solve finite differences
 and root-convergence studies to qualify a new physical response.
 
 Continuation from an accepted free-boundary anchor
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``make_free_boundary_continuation_config`` takes an existing coupled solver
 configuration, fixed ``ImplicitParams``, and a rank-one vector of field
@@ -724,7 +724,7 @@ The main entry points are :func:`vmex.core.optimize.make_problem`,
 
 
 Reverse GCROT free-boundary adjoints
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Set ``adjoint_solver="reverse_gcrot"`` in ``make_free_boundary_config`` to
 use JAX/Solvax GCROT on the transpose of the already-linearized projected
@@ -754,7 +754,7 @@ imply a speedup over the default.
 
 
 Dense free-boundary adjoints
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``make_free_boundary_config(..., adjoint_solver="forward_dense")`` assembles
 an explicit active-state Jacobian with forward JVPs and solves its transpose

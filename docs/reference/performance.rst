@@ -362,15 +362,19 @@ problem sizes (see the GPU guidance below).
 Optimization wall time
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Whole-campaign numbers, from a near-circular torus to a precise
-configuration on a 36-core office CPU (details and scripts in
-:doc:`/explanation/adjoint-gradients`): QA to QS 7.2e-6 in **14.5 min** with a single
-ESS-scaled ``least_squares`` call (the staged ``max_mode`` 1–5 ladder
-reaches 3.7e-7 in 25.5 min), and QI to a 25x omnigenity-residual reduction
-in **17.3 min**. Two measured gradient-stack optimizations make that
-possible — the block-tridiagonal implicit Jacobian (33x on the Jacobian
-phase) and the perturbation warm start (3.7x fewer trial-solve iterations)
-— both on by default and documented in :doc:`/explanation/adjoint-gradients`.
+No committed record times a whole optimization campaign from a seed to a
+final design, so this page states no campaign duration.  The committed
+records time parts of one: rows F4 and F8 above (one implicit scalar value
+and gradient; five least-squares evaluations) and the QA startup records
+``benchmarks/qa_optimization_startup_least_squares_m4.json`` and
+``benchmarks/qa_optimization_startup_scalar_m4.json`` (48 boundary degrees
+of freedom on one Apple CPU host; read in :doc:`/reference/optimization`).
+None of them splits a warm evaluation into the equilibrium solve, its
+refinement, and the Jacobian or adjoint, so none of them says where the warm
+time goes.  The block-tridiagonal implicit Jacobian and the perturbation warm
+start are on by default and described in
+:doc:`/explanation/adjoint-gradients`; neither has a committed before/after
+record.
 
 Parity with VMEC2000
 --------------------
@@ -493,6 +497,17 @@ and a warm rerun 3.1 s with 289 of 289 lookups hitting — pruning by access
 time keeps the working set.  Set ``VMEX_CACHE_MAX_ENTRIES`` to change the
 bound, or to ``0`` to disable trimming.  The measurements, with provenance,
 are in ``benchmarks/cache_entry_scaling_m4_2026-09-03.json``.
+
+A fixed bound alone evicts a large workload's own working set: the QI
+optimization example writes 1,342 executables, so the ``1024`` bound dropped
+318 of them at every import and every returning run recompiled them.  Entries
+used in the last 24 hours are therefore kept up to four times the bound, and
+only older entries are trimmed to it.  On a 36-thread Xeon the QI example's
+warm run then misses nothing (its compile falls from 68.0 s to 38.6 s); a cold
+seed-deck solve against 4,026 stale entries still sees the cache trimmed to
+``1024`` (10.2 s, against 9.7 s with the plain bound); and the worst case,
+4,026 entries all used within the day, costs 17.9 s, where a fixed ``4096``
+bound costs 19.0 s on any mature cache.
 
 Fresh decks against ``xvmec2000`` (2026-09-02)
 -----------------------------------------------
@@ -716,8 +731,9 @@ unaffected.  Library :func:`~vmex.core.multigrid.solve_multigrid` and
 executables by default (the right policy for scans and repeated solves) and
 accept ``release_stage_cache=True`` to opt into the one-shot behaviour.
 The machine-scoped disk cache is bounded to 10% of the free disk (2 GiB
-floor, 20 GiB ceiling).  On macOS with jaxlib < 0.10 the cache defaults to
-off: those jaxlib releases crash with ``SIGBUS``/``SIGILL`` inside
+floor, 20 GiB ceiling).  With jaxlib < 0.10 the cache defaults to off on
+every platform: those jaxlib releases crash (``SIGBUS``/``SIGILL`` on macOS,
+``SIGSEGV`` on Linux) inside
 ``PyClient::DeserializeExecutable`` when loading a cached CPU executable
 holding more than a few hundred kernels (LLVM ORC materializes the
 per-kernel objects recursively on one fixed-size worker-thread stack), and

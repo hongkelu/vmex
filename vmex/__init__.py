@@ -29,6 +29,25 @@ links to the module that documents it.
   :func:`~vmex.core.restart.restart_state` — hot restart from any wout
   (also ``solve*(..., restart_from=...)``)
 
+**Free-boundary continuation and shared derivatives**
+
+- :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationConfig` /
+  :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationResult`
+  — continuation controls and a certified endpoint
+- :func:`~vmex.core.freeboundary_continuation.make_free_boundary_continuation_config` /
+  :func:`~vmex.core.freeboundary_continuation.make_free_boundary_continuation_config_from_state`
+  — create a continuation family from a solve or an existing state
+- :func:`~vmex.core.freeboundary_continuation.certify_free_boundary_continuation_state` /
+  :func:`~vmex.core.freeboundary_continuation.reanchor_free_boundary_continuation_config`
+  — certify a state and explicitly replace the continuation anchor
+- :func:`~vmex.core.freeboundary_continuation.solve_free_boundary_continuation` /
+  :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_result` /
+  :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_stats`
+  — differentiable state, endpoint diagnostics, and work counters
+- :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_state_pullback` /
+  :func:`~vmex.core.freeboundary_implicit.free_boundary_state_pullback_multi_rhs`
+  — shared implicit pullbacks at the same certified root
+
 **Outputs and scaling**
 
 - :class:`~vmex.core.wout.WoutData` / :func:`~vmex.core.wout.read_wout` /
@@ -146,7 +165,34 @@ from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _package_version
 import os as _os
 from pathlib import Path as _Path
-import warnings as _warnings
+import sys as _sys
+
+from packaging.version import Version as _Version
+
+# Oldest supported versions, equal to the pyproject.toml floors.  SciPy 1.16
+# added the least_squares(callback=) that the optimization examples pass.
+_MINIMUM_VERSIONS = {"scipy": (1, 16), "jax": (0, 9, 2), "jaxlib": (0, 9, 2)}
+
+
+def _check_supported_versions() -> None:
+    """Fail at import, not deep inside an example, on an unsupported stack."""
+    if _sys.version_info < (3, 11):
+        raise ImportError(
+            f"vmex requires Python >= 3.11 (found {_sys.version.split()[0]}); "
+            "install vmex in a Python 3.11+ environment.")
+    for name, minimum in _MINIMUM_VERSIONS.items():
+        try:
+            found = _package_version(name)
+        except _PackageNotFoundError:
+            continue  # the import below reports a missing package itself
+        if _Version(found).release < minimum:
+            required = ".".join(map(str, minimum))
+            raise ImportError(
+                f"vmex requires {name} >= {required} (found {found}); "
+                f'run: pip install -U "{name}>={required}"')
+
+
+_check_supported_versions()
 
 from ._compat import _default_compilation_cache_dir as _default_jax_cache_dir
 
@@ -188,18 +234,7 @@ import jax as _jax
 
 
 def _configure_jax_logging(jax_module) -> None:
-    """Quiet JAX by default, with explicit overrides and an old-JAX notice."""
-    if not hasattr(jax_module.config, "jax_logging_level"):
-        _warnings.warn(
-            f"JAX {getattr(jax_module, '__version__', 'unknown')} does not "
-            "provide jax_logging_level (available since JAX 0.4.36). VMEX "
-            "will use environment-level log suppression, but repeated "
-            "XLA/PjRt warnings may still appear. Upgrade JAX to silence them "
-            "reliably.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return
+    """Quiet JAX by default, with explicit overrides."""
     level = _os.environ.get("VMEX_JAX_LOGGING_LEVEL")
     if level is None:
         level = _os.environ.get("JAX_LOGGING_LEVEL", "ERROR")

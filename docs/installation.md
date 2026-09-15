@@ -6,10 +6,15 @@ Boozer transform — no user-facing extras to remember. Verify with
 
 ## Requirements
 
-- Python 3.10+ (Python 3.12+ recommended for current accelerator-enabled JAX)
-- `numpy`, `jax` + `jaxlib` (0.4.36 or newer: VMEX sets the
-  `jax_logging_level` option introduced in that release), `netCDF4`,
-  `matplotlib`, `booz_xform_jax` (all installed automatically)
+- Python 3.11+, and 3.12+ recommended: jax and jaxlib 0.11 require Python 3.12,
+  so a 3.11 environment resolves JAX 0.10.2 at the newest. CI tests 3.11, 3.12
+  and 3.13.
+- `numpy`, `jax` + `jaxlib` (0.9.2 or newer, the oldest release CI tests),
+  `scipy` (1.16 or newer: the optimization examples pass
+  `least_squares(callback=...)`, which SciPy 1.16 introduced and which needs
+  Python 3.11), `netCDF4`, `matplotlib`, `booz_xform_jax` (all installed
+  automatically). `import vmex` names the package to upgrade when an older
+  version is installed.
 
 ## From PyPI
 

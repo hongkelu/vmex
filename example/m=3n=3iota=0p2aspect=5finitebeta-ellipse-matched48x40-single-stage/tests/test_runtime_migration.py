@@ -9,12 +9,14 @@ import pytest
 CASE = Path(__file__).resolve().parents[1]
 
 def initialization():
+    """Load this case without launching its runner."""
     spec = importlib.util.spec_from_file_location("case_initialization", CASE / "initialization.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 def test_active_runtime_matches_complete_manifest():
+    """Verify that every runtime module matches the active pin."""
     runtime = initialization().verify_runtime()
     manifest = json.loads((CASE / "runtime_manifest.json").read_text())
     actual = {str(p.relative_to(runtime)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -22,6 +24,7 @@ def test_active_runtime_matches_complete_manifest():
     assert manifest["files"] == actual
 
 def test_modified_runtime_is_rejected(monkeypatch, tmp_path):
+    """Reject modified source before any case computation."""
     import vmex
     fake = tmp_path / "__init__.py"
     fake.write_text("# modified runtime\n")
@@ -30,6 +33,7 @@ def test_modified_runtime_is_rejected(monkeypatch, tmp_path):
         initialization().verify_runtime()
 
 def test_historical_manifest_is_preserved():
+    """Retain the previous pin without transferring qualification."""
     migration = json.loads((CASE / "runtime_migration.json").read_text())
     archive = CASE / migration["previous_manifest"]
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == migration["previous_manifest_sha256"]

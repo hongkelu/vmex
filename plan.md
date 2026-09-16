@@ -219,6 +219,7 @@ attribution. One heavy local job at a time; the office box takes one.
 | A2 exterior oracles | `tests/test_virtual_casing_physics.py`, `vmex/core/virtual_casing.py`, `extender.py`, `docs/explanation/nestor-vacuum.rst`, `examples/vmex_get_B_outside_plasma.py` | tests for the vacuum identity outside, the interior identity inside and Malhotra on-surface parity; `B_plasma_xyz` returns achieved digits and a failed schedule raises or warns; the `d ≳ 2h` rule and the default grid documented; the example uses a grid that passes its own check |
 | A3 honest single stage | `examples/optimization/single_stage_optimization.py`, `single_stage_free_boundary_optimization.py` | seed with mean ι ≥ 0.3; ι and aspect as bounds or constraints (ESSOS augmented Lagrangian or `trust-constr`); QS normalized by ι; the objective jitted; the example meets its targets or fails loudly; a committed profile row exists for both examples |
 | A4 documentation truth | `README.md`, `docs/reference/performance.rst`, `docs/reference/objectives.rst`, `docs/explanation/adjoint-gradients.md`, `docs/howto/run-on-gpu.md`, `docs/howto/parameter-scans.md`, `docs/_static/figures/figures.json` | the 14.5-minute QA, 17.3-minute QI and 33× adjoint prose numbers either gain a record or go; the README qualifies the exterior field and GPU optimization; the orphaned extender figure is cited or removed; prose gate and cited-path test pass |
+| A5 external-corpus robustness | fetch the 23 decks where a VMEC-family peer strictly converged and VMEX did not (`atf*`, `bean14`, `belt20`, `c82vac20`, `qas14`, `w7s20`, `cooper`, `Q2_KINK`, `HSX_QHS`, `WISTELL-A`, W7-X `d23p4_tm`, `qhs46`, ITER hybrid), run them, and classify each failure as an INDATA feature not parsed, a Jacobian reset, an iteration budget or genuine non-convergence; fix only what the classification names | VMEX's strictly-converged count on the 344-case `itpplasma/benchmark_vmec` corpus reaches vmec2000's 179, from 168; no shipped deck regresses |
 | A5 robustness against the external corpus | the 23 named decks, then whatever the classification points at | `itpplasma/benchmark_vmec` runs 344 cases through twelve codes. VMEX is strictly converged on all 168 it reports — third in the VMEC family, ahead of VMEC++ at 157 — but 23 cases converge for a peer and not for VMEX (`atf*`, `bean14`, `belt20`, `c82vac20`, `qas14`, `w7s20`, `cooper`, `Q2_KINK`, `HSX_QHS`, `WISTELL-A`, W7-X `d23p4_tm`, `qhs46`, ITER hybrid). Fetch them, run them, classify each failure (INDATA feature not parsed / Jacobian reset / iteration budget / genuine non-convergence), and fix only what the classification shows. Gate: the strictly-converged count reaches vmec2000's 179, with no case regressing. Independent of B–F; after A1–A4 |
 
 ### Phase B, weeks 1–3: one certified solve per trial
@@ -228,7 +229,7 @@ attribution. One heavy local job at a time; the office box takes one.
 | B1 Newton finish | in `solver.py`/`implicit.py`: when `fsq` falls below a switch threshold, take matrix-free Newton–GCROT steps inside the descent (the `_newton_step` lane with exact JVPs and the true-residual check) so the returned state is a certified root; delete the separate refinement pass; value-only trials get the same root; #302's anchor contract folds in here | refinement is 51 % of a gradient call; drift 1.5 % → 6e-8 when refined | objective replay at a repeated `x` agrees to 1e-9 on the QI and single-stage cases; the joint phase exits without precision loss; gradient call ≤ 0.5× today; certificate values unchanged on the P1 matrix |
 | B2 warm starts everywhere | perturbation predictor into the free-boundary cache; rung skipping for `initial_state`; hot restart for CLI and `solve_file` sequences; `mode="jit"` inside the callback | 806 → 212 iterations at a 1e-4 move | iterations per accepted trial ≤ 0.3× cold on the QI example |
 | B3 exact block adjoint (measured on both decks: adjoint residual ≤ 1.2e-10 in one factorization, 300–5,000× cheaper than production with the Jacobian's factor reused, while B1's dense check puts the production Krylov error at 9e-6 (QA) to 3e-5 (QI); the 1.1e-3 QI gap between lanes is the raw-versus-preconditioned formulation at non-root anchors, which B3 aligns on the raw formulation), then Krylov recycling | on the seed deck the QI adjoint's GCROT stalls at 2.6e-5 and takes 13,228 iterations (78 s), while the raw block factorization is exact at the state, so first solve the adjoint by transposing that factorization together with the 1-D preconditioner (one direct solve; B1 is measuring it); keep GCROT as fallback and certifier; then return the adjoint's Krylov iteration count from compiled programs (A1's counters report `None` for every compiled adjoint, which covers scalar `minimize()` gradients); then warm-start λ across trials, reuse the GCROT deflation space across Newton and adjoint solves, and freeze the preconditioner in the matvec at the root | three solves of one operator per gradient today | adjoint matvecs per gradient ≤ 0.5×, measured by the returned count |
-| B4 compile hygiene | `x0` out of the jit key; configs keyed by content; one compile per resolution; persistent cache where jaxlib allows; the JAX value-and-gradient lane must reuse the host lane's executables instead of compiling its own | 102 compiles in a five-evaluation warm campaign; on the A1 rows (#310) the JAX value-and-gradient lane spends 41.6 s (QA) and 71.0 s (QI) compiling after the host derivative has already compiled, and builds take 244–500 XLA compiles | cold to first gradient ≤ 20 s CPU on the QI example; zero recompiles across `max_mode` stages; the second lane adds under 5 s of compile |
+| B4 compile hygiene | `x0` out of the jit key; configs keyed by content; one compile per resolution; persistent cache where jaxlib allows; the JAX value-and-gradient lane must reuse the host lane's executables instead of compiling its own | 102 compiles in a five-evaluation warm campaign; on the A1 rows (#310) the JAX value-and-gradient lane spends 41.6 s (QA) and 71.0 s (QI) compiling after the host derivative has already compiled, and builds take 244–500 XLA compiles  A per-module census of one `input.circular_tokamak` solve (2026-09-16) counts 152 XLA compilations for a 7.6 s cold solve whose warm repeat is 0.16 s: four named lanes (`_block_lane` twice, 2.49 s) and about 130 single eager ops, each compiling its own module — `broadcast_in_dim` 22, `multiply` 19, `copy` 17 — in `setup.py`, `solver.py:2345` (leaf-by-leaf carry copy) and `solver.py:914` (`_zero_cache`). A jitted whole-tree copy plus `device_put` of NumPy zeros takes it to 129. The persistent cache already halves the QA_lowres cold start across processes (20.3 s to 10.5 s) and cuts the single-stage gradient's compile from 49.8 s to 6.0 s, so what is left to attack is the 10 s of Python-side tracing. | cold to first gradient ≤ 20 s CPU on the QI example; zero recompiles across `max_mode` stages; the second lane adds under 5 s of compile |
 | B5 per-iteration constant | one bounded experiment (≤ 1 week), in this order: ms per iteration for VMEX and VMEC++ at 1, 2 and 4 threads; an HLO census of the iteration (ops, loops, loop trips; the CPU tridiagonal solve is two `lax.scan` Thomas sweeps, about 100 serial trips per iteration at ns = 50); a dispatch arm with a batched tridiagonal kernel; and only if the thread scaling shows headroom, `shard_map` with radial slabs and the tridiagonal solve split over modes, as VMEC++'s OpenMP does | 2.4 vs 0.9 ms per iteration; JAX's CPU thunk runtime has documented 2.5–14× regressions on many-small-kernel workloads and host devices share one thread pool | warm ns = 50 QA below 1.5 ms per iteration; the dispatch arm keeps iteration counts identical and the final state within 1e-12 relative; kill sharding below 1.25× on four devices or with collectives above 30 % of the iteration |
 
 ### Phase C, weeks 2–4: derivatives sized to the problem
@@ -254,7 +255,7 @@ attribution. One heavy local job at a time; the office box takes one.
 |---|---|---|
 | E0 level choice and per-period schedule | select schedule levels by #312's calibrated estimate instead of the double-layer self-test (which passes errors up to 0.30 at a 1e-4 tolerance), and scale the default levels by nfp (today the finest default level counts `2·nphi` toroidal points over the whole torus, so nfp = 5 with nphi = 32 gets 13 points per period); upstream in virtual_casing_jax, then VMEX's defaults | vacuum and interior identities on nfp = 2, 3 and 5 decks at the default grid meet the requested digits wherever `d ≥ 2h`; returned fields change only where the old level was under-resolved; cost per target recorded |
 | E1 equivalent-source exterior field | replace near-surface quadrature by a fit: point sources on a deflated interior surface (or the LCFS offset inward by ~0.25 a) plus the analytic net-current filament, fitted by least squares to the accurate on-surface partition-of-unity field on an upsampled grid (Stein–Barnett quadrature by fundamental solutions, [arXiv:2109.08802](https://arxiv.org/abs/2109.08802)); the field is then a smooth sum everywhere outside, uniform in `d`, spectral in the source count, differentiable through the on-surface data and the least-squares solve; the trapezoid rule stays beyond ~0.5 a; the fallback if the fit residual stalls is hedgehog extrapolation (p ≈ 8 trapezoid evaluations at ≥ 3h along the normal, [arXiv:2002.04143](https://arxiv.org/abs/2002.04143)) | vacuum identity ≤ 1e-5 for all `d ≥ 0.005 a` on the default grid (bounded by today's 2e-4 on-surface error until its parameters are raised); on-surface limit agrees with the partition-of-unity path; cost per target ≤ the source count in kernel evaluations, no fixed latency above 10 ms per call |
-| E2 tabulated field | (R,φ,Z) table through `MgridField.from_parameterized_cartesian_field`, divergence-cleaned interpolation, half-period symmetry; the Taylor plan retained below 0.2 a and the direct path above 0.5 a until E1 lands | field-line tracing outside the LCFS in seconds with a stated error; the `d ≳ 2h` rule enforced on the direct path |
+| E2 tabulated field | (R,φ,Z) table through `MgridField.from_parameterized_cartesian_field`, divergence-cleaned interpolation, half-period symmetry; the Taylor plan retained below 0.2 a and the direct path above 0.5 a until E1 lands | field-line tracing outside the LCFS in seconds with a stated error; the `d ≳ 2h` rule enforced on the direct path. The Taylor plan is **broken**, not merely approximate: measured 2026-09-16 at the default grid (finest 256x128, `h_tor` 0.030 m, `a` 0.077 m) it takes 416 s to prepare and returns ~1e-5 in magnitude at every distance while the direct field falls from 0.52 T at `d = 0.25h` to 4e-6 T at `4h`; at `3h` and `4h`, where the direct estimate is certified at 3.7e-08 and 1.7e-10, the two disagree by factors of 4 and 7, so the error is the continuation's. It carries no estimate of its own (`B_error_estimate` raises on it) and now warns in its docstring. Fix or withdraw it before E2 depends on it. |
 | E3 source data | LCFS covariant field from the NESTOR channel or the high-order state instead of the `1.5x[−1] − 0.5x[−2]` half-mesh extrapolation, once E1 exposes it | finite-β interior identity ≤ 1e-4 |
 
 ### Phase F, weeks 5–8: the free-boundary derivative
@@ -262,7 +263,7 @@ attribution. One heavy local job at a time; the office box takes one.
 | PR | change | gate |
 |---|---|---|
 | F-pre jit the free-boundary pullback | the free-boundary implicit pullback converts traced arrays to NumPy (`_solve_bwd_impl` → `_projected_residual` in `freeboundary_implicit.py`), so no free-boundary objective can be wrapped in `jax.jit` (found by A3, #311) | a jitted free-boundary objective's value and gradient match the eager path to 1e-12 relative on the CTH case |
-| F0 measure | warm split of one NESTOR call into Green's-function transform, kernel, mode-matrix assembly and LU on NCSX ns = 15 (flop counts put the LU near 5 %; VMEC++'s benchmark header says assembly and factorization dominate) | the measured split decides how much F1a can save before F1b |
+| F0 measure | warm split of one NESTOR call into Green's-function transform, kernel, mode-matrix assembly and LU on NCSX ns = 15 (flop counts put the LU near 5 %; VMEC++'s benchmark header says assembly and factorization dominate) | the measured split decides how much F1a can save before F1b. Baseline to beat, measured 2026-09-16 at ns = 15, mpol = ntor = 3: a free-boundary value-and-gradient costs 7.213 s against 0.174 s for the value alone, 41.5x, with 70.6 s of adjoint compile the first time in a process; the fixed-boundary equivalents are 1.91x (vacuum) and 5.87x (finite beta). F1b's 3x gate is 14x away. |
 | F1a linearize once | hoist the coupled linearization out of the host GCROT lane; land #299's saved-pullback commit as its own PR; replace `lu_factor`/`lu_solve` in the vacuum pressure with a `custom_linear_solve` (the cached-LU tangent `dpot = A⁻¹(db − dA·pot)` is exact) | transpose identity at 1e-11 and the NCSX adjoint value unchanged to 1e-10 relative; cold compile peak not above today's |
 | F1b edge response matrix | a linearized NESTOR matvec cannot reach 0.1× a forward call (reverse sweeps cost 1–3× the forward kernel), so build NESTOR's dense response to the edge rows, the axis and `ctor` once per gradient with forward-mode columns (about 100 edge columns plus a rank-1 `ctor` term); every coupled matvec and the whole edge Schur matrix then cost a dense multiply plus the existing batched sparse solve | response build ≤ 300 NESTOR-call equivalents; matvec ≤ 0.1× one NESTOR call; JVP against finite differences of the vacuum pressure at 1e-6; coupled-residual acceptance unchanged |
 | F2 Schur Krylov, fallback | only for `nedge > 512` or if F1b fails: GCROT on the edge Schur complement preconditioned by the previous optimizer iterate's Schur LU, with a persistent recycle space (`gcrotmk`'s `CU`, not passed today at `freeboundary_implicit.py:751, 894`) and a warm λ | mean preconditioned iterations ≤ `nedge`/5 on a recorded ten-iterate trajectory; with F1b, gradient ≤ 3× a forward solve at ns = 25 |
@@ -282,7 +283,18 @@ is the differentiable comparison: VMEX against VMEC++ 0.7.4 on cold, warm, hot
 and adjoint costs on named hardware, and against DESC's omnigenity
 time-to-metric, from `benchmarks/optimization.py` records; the three-way
 gradient comparison and the Taylor test of the 2026-09-06 plan then close on
-the fixed anchor. Then §5 resumes.
+the fixed anchor.
+
+A local four-code run on 2026-09-16 (one machine, one process per code) sets
+the scale that table has to record. `input.circular_tokamak`: VMEC2000 0.23 s,
+VMEC++ 1.20 s, VMEX 0.16 s warm and 7.6 s cold, DESC 24.3 s, all four at volume
+473.74101, and VMEX against VMEC++ wout by wout at 3.6e-16 on volume and
+1.2e-16 on `iotaf`. `input.LandremanPaul2021_QA_lowres` at an adequate
+iteration budget: VMEC2000 10.30 s, VMEC++ 11.12 s, VMEX 13.87 s warm and
+31.6 s cold, DESC 47.0 s, volume agreeing to eight figures. At the deck's
+shipped budget (`NITER_ARRAY = 600 1000 1000` against `FTOL 1e-13`) no
+VMEC-family code converges, VMEX included — so that deck measures the budget,
+not the code. Then §5 resumes.
 
 ### Kill rules and things not to repeat
 
@@ -1494,3 +1506,149 @@ round: #352, #353, #354, #355 and the two defects below.
   current GPU result.
 - **Next action.** Phase D (D1, a differentiable QI well location) as before,
   plus A5 for the 23-deck robustness backlog and the Phase G retarget above.
+
+
+**2026-09-16: 0.9.1, and where the cold seconds, the GPU failures and the
+gradient doubts actually are.** Merged #362 (`8db9c825`). ESSOS 0.17,
+`booz_xform_jax` 0.3.0 and solvax 0.22.0 are all on PyPI, so the coil examples
+install from PyPI and every floor the plan gates on is raisable. Measurements
+below are from this laptop (14 cores, JAX 0.11.1, x64) and from the office box
+(2x RTX A4000, driver 580.173, JAX 0.11.1 CUDA), with
+`VMEX_COMPILATION_CACHE=disabled` where a cold compile is the subject.  Both
+machines carried other jobs, so wall times are upper bounds; byte counts,
+error estimates and ratios are not affected.
+
+- **Optimization gradients could not be compiled on any machine with a GPU
+  (fixed).** `resolve_implicit_device` stands the implicit path down to the CPU
+  on an accelerator backend, `_callback_sharding` pinned the host callback
+  there, and JAX requires a pinned device to appear in the enclosing
+  computation's device assignment -- which for a jit compiled on a GPU box is
+  `[cuda:0]`. All three ways of asking (default placement,
+  `jax.default_device(gpu)`, `vmex device_scope("gpu")`) died in JAX's lowering
+  with `ValueError: tuple.index(x): x not in tuple`, no VMEX frame; the same
+  program under `JAX_PLATFORMS=cpu` returned `f = 8.2959e-11`. JAX catches
+  `IndexError` there where `tuple.index` raises `ValueError`, so its own
+  actionable message never printed -- worth an upstream issue. The pin is now
+  applied only within one platform.
+- **The GPU loses on both shipped decks, including the one the policy
+  recommends for it.** Office, one process per row, peak device memory from the
+  allocator's own counter with preallocation off:
+
+  | deck | CPU cold | CPU warm | GPU cold | GPU warm | peak device |
+  |---|---|---|---|---|---|
+  | `circular_tokamak` | 6.74 s | 0.22 s | 12.82 s | 1.19 s | 0.16 GiB |
+  | `QA_lowres` | 16.99 s | 6.20 s | 35.96 s | 6.91 s | 0.16 GiB |
+
+  `recommended_device` answers `gpu` for `QA_lowres` (work proxy 1,536,000
+  against a 100,000 threshold), and on this hardware that is the wrong answer
+  cold and warm. The full sweep then settled it
+  (`benchmarks/gpu_a4000_2026-09-16.json`, `run_gpu_matrix.py --skip-tridiag`):
+  **the GPU wins no cell**, warm gain 0.17x (solovev) to 0.83x
+  (`NuhrenbergZille_1988_QHS`, the largest case at 111 s of warm CPU work and
+  the very deck the July baseline claimed up to 3x for), with the synthetic
+  `ns` x `mnmax` scan walking from ns 35 to 151 without crossing over. So
+  `GPU_MIN_ITERATION_WORK` is not merely mis-tuned here: the crossover it
+  encodes does not exist on this hardware and JAX version. Do not move the
+  constant on one machine -- the July numbers were honestly measured on
+  another; the how-to now carries both, and the work package is a
+  hardware-labelled policy rather than a single global threshold.
+- **No terabyte anywhere.** Single-stage finite-beta value-and-gradient at
+  ns = 15, mpol = 5, 24 dof: peak device 0.16 GiB, peak host 3.17 GiB on
+  office and 2.2-2.5 GiB on the laptop, largest single traced intermediate
+  7.7 MiB out of 148,500 equations. The full example at its shipped settings
+  finishes in 900 s and 3.8 GB, driving the total objective 31.66 -> 4.06 over
+  eight accepted iterations. The peak is XLA's *compile* working set, as
+  `implicit.py:1137` already says.
+- **The single-stage compile is already an 8x once-per-machine cost.** Same
+  gradient, two processes sharing a persistent cache: process 1 trace+lower
+  14.1 s, compile 49.8 s, run 19.5 s; process 2 trace+lower 10.1 s, compile
+  **6.0 s**, run 5.4 s (380 entries, 12 MB). So the 50-70 s compile is paid
+  once per machine, not once per run, and what is left to attack is the 10 s of
+  Python-side tracing, which no cache can help.
+- **Cold start is compilation, and a third of it is incidental.** A per-module
+  census of one `input.circular_tokamak` solve counts **152 XLA compilations**
+  (7.1 s) for a 7.6 s cold solve whose warm repeat is 0.16 s. Four are named
+  lanes (`_block_lane` twice, 2.49 s, one per rung); the other ~130 are single
+  eager JAX ops, each compiling its own module -- `broadcast_in_dim` 22,
+  `multiply` 19, `copy` 17, `where` 8 -- in `setup.py`, `solver.py:2345`
+  (leaf-by-leaf carry copy) and `solver.py:914` (`_zero_cache`). A two-change
+  prototype (one jitted whole-tree copy, `device_put` of NumPy zeros) takes 152
+  to 129 without touching physics. `QA_lowres` compiles 230 modules. This is
+  B4's target, now with line numbers.
+- **Four codes, same decks, same machine, one process each.**
+  `input.circular_tokamak`: VMEC2000 0.23 s, VMEC++ 1.20 s, VMEX 0.16 s warm
+  and 7.6 s cold, DESC 24.3 s -- all four at volume 473.74101, and VMEX against
+  VMEC++ wout by wout at 3.6e-16 on volume, 1.0e-15 on aspect, 1.2e-16 on
+  `iotaf`, 4.7e-12 on `jcuru`. At `QA_lowres`'s shipped
+  `NITER_ARRAY = 600 1000 1000` against `FTOL 1e-13`, **no VMEC-family code
+  converges** -- VMEC2000 `ierr=2`, VMEC++ raises, VMEX `ier_flag 2` at FSQ
+  2.63e-13. Raised to 2000/4000/8000 all three converge: VMEC2000 10.30 s,
+  VMEC++ 11.12 s, VMEX 13.87 s warm and 31.6 s cold (`ier 11`, 1115
+  iterations, FSQ 9.92e-14), DESC 47.0 s, volume agreeing to eight figures.
+- **The free-boundary adjoint is right; its certification was not.** Fixed
+  boundary certifies at **1.09e-07** against a central difference; free boundary
+  stopped at 1.06e-02 on the same script, which reads as a 1 % gradient error.
+  Sweeping the step at ftol 1e-10: 1e-2 -> 3.22e-02, 1e-3 -> 5.04e-02,
+  1e-4 -> -9.84e-02, 1e-5 -> -2.18e+01. It changes sign and diverges by three
+  orders as the step shrinks -- noise, not a systematic offset. The two adjoint
+  solvers **agree to 9.67e-05** (coupled GCROT 2.23693204e-02, `boundary_schur`
+  2.23671581e-02), which closes the arbitration the F series wanted. The
+  example now certifies against the second adjoint and prints 1.57e-04 at its
+  shipped settings.
+- **Gradient cost, steady state** (ns = 15, mpol = ntor = 3): fixed vacuum
+  **1.91x** the value, fixed finite beta **5.87x**, free boundary **41.5x**.
+  First adjoint in a process costs 20.8 s, 11.5 s and 70.6 s to compile. F1b's
+  3x gate is 14x away.
+- **`booz_xform_jax` is not a bottleneck; the exterior field's default grid
+  was.** Boozer transform of 8 surfaces, warm: 16 ms at mboz/nboz 16/12, 33 ms
+  at 24/18, 58 ms at 32/24. Virtual casing costs ~0.45 s per call *independent
+  of target count* to 1024 (4096 targets, 0.84 s), so batch targets and never
+  loop. `from_wout` hard-coded `nphi=ntheta=32`, and `from_surface_data`
+  treated a per-period sampling as a full-torus level count; on the shipped QA
+  wout the achieved error one minor radius off the boundary was **2.46e-02
+  against a requested 1e-6**. Sizing the grid from the geometry and carrying
+  the `nfp` factor, with the poloidal count following the toroidal one, gives
+  **4.31e-07** at one minor radius and 5.05e-07 at two, at **0.116 s per call
+  against 0.226 s** -- more accurate and no slower (the coarse grid fails its
+  own self-test and the adaptive schedule then does more work, so the finer
+  default measured faster; the mechanism is inferred, the two timings are not). Calibration (finest level, source points,
+  error at `d = a`): (32,32) 128x64, 8,192, 6.4e-04; (64,32) 256x64, 16,384,
+  7.1e-06; (64,64) 256x128, 32,768, 4.3e-07; (96,48) 384x96, 36,864, 1.4e-08;
+  (128,64) 512x128, 65,536, 3.5e-11. Poloidal beyond 64 buys nothing
+  ((64,96) repeats (64,64) exactly), which is why the rule pairs the two.
+- **Force-balance polishing is not the five-minute item.** The shaped tokamak:
+  `solve_file` (equilibrium + polish + WOUT export) 114.2 s of which the polish
+  itself is 55.8 s over 3 nonlinear iterations, certified, eps_F volume L2
+  1.284e-02 -> 1.820e-03; `plot_wout` is 12.2 s per figure set. The example
+  reads as 312 s because it renders two full sets and pays a cold compile --
+  the same script on a warm cache is 114 s + plots, and 82.1 s on a third run.
+  The stellarator is the one that is genuinely long:
+  `input.finite_beta_stellarator_polished` takes **328.0 s** for solve plus
+  polish, certified. So "over five minutes for a single run" is true of the
+  finite-beta stellarator and not of the tokamak.
+- **Repo-size audit, by reference rather than by size.** 9.9 MB tracked across
+  607 files, so this is a file-count and organization question, not a byte one:
+  `tests` 133, `benchmarks` 131, `examples` 123, `docs` 100, `vmex` 79,
+  `tools` 17, root 12, `assets` 1. Four files were referenced by nothing and are
+  gone (the QI sheet-current mgrid builder, a repo census carrying branch and PR
+  counts, a stale profile record, and the pre-commit config, which duplicated
+  `tools/preflight.py` with a separately pinned ruff and a 200 kB file cap the
+  tracked tree already exceeds). Everything else in `tools/` is referenced --
+  `fetch_assets.py` 23 times and in three workflows, `test_manifest.py` in four
+  -- and `assets/manifest.json` is read by eight places including `MANIFEST.in`,
+  so the one-file directory stays.
+- **`benchmarks/baselines/m4/` should NOT be consolidated.** It is 54 files,
+  8.7 % of the tree, and nothing reads them programmatically -- so merging them
+  into one keyed record looks like the biggest available win. It is not:
+  `profile_workflows.py` writes `{workflow}_{regime}.json` one cell at a time
+  and re-executes itself in a subprocess for the cold regimes, so one file per
+  cell is what lets a partial run on a shared machine keep its completed cells.
+  Consolidating would trade that for a cosmetic count. The file count there is a
+  consequence of a sound design; leave it.
+- **21 of 66 shipped examples were run by no test and nothing said so.**
+  `tests/test_examples.py` now parses every example and requires each to be
+  named by a test or listed in `UNTESTED_EXAMPLES` with a reason. The QH, QI and
+  QP entries drive the same code as a tested QA sibling, which is the reason
+  they are exempt rather than uncovered. `take_fixed_boundary_gradients.py` got
+  a test instead of an exemption: 5.0e-06 at the smoke settings against 1.1e-07
+  at the shipped ones.

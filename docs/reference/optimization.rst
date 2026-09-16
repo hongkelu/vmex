@@ -798,7 +798,7 @@ methods are optional alternatives; coupled_gcrot remains the default.
 Strict accepted-state examples
 ------------------------------
 
-``example/m=3n=3iota=0p2/run.py`` uses the existing reverse-GCROT backend.
+``examples/m=3n=3iota=0p2/run.py`` uses the existing reverse-GCROT backend.
 ``make_free_boundary_continuation_config_from_state`` imports an equilibrium
 with explicit constraint baselines and freshly certifies it without invoking
 an equilibrium solver. ``certify_free_boundary_continuation_state`` returns

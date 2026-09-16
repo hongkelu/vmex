@@ -10,7 +10,7 @@ import pytest
 from vmex.core import freeboundary_implicit as fbi
 from vmex.core.errors import AdjointSolveError
 
-CASE = Path(__file__).resolve().parents[1]/'example/m=3n=3iota=0p2'
+CASE = Path(__file__).resolve().parents[1]/'examples/m=3n=3iota=0p2'
 spec=importlib.util.spec_from_file_location('m3n3_optimization',CASE/'optimization.py')
 opt=importlib.util.module_from_spec(spec);spec.loader.exec_module(opt)
 

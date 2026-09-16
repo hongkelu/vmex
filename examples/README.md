@@ -129,3 +129,7 @@ unless they are compact reviewed documentation artifacts.
 
 Published-equilibrium comparisons and reproducibility studies belong in
 `../benchmarks/`, not among the user-facing optimization examples.
+
+## M3/N3 single-stage cases
+
+- [m=3n=3iota=0p2](m=3n=3iota=0p2/README.md)

@@ -1,18 +1,14 @@
-# Runtime update: 2026-09-15
+# Runtime update: 2026-09-16
 
-The active case uses VMEX main `5c69195ff1045a6c7b9acc0708724c3b04b967ab` (0.9.0), including
-upstream `8db9c825`. New runs verify all 78 VMEX Python files.
-The optimizer default now accepts only `FSQ / forward_ftol <= 100`.
-Only `core/optimize.py` changed relative to the previous active runtime.
-Free-boundary solver and adjoint implementations are unchanged.
+The active case uses VMEX main `345f940c56264dc2a66c95b0201330283cc5241d` (0.9.1), including
+upstream `ef88081f`. New runs verify all 78 VMEX Python files.
+Only `core/implicit.py` (cross-platform callback placement) and
+`core/extender.py` (exterior-field source sampling) changed from the previous pin.
+Free-boundary solver and adjoint implementations and acceptance thresholds remain intact.
 
-The prior manifest is preserved byte-for-byte in `runtime_manifest.0bc787b72917.json`.
-`runtime_migration.json` records this transition; the earlier migration record
-and original d6910b428841 manifest are also retained.
-
-Input hashes, physical targets, case acceptance tolerances, historical results
-and frozen source snapshots are unchanged. Historical numerical or physical
-qualification does not qualify this runtime. Resume still requires the existing
-fresh certification of the exact saved state and restoration checks; a failure
-must stop the run. No acceptance threshold was relaxed. Repeat numerical and
-physical qualification before treating a new trajectory as validated.
+The previous manifest is retained byte-for-byte in `runtime_manifest.5c69195ff104.json`;
+`runtime_migration.json` records this update and earlier migrations remain archived.
+ESSOS 0.17 supplies the released coil API. Inputs, physical targets, checkpoints
+and historical results are preserved. Resuming still requires fresh certification
+of the exact saved state and restoration checks. A failure must stop the run;
+no prior qualification transfers to this runtime.

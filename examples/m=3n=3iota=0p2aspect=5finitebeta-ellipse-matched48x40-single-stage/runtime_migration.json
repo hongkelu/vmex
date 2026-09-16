@@ -1,15 +1,16 @@
 {
   "schema": "vmex.runtime-migration/v1",
-  "previous_commit": "0bc787b72917371ab122f76e870e1cf6ab141102",
-  "current_commit": "5c69195ff1045a6c7b9acc0708724c3b04b967ab",
-  "previous_manifest": "runtime_manifest.0bc787b72917.json",
-  "previous_manifest_sha256": "9c5294f5671bbb4d9f3feb621b8f291b052a59b37fe350e40724076786080503",
-  "previous_migration": "runtime_migration.d6910b428841-to-0bc787b72917.json",
+  "previous_commit": "5c69195ff1045a6c7b9acc0708724c3b04b967ab",
+  "current_commit": "345f940c56264dc2a66c95b0201330283cc5241d",
+  "previous_manifest": "runtime_manifest.5c69195ff104.json",
+  "previous_manifest_sha256": "518cb6ebc526429eb66f1c64c6093c52acb339f4c64240aeda98f2cfd52f2cbf",
+  "previous_migration": "runtime_migration.before-0.9.1.json",
   "changed_runtime_files": [
-    "core/optimize.py"
+    "core/extender.py",
+    "core/implicit.py"
   ],
-  "upstream_commit": "8db9c825d10f5a4c454a5cfd0f2417e107d38e1b",
-  "scope": "Active case runtime only. Upstream optimizer entry points now default max_fsq_ratio to 100 instead of 1e6. Free-boundary solver and adjoint source are unchanged.",
+  "upstream_commit": "ef88081fc718d36d997d87a3fece79871560ddce",
+  "scope": "VMEX 0.9.1 callback placement and exterior-field sampling fixes. Active runtime only; all historical results and source snapshots retained.",
   "physical_qualification": false,
-  "resume_policy": "Authenticated saved state must pass the existing fresh certification and exact restoration checks under the new runtime. No historical qualification is transferred."
+  "resume_policy": "Authenticated saved state must pass existing fresh certification and exact restoration checks; historical qualification is not transferred."
 }

@@ -1,0 +1,15 @@
+{
+  "schema": "vmex.runtime-migration/v1",
+  "previous_commit": "0bc787b72917371ab122f76e870e1cf6ab141102",
+  "current_commit": "5c69195ff1045a6c7b9acc0708724c3b04b967ab",
+  "previous_manifest": "runtime_manifest.0bc787b72917.json",
+  "previous_manifest_sha256": "9c5294f5671bbb4d9f3feb621b8f291b052a59b37fe350e40724076786080503",
+  "previous_migration": "runtime_migration.d6910b428841-to-0bc787b72917.json",
+  "changed_runtime_files": [
+    "core/optimize.py"
+  ],
+  "upstream_commit": "8db9c825d10f5a4c454a5cfd0f2417e107d38e1b",
+  "scope": "Active case runtime only. Upstream optimizer entry points now default max_fsq_ratio to 100 instead of 1e6. Free-boundary solver and adjoint source are unchanged.",
+  "physical_qualification": false,
+  "resume_policy": "Authenticated saved state must pass the existing fresh certification and exact restoration checks under the new runtime. No historical qualification is transferred."
+}

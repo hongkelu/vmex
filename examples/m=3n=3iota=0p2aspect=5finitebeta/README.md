@@ -54,7 +54,7 @@ Force and edge tolerances are 1e-10, the projected-root gate is 2e-6, and the fo
 Use a project environment containing JAX, Solvax, ESSOS, NumPy and the plotting/WOUT dependencies. The VMEX source at this branch's base matches the pinned runtime. From the repository root, with ESSOS installed in the environment or its source directory already on PYTHONPATH:
 
 ```sh
-case_dir="example/m=3n=3iota=0p2aspect=5finitebeta"
+case_dir="examples/m=3n=3iota=0p2aspect=5finitebeta"
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_ENABLE_X64=1
 export PYTHONDONTWRITEBYTECODE=1

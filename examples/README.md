@@ -133,3 +133,7 @@ Published-equilibrium comparisons and reproducibility studies belong in
 ## M3/N3 single-stage cases
 
 - [m=3n=3iota=0p2](m=3n=3iota=0p2/README.md)
+
+- [m=3n=3iota=0p2aspect=5finitebeta](m=3n=3iota=0p2aspect=5finitebeta/README.md)
+
+- [m=3n=3iota=0p2aspect=5fresh](m=3n=3iota=0p2aspect=5fresh/README.md)

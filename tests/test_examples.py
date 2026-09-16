@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -30,7 +29,7 @@ _COST_RE = re.compile(r"^\s*\d+\s+\d+\s+([0-9.eE+-]+)", re.MULTILINE)
 _SCALAR_COST_RE = re.compile(
     r"optimizer scalar cost:\s*([0-9.eE+-]+)\s*->\s*([0-9.eE+-]+)")
 
-ESSOS_BRANCH_EXAMPLES = (
+ESSOS_COIL_EXAMPLES = (
     EXAMPLES / "take_free_boundary_gradients.py",
     EXAMPLES / "vmex_fixed_free_boundary_comparison.py",
     EXAMPLES / "vmex_get_B_outside_plasma.py",
@@ -60,38 +59,112 @@ def test_released_essos_reads_bundled_coil_fixtures() -> None:
         assert np.all(np.isfinite(np.asarray(coils.currents)))
 
 
-def test_essos_examples_name_the_required_branch() -> None:
-    """ESSOS 0.16 reports the commit to install, not a missing symbol."""
-    pytest.importorskip("essos")
+def test_coil_examples_need_only_the_pinned_essos_release() -> None:
+    """Every coil example runs on the ESSOS the ``coils`` extra installs.
+
+    These examples used to raise with a ``pip install essos @ git+...`` line
+    because the API they need (uwplasma/ESSOS#58) was unreleased. ESSOS 0.17
+    carries it, the extra pins that floor, and the instruction is gone -- so
+    what has to stay true is that the floor and the API agree.
+    """
+    import tomllib
+    from importlib.metadata import version
+
+    from packaging.version import Version
+
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    coils = pyproject["project"]["optional-dependencies"]["coils"]
+    assert coils == ["essos>=0.17"], coils
+
+    for script in ESSOS_COIL_EXAMPLES:
+        text = script.read_text()
+        assert "git+https://github.com/uwplasma/ESSOS" not in text, script.name
+
+    essos = pytest.importorskip("essos")
+    assert Version(version("essos")) >= Version("0.17"), version("essos")
     from essos.coils import Coils
+    from essos.dynamics import LevelsetStoppingCriterion, trace_field_lines
+    from essos.objective_functions import (
+        loss_coil_separation,
+        loss_coil_surface_distance,
+    )
+    from essos.surfaces import surfacerzfourier_from_boundary
 
-    try:
-        from essos.dynamics import LevelsetStoppingCriterion, trace_field_lines
-        from essos.objective_functions import (
-            loss_coil_separation,
-            loss_coil_surface_distance,
-        )
-        from essos.surfaces import surfacerzfourier_from_boundary
-    except ImportError:
-        has_branch_api = False
-    else:
-        del (LevelsetStoppingCriterion, trace_field_lines,
-             loss_coil_separation, loss_coil_surface_distance,
-             surfacerzfourier_from_boundary)
-        has_branch_api = all(
-            hasattr(Coils, name)
-            for name in ("from_json", "with_dofs", "dof_names")
-        )
-    if has_branch_api:
-        pytest.skip("the required ESSOS branch API is installed")
+    del (essos, LevelsetStoppingCriterion, trace_field_lines,
+         loss_coil_separation, loss_coil_surface_distance,
+         surfacerzfourier_from_boundary)
+    for name in ("from_json", "with_dofs", "dof_names"):
+        assert hasattr(Coils, name), name
 
-    for script in ESSOS_BRANCH_EXAMPLES:
-        with pytest.raises(
-            ImportError,
-            match=(r"needs ESSOS with uwplasma/ESSOS#58.*"
-                   r"essos @ git\+https://github\.com/uwplasma/ESSOS@1b3210ca34efaceec09272aa29599c9788c4ec35"),
-        ):
-            runpy.run_path(str(script))
+
+#: Shipped examples that no test runs, each with the reason it is exempt.
+#: The QH, QI and QP entries drive the same code as a tested QA sibling on a
+#: different symmetry class, so the driver is covered and only the deck is not.
+#: Keeping the list explicit is what makes the gap reviewable: a new example
+#: that nothing tests fails the guard below until it is either tested or
+#: listed here on purpose.
+UNTESTED_EXAMPLES = {
+    "examples/mirror/pleiades_mirror_reference.py": "needs an unshipped reference deck",
+    "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py": "mirror hybrid, covered by tests/mirror",
+    "examples/mirror/stellarator_mirror_hybrid.py": "mirror hybrid, covered by tests/mirror",
+    "examples/optimization/QA_optimization_bootstrap.py": "bootstrap driver covered by tests/test_bootstrap.py",
+    "examples/optimization/QH_optimization_bootstrap.py": "QA sibling is tested",
+    "examples/optimization/QH_optimization_finite_beta_scalar.py": "QA sibling is tested",
+    "examples/optimization/QH_optimization_scalar.py": "QA sibling is tested",
+    "examples/optimization/QI_optimization_bootstrap.py": "QA sibling is tested",
+    "examples/optimization/QI_optimization_finite_beta_scalar.py": "QA sibling is tested",
+    "examples/optimization/QI_optimization_scalar.py": "QA sibling is tested",
+    "examples/optimization/QP_optimization.py": "QA sibling is tested",
+    "examples/optimization/QP_optimization_finite_beta_scalar.py": "QA sibling is tested",
+    "examples/optimization/QP_optimization_scalar.py": "QA sibling is tested",
+    "examples/optimization/QP_optimization_scipy.py": "QA sibling is tested",
+    "examples/optimization/stellarator_asymmetry/QA_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
+    "examples/optimization/stellarator_asymmetry/QH_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
+    "examples/optimization/stellarator_asymmetry/QI_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
+    "examples/optimization/stellarator_asymmetry/QP_optimization.py": "asymmetric variants share the symmetric drivers",
+    "examples/optimization/stellarator_asymmetry/QP_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
+    "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
+}
+
+
+def _shipped_examples() -> list[Path]:
+    return sorted(p for p in EXAMPLES.rglob("*.py") if not p.name.startswith("_"))
+
+
+def test_every_example_parses() -> None:
+    """Every shipped example compiles.
+
+    Cheap, and it catches the class of damage an edit across many examples can
+    do -- a removed import guard, a stranded ``except`` -- without running any
+    of them.
+    """
+    import ast
+
+    for script in _shipped_examples():
+        try:
+            ast.parse(script.read_text(), filename=str(script))
+        except SyntaxError as error:  # pragma: no cover - the failure is the point
+            raise AssertionError(f"{script.relative_to(REPO)}: {error}") from error
+
+
+def test_every_example_is_tested_or_listed_as_untested() -> None:
+    """No example is uncovered by accident."""
+    # The UNTESTED_EXAMPLES entries above are themselves test source, so drop
+    # those lines before searching or every listed example would look covered.
+    tests_text = "\n".join(
+        line
+        for path in sorted((REPO / "tests").rglob("test_*.py"))
+        for line in path.read_text().splitlines()
+        if not line.lstrip().startswith('"examples/'))
+    uncovered = {
+        str(script.relative_to(REPO))
+        for script in _shipped_examples()
+        if script.name not in tests_text
+    }
+    assert uncovered == set(UNTESTED_EXAMPLES), {
+        "missing a test or an entry": sorted(uncovered - set(UNTESTED_EXAMPLES)),
+        "listed but now tested": sorted(set(UNTESTED_EXAMPLES) - uncovered),
+    }
 
 
 def _run_example(script: Path, cwd: Path, timeout: int = 2400,
@@ -265,11 +338,32 @@ def test_free_boundary_mgrid(tmp_path):
     assert (tmp_path / "output_free_boundary_mgrid" / "wout_cth_like_free_bdy.nc").exists()
 
 
-@pytest.mark.full  # one free solve, coupled adjoint, and two independent re-solves
+@pytest.mark.full  # one fixed solve, its adjoint, and two re-solves for the FD
+def test_take_fixed_boundary_gradients(tmp_path):
+    """The fixed-boundary counterpart certifies against a difference quotient.
+
+    Unlike the free boundary, a fixed-boundary re-solve follows the same path,
+    so the quotient is usable: at the shipped settings the example reports
+    1.1e-07, and the smoke settings (ns 11, mpol 3, ftol 1e-9) stay well inside
+    the bound below.
+    """
+    out = _run_example(EXAMPLES / "take_fixed_boundary_gradients.py", tmp_path,
+                       timeout=900)
+    match = re.search(r"relative error = ([0-9.eE+-]+)", out)
+    assert match is not None, out[-2000:]
+    assert float(match.group(1)) < 1.0e-3, out[-2000:]
+
+
+@pytest.mark.full  # one free solve and both adjoint solvers
 def test_take_free_boundary_gradients(tmp_path):
     pytest.importorskip("essos")
     out = _run_example(EXAMPLES / "take_free_boundary_gradients.py", tmp_path, timeout=900)
-    match = re.search(r"relative error = ([0-9.eE+-]+)", out)
+    # The certificate is the two independent adjoint solvers agreeing, not the
+    # difference quotient: on a free boundary the quotient changes sign as the
+    # step shrinks.  The smoke settings run at ftol 1e-7, where the equilibrium
+    # is not a tight enough root for better than ~2e-2; the shipped settings
+    # give 1.6e-04.
+    match = re.search(r"they differ by ([0-9.eE+-]+)", out)
     assert match is not None and float(match.group(1)) < 3.0e-2
 
 

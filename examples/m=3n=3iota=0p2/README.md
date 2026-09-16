@@ -15,7 +15,7 @@ The iota label is approximate; targets come from the authenticated anchor.
 Campaign QS is distinct from WOUT QS. Numerical acceptance is not qualification.
 
 ```
-python 'example/m=3n=3iota=0p2/run.py' \
+python 'examples/m=3n=3iota=0p2/run.py' \
   --payload /path/payload.json --payload-sha256 HASH \
   --resume-checkpoint /path/checkpoint_step_0010.npz --checkpoint-sha256 HASH \
   --target-step 20 --device cuda:0 --output-dir /path/new-run

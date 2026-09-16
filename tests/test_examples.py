@@ -147,6 +147,20 @@ def test_every_example_parses() -> None:
             raise AssertionError(f"{script.relative_to(REPO)}: {error}") from error
 
 
+# Fork research cases have separate case suites and frozen provenance snapshots.
+# Keep their support modules out of the standalone-example coverage registry;
+# test_every_example_parses still checks their syntax. New unlisted roots remain
+# subject to the registry, so adding another case requires an explicit decision.
+RESEARCH_CASE_ROOTS = {
+    "m=3n=3iota=0p2",
+    "m=3n=3iota=0p2aspect=5angular48x40",
+    "m=3n=3iota=0p2aspect=5finitebeta",
+    "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40",
+    "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage",
+    "m=3n=3iota=0p2aspect=5fresh",
+}
+
+
 def test_every_example_is_tested_or_listed_as_untested() -> None:
     """No example is uncovered by accident."""
     # The UNTESTED_EXAMPLES entries above are themselves test source, so drop
@@ -159,7 +173,8 @@ def test_every_example_is_tested_or_listed_as_untested() -> None:
     uncovered = {
         str(script.relative_to(REPO))
         for script in _shipped_examples()
-        if script.name not in tests_text
+        if script.relative_to(EXAMPLES).parts[0] not in RESEARCH_CASE_ROOTS
+        and script.name not in tests_text
     }
     assert uncovered == set(UNTESTED_EXAMPLES), {
         "missing a test or an entry": sorted(uncovered - set(UNTESTED_EXAMPLES)),

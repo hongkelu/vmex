@@ -61,7 +61,7 @@ From the repository root, with an authorized GPU selected:
 ```sh
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_ENABLE_X64=1
-case_dir='example/m=3n=3iota=0p2aspect=5angular48x40'
+case_dir='examples/m=3n=3iota=0p2aspect=5angular48x40'
 python -B "$case_dir/run.py" --initialize-only --target-step 10 \
   --device cuda:0 --max-wall-hours 1 --output-dir "$case_dir/outputs/initial"
 ```

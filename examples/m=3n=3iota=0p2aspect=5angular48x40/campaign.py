@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse,collections,csv,datetime,fcntl,hashlib,io,json,math,os,shutil,subprocess,sys,time
 ROOT=Path(__file__).resolve().parent
 SOURCE=ROOT/'source'
-CASE_REL='example/m=3n=3iota=0p2aspect=5angular48x40'
+CASE_REL='examples/m=3n=3iota=0p2aspect=5angular48x40'
 PYTHON=str(ROOT/'venv/bin/python')
 ESSOS=str(ROOT/'external/ESSOS')
 GPU='GPU-da1ee515-5328-d768-95bc-4fbe4817911e'

@@ -6,9 +6,9 @@ that script after adding, moving or re-measuring anything under
 missing from this file, when a path named here does not exist, and when a
 grouped directory holds a different number of files than the count below.
 
-93 committed artifacts: 39 standalone records and 1 grouped directory holding
-54 files. 35 of the 40 entries below are cited by a page, a test or another
-script; 5 are cited by nothing.
+92 committed artifacts: 38 standalone records and 1 grouped directory holding
+54 files. 36 of the 39 entries below are cited by a page, a test or another
+script; 3 are cited by nothing.
 
 `commit` is the revision recorded inside the artifact (short form) and
 `date` its recorded measurement date; both are blank where the schema of
@@ -29,29 +29,28 @@ hand rather than by a script in this tree.
 | `benchmarks/freeboundary_multigrid.json` | `benchmarks/run_freeboundary_multigrid.py` | `b0cc789e` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
 | `benchmarks/fresh_decks_vs_vmec2000_2026-09-02.json` |  | `8ef81c44` | 2026-09-02 | `docs/explanation/validation.md`, `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
 | `benchmarks/fresh_decks_vs_vmec2000_2026-09-02.md` |  |  |  | *nothing* |
-| `benchmarks/gpu_baseline.json` | `benchmarks/run_gpu_matrix.py` | `a324f503` | 2026-07-09 | `benchmarks/make_readme_figures.py`, `docs/_static/figures/figures.json`, `docs/explanation/architecture.rst`, `docs/explanation/validation.md`, `docs/howto/run-on-gpu.md`, `docs/reference/performance.rst`, `tests/test_performance_docs.py`, `vmex/core/__init__.py`, `vmex/core/device.py` |
+| `benchmarks/gpu_a4000_2026-09-16.json` | `benchmarks/run_gpu_matrix.py` | `5ee94c93` | 2026-09-16 | `CHANGELOG.md`, `docs/howto/run-on-gpu.md`, `plan.md` |
+| `benchmarks/gpu_baseline.json` | `benchmarks/run_gpu_matrix.py` | `a324f503` | 2026-07-09 | `benchmarks/gpu_a4000_2026-09-16.json`, `benchmarks/make_readme_figures.py`, `docs/_static/figures/figures.json`, `docs/explanation/architecture.rst`, `docs/explanation/validation.md`, `docs/howto/run-on-gpu.md`, `docs/reference/performance.rst`, `tests/test_performance_docs.py`, `vmex/core/__init__.py`, `vmex/core/device.py` |
 | `benchmarks/high_mode_fft.json` | `benchmarks/run_high_mode_fft.py` | `ecfbe31d` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
 | `benchmarks/mirror_fixed_boundary.json` |  | `e02dcea7` |  | `benchmarks/capabilities.json`, `docs/_static/figures/figures.json`, `docs/explanation/mirror-geometry.rst`, `docs/reference/capabilities.rst`, `tests/mirror/test_output.py` |
 | `benchmarks/mirror_free_boundary_axisymmetric.json` |  | `d4f56dae` |  | `benchmarks/capabilities.json`, `docs/_static/figures/figures.json`, `docs/explanation/mirror-geometry.rst`, `docs/reference/capabilities.rst`, `tests/mirror/test_output.py`, `tests/test_capability_docs.py` |
 | `benchmarks/mirror_free_boundary_nonaxisymmetric.json` |  | `f9eb6a44` |  | `benchmarks/capabilities.json`, `docs/explanation/mirror-geometry.rst`, `docs/reference/capabilities.rst`, `tests/mirror/test_output.py` |
 | `benchmarks/mirror_hybrid_fixed_boundary.json` |  | `56d7c4b7` |  | `benchmarks/capabilities.json`, `docs/_static/figures/figures.json`, `docs/explanation/mirror-geometry.rst`, `docs/reference/capabilities.rst`, `tests/mirror/test_output.py` |
 | `benchmarks/newton_finish_arms_20260913.json` | `benchmarks/newton_finish_arms.py` | `eb9d0376` | 2026-09-13 | `plan.md`, `vmex/core/implicit.py` |
-| `benchmarks/optimization_counters_20260913.json` | `benchmarks/optimization.py` | `142d6c92` | 2026-09-13 | `CHANGELOG.md`, `plan.md` |
+| `benchmarks/optimization_counters_20260913.json` | `benchmarks/optimization.py` | `142d6c92` | 2026-09-13 | `plan.md` |
 | `benchmarks/polish3d_tuning.md` |  |  |  | `docs/explanation/validation.md`, `docs/reference/api/advanced.rst`, `vmex/core/polish_driver.py` |
 | `benchmarks/polish_cost_office.json` | `benchmarks/polish_cost.py` | `529f1789` |  | `docs/reference/performance.rst` |
 | `benchmarks/polish_force_error_2026-09-03.json` | `benchmarks/strong_polish.py` | `5efde0ee` |  | `benchmarks/polish_force_error_2026-09-03.md`, `docs/explanation/high-order-force-balance.rst`, `docs/explanation/validation.md`, `tests/test_performance_docs.py` |
 | `benchmarks/polish_force_error_2026-09-03.md` |  |  |  | *nothing* |
 | `benchmarks/polish_force_error_solovev_2026-09-03.json` | `benchmarks/strong_polish.py` | `5efde0ee` |  | `benchmarks/polish_force_error_2026-09-03.md`, `docs/explanation/validation.md`, `tests/test_performance_docs.py` |
 | `benchmarks/polish_implicit_m4.json` | `benchmarks/polish_implicit.py` | `e176b1ac` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
-| `benchmarks/polish_memory_w7x.json` | `benchmarks/polish_memory.py` | `529f1789` |  | `CHANGELOG.md`, `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
+| `benchmarks/polish_memory_w7x.json` | `benchmarks/polish_memory.py` | `529f1789` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
 | `benchmarks/polish_preconditioner_m4.json` | `benchmarks/polish_preconditioner.py` | `7bb306e0` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |
 | `benchmarks/preconditioner_2d_stiff_cases.json` | `benchmarks/preconditioner_2d_stiff.py` | `8b1c5ffe` | 2026-09-03 | `benchmarks/make_readme_figures.py`, `docs/_static/figures/figures.json`, `docs/reference/performance.rst`, `tests/test_figure_provenance.py` |
-| `benchmarks/profile.json` | `benchmarks/profile_production.py` |  |  | *nothing* |
 | `benchmarks/qa_optimization_startup_least_squares_m4.json` | `benchmarks/qa_optimization_startup.py` | `63b1f512` |  | `docs/reference/optimization.rst`, `docs/reference/performance.rst`, `plan.md` |
 | `benchmarks/qa_optimization_startup_main_m4.json` | `benchmarks/qa_optimization_startup.py` | `980b602a` |  | *nothing* |
 | `benchmarks/qa_optimization_startup_scalar_m4.json` | `benchmarks/qa_optimization_startup.py` | `63b1f512` |  | `docs/reference/optimization.rst`, `docs/reference/performance.rst` |
 | `benchmarks/qi_optimization_profile_office.json` | `benchmarks/qi_optimization_profile.py` | `3ee6ca58` | 2026-09-14 | `docs/reference/objectives.rst`, `examples/optimization/QI_optimization.py` |
-| `benchmarks/review_20260905.json` |  |  | 2026-09-06 | *nothing* |
 | `benchmarks/review_20260913.json` |  | `f09288b3` | 2026-09-13 | `benchmarks/review_20260913_equilibrium.py`, `benchmarks/review_20260913_exterior.py`, `plan.md` |
 | `benchmarks/single_stage_profile_m4.json` | `benchmarks/single_stage_profile.py` | `50814b65` | 2026-09-13 | `examples/optimization/single_stage_optimization.py`, `plan.md` |
 | `benchmarks/strong_force_cases_m4.json` | `benchmarks/make_strong_force_comparison.py` | `aa34952d` |  | `benchmarks/strong_force_comparison_m4.json`, `docs/_static/figures/figures.json`, `docs/explanation/high-order-force-balance.rst`, `tests/test_performance_docs.py` |
@@ -74,6 +73,4 @@ reads. They are kept, not deleted; the list exists so that stays visible.
 
 - `benchmarks/fresh_decks_vs_vmec2000_2026-09-02.md`
 - `benchmarks/polish_force_error_2026-09-03.md`
-- `benchmarks/profile.json`
 - `benchmarks/qa_optimization_startup_main_m4.json`
-- `benchmarks/review_20260905.json`

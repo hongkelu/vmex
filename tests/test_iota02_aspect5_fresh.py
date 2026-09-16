@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-CASE=Path(__file__).resolve().parents[1]/'example/m=3n=3iota=0p2aspect=5fresh'
+CASE=Path(__file__).resolve().parents[1]/'examples/m=3n=3iota=0p2aspect=5fresh'
 def module(name):
     spec=importlib.util.spec_from_file_location('fresh_aspect5_'+name,CASE/(name+'.py'))
     m=importlib.util.module_from_spec(spec);sys.modules[spec.name]=m;spec.loader.exec_module(m);return m

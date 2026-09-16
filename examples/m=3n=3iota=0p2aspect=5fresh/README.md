@@ -100,9 +100,9 @@ From the repository root, with this checkout on `PYTHONPATH`, run:
 
 ```sh
 PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" JAX_ENABLE_X64=1 PYTHONDONTWRITEBYTECODE=1 \
-python -B 'example/m=3n=3iota=0p2aspect=5fresh/run.py' \
+python -B 'examples/m=3n=3iota=0p2aspect=5fresh/run.py' \
   --device cuda:0 --target-step 200 --max-wall-hours 4 \
-  --output-dir 'example/m=3n=3iota=0p2aspect=5fresh/runs/fresh200'
+  --output-dir 'examples/m=3n=3iota=0p2aspect=5fresh/runs/fresh200'
 ```
 
 The output directory must not already exist. To start with a bounded smoke

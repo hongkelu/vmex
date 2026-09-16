@@ -10,7 +10,7 @@ import pytest
 from vmex.core import freeboundary_implicit as fbi
 from vmex.core.errors import AdjointSolveError
 
-CASE = Path(__file__).resolve().parents[1]/'example/m=3n=3iota=0p2'
+CASE = Path(__file__).resolve().parents[1]/'examples/m=3n=3iota=0p2'
 @pytest.fixture
 def case_dir():
     if not (CASE / "optimization.py").is_file():

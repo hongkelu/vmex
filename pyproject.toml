@@ -175,6 +175,8 @@ select = ["E4", "E7", "E9", "F", "D101", "D102", "D103"]
 ignore = ["E402", "E501", "E702"]
 
 [tool.ruff.lint.per-file-ignores]
+# Frozen research snapshots retain their recorded source hashes.
+"examples/m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage/analysis/**" = ["ALL"]
 # The docstring contract is on the package's public surface only.
 "tests/**" = ["D"]
 # The split polish modules import shared fixtures with the `as` re-export

@@ -1,28 +1,33 @@
 """Authenticated M3/N3 inputs, original coil chart and physical rows."""
+
 from dataclasses import dataclass
 import hashlib
-import json
+import json  # noqa: F401
 from pathlib import Path
 from typing import Any
-import jax
+import jax  # noqa: F401
 import jax.numpy as jnp
 import numpy as np
 from vmex.core.transforms import register_pytree_dataclass
-from vmex.core import statephysics
-from vmex.core.input import VmecInput
-from vmex.core.optimize import QuasisymmetryRatioResidual
-from vmex.core.wout import read_wout
+from vmex.core import statephysics  # noqa: F401
+from vmex.core.input import VmecInput  # noqa: F401
+from vmex.core.optimize import QuasisymmetryRatioResidual  # noqa: F401
+from vmex.core.wout import read_wout  # noqa: F401
 
 N_BASE_COILS, NFP, FOURIER_ORDER, SOLVE_COIL_SEGMENTS = 4, 2, 4, 75
 STELLSYM = True
 CURRENT_GROUPS = (1, 2, 3)
 PARAMETER_COUNT = 111
-PARAMETER_SCALES = np.r_[np.full(3, .06), np.tile([.002,.002,.002,.0005,.0005,.002/9,.002/9,.002/16,.002/16],12)]
-CONSTRAINT_SCALES = np.array([.005,.05,.01])
-ROW_ORDER = ('qs_norm','mean_iota','aspect_ratio','b0')
+PARAMETER_SCALES = np.r_[
+    np.full(3, 0.06), np.tile([0.002, 0.002, 0.002, 0.0005, 0.0005, 0.002 / 9, 0.002 / 9, 0.002 / 16, 0.002 / 16], 12)
+]
+CONSTRAINT_SCALES = np.array([0.005, 0.05, 0.01])
+ROW_ORDER = ("qs_norm", "mean_iota", "aspect_ratio", "b0")
+
 
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
 
 @dataclass(frozen=True, eq=False)
 class DirectCoilField:
@@ -49,7 +54,9 @@ class DirectCoilField:
         bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
         return br, bphi, bxyz[..., 2]
 
+
 register_pytree_dataclass(DirectCoilField)
+
 
 @dataclass(frozen=True, eq=False)
 class Full111FieldBuilder:
@@ -94,4 +101,3 @@ class Full111FieldBuilder:
             gamma_dash=jnp.asarray(coils.gamma_dash),
             currents=jnp.asarray(coils.currents),
         )
-

@@ -1,0 +1,10 @@
+{
+  "schema": "vmex.runtime-migration/v1",
+  "previous_commit": "d6910b428841766c04767410e9e9cdc39a6cfb19",
+  "current_commit": "0bc787b72917371ab122f76e870e1cf6ab141102",
+  "previous_manifest": "runtime_manifest.d6910b428841.json",
+  "previous_manifest_sha256": "4ca4e03263817354ef42a9195627f4eb95c7f20f35c7eea0ad04e3332f233aae",
+  "scope": "Active case runtime only; historical inputs, results and source snapshots retain their original provenance.",
+  "physical_qualification": false,
+  "resume_policy": "Authenticated saved state must pass the existing fresh certification and exact restoration checks under the new runtime. No historical qualification is transferred."
+}

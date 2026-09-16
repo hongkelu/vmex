@@ -1,5 +1,5 @@
 {
-  "commit": "0bc787b72917371ab122f76e870e1cf6ab141102",
+  "commit": "5c69195ff1045a6c7b9acc0708724c3b04b967ab",
   "files": {
     "__init__.py": "17bc5d2e30dafb839110ba31f5d0e85262685a605ecc8fd15823e04093aa0306",
     "__main__.py": "61c4f74944ce688c19adfb396dc79855085720d6064a54199e74acce6d9ba5b1",
@@ -33,7 +33,7 @@
     "core/neoclassical.py": "9c9856d26ddc3047bc994386d291fe4bac1d62db90c11c633c2337f8b25feb77",
     "core/nyquist.py": "fc6ae610f46134a9ffabeae0ca0c1d7ac05c3053d49b88d3e24af9213d4c63fb",
     "core/omnigenity.py": "dacbdb9e0990adf7092043b8663e160d2d89e81ef0f18bd978e169c449aed2e2",
-    "core/optimize.py": "3e229690d97d6767013c7bd9f4ba3da2f81c95d615237cbb6ea6b889526303d8",
+    "core/optimize.py": "584a970963fdaf432bc72f4b81323f2d14f757cde91b13e1d432eab7ea70393a",
     "core/parallel.py": "a09db5bbb9ea32df35304ba812eed6e93610a0d52d40360842ddbaeeaf13c1a3",
     "core/plotting.py": "6b3174cc4418e8ecaa269536cfa0a7e75b0cf1c3ce68b4d9ce077a0d04681b9d",
     "core/polish.py": "f2ce5e29a86f28d3b9775d4d0012fee173c9217d2a9d9111bca3141e1fefa0cc",

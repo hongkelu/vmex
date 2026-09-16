@@ -1410,4 +1410,3 @@ def test_max_fsq_ratio_default_is_strict_on_every_entry_point():
     }
     assert defaults, "no entry point exposes max_fsq_ratio"
     assert set(defaults.values()) == {1.0e2}, defaults
-

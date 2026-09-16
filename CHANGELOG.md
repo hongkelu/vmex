@@ -186,4 +186,3 @@ programs (v0.8.0: 773; v0.3.0: 523).
   restructuring shifts XLA fusion, so trajectories can differ from v0.8.0 at
   1 ULP per iteration with identical iteration counts and converged
   geometry agreeing at 1e-12.
-

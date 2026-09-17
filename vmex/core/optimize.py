@@ -132,6 +132,11 @@ from .problem import Evaluation, FunctionProblem, VmecProblem, _run_with_progres
 from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRecord
 
 __all__ = [
+    "FreeBoundaryProblem",  # noqa: F822
+    "TargetBand",  # noqa: F822
+    "CoilParameters",  # noqa: F822
+    "minimize_projected",  # noqa: F822
+    "ProjectedOptions",  # noqa: F822
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
@@ -190,6 +195,15 @@ Array = Any
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export
+    if name in ("FreeBoundaryProblem", "TargetBand"):
+        from . import freeboundary_problem
+        return getattr(freeboundary_problem, name)
+    if name == "CoilParameters":
+        from .coil_parameters import CoilParameters
+        return CoilParameters
+    if name in ("minimize_projected", "ProjectedOptions"):
+        from . import projected_optimization
+        return getattr(projected_optimization, name)
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":

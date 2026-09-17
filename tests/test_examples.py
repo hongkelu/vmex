@@ -399,17 +399,18 @@ def test_fixed_free_boundary_comparison(tmp_path):
 
 
 def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():
-    """The examples expose tuples, scalarization, AD, and SciPy directly."""
-    for name in ("single_stage_free_boundary_optimization.py",
-                 "single_stage_free_boundary_optimization_finite_beta.py"):
-        text = (EXAMPLES / "optimization" / name).read_text()
-        assert "solve_free_boundary_implicit" in text
-        assert "residuals_from_tuples" in text
-        assert "jax.value_and_grad" in text
-        assert "FunctionProblem.from_functions" in text
-        assert "minimize(free_problem.value_and_grad" in text
-        assert "pack_boundary" not in text
-        assert "mgrid file" in text
+    """Vacuum uses the maintained public API; finite beta keeps its own model."""
+    case = EXAMPLES / "m=3n=3iota=0p2aspect=5angular48x40"
+    vacuum = (case / "single_stage_free_boundary_optimization.py").read_text()
+    for contract in ("FreeBoundaryProblem.from_tuples", "TargetBand", "minimize_projected"):
+        assert contract in vacuum
+    assert "pack_boundary" not in vacuum
+    finite = (EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_finite_beta.py").read_text()
+    for contract in ("solve_free_boundary_implicit", "residuals_from_tuples", "jax.value_and_grad",
+                     "FunctionProblem.from_functions", "minimize(free_problem.value_and_grad"):
+        assert contract in finite
+    assert "pack_boundary" not in finite
+
 
 
 def test_global_optimization_example_exposes_optimizer_contract():
@@ -490,24 +491,16 @@ def test_combined_confinement_example_states_the_surrogate_policy():
     assert "epsilon_eff unavailable" in text  # optional NEO_JAX states its absence
 
 
-@pytest.mark.full  # one direct-coil free solve, coupled adjoint, and output solve (~2 min)
 def test_vacuum_free_boundary_single_stage_optimization(tmp_path):
-    pytest.importorskip("essos")
+    """The compatibility launcher exposes the maintained bounded CLI without solving."""
     out = _run_example(
         EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py",
-        tmp_path, timeout=600)
-    assert "no boundary dofs or mgrid file" in out
-    assert re.search(r"\[final\] QA = ([0-9.eE+-]+)", out)
-    # Smoke mode exits 0 even when a target is missed, so the report must say so.
-    assert re.search(r"Minimum \|iota\| = [0-9.]+ \(target >= [0-9.]+\)", out)
-    summary = json.loads(
-        (tmp_path / "single_stage_free_boundary_optimization_summary.json").read_text())
-    assert summary["met"] == (not summary["unmet"])
-    assert summary["met"] or "did NOT meet its stated targets" in out
-    for name in ("wout_single_stage_free_boundary_optimized.nc",
-                 "single_stage_free_boundary_optimization.png",
-                 "single_stage_free_boundary_objectives.png"):
-        assert (tmp_path / name).stat().st_size > 0
+        tmp_path, timeout=30, args=("--help",))
+    for option in ("--output-dir", "--target-step", "--max-wall-hours",
+                   "--resume-checkpoint", "--checkpoint-sha256"):
+        assert option in out
+    assert not list(tmp_path.iterdir())
+
 
 
 @pytest.mark.full
@@ -950,7 +943,6 @@ def test_single_stage_examples_use_general_surface_output_and_movie_colors() -> 
 def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
     """Targets are constraints checked at the end; a missed one is a non-zero exit."""
     fixed = (EXAMPLES / "optimization" / "single_stage_optimization.py").read_text()
-    free = (EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py").read_text()
     assert "def augmented_lagrangian(" in fixed and 'method="L-BFGS-B"' in fixed
     for constraint in ("IOTA_CONSTRAINT", "ASPECT_CONSTRAINT", "NORMAL_FIELD_CONSTRAINT"):
         assert constraint in fixed
@@ -958,12 +950,12 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
     # Jacobian lane and no second residual callback.
     assert "jax_objective_from_state" in fixed
     assert "jax_value_and_grad" not in fixed and "jax_residual" not in fixed
-    # The free-boundary pullback is host-eager; everything after the solve is jitted.
-    assert "@jax.jit\ndef accepted_terms(" in free
-    for source in (fixed, free):
-        assert "did NOT meet its stated targets" in source
-        assert "if unmet and not ci_smoke:\n    raise SystemExit(1)" in source
-        assert "_summary.json" in source
+    assert "did NOT meet its stated targets" in fixed
+    assert "if unmet and not ci_smoke:\n    raise SystemExit(1)" in fixed
+    assert "_summary.json" in fixed
+    # Vacuum target-band rejection and accepted-state ownership are exercised
+    # numerically in test_freeboundary_problem_api.py and the maintained case suite.
+
 
 
 @pytest.mark.full  # nightly: two bounded ESSOS tracing integrations (~40 s total)

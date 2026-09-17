@@ -381,20 +381,59 @@ def reanchor_free_boundary_continuation_config(cfg, accepted):
                                _anchor=anchor, _owner=owner, _runtime=_Runtime())
 
 
-def free_boundary_continuation_state_pullback(accepted, cfg, state_cotangents, *, diagnostics=None):
+@dataclass(eq=False)
+class FreeBoundaryContinuationLinearization:
+    """A gradient and reusable tangent factors owned by one accepted root.
+
+    Pass the current accepted record and configuration on every tangent call.
+    Identity checks prevent factors from crossing roots, masks or constraint
+    baselines. Close at promotion or when abandoning the current direction.
+    """
+    field_jacobian: Any
+    _accepted: Any = field(repr=False)
+    _cfg: Any = field(repr=False)
+    _dense: Any = field(repr=False)
+
+    def tangent(self, accepted, cfg, direction, *, diagnostics=None):
+        """Return the certified tangent using this accepted root's factors."""
+        if self._dense is None:
+            raise ValueError('continuation linearization is closed')
+        if accepted is not self._accepted or cfg is not self._cfg:
+            raise ValueError('linearization belongs to a different accepted root or configuration')
+        if accepted._owner is not cfg._owner:
+            raise ValueError('accepted root belongs to a different continuation config')
+        return self._dense.tangent(direction,diagnostics=diagnostics)
+
+    def close(self):
+        """Release the retained linearization and invalidate subsequent reuse."""
+        if self._dense is not None:
+            self._dense.close()
+        self._dense = self._accepted = self._cfg = self.field_jacobian = None
+
+
+def free_boundary_continuation_state_pullback(
+    accepted, cfg, state_cotangents, *, diagnostics=None, return_linearization=False,
+):
     """Shared implicit field-parameter derivatives at the supplied exact root.
 
     Cotangent leaves have a leading RHS axis. This delegates to main's shared
     selected adjoint backend; add explicit objective field derivatives yourself.
     The saved record prevents a later memo refresh from changing the root.
+    ``return_linearization=True`` retains the certified dense factors and returns
+    a :class:`FreeBoundaryContinuationLinearization` instead of the field rows.
     """
     if accepted._owner is not cfg._owner:
         raise ValueError("accepted root belongs to a different continuation config")
-    _, field_bar = fbi.free_boundary_state_pullback_multi_rhs(
+    result = fbi.free_boundary_state_pullback_multi_rhs(
         cfg.params, jnp.asarray(accepted.parameters), cfg.solver,
         accepted.state, accepted.dof_mask, state_cotangents,
         rcon0=accepted.rcon0, zcon0=accepted.zcon0,
-        root_residual_atol=cfg.root_residual_atol, diagnostics=diagnostics)
+        root_residual_atol=cfg.root_residual_atol, diagnostics=diagnostics,
+        **({'return_linearization': True} if return_linearization else {}))
+    if return_linearization:
+        (_, field_bar), dense = result
+        return FreeBoundaryContinuationLinearization(field_bar, accepted, cfg, dense)
+    _, field_bar = result
     return field_bar
 
 
@@ -456,4 +495,5 @@ __all__ = [
     'make_free_boundary_continuation_config', 'free_boundary_continuation_result',
     'free_boundary_continuation_stats', 'reanchor_free_boundary_continuation_config',
     'free_boundary_continuation_state_pullback', 'solve_free_boundary_continuation',
+    'FreeBoundaryContinuationLinearization',
 ]

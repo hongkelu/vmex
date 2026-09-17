@@ -1,0 +1,17 @@
+{
+  "constraint_relative_tolerance": 0.01,
+  "maximum_coil_step_m": 0.001,
+  "maximum_current_fraction_step": 0.01,
+  "max_trials": 6,
+  "backtrack_factor": 0.5,
+  "armijo_fraction": 0.0001,
+  "minimum_qa_decrease": 1e-10,
+  "violation_reduction_fraction": 0.0001,
+  "projected_gradient_atol": 1e-06,
+  "projected_gradient_rtol": 0.0001,
+  "restoration_fraction_interior": 0.001,
+  "restoration_fraction_boundary": 0.02,
+  "restoration_boundary_start": 0.8,
+  "restoration_budget_fraction": 0.2,
+  "restoration_descent_fraction": 0.5
+}

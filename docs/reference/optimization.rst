@@ -813,3 +813,135 @@ true-residual acceptance threshold independently of ``adjoint_tol``. Its
 pullback accepts an optional ``diagnostics`` list populated with each
 row's residual norm, RHS norm, threshold and iterations. No extra equilibrium
 or linear solve is performed for this reporting.
+
+Free-boundary coil variables
+----------------------------
+
+``opt.FreeBoundaryProblem`` uses the same ``FunctionProblem`` interface as
+``VmecProblem``. Its design vector contains coil currents and Cartesian
+Fourier coefficients; the LCFS is the result of the free-boundary equilibrium.
+The class owns no files, command-line arguments, or signal handlers.
+
+For an input with ``lfreeb=True`` and a confining initial coil set:
+
+.. code-block:: python
+
+   qs = opt.QuasisymmetryRatioResidual(
+       (0.25, 0.5, 0.75, 1.0), helicity_m=1, helicity_n=0)
+   problem = opt.FreeBoundaryProblem.from_tuples(
+       inp, [(qs, 0.0, 1.0)],
+       coils=coils, current_dofs=(1, 2, 3), max_coil_mode=4,
+       restart_from=initial_state,
+       constraints=[
+           opt.TargetBand(opt.mean_iota, 0.2, rtol=0.01, scale=0.005),
+           opt.TargetBand(opt.aspect_ratio, 5.0, rtol=0.01, scale=0.05),
+       ],
+       solver_options=dict(
+           ftol=1e-11, edge_force_tolerance=1e-11,
+           max_iterations=12000, adjoint_solver="forward_dense_jax",
+           adjoint_tol=2e-5, adjoint_residual_rtol=2e-5),
+   )
+   monitor = opt.OptimizationMonitor(problem)
+   result = opt.minimize_projected(problem, maxiter=10, callback=monitor)
+   coils_final = problem.coils_from_x(result.x)
+   equilibrium = problem.equilibrium_from_x(result.x)
+   problem.close()
+
+The maintained vacuum example additionally constrains signed on-axis B0 and
+uses authenticated inputs and checkpoint restoration. See
+``examples/m=3n=3iota=0p2aspect=5angular48x40/single_stage_free_boundary_optimization.py``.
+It retains its original 111 coordinates, scales and physical acceptance rules.
+For other cases, the direct public API above does not import that example.
+
+Coordinates and constraints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``CoilParameters`` places selected relative current changes first, followed
+by additive coefficients in metres in ``(coil, Cartesian coordinate, Fourier
+coefficient)`` order. Fourier order is constant, sine-1, cosine-1, sine-2,
+cosine-2, and so on. Unselected currents and higher modes stay fixed. Base
+currents are physical amperes, not ESSOS's scaled current DOFs. Symmetry copies
+are not independent variables. ``dof_names`` and ``scales`` follow this exact
+ordering; pass an explicit ``parameterization`` to retain an existing chart.
+
+ESSOS compatibility
+~~~~~~~~~~~~~~~~~~~
+
+This free-boundary interface supports unmodified ESSOS ``main`` (validated at
+``c9b41222e06aed62c246ca3b35349e427a3ea239``) and the research branch. Its ESSOS
+adapter is contained in ``vmex/core/coil_parameters.py``; no ESSOS patches or
+version-specific branches are needed. ``from_coils`` reads physical currents
+through ``dofs_currents_raw`` and removes ``curves.scaling`` from public Fourier
+DOFs once, when constructing the parameterization. Non-default ESSOS scaling
+therefore preserves the physical geometry and currents.
+
+The traced field path uses standard ``Curves``/``Coils`` construction and passes
+geometry/current arrays to ``DirectCoilField``. It does not pass a ``Coils``
+pytree through the equilibrium solver, so it does not require the research
+branch's dynamic current-scale metadata fix. The projected optimizer, compact
+derivatives, retained tangent factors and batching policy are unchanged.
+
+``tests/test_coil_parameters.py`` covers scaled inputs, standard JSON round
+trips, and nested JIT forward/reverse derivatives. Run it with the selected
+ESSOS source root first on ``PYTHONPATH``. ``benchmarks/coil_parameters.py``
+compares field values, both Jacobians, compiler input hashes, compilation time
+and synchronized warm timings. These local coil checks do not measure a whole
+GPU equilibrium or optimizer step.
+
+Use ``Coils.to_json`` / ``Coils.from_json`` for new exports. Legacy fork JSON
+with normalized ``dofs_currents`` has different loader semantics on upstream;
+convert such inputs to explicit physical arrays before using this interface.
+The maintained example already loads its authenticated physical arrays directly.
+
+Target bands
+~~~~~~~~~~~~
+
+``TargetBand`` is a physical constraint, not an objective penalty. Its
+acceptance tolerance is ``atol + rtol * abs(target)``; its independent
+``scale`` conditions the target error and its Jacobian. A zero target requires
+positive ``atol``. The initial normalization is
+``max(norm(weighted_objective_residuals), 0.001)``. Pass the saved positive
+numeric normalization when resuming; it is never reset after promotion.
+
+Derivatives and evaluation ownership
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``value_and_grad`` and ``constraint_jac`` share a compact pullback with one
+objective-norm row plus one row per physical constraint. The full pointwise
+objective Jacobian is built only by ``residual_jac`` / ``residual_and_jac``.
+``compile_value_and_gradient`` warms the compact path;
+``compile_residual_and_jacobian`` explicitly requests the full path.
+
+Every trial uses tangent prediction, ordinary correction, and strict force,
+edge, and projected-root certification. Evaluation does not move the accepted
+anchor. ``accept(candidate)`` is called only after the optimizer's nonlinear
+acceptance checks, and invalidates old derivative factors and evaluation caches.
+The retained linearization belongs to one root and configuration.
+
+``coils_from_x`` performs no equilibrium solve. ``equilibrium_from_x`` reuses
+the most recent evaluation or solves/certifies the requested parameters without
+promoting them. Its WOUT property computes vacuum data on that exact geometry;
+it does not reconverge or replace the accepted equilibrium.
+
+Limits and results
+~~~~~~~~~~~~~~~~~~
+
+This first public implementation requires float64 JAX and
+``forward_dense_jax`` derivatives. Objective and constraint functions depend
+on ``(state, runtime)``. Direct coil-objective terms need an explicit direct
+parameter derivative and are not part of this interface yet. Calls stay eager
+outside the compiled state functions; do not wrap the problem in ``jax.jit``.
+
+``minimize_projected`` preserves projected descent, adaptive target restoration,
+physical coil/current step caps and finite backtracking. ``maxiter`` counts
+new accepted steps; the maintained example translates an absolute campaign
+step limit into that number. Its result includes ``x``, ``fun``, ``constraints``,
+``feasible``, ``accepted``, ``nit``, ``nfev`` (trial evaluations), ``njev``
+(linearization requests), and the original projected-gradient reference.
+The callback receives an ``OptimizeResult`` after each accepted step; raising
+``StopIteration`` returns the last accepted state with ``callback_stopped``.
+
+``success=True`` means feasible equality-tangent stationarity. It is not a
+full inequality KKT certificate or independent physical qualification.
+``step_budget_reached`` and ``stagnated`` both have ``success=False``.
+The caller owns checkpoint authentication and numerical qualification.

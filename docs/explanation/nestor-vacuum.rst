@@ -154,10 +154,13 @@ Despite using the interface equations, that example is a **fixed-boundary**
 optimization: every trial boundary is prescribed to VMEX and reconverged, and
 both boundary and coil coefficients are decision variables. Virtual casing
 separates the converged total VMEX field into plasma-current and external-coil
-parts; it does not run NESTOR or a free-boundary equilibrium. The preview
-``single_stage_free_boundary_optimization*.py`` examples instead hold the
-plasma boundary implicit and vary only coil parameters through the coupled
-NESTOR derivative below. They need ESSOS
+parts; it does not run NESTOR or a free-boundary equilibrium. The
+``single_stage_free_boundary_optimization.py`` launcher uses the maintained
+48x40 vacuum case and public ``FreeBoundaryProblem`` API with projected QA
+and target restoration. Its plasma boundary is implicit and only coil
+parameters vary through the coupled NESTOR derivative. The separate
+finite-beta example also holds the LCFS implicit and includes bootstrap
+physics. These examples need ESSOS
 (``pip install "vmex[coils]"``).
 
 The reported normalized total-pressure jump is

@@ -1,17 +1,11 @@
 """Authenticated M3/N3 inputs, original coil chart and physical rows."""
 
-from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
-import jax
 import jax.numpy as jnp
 import numpy as np
-from vmex.core.transforms import register_pytree_dataclass
-from vmex.core import statephysics
 from vmex.core.input import VmecInput
-from vmex.core.optimize import QuasisymmetryRatioResidual
 from vmex.core.wout import read_wout  # noqa: F401
 
 N_BASE_COILS, NFP, FOURIER_ORDER, SOLVE_COIL_SEGMENTS = 4, 2, 4, 75
@@ -29,78 +23,19 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-@dataclass(frozen=True, eq=False)
-class DirectCoilField:
-    """Exact JAX-traceable filament field used by the qualified anchor."""
-
-    gamma: Any
-    gamma_dash: Any
-    currents: Any
-
-    def b_cyl(self, r: Any, phi: Any, z: Any) -> tuple[Any, Any, Any]:
-        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
-        cosine, sine = jnp.cos(pp), jnp.sin(pp)
-        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
-        differential = differential * inv_radius3[..., None]
-        point_ndim = xyz.ndim - 1
-        current_shape = (1,) * point_ndim + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
-        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
-        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
-        return br, bphi, bxyz[..., 2]
+from vmex.core.coil_parameters import CoilParameters, DirectCoilField  # noqa: F401
 
 
-register_pytree_dataclass(DirectCoilField)
+class Full111FieldBuilder(CoilParameters):
+    """Compatibility constructor for the original 111-coordinate chart."""
 
-
-@dataclass(frozen=True, eq=False)
-class Full111FieldBuilder:
-    """Three relative currents plus every order-4 Cartesian coefficient."""
-
-    nominal_dofs_curves: Any
-    nominal_base_currents: Any
-
-    def _parameters(self, parameters: Any):
-        values = jnp.asarray(parameters)
-        if values.shape != (PARAMETER_COUNT,):
-            raise ValueError(f"full111 parameters must have shape ({PARAMETER_COUNT},)")
-        if not jnp.issubdtype(values.dtype, jnp.floating):
-            raise TypeError("full111 parameters must use a floating dtype")
-        return values.astype(jnp.asarray(self.nominal_dofs_curves).dtype)
-
-    def base_currents_at(self, parameters: Any):
-        values = self._parameters(parameters)
-        nominal = jnp.asarray(self.nominal_base_currents)
-        varied = nominal
-        for local_index, group in enumerate(CURRENT_GROUPS):
-            varied = varied.at[group].add(values[local_index] * nominal[group])
-        return varied
-
-    def curve_dofs_at(self, parameters: Any):
-        values = self._parameters(parameters)
-        displacement = jnp.reshape(values[len(CURRENT_GROUPS) :], jnp.shape(self.nominal_dofs_curves))
-        return jnp.asarray(self.nominal_dofs_curves) + displacement
-
-    def __call__(self, parameters: Any) -> DirectCoilField:
-        from essos.coils import Coils, Curves
-
-        curves = Curves(
-            self.curve_dofs_at(parameters),
-            SOLVE_COIL_SEGMENTS,
-            NFP,
-            STELLSYM,
-        )
-        coils = Coils(curves, self.base_currents_at(parameters))
-        return DirectCoilField(
-            gamma=jnp.asarray(coils.gamma),
-            gamma_dash=jnp.asarray(coils.gamma_dash),
-            currents=jnp.asarray(coils.currents),
-        )
+    def __init__(self, nominal_dofs_curves, nominal_base_currents):
+        super().__init__(nominal_dofs_curves, nominal_base_currents,
+                         current_dofs=CURRENT_GROUPS, max_coil_mode=FOURIER_ORDER,
+                         nfp=NFP, stellsym=STELLSYM, n_segments=SOLVE_COIL_SEGMENTS,
+                         scales=PARAMETER_SCALES)
+        self.nominal_dofs_curves = jnp.asarray(self.coefficients)
+        self.nominal_base_currents = jnp.asarray(self.currents)
 
 
 CASE = Path(__file__).resolve().parent
@@ -150,30 +85,18 @@ def load_case():
 
 
 def physical_rows(state, rt):
-    return jnp.array(
-        [
-            statephysics.mean_iota(state, rt),
-            statephysics.aspect_ratio(state, rt),
-            statephysics.on_axis_magnetic_field(state, rt),
-        ]
-    )
+    from single_stage_support import scientific_workflow
+    return scientific_workflow().physical_rows(state, rt)
 
 
 def resolve_targets(initial_physical):
-    values = np.asarray(initial_physical, dtype=float)
-    if values.shape != (3,) or not np.all(np.isfinite(values)) or values[2] == 0:
-        raise ValueError("finite, nonzero initial signed B0 required")
-    return np.array([0.2, 5.0, -0.17506474574437714])
+    from single_stage_support import scientific_workflow
+    return scientific_workflow().resolve_targets(initial_physical)
 
 
 def make_rows(runtime, targets, loss_scale):
-    qs = QuasisymmetryRatioResidual((0.25, 0.5, 0.75, 1.0), 1, 0)
-
-    def rows(state):
-        norm = jnp.linalg.norm(qs.residuals_state(state, runtime)) / loss_scale
-        return jnp.r_[norm, (physical_rows(state, runtime) - targets) / CONSTRAINT_SCALES]
-
-    return jax.jit(rows)
+    from single_stage_support import scientific_workflow
+    return scientific_workflow().make_rows(runtime, targets, loss_scale)
 
 
 def metrics(values, targets, loss_scale):

@@ -15,6 +15,11 @@ class Policy:
     violation_reduction_fraction: float = 1e-4
     projected_gradient_atol: float = 1e-6
     projected_gradient_rtol: float = 1e-4
+    restoration_fraction_interior: float = .001
+    restoration_fraction_boundary: float = .02
+    restoration_boundary_start: float = .8
+    restoration_budget_fraction: float = .2
+    restoration_descent_fraction: float = .5
 
     def __post_init__(self):
         for name in ('constraint_relative_tolerance', 'maximum_coil_step_m',
@@ -27,6 +32,13 @@ class Policy:
         for name in ('backtrack_factor', 'armijo_fraction', 'violation_reduction_fraction'):
             if not 0 < getattr(self, name) < 1:
                 raise ValueError('invalid fraction: ' + name)
+        for name in ('restoration_fraction_interior', 'restoration_fraction_boundary',
+                     'restoration_boundary_start', 'restoration_budget_fraction',
+                     'restoration_descent_fraction'):
+            if not np.isfinite(getattr(self, name)) or not 0 < getattr(self, name) < 1:
+                raise ValueError('invalid restoring fraction: ' + name)
+        if self.restoration_fraction_interior > self.restoration_fraction_boundary:
+            raise ValueError('boundary restoring weight must not be smaller')
 
 
 def displacement(delta):
@@ -92,38 +104,14 @@ class Direction:
     projected_gradient_norm: float
     objective_directional_derivative: float
     constraint_info: dict
+    restoring_weight: float = 0.
+    combined_cap_factor: float = 1.
+    predicted_constraint_change: tuple = ()
 
 
 def proposal(values, jacobian, scales, targets, constraint_scales, policy):
-    """QA tangent in the feasible band; pure equality restoration outside it.
-
-    QA sizing depends on geometry/current caps, never the equality-error norm.
-    Projection uses the three equality Jacobian rows in scaled coordinates.
-    Thus convergence means equality-tangent stationarity, not a full inequality
-    KKT certificate for the tolerance band.
-    """
-    values, scales, jacobian = map(np.asarray, (values, scales, jacobian))
-    info = constraint_state(values, targets, constraint_scales, policy)
-    if (scales.shape != (111,) or np.any(scales <= 0)
-            or not np.all(np.isfinite(scales)) or jacobian.shape != (4, 111)
-            or not np.all(np.isfinite(jacobian))):
-        raise ValueError('invalid scaled Jacobian')
-    jac = jacobian*scales[None, :]
-    u, singular, vt = np.linalg.svd(jac[1:], full_matrices=False)
-    if singular[-1] <= 1e-12*max(1., singular[0]):
-        raise ValueError('equality Jacobian is rank deficient')
-    gradient = float(values[0])*jac[0]
-    projected = gradient-vt.T@(vt@gradient)
-    norm = float(np.linalg.norm(projected))
-    if info['feasible']:
-        direction = -projected*scales
-        mode = 'qa'
-    else:
-        direction = -(vt.T@((u.T@values[1:])/singular))*scales
-        mode = 'restoration'
-    delta = limit_direction(direction, policy, expand=(mode == 'qa'))
-    derivative = float((float(values[0])*jacobian[0])@delta)
-    return Direction(delta, mode, norm, derivative, info)
+    from single_stage_problem import proposal as implementation
+    return implementation(values, jacobian, scales, targets, constraint_scales, policy)
 
 
 def converged(direction, initial_projected_gradient_norm, policy):
@@ -134,30 +122,12 @@ def converged(direction, initial_projected_gradient_norm, policy):
 
 
 def acceptance(before, after, direction, alpha, targets, constraint_scales, policy):
-    old = direction.constraint_info
-    try:
-        new = constraint_state(after, targets, constraint_scales, policy)
-    except ValueError:
-        return False, dict(reason='nonfinite_candidate_metrics')
-    qa_before, qa_after = .5*float(before[0])**2, .5*float(after[0])**2
-    if not np.isfinite(qa_after):
-        return False, dict(reason='nonfinite_candidate_objective')
-    if old['feasible']:
-        required = max(policy.minimum_qa_decrease,
-                       policy.armijo_fraction*alpha*max(0., -direction.objective_directional_derivative))
-        passed = new['feasible'] and qa_before-qa_after >= required
-        reason = 'qa_decrease_and_feasible' if passed else ('constraint_violation' if not new['feasible'] else 'insufficient_qa_decrease')
-    else:
-        required = policy.violation_reduction_fraction*alpha*old['violation']
-        passed = new['feasible'] or (old['violation']-new['violation'] >= max(1e-12, required))
-        reason = 'violation_reduced' if passed else 'insufficient_violation_reduction'
-    return bool(passed), dict(reason=reason, before=old, after=new,
-                             qa_before=qa_before, qa_after=qa_after,
-                             required_decrease=required)
+    from single_stage_problem import acceptance as implementation
+    return implementation(before, after, direction, alpha, targets, constraint_scales, policy)
 
 
-class TrialRejected(Exception):
-    """Expected numerical rejection of a candidate; permits bounded backtracking."""
+# One exception identity, also when older callers load this module by file path.
+from single_stage_support import TrialRejected as TrialRejected
 
 
 @dataclass(frozen=True)
@@ -169,33 +139,5 @@ class SearchResult:
 
 
 def backtrack(before, direction, targets, constraint_scales, policy, evaluate, record):
-    """Evaluate each reduced proposal from the same accepted base state.
-
-    evaluate(delta, trial_index) must return (candidate, actual_rows) without
-    mutating the base state. Only a returned accepted candidate may be promoted.
-    """
-    trials = []
-    for index in range(1, policy.max_trials+1):
-        alpha = policy.backtrack_factor**(index-1)
-        delta = alpha*direction.delta
-        motion, current = motion_bounds(delta)
-        if motion > policy.maximum_coil_step_m*(1+1e-12) or current > policy.maximum_current_fraction_step*(1+1e-12):
-            raise ValueError('proposal exceeds the geometry/current budget')
-        entry = dict(trial=index, alpha=alpha, maximum_coil_bound_m=motion,
-                     maximum_current_fraction=current)
-        if not np.any(delta):
-            entry.update(accepted=False, reason='zero_proposal')
-            trials.append(entry); record(entry)
-            break
-        try:
-            candidate, values = evaluate(delta, index)
-            passed, details = acceptance(before, values, direction, alpha,
-                                         targets, constraint_scales, policy)
-            entry.update(accepted=passed, **details)
-        except TrialRejected as exc:
-            candidate = values = None
-            entry.update(accepted=False, reason='numerical_rejection', error=str(exc))
-        trials.append(entry); record(entry)
-        if entry['accepted']:
-            return SearchResult(candidate, np.asarray(values), delta, tuple(trials))
-    return SearchResult(None, None, None, tuple(trials))
+    from single_stage_problem import backtrack as implementation
+    return implementation(before, direction, targets, constraint_scales, policy, evaluate, record)

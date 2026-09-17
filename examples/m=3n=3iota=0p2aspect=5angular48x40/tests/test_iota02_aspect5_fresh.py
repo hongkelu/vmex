@@ -61,7 +61,13 @@ def test_fresh_targets_tolerances_and_signed_b0():
 def test_fresh_qa_size_is_independent_of_roundoff_constraints():
     exact = direction([1, 0, 0, 0])
     tiny = direction([1, 1e-15, -1e-15, 1e-15])
-    np.testing.assert_array_equal(exact.delta, tiny.delta)
+    # Adaptive restoration retains roundoff-sized constraint corrections.
+    # This is a floating-point comparison, not a physical acceptance tolerance.
+    eps = np.finfo(np.float64).eps
+    np.testing.assert_allclose(
+        exact.delta, tiny.delta, rtol=32 * eps,
+        atol=32 * eps * np.linalg.norm(exact.delta, ord=np.inf),
+    )
     assert opt.motion_bounds(tiny.delta)[0] == pytest.approx(0.001)
     assert tiny.projected_gradient_norm == 1 and tiny.objective_directional_derivative < 0
     np.testing.assert_allclose(jacobian()[1:] @ tiny.delta, 0, atol=1e-15)

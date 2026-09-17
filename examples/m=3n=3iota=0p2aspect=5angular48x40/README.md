@@ -1,124 +1,137 @@
-# M3/N3 QA optimization on a 48×40 angular grid
+# Free-boundary single-stage QA optimization
 
-This independent case starts from the original zero-parameter coils and spectral
-seed. It uses NTHETA=48, NZETA=40, M3/N3, NS31, NFP2, and 111 coil/current
-parameters. Its scientific core is published main commit
-`d6910b428841766c04767410e9e9cdc39a6cfb19`, the parent of this case branch.
+This maintained M3/N3 vacuum case optimizes three relative coil currents and
+108 Cartesian Fourier coefficients. The LCFS follows the equilibrium solve.
+Targets are mean iota 0.2, aspect ratio 5, and signed on-axis B0
+-0.17506474574437714 T, each within its original 1% band. The equilibrium grid
+is NS31, NTHETA48, NZETA40. Per-step caps are 1 mm coil displacement and 1%
+nominal-current change, with at most six half-step trials.
 
-## Targets and acceptance
+The optimizer combines projected QA descent with bounded adaptive target
+restoration. Force/edge, projected-root and derivative gates remain strict.
+`case_contract.json`, `optimizer_policy.json` and the input manifest record the
+physical and numerical contract; checkpoint migration is explicit.
 
-| Quantity | Target | Absolute tolerance (1%) |
-|---|---:|---:|
-| Mean iota | 0.2 | 0.002 |
-| Aspect ratio | 5 | 0.05 |
-| Signed on-axis B0 | −0.17506474574437714 T | 0.0017506474574437714 T |
+The public API supports unmodified ESSOS main at
+`c9b41222e06aed62c246ca3b35349e427a3ea239`. Runtime data and host-specific pilot
+controllers are not part of this example. Passing software tests is not
+independent qualification of a new equilibrium or GPU campaign.
 
-These bands are design tolerances, not numerical uncertainty estimates. Signed B0
-retains the original reference target when refining the initial equilibrium.
+### Public problem API
 
-- Ordinary force channels and fresh edge residual: **≤1e-11**.
-- Projected-root residual norm: **≤2e-6**.
-- Adjoint and state-tangent relative residual: **≤2e-5**.
-- Adjoint backend: `forward_dense_jax`; the state tangent uses main's GCROT path.
-- Maximum coil motion per accepted step: **1 mm**, with a separate **1% of each
-  nominal current** step cap. These do not bound cumulative changes.
-- No root polish or same-coil equilibrium retries.
+`single_stage_free_boundary_optimization.py` follows
+`examples/optimization/qa_optimization.py`: settings, objective tuples,
+physical constraints, problem construction, optimization, and reporting.
+The design vector contains three relative currents and 108 Cartesian coil
+Fourier coefficients. The plasma boundary is determined by equilibrium.
 
-When feasible, the equality-tangent QA direction is sized independently of the
-equality correction. Acceptance requires actual QA decrease and all constraints
-remaining feasible. Otherwise, restoration must reduce normalized constraint
-violation; QA may increase. Each proposal has at most six trials with successive
-halving. Rejected states never replace the accepted checkpoint.
+The script calls `opt.FreeBoundaryProblem.from_tuples`, `opt.TargetBand`, and
+`opt.minimize_projected`. The problem inherits `FunctionProblem` and provides
+`x0`, `scales`, `dof_names`, `residual`, `residual_jac`, `value_and_grad`,
+`constraint_values`, `constraint_jac`, `coils_from_x`, and `equilibrium_from_x`.
+It owns no command-line arguments or output directory. The scalar objective
+and three constraints share the compact derivative path; only an explicit
+request computes the full QA residual Jacobian.
 
-Convergence requires feasibility and a sufficiently small projected QA gradient.
-An exhausted trial budget reports stagnation. A step budget or tiny coil motion
-does not establish convergence.
+`example_support.py` connects the public API to this maintained case's verified
+inputs, original coordinate chart, checkpoint schema and diagnostic files.
+It enforces the saved targets, tolerances and normalization. The example does
+not manipulate anchors, assemble derivatives, or write checkpoint internals.
+Changing this case's physical contract requires updating its records. Other
+cases can use the public API directly without this persistence adapter.
 
-QA error is the squared norm of `QuasisymmetryRatioResidual` at normalized flux
-surfaces 0.25, 0.5, 0.75, and 1 with helicity (1, 0). The objective is half that
-error divided by the initial QA squared norm. It is not a Boozer-mode error or
-an independent field-line confinement certificate.
+Legacy case functions retain their interfaces; proposal and acceptance delegate
+to the library implementation. Existing equilibrium benchmark interfaces remain
+available. This refactor keeps projected QA/restoration; it does not adopt the
+fixed-boundary example's augmented Lagrangian or L-BFGS-B. The API and its current
+limitations are documented in `docs/reference/optimization.rst`.
 
-## Initial state and resume
-
-`inputs/manifest.json` authenticates the bundled input, coils, and spectral seed.
-The small seed NPZ contains numerical arrays and a schema label; it is not a
-certified 48×40 restart state. Fresh initialization performs one ordinary
-refined-grid solve and independently certifies its `result.state`, not the
-continuation restart buffer. Ordinary and freshly evaluated edge residuals must
-agree with relative tolerance 1e-5 and absolute tolerance 1e-15.
-
-Use a project environment satisfying VMEX's dependencies with compatible ESSOS
-`Coils` and `Curves`. The validated campaign used Python 3.12, JAX/JAXLIB 0.6.2,
-Solvax 0.20.0, NumPy 2.2.6, SciPy 1.15.3, and netCDF4 1.7.2 on an NVIDIA RTX
-4090 D. Its ESSOS `coils.py` SHA256 was
-`8988ebb9ffdda232782dabe131d1e1d7cfe02b9e13da23c3ac82bb954fcb987e`.
-Runtime manifests record the installed ESSOS source hash rather than assuming
-that any release behaves identically.
-
-From the repository root, with an authorized GPU selected:
+For example, from the repository root with the VMEX/ESSOS environment active,
+prepare and certify the bundled initial state in a new output directory:
 
 ```sh
-export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
-export JAX_ENABLE_X64=1
-case_dir='examples/m=3n=3iota=0p2aspect=5angular48x40'
-python -B "$case_dir/run.py" --initialize-only --target-step 10 \
-  --device cuda:0 --max-wall-hours 1 --output-dir "$case_dir/outputs/initial"
+PYTHONDONTWRITEBYTECODE=1 python -B \
+  'examples/m=3n=3iota=0p2aspect=5angular48x40/single_stage_free_boundary_optimization.py' \
+  --initialize-only --device cuda:0 --max-wall-hours 1 \
+  --output-dir 'examples/m=3n=3iota=0p2aspect=5angular48x40/runs/example-initial'
 ```
 
-Each output directory must be new. After initialization passes, read
-`latest_checkpoint.json` for the checkpoint path and SHA256, then supply both:
+To optimize, omit `--initialize-only` and specify `--target-step` (an absolute
+accepted-step limit, at most 3000). Resume also requires `--resume-checkpoint`
+and `--checkpoint-sha256`; every invocation uses a new output directory.
+`--help` and importing the script perform no solves. The new entry point records
+the actual checkout revision plus source hashes, and honors the device ordinal.
+This code reorganization alone is not numerical qualification of a new run.
+
+From the repository root, run the lightweight tests with a compatible environment:
 
 ```sh
-python -B "$case_dir/run.py" --resume-checkpoint CHECKPOINT_PATH \
-  --checkpoint-sha256 CHECKPOINT_SHA256 --target-step 10 \
-  --device cuda:0 --max-wall-hours 24 --output-dir "$case_dir/outputs/validation10"
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  'examples/m=3n=3iota=0p2aspect=5angular48x40/tests'
 ```
 
-Validate the clean terminal summary, exit, ten accepted checkpoints, gates and
-diagnostics before continuing from the authenticated step-10 checkpoint with
-`--target-step 3000`. This means **3000 total accepted steps**, not 3000 more.
-Each process is limited to 24 hours. Subsequent processes restore accepted states
-exactly and recheck certification without a cold equilibrium solve.
+### Required fast tangent policy
 
-Every accepted step saves its checkpoint and records iota, QA error, aspect,
-signed B0 and residuals. Paired coil/WOUT exports occur initially, every 20 steps,
-and at the final accepted state. Initial compilation is substantial; measure
-steady step times using consecutive promotion events within the same segment.
+Both `run.py` and `single_stage_free_boundary_optimization.py` now execute the
+same maintained optimizer. `run.py` is a compatibility wrapper, not a second
+implementation. Every step uses a dense adjoint and retains its LU
+factors for tangent prediction. Backtracking scales a previously checked tangent
+at the same accepted root; each response is checked again against the original
+matrix-free operator. Promotion closes the old linearization. Missing, stale or
+failed linearizations stop or reject the trial; there is no GCROT or
+accepted-state-only fallback in this workflow.
 
-## Monitoring deployment
+The predictor is always `equilibrium_predictor=reused_dense`. The batch size
+defaults to `--adjoint-dense-batch-size 32`; set it to `64` to use that batch
+instead. Numeric inputs skip the timing comparison. A fresh run still performs
+the complete initial equilibrium solve and certification, then computes the
+first gradient once. First-use compilation is still required.
 
-`campaign.py` and `workflow.py` expect a deployment root containing `source/`,
-`external/ESSOS`, `venv/`, authenticated source/test manifests, a validated
-checkpoint, `policy.json`, and `registry.json`. They are deployment controllers,
-not automatic installation or bootstrap scripts. The controller GPU UUID and
-`monitor_both.py` SSH alias/root refer to the original authorized deployment and
-must be configured deliberately for another machine.
+Optional `--adjoint-dense-batch-size auto` tunes once per run at the first accepted
+root: it warms up batches 32 and 64 and compares three alternating pairs of
+complete gradients. Batch 64 must be at least 5% faster in every pair; otherwise
+32 wins. Every gradient row must agree with the first batch-32 result to 1e-8
+relative (exactly for zero rows), in addition to the original solver checks.
+Any numerical failure stops the run. The chosen factors are reused immediately
+and the batch is retained for subsequent steps. Tuning uses eight gradient calls,
+adds startup/compilation time, and obeys the run's walltime limit. It is not
+repeated each step or reused blindly across devices, code versions, or restarts.
 
-Despite its legacy filename, `monitor_both.py` checks **only this high-resolution
-case**. The hourly watcher invokes it with `--restart`. The locked controller
-prevents duplicate processes and resumes eligible kills or timeouts from verified
-accepted checkpoints. Scientific/integrity failures, unknown exits, stagnation,
-convergence and exhausted budgets require review instead of blind relaunch.
+The manifest records both the requested policy and actual batch. Optional auto
+tuning writes measurements to `adjoint_batch_tuning.json` and the progress log.
+Initialization without a gradient does not trigger tuning.
+Requests for `--equilibrium-predictor tangent`,
+`--equilibrium-predictor accepted` or `--adjoint-dense-batch-size 4` are rejected
+explicitly. Automatic batching cannot re-enable the removed slow predictor.
 
-The campaign policy permits 96 cumulative solver hours within seven elapsed days,
-at most 64 segments and three consecutive no-progress interruptions, and requires
-at least 10 GiB free disk. Per-process limits remain at most 24 hours. Live
-deployment metadata, caches, generated WOUTs and campaign results are excluded
-from this source publication. Publishing does not modify the active deployment
-or install a scheduler for other users.
+The VMEX 0.9.1 `free_boundary_continuation_state_pullback` API, called with
+`return_linearization=True`, returns the gradient, accepted-state identity and
+dense factors together. Its `.tangent(accepted, cfg, direction)`
+checks root/configuration identity and performs the direct solve; `.close()`
+releases the numerical cache. No module monkey-patching is used.
 
-## Validation
+The example follows the fixed-boundary `examples/optimization/qa_optimization.py`
+layout: run settings, objective/constraint derivatives, optimization, and output.
+`ADJOINT_BATCH_SIZE` is alongside the device and budget settings. Case inputs,
+the projected-QA/restoration proposal, acceptance rules, and output remain shared
+helpers. Tuning and normal steps call the same native derivative helper; all
+linearization lifecycle points share the same cleanup. This is a code-structure
+cleanup; it does not adopt the fixed example's optimizer or targets.
 
-The ten-step GPU validation completed with exit 0 and all numerical gates passed.
-Its endpoint remained outside the target bands: numerical validation did not
-establish target attainment or QA convergence. The running 3000-step campaign
-is not represented as a completed result here.
+Force/edge 1e-11, projected-root 2e-6, linear residual 2e-5, target bands,
+optimizer caps, continuation spacing, finite backtracking and checkpoint lineage
+are unchanged. No root polishing or augmented Lagrangian is enabled.
 
-Run the included lightweight acceptance, checkpoint, diagnostic and controller
-tests without launching a GPU campaign:
+The isolated prototype measured 15.8/12.8-second warmed steps on LHK3-6 GPU3,
+versus 70.3/67.9 seconds for the matched tangent-GCROT reference. Both accepted
+alpha 0.25 with matching gradients. Accepted normalized QA differed by 7.18e-8;
+two rejected trials exceeded the extra 1e-7 QA comparison threshold. These are
+single-anchor performance results, not identical equilibrium states or a
+multi-step qualification. See the workspace reports
+`reports/tangent-reuse-20260917/` and
+`reports/vacuum-tangent-integration-20260917/` for prototype and integration evidence.
 
-```sh
-python -B -m pytest "$case_dir/tests" "$case_dir/test_campaign.py" \
-  "$case_dir/test_workflow.py" -q
-```
+Historical predictor-removal, warm-restart and batch-sweep evidence remains under
+`campaigns/step214-to1000-20260914/analysis/`. Archived campaign source is provenance,
+not an alternative maintained entry point. This local source update does not
+replace, restart or otherwise change an already running remote campaign.

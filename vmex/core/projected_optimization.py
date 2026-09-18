@@ -322,6 +322,7 @@ def minimize_projected(problem, *, maxiter, options=None, callback=None, initial
         )
         if initial_gradient_norm is None:
             initial_gradient_norm = direction.projected_gradient_norm
+        problem.initial_gradient_norm = initial_gradient_norm
         last_gradient, gradient_step = direction.projected_gradient_norm, nit
         done, threshold = converged(direction, initial_gradient_norm, policy)
         emit(

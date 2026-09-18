@@ -9,7 +9,7 @@ import sys
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    "case_diagnostics", Path(__file__).resolve().parents[1] / "diagnostics.py"
+    "case_diagnostics", Path(__file__).resolve().parents[1] / "examples/optimization/_free_boundary_diagnostics.py"
 )
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
@@ -32,7 +32,7 @@ def checkpoint(root, step):
 
 
 def recorder(root):
-    return m.Diagnostics(root, targets=[0.2, 5.0, -0.175], tolerances=[0.002, 0.05, 0.00175])
+    return m.AcceptedHistory(root, targets=[0.2, 5.0, -0.175], tolerances=[0.002, 0.05, 0.00175])
 
 
 def record(d, root, step, export, **changes):
@@ -132,3 +132,42 @@ def test_final_noninterval_snapshot(tmp_path):
         last = record(d, tmp_path, step, export)
     d.snapshot(step=3, checkpoint=last["checkpoint"], metrics=last["metrics"], export=export)
     assert calls == ["step_0000", "step_0003"]
+
+
+@pytest.mark.parametrize("original_error", [None, TimeoutError("walltime")])
+def test_export_failure_preserves_final_checkpoint_and_original_error(tmp_path, original_error):
+    from types import SimpleNamespace as NS
+    import time
+
+    observer = m.Diagnostics.__new__(m.Diagnostics)
+    closed = []
+    observer.output, observer.started = tmp_path, time.monotonic()
+    observer.status, observer.initial_step = "step_budget_reached", 0
+    observer.last_candidate, observer.handlers = None, {}
+    observer.last_checkpoint = checkpoint(tmp_path, 0)
+
+    def save(path):
+        path.write_text("accepted state with final stopping reference")
+        return dict(path=str(path), sha256=m.sha256(path), accepted_step=0)
+
+    observer.problem = NS(accepted_step=0, initial_gradient_norm=2.75,
+                          save_checkpoint=save, close=lambda: closed.append(True))
+    observer.monitor = NS(save=lambda path: path.write_text("cost\n0.5\n"))
+    observer.metrics = lambda: values(0)
+
+    def fail(**kwargs):
+        raise OSError("WOUT export failed")
+
+    observer.history = NS(snapshot=fail)
+    if original_error is None:
+        with pytest.raises(OSError, match="WOUT export failed"):
+            observer.__exit__(None, None, None)
+    else:
+        assert observer.__exit__(type(original_error), original_error, None) is False
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["status"] == "failed"
+    assert summary["initial_projected_gradient_norm"] == 2.75
+    assert summary["finalization_error"] == "WOUT export failed"
+    assert Path(summary["final_checkpoint"]["path"]).is_file()
+    assert "final_wout" not in summary
+    assert closed == [True]

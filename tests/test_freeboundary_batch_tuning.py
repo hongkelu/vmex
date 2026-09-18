@@ -1,7 +1,5 @@
 """Selection must survive warmup bias, timing drift, and numerical failures."""
 import dataclasses
-import importlib
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,8 +8,8 @@ import pytest
 
 @pytest.fixture
 def tuner(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
-    return importlib.import_module('adjoint_batch').tune_adjoint_batch
+    from vmex.core._freeboundary_dense import tune_adjoint_batch
+    return tune_adjoint_batch
 
 
 class Root:
@@ -92,7 +90,7 @@ def test_evaluation_failure_closes_prior_roots(tuner):
 def test_native_run_tunes_once_and_retains_matching_config(tuner,monkeypatch,tmp_path):
     import jax
     from vmex.core import freeboundary_continuation as fc
-    support=importlib.import_module('single_stage_support')
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
     @dataclasses.dataclass(frozen=True)
     class Solver:
         adjoint_dense_batch_size:int=32
@@ -107,26 +105,21 @@ def test_native_run_tunes_once_and_retains_matching_config(tuner,monkeypatch,tmp
         return root
     monkeypatch.setattr(fc,'free_boundary_continuation_state_pullback',linearize)
     monkeypatch.setattr(jax,'jacrev',lambda rows:lambda state:None)
-    run=support.FreeBoundaryRun.__new__(support.FreeBoundaryRun)
-    run.deadline=float('inf');run.linearization=None;run.point=None;run.step=0
-    run.started=support.time.monotonic();run.output=tmp_path
-    run.cfg=Config(Solver());initial_cfg=run.cfg;run.solver=run.cfg.solver
-    run.batch_tuning_done=False;run.adjoint_batch_size=32
-    run.accepted=SimpleNamespace(state=None);run.rows=None;run.values=np.ones(2);run.provenance={}
-    run._tune_adjoint_batch([])
-    assert len(configs)==8 and run.batch_tuning_done
-    assert configs[0] is initial_cfg  # preserve the already compiled solver
-    assert run.linearization.cfg is run.cfg and not run.linearization.closed
-    assert run.provenance['adjoint_dense_batch_size']==run.adjoint_batch_size
-    assert (tmp_path/'adjoint_batch_tuning.json').exists()
-    previous=run.linearization
-    # Restore the anchor while retaining the selected, already compiled solver.
-    run.cfg=dataclasses.replace(initial_cfg,solver=run.solver)
-    run._close_linearization()
-    run.linearization = run._state_linearization(run.cfg, [])
-    assert len(configs)==9 and previous.closed
-    assert run.linearization.cfg is run.cfg
-    assert run.cfg.solver.adjoint_dense_batch_size==run.adjoint_batch_size
-    assert all(r.closed for r in roots[:-1])
-    run._close_linearization()
+    problem = FreeBoundaryProblem.__new__(FreeBoundaryProblem)
+    problem.deadline = None
+    problem._linearization = None
+    problem._linearization_record = None
+    problem._compact_jac = None
+    problem.cfg = Config(Solver()); initial_cfg = problem.cfg
+    problem.solver = problem.cfg.solver
+    problem.accepted = SimpleNamespace(state=None)
+    problem._compact_state = lambda s: None
+    problem._emit = lambda *a, **k: None
+    report = problem.tune_adjoint_batch()
+    assert len(configs) == 8
+    assert configs[0] is initial_cfg
+    assert problem._linearization.cfg is problem.cfg
+    assert not problem._linearization.closed
+    assert report['selected_batch_size'] == problem.solver.adjoint_dense_batch_size
+    problem.close()
     assert all(r.closed for r in roots)

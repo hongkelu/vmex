@@ -4,7 +4,7 @@ from vmex.core.coil_parameters import CoilParameters
 import numpy as np
 import pytest
 
-CASE = Path(__file__).resolve().parents[1]
+DATA = Path(__file__).resolve().parent / 'data/free_boundary_qa'
 chart = CoilParameters(np.zeros((4, 3, 9)), np.ones(4), current_dofs=(1, 2, 3))
 from vmex.core import projected_optimization as m
 TARGETS = np.array([.2, 5., -.17506474574437714])
@@ -87,7 +87,7 @@ def test_true_acceptance_keeps_original_bands_and_qa_requirement():
 
 
 def test_recorded_step204_jacobian_predicts_inward_qa_descent():
-    with np.load(CASE/'tests/fixtures/baseline_step204_proposal.npz',allow_pickle=False) as z:
+    with np.load(DATA/'baseline_step204_proposal.npz',allow_pickle=False) as z:
         values,jac=z['rows'],z['jacobian']
     scales=np.r_[np.full(3,.06),np.tile([.002,.002,.002,.0005,.0005,.002/9,.002/9,.002/16,.002/16],12)]
     d=m.proposal(values, jac, scales, TARGETS, CS, m.ProjectedOptions(), motion_bounds=chart.motion_bounds)

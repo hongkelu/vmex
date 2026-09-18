@@ -1,5 +1,5 @@
 """Public trial correction preserves prediction, gates and rejected evidence."""
-from types import MethodType, SimpleNamespace as NS
+from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import numpy as np
 import pytest
@@ -11,9 +11,6 @@ from vmex.core.errors import VmecError
 
 
 def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
-    import case
-    from example_support import CaseRun
-    from single_stage_support import FreeBoundaryRun
 
     anchor = NS(parameters=np.zeros(1), state=10., rcon0=1., zcon0=2.)
     result = NS(state=20., converged=converge, iterations=30,
@@ -27,8 +24,6 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
         cert.side_effect = VmecError('root residual gate')
     monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', solve)
     monkeypatch.setattr(fc, 'certify_free_boundary_continuation_state', cert)
-    monkeypatch.setattr(case, 'STATE_NAMES', ())
-    monkeypatch.setattr(case, 'sampled_displacement', lambda _: np.zeros((1, 3)))
     problem = FreeBoundaryProblem.__new__(FreeBoundaryProblem)
     problem.x0 = problem.scales = np.ones(1)
     problem.deadline = None
@@ -43,12 +38,7 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
     problem._compact_jac = np.zeros((4, 1))
     problem._compact_state = lambda _: np.zeros(4)
     problem.metadata = {'holder': {'failed_trials': 0}}
-    recorder = NS(problem=problem, args=NS(equilibrium_predictor='reused_dense'),
-                  step=1801, output=tmp_path, accepted=anchor, values=np.zeros(4),
-                  builder=NS(motion_bounds=lambda _: (0., 0.)), event=Mock())
-    for name in ('_record_proposal', '_record_ordinary_correction', '_record_certification', '_record_candidate'):
-        setattr(recorder, name, MethodType(getattr(FreeBoundaryRun, name), recorder))
-    problem._emit = MethodType(CaseRun.solver_event, recorder)
+    problem._emit = Mock()
     return problem, solve, tangent, cert
 
 
@@ -69,8 +59,9 @@ def test_reused_tangent_rejects_failed_equilibrium_and_certification(monkeypatch
     assert problem.accepted is anchor
     if not converge:
         cert.assert_not_called()
-    with np.load(tmp_path/'trial_step_1802_trial_01_candidate.npz') as data:
-        assert not bool(data['eligible_for_resume'])
+    emitted = problem._emit.call_args_list[-1]
+    assert emitted.args == ('candidate',)
+    assert emitted.kwargs['stage'] is solve.return_value
 
 
 def test_each_backtracking_trial_restarts_at_the_accepted_anchor(monkeypatch, tmp_path):

@@ -1,32 +1,20 @@
 """Independent QA sizing, physical feasibility, rollback and stopping checks."""
 
-import importlib.util
-import json
-import sys
-import os  # noqa: F401
 from pathlib import Path
 from vmex.core.coil_parameters import CoilParameters
 import numpy as np
 import pytest
 
-CASE = Path(__file__).resolve().parents[1]
+DATA = Path(__file__).resolve().parents[1] / "examples/data/free_boundary_qa"
 chart = CoilParameters(np.zeros((4, 3, 9)), np.ones(4), current_dofs=(1, 2, 3))
 
 
-def module(name):
-    spec = importlib.util.spec_from_file_location("fresh_aspect5_" + name, CASE / (name + ".py"))
-    m = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = m
-    spec.loader.exec_module(m)
-    return m
 
 
 from vmex.core import projected_optimization as opt
-case = module("case")
-cp = module("checkpoint")
 POLICY = opt.ProjectedOptions()
 TARGETS = np.array([0.2, 5.0, -0.17506474574437714])
-CS = case.CONSTRAINT_SCALES
+CS = np.array([.005, .05, .01])
 
 
 def jacobian():
@@ -43,14 +31,12 @@ def direction(values, policy=POLICY, jac=None, scales=None):
 
 
 def test_fresh_targets_tolerances_and_signed_b0():
-    np.testing.assert_array_equal(np.array(list(json.loads((CASE / "case_contract.json").read_text())["targets"].values())), TARGETS)
     info = opt.constraint_state(np.array([1.0, 0, 0, 0]), TARGETS, CS, POLICY)
     np.testing.assert_allclose(info["tolerances"], [0.002, 0.05, 0.0017506474574437714])
     assert info["feasible"] and info["violation"] == 0
-    contract = json.loads((CASE / "case_contract.json").read_text())
-    assert contract["adjoint_solver"] == "forward_dense_jax"
-    assert contract["force_tolerance"] == contract["edge_force_tolerance"] == 1e-11
-    assert contract["adjoint_residual_rtol"] == 2e-5 and not contract["root_polishing"]
+    from vmex import VmecInput
+    inp = VmecInput.from_file(DATA / "input.rotating_ellipse")
+    assert inp.ftol_array[0] == 1e-11
 
 
 def test_fresh_qa_size_is_independent_of_roundoff_constraints():
@@ -72,7 +58,7 @@ def test_fresh_infeasible_restoration_is_not_amplified():
     values = np.array([1.0, -0.46, -5.1, 0.0])
     rng = np.random.default_rng(834)
     jac = rng.normal(size=(4, 111))
-    d = direction(values, jac=jac, scales=case.PARAMETER_SCALES)
+    d = direction(values, jac=jac, scales=chart.scales)
     assert d.mode == "restoration"
     change = jac[1:] @ d.delta
     alpha = -change[0] / values[1]
@@ -197,13 +183,3 @@ def test_fresh_convergence_requires_feasibility_and_projected_gradient():
     assert not opt.converged(outside, 1.0, POLICY)[0]
     with pytest.raises(ValueError, match="rank deficient"):
         direction([1, 0, 0, 0], jac=np.ones((4, 111)))
-
-
-def test_fresh_original_seed_is_authenticated():
-    inp, builder, state, contract, hashes = case.load_case()
-    assert (inp.mpol, inp.ntor, inp.nfp) == (3, 3, 2)
-    assert hashes["seed_checkpoint.npz"] == "bbc25674652973ccdb2f0e1305216af6016a84c6a4ce9775afe6ca479290d9f1"
-    with np.load(CASE / "inputs/seed_checkpoint.npz", allow_pickle=False) as z:
-        assert int(z["accepted_step"]) == 0 and np.all(z["parameters"] == 0)
-        for n in case.STATE_NAMES:
-            np.testing.assert_array_equal(getattr(state, n), z[n])

@@ -152,7 +152,6 @@ def test_every_example_parses() -> None:
 # test_every_example_parses still checks their syntax. New unlisted roots remain
 # subject to the registry, so adding another case requires an explicit decision.
 RESEARCH_CASE_DIRS = {
-    "optimization/free_boundary_qa",
     "m=3n=3iota=0p2aspect=5finitebeta",
     "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40",
     "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage",
@@ -399,8 +398,7 @@ def test_fixed_free_boundary_comparison(tmp_path):
 
 def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():
     """Vacuum uses the maintained public API; finite beta keeps its own model."""
-    case = EXAMPLES / "optimization/free_boundary_qa"
-    vacuum = (case / "single_stage_free_boundary_optimization.py").read_text()
+    vacuum = (EXAMPLES / "optimization/single_stage_free_boundary_optimization.py").read_text()
     for contract in ("FreeBoundaryProblem.from_tuples", "TargetBand", "minimize_projected"):
         assert contract in vacuum
     assert "pack_boundary" not in vacuum

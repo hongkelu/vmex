@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 import time
 from typing import Callable
 
@@ -98,6 +99,9 @@ class FreeBoundaryProblem(FunctionProblem):
         scales=None,
         constraints=(),
         restart_from=None,
+        checkpoint=None,
+        checkpoint_sha256=None,
+        checkpoint_identity=None,
         solver_options=None,
         objective_normalization="initial",
         continuation=None,
@@ -115,6 +119,9 @@ class FreeBoundaryProblem(FunctionProblem):
         attaches an already certified config with the identical field chart;
         the caller authenticates checkpoint data before creating that config.
         A numeric objective_normalization preserves an existing normalization.
+        checkpoint plus checkpoint_sha256 restores an accepted state without
+        solving it again; certification must preserve every stored array.
+        checkpoint_identity must describe the objective and optimizer settings.
         Only state/runtime objective terms are supported in this first API.
         """
         if not jax.config.x64_enabled:
@@ -132,6 +139,29 @@ class FreeBoundaryProblem(FunctionProblem):
         constraints = tuple(constraints)
         if not all(isinstance(c, TargetBand) for c in constraints):
             raise TypeError("constraints must be TargetBand instances")
+        from . import _freeboundary_checkpoint as storage
+
+        if checkpoint is not None and (continuation is not None or restart_from is not None or x0 is not None):
+            raise ValueError("checkpoint cannot be combined with continuation, seed or x0")
+        if checkpoint is None and checkpoint_sha256 is not None:
+            raise ValueError("checkpoint_sha256 requires a checkpoint")
+        if continuation is not None and checkpoint_identity is not None:
+            raise ValueError("checkpoint storage requires construction with solver_options, not continuation")
+        saved = None
+        identity = None
+        if checkpoint_identity is not None:
+            identity = storage.identity(inp, parameterization, constraints, solver_options or {},
+                                        dict(objectives=checkpoint_identity, continuation_step=continuation_step,
+                                             max_continuation_steps=max_continuation_steps,
+                                             root_residual_atol=root_residual_atol))
+        if checkpoint is not None:
+            if identity is None:
+                raise ValueError("checkpoint_identity is required to authenticate objective and optimizer settings")
+            if objective_normalization != "initial":
+                raise ValueError("checkpoint owns the objective normalization")
+            saved = storage.read(checkpoint, checkpoint_sha256, identity)
+            x0 = saved["parameters"]
+            objective_normalization = float(saved["loss_scale"])
         if continuation is not None:
             if any(x is not None for x in (restart_from, solver_options, x0)):
                 raise ValueError("continuation already specifies solver, seed and initial parameters")
@@ -165,43 +195,59 @@ class FreeBoundaryProblem(FunctionProblem):
 
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("walltime")
-            stage = _solve_free_boundary_stage(
-                inp,
-                external_field=parameterization(jnp.asarray(point)),
-                resolution=solver.resolution,
-                ftol=solver.implicit.ftol,
-                max_iterations=solver.implicit.max_iterations,
-                initial_state=restart_from,
-                include_edge_in_convergence=True,
-                edge_force_tolerance=solver.edge_force_tolerance,
-                error_on_no_convergence=False,
-                jacobian_retries=0,
-                allow_initial_axis_reguess=False,
-                use_fft=False,
-            )
-            if not stage.result.converged:
-                raise VmecError("initial ordinary equilibrium did not converge")
-            cfg = fc.make_free_boundary_continuation_config_from_state(
-                solver,
-                params,
-                point,
-                state=stage.result.state,
-                rcon0=stage.rcon0,
-                zcon0=stage.zcon0,
-                parameter_scales=parameterization.scales,
-                continuation_step=continuation_step,
-                max_continuation_steps=max_continuation_steps,
-                root_residual_atol=root_residual_atol,
-            )
-            if not np.isclose(stage.result.fedge, cfg._anchor.result.fedge, rtol=1e-5, atol=1e-15):
-                raise VmecError("ordinary/fresh edge residual disagreement")
+            if saved is not None:
+                from .solver import SpectralState
+                state = SpectralState(*(jnp.asarray(saved[f]) for f in storage.FIELDS))
+                cfg = fc.make_free_boundary_continuation_config_from_state(
+                    solver, params, point, state=state, rcon0=jnp.asarray(saved["rcon0"]),
+                    zcon0=jnp.asarray(saved["zcon0"]), parameter_scales=parameterization.scales,
+                    continuation_step=continuation_step, max_continuation_steps=max_continuation_steps,
+                    root_residual_atol=root_residual_atol)
+                storage.verify(cfg._anchor, saved)
+            else:
+                if isinstance(restart_from, (str, Path)):
+                    from .restart import restart_state
+                    restart_from = restart_state(restart_from, inp, ns=solver.resolution.ns)
+                stage = _solve_free_boundary_stage(
+                    inp,
+                    external_field=parameterization(jnp.asarray(point)),
+                    resolution=solver.resolution,
+                    ftol=solver.implicit.ftol,
+                    max_iterations=solver.implicit.max_iterations,
+                    initial_state=restart_from,
+                    include_edge_in_convergence=True,
+                    edge_force_tolerance=solver.edge_force_tolerance,
+                    error_on_no_convergence=False,
+                    jacobian_retries=0,
+                    allow_initial_axis_reguess=False,
+                    use_fft=False,
+                )
+                if not stage.result.converged:
+                    raise VmecError("initial ordinary equilibrium did not converge")
+                cfg = fc.make_free_boundary_continuation_config_from_state(
+                    solver,
+                    params,
+                    point,
+                    state=stage.result.state,
+                    rcon0=stage.rcon0,
+                    zcon0=stage.zcon0,
+                    parameter_scales=parameterization.scales,
+                    continuation_step=continuation_step,
+                    max_continuation_steps=max_continuation_steps,
+                    root_residual_atol=root_residual_atol,
+                )
+                if any(not np.array_equal(np.asarray(a), np.asarray(b)) for a, b in
+                       zip(jax.tree.leaves(stage.result.state), jax.tree.leaves(cfg._anchor.state))):
+                    raise VmecError("initial certification changed the ordinary state")
+                if not np.isclose(stage.result.fedge, cfg._anchor.result.fedge, rtol=1e-5, atol=1e-15):
+                    raise VmecError("ordinary/fresh edge residual disagreement")
         if not cfg.solver.include_edge_in_convergence:
             raise ValueError("a strict edge-certified continuation config is required")
         if cfg.solver.adjoint_solver != "forward_dense_jax":
             raise ValueError("this API currently requires the forward_dense_jax derivative backend")
         if not np.array_equal(cfg.parameter_scales, parameterization.scales):
             raise ValueError("continuation and coil coordinate scales differ")
-        return cls(
+        problem = cls(
             inp,
             parameterization,
             cfg,
@@ -211,6 +257,11 @@ class FreeBoundaryProblem(FunctionProblem):
             event=event,
             deadline=deadline,
         )
+        problem.checkpoint_identity = identity
+        if saved is not None:
+            problem.accepted_step = int(saved["accepted_step"])
+            problem.initial_gradient_norm = saved["gradient_reference"]
+        return problem
 
     def __init__(
         self, inp, parameterization, cfg, objective_terms, constraints, normalization, *, event=None, deadline=None
@@ -221,6 +272,9 @@ class FreeBoundaryProblem(FunctionProblem):
         self.solver, self.params = cfg.solver, cfg.params
         self.rt = im.runtime_from_params(self.params, self.solver.implicit)
         self.accepted = cfg._anchor
+        self.accepted_step = 0
+        self.initial_gradient_norm: float | None = None
+        self.checkpoint_identity: str | None = None
         self.targets = np.array([c.target for c in constraints])
         self.constraint_scales = np.array([c.scale for c in constraints])
         self.constraint_tolerances = np.array([c.tolerance for c in constraints])
@@ -343,7 +397,7 @@ class FreeBoundaryProblem(FunctionProblem):
         if count > self.cfg.max_continuation_steps:
             raise TrialRejected("continuation budget exceeded")
         self._derivatives(self.accepted)
-        self._emit("proposal", delta=delta.copy(), trial=trial, points=count)
+        self._emit("proposal", delta=delta.copy(), trial=trial, points=count, jacobian=self._compact_jac.copy())
         last_stage = point = None
         try:
             diagnostics = []
@@ -417,6 +471,7 @@ class FreeBoundaryProblem(FunctionProblem):
             raise ValueError("candidate is not a current evaluation of this problem")
         self.cfg = fc.reanchor_free_boundary_continuation_config(self.cfg, candidate)
         self.accepted = self.cfg._anchor
+        self.accepted_step += 1
         self._close_linearization()
         self._records = {self._key(self.accepted.parameters): self.accepted}
         self._vg_cache = self._rj_cache = None
@@ -457,6 +512,42 @@ class FreeBoundaryProblem(FunctionProblem):
         """Return a certified equilibrium; WOUT uses its exact fixed-geometry vacuum."""
         record = self._record(x)
         return _Equilibrium(self.inp, record.state, self.rt, record.result, _wout_factory=lambda: self._wout(record))
+
+    def tune_adjoint_batch(self):
+        """Compare batches 32/64 at this root and retain the certified winner's factors."""
+        from ._freeboundary_dense import BATCH_SIZES, tune_adjoint_batch
+
+        self._check_time()
+        self._close_linearization()
+        configs = {batch: self.cfg if batch == self.solver.adjoint_dense_batch_size
+                   else replace(self.cfg, solver=replace(self.solver, adjoint_dense_batch_size=batch))
+                   for batch in BATCH_SIZES}
+        rhs = jax.jacrev(self._compact_state)(self.accepted.state)
+
+        def evaluate(batch):
+            self._check_time()
+            diagnostics = []
+            root = fc.free_boundary_continuation_state_pullback(
+                self.accepted, configs[batch], rhs, diagnostics=diagnostics, return_linearization=True)
+            try:
+                self._emit("adjoint_batch_certification", batch=batch, rows=diagnostics)
+            except BaseException:
+                root.close()
+                raise
+            return root
+
+        selected, linearization, report = tune_adjoint_batch(
+            evaluate, deadline=self.deadline if self.deadline is not None else float("inf"), event=self._emit)
+        self.cfg, self.solver = configs[selected], configs[selected].solver
+        self._linearization = linearization
+        self._linearization_record = self.accepted
+        self._compact_jac = np.asarray(linearization.field_jacobian)
+        return report
+
+    def save_checkpoint(self, path):
+        """Save the accepted root and optimizer reference for exact authenticated resume."""
+        from ._freeboundary_checkpoint import write
+        return write(self, path)
 
     def close(self):
         """Release retained derivative factors without altering accepted results."""

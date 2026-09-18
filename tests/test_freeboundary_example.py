@@ -1,6 +1,5 @@
 """Exercise the readable loop with real acceptance rules and synthetic rows."""
 
-import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from vmex.core import projected_optimization as optimizer
@@ -12,7 +11,7 @@ import pytest
 
 @pytest.fixture
 def problem_and_loop(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "examples/optimization"))
 
     class Problem:
         def __init__(self):
@@ -114,44 +113,43 @@ def test_already_at_budget_does_not_evaluate(problem_and_loop):
 
 
 
-def test_example_passes_its_definitions_to_the_problem(problem_and_loop, monkeypatch, tmp_path):
-    from types import SimpleNamespace
+
+def test_standalone_script_passes_original_physics_and_policy(monkeypatch, tmp_path):
+    import runpy
+    from unittest.mock import Mock
+    from dataclasses import asdict
+    import json
+    pytest.importorskip('essos')
     from vmex import optimize as opt
-
-    example = importlib.import_module("single_stage_free_boundary_optimization")
+    folder = Path(__file__).resolve().parents[1] / 'examples/optimization'
+    monkeypatch.syspath_prepend(str(folder))
+    entry = runpy.run_path(str(folder/'single_stage_free_boundary_optimization.py'))
     calls = []
-    problem = SimpleNamespace(dof_names=("current[1]/nominal",))
-
-    class Run:
-        def __init__(self, args):
-            self.cfg = SimpleNamespace(solver=SimpleNamespace(implicit=SimpleNamespace(inp="input")))
-            self.builder, self.resume, self.deadline = "chart", None, 100.
-            self.input, self.coil_parameters, self.continuation = "input", "chart", self.cfg
-            self.output = tmp_path
-
+    class Output:
+        deadline = None
+        solver_event = Mock()
+        def __init__(self, *a, **kw):
+            pass
         def __enter__(self):
             return self
-
-        def bind(self, value):
-            assert value is problem
-
         def __exit__(self, *exc):
             calls.append(self.status)
-
-    def build(inp, terms, **kwargs):
-        calls.append((inp, terms, kwargs))
-        return problem
-
-    monkeypatch.setattr(example, "parse_args", lambda *a, **k: SimpleNamespace(
-        output_dir=tmp_path, target_step=10, initialize_only=True))
-    monkeypatch.setattr(example, "CaseRun", Run)
-    monkeypatch.setattr(opt.FreeBoundaryProblem, "from_tuples", build)
-    monkeypatch.setattr(opt, "OptimizationMonitor", lambda p: None)
-    example.main([])
+        def bind(self, problem, **kw):
+            assert problem.accepted_step == 0
+    def create(inp, terms, **kw):
+        calls.append((inp, terms, kw))
+        return SimpleNamespace(accepted_step=0)
+    monkeypatch.setattr(opt.FreeBoundaryProblem, 'from_tuples', create)
+    entry['main'].__globals__['Diagnostics'] = Output
+    entry['main'](['--output-dir',str(tmp_path/'run'),'--device','cpu','--initialize-only'])
     inp, terms, settings = calls[0]
-    assert inp == "input" and settings['parameterization'] == "chart"
-    assert terms[0][1:] == (0.0, 1.0)
-    assert [c.target for c in settings['constraints']] == [example.IOTA_TARGET, example.ASPECT_TARGET, example.B0_TARGET]
-    assert [c.rtol for c in settings['constraints']] == [.01]*3
-    assert settings['objective_normalization'] == 'initial'
+    assert (inp.ntheta,inp.nzeta,list(inp.ns_array)) == (48,40,[31])
+    assert settings['parameterization'].size == 111
+    assert settings['parameterization'].n_segments == 75
+    assert settings['solver_options']['ftol'] == settings['solver_options']['edge_force_tolerance'] == 1e-11
+    assert settings['solver_options']['adjoint_dense_batch_size'] == 32
+    assert [c.target for c in settings['constraints']] == [.2,5.,-.17506474574437714]
+    expected = json.loads((Path(__file__).parent/'data/free_boundary_qa/optimizer_policy.json').read_text())
+    assert settings['checkpoint_identity']['optimizer'] == expected == asdict(opt.ProjectedOptions())
+    assert settings['restart_from'].name == 'initial_state.npz'
     assert calls[1] == 'initialized_only'

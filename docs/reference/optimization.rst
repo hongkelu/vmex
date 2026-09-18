@@ -795,7 +795,7 @@ methods are optional alternatives; coupled_gcrot remains the default.
 Strict accepted-state examples
 ------------------------------
 
-The maintained ``examples/optimization/free_boundary_qa/`` example uses the
+The maintained ``single_stage_free_boundary_optimization.py`` example uses the
 public problem API and dense JAX backend.
 ``make_free_boundary_continuation_config_from_state`` imports an equilibrium
 with explicit constraint baselines and freshly certifies it without invoking
@@ -850,7 +850,7 @@ For an input with ``lfreeb=True`` and a confining initial coil set:
 
 The maintained vacuum example additionally constrains signed on-axis B0 and
 uses authenticated inputs and checkpoint restoration. See
-``examples/optimization/free_boundary_qa/single_stage_free_boundary_optimization.py``.
+``examples/optimization/single_stage_free_boundary_optimization.py``.
 It retains its original 111 coordinates, scales and physical acceptance rules.
 For other cases, the direct public API above does not import that example.
 
@@ -892,7 +892,7 @@ GPU equilibrium or optimizer step.
 Use ``Coils.to_json`` / ``Coils.from_json`` for new exports. Legacy fork JSON
 with normalized ``dofs_currents`` has different loader semantics on upstream;
 convert such inputs to explicit physical arrays before using this interface.
-The maintained example already loads its authenticated physical arrays directly.
+The maintained example uses standard ESSOS JSON with physical currents.
 
 Target bands
 ~~~~~~~~~~~~
@@ -946,3 +946,41 @@ The callback receives an ``OptimizeResult`` after each accepted step; raising
 full inequality KKT certificate or independent physical qualification.
 ``step_budget_reached`` and ``stagnated`` both have ``success=False``.
 The caller owns checkpoint authentication and numerical qualification.
+
+
+Standalone rotating-ellipse example
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The free-boundary example has one optimization script and one diagnostics
+helper in ``examples/optimization/``. Its three scientific inputs live in
+``examples/data/free_boundary_qa/``: ``input.rotating_ellipse`` is a standard
+``&INDATA`` namelist, ``coils.json`` uses ESSOS serialization, and
+``initial_state.npz`` preserves the six spectral state arrays exactly.
+``restart_from`` accepts this lossless seed path; it still performs one ordinary
+solve and fresh certification. It does not treat the seed as a certified root.
+
+For an exact optimizer resume, supply ``checkpoint``, ``checkpoint_sha256`` and
+``checkpoint_identity`` to ``FreeBoundaryProblem.from_tuples``. The identity
+must describe the objective definitions and optimizer options. The library also
+binds the input, coil chart, target bands, solver options and continuation gates.
+Checkpoint storage requires construction with ``solver_options``; attaching an
+existing ``continuation`` remains a separate in-memory interface.
+Changed numerical settings are rejected before certification. Certification
+must preserve the saved state, masks and constraint baselines exactly and never
+launches an ordinary solve. The problem exposes ``accepted_step`` and
+``initial_gradient_norm`` and writes accepted states with ``save_checkpoint``.
+Pass the saved gradient reference to ``minimize_projected`` on resume.
+
+The default dense batch size remains 32. ``problem.tune_adjoint_batch()`` is
+optional: it compares 32/64 at the unchanged root, checks gradient agreement,
+and retains only the selected certified factors. The diagnostics helper never
+assembles derivatives or controls optimizer acceptance.
+
+Historical case checkpoints require explicit conversion with
+``tools/convert_freeboundary_checkpoint.py``. Supply the original input directory
+and both SHA256 values for the source and a new-format reference checkpoint.
+The converter checks effective input, coil chart, optimizer policy, targets and
+solver gates against that reference, then preserves the numerical arrays and
+stopping reference. It refuses policy changes and missing stopping references.
+The converted checkpoint is still freshly certified when resumed; conversion
+itself does not establish equilibrium validity.

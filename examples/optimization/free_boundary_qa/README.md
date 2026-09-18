@@ -20,7 +20,7 @@ independent qualification of a new equilibrium or GPU campaign.
 ### Public problem API
 
 `single_stage_free_boundary_optimization.py` follows
-`examples/optimization/qa_optimization.py`: settings, objective tuples,
+`examples/optimization/QA_optimization.py`: settings, objective tuples,
 physical constraints, problem construction, optimization, and reporting.
 The design vector contains three relative currents and 108 Cartesian coil
 Fourier coefficients. The plasma boundary is determined by equilibrium.
@@ -40,20 +40,18 @@ not manipulate anchors, assemble derivatives, or write checkpoint internals.
 Changing this case's physical contract requires updating its records. Other
 cases can use the public API directly without this persistence adapter.
 
-Legacy case functions retain their interfaces; proposal and acceptance delegate
-to the library implementation. Existing equilibrium benchmark interfaces remain
-available. This refactor keeps projected QA/restoration; it does not adopt the
-fixed-boundary example's augmented Lagrangian or L-BFGS-B. The API and its current
-limitations are documented in `docs/reference/optimization.rst`.
+The example uses the public problem and projected optimizer directly. There is
+no case-local numerical problem, optimizer loop, or legacy import adapter.
+Checkpoint migration records remain because supported resumes still use them.
 
 For example, from the repository root with the VMEX/ESSOS environment active,
 prepare and certify the bundled initial state in a new output directory:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -B \
-  'examples/m=3n=3iota=0p2aspect=5angular48x40/single_stage_free_boundary_optimization.py' \
+  'examples/optimization/free_boundary_qa/single_stage_free_boundary_optimization.py' \
   --initialize-only --device cuda:0 --max-wall-hours 1 \
-  --output-dir 'examples/m=3n=3iota=0p2aspect=5angular48x40/runs/example-initial'
+  --output-dir 'examples/optimization/free_boundary_qa/runs/example-initial'
 ```
 
 To optimize, omit `--initialize-only` and specify `--target-step` (an absolute
@@ -67,14 +65,13 @@ From the repository root, run the lightweight tests with a compatible environmen
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
-  'examples/m=3n=3iota=0p2aspect=5angular48x40/tests'
+  'examples/optimization/free_boundary_qa/tests'
 ```
 
 ### Required fast tangent policy
 
-Both `run.py` and `single_stage_free_boundary_optimization.py` now execute the
-same maintained optimizer. `run.py` is a compatibility wrapper, not a second
-implementation. Every step uses a dense adjoint and retains its LU
+`single_stage_free_boundary_optimization.py` is the case entry point.
+Every step uses a dense adjoint and retains its LU
 factors for tangent prediction. Backtracking scales a previously checked tangent
 at the same accepted root; each response is checked again against the original
 matrix-free operator. Promotion closes the old linearization. Missing, stale or
@@ -110,7 +107,7 @@ dense factors together. Its `.tangent(accepted, cfg, direction)`
 checks root/configuration identity and performs the direct solve; `.close()`
 releases the numerical cache. No module monkey-patching is used.
 
-The example follows the fixed-boundary `examples/optimization/qa_optimization.py`
+The example follows the fixed-boundary `examples/optimization/QA_optimization.py`
 layout: run settings, objective/constraint derivatives, optimization, and output.
 `ADJOINT_BATCH_SIZE` is alongside the device and budget settings. Case inputs,
 the projected-QA/restoration proposal, acceptance rules, and output remain shared

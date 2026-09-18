@@ -131,8 +131,8 @@ unless they are compact reviewed documentation artifacts.
 Published-equilibrium comparisons and reproducibility studies belong in
 `../benchmarks/`, not among the user-facing optimization examples.
 
-## M3/N3 single-stage cases
+## Free-boundary single-stage QA
 
-- [m=3n=3iota=0p2](m=3n=3iota=0p2/README.md)
-
-- [m=3n=3iota=0p2aspect=5angular48x40](m=3n=3iota=0p2aspect=5angular48x40/README.md)
+- [Maintained 48x40 case](optimization/free_boundary_qa/README.md): coil-current
+  and Fourier-coefficient optimization with projected QA and target restoration.
+  Launch through `optimization/single_stage_free_boundary_optimization.py`.

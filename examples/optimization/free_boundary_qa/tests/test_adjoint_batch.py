@@ -113,7 +113,7 @@ def test_native_run_tunes_once_and_retains_matching_config(tuner,monkeypatch,tmp
     run.cfg=Config(Solver());initial_cfg=run.cfg;run.solver=run.cfg.solver
     run.batch_tuning_done=False;run.adjoint_batch_size=32
     run.accepted=SimpleNamespace(state=None);run.rows=None;run.values=np.ones(2);run.provenance={}
-    values,jac=run.linearize()
+    run._tune_adjoint_batch([])
     assert len(configs)==8 and run.batch_tuning_done
     assert configs[0] is initial_cfg  # preserve the already compiled solver
     assert run.linearization.cfg is run.cfg and not run.linearization.closed
@@ -122,12 +122,11 @@ def test_native_run_tunes_once_and_retains_matching_config(tuner,monkeypatch,tmp
     previous=run.linearization
     # Restore the anchor while retaining the selected, already compiled solver.
     run.cfg=dataclasses.replace(initial_cfg,solver=run.solver)
-    run.linearize()
+    run._close_linearization()
+    run.linearization = run._state_linearization(run.cfg, [])
     assert len(configs)==9 and previous.closed
     assert run.linearization.cfg is run.cfg
     assert run.cfg.solver.adjoint_dense_batch_size==run.adjoint_batch_size
     assert all(r.closed for r in roots[:-1])
-    run.cfg=dataclasses.replace(initial_cfg,solver=Solver(64 if run.adjoint_batch_size==32 else 32))
-    with pytest.raises(RuntimeError,match='configuration was replaced'):
-        run.linearize()
+    run._close_linearization()
     assert all(r.closed for r in roots)

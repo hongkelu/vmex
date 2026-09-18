@@ -1,4 +1,4 @@
-"""Neither maintained entry point can select a slow predictor or small batch."""
+"""The maintained entry point can select a slow predictor or small batch."""
 from pathlib import Path
 import importlib
 from types import SimpleNamespace
@@ -11,12 +11,10 @@ def support(monkeypatch):
     return importlib.import_module('single_stage_support')
 
 
-def test_default_policy_and_legacy_entrypoint(support):
+def test_default_policy_and_entrypoint(support):
     args=support.parse_args(['--output-dir','unused'],target_step=1,device='cpu',max_wall_hours=1)
     assert args.equilibrium_predictor=='reused_dense' and args.adjoint_dense_batch_size==32
-    legacy=importlib.import_module('run')
     current=importlib.import_module('single_stage_free_boundary_optimization')
-    assert legacy.main is current.main
     assert current.ADJOINT_BATCH_SIZE==32
 
 

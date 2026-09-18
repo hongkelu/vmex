@@ -3,10 +3,8 @@
 import hashlib
 import json
 from pathlib import Path
-import jax.numpy as jnp
 import numpy as np
 from vmex.core.input import VmecInput
-from vmex.core.wout import read_wout  # noqa: F401
 
 N_BASE_COILS, NFP, FOURIER_ORDER, SOLVE_COIL_SEGMENTS = 4, 2, 4, 75
 STELLSYM = True
@@ -23,19 +21,7 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-from vmex.core.coil_parameters import CoilParameters, DirectCoilField  # noqa: F401
-
-
-class Full111FieldBuilder(CoilParameters):
-    """Compatibility constructor for the original 111-coordinate chart."""
-
-    def __init__(self, nominal_dofs_curves, nominal_base_currents):
-        super().__init__(nominal_dofs_curves, nominal_base_currents,
-                         current_dofs=CURRENT_GROUPS, max_coil_mode=FOURIER_ORDER,
-                         nfp=NFP, stellsym=STELLSYM, n_segments=SOLVE_COIL_SEGMENTS,
-                         scales=PARAMETER_SCALES)
-        self.nominal_dofs_curves = jnp.asarray(self.coefficients)
-        self.nominal_base_currents = jnp.asarray(self.currents)
+from vmex.core.coil_parameters import CoilParameters
 
 
 CASE = Path(__file__).resolve().parent
@@ -77,26 +63,12 @@ def load_case():
             raise ValueError("invalid seed state")
     return (
         inp,
-        Full111FieldBuilder(jnp.asarray(curves), jnp.asarray(currents)),
+        CoilParameters(curves, currents, current_dofs=CURRENT_GROUPS, max_coil_mode=FOURIER_ORDER,
+                       nfp=NFP, stellsym=STELLSYM, n_segments=SOLVE_COIL_SEGMENTS, scales=PARAMETER_SCALES),
         SpectralState(*(data[k] for k in STATE_NAMES)),
         contract,
         expected,
     )
-
-
-def physical_rows(state, rt):
-    from single_stage_support import scientific_workflow
-    return scientific_workflow().physical_rows(state, rt)
-
-
-def resolve_targets(initial_physical):
-    from single_stage_support import scientific_workflow
-    return scientific_workflow().resolve_targets(initial_physical)
-
-
-def make_rows(runtime, targets, loss_scale):
-    from single_stage_support import scientific_workflow
-    return scientific_workflow().make_rows(runtime, targets, loss_scale)
 
 
 def metrics(values, targets, loss_scale):
@@ -111,3 +83,16 @@ def metrics(values, targets, loss_scale):
         constraint_inf=float(np.max(np.abs(values[1:]))),
         target_errors=dict(zip(ROW_ORDER[1:], (physical - targets).tolist())),
     )
+
+
+def sampled_displacement(delta):
+    """Evaluate the proposed coil displacement at the 75 diagnostic angles."""
+    delta = np.asarray(delta)
+    if delta.shape != (111,) or not np.all(np.isfinite(delta)):
+        raise ValueError('expected finite 111-vector')
+    t = np.arange(75)/75
+    basis = np.ones((75, 9))
+    for k in range(1, 5):
+        basis[:, 2*k-1] = np.sin(2*np.pi*k*t)
+        basis[:, 2*k] = np.cos(2*np.pi*k*t)
+    return np.einsum('cdk,sk->csd', delta[3:].reshape(4, 3, 9), basis)

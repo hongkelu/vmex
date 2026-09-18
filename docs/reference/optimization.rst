@@ -795,7 +795,8 @@ methods are optional alternatives; coupled_gcrot remains the default.
 Strict accepted-state examples
 ------------------------------
 
-``examples/m=3n=3iota=0p2/run.py`` uses the existing reverse-GCROT backend.
+The maintained ``examples/optimization/free_boundary_qa/`` example uses the
+public problem API and dense JAX backend.
 ``make_free_boundary_continuation_config_from_state`` imports an equilibrium
 with explicit constraint baselines and freshly certifies it without invoking
 an equilibrium solver. ``certify_free_boundary_continuation_state`` returns
@@ -849,7 +850,7 @@ For an input with ``lfreeb=True`` and a confining initial coil set:
 
 The maintained vacuum example additionally constrains signed on-axis B0 and
 uses authenticated inputs and checkpoint restoration. See
-``examples/m=3n=3iota=0p2aspect=5angular48x40/single_stage_free_boundary_optimization.py``.
+``examples/optimization/free_boundary_qa/single_stage_free_boundary_optimization.py``.
 It retains its original 111 coordinates, scales and physical acceptance rules.
 For other cases, the direct public API above does not import that example.
 

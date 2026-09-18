@@ -22,7 +22,9 @@ checkpoint = module("checkpoint")
 
 
 def test_refined_initial_field_does_not_redefine_signed_b0_target():
-    np.testing.assert_array_equal(case.resolve_targets([0.201, 4.8, -0.185]), [0.2, 5.0, -0.17506474574437714])
+    entry = module("single_stage_free_boundary_optimization")
+    np.testing.assert_array_equal([entry.IOTA_TARGET, entry.ASPECT_TARGET, entry.B0_TARGET],
+                                  [0.2, 5.0, -0.17506474574437714])
 
 
 def test_explicit_grid_and_unchanged_spectral_seed():

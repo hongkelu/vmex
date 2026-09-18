@@ -12,7 +12,7 @@ import sys
 
 
 def main(argv=None):
-    case = Path(__file__).resolve().parents[1] / "m=3n=3iota=0p2aspect=5angular48x40"
+    case = Path(__file__).resolve().parent / "free_boundary_qa"
     previous_path = sys.path.copy()
     try:
         sys.path.insert(0, str(case))

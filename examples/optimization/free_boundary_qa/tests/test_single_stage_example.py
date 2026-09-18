@@ -2,6 +2,9 @@
 
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
+from vmex.core import projected_optimization as optimizer
+from vmex.core.coil_parameters import CoilParameters
 
 import numpy as np
 import pytest
@@ -10,11 +13,8 @@ import pytest
 @pytest.fixture
 def problem_and_loop(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
-    example = importlib.import_module("single_stage_free_boundary_optimization")
-    support = importlib.import_module("single_stage_support")
-    optimizer = importlib.import_module("optimization")
 
-    class Problem(support.FreeBoundaryRun):
+    class Problem:
         def __init__(self):
             # No solver or output directory: only test iteration/acceptance.
             self.step = 8
@@ -22,7 +22,7 @@ def problem_and_loop(monkeypatch):
             self.parameter_scales = np.ones(111)
             self.constraint_scales = np.array([.005, .05, .01])
             self.targets = np.array([.2, 5., -.17506474574437714])
-            self.policy = optimizer.Policy()
+            self.policy = optimizer.ProjectedOptions()
             self.initial_gradient_norm = 2.0  # Simulate a resumed run.
             self.jac = np.zeros((4, 111))
             self.jac[0, 6] = 1.
@@ -31,6 +31,10 @@ def problem_and_loop(monkeypatch):
             self.trials = 0
             self.promotions = []
             self.failure = None
+            self.scales = self.parameter_scales
+            self.parameterization = CoilParameters(np.zeros((4, 3, 9)), np.ones(4), current_dofs=(1, 2, 3))
+            self.constraint_tolerances = 0.01 * np.abs(self.targets)
+            self.accepted = SimpleNamespace(parameters=np.zeros(111), values=self.values)
 
         def event(self, phase, **values):
             self.events.append((phase, values))
@@ -42,14 +46,29 @@ def problem_and_loop(monkeypatch):
             self.trials += 1
             if self.failure is not None:
                 raise self.failure
-            return object(), self.values + self.jac @ delta
+            values = self.values + self.jac @ delta
+            return SimpleNamespace(parameters=self.accepted.parameters + delta, values=values), values
 
         def accept(self, trial):
             self.promotions.append(trial)
+            self.accepted = trial
             self.values = trial.values
             self.step += 1
 
-    return Problem(), example.optimize, optimizer.TrialRejected
+        def optimizer_rows(self, record):
+            return record.values
+
+        def constraint_values(self, x):
+            return self.targets + self.values[1:] * self.constraint_scales
+
+    def optimize(problem, target_step):
+        result = optimizer.minimize_projected(
+            problem, maxiter=target_step - problem.step, options=problem.policy,
+            initial_gradient_norm=problem.initial_gradient_norm)
+        assert result.initial_gradient_norm == problem.initial_gradient_norm
+        return result.status
+
+    return Problem(), optimize, optimizer.TrialRejected
 
 
 def test_absolute_budget_and_original_gradient_reference(problem_and_loop):
@@ -91,41 +110,8 @@ def test_already_at_budget_does_not_evaluate(problem_and_loop):
     assert problem.trials == 0 and problem.promotions == []
 
 
-def test_workspace_launcher_name_does_not_shadow_scientific_workflow(problem_and_loop, monkeypatch, tmp_path):
-    import sys
-    from types import ModuleType
-
-    problem, _, rejected = problem_and_loop
-    launcher = ModuleType("single_stage_free_boundary_optimization")
-    launcher.__file__ = str(tmp_path / "single_stage_free_boundary_optimization.py")
-    monkeypatch.setitem(sys.modules, launcher.__name__, launcher)
-    optimizer = importlib.import_module("optimization")
-    direction = optimizer.proposal(problem.values, problem.jac, problem.parameter_scales,
-                                   problem.targets, problem.constraint_scales, problem.policy)
-    problem.failure = rejected("force gate failed")
-    result = optimizer.backtrack(problem.values, direction, problem.targets,
-                                 problem.constraint_scales, problem.policy,
-                                 problem.evaluate_trial, problem.record_trial)
-    assert result.candidate is None and len(result.trials) == 6
-    assert problem.step == 8 and problem.promotions == []
 
 
-def test_problem_uses_explicit_objective_and_constraint_callbacks(problem_and_loop, monkeypatch):
-    backend = importlib.import_module("single_stage_problem")
-    support = importlib.import_module("single_stage_support")
-    # Construction should pass the user's definitions to the numerical layer;
-    # no output directory or equilibrium solve is needed to check this boundary.
-    monkeypatch.setattr(support.FreeBoundaryRun, "__init__", lambda self, args: None)
-    def rows(runtime, targets, scale):
-        return None
-
-    def physical_values(state, runtime):
-        return None
-
-    def targets(initial_physical):
-        return None
-    problem = backend.FreeBoundaryProblem(None, rows=rows, physical_values=physical_values, targets=targets)
-    assert backend._objective_functions(problem) == (physical_values, targets, rows)
 
 
 def test_example_passes_its_definitions_to_the_problem(problem_and_loop, monkeypatch, tmp_path):

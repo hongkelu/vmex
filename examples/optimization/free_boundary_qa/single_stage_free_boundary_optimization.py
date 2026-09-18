@@ -70,17 +70,6 @@ def main(argv=None):
     print(f"Accepted history and final coil/WOUT paths: {run.output}")
 
 
-def __getattr__(name):
-    # Source compatibility for old run.py, benchmarks and imported callbacks.
-    if name in ("physical_rows", "resolve_targets", "make_rows"):
-        import case_objectives
-
-        return getattr(case_objectives, name)
-    if name in ("FreeBoundaryProblem", "optimize"):
-        import single_stage_problem
-
-        return getattr(single_stage_problem, name)
-    raise AttributeError(name)
 
 
 if __name__ == "__main__":

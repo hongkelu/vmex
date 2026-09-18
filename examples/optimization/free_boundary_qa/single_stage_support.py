@@ -1,8 +1,7 @@
 """Input authentication, checkpointing, diagnostics and run lifecycle.
 
-Read single_stage_free_boundary_optimization.py for the user-facing problem;
-single_stage_problem.py implements the equilibrium and optimizer operations. Compatibility methods below keep
-existing benchmark callers using that same scientific implementation.
+The public FreeBoundaryProblem owns numerical evaluation and promotion.
+This module owns case loading, checkpoint files, diagnostics and run lifetime.
 """
 
 import argparse
@@ -14,34 +13,6 @@ import time
 from pathlib import Path
 
 from adjoint_batch import BATCH_SIZES, tune_adjoint_batch
-
-
-class TrialRejected(Exception):
-    """Legacy numerical rejection, translated by the public optimizer adapter."""
-
-
-def scientific_workflow():
-    """Resolve this case's script even if a workspace launcher has its name."""
-    import importlib.util
-    import sys
-
-    source = Path(__file__).with_name("single_stage_free_boundary_optimization.py").resolve()
-    private_name = "_vmex_vacuum_scientific_workflow"
-    for name in ("single_stage_free_boundary_optimization", "__main__", private_name):
-        module = sys.modules.get(name)
-        if (module is not None and getattr(module, "__file__", None)
-                and Path(module.__file__).resolve() == source
-                and hasattr(module, "FreeBoundaryProblem")):
-            return module
-    spec = importlib.util.spec_from_file_location(private_name, source)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[private_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(private_name, None)
-        raise
-    return module
 
 
 def source_commit(source):
@@ -266,9 +237,6 @@ class FreeBoundaryRun:
         if self.step == 0 or self.step % 20 == 0:
             self.event("diagnostic_snapshot", absolute_step=self.step, path=str(self.output / "diagnostics" / f"step_{self.step:04d}"))
 
-    def setup_problem(self):
-        from single_stage_problem import FreeBoundaryProblem
-        return FreeBoundaryProblem.setup_problem(self)
 
     def _close_linearization(self):
         """Release factors at the same lifecycle points for every entry point."""
@@ -276,9 +244,20 @@ class FreeBoundaryRun:
             self.linearization.close()
             self.linearization = None
 
+
     def _state_linearization(self, cfg, diagnostics):
-        from single_stage_problem import FreeBoundaryProblem
-        return FreeBoundaryProblem._state_linearization(self, cfg, diagnostics)
+        """Use the same certified gradient path for tuning and normal steps."""
+        import jax
+        from vmex.core import freeboundary_continuation as fc
+
+        # Differentiate each row with respect to the equilibrium state, then
+        # pull those derivatives back to the 111 coil/current parameters.
+        # Retain the same dense factors for the trial's tangent prediction.
+        rhs = jax.jacrev(self.rows)(self.accepted.state)
+        return fc.free_boundary_continuation_state_pullback(
+            self.accepted, cfg, rhs, diagnostics=diagnostics, return_linearization=True
+        )
+
 
     def _tune_adjoint_batch(self, diagnostics):
         """Select a batch once, retaining its solver identity and factors."""
@@ -313,16 +292,9 @@ class FreeBoundaryRun:
         self.write(self.output / 'adjoint_batch_tuning.json', report)
         self.write(self.output / 'manifest.json', self.provenance)
 
-    def linearize(self):
-        from single_stage_problem import FreeBoundaryProblem
-        return FreeBoundaryProblem.linearize(self)
-
-    def evaluate_trial(self, delta, trial):
-        from single_stage_problem import FreeBoundaryProblem
-        return FreeBoundaryProblem.evaluate_trial(self, delta, trial)
 
     def has_converged(self, direction):
-        from optimization import converged
+        from vmex.core.projected_optimization import converged
         if self.initial_gradient_norm is None:
             self.initial_gradient_norm = direction.projected_gradient_norm
         self.last_gradient = direction.projected_gradient_norm
@@ -364,30 +336,6 @@ class FreeBoundaryRun:
             projected_gradient_norm=self.last_gradient,
         )
 
-    def accept(self, result):
-        """Promote one accepted trial, then checkpoint and export its diagnostics."""
-        from vmex.core import freeboundary_continuation as fc
-        from case import metrics
-        from optimization import motion_bounds
-        self._close_linearization()
-        self.cfg = fc.reanchor_free_boundary_continuation_config(self.cfg, result.candidate)
-        self.accepted = self.cfg._anchor
-        self.step += 1
-        self.values = result.values
-        self.last_stage = None
-        self.event(
-            "promoted",
-            absolute_step=self.step,
-            metrics=metrics(self.values, self.targets, self.loss_scale),
-            root_residual=self.accepted.root_residual_norm,
-            maximum_coil_bound_m=motion_bounds(result.delta)[0],
-            maximum_current_fraction=motion_bounds(result.delta)[1],
-            trial_count=len(result.trials),
-            acceptance=result.trials[-1],
-            forces={n: float(getattr(self.accepted.result, n)) for n in ("fsqr", "fsqz", "fsql", "fedge")},
-            checkpoint=self.checkpoint(),
-        )
-        self.record_diagnostics()
 
     def save_results(self):
         import numpy as np
@@ -443,14 +391,14 @@ class FreeBoundaryRun:
         import jax.numpy as jnp
         import numpy as np
         from case import CASE, STATE_NAMES, load_case, sha256
-        from optimization import Policy
+        from vmex.core.projected_optimization import ProjectedOptions
         from checkpoint import load_checkpoint
         from vmex.core.solver import SpectralState
         from case import PARAMETER_SCALES, CONSTRAINT_SCALES
         self.parameter_scales = PARAMETER_SCALES
         self.constraint_scales = CONSTRAINT_SCALES
         self.inp, self.builder, self.seed, self.contract, self.input_hashes = load_case()
-        self.policy = Policy(**json.loads((CASE / "optimizer_policy.json").read_text()))
+        self.policy = ProjectedOptions(**json.loads((CASE / "optimizer_policy.json").read_text()))
         if sha256(CASE / "optimizer_policy.json") != self.contract["optimizer_policy_sha256"]:
             raise ValueError("optimizer policy hash mismatch")
         self.inp = dataclasses.replace(
@@ -493,7 +441,7 @@ class FreeBoundaryRun:
         import sys
         from essos.coils import Coils
 
-        source = CASE.parents[1]
+        source = CASE.parents[2]
         self.provenance = dict(
             equilibrium_predictor=self.args.equilibrium_predictor,
             adjoint_dense_batch_size=self.adjoint_batch_size,
@@ -602,7 +550,7 @@ class FreeBoundaryRun:
 
     def _record_proposal(self, delta, trial, count, name):
         import numpy as np
-        from optimization import displacement, motion_bounds
+        from case import sampled_displacement
         np.savez_compressed(
             self.output / (name + "_proposal.npz"),
             parameters=self.accepted.parameters,
@@ -610,14 +558,14 @@ class FreeBoundaryRun:
             rows=self.values,
             jacobian=self.jac,
         )
-        motion, current = motion_bounds(delta)
+        motion, current = self.builder.motion_bounds(delta)
         self.event(
             "proposal",
             absolute_step=self.step + 1,
             trial=trial,
             points=count,
             maximum_coil_bound_m=motion,
-            maximum_sampled_step_m=float(np.max(np.linalg.norm(displacement(delta), axis=-1))),
+            maximum_sampled_step_m=float(np.max(np.linalg.norm(sampled_displacement(delta), axis=-1))),
             maximum_current_fraction=current,
             predicted_row_change=(self.jac @ delta).tolist(),
         )

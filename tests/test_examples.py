@@ -1,7 +1,10 @@
 """Run the documented examples at reduced, deterministic CI budgets.
 
-Each script reads ``VMEX_EXAMPLES_CI=1``; the tests require a clean exit,
-physics progress where applicable, and the documented output artifacts.
+Every test sets ``VMEX_EXAMPLES_CI=1`` and requires a clean exit, physics
+progress where applicable, and the documented output artifacts.  Most scripts
+read the variable to shrink their work; a few have no smoke path and run as
+shipped, among them ``vmex_get_B_gradB.py`` and ``vmex_get_B_outside_plasma.py``,
+whose cost is XLA compilation that a coarser equilibrium does not reduce.
 Commented optional objective terms are exercised by their physics/AD unit tests;
 this module keeps their example wiring explicit.
 """
@@ -929,7 +932,14 @@ def test_field_query_examples_cover_inside_outside_and_vjps() -> None:
     assert "ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json" in exterior
 
 
-@pytest.mark.full  # nightly: two bounded high-order field/VJP compilations (~3 min)
+# Wall time here is XLA compilation of a few very large graphs: the order-3
+# forward derivative plus one parameter-adjoint per derivative order, over a
+# Newton-unrolled spectral inverse map. It is set by that structure, not by
+# resolution or by the number of evaluated points, so a coarser smoke
+# equilibrium does not move it. Cold, on two cores: 5.5 min (interior) and
+# 5.9 min (exterior); this lane runs with ``-n 2``, so a four-core runner gives
+# each test about that share.
+@pytest.mark.full  # nightly: two bounded high-order field/VJP compilations
 @pytest.mark.parametrize(("script", "message"), [
     ("vmex_get_B_gradB.py", "gradgradgradB VJP shapes"),
     ("vmex_get_B_outside_plasma.py", "uses virtual casing = True"),
@@ -938,7 +948,7 @@ def test_field_query_examples_run(script, message, tmp_path):
     if "outside" in script:
         pytest.importorskip("essos")
         pytest.importorskip("virtual_casing_jax")
-    out = _run_example(EXAMPLES / script, tmp_path, timeout=360)
+    out = _run_example(EXAMPLES / script, tmp_path, timeout=900)
     assert message in out and "dof_names =" in out
 
 
@@ -983,7 +993,9 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
         assert "_summary.json" in source
 
 
-@pytest.mark.full  # nightly: two bounded ESSOS tracing integrations (~40 s total)
+# Cold, on two cores, the finite-beta script takes 1.9 min; most of it is the
+# virtual-casing and tracing compilations, and this lane runs with ``-n 2``.
+@pytest.mark.full  # nightly: two bounded ESSOS tracing integrations
 @pytest.mark.parametrize(("script", "message", "output"), [
     ("vmex_fieldline_tracing_vacuum.py", "VMEX exterior API outside", "vmex_fieldline_tracing_vacuum.png"),
     ("vmex_fieldline_tracing_finite_beta.py", "VMEX coil + virtual-casing field outside",
@@ -992,7 +1004,7 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
 def test_vmex_fieldline_tracing_examples(script, message, output, tmp_path):
     pytest.importorskip("essos")
     pytest.importorskip("virtual_casing_jax")
-    out = _run_example(EXAMPLES / script, tmp_path, timeout=300)
+    out = _run_example(EXAMPLES / script, tmp_path, timeout=600)
     assert message in out
     if "finite_beta" in script:
         alignment = re.search(r"Boundary field alignment = ([0-9.eE+-]+)", out)

@@ -1652,3 +1652,43 @@ error estimates and ratios are not affected.
   they are exempt rather than uncovered. `take_fixed_boundary_gradients.py` got
   a test instead of an exemption: 5.0e-06 at the smoke settings against 1.1e-07
   at the shipped ones.
+- **Two single-stage examples now ship, and the augmented Lagrangian's cost is
+  measured rather than asserted.** The example's docstring had justified the
+  augmented Lagrangian with a penalty run ending at min |iota| 0.07 against a
+  0.42 floor -- from the OLD seed at mean iota 0.08, not the current
+  0.408/0.391/4.03, so the justification was stale. Re-measured at 301 trials
+  each, coil length target 5.3 m and coil-coil limit 0.17 m, both forms reach
+  every target:
+
+  | | penalized | augmented Lagrangian | target |
+  | --- | --- | --- | --- |
+  | aspect | 3.9841 | 3.9801 | <= 4.0 |
+  | min \|iota\| | 0.4275 | 0.4272 | >= 0.42 |
+  | B.n/B RMS | 0.800 % | 0.799 % | <= 1.0 % |
+  | coil-surface | 0.2217 | 0.2329 | >= 0.20 |
+  | coil-coil | 0.1898 | 0.1805 | >= 0.17 |
+  | max curvature | 6.903 | 6.629 | <= 7.0 |
+  | objective | 6.48e-02 | 4.49e-02 | |
+  | wall, iterations | 697 s, 149 | 755 s, 127 over 6 stages | |
+
+  The penalized form is not slower and not worse at reaching targets; what it
+  costs is tuning. A quadratic penalty asymptotes just INSIDE the threshold it
+  is handed, so each limit must be given tightened (coil separation 0.19
+  against the 0.17 limit) and the weights raised until the design lands
+  outside -- three measured attempts, the first of which settled at 0.1586.
+  The augmented Lagrangian reaches the same targets with the limits as stated
+  and a 1.4x lower objective. Ship both: the penalized file is the one to copy
+  for a new problem, the augmented Lagrangian the one to finish with.
+- **`LENGTH_TARGET` 4.1 -> 5.3 on the fixed-boundary single stage.** The seed
+  coils have circumference `2*pi*0.65 = 4.08 m` but the optimizer drives them to
+  about 5.3 m whatever the target says, so 4.1 was a tug it always paid and
+  never satisfied. At 5.3 the coils land at 5.312 m, the length term stops
+  competing with the normal-field one, and every margin improves: curvature
+  6.629 against 6.909 at the old 4.1, and coil-coil 0.1805 against a 0.17 limit
+  where 4.1 managed 0.1714 against a looser 0.15.
+- **L-BFGS-B is required, not preferred, on this problem.** At the full-budget
+  solution 3 of the 99 coil dofs sit exactly on the +/-3.0 parameter bound, in
+  both forms. BFGS cannot represent a bound, so it would leave the region the
+  seed solve is known to converge on. A joint least-squares driver (plan C3)
+  would change the optimizer, not the constraint handling: its residuals are
+  still weighted, so it would inherit the penalized form's threshold offset.

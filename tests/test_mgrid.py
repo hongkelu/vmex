@@ -451,19 +451,34 @@ def test_interior_field_inverts_flux_coordinates_and_recovers_B():
                 method(shaped_points), expected_nested, rtol=1e-10,
                 atol=1e-10 * float(jnp.abs(expected_nested).max()))
 
-        # Too few Newton steps from the geometric guess must not pass for a
-        # field value; a point outside the plasma is still a quiet NaN.
-        # The geometric guess is exact for a circle, so elongate the section.
-        elongated = dict(shaped_spectra, zmns=1.8 * shaped_spectra["zmns"])
-        inside = ext._flux_coordinates_to_xyz(elongated, coordinates)
-        starved = VmecInteriorField(elongated, newton_iterations=1)
+        # Too few Newton steps must not pass for a field value; a point outside
+        # the plasma is still a quiet NaN. The starting guess sweeps the forward
+        # map, so an ellipse it lands on almost exactly; a bean-shaped section,
+        # whose VMEC poloidal angle runs well away from the polar angle, is far
+        # enough from any swept node that one step cannot close the residual.
+        bean = dict(
+            shaped_spectra,
+            xm=jnp.array([0.0, 1.0, 2.0]), xn=jnp.zeros(3),
+            rmnc=jnp.concatenate(
+                (shaped_spectra["rmnc"],
+                 (0.4 * minor_radius * s_mesh)[:, None]), axis=1),
+            zmns=jnp.concatenate(
+                (shaped_spectra["zmns"],
+                 (-0.4 * minor_radius * s_mesh)[:, None]), axis=1))
+        inside = ext._flux_coordinates_to_xyz(bean, coordinates)
+        starved = VmecInteriorField(bean, newton_iterations=1)
         with pytest.raises(VmecNumericalError, match="did not converge at 2 of 2"):
             starved.B(inside)
         with pytest.raises(VmecNumericalError, match="newton_iterations=1"):
             starved.flux_coordinates(inside)
         assert jnp.all(jnp.isnan(jax.jit(starved.B)(inside)))  # traced: cannot raise
+        # Two steps are enough, and the default is exact: the raise above is a
+        # starved budget, not a boundary this code cannot invert.
         np.testing.assert_allclose(
-            VmecInteriorField(elongated).flux_coordinates(inside), coordinates,
+            VmecInteriorField(bean, newton_iterations=2).flux_coordinates(inside),
+            coordinates, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(
+            VmecInteriorField(bean).flux_coordinates(inside), coordinates,
             rtol=0, atol=2e-12)
         outside = jnp.array([[major_radius + 1.5 * minor_radius, 0.0, 0.0]])
         assert jnp.all(jnp.isnan(shaped_field.B(outside)))
@@ -509,6 +524,52 @@ def test_interior_field_inverts_flux_coordinates_and_recovers_B():
         parameterized.B_vjp(weight), expected_vjp, rtol=2e-10, atol=2e-10)
     with pytest.raises(ValueError, match="cotangent has shape"):
         parameterized.B_vjp(jnp.ones(weight.shape + (3,)))
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")  # one solve, 200 s interpreted
+def test_interior_geometry_matches_the_wout_table():
+    """The interior field and the wout must describe the same surfaces.
+
+    ``_state_field_spectra`` and ``wout_from_state`` build ``rmnc``/``zmns``
+    from the same state and must agree exactly; the interior field is the only
+    consumer of the former, and it once carried an extra ``sqrt(s)`` on the
+    odd-``m`` rows that pulled every interior surface towards the axis while
+    leaving the boundary — and so every virtual-casing path — untouched.  The
+    identity holds for any state, converged or not, so one iteration is enough.
+    """
+    from dataclasses import replace
+
+    from vmex.core.input import VmecInput
+    from vmex.core.multigrid import solve_multigrid
+    from vmex.core.virtual_casing import _state_field_spectra
+    from vmex.core.wout import wout_from_state
+
+    deck = REPO / "examples" / "data" / "input.DSHAPE"
+    inp = VmecInput.from_file(deck).change_resolution(mpol=4, ntor=0)
+    inp = replace(inp, ns_array=np.array([9]), ftol_array=np.array([1e-20]),
+                  niter_array=np.array([1]))
+    result = solve_multigrid(inp, verbose=False, raise_on_max_iterations=False)
+
+    spectra = _state_field_spectra(inp, result.state)
+    wout = wout_from_state(
+        inp=inp, state=result.state, fsqr=float(result.fsqr),
+        fsqz=float(result.fsqz), fsql=float(result.fsql),
+        niter=int(result.iterations), converged=False)
+
+    xm, xn = np.asarray(spectra["xm"]), np.asarray(spectra["xn"])
+    order = [int(np.where((np.asarray(wout.xm) == m)
+                          & (np.asarray(wout.xn) == n))[0][0])
+             for m, n in zip(xm, xn)]
+    odd = xm % 2 == 1
+    assert odd.any(), "deck has no odd-m modes, so it cannot see the defect"
+    # Interior odd-m amplitudes must be non-trivial, or agreement is vacuous.
+    interior_odd = np.abs(np.asarray(wout.rmnc)[1:-1][:, odd]).max()
+    assert interior_odd > 1e-3, interior_odd
+
+    np.testing.assert_array_equal(
+        np.asarray(spectra["rmnc"]), np.asarray(wout.rmnc)[:, order])
+    np.testing.assert_array_equal(
+        np.asarray(spectra["zmns"]), np.asarray(wout.zmns)[:, order])
 
 
 def test_magnetic_field_cylindrical_points_round_trip():

@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.flatten_util import ravel_pytree
+from scipy.sparse.linalg import LinearOperator, gcrotmk
 
 from tests.test_lasym_free_case import lasym_free_field, lasym_free_input
 from vmex.core import implicit as im
@@ -504,6 +505,70 @@ def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
     np.testing.assert_allclose(np.asarray(solution), np.zeros(4))
 
 
+def test_cold_start_ladders_only_when_one_rung_cannot_converge(monkeypatch):
+    """A converged single rung is kept; a stalled one falls back to a ladder."""
+    inp = lasym_free_input(DATA)
+    field = lasym_free_field()
+    asked = []
+
+    def ladder(_inp, *, ns_array, external_field, **_kwargs):
+        asked.append(tuple(int(value) for value in ns_array))
+        return SimpleNamespace(state="coarse")
+
+    monkeypatch.setattr(
+        "vmex.core.multigrid.solve_free_boundary_multigrid", ladder)
+    for ns, converged, expected in ((31, True, None), (4, False, None),
+                                    (8, False, (4, 8)), (31, False, (15, 31))):
+        cfg = make_free_boundary_config(inp, field, ns=ns, ftol=1.0e-6,
+                                        max_iterations=20)
+        seen = []
+
+        def solve(*, initial_state, _seen=seen, _converged=converged):
+            _seen.append(initial_state)
+            return SimpleNamespace(
+                result=SimpleNamespace(converged=_converged), seed=initial_state)
+
+        stage = fbi._cold_reference(solve, cfg.implicit, inp, field)
+        assert seen[0] is None  # the single rung is always tried first
+        assert (asked[-1] if asked else None) == expected
+        assert stage.seed == ("coarse" if expected is not None else None)
+
+
+def test_restart_carries_the_reference_continuation_but_not_its_vacuum_cache():
+    """The trial's own field rebuilds the vacuum caches; the rest continues."""
+    stage = SimpleNamespace(
+        continuation_state="state", vacuum="vacuum", rcon0="rcon", zcon0="zcon",
+        result=SimpleNamespace(fsqr=1.0, fsqz=2.0, fsql=3.0))
+    restart = fbi._continuation(stage)
+    assert restart == {
+        "initial_state": "state", "vacuum_continuation": "vacuum",
+        "constraint_continuation": ("rcon", "zcon"),
+        "residual_continuation": (1.0, 2.0, 3.0)}
+    assert "reuse_vacuum_cache" not in restart
+
+
+def test_traced_pullback_says_it_cannot_run_the_host_schur_lane(monkeypatch):
+    """boundary_schur is a host lane; under jit the staged solve replaces it."""
+    def residual(z, p, field, *_args):
+        return jnp.asarray([z[0]**2 + p * z[1] + field, z[0] * z[1] + z[1]**2 - p])
+
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_a, **_k: residual)
+    monkeypatch.setattr(im, "_dof_projector", lambda *_args: (lambda tree: tree))
+    cfg = SimpleNamespace(
+        implicit=SimpleNamespace(adjoint_tol=1.0e-12, adjoint_gcrot_m=2,
+                                 adjoint_gcrot_k=1, adjoint_maxiter=10),
+        adjoint_solver="boundary_schur", adjoint_fail="error")
+    saved = (jnp.asarray(0.5), jnp.asarray(0.25), jnp.asarray([2., 3.]),
+             None, None, None)
+    # The warning has to name both consequences: a different solver, and the
+    # slower one, so a user who jits does not silently pay for both.
+    with pytest.warns(RuntimeWarning, match="not available under jax.jit") as caught:
+        jax.jit(lambda bar: fbi._solve_bwd_impl(cfg, saved, bar))(
+            jnp.asarray([1., -2.]))
+    message = str(caught[0].message)
+    assert "staged" in message and "slower" in message
+
+
 def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     """A bad cached state is discarded, but implementation errors are not."""
     inp = dataclasses.replace(
@@ -518,8 +583,14 @@ def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     # monkeypatch.setitem restores both entries at teardown; a bare assignment
     # would hand the all-zero mask to the next free-boundary case sharing that
     # key, which reaches the Schur lane as an edge basis with no columns.
+    # The cache holds the reference stage whose whole continuation restarts
+    # every solve; only its spectral state identifies it to the stub below.
     seed = object()
-    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, seed)
+    reference = SimpleNamespace(
+        continuation_state=seed, vacuum=None, rcon0=runtime.rcon0,
+        zcon0=runtime.zcon0,
+        result=SimpleNamespace(fsqr=0.0, fsqz=0.0, fsql=0.0))
+    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, reference)
     monkeypatch.setitem(fbi._FREE_MASK_CACHE, fbi._mask_key(cfg),
                         jax.tree.map(jnp.zeros_like, state))
     calls = []
@@ -534,9 +605,75 @@ def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
                                rcon0=runtime.rcon0, zcon0=runtime.zcon0)
 
     monkeypatch.setattr(fbi, "_solve_free_boundary_stage", solve)
+    # The cold retry builds its start from a coarse rung; that ladder is a real
+    # solve, which this stubbed unit test does not need in order to check that
+    # the bad reference is dropped.
+    monkeypatch.setattr(fbi, "_cold_reference",
+                        lambda solve, *_args: solve(initial_state=None))
     solved, *_ = fbi._host_solve_and_mask(cfg, im.params_from_input(inp), field)
     assert calls == [seed, None]
     np.testing.assert_allclose(solved.R_cos, state.R_cos)
+
+
+def test_a_restart_that_misses_ftol_is_solved_cold_instead(monkeypatch):
+    """A trial the reference cannot reach is rebuilt, and the reference stands.
+
+    Replacing the stored reference with the rebuild would make the next call
+    restart from somewhere else, which is exactly the history dependence this
+    lane exists to remove -- so the rebuild serves its own trial only.  An
+    unproductive rebuild spends the per-configuration budget; a productive one
+    does not.
+    """
+    inp = dataclasses.replace(
+        lasym_free_input(DATA), ns_array=np.array([8]),
+        ftol_array=np.array([1.0e-6]), niter_array=np.array([20]))
+    field = lasym_free_field()
+    cfg = make_free_boundary_config(inp, field, ns=8, ftol=1.0e-6,
+                                    max_iterations=20)
+    runtime = im._template_runtime(cfg.implicit)
+    state = im._initial_state(runtime.setup)
+    reference = SimpleNamespace(
+        continuation_state=object(), vacuum=None, rcon0=runtime.rcon0,
+        zcon0=runtime.zcon0,
+        result=SimpleNamespace(fsqr=0.0, fsqz=0.0, fsql=0.0))
+    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, reference)
+    monkeypatch.setitem(fbi._FREE_MASK_CACHE, fbi._mask_key(cfg),
+                        jax.tree.map(jnp.zeros_like, state))
+    monkeypatch.setitem(fbi._REBUILD_BUDGET, cfg, fbi._REBUILDS)
+
+    def stage(converged, marker):
+        return SimpleNamespace(
+            result=SimpleNamespace(state=state, fsqr=0.0, fsqz=0.0, fsql=0.0,
+                                   converged=converged, marker=marker),
+            continuation_state=state, rcon0=runtime.rcon0, zcon0=runtime.zcon0)
+
+    # The restart from the reference never reaches ftol.
+    monkeypatch.setattr(fbi, "_solve_free_boundary_stage",
+                        lambda *_a, **_k: stage(False, "restart"))
+    rebuilds = []
+
+    def rebuild(converged):
+        def cold(*_args):
+            rebuilds.append(converged)
+            return stage(converged, "rebuild")
+        return cold
+
+    monkeypatch.setattr(fbi, "_cold_reference", rebuild(True))
+    fbi._host_solve_and_mask(cfg, im.params_from_input(inp), field)
+    assert rebuilds == [True]
+    assert fbi._FREE_LAST_RESULT[cfg].marker == "rebuild"
+    assert fbi._FREE_HOT_CACHE[cfg] is reference  # the reference stands
+    assert fbi._REBUILD_BUDGET[cfg] == fbi._REBUILDS  # a useful rebuild is free
+
+    monkeypatch.setattr(fbi, "_cold_reference", rebuild(False))
+    fbi._host_solve_and_mask(cfg, im.params_from_input(inp), field)
+    assert rebuilds == [True, False]
+    assert fbi._REBUILD_BUDGET[cfg] == fbi._REBUILDS - 1
+
+    monkeypatch.setitem(fbi._REBUILD_BUDGET, cfg, 0)
+    fbi._host_solve_and_mask(cfg, im.params_from_input(inp), field)
+    assert rebuilds == [True, False]  # spent: the stalled restart is returned
+    assert fbi._FREE_LAST_RESULT[cfg].marker == "restart"
 
 
 def test_free_boundary_host_adjoint_rejects_a_false_solver_success(monkeypatch):
@@ -588,7 +725,21 @@ def test_free_boundary_current_gradient_matches_resolve_finite_difference():
         lambda value: jnp.mean(solve_free_boundary_implicit(
             params, value, cfg).R_cos[-1] ** 2), current)
     derivative = jax.grad(objective)(current)[0]
-    step = 2.0e-4
+    # A re-solve finite difference only measures the derivative while both
+    # legs stay on the same root; a step large enough to move one of them
+    # measures the root change instead, and does so by orders of magnitude.
+    # That is the rule both re-solve anchors in this file teach.  Measured
+    # here, adjoint against the central difference at three steps:
+    #
+    #   step   2e-4        2e-5        2e-6
+    #   FD    -4.293e-02  -2.306e-01  -2.366e-01   (adjoint -2.270e-01)
+    #
+    # The 2e-4 leg lands on a different root and collapses the difference by
+    # 5x; 2e-5 and 2e-6 agree with the adjoint to 1.6 % and 4.0 %, and 2e-5 is
+    # the least noisy of the usable steps.  The adjoint itself is insensitive
+    # to all of this: it moves by 0.1 % across solver revisions that move the
+    # 2e-4 difference by 5x.
+    step = 2.0e-5
     finite_difference = (
         objective(current + step) - objective(current - step)
     ) / (2.0 * step)
@@ -659,8 +810,51 @@ def test_ncsx_free_boundary_current_gradient_matches_resolve_finite_difference()
 
 
 @pytest.mark.full
-def test_free_boundary_pressure_gradient_matches_resolve_finite_difference():
-    """The solved objective retains the edge-pressure normalization response."""
+def test_free_boundary_pressure_gradient_is_certified_at_one_root():
+    """The pressure response, certified without re-solving anything.
+
+    The re-solve finite difference this replaced is not noisy on this deck,
+    PROVIDED EVERY LEG POPS ``_FREE_HOT_CACHE`` FIRST, as the retired test
+    did.  That protocol matters more than the step size and generalises to
+    any finite-difference check against this solver: measured on one head
+    with both protocols back to back, independent cold legs give 1.565918e-5,
+    1.520154e-5 and 1.520142e-5 at steps 1e-2, 1e-3 and 1e-4 -- five digits
+    stable, and an eleven-point scan that departs from its own best-fit line
+    by nothing measurable -- while legs that continue warm from each other
+    give -7.78e-5, +6.83e-4 and -1.03e-3 on the same head, with a departure
+    from that line of 75 times the signal.  Write the pop, or measure noise.
+
+    So this test is not retired for noise.  It is retired because of which
+    root its legs converge TO.  Both land on genuinely ftol-converged roots,
+    but not the same one that a different forward solve reaches: this deck
+    stops at J = 0.2752496 in 95 iterations where the previous revision
+    stopped at J = 0.2752520 in 467.  Across that change the difference moves
+    by 8.8 % while the adjoint moves by 0.2 %, so the ratio of the two is
+    1.066 with one forward solve and 0.858 with this one.  The retired test
+    allowed ten per cent, and 0.858 is outside it: the test could not be
+    re-tuned, because a tolerance calibrated to one root cannot separate a
+    wrong adjoint from a different root, and the adjoint here is right.
+    (An intermediate revision that always laddered was worse still: its
+    coarse rung put neighbouring parameter points on visibly different roots,
+    and its finite difference swung four orders of magnitude and changed
+    sign.  That arm is gone, and the sign flip that first raised the alarm
+    went with it.)
+
+    What is certified instead, both at one saved root:
+
+    1.  ``dF/dp`` in the pressure direction against a central difference *of
+        the residual itself*.  Nothing is solved, so the only error is FD
+        truncation, and the gate is 1e-6 relative.
+    2.  The assembled gradient against forward-adjoint duality: the adjoint
+        contraction against ``<dJ/dz, dz>`` with ``(dF/dz) dz = -(dF/dp) dp``
+        from an independent forward solve of the same linear system.  The two
+        sides differ only by how far each Krylov solve ran, so the gate is
+        the configuration's own ``adjoint_tol`` with the same factor of ten
+        that ``_adjoint_acceptance`` uses; measured here at 7.8e-8.
+
+    Together these fix the sign, the scale and the ``presf_ns_scale`` term of
+    the pressure entry without depending on where the nonlinear solver stops.
+    """
     inp = dataclasses.replace(
         lasym_free_input(DATA), ns_array=np.array([8]),
         ftol_array=np.array([1.0e-9]), niter_array=np.array([4000]))
@@ -672,28 +866,56 @@ def test_free_boundary_pressure_gradient_matches_resolve_finite_difference():
         field_from_parameters=lambda current: dataclasses.replace(
             field, extcur=current), device="cpu")
 
-    def objective(relative_am0):
-        trial = dataclasses.replace(
-            params, am=params.am.at[0].set(params.am[0] * (1.0 + relative_am0)))
-        state, _, _, _ = solve_free_boundary_implicit_status(
-            trial, field.extcur, cfg)
-        return jnp.mean(state.R_cos[-1]**2 + state.Z_sin[-1]**2)
+    (_state, status, _fsq, _ratio), saved = fbi._solve_status_fwd(
+        params, field.extcur, cfg)
+    assert int(status) == 0
+    prm, current, solved, mask, rcon0, zcon0, _ = saved
+    frozen = jax.lax.stop_gradient(solved)
+    project = im._dof_projector(cfg.implicit, mask)
+    z_star = project(solved)
+    residual = fbi._projected_residual(cfg, mask)
+    direction = dataclasses.replace(
+        jax.tree.map(jnp.zeros_like, prm),
+        am=jnp.zeros_like(prm.am).at[0].set(prm.am[0]))
 
-    derivative = jax.grad(objective)(0.0)
-    step = 1.0e-2
-    values = []
-    for sign in (-1.0, 1.0):
-        # Independent cold re-solves prevent continuation history from
-        # manufacturing agreement with the implicit derivative.
-        fbi._FREE_HOT_CACHE.pop(cfg, None)
-        values.append(objective(sign * step))
-    finite_difference = (values[1] - values[0]) / (2.0 * step)
+    def lane(parameters):
+        return residual(z_star, parameters, current, frozen, rcon0, zcon0)
 
-    assert abs(float(finite_difference)) > 1.0e-7
-    # This ns=8 campaign is limited by the independently reconverged nonlinear
-    # roots. The missing presf_ns_scale term changes the response by O(1).
+    analytic = jax.jvp(lane, (prm,), (direction,))[1]
+    assert float(im._tree_norm(analytic)) > 0.0
+    step = 1.0e-4
+    shifted = [jax.tree.map(lambda a, b, sign=sign: a + sign * step * b,
+                            prm, direction) for sign in (1.0, -1.0)]
+    finite = jax.tree.map(
+        lambda plus, minus: (plus - minus) / (2.0 * step),
+        lane(shifted[0]), lane(shifted[1]))
+    assert float(im._tree_norm(jax.tree.map(
+        jnp.subtract, analytic, finite))) <= 1.0e-6 * float(
+            im._tree_norm(analytic))
+
+    state_bar = jax.grad(
+        lambda s: jnp.mean(s.R_cos[-1] ** 2 + s.Z_sin[-1] ** 2))(solved)
+    params_bar, _ = fbi._solve_bwd_impl(
+        cfg, (prm, current, solved, mask, rcon0, zcon0), state_bar)
+    adjoint = float(sum(
+        jnp.vdot(left, right) for left, right in zip(
+            jax.tree.leaves(params_bar), jax.tree.leaves(direction))))
+    assert adjoint > 0.0  # more pressure pushes the boundary outward
+
+    rhs_flat = ravel_pytree(project(state_bar))[0]
+    forcing, unravel = ravel_pytree(jax.tree.map(jnp.negative, analytic))
+    operator = LinearOperator(
+        (forcing.size,) * 2,
+        matvec=lambda value: np.asarray(ravel_pytree(jax.jvp(
+            lambda z: residual(z, prm, current, frozen, rcon0, zcon0),
+            (z_star,), (unravel(jnp.asarray(value, forcing.dtype)),))[1])[0]),
+        dtype=np.asarray(forcing).dtype)
+    tangent, info = gcrotmk(operator, np.asarray(forcing), rtol=1.0e-9,
+                            atol=0.0, m=30, k=5, maxiter=300)
+    assert info == 0
+    forward = float(np.dot(np.asarray(rhs_flat), tangent))
     np.testing.assert_allclose(
-        derivative, finite_difference, rtol=1.0e-1, atol=1.0e-7)
+        adjoint, forward, rtol=10.0 * cfg.implicit.adjoint_tol, atol=0.0)
 
 
 @pytest.mark.full
@@ -1059,22 +1281,17 @@ def test_free_boundary_gradient_is_certified_factor_by_factor():
 
 
 @pytest.mark.full
-def test_free_boundary_root_reproducibility_bounds_the_gradient():
-    """Two entry points, two roots, and the gradient amplifies the gap.
+def test_free_boundary_root_is_a_function_of_the_parameters():
+    """Two entry points and repeated calls return one root, bit for bit.
 
-    ``solve_free_boundary_implicit_status`` and ``_host_solve_and_mask`` solve
-    the same problem, and the certificate above shows the adjoint of either
-    root is exact to 3.5e-12.  They do not return the same root: measured
-    4.7e-4 in relative state norm at ``ftol = 1e-7``, which moves
-    ``dJ/dI`` by 1.9e-3 -- a 4x amplification.
-
-    That is the accuracy limit of the free-boundary gradient, and it is the
-    same class the fixed-boundary lane fixed by refining the returned state
-    before linearizing: ``ftol`` gates a sum of squares, so a converged solve
-    stops with ``|F| ~ sqrt(ftol)``, and where ``dF/dz`` has a small singular
-    value that is a real displacement.  This test pins the amplification so a
-    regression in either direction is visible; it is deliberately not a tight
-    gate on the difference itself.
+    They used to not: both entry points solved from whatever state the last
+    call left behind, so the same parameters gave different roots -- measured
+    4.7e-4 in relative state norm at ``ftol = 1e-7``, which moved ``dJ/dI`` by
+    1.9e-3, a 4x amplification, and on the finite-beta free-boundary deck at
+    ns = 31 moved the example's objective by 57 %.  An optimizer cannot line
+    search through that.  Every solve now restarts from one converged
+    reference per configuration instead of from the previous trial, so the
+    returned root depends on the parameters alone.
     """
     inp = dataclasses.replace(
         lasym_free_input(DATA), ns_array=np.array([16]),
@@ -1090,12 +1307,12 @@ def test_free_boundary_root_reproducibility_bounds_the_gradient():
     )
     current = jnp.asarray(field.extcur)
 
-    status_root, *_ = solve_free_boundary_implicit_status(params, current, cfg)
+    first, *_ = solve_free_boundary_implicit_status(params, current, cfg)
+    repeat, *_ = solve_free_boundary_implicit_status(params, current, cfg)
     host_root, *_ = fbi._host_solve_and_mask(cfg, params, current)
     host_root = jax.tree.map(jnp.asarray, host_root)
-    gap = float(jnp.linalg.norm(_flat(
-        jax.tree.map(jnp.subtract, status_root, host_root))))
-    scale = float(jnp.linalg.norm(_flat(status_root)))
-    relative_gap = gap / scale
-    # Both are "converged" by the same ftol; neither is wrong.
-    assert 1.0e-6 < relative_gap < 1.0e-2, relative_gap
+    scale = float(jnp.linalg.norm(_flat(first)))
+    for label, other in (("repeat", repeat), ("host entry point", host_root)):
+        gap = float(jnp.linalg.norm(_flat(
+            jax.tree.map(jnp.subtract, first, other))))
+        assert gap / scale == 0.0, (label, gap / scale)

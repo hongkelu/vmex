@@ -1108,6 +1108,8 @@ def free_boundary_state_pullback_multi_rhs(
     state_cotangents: SpectralState, *, rcon0, zcon0,
     root_residual_atol: float = 1e-5,
     diagnostics: list | None = None,
+    return_linearization: bool = False,
+    preconditioner=None,
 ):
     """Pull back several state cotangents at one accepted free-boundary root.
 
@@ -1115,6 +1117,12 @@ def free_boundary_state_pullback_multi_rhs(
     ``(params_bar, field_parameters_bar)`` with that leading RHS dimension.
     These are implicit state contributions only: callers must add any
     explicit objective dependence on profiles or field parameters.
+
+    With ``return_linearization=True``, return ``((params_bar, field_bar), root)``
+    where ``root`` owns the shared dense factors for subsequent tangent solves.
+    This requires ``forward_dense_jax`` and strict adjoint failure handling.
+    An explicit seed LU ``preconditioner`` replaces dense reassembly with a
+    current-root matrix-free solve; the seed never changes automatically.
 
     The state, mask and constraint baselines must come from the same solve.
     ``root_residual_atol`` bounds the norm of the projected preconditioned
@@ -1129,6 +1137,10 @@ def free_boundary_state_pullback_multi_rhs(
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
+    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
+        raise ValueError('retained linearization requires forward_dense_jax with adjoint_fail=error')
+    if preconditioner is not None and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
+        raise ValueError('seed LU requires forward_dense_jax with adjoint_fail=error')
     if cfg.adjoint_solver not in {"coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"}:
         raise ValueError("multi-RHS state pullback requires coupled_gcrot, reverse_gcrot, forward_dense, or forward_dense_jax")
     if not np.isfinite(root_residual_atol) or root_residual_atol <= 0:
@@ -1162,15 +1174,25 @@ def free_boundary_state_pullback_multi_rhs(
                 f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
         if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"}:
             from ._freeboundary_dense import solve_dense_adjoint
-            adjoints = solve_dense_adjoint(
+            solve_adjoint = solve_dense_adjoint
+            options = {}
+            if preconditioner is not None:
+                from ._freeboundary_matrixfree import solve_matrixfree_adjoint
+                solve_adjoint = solve_matrixfree_adjoint
+                options['preconditioner'] = preconditioner
+            result = solve_adjoint(
                 residual,z_star,params,field_parameters,frozen,rcon0,zcon0,
-                jax.vmap(project)(state_cotangents),dof_mask,cfg,diagnostics=diagnostics)
+                jax.vmap(project)(state_cotangents),dof_mask,cfg,diagnostics=diagnostics,
+                **options,
+                **({'return_linearization': True} if return_linearization else {}))
+            adjoints, linearization = result if return_linearization else (result, None)
             parameter_pullback = _prepare_parameter_pullback(
                 z_star,params,field_parameters,frozen,rcon0,zcon0,residual=residual)
             rows = [_apply_parameter_pullback(
                 jax.tree.map(lambda value:value[index],adjoints),parameter_pullback)
                 for index in range(count)]
-            return jax.tree.map(lambda *values:jnp.stack(values),*rows)
+            bars = jax.tree.map(lambda *values:jnp.stack(values),*rows)
+            return (bars, linearization) if return_linearization else bars
         return _host_pullback_multi_rhs(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
             jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail,

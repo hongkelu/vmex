@@ -1729,6 +1729,18 @@ def _make_body(
             # ---- TimeStepControl (evolve.f) --------------------------------
             first = it == carry.iter1
             fsq_prev = carry.fsq
+            if evaluation_state is not None and rt.include_edge_in_convergence:
+                # Vacuum activation changes the force operator.  A converged
+                # warm start can have a tiny fixed-boundary residual; retaining
+                # it as the growth reference repeatedly restores the old state
+                # even when the new free-boundary residual is decreasing.
+                # Seed strict turn-on control from the newly evaluated operator.
+                # The first-step damping window is reset independently below.
+                fsq_prev = jnp.where(
+                    (~jac1) & (~nonfinite1),
+                    e1.pre.fsqr1 + e1.pre.fsqz1 + e1.pre.fsql1,
+                    fsq_prev,
+                )
             res0_f = jnp.where(first, fsq_prev, carry.res0)
             res1_f = jnp.where(first, fsq0, carry.res1)
             record_low = (fsq_prev <= res0_f) & (fsq0 <= res1_f)

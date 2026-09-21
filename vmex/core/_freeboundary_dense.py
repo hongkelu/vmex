@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import warnings
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -110,22 +111,115 @@ def _assemble_host(tangent, template, space, batch_size):
     return matrix
 
 
-def _factor_solve(matrix, rhs, backend):
+def _factor_solve(matrix, rhs, backend, *, return_factors=False):
     """One factorization, all transpose RHS columns, without assuming symmetry."""
     if backend == 'forward_dense':
         with warnings.catch_warnings():
             warnings.simplefilter('error', sl.LinAlgWarning)
-            return sl.lu_solve(sl.lu_factor(matrix), np.asarray(rhs).T, trans=1).T
-    return jsl.lu_solve(jsl.lu_factor(matrix), rhs.T, trans=1).T
+            factors = sl.lu_factor(matrix)
+            solution = sl.lu_solve(factors, np.asarray(rhs).T, trans=1).T
+    else:
+        factors = jsl.lu_factor(matrix)
+        solution = jsl.lu_solve(factors, rhs.T, trans=1).T
+    return (solution, factors) if return_factors else solution
+
+
+@dataclass(eq=False)
+class DenseRootLinearization:
+    """Owned numerical factors and tape for exactly one certified root.
+
+    Created only after successful adjoint certification. Its caller owns the
+    accepted-state lifetime; there is no global numerical cache or slow fallback.
+    """
+    residual: object
+    z: object
+    params: object
+    field: object
+    frozen: object
+    rcon: object
+    zcon: object
+    space: object
+    factors: object
+    action: object
+    cfg: object
+    _direction: object = None
+    _response: object = None
+    _rhs: object = None
+    _tangent_backend = 'reused_dense_lu'
+
+    def _solve_tangent(self, rhs):
+        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=0)
+        return _expand(solution, self.z, self.space), 1
+
+    def close(self):
+        """Release root-specific arrays/tapes and permanently invalidate reuse."""
+        for name in self.__dataclass_fields__:
+            setattr(self, name, None)
+
+    def tangent(self, direction, *, diagnostics=None):
+        """Solve and independently certify the response to a field direction."""
+        if self.factors is None:
+            raise ValueError('dense root linearization is closed')
+        if any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(direction)):
+            raise ValueError('dense root tangent requires host-eager inputs')
+        vector = np.asarray(direction)
+        if vector.shape != self.field.shape or not np.all(np.isfinite(vector)):
+            raise ValueError('tangent direction must be finite and match field parameters')
+        if np.iscomplexobj(vector):
+            raise ValueError('tangent direction must be real')
+        scale = None
+        if self._direction is not None:
+            index = int(np.argmax(np.abs(self._direction)))
+            if self._direction.flat[index] != 0:
+                candidate = float(vector.flat[index]/self._direction.flat[index])
+                # Backtracking uses exact binary halvings. A changed direction,
+                # even a nearby one, needs its own RHS and direct solve.
+                if np.array_equal(vector, candidate*self._direction):
+                    scale = candidate
+            elif not np.any(vector):
+                scale = 0.
+        with im._device_context(self.cfg.implicit):
+            if scale is None:
+                direction = im._device_pin(self.cfg.implicit, jnp.asarray(vector))
+                rhs = jax.jvp(lambda p:self.residual(self.z,self.params,p,self.frozen,self.rcon,self.zcon),
+                              (self.field,), (direction,))[1]
+                response, iterations = self._solve_tangent(rhs)
+            else:
+                response = jax.tree.map(lambda x:scale*x,self._response)
+                rhs = jax.tree.map(lambda x:scale*x,self._rhs)
+                iterations = 0
+            # Independent full matrix-free residual, also for scaled responses.
+            defect = jax.tree.map(lambda ax,b:ax+b,self.action(response),rhs)
+            norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
+            rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
+            rtol = self.cfg.adjoint_residual_rtol
+            tolerance = (float(im._adjoint_acceptance(self.cfg.implicit,rhs_norm))
+                         if rtol is None else rtol*rhs_norm)
+            finite = all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(response))
+            accepted = finite and np.isfinite(norm) and norm <= tolerance
+            if diagnostics is not None:
+                diagnostics.append(dict(row=None,residual_norm=norm,rhs_norm=rhs_norm,
+                    relative_residual=norm/rhs_norm if rhs_norm else (0. if norm == 0 else float('inf')),
+                    tolerance=tolerance,iterations=iterations,accepted=bool(accepted),
+                    backend=self._tangent_backend,scaled_reuse=scale is not None))
+            if not accepted:
+                im._raise_adjoint_unconverged(self.cfg.implicit,iterations=iterations,
+                    residual_norm=norm,tolerance=tolerance,method=self._tangent_backend+' tangent')
+            if scale is None:
+                self._direction = vector.copy()
+                self._response, self._rhs = response, rhs
+            return response
 
 
 def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
-                        rhs_batch, mask, cfg, *, diagnostics=None):
+                        rhs_batch, mask, cfg, *, diagnostics=None, return_linearization=False):
     """Forward assembly and certified transpose solve for scalar or shared callers.
 
     This interface is host-eager even for the JAX matrix backend: the runtime
     mask determines the active dimension. No Krylov fallback is substituted.
     """
+    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
+        raise ValueError('retained linearization requires forward_dense_jax with adjoint_fail=error')
     values = (z,params,field,frozen,rcon,zcon,rhs_batch,mask)
     if any(isinstance(x,jax.core.Tracer) for x in jax.tree.leaves(values)):
         raise ValueError("dense free-boundary adjoints require host-eager inputs; "
@@ -151,7 +245,10 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     if not bool(jnp.all(jnp.isfinite(matrix))):
         reject(0,np.inf,0.)
     try:
-        solution = _factor_solve(matrix,rhs,cfg.adjoint_solver)
+        if return_linearization:
+            solution, factors = _factor_solve(matrix,rhs,cfg.adjoint_solver,return_factors=True)
+        else:
+            solution = _factor_solve(matrix,rhs,cfg.adjoint_solver)
     except (np.linalg.LinAlgError, sl.LinAlgWarning):
         reject(0,np.inf,0.)
     # Check the actual dense equation after the solve, independently of the
@@ -178,4 +275,87 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
                 reject(row,norms[row],tolerances[row])
             warnings.warn(f'{cfg.adjoint_solver} row {row} residual exceeds acceptance; '
                           "returning an inaccurate best-effort adjoint",RuntimeWarning,stacklevel=2)
-    return jax.vmap(lambda value:_expand(value,z,space))(jnp.asarray(solution))
+    adjoints = jax.vmap(lambda value:_expand(value,z,space))(jnp.asarray(solution))
+    if return_linearization:
+        return adjoints, DenseRootLinearization(
+            residual,z,params,field,frozen,rcon,zcon,space,factors,tangent,cfg)
+    return adjoints
+
+
+BATCH_SIZES = (32, 64)
+
+
+def tune_adjoint_batch(evaluate, *, deadline, event, clock=None):
+    """Return (batch, owned linearization, report) at one unchanged root.
+
+    ``evaluate(batch)`` must return a certified native linearization. Compile
+    both shapes, then measure three pairs in alternating order. Choose 64 only
+    if it beats 32 by at least 5% in every pair. The first 32 gradient is the
+    numerical reference; no candidate may change any gradient row by 1e-8.
+    All objects except the returned winner are closed, including on failure.
+    No timings or numerical factors are shared across runs/devices.
+    """
+    import statistics
+    import time
+    import numpy as np
+
+    clock = time.monotonic if clock is None else clock
+    roots, records = {}, []
+    reference = None
+    started = clock()
+    baseline, candidate = BATCH_SIZES
+    try:
+        # Discard the first call for each static batch shape (includes JIT).
+        schedule = [(batch, None) for batch in BATCH_SIZES]
+        schedule += [(batch, pair) for pair, order in enumerate(
+            (BATCH_SIZES, BATCH_SIZES[::-1], BATCH_SIZES)) for batch in order]
+        for batch, pair in schedule:
+            if clock() >= deadline:
+                raise TimeoutError('walltime during adjoint batch tuning')
+            if batch in roots:
+                roots.pop(batch).close()
+            event('adjoint_batch_probe_start', batch=batch, pair=pair)
+            start = clock()
+            root = evaluate(batch)
+            roots[batch] = root
+            jac = np.asarray(root.field_jacobian)  # synchronize before timing
+            seconds = clock() - start
+            if clock() >= deadline:
+                raise TimeoutError('walltime during adjoint batch tuning')
+            if not np.isfinite(seconds) or seconds <= 0:
+                raise ValueError('invalid adjoint batch timing')
+            if not np.all(np.isfinite(jac)):
+                raise ValueError('nonfinite adjoint batch gradient')
+            if reference is None:
+                reference = jac.copy()
+            if jac.shape != reference.shape:
+                raise ValueError('adjoint batch gradient shape changed')
+            norm = np.linalg.norm(reference, axis=1)
+            difference = np.linalg.norm(jac - reference, axis=1)
+            if not np.all(np.isfinite(norm)) or not np.all(np.isfinite(difference)):
+                raise ValueError('nonfinite adjoint batch gradient norm')
+            # Zero reference rows require exact agreement; never hide them
+            # behind an absolute tolerance or a division-by-zero workaround.
+            relative = np.divide(difference, norm, out=np.zeros_like(norm), where=norm > 0)
+            if np.any((norm == 0) & (difference != 0)) or np.any(relative > 1e-8):
+                raise ValueError('adjoint batch gradient agreement failed')
+            record = dict(batch=batch, pair=pair, warmup=pair is None,
+                          seconds=seconds, maximum_gradient_row_relative_difference=float(max(relative)))
+            records.append(record)
+            event('adjoint_batch_probe', **record)
+        timings = {batch: [r['seconds'] for r in records
+                          if r['batch'] == batch and not r['warmup']] for batch in BATCH_SIZES}
+        ratios = [b / a for a, b in zip(timings[baseline], timings[candidate])]
+        selected = candidate if all(r < 0.95 for r in ratios) else baseline
+        report = dict(requested='auto', selected_batch_size=selected,
+                      candidates=list(BATCH_SIZES), records=records, paired_64_over_32=ratios,
+                      warm_median_seconds={str(b): statistics.median(t) for b, t in timings.items()},
+                      minimum_consistent_speedup_fraction=0.05,
+                      gradient_agreement_rtol=1e-8, elapsed_seconds=clock() - started,
+                      reason='consistent_gain' if selected == candidate else 'no_consistent_gain')
+        event('adjoint_batch_selected', **report)
+        winner = roots.pop(selected)
+        return selected, winner, report
+    finally:
+        for root in roots.values():
+            root.close()

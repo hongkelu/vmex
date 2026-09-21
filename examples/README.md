@@ -1,5 +1,9 @@
 # Examples
 
+The [three-methods benchmark](three-methods-benchmark/README.md) provides
+shared rotating-ellipse inputs and prescribed-boundary QA, fixed-boundary
+single-stage, and free-boundary single-stage research examples.
+
 All runnable examples live under this single `examples/` tree. The coil and
 exterior-field examples need ESSOS 0.17 or newer: `pip install "vmex[coils]"`,
 or `pip install "vmex[all]"` for everything the examples use.

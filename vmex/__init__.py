@@ -44,6 +44,10 @@ links to the module that documents it.
   :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_result` /
   :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_stats`
   — differentiable state, endpoint diagnostics, and work counters
+- :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationLinearization`
+  — root-owned reusable derivative factors
+- :class:`~vmex.core.freeboundary_continuation.FreeBoundaryLUPreconditioner`
+  — explicit seed factors for current-root matrix-free adjoints and predictors
 - :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_state_pullback` /
   :func:`~vmex.core.freeboundary_implicit.free_boundary_state_pullback_multi_rhs`
   — shared implicit pullbacks at the same certified root
@@ -101,6 +105,13 @@ links to the module that documents it.
   :class:`~vmex.core.problem.FunctionProblem` /
   :class:`~vmex.core.problem.Evaluation` — optimizer-neutral value,
   residual, and derivative callables
+- :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` /
+  :class:`~vmex.core.freeboundary_problem.TargetBand` /
+  :class:`~vmex.core.coil_parameters.CoilParameters` — coil design variables,
+  free-boundary objectives and physical target bands
+- :func:`~vmex.core.projected_optimization.minimize_projected` /
+  :class:`~vmex.core.projected_optimization.ProjectedOptions` — projected descent
+  with target restoration and bounded backtracking
 - :class:`~vmex.core.monitoring.OptimizationMonitor` /
   :class:`~vmex.core.monitoring.OptimizationRecord` — accepted iterations;
   :class:`~vmex.core.monitoring.EquilibriumReporter` — compact diagnostics
@@ -284,6 +295,10 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.freeboundary_continuation", "reanchor_free_boundary_continuation_config"),
     "free_boundary_continuation_state_pullback": (
         ".core.freeboundary_continuation", "free_boundary_continuation_state_pullback"),
+    "FreeBoundaryLUPreconditioner": (
+        ".core.freeboundary_continuation", "FreeBoundaryLUPreconditioner"),
+    "FreeBoundaryContinuationLinearization": (
+        ".core.freeboundary_continuation", "FreeBoundaryContinuationLinearization"),
     "solve_free_boundary_continuation": (
         ".core.freeboundary_continuation", "solve_free_boundary_continuation"),
     # wout IO
@@ -341,6 +356,11 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     # optimizer-neutral problem callables
     "Evaluation": (".core.problem", "Evaluation"),
     "FunctionProblem": (".core.problem", "FunctionProblem"),
+    "FreeBoundaryProblem": (".core.freeboundary_problem", "FreeBoundaryProblem"),
+    "TargetBand": (".core.freeboundary_problem", "TargetBand"),
+    "CoilParameters": (".core.coil_parameters", "CoilParameters"),
+    "minimize_projected": (".core.projected_optimization", "minimize_projected"),
+    "ProjectedOptions": (".core.projected_optimization", "ProjectedOptions"),
     "VmecProblem": (".core.problem", "VmecProblem"),
     "EquilibriumReporter": (".core.monitoring", "EquilibriumReporter"),
     "OptimizationMonitor": (".core.monitoring", "OptimizationMonitor"),

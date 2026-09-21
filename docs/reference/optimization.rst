@@ -503,6 +503,52 @@ delegates to the existing scalar adjoint at the saved endpoint. Profiles stay
 fixed in this initial continuation API. Solver iterations and anchor selection
 are not differentiated.
 
+Reusing a dense seed as a matrix-free preconditioner
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For an explicit continuation loop, ``forward_dense_jax`` with
+``adjoint_fail="error"`` can retain one dense seed LU and solve subsequent
+adjoints and predictors with current-root matrix-vector products::
+
+    dense = vmex.free_boundary_continuation_state_pullback(
+        accepted, continuation, rhs_batch, return_linearization=True)
+    seed = dense.preconditioner(rtol=1e-11, restart=30, max_restarts=10)
+    dense.close()  # the seed owns an independent float64 host copy
+    try:
+        current = vmex.free_boundary_continuation_state_pullback(
+            accepted, continuation, rhs_batch, preconditioner=seed,
+            return_linearization=True)
+        try:
+            implicit_gradient_rows = current.field_jacobian
+            response = current.tangent(accepted, continuation, coil_direction)
+        finally:
+            current.close()
+    finally:
+        seed.close()
+
+Repeat the inner pullback at each newly certified root, with that root's
+cotangents, using the same seed. Add the objective's explicit field derivatives
+to ``field_jacobian``. The seed only preconditions the solve: it never replaces
+the current Jacobian. Identical or opposite cotangents reuse a solution within
+one batch; arbitrary row counts are supported. Predictor ownership and full
+residual checks remain the same as in the dense path.
+
+``FreeBoundaryLUPreconditioner`` is bound to one continuation configuration,
+state layout and active basis. A different resolution or mask requires a new
+seed. There is no global cache, automatic factor refresh or dense fallback.
+The requested Krylov tolerance is distinct from ``adjoint_residual_rtol``,
+which checks the actual full projected equation. Failure raises instead of
+returning an unchecked gradient. Closing a seed prevents further pullbacks;
+already-created predictor objects retain their own factor references.
+
+This removes repeated dense assembly, not the initial dense setup or storage.
+The caller may also use ``linearization.offload_factors()`` on the ordinary
+dense path to keep its factors in host memory between predictor calls. Both
+paths are host-eager and require float64. The scalar custom VJP is unchanged.
+Qualification still requires independent, reconverged finite differences at
+representative equilibria. A correct adjoint of an under-resolved equilibrium
+does not establish physical accuracy at higher resolution.
+
 Exact targets use a bounded memo (eight endpoints by default). A failed path
 does not update the memo or anchor. ``force_recompute=True`` requests a fresh
 path from the same anchor; failure preserves a previously accepted endpoint.

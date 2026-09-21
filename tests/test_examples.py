@@ -152,6 +152,7 @@ def test_every_example_parses() -> None:
 # test_every_example_parses still checks their syntax. New unlisted roots remain
 # subject to the registry, so adding another case requires an explicit decision.
 RESEARCH_CASE_ROOTS = {
+    "three-methods-benchmark",  # callback/API tests; full GPU campaign is separate
     "m=3n=3iota=0p2",
     "m=3n=3iota=0p2aspect=5angular48x40",
     "m=3n=3iota=0p2aspect=5finitebeta",

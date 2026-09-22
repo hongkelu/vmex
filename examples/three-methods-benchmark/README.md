@@ -9,7 +9,8 @@ single-stage optimization with the coils determining the plasma boundary.
 |---|---|---|
 | Prescribed-boundary QA | `qa_optimization.py` | Staged least squares |
 | Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP with `--constrained`; BFGS otherwise |
-| Free-boundary scalar single stage | `free_boundary_single_stage_optimization_scalar.py` | SLSQP with `--constrained`; BFGS otherwise |
+| Free-boundary scalar single stage | `free_boundary_single_stage_optimization_scalar.py` | SLSQP |
+| Free-boundary bounded single stage | `free_boundary_single_stage_optimization.py` | L-BFGS-B |
 
 The methods share an input, but the default scripts are not an automatically
 matched performance comparison. Match resolution, coils, objective terms,
@@ -30,7 +31,7 @@ with a 48x40 angular grid; the free driver supports explicit overrides.
 `coils.initial.scalar.json` is a saved initial coil fit, with its generation
 metadata beside it. The separately included
 `coils_single_stage_scalar_fitted_1789769333906005000.json` is the common
-stage-two fit used by the scalar free-boundary driver. Currents remain fixed.
+stage-two fit available through `--coils` during qualification. Currents remain fixed.
 Neither file is a final plasma/coil optimization checkpoint.
 
 The free-boundary initialization first solves the prescribed ellipse, then
@@ -39,13 +40,7 @@ is optimization step 0, so its boundary and QA can differ from the prescribed
 ellipse. Every subsequent candidate and retry starts from the last accepted
 equilibrium.
 
-## Run the scalar examples
-
-Inspect the free driver's options without starting a solve:
-
-```sh
-python -B free_boundary_single_stage_optimization_scalar.py --help
-```
+## Fixed-boundary reference
 
 For a fixed-boundary comparison using the saved common coils:
 
@@ -55,92 +50,133 @@ python -B single_stage_optimization_scalar.py --constrained --device gpu \
   --maxiter 100 --output runs/fixed-scalar
 ```
 
-For a bounded free-boundary matrix-free pilot:
+## Qualified free-boundary production
+
+`free_boundary_single_stage_optimization_scalar.py` (formerly
+`free_boundary_single_stage_fast.py`) follows the scalar reference directly:
+editable parameters, weighted plasma/coil objectives, a public VMEX problem,
+SciPy SLSQP, and endpoint reporting all appear in the example. It imports
+`vmex` and `vmex.optimize`, with ESSOS for coils and surfaces. It does not
+import private VMEX modules or a local driver/setup helper.
+
+`opt.FreeBoundaryProblem.from_loss` owns equilibrium correction and the total
+scalar gradient, including the moving surface in coil-surface clearance.
+`accept_x` promotes only optimizer-accepted states. The example's importable
+`build_problem` defines one initialization/objective path for production and
+qualification. No local numerical helper module is used; historical drivers
+and frozen run snapshots remain unchanged.
+
+Run expensive qualification once for the desired configuration, then reuse its
+fitted coils and certified initial checkpoint:
 
 ```sh
+python -B verify_free_boundary_single_stage.py --output runs/qualification-new
 python -B free_boundary_single_stage_optimization_scalar.py \
-  --device gpu --constrained --adjoint matrixfree \
-  --resolution 8 8 51 --grid 64 64 \
-  --adjoint-max-dofs 20000 --adjoint-batch-size 32 --no-boundary-error \
-  --initial-ftol 1e-18 --ftol 1e-11 --fd-ftol 1e-20 \
-  --matrixfree-restart 100 --matrixfree-max-cycles 3 --matrixfree-refresh-on-failure \
-  --maxiter 10 --accepted-steps 2 --max-trials 40 \
-  --wall-seconds 5400 --optimization-seconds 1800 \
-  --verification-seconds 1800 --verify-ns 51 \
-  --verify-maxiter 12000 --verify-ftol 1e-15 \
-  --output runs/free-scalar-matrixfree --no-plots
+  --qualification runs/qualification-new/qualification.json \
+  --output runs/production-new
 ```
 
-This free configuration is not resolution/objective matched to the fixed
-command above. Use a suitable GPU allocation and external finite watchdog
-for long runs. The driver creates a new output directory and refuses to
-overwrite one. The evaluation budget includes qualification endpoints.
-
-SLSQP uses `ftol=1e-10` and explicit iota/radius inequalities. The physical
-limits are minimum half-mesh |iota| >= 0.19 and major radius 0.99–1.01 m;
-internal guards are 0.1905 and 0.991–1.009 m. Intermediate SLSQP iterates
-can violate those guards. QA, aspect and coil geometry contribute to the
-weighted objective. `--no-boundary-error` removes both normal-field objective
-terms while retaining their final diagnostics. B0 is diagnostic only.
-
-The native matrix-free adjoint and tangent use a retained LU
-preconditioner, current-root JVP/VJP operations and bounded FGMRES. Fresh
-finite-difference qualification is required at both h=0.003 and h=0.001,
-with objective and constraint relative errors below 0.001. Dense/matrix-free
-gradient and tangent parity must be below 1e-8; true linear residual checks
-use a 1e-9 gate. Dense recovery is opt-in and factors refresh only after
-optimizer acceptance, as described below.
-
-## Validation status
-
-This is research code, not a completed three-method scientific qualification.
-The earlier native pilot passed independent M8/N8/NS201 physical checks.
-The later recovery/tolerance pilot described below used same-resolution final
-verification. Neither establishes a completed 100-step qualification.
-An accepted-step budget stop does not establish optimizer convergence.
-
-`QA total` is the sum of squared quasisymmetry residuals, evaluated on ten
-surfaces from s=0.1 to 1. It is distinct from the total weighted objective.
-The fresh M8/N8/NS51 free run recorded step-0 QA 0.0578603254. Report
-best feasible states separately from raw endpoints, and verify final iota
-and radius independently at higher resolution before making physical claims.
-
-Local campaign directories, raw checkpoints, machine configuration and
-monitoring scripts are excluded from this publication. The active campaign
-retains its original local `three-way-benchmark` path so its immutable source
-hashes and monitor continue working.
-
-
-## Optional matrix-free adjoints
-
-Dense adjoints remain the default and reference. To use a retained dense LU
-as a preconditioner for current-root Krylov solves, add these options to the
-free-boundary command above:
+For bounded L-BFGS-B, use the same qualification bundle:
 
 ```sh
---adjoint matrixfree --matrixfree-restart 100 --matrixfree-max-cycles 3 \
---matrixfree-rhs-batch-size 3 --matrixfree-rtol 1e-11 \
---adjoint-residual-rtol 1e-9 --predictor-rtol 1e-11 \
---matrixfree-convergence-policy residual --matrixfree-refresh-on-failure \
---ftol 1e-11 --verify-ftol 1e-15
+python -B free_boundary_single_stage_optimization.py \
+  --qualification runs/qualification-new/qualification.json \
+  --output runs/production-lbfgsb-new
 ```
 
-The Krylov stopping request and the independently evaluated full adjoint
-residual are different checks. The `residual` policy accepts a finite solution
-only when the full residual passes; `requested` additionally requires Krylov's
-convergence flag. Predictor stopping is independent. Starting-point derivative
-qualification is mandatory; its finite-difference equilibrium tolerance stays
-at `1e-20` by default and is excluded from optimization timing.
+The L-BFGS-B entry point calls the scalar production workflow with a different
+optimizer; it adds no duplicated setup, objective or post-processing code.
+Both optimize the same weighted loss. SLSQP enforces the nonlinear iota/radius
+inequalities; L-BFGS-B applies bounds `[-5, 5]` in scaled coil coordinates and
+uses the existing soft iota penalty. Radius is an endpoint check in L-BFGS-B,
+not a loss term. Its optimizer success does not imply physical feasibility.
+The shared final checks and exit status require the physical limits to pass.
+No augmented Lagrangian is used.
 
-After qualification, a failed matrix-free adjoint can trigger one checked
-dense solve at the same certified trial. Its factors replace the retained LU
-only if the optimizer accepts that trial. Failed trials and their last accepted
-anchors are saved for replay. Recovery cost is included in gradient/step timing.
-An explicit `--initial-checkpoint` requires its `--initial-checkpoint-sha256`
-and fresh qualification; it starts fresh optimizer history.
+L-BFGS-B promotes only accepted-iteration callbacks, never line-search gradient
+probes. If a proposal cannot provide a certified equilibrium/gradient, it stops
+and preserves the last accepted state; no replacement gradient is fabricated.
+The summary identifies the optimizer and whether nonlinear constraints were
+applied. Both entry-point sources are included in the qualification contract
+and saved provenance, so this rename requires fresh qualification.
 
-The vacuum M8/N8/NS51, 64x64 pilot passed two accepted steps from the formerly
-blocked step 10, with a same-resolution final force check at `1e-15`. That
-bounded result does not establish long-run convergence, finite-beta accuracy,
-or equivalence to the separate projected optimizer on `main`. Keep this path
-opt-in until a matched longer run passes numerical and physical checks.
+All commands default to GPU. Each output directory must be new. `--dry-run`
+prints configuration without creating files or initializing JAX. Production
+requires a passing matching report; it does not rerun finite differences or
+dense/matrix-free comparisons. Its own dense LU initialization and all actual
+residual checks are still necessary. The report binds input/WOUT contents,
+physics and solver controls, source hashes, dependency versions, device kind,
+fitted coils and the initial checkpoint. A changed numerical configuration or
+source requires fresh qualification. Budgets and plot flags may be changed via
+CLI without repeating qualification.
+
+Initialization is defined in the production example:
+
+- With no input option, use the rotating ellipse at `(MPOL, NTOR, NS) =
+  (8, 8, 51)` and grid `64 x 64`.
+- `--input input.case` preserves that deck's profiles and resolution unless
+  `--resolution MPOL NTOR NS` or `--grid NTHETA NZETA` is explicitly supplied.
+- `--input input.case --wout wout_case.nc` takes the boundary and restart state
+  from WOUT. The matching input deck remains required for pressure/current
+  profiles and solver controls. VMEX remaps the restart to the requested grid.
+- Without coil input, generate equally spaced coils and fit their geometry on
+  the fixed input/WOUT surface with the reference's stage-two L-BFGS-B loss.
+  Currents remain fixed. `--initial-coils file.json` fits a supplied initial
+  geometry instead. `--coil-fit-maxiter` bounds this fit (default 200).
+- `--coils fitted.json` reuses a fitted set, skipping stage two.
+
+Qualification calls this shared preparation once. Production inherits the
+input and resolution options from the report and restores the exact qualified
+seed; it performs neither stage-two refitting nor an initial ordinary solve.
+The source input/WOUT and report artifacts must remain available. Restored
+states are freshly certified before use.
+
+`verify_free_boundary_single_stage.py` checks the objective and all constraint
+rows along one reproducible direction at steps `3e-3` and `1e-3`, using
+independent corrections with force tolerance `1e-20` and error gate `1e-3`.
+It also checks matrix-free gradient/predictor parity against dense at `1e-6`.
+It writes `gradient_check.json`, `matrixfree_check.json`, and a passing
+`qualification.json` only after all gates pass. Failed attempts keep their
+available diagnostics and a report with `passed: false`; no SLSQP run starts.
+
+Production retains force/edge tolerance `1e-15`, adjoint full relative residual
+`1e-9`, Krylov request `1e-11`, 100 accepted steps and final independent
+verification at NS=201, force tolerance `1e-15`. A failed matrix-free adjoint
+gets one checked dense retry; its LU replaces the seed only if accepted.
+Each production run saves provenance, solver events, accepted checkpoints,
+WOUT/coil outputs and `optimization_summary.json`. Predictor, correction and
+gradient times remain separate. The startup budget is one hour, optimization
+twelve hours, final verification thirty minutes. Qualification separately has
+a one-hour budget. A budget endpoint or numerical check is not convergence or
+physical feasibility. No new full GPU qualification/pilot has been run as part
+of this code refactor.
+
+Post-processing matches the fixed-boundary scalar example: the equilibrium
+report includes QA, aspect, mean iota and magnetic well, followed by coil
+lengths, curvature, clearance, B.n/B and physical-limit checks. Both initial
+and independently verified final surfaces/coils are exported as VTK. The
+summary records unmet limits and the best accepted step meeting the plasma
+constraints.
+
+After verification, saved accepted checkpoints supply `accepted_steps.csv`,
+expanded `accepted_steps.json`, `step_*.npz` coil-motion diagnostics, and
+`free_boundary_scalar_objectives.csv` with individual weighted terms. Replay
+checks checkpoint hashes and parameter identity, and does not re-solve old
+states. This work is outside the optimization timer, with its own thirty-minute
+budget. Normal-field history uses the same coil-field diagnostic as the scalar
+reference; B.n terms remain excluded from the free-boundary objective.
+
+Figures are enabled by default: `optimization.png`, `objectives.png`,
+`optimization.gif`, and the standard WOUT summary, surface, |B|, profile,
+stability and 3D figures. The accepted-iterate movie defaults to the saved
+equilibrium's total `|B|`, using `MOVIE_SURFACE_COLOR="absB"`; `"B.n/B"` uses
+the plasma-vacuum interface API. `--no-movie` skips only the movie;
+`--no-plots` skips figures and the movie while retaining reports, CSV/NPZ,
+WOUT, coil JSON and VTK exports.
+
+
+## Historical validation
+
+The previous private-driver experiments and commands are preserved in Git history.
+Their timings and qualification results do not qualify these new entry points.
+A matched GPU qualification and bounded pilot remain necessary before a long run.

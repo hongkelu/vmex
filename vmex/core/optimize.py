@@ -117,6 +117,10 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    boundary_from_state,
+    boundary_from_wout,
+    major_radius,
+    on_axis_magnetic_field,
     edge_iota,
     elongation_profile,
     iota_edge,
@@ -137,6 +141,7 @@ __all__ = [
     "CoilParameters",  # noqa: F822
     "minimize_projected",  # noqa: F822
     "ProjectedOptions",  # noqa: F822
+    "TrialRejected",  # noqa: F822
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
@@ -148,6 +153,10 @@ __all__ = [
     "solve_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
+    "boundary_from_state",
+    "boundary_from_wout",
+    "major_radius",
+    "on_axis_magnetic_field",
     "mean_iota",
     "min_abs_iota",
     "soft_min_abs_iota",
@@ -201,7 +210,7 @@ def __getattr__(name: str):  # PEP 562 lazy re-export
     if name == "CoilParameters":
         from .coil_parameters import CoilParameters
         return CoilParameters
-    if name in ("minimize_projected", "ProjectedOptions"):
+    if name in ("minimize_projected", "ProjectedOptions", "TrialRejected"):
         from . import projected_optimization
         return getattr(projected_optimization, name)
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,

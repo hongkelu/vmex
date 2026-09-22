@@ -1,102 +1,245 @@
-#!/usr/bin/env python3
-"""Optimize rotating-ellipse coils with a free-boundary QA objective."""
-import argparse
-from dataclasses import asdict
+#!/usr/bin/env python
+"""True free-boundary QA optimization with ESSOS coils as the only dofs.
+
+The coils start from a set that already produces a confining field, and that
+is a requirement rather than a convenience.  Seeding this lane from circular
+coils, the way ``single_stage_optimization.py`` does, does not work for a
+vacuum zero-current deck: circular coils carry no rotational transform, so the
+plasma they produce has none either, and the quasi-symmetry residual of a
+field with no transform is trivially small.  Measured on
+``input.minimal_seed_nfp2`` (CURTOR = 0, AM = 0) at ns=25, mpol=ntor=5, with
+random non-planar excursions added to 4 circular coils per half period: at
+zero excursion the solve converges to min|iota| = 5.6e-11 with a QA residual
+of 4.2e-10; the transform is still only 4.0e-3 at excursion 3e-2, and by
+excursion 1e-1 the free-boundary root is gone (status 2) with min|iota| at
+7.9e-3, against the 0.42 this example targets.  The optimizer would start in
+a flat, degenerate region it cannot cross.
+
+``single_stage_optimization.py`` can start there precisely because its plasma
+is a *fixed-boundary* solve coupled to the coils by a B.n penalty, so the
+boundary supplies the transform and the coils are pulled toward it.  Treat
+this lane as a refinement stage for coils that already confine, not as an
+initialization stage.
+
+"""
+
+from dataclasses import replace
+import json
+import os
 from pathlib import Path
+import time
 
-from _free_boundary_diagnostics import Diagnostics
+import jax
+import jax.numpy as jnp
+import numpy as np
+from scipy.optimize import minimize
 
-DATA = Path(__file__).resolve().parents[1] / "data/free_boundary_qa"
-SURFACES = (0.25, 0.5, 0.75, 1.0)
-IOTA_TARGET, ASPECT_TARGET, B0_TARGET = 0.2, 5.0, -0.17506474574437714
-FORCE_TOLERANCE, ROOT_TOLERANCE, ADJOINT_TOLERANCE = 1e-11, 2e-6, 2e-5
-TARGET_STEP, MAX_WALL_HOURS, DEVICE = 3000, 1.0, "cuda:0"
-ADJOINT_BATCH_SIZE = 32
+import vmex as vj
+from vmex import optimize as opt
+from vmex.core import implicit as im
 
+from essos.coils import Coils
+from essos.fields import BiotSavart
+from essos.objective_functions import loss_coil_separation
+from essos.surfaces import SurfaceRZFourier, surfacerzfourier_from_boundary
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--target-step", type=int, default=TARGET_STEP)
-    parser.add_argument("--max-wall-hours", type=float, default=MAX_WALL_HOURS)
-    parser.add_argument("--device", default=DEVICE)
-    parser.add_argument("--initialize-only", action="store_true")
-    parser.add_argument("--resume-checkpoint", type=Path)
-    parser.add_argument("--checkpoint-sha256")
-    parser.add_argument("--adjoint-dense-batch-size", choices=("32", "64", "auto"), default=str(ADJOINT_BATCH_SIZE))
-    args = parser.parse_args(argv)
-    if not 1 <= args.target_step <= 3000 or not 0 < args.max_wall_hours <= 24:
-        parser.error("target step must be in 1..3000 and walltime in (0, 24] hours")
-    if bool(args.resume_checkpoint) != bool(args.checkpoint_sha256):
-        parser.error("resume requires both checkpoint and SHA256")
-    if args.initialize_only and args.resume_checkpoint:
-        parser.error("initialize-only cannot resume")
-    return args
+started = time.perf_counter()
+SURFACES = np.linspace(0.1, 1.0, 6)
+# FTOL = 1e-9 rather than 1e-10: measured on this deck at u = 0, the tighter
+# root costs 154 s against 59 s and moves the gradient by 0.6%, while 1e-8
+# is too loose for the adjoint (|grad| 36.7 against 11.2).  The Schur adjoint
+# stays conditioned on the marginally converged roots that a line search
+# visits, where the coupled Krylov solve stalls at 0.66 relative residual.
+NS, MPOL, NTOR, NITER, FTOL = 25, 5, 5, 2000, 1.0e-9
+MAXITER, METHOD, PARAMETER_BOUND = 20, "L-BFGS-B", 1.0
+ASPECT_TARGET, IOTA_FLOOR = 6.0, 0.42
+# The seed coils give min |iota| 0.4137 (smooth minimum 0.4194) on both the
+# optimizer's solve and the output solve.  At weight 10 on the smooth minimum the
+# floor cost 1.3e-5 beside a 2.8e-2 coil-length term, so the run ended at 0.4136.
+# A quadratic hinge settles slightly below its threshold, hence 0.43 here.
+IOTA_CONSTRAINT, IOTA_FLOOR_WEIGHT = 0.43, 1.0e3
+# 5.2 m against 5.25 m coils, not the former 3.5: at 3.5 the term was
+# 0.5*sum((L - 3.5)^2) = 23.598 against QA at 3.44e-04, i.e. 99.998% of the
+# objective, so the optimizer only ever fought an unreachable length.  A
+# target just inside the current length keeps a real shortening gradient
+# (0.02 at the start) without swamping the plasma terms.
+LENGTH_TARGET, LENGTH_WEIGHT = 5.2, 1.0
+CURVATURE_LIMIT, CURVATURE_WEIGHT = 7.0, 10.0
+COIL_DISTANCE_LIMIT, COIL_DISTANCE_WEIGHT = 0.08, 1.0e3
+OPTIONS = {"maxiter": MAXITER, "maxls": 10, "ftol": 1.0e-12, "gtol": 1.0e-8}
 
+ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
+if ci_smoke:
+    NS, MPOL, NTOR, NITER, FTOL, MAXITER = 12, 2, 2, 3000, 1.0e-7, 0
+    OPTIONS = {"maxiter": MAXITER, "maxls": 5, "ftol": 1.0e-8, "gtol": 1.0e-5}
 
-def main(argv=None):
-    args = parse_args(argv)
-    with Diagnostics(args.output_dir, max_wall_hours=args.max_wall_hours) as output:
-        import jax
-        import numpy as np
-        import vmex
-        from vmex import optimize as opt
-        from vmex.core.statephysics import on_axis_magnetic_field
-        from essos.coils import Coils
+DATA = Path(__file__).resolve().parents[1] / "data"
+inp = vj.VmecInput.from_file(DATA / "input.minimal_seed_nfp2").change_resolution(
+    mpol=MPOL, ntor=NTOR, ntheta=2 * MPOL + 6, nzeta=16)
+inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", phiedge=-0.025,
+              ns_array=np.array([NS]), niter_array=np.array([NITER]),
+              ftol_array=np.array([FTOL]))
+coils0 = Coils.from_json(str(DATA / "ESSOS_biot_savart_LandremanPaulQA.json"))
+if ci_smoke:
+    coils0.n_segments = 24
 
-        # Inputs and design variables: three relative currents plus 108 coefficients.
-        inp = vmex.VmecInput.from_file(DATA / "input.rotating_ellipse")
-        coils = Coils.from_json(str(DATA / "coils.json"))
-        coils.n_segments = 75  # Preserve the equilibrium field quadrature.
-        scales = np.r_[np.full(3, 0.06), np.tile([0.002] + [0.002/k**2 for k in range(1, 5) for _ in range(2)], 12)]
-        parameters = opt.CoilParameters.from_coils(coils, current_dofs=(1, 2, 3), max_coil_mode=4, scales=scales)
+x0 = np.asarray(coils0.dofs)
+n_curve_dofs = coils0.dofs_curves.size
+scales = np.concatenate([np.full(n_curve_dofs, 0.01),
+                         0.02 * np.maximum(np.abs(x0[n_curve_dofs:]), 1.0e5)])
+dof_names = coils0.dof_names
 
-        # Initial-normalized QA, with the original physical target bands.
-        qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
-        objective_terms = [(qs, 0.0, 1.0)]
-        constraints = [
-            opt.TargetBand(opt.mean_iota, IOTA_TARGET, rtol=0.01, scale=0.005),
-            opt.TargetBand(opt.aspect_ratio, ASPECT_TARGET, rtol=0.01, scale=0.05),
-            opt.TargetBand(on_axis_magnetic_field, B0_TARGET, rtol=0.01, scale=0.01),
-        ]
-        policy = opt.ProjectedOptions(maximum_coil_step_m=0.001, maximum_current_fraction_step=0.01, max_trials=6)
-        platform, _, ordinal = args.device.partition(":")
-        if platform not in ("cpu", "cuda", "gpu") or (ordinal and not ordinal.isdecimal()):
-            raise ValueError("device must be cpu, cpu:N, cuda:N or gpu:N")
-        solver = dict(device=jax.devices("gpu" if platform in ("cuda", "gpu") else "cpu")[int(ordinal or 0)],
-                      ftol=FORCE_TOLERANCE, edge_force_tolerance=FORCE_TOLERANCE, max_iterations=12000,
-                      include_edge_in_convergence=True, adjoint_solver="forward_dense_jax", adjoint_fail="error",
-                      adjoint_tol=ADJOINT_TOLERANCE, adjoint_residual_rtol=ADJOINT_TOLERANCE,
-                      adjoint_dense_batch_size=32 if args.adjoint_dense_batch_size == "auto" else int(args.adjoint_dense_batch_size),
-                      adjoint_dense_max_dofs=4096, adjoint_gcrot_m=30, adjoint_gcrot_k=10, adjoint_maxiter=100)
+def coils_from_u(u):
+    return coils0.with_dofs(jnp.asarray(x0) + jnp.asarray(scales) * u)
 
-        # Fresh starts solve once; resumes certify the exact saved accepted root.
-        problem = opt.FreeBoundaryProblem.from_tuples(
-            inp, objective_terms, parameterization=parameters, constraints=constraints,
-            restart_from=None if args.resume_checkpoint else DATA / "initial_state.npz",
-            checkpoint=args.resume_checkpoint, checkpoint_sha256=args.checkpoint_sha256,
-            checkpoint_identity=dict(qa_surfaces=SURFACES, helicity=[1, 0], optimizer=asdict(policy)),
-            solver_options=solver, root_residual_atol=ROOT_TOLERANCE,
-            continuation_step=0.1, max_continuation_steps=64, event=output.solver_event, deadline=output.deadline)
-        output.bind(problem, inputs=DATA)
-        if args.target_step <= problem.accepted_step:
-            raise ValueError("target step must exceed the saved accepted step")
-        if args.initialize_only:
-            output.status = "initialized_only"
-            return
-        if args.adjoint_dense_batch_size == "auto":
-            output.save_json("adjoint_batch_tuning.json", problem.tune_adjoint_batch())
+def field_from_u(u):
+    return BiotSavart(coils_from_u(u))
 
-        # One optimizer implementation; only accepted steps enter the history.
-        result = opt.minimize_projected(
-            problem, maxiter=args.target_step - problem.accepted_step, options=policy,
-            initial_gradient_norm=problem.initial_gradient_norm, event=output.optimizer_event,
-            callback=output.monitor)
-        output.status = result.status
-        opt.EquilibriumReporter(("QA", qs.total_state, ".6e"), ("aspect", opt.aspect_ratio, ".4f"),
-                                ("mean iota", opt.mean_iota, ".4f"))("final", problem.equilibrium_from_x(result.x))
-    print(f"Accepted history and matching coil/WOUT files: {args.output_dir}")
+params = im.params_from_input(inp)
+config = vj.make_free_boundary_config(
+    inp, BiotSavart(coils0), ns=NS, ftol=FTOL, max_iterations=NITER,
+    adjoint_tol=1.0e-8, adjoint_solver="boundary_schur",
+    field_from_parameters=field_from_u)
+solver_context = im.runtime_from_params(params, config.implicit)
+# Floor the profile minimum, not its average: a mean target is satisfiable while
+# an interior surface sits near zero transform, which is what a current-carried
+# finite-beta profile does. opt.mean_iota targets the average instead, and
+# opt.soft_min_abs_iota is the smooth-minimum variant, but it sits above the
+# hard minimum by the width of its softmax, so a floor on it misses this check.
+def iota_floor(equilibrium_state, solver_context):
+    return jnp.maximum(
+        IOTA_CONSTRAINT - opt.min_abs_iota(equilibrium_state, solver_context), 0.0)
 
 
-if __name__ == "__main__":
-    main()
+qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
+tuples = [(qs.residuals_state, 0.0, 1.0),
+          (opt.aspect_ratio, ASPECT_TARGET, 1.0),
+          (iota_floor, 0.0, IOTA_FLOOR_WEIGHT)]
+
+# The free-boundary pullback assembles its projected residual on the host, so
+# the solve and its adjoint run eagerly and cannot sit under jax.jit.  Every
+# term after the solve is compiled once here and reused by each trial.
+@jax.jit
+def accepted_terms(equilibrium_state, u):
+    residual = opt.residuals_from_tuples(equilibrium_state, solver_context, tuples)
+    coils = coils_from_u(u)
+    costs = jnp.asarray([
+        0.5 * LENGTH_WEIGHT * jnp.sum(
+            (coils.length - LENGTH_TARGET)**2),
+        0.5 * CURVATURE_WEIGHT * jnp.sum(
+            jnp.maximum(coils.curvature - CURVATURE_LIMIT, 0.0)**2),
+        0.5 * COIL_DISTANCE_WEIGHT * loss_coil_separation(
+            coils, COIL_DISTANCE_LIMIT, block_size=32),
+    ])
+    return 0.5 * jnp.vdot(residual, residual) + jnp.sum(costs), (residual, costs)
+
+def objective(u):
+    equilibrium_state, status, _, _ = vj.solve_free_boundary_implicit_status(params, u, config)
+
+    def accepted(_):
+        value, (residual, costs) = accepted_terms(equilibrium_state, u)
+        return value, (residual, costs, status)
+
+    def rejected(_):
+        # A smooth, finite wall lets SciPy backtrack after a failed trial. Its
+        # derivative is explicit here; the failed equilibrium contributes zero.
+        residual = jnp.zeros_like(accepted_terms(equilibrium_state, u)[1][0])
+        wall = 1.0e3 * (1.0 + jnp.sqrt(1.0e-12 + jnp.vdot(u, u)))**2
+        return wall, (residual, jnp.zeros(3), status)
+
+    return jax.lax.cond(status == 0, accepted, rejected, operand=None)
+
+monitor = opt.OptimizationMonitor()
+value_and_grad_jax = jax.value_and_grad(objective, has_aux=True)
+trials = {"count": 0}
+
+def value_and_grad(u):
+    trials["count"] += 1
+    (value, (residual, coil_costs, status)), gradient = value_and_grad_jax(jnp.asarray(u))
+    rows = np.asarray(residual); parts = (rows[:-2], rows[-2:-1], rows[-1:])
+    terms = {name: 0.5 * float(part @ part)
+             for name, part in zip(("QA", "aspect", "mean iota"), parts)}
+    terms.update(zip(("coil length", "coil curvature", "coil separation"),
+                     map(float, np.asarray(coil_costs))))
+    terms["rejected trial"] = float(value) if int(status) else 0.0
+    return monitor.cache_evaluation(u, value, gradient, terms)
+
+print("Running single_stage_free_boundary_optimization.py")
+print(f"True NESTOR free boundary + ESSOS: {x0.size} coil variables; "
+      "no boundary dofs or mgrid file")
+print(f"dof_names = {dof_names}")
+free_problem = vj.FunctionProblem.from_functions(
+    np.zeros_like(x0), value_and_grad=value_and_grad, names=dof_names,
+    evaluation_progress=not ci_smoke)
+first = free_problem.compile_value_and_gradient(progress=not ci_smoke, report_interval=10.0)
+if ci_smoke:
+    final_cost, optimized_u, iterations = first.value, np.zeros_like(x0), 0
+else:
+    result = minimize(free_problem.value_and_grad, np.zeros_like(x0), jac=True, method=METHOD,
+        bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
+        callback=monitor, options=OPTIONS)
+    optimized_u, final_cost, iterations = result.x, result.fun, result.nit
+
+coils_final = coils_from_u(jnp.asarray(optimized_u))
+print("Solving the optimized free boundary for output...")
+free_result = vj.solve_free_boundary_multigrid(
+    inp, external_field=BiotSavart(coils_final), verbose=not ci_smoke)
+wout = vj.wout_from_state(
+    inp=inp, state=free_result.state, fsqr=free_result.fsqr,
+    fsqz=free_result.fsqz, fsql=free_result.fsql,
+    niter=free_result.iterations, converged=free_result.converged,
+    vacuum_output=free_result.vacuum)
+
+# Print results
+final_qa = float(qs.total_state(free_result.state, solver_context))
+final_aspect = float(opt.aspect_ratio(free_result.state, solver_context))
+minimum_iota = float(opt.min_abs_iota(free_result.state, solver_context))
+maximum_curvature = float(np.max(np.asarray(coils_final.curvature)))
+print(f"[final] QA = {final_qa:.5e}, aspect = {final_aspect:.3f}, min |iota| = {minimum_iota:.3f}")
+print(f"Objective = {float(final_cost):.6e} after {iterations} {METHOD} iterations")
+print(f"Coil lengths = {np.asarray(coils_final.length)}")
+print(f"Maximum curvature = {maximum_curvature:.3f} 1/m")
+print(f"Minimum |iota| = {minimum_iota:.4f} (target >= {IOTA_FLOOR:.4f}); "
+      f"aspect {final_aspect:.3f} is a least-squares term toward {ASPECT_TARGET:.1f}")
+# The output solve is independent of the optimizer's, so it is the one checked.
+unmet = []
+if minimum_iota < IOTA_FLOOR:
+    unmet.append(f"minimum |iota| {minimum_iota:.4f} below the {IOTA_FLOOR:.4f} floor")
+if not bool(np.all(np.asarray(free_result.converged))):
+    unmet.append("the output free-boundary solve did not converge")
+if unmet:
+    print("This run did NOT meet its stated targets: " + "; ".join(unmet) + ".")
+    if ci_smoke:
+        print("Smoke mode runs no optimizer iterations; exit status 0.")
+Path("single_stage_free_boundary_optimization_summary.json").write_text(json.dumps({
+    "example": "single_stage_free_boundary_optimization.py", "smoke": ci_smoke,
+    "optimization_seconds": round(time.perf_counter() - started, 1),
+    "trials": trials["count"], "lbfgsb_iterations": int(iterations),
+    "free_boundary_solves": trials["count"] + 1,  # one per trial plus the output solve
+    "final": {"QA": final_qa, "aspect": final_aspect, "min |iota|": minimum_iota,
+              "maximum curvature": maximum_curvature,
+              "output solve converged": bool(np.all(np.asarray(free_result.converged)))},
+    "targets": {"min |iota| >=": IOTA_FLOOR, "aspect (least squares)": ASPECT_TARGET},
+    "unmet": unmet, "met": not unmet}, indent=2) + "\n")
+
+# Save results
+input_path = inp.to_indata("input.single_stage_free_boundary_optimized")
+wout_path = vj.write_wout("wout_single_stage_free_boundary_optimized.nc", wout)
+coils_final.to_json("coils_single_stage_free_boundary_optimized.json")
+surface_initial = surfacerzfourier_from_boundary(
+    inp.rbc, inp.zbs, inp.nfp, nphi=60, ntheta=60)
+surface_final = SurfaceRZFourier.from_wout_file(wout_path, nphi=60, ntheta=60)
+surface_initial.to_vtk("surface_single_stage_free_boundary_initial")
+coils0.to_vtk("coils_single_stage_free_boundary_initial")
+surface_final.to_vtk("surface_single_stage_free_boundary_optimized")
+coils_final.to_vtk("coils_single_stage_free_boundary_optimized")
+print(f"Wrote {input_path}\nWrote {wout_path}")
+
+# Plot results
+monitor.save("single_stage_free_boundary_objectives.csv")
+monitor.plot("single_stage_free_boundary_objectives.png", title="Free-boundary objective terms")
+vj.plot_optimization_objects("single_stage_free_boundary_optimization.png",
+    ("Initial", surface_initial, coils0), ("Optimized", surface_final, coils_final))
+print("Wrote single_stage_free_boundary_optimization.png and objective history")
+if unmet and not ci_smoke:
+    raise SystemExit(1)

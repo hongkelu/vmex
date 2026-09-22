@@ -146,23 +146,8 @@ unless they are compact reviewed documentation artifacts.
 Published-equilibrium comparisons and reproducibility studies belong in
 `../benchmarks/`, not among the user-facing optimization examples.
 
-## Free-boundary single-stage QA
+## Three-method single-stage comparison
 
-- [Free-boundary QA optimization](optimization/single_stage_free_boundary_optimization.py):
-  coil-current and Fourier-coefficient optimization with projected QA and target
-  restoration. Inputs are `data/free_boundary_qa/input.rotating_ellipse`,
-  `coils.json`, and the lossless `initial_state.npz`. The adjacent
-  `_free_boundary_diagnostics.py` records accepted steps and exports matching
-  coils/WOUT snapshots.
-
-```sh
-python examples/optimization/single_stage_free_boundary_optimization.py \
-  --output-dir results/rotating_ellipse --target-step 10 --device cuda:0
-```
-
-Use `--initialize-only` to solve/certify the original seed without optimizing.
-Resume with `--resume-checkpoint PATH --checkpoint-sha256 SHA256` and a new
-output directory. The target step is an absolute accepted-step count. The normal
-input retains NS31, M3/N3 and the 48x40 angular grid; all initial-state arrays
-and the original coils are preserved. Solver tolerances and physical target
-bands are visible in the script. Numerical regression tests live in `tests/`.
+The maintained custom workflow is in [three-methods-benchmark](three-methods-benchmark/README.md),
+including the free-boundary scalar and L-BFGS-B entry points and their separate
+qualification script. Earlier case-specific drivers have been retired.

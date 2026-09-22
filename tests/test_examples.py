@@ -545,16 +545,17 @@ def test_fixed_free_boundary_comparison(tmp_path):
 
 
 def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():
-    """Vacuum uses the maintained public API; finite beta keeps its own model."""
-    vacuum = (EXAMPLES / "optimization/single_stage_free_boundary_optimization.py").read_text()
-    for contract in ("FreeBoundaryProblem.from_tuples", "TargetBand", "minimize_projected"):
-        assert contract in vacuum
-    assert "pack_boundary" not in vacuum
-    finite = (EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_finite_beta.py").read_text()
-    for contract in ("solve_free_boundary_implicit", "residuals_from_tuples", "jax.value_and_grad",
-                     "FunctionProblem.from_functions", "minimize(free_problem.value_and_grad"):
-        assert contract in finite
-    assert "pack_boundary" not in finite
+    """The examples expose tuples, scalarization, AD, and SciPy directly."""
+    for name in ("single_stage_free_boundary_optimization.py",
+                 "single_stage_free_boundary_optimization_finite_beta.py"):
+        text = (EXAMPLES / "optimization" / name).read_text()
+        assert "solve_free_boundary_implicit" in text
+        assert "residuals_from_tuples" in text
+        assert "jax.value_and_grad" in text
+        assert "FunctionProblem.from_functions" in text
+        assert "minimize(free_problem.value_and_grad" in text
+        assert "pack_boundary" not in text
+        assert "mgrid file" in text
 
 
 
@@ -668,15 +669,24 @@ def test_combined_confinement_example_states_the_surrogate_policy():
     assert "epsilon_eff unavailable" in text  # optional NEO_JAX states its absence
 
 
+@pytest.mark.full  # one direct-coil free solve, coupled adjoint, and output solve (~2 min)
 def test_vacuum_free_boundary_single_stage_optimization(tmp_path):
-    """The compatibility launcher exposes the maintained bounded CLI without solving."""
+    pytest.importorskip("essos")
     out = _run_example(
         EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py",
-        tmp_path, timeout=30, args=("--help",))
-    for option in ("--output-dir", "--target-step", "--max-wall-hours",
-                   "--resume-checkpoint", "--checkpoint-sha256"):
-        assert option in out
-    assert not list(tmp_path.iterdir())
+        tmp_path, timeout=600)
+    assert "no boundary dofs or mgrid file" in out
+    assert re.search(r"\[final\] QA = ([0-9.eE+-]+)", out)
+    # Smoke mode exits 0 even when a target is missed, so the report must say so.
+    assert re.search(r"Minimum \|iota\| = [0-9.]+ \(target >= [0-9.]+\)", out)
+    summary = json.loads(
+        (tmp_path / "single_stage_free_boundary_optimization_summary.json").read_text())
+    assert summary["met"] == (not summary["unmet"])
+    assert summary["met"] or "did NOT meet its stated targets" in out
+    for name in ("wout_single_stage_free_boundary_optimized.nc",
+                 "single_stage_free_boundary_optimization.png",
+                 "single_stage_free_boundary_objectives.png"):
+        assert (tmp_path / name).stat().st_size > 0
 
 
 

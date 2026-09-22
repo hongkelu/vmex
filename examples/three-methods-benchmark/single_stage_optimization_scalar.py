@@ -59,7 +59,7 @@ if jax.default_backend() != args.device or not jax.config.x64_enabled:
     raise RuntimeError("requested device and float64 precision are required")
 
 try:
-    from essos.coils import Coils, CreateEquallySpacedCurves
+    from essos.coils import Coils
     from essos.fields import BiotSavart
     from essos.objective_functions import loss_coil_separation, loss_coil_surface_distance
     from essos.surfaces import surfacerzfourier_from_boundary
@@ -385,7 +385,10 @@ def record_step(u):
               f"physical limits met={bool(row['constraints_feasible'])}", flush=True)
 
 
-sha = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 Path("provenance.json").write_text(json.dumps(dict(
     command=sys.argv, device=str(jax.devices()[0]), python=sys.version, jax=jax.__version__,
     input_sha256=sha(DATA), coils_sha256=sha(args.coils) if args.coils else sha(coil_fit_path),

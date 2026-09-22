@@ -50,7 +50,9 @@ def main():
     signal.signal(signal.SIGALRM, timeout)
     signal.alarm(WALL_SECONDS)
     metadata = json.loads(COILS.with_suffix(".metadata.json").read_text())
-    sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    def sha(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
     if sha(COILS) != metadata["coils_sha256"] or sha(INPUT) != metadata["input_sha256"]:
         raise ValueError("shared coil/input hashes differ from the fitted case")
     shutil.copyfile(COILS, out / COILS.name)

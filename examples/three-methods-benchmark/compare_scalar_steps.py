@@ -16,7 +16,6 @@ args.output.mkdir(parents=True, exist_ok=False)
 cache = args.output.resolve()/'cache'; cache.mkdir()
 os.environ.update(MPLCONFIGDIR=str(cache), MPLBACKEND='Agg')
 import matplotlib.pyplot as plt
-import numpy as np
 
 def read(path):
     with path.open() as stream:
@@ -48,8 +47,10 @@ for ax,(key,label,scale,log) in zip(axes.flat,panels):
     for data,name,color in [(control,'Fixed control','#2166ac'),(free,'Free boundary','#d95f02')]:
         data=data[1:] if log else data
         ax.plot([r['step'] for r in data],[scale*r[key] for r in data],'.-',label=name,color=color)
-    if log: ax.set_yscale('log')
-    if key=='min_abs_iota': ax.axhline(.19,color='black',ls='--',lw=1,label='Floor 0.19')
+    if log:
+        ax.set_yscale('log')
+    if key == 'min_abs_iota':
+        ax.axhline(.19, color='black', ls='--', lw=1, label='Floor 0.19')
     if key=='major_radius_m':
         ax.axhspan(.99,1.01,color='green',alpha=.08)
         ax.axhline(.99,color='black',ls='--',lw=1); ax.axhline(1.01,color='black',ls='--',lw=1)

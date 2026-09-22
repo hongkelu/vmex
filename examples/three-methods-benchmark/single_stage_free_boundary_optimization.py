@@ -319,7 +319,7 @@ def main():
         cycle_gradient_seconds = cycle_solve_seconds = 0.0
 
     status, stages, result, failure = "stage_budget_reached", 0, None, None
-    initial_value = final_value = None
+    initial_value = None
     try:
         initial_value, _ = value_and_grad(np.zeros(chart.size))
         record_step(initial_value, last["terms"], cycle_gradient_seconds, cycle_solve_seconds)
@@ -331,7 +331,6 @@ def main():
                 options={"maxiter": args.stage_maxiter, "maxfun": args.max_trials-counts["trials"],
                          "maxcor": 20, "maxls": 20, "ftol": 1e-12, "gtol": 1e-8})
             value_and_grad(accepted.parameters/scales)
-            final_value = last["value"]
             updated = last["updated"]
             violation = float(np.max(np.abs(updated-multipliers))) / penalty
             stages += 1

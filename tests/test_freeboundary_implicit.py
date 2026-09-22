@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import gc
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,11 +12,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.flatten_util import ravel_pytree
+from scipy.sparse.linalg import LinearOperator, gcrotmk
 
 from tests.test_lasym_free_case import lasym_free_field, lasym_free_input
 from vmex.core import implicit as im
 from vmex.core.input import VmecInput
 from vmex.core.mgrid import MgridField, read_mgrid
+from vmex.core.solver import SpectralState
 from vmex.core.freeboundary_implicit import (
     make_free_boundary_config,
     solve_free_boundary_implicit,
@@ -68,8 +73,11 @@ def test_free_boundary_config_rejects_fixed_boundary_input():
 
 def test_free_boundary_config_validates_adjoint_solver():
     inp, field = lasym_free_input(DATA), lasym_free_field()
-    with pytest.raises(ValueError, match="'boundary_schur' or 'coupled_gcrot'"):
+    with pytest.raises(ValueError, match="adjoint_solver must be one of"):
         make_free_boundary_config(inp, field, adjoint_solver="dense")
+    for name in fbi._ADJOINT_SOLVERS:
+        assert make_free_boundary_config(
+            inp, field, adjoint_solver=name).adjoint_solver == name
 
 
 def test_free_boundary_config_validates_adjoint_fail():
@@ -103,6 +111,290 @@ def test_host_adjoint_refreshes_saved_pullback_at_each_point():
         np.testing.assert_allclose(solved, np.linalg.solve(jacobian.T, rhs), rtol=1e-9)
 
 
+def test_cheaper_transpose_is_accepted_only_on_the_exact_one(monkeypatch):
+    """A response adjoint is certified on the coupled operator or not at all.
+
+    The edge-response lane iterates on a cheaper transpose.  A wrong cheaper
+    operator must cost a second solve on the exact one, never a wrong answer;
+    a right one must be accepted without that second solve.
+    """
+    def residual(z, p, *_args):
+        return jnp.asarray([z[0]**2 + p * z[1], z[0] * z[1] + z[1]**2])
+
+    def mislinearized(z, p, *_args):
+        return residual(z, p) + 0.3 * jnp.asarray([z[1]**2, z[0]])
+
+    class Config(SimpleNamespace):
+        __hash__ = object.__hash__  # the fallback is counted per configuration
+
+    cfg = Config(
+        adjoint_tol=1e-10, adjoint_gcrot_m=2, adjoint_gcrot_k=1,
+        adjoint_maxiter=10,
+    )
+    z, p, rhs = jnp.asarray([2., 3.]), 0.5, jnp.asarray([1., -2.])
+    exact = np.linalg.solve(np.array([[4., 0.5], [3., 8.]]).T, rhs)
+    warm_starts, solver = [], fbi.gcrotmk
+
+    def counted(*args, **kwargs):
+        warm_starts.append(kwargs.get("x0"))
+        return solver(*args, **kwargs)
+
+    monkeypatch.setattr(fbi, "gcrotmk", counted)
+    for lane, solves in ((mislinearized, 2), (residual, 1)):
+        warm_starts.clear()
+        solved = fbi._host_adjoint(
+            residual, z, p, None, None, None, None, rhs, cfg, certify=True,
+            pullback=fbi._prepare_transpose(
+                z, p, None, None, None, None, residual=lane))
+        np.testing.assert_allclose(solved, exact, rtol=1e-9)
+        assert len(warm_starts) == solves
+        assert warm_starts[0] is None and all(
+            start is not None for start in warm_starts[1:])
+    assert im._SOLVE_STATS[cfg]["adjoint_certificate_fallbacks"] == 1
+
+
+def test_edge_response_models_nestor_and_drives_the_adjoint_lane():
+    """The dense edge response, its lane and its gradient, on a small deck.
+
+    The response is an exact linearization wherever it is built, root or not,
+    so this needs no converged equilibrium to certify -- only one saved point
+    used by both lanes.  Kept out of ``full`` on purpose: these are the paths
+    a coverage lane has to execute, and they are cheap at this resolution.
+    """
+    inp = dataclasses.replace(
+        lasym_free_input(DATA).change_resolution(
+            mpol=3, ntor=0, ntheta=10, nzeta=4),
+        ns_array=np.array([5]), ftol_array=np.array([1.0e-6]),
+        niter_array=np.array([400]))
+    field = lasym_free_field()
+    params = im.params_from_input(inp)
+
+    def configure(solver):
+        return make_free_boundary_config(
+            inp, field, ns=5, ftol=1.0e-6, max_iterations=400,
+            adjoint_tol=1.0e-8, adjoint_maxiter=100, adjoint_solver=solver,
+            field_from_parameters=lambda current: dataclasses.replace(
+                field, extcur=current), device="cpu")
+
+    cfg = configure("edge_response")
+    (_state, _status, _fsq, _ratio), saved = fbi._solve_status_fwd(
+        params, field.extcur, cfg)
+    prm, current, solved, mask, rcon0, zcon0, _ = saved
+    frozen = jax.lax.stop_gradient(solved)
+    value, jacobian, inputs = fbi._edge_response(
+        cfg, prm, current, frozen, rcon0, zcon0)
+    assert jacobian.shape == value.shape + inputs.shape
+    assert bool(jnp.all(jnp.isfinite(jacobian)))
+
+    icfg = cfg.implicit
+    runtime = dataclasses.replace(
+        im.runtime_from_params(prm, icfg), rcon0=rcon0, zcon0=zcon0,
+        lfreeb=True, jmax=int(icfg.resolution.ns))
+    response = (value, jacobian, inputs)
+    # At the point it was built on, the model reproduces NESTOR exactly.
+    np.testing.assert_allclose(
+        np.asarray(fbi._linearized_bsqvac(frozen, runtime, response)),
+        np.asarray(cfg.vacuum_program.bsq(
+            frozen, runtime, cfg.field_from_parameters(current))),
+        rtol=1.0e-12, atol=0.0)
+
+    project = im._dof_projector(icfg, mask)
+    z_star = project(solved)
+    exact = fbi._projected_residual(cfg, mask)
+    modelled = fbi._projected_residual(cfg, mask, response=response)
+    tangent = project(jax.tree.map(
+        lambda leaf: jnp.asarray(np.random.default_rng(3).standard_normal(
+            leaf.shape)) * 1.0e-3, z_star))
+    call = lambda lane, z: lane(z, prm, current, frozen, rcon0, zcon0)  # noqa: E731
+    products = [jax.jvp(lambda z: call(lane, z), (z_star,), (tangent,))[1]
+                for lane in (exact, modelled)]
+    assert float(im._tree_norm(jax.tree.map(jnp.subtract, *products))) <= (
+        1.0e-10 * float(im._tree_norm(products[0])))
+
+    # The saved response transpose is the transpose of that same lane.
+    pullback = fbi._prepare_response_transpose(
+        z_star, prm, current, frozen, rcon0, zcon0, mask, response, cfg=cfg)
+    cotangent = project(jax.tree.map(
+        lambda leaf: jnp.asarray(np.random.default_rng(4).standard_normal(
+            leaf.shape)), z_star))
+    left = float(_flat(pullback(cotangent)[0]) @ _flat(tangent))
+    right = float(_flat(cotangent) @ _flat(products[1]))
+    np.testing.assert_allclose(left, right, rtol=1.0e-9, atol=0.0)
+
+    # The lane assembles the same gradient as the certified default, and
+    # certifies it on the exact transpose rather than on its own model.
+    state_bar = jax.grad(
+        lambda state: jnp.mean(state.R_cos[-1] ** 2))(solved)
+    gradients = [np.asarray(fbi._solve_bwd_impl(
+        configure(name), saved[:6], state_bar)[1])
+        for name in ("coupled_gcrot", "edge_response")]
+    assert np.max(np.abs(gradients[0])) > 0.0
+    np.testing.assert_allclose(gradients[1], gradients[0], rtol=1.0e-6,
+                               atol=0.0)
+    assert (im._SOLVE_STATS.get(configure("edge_response").implicit) or {}
+            ).get("adjoint_certificate_fallbacks", 0) == 0
+
+
+@contextlib.contextmanager
+def monkeypatched_debug():
+    """Run the adjoint lanes' diagnostic channel for one block."""
+    original = im._adjoint_debug_enabled
+    im._adjoint_debug_enabled = lambda: True
+    try:
+        yield
+    finally:
+        im._adjoint_debug_enabled = original
+
+
+def test_edge_basis_pairs_the_constrained_m1_columns():
+    """The evolved edge basis is orthonormal and folds the m=1 constraint.
+
+    With ``lconm1`` and ``ntor > 0`` the edge carries redundant m=1
+    directions: VMEC evolves one combination of each pair, so the basis must
+    span each pair once, not twice, or the reduced edge system inherits a
+    null direction.  No equilibrium is solved here -- the basis depends only
+    on the configuration and the structural mask.
+    """
+    inp = VmecInput.from_file(DATA / "input.cth_like_free_bdy_lasym_small")
+    data = read_mgrid(DATA / "mgrid_cth_like_lasym_small.nc")
+    field = MgridField.from_mgrid_data(
+        data, extcur=np.asarray(inp.extcur, dtype=float)[: data.nextcur])
+    cfg = make_free_boundary_config(
+        inp, field, ns=8, ftol=1.0e-6, max_iterations=10, device="cpu",
+        field_from_parameters=lambda current: dataclasses.replace(
+            field, extcur=current))
+    icfg = cfg.implicit
+    assert bool(icfg.lconm1) and int(icfg.resolution.ntor) > 0
+
+    mn = int(np.asarray(im._template_runtime(icfg).modes.m).size)
+    fields = im._active_state_fields(icfg)
+    mask = SpectralState(**{
+        name: jnp.ones((int(icfg.resolution.ns), mn))
+        for name in im._STATE_FIELDS})
+    packed_mask = np.ones(len(fields) * mn)
+    basis = fbi._edge_basis(cfg, mask, packed_mask, jnp.float64)
+
+    pairs = len(im._m1_pair_columns(icfg)[0])
+    lasym_pairs = pairs * (2 if bool(icfg.resolution.lasym) else 1)
+    assert basis.shape == (len(fields) * mn, len(fields) * mn - lasym_pairs)
+    np.testing.assert_allclose(
+        np.asarray(basis.T @ basis), np.eye(basis.shape[1]),
+        rtol=0.0, atol=1.0e-12)
+
+
+def test_balanced_dense_solver_survives_a_rank_deficient_edge_system():
+    """A singular reduced edge system gets a least-squares solve, not a NaN.
+
+    The edge system can inherit redundant m=1 directions on decks the basis
+    above cannot fold away, and a plain solve would amplify them.  The exact
+    coupled-residual certificate remains authoritative either way, so the
+    requirement here is only that the reduced solve stays finite and
+    reproduces the right answer on the range.
+    """
+    singular = np.array([[1.0, 2.0, 3.0],
+                         [2.0, 4.0, 6.0],
+                         [1.0, 1.0, 1.0]])
+    solve_reduced, condition = fbi._balanced_dense_solver(singular)
+    assert not (np.isfinite(condition)
+                and condition < 1.0 / np.finfo(singular.dtype).eps)
+    wanted = np.array([1.0, -2.0, 0.5])
+    solution = solve_reduced(singular @ wanted)
+    assert np.all(np.isfinite(solution))
+    np.testing.assert_allclose(singular @ solution, singular @ wanted,
+                               rtol=1.0e-9, atol=1.0e-9)
+
+    well_posed = np.array([[4.0, 1.0], [1.0, 3.0]])
+    solve_reduced, condition = fbi._balanced_dense_solver(well_posed)
+    assert np.isfinite(condition)
+    np.testing.assert_allclose(
+        solve_reduced(well_posed @ np.array([2.0, -1.0])),
+        np.array([2.0, -1.0]), rtol=1.0e-12, atol=0.0)
+
+
+def test_schur_lanes_are_reusable_and_leak_nothing_per_gradient():
+    """The radial-elimination lanes reuse one executable and strand no arrays.
+
+    Every per-gradient array -- the bulk blocks, the mask, the saved
+    transpose -- reaches the jitted helpers as an argument, so ``cfg`` is the
+    only static key and one executable serves a whole optimization.  When
+    these were closures defined inside the adjoint instead, each backward
+    pass was a fresh jit key: the lane recompiled every gradient and JAX's
+    trace cache kept that trial's arrays alive as jaxpr constants, a whole
+    block system per successful gradient: measured on the free-boundary
+    reproducer, 2218 live arrays and 0.289 GiB of device buffers each time.
+    What remains here is one array per gradient, bookkeeping rather than a
+    block system, so the bound below is a small constant, not equality.
+    """
+    inp = dataclasses.replace(
+        lasym_free_input(DATA).change_resolution(
+            mpol=3, ntor=0, ntheta=10, nzeta=4),
+        ns_array=np.array([5]), ftol_array=np.array([1.0e-6]),
+        niter_array=np.array([400]))
+    field = lasym_free_field()
+    params = im.params_from_input(inp)
+
+    def configure(solver):
+        return make_free_boundary_config(
+            inp, field, ns=5, ftol=1.0e-6, max_iterations=400,
+            adjoint_tol=1.0e-8, adjoint_maxiter=100, adjoint_solver=solver,
+            field_from_parameters=lambda current: dataclasses.replace(
+                field, extcur=current), device="cpu")
+
+    cfg = configure("boundary_schur")
+    (_state, _status, _f, _r), saved = fbi._solve_status_fwd(
+        params, field.extcur, cfg)
+    state_bar = jax.grad(
+        lambda state: jnp.mean(state.R_cos[-1] ** 2))(saved[2])
+
+    live, gradients = [], []
+    for index in range(3):
+        # A different cotangent each time: a repeated one could be served
+        # from a memo without exercising the lane at all.
+        scaled = jax.tree.map(lambda leaf, k=index: leaf * (1.0 + 0.1 * k),
+                              state_bar)
+        gradients.append(np.asarray(
+            fbi._solve_bwd_impl(cfg, saved[:6], scaled)[1]))
+        gc.collect()
+        live.append(len(jax.live_arrays()))
+    # One block system is (ns, block, block) plus its scalings, tens of
+    # arrays; a bound of two separates bookkeeping from that defect.
+    assert live[2] - live[1] <= 2, (
+        f"the lane stranded {live[2] - live[1]} arrays in one gradient: {live}")
+    assert np.max(np.abs(gradients[0])) > 0.0
+
+    # The diagnostic channel runs too, so its formatting cannot rot unnoticed.
+    with monkeypatched_debug():
+        elimination = np.asarray(fbi._solve_bwd_impl(
+            configure("boundary_schur"), saved[:6], state_bar)[1])
+    np.testing.assert_allclose(elimination, gradients[0], rtol=1.0e-6,
+                               atol=0.0)
+
+    # A certificate this lane cannot meet must cost a second solve on the
+    # exact operator and be counted, never be returned as it stands.
+    schur = configure("boundary_schur")
+    strict, acceptance = [0], im._adjoint_acceptance
+
+    def first_call_is_impossible(cfg_arg, norm, rtol=None):
+        strict[0] += 1
+        if strict[0] == 1:
+            return 0.0
+        return acceptance(cfg_arg, norm, rtol) if rtol is not None else (
+            acceptance(cfg_arg, norm))
+
+    before = (im._SOLVE_STATS.get(schur.implicit) or {}).get(
+        "adjoint_certificate_fallbacks", 0) or 0
+    im._adjoint_acceptance = first_call_is_impossible
+    try:
+        forced = np.asarray(fbi._solve_bwd_impl(
+            schur, saved[:6], state_bar)[1])
+    finally:
+        im._adjoint_acceptance = acceptance
+    after = (im._SOLVE_STATS.get(schur.implicit) or {})[
+        "adjoint_certificate_fallbacks"]
+    assert after == before + 1
+    np.testing.assert_allclose(forced, elimination, rtol=1.0e-6, atol=0.0)
+
+
 def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
     """Under an outer jax.jit the pullback is taken at the root, then staged GCROT."""
     def residual(z, p, field, *_args):
@@ -122,6 +414,66 @@ def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
     lam = np.linalg.solve(np.array([[4., 0.5], [3., 8.]]).T, rhs)
     np.testing.assert_allclose(params_bar, -(np.array([3., -1.]) @ lam), rtol=1e-10)
     np.testing.assert_allclose(field_bar, -lam[0], rtol=1e-10)
+
+
+def test_projected_residual_memo_skips_a_traced_mask():
+    """The closure memo keys on mask bytes; a traced mask has none.
+
+    This is the fast guard for the line the stubbed test above never reaches:
+    the real :func:`_projected_residual` is called under ``jax.jit`` (enabled
+    for this module) with a traced mask, and eagerly with a concrete one.
+    """
+    cfg = make_free_boundary_config(lasym_free_input(DATA), lasym_free_field())
+    mask = {"rows": jnp.zeros((4, 3))}
+    eager = fbi._projected_residual(cfg, mask)
+    assert fbi._projected_residual(cfg, mask) is eager  # the eager memo hits
+    traced = []
+    jax.jit(lambda m: traced.append(fbi._projected_residual(cfg, m)) or 0.0)(mask)
+    assert len(traced) == 1 and traced[0] is not eager
+
+
+@pytest.mark.full
+def test_jitted_free_boundary_gradient_matches_the_eager_path():
+    """A jitted free-boundary objective runs and reproduces the eager gradient.
+
+    The test above stubs :func:`_projected_residual` out, so nothing exercised
+    the real closure under a trace.  Its memo keys on the mask bytes, which a
+    traced mask does not have, and every jitted free-boundary value-and-gradient
+    raised ``TracerArrayConversionError`` there before its first adjoint matvec.
+
+    Both calls start from the same hot state: the root is history-dependent at
+    a finite ``ftol`` (see the reproducibility test at the end of this file),
+    so a cold first call would compare two roots rather than two lanes.
+    """
+    inp = dataclasses.replace(
+        lasym_free_input(DATA), ns_array=np.array([16]),
+        ftol_array=np.array([1.0e-7]), niter_array=np.array([2500]),
+    )
+    field = lasym_free_field()
+    params = im.params_from_input(inp)
+    cfg = make_free_boundary_config(
+        inp, field, ns=16, ftol=1.0e-7, max_iterations=2500,
+        adjoint_tol=1.0e-10, adjoint_maxiter=400,
+        field_from_parameters=lambda current: dataclasses.replace(
+            field, extcur=current),
+    )
+
+    def objective(current):
+        state, _, _, _ = solve_free_boundary_implicit_status(params, current, cfg)
+        return jnp.mean(state.R_cos[-1] ** 2 + state.Z_sin[-1] ** 2)
+
+    current = jnp.asarray(field.extcur)
+    objective(current)
+    eager_value, eager_gradient = jax.value_and_grad(objective)(current)
+    jit_value, jit_gradient = jax.jit(jax.value_and_grad(objective))(current)
+    np.testing.assert_allclose(jit_value, eager_value, rtol=1.0e-12)
+    # Host and staged GCROT solve the same system to ``adjoint_tol``, not to
+    # machine precision, so their gradients agree to that solve tolerance.
+    np.testing.assert_allclose(jit_gradient, eager_gradient, rtol=1.0e-6,
+                               atol=1.0e-9 * float(jnp.linalg.norm(eager_gradient)))
+    # The eager memo still hits: equal mask content returns one closure.
+    mask = fbi._FREE_MASK_CACHE[fbi._mask_key(cfg)]
+    assert fbi._projected_residual(cfg, mask) is fbi._projected_residual(cfg, mask)
 
 
 def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
@@ -267,6 +619,70 @@ def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
         fbi.free_boundary_state_pullback_multi_rhs(zero,zero,cfg,jnp.ones(3),mask,rhs,rcon0=None,zcon0=None)
 
 
+def test_cold_start_ladders_only_when_one_rung_cannot_converge(monkeypatch):
+    """A converged single rung is kept; a stalled one falls back to a ladder."""
+    inp = lasym_free_input(DATA)
+    field = lasym_free_field()
+    asked = []
+
+    def ladder(_inp, *, ns_array, external_field, **_kwargs):
+        asked.append(tuple(int(value) for value in ns_array))
+        return SimpleNamespace(state="coarse")
+
+    monkeypatch.setattr(
+        "vmex.core.multigrid.solve_free_boundary_multigrid", ladder)
+    for ns, converged, expected in ((31, True, None), (4, False, None),
+                                    (8, False, (4, 8)), (31, False, (15, 31))):
+        cfg = make_free_boundary_config(inp, field, ns=ns, ftol=1.0e-6,
+                                        max_iterations=20)
+        seen = []
+
+        def solve(*, initial_state, _seen=seen, _converged=converged):
+            _seen.append(initial_state)
+            return SimpleNamespace(
+                result=SimpleNamespace(converged=_converged), seed=initial_state)
+
+        stage = fbi._cold_reference(solve, cfg.implicit, inp, field)
+        assert seen[0] is None  # the single rung is always tried first
+        assert (asked[-1] if asked else None) == expected
+        assert stage.seed == ("coarse" if expected is not None else None)
+
+
+def test_restart_carries_the_reference_continuation_but_not_its_vacuum_cache():
+    """The trial's own field rebuilds the vacuum caches; the rest continues."""
+    stage = SimpleNamespace(
+        continuation_state="state", vacuum="vacuum", rcon0="rcon", zcon0="zcon",
+        result=SimpleNamespace(fsqr=1.0, fsqz=2.0, fsql=3.0))
+    restart = fbi._continuation(stage)
+    assert restart == {
+        "initial_state": "state", "vacuum_continuation": "vacuum",
+        "constraint_continuation": ("rcon", "zcon"),
+        "residual_continuation": (1.0, 2.0, 3.0)}
+    assert "reuse_vacuum_cache" not in restart
+
+
+def test_traced_pullback_says_it_cannot_run_the_host_schur_lane(monkeypatch):
+    """boundary_schur is a host lane; under jit the staged solve replaces it."""
+    def residual(z, p, field, *_args):
+        return jnp.asarray([z[0]**2 + p * z[1] + field, z[0] * z[1] + z[1]**2 - p])
+
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_a, **_k: residual)
+    monkeypatch.setattr(im, "_dof_projector", lambda *_args: (lambda tree: tree))
+    cfg = SimpleNamespace(
+        implicit=SimpleNamespace(adjoint_tol=1.0e-12, adjoint_gcrot_m=2,
+                                 adjoint_gcrot_k=1, adjoint_maxiter=10),
+        adjoint_solver="boundary_schur", adjoint_fail="error")
+    saved = (jnp.asarray(0.5), jnp.asarray(0.25), jnp.asarray([2., 3.]),
+             None, None, None)
+    # The warning has to name both consequences: a different solver, and the
+    # slower one, so a user who jits does not silently pay for both.
+    with pytest.warns(RuntimeWarning, match="not available under jax.jit") as caught:
+        jax.jit(lambda bar: fbi._solve_bwd_impl(cfg, saved, bar))(
+            jnp.asarray([1., -2.]))
+    message = str(caught[0].message)
+    assert "staged" in message and "slower" in message
+
+
 def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     """A bad cached state is discarded, but implementation errors are not."""
     inp = dataclasses.replace(
@@ -281,8 +697,14 @@ def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
     # monkeypatch.setitem restores both entries at teardown; a bare assignment
     # would hand the all-zero mask to the next free-boundary case sharing that
     # key, which reaches the Schur lane as an edge basis with no columns.
+    # The cache holds the reference stage whose whole continuation restarts
+    # every solve; only its spectral state identifies it to the stub below.
     seed = object()
-    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, seed)
+    reference = SimpleNamespace(
+        continuation_state=seed, vacuum=None, rcon0=runtime.rcon0,
+        zcon0=runtime.zcon0,
+        result=SimpleNamespace(fsqr=0.0, fsqz=0.0, fsql=0.0))
+    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, reference)
     monkeypatch.setitem(fbi._FREE_MASK_CACHE, fbi._mask_key(cfg),
                         jax.tree.map(jnp.zeros_like, state))
     calls = []
@@ -297,9 +719,78 @@ def test_free_boundary_warm_failure_retries_once_from_cold(monkeypatch):
                                rcon0=runtime.rcon0, zcon0=runtime.zcon0)
 
     monkeypatch.setattr(fbi, "_solve_free_boundary_stage", solve)
+    # The cold retry builds its start from a coarse rung; that ladder is a real
+    # solve, which this stubbed unit test does not need in order to check that
+    # the bad reference is dropped.
+    monkeypatch.setattr(fbi, "_cold_reference",
+                        lambda solve, *_args: solve(initial_state=None))
     solved, *_ = fbi._host_solve_and_mask(cfg, im.params_from_input(inp), field)
     assert calls == [seed, None]
     np.testing.assert_allclose(solved.R_cos, state.R_cos)
+
+
+def test_failed_trials_do_not_change_a_rebuilt_point(monkeypatch):
+    """A cold-rebuilt point stays identical after unrelated failed trials."""
+    inp = dataclasses.replace(
+        lasym_free_input(DATA), ns_array=np.array([8]),
+        ftol_array=np.array([1.0e-6]), niter_array=np.array([20]))
+    field = lasym_free_field()
+    cfg = make_free_boundary_config(inp, field, ns=8, ftol=1.0e-6,
+                                    max_iterations=20)
+    runtime = im._template_runtime(cfg.implicit)
+    state = im._initial_state(runtime.setup)
+    reference = SimpleNamespace(
+        continuation_state=object(), vacuum=None, rcon0=runtime.rcon0,
+        zcon0=runtime.zcon0,
+        result=SimpleNamespace(fsqr=0.0, fsqz=0.0, fsql=0.0))
+    monkeypatch.setitem(fbi._FREE_HOT_CACHE, cfg, reference)
+    monkeypatch.setitem(fbi._FREE_MASK_CACHE, fbi._mask_key(cfg),
+                        jax.tree.map(jnp.zeros_like, state))
+    rebuilt_state = dataclasses.replace(state, R_cos=state.R_cos + 1.0)
+
+    def stage(converged, marker, result_state=state):
+        fsq = 0.0 if converged else 1.0e-3
+        return SimpleNamespace(
+            result=SimpleNamespace(
+                state=result_state, fsqr=fsq, fsqz=0.0, fsql=0.0,
+                converged=converged, marker=marker),
+            continuation_state=result_state, rcon0=runtime.rcon0,
+            zcon0=runtime.zcon0)
+
+    # The restart from the reference never reaches ftol.
+    monkeypatch.setattr(fbi, "_solve_free_boundary_stage",
+                        lambda *_a, **_k: stage(False, "restart"))
+    current = jnp.asarray(field.extcur)
+    failed_current = current.at[0].add(1.0)
+    rebuilds = []
+
+    def rebuild(_solve, _icfg, _inp, trial_field):
+        productive = np.array_equal(np.asarray(trial_field), np.asarray(current))
+        rebuilds.append(productive)
+        return stage(productive, "rebuild" if productive else "failed-rebuild",
+                     rebuilt_state if productive else state)
+
+    monkeypatch.setattr(fbi, "_cold_reference", rebuild)
+    first, *_rest, first_status, _fsq, _ratio = fbi._host_solve_and_mask_status(
+        cfg, im.params_from_input(inp), current)
+    assert int(first_status) == 0
+    assert rebuilds == [True]
+    assert fbi._FREE_LAST_RESULT[cfg].marker == "rebuild"
+    assert fbi._FREE_HOT_CACHE[cfg] is reference  # the reference stands
+
+    failed_trials = 8  # the former global budget was exhausted at this point
+    for _ in range(failed_trials):
+        *_ignored, status, _fsq, _ratio = fbi._host_solve_and_mask_status(
+            cfg, im.params_from_input(inp), failed_current)
+        assert int(status) == 2
+    assert rebuilds == [True] + [False] * failed_trials
+
+    repeated, *_rest, repeated_status, _fsq, _ratio = (
+        fbi._host_solve_and_mask_status(
+            cfg, im.params_from_input(inp), current))
+    assert int(repeated_status) == 0
+    np.testing.assert_array_equal(repeated.R_cos, first.R_cos)
+    assert fbi._FREE_LAST_RESULT[cfg].marker == "rebuild"
 
 
 def test_free_boundary_host_adjoint_rejects_a_false_solver_success(monkeypatch):
@@ -351,7 +842,21 @@ def test_free_boundary_current_gradient_matches_resolve_finite_difference():
         lambda value: jnp.mean(solve_free_boundary_implicit(
             params, value, cfg).R_cos[-1] ** 2), current)
     derivative = jax.grad(objective)(current)[0]
-    step = 2.0e-4
+    # A re-solve finite difference only measures the derivative while both
+    # legs stay on the same root; a step large enough to move one of them
+    # measures the root change instead, and does so by orders of magnitude.
+    # That is the rule both re-solve anchors in this file teach.  Measured
+    # here, adjoint against the central difference at three steps:
+    #
+    #   step   2e-4        2e-5        2e-6
+    #   FD    -4.293e-02  -2.306e-01  -2.366e-01   (adjoint -2.270e-01)
+    #
+    # The 2e-4 leg lands on a different root and collapses the difference by
+    # 5x; 2e-5 and 2e-6 agree with the adjoint to 1.6 % and 4.0 %, and 2e-5 is
+    # the least noisy of the usable steps.  The adjoint itself is insensitive
+    # to all of this: it moves by 0.1 % across solver revisions that move the
+    # 2e-4 difference by 5x.
+    step = 2.0e-5
     finite_difference = (
         objective(current + step) - objective(current - step)
     ) / (2.0 * step)
@@ -422,8 +927,51 @@ def test_ncsx_free_boundary_current_gradient_matches_resolve_finite_difference()
 
 
 @pytest.mark.full
-def test_free_boundary_pressure_gradient_matches_resolve_finite_difference():
-    """The solved objective retains the edge-pressure normalization response."""
+def test_free_boundary_pressure_gradient_is_certified_at_one_root():
+    """The pressure response, certified without re-solving anything.
+
+    The re-solve finite difference this replaced is not noisy on this deck,
+    PROVIDED EVERY LEG POPS ``_FREE_HOT_CACHE`` FIRST, as the retired test
+    did.  That protocol matters more than the step size and generalises to
+    any finite-difference check against this solver: measured on one head
+    with both protocols back to back, independent cold legs give 1.565918e-5,
+    1.520154e-5 and 1.520142e-5 at steps 1e-2, 1e-3 and 1e-4 -- five digits
+    stable, and an eleven-point scan that departs from its own best-fit line
+    by nothing measurable -- while legs that continue warm from each other
+    give -7.78e-5, +6.83e-4 and -1.03e-3 on the same head, with a departure
+    from that line of 75 times the signal.  Write the pop, or measure noise.
+
+    So this test is not retired for noise.  It is retired because of which
+    root its legs converge TO.  Both land on genuinely ftol-converged roots,
+    but not the same one that a different forward solve reaches: this deck
+    stops at J = 0.2752496 in 95 iterations where the previous revision
+    stopped at J = 0.2752520 in 467.  Across that change the difference moves
+    by 8.8 % while the adjoint moves by 0.2 %, so the ratio of the two is
+    1.066 with one forward solve and 0.858 with this one.  The retired test
+    allowed ten per cent, and 0.858 is outside it: the test could not be
+    re-tuned, because a tolerance calibrated to one root cannot separate a
+    wrong adjoint from a different root, and the adjoint here is right.
+    (An intermediate revision that always laddered was worse still: its
+    coarse rung put neighbouring parameter points on visibly different roots,
+    and its finite difference swung four orders of magnitude and changed
+    sign.  That arm is gone, and the sign flip that first raised the alarm
+    went with it.)
+
+    What is certified instead, both at one saved root:
+
+    1.  ``dF/dp`` in the pressure direction against a central difference *of
+        the residual itself*.  Nothing is solved, so the only error is FD
+        truncation, and the gate is 1e-6 relative.
+    2.  The assembled gradient against forward-adjoint duality: the adjoint
+        contraction against ``<dJ/dz, dz>`` with ``(dF/dz) dz = -(dF/dp) dp``
+        from an independent forward solve of the same linear system.  The two
+        sides differ only by how far each Krylov solve ran, so the gate is
+        the configuration's own ``adjoint_tol`` with the same factor of ten
+        that ``_adjoint_acceptance`` uses; measured here at 7.8e-8.
+
+    Together these fix the sign, the scale and the ``presf_ns_scale`` term of
+    the pressure entry without depending on where the nonlinear solver stops.
+    """
     inp = dataclasses.replace(
         lasym_free_input(DATA), ns_array=np.array([8]),
         ftol_array=np.array([1.0e-9]), niter_array=np.array([4000]))
@@ -435,28 +983,56 @@ def test_free_boundary_pressure_gradient_matches_resolve_finite_difference():
         field_from_parameters=lambda current: dataclasses.replace(
             field, extcur=current), device="cpu")
 
-    def objective(relative_am0):
-        trial = dataclasses.replace(
-            params, am=params.am.at[0].set(params.am[0] * (1.0 + relative_am0)))
-        state, _, _, _ = solve_free_boundary_implicit_status(
-            trial, field.extcur, cfg)
-        return jnp.mean(state.R_cos[-1]**2 + state.Z_sin[-1]**2)
+    (_state, status, _fsq, _ratio), saved = fbi._solve_status_fwd(
+        params, field.extcur, cfg)
+    assert int(status) == 0
+    prm, current, solved, mask, rcon0, zcon0, _ = saved
+    frozen = jax.lax.stop_gradient(solved)
+    project = im._dof_projector(cfg.implicit, mask)
+    z_star = project(solved)
+    residual = fbi._projected_residual(cfg, mask)
+    direction = dataclasses.replace(
+        jax.tree.map(jnp.zeros_like, prm),
+        am=jnp.zeros_like(prm.am).at[0].set(prm.am[0]))
 
-    derivative = jax.grad(objective)(0.0)
-    step = 1.0e-2
-    values = []
-    for sign in (-1.0, 1.0):
-        # Independent cold re-solves prevent continuation history from
-        # manufacturing agreement with the implicit derivative.
-        fbi._FREE_HOT_CACHE.pop(cfg, None)
-        values.append(objective(sign * step))
-    finite_difference = (values[1] - values[0]) / (2.0 * step)
+    def lane(parameters):
+        return residual(z_star, parameters, current, frozen, rcon0, zcon0)
 
-    assert abs(float(finite_difference)) > 1.0e-7
-    # This ns=8 campaign is limited by the independently reconverged nonlinear
-    # roots. The missing presf_ns_scale term changes the response by O(1).
+    analytic = jax.jvp(lane, (prm,), (direction,))[1]
+    assert float(im._tree_norm(analytic)) > 0.0
+    step = 1.0e-4
+    shifted = [jax.tree.map(lambda a, b, sign=sign: a + sign * step * b,
+                            prm, direction) for sign in (1.0, -1.0)]
+    finite = jax.tree.map(
+        lambda plus, minus: (plus - minus) / (2.0 * step),
+        lane(shifted[0]), lane(shifted[1]))
+    assert float(im._tree_norm(jax.tree.map(
+        jnp.subtract, analytic, finite))) <= 1.0e-6 * float(
+            im._tree_norm(analytic))
+
+    state_bar = jax.grad(
+        lambda s: jnp.mean(s.R_cos[-1] ** 2 + s.Z_sin[-1] ** 2))(solved)
+    params_bar, _ = fbi._solve_bwd_impl(
+        cfg, (prm, current, solved, mask, rcon0, zcon0), state_bar)
+    adjoint = float(sum(
+        jnp.vdot(left, right) for left, right in zip(
+            jax.tree.leaves(params_bar), jax.tree.leaves(direction))))
+    assert adjoint > 0.0  # more pressure pushes the boundary outward
+
+    rhs_flat = ravel_pytree(project(state_bar))[0]
+    forcing, unravel = ravel_pytree(jax.tree.map(jnp.negative, analytic))
+    operator = LinearOperator(
+        (forcing.size,) * 2,
+        matvec=lambda value: np.asarray(ravel_pytree(jax.jvp(
+            lambda z: residual(z, prm, current, frozen, rcon0, zcon0),
+            (z_star,), (unravel(jnp.asarray(value, forcing.dtype)),))[1])[0]),
+        dtype=np.asarray(forcing).dtype)
+    tangent, info = gcrotmk(operator, np.asarray(forcing), rtol=1.0e-9,
+                            atol=0.0, m=30, k=5, maxiter=300)
+    assert info == 0
+    forward = float(np.dot(np.asarray(rhs_flat), tangent))
     np.testing.assert_allclose(
-        derivative, finite_difference, rtol=1.0e-1, atol=1.0e-7)
+        adjoint, forward, rtol=10.0 * cfg.implicit.adjoint_tol, atol=0.0)
 
 
 @pytest.mark.full
@@ -511,6 +1087,89 @@ def test_boundary_schur_adjoint_reproduces_the_coupled_gcrot_gradient():
 
     assert np.all(np.isfinite(coupled)) and np.max(np.abs(coupled)) > 0.0
     np.testing.assert_allclose(schur, coupled, rtol=2.0e-2, atol=1.0e-8)
+
+
+@pytest.mark.full
+def test_edge_response_is_the_exact_linearization_of_nestor():
+    """The dense edge response reproduces NESTOR's derivative and the gradient.
+
+    Three facts on one converged LASYM root, each with its own tolerance: the
+    response columns against a central difference of the vacuum pressure
+    itself (truncation only, 1e-6); the response-linearized coupled lane
+    against the exact coupled Jacobian-vector product (round-off, 1e-10); and
+    the edge-response gradient against the certified default at the same
+    root, where both lanes solve the same operator to the same tolerance.
+    """
+    base = lasym_free_input(DATA).change_resolution(
+        mpol=10, ntor=0, ntheta=30, nzeta=4)
+    inp = dataclasses.replace(
+        base, ns_array=np.array([8]),
+        ftol_array=np.array([1.0e-8]), niter_array=np.array([2500]))
+    field = lasym_free_field()
+    params = im.params_from_input(inp)
+
+    def configure(solver):
+        return make_free_boundary_config(
+            inp, field, ns=8, ftol=1.0e-8, max_iterations=2500,
+            adjoint_tol=1.0e-9, adjoint_maxiter=100, adjoint_solver=solver,
+            field_from_parameters=lambda current: dataclasses.replace(
+                field, extcur=current),
+            device="cpu")
+
+    coupled_cfg, response_cfg = configure("coupled_gcrot"), configure("edge_response")
+    (_, status, _, _), saved = fbi._solve_status_fwd(
+        params, field.extcur, response_cfg)
+    assert int(status) == 0
+    prm, current, state, mask, rcon0, zcon0, _ = saved
+    # Both lanes pull the same cotangent back through the same saved root, so
+    # solver history cannot stand in for agreement between the two adjoints.
+    state_bar = jax.grad(
+        lambda s: jnp.mean(s.R_cos[-1] ** 2 + s.Z_sin[-1] ** 2))(state)
+    coupled_gradient, response_gradient = (
+        np.asarray(fbi._solve_bwd(cfg, saved[:6], state_bar)[1])
+        for cfg in (coupled_cfg, response_cfg))
+    assert np.max(np.abs(coupled_gradient)) > 0.0
+    np.testing.assert_allclose(
+        response_gradient, coupled_gradient, rtol=1.0e-6, atol=0.0)
+
+    value, jacobian, inputs = fbi._edge_response(
+        response_cfg, prm, current, state, rcon0, zcon0)
+    assert jacobian.shape == value.shape + inputs.shape
+
+    icfg = response_cfg.implicit
+    rt = dataclasses.replace(
+        im.runtime_from_params(prm, icfg), rcon0=rcon0, zcon0=zcon0,
+        lfreeb=True, jmax=int(icfg.resolution.ns))
+    _, unflatten = ravel_pytree(fbi._vacuum_inputs(state, rt))
+    direction = jnp.asarray(
+        np.random.default_rng(0).standard_normal(inputs.size))
+    direction *= jnp.linalg.norm(inputs) / jnp.linalg.norm(direction)
+    step = 1.0e-6
+
+    def pressure(vector):
+        return response_cfg.vacuum_program.bsq_edge(
+            *unflatten(vector), response_cfg.field_from_parameters(current))
+
+    finite = (pressure(inputs + step * direction)
+              - pressure(inputs - step * direction)) / (2.0 * step)
+    np.testing.assert_allclose(
+        jnp.tensordot(jacobian, direction, axes=1), finite,
+        rtol=0.0, atol=1.0e-6 * float(jnp.linalg.norm(finite)))
+
+    project = im._dof_projector(icfg, mask)
+    z_star = project(state)
+    tangent = project(jax.tree.map(
+        lambda leaf: jnp.asarray(np.random.default_rng(1).standard_normal(
+            leaf.shape)) * 1.0e-3, z_star))
+    products = [
+        jax.jvp(lambda z: lane(z, prm, current, state, rcon0, zcon0),
+                (z_star,), (tangent,))[1]
+        for lane in (fbi._projected_residual(response_cfg, mask),
+                     fbi._projected_residual(
+                         response_cfg, mask,
+                         response=(value, jacobian, inputs)))]
+    assert float(im._tree_norm(jax.tree.map(
+        jnp.subtract, *products))) <= 1.0e-10 * float(im._tree_norm(products[0]))
 
 
 @pytest.mark.full
@@ -739,22 +1398,17 @@ def test_free_boundary_gradient_is_certified_factor_by_factor():
 
 
 @pytest.mark.full
-def test_free_boundary_root_reproducibility_bounds_the_gradient():
-    """Two entry points, two roots, and the gradient amplifies the gap.
+def test_free_boundary_root_is_a_function_of_the_parameters():
+    """Two entry points and repeated calls return one root, bit for bit.
 
-    ``solve_free_boundary_implicit_status`` and ``_host_solve_and_mask`` solve
-    the same problem, and the certificate above shows the adjoint of either
-    root is exact to 3.5e-12.  They do not return the same root: measured
-    4.7e-4 in relative state norm at ``ftol = 1e-7``, which moves
-    ``dJ/dI`` by 1.9e-3 -- a 4x amplification.
-
-    That is the accuracy limit of the free-boundary gradient, and it is the
-    same class the fixed-boundary lane fixed by refining the returned state
-    before linearizing: ``ftol`` gates a sum of squares, so a converged solve
-    stops with ``|F| ~ sqrt(ftol)``, and where ``dF/dz`` has a small singular
-    value that is a real displacement.  This test pins the amplification so a
-    regression in either direction is visible; it is deliberately not a tight
-    gate on the difference itself.
+    They used to not: both entry points solved from whatever state the last
+    call left behind, so the same parameters gave different roots -- measured
+    4.7e-4 in relative state norm at ``ftol = 1e-7``, which moved ``dJ/dI`` by
+    1.9e-3, a 4x amplification, and on the finite-beta free-boundary deck at
+    ns = 31 moved the example's objective by 57 %.  An optimizer cannot line
+    search through that.  Every solve now restarts from one converged
+    reference per configuration instead of from the previous trial, so the
+    returned root depends on the parameters alone.
     """
     inp = dataclasses.replace(
         lasym_free_input(DATA), ns_array=np.array([16]),
@@ -770,15 +1424,25 @@ def test_free_boundary_root_reproducibility_bounds_the_gradient():
     )
     current = jnp.asarray(field.extcur)
 
-    status_root, *_ = solve_free_boundary_implicit_status(params, current, cfg)
+    first, first_status, *_ = solve_free_boundary_implicit_status(
+        params, current, cfg)
+    assert int(first_status) == 0
+
+    # A distant current trial misses the nonlinear acceptance gate after its
+    # deterministic cold retry. It must not change the root returned when the
+    # accepted point is evaluated again.
+    _, failed_status, *_ = solve_free_boundary_implicit_status(
+        params, 2.0 * current, cfg)
+    assert int(failed_status) == 2
+
+    repeat, *_ = solve_free_boundary_implicit_status(params, current, cfg)
     host_root, *_ = fbi._host_solve_and_mask(cfg, params, current)
     host_root = jax.tree.map(jnp.asarray, host_root)
-    gap = float(jnp.linalg.norm(_flat(
-        jax.tree.map(jnp.subtract, status_root, host_root))))
-    scale = float(jnp.linalg.norm(_flat(status_root)))
-    relative_gap = gap / scale
-    # Both are "converged" by the same ftol; neither is wrong.
-    assert 1.0e-6 < relative_gap < 1.0e-2, relative_gap
+    scale = float(jnp.linalg.norm(_flat(first)))
+    for label, other in (("repeat", repeat), ("host entry point", host_root)):
+        gap = float(jnp.linalg.norm(_flat(
+            jax.tree.map(jnp.subtract, first, other))))
+        assert gap / scale == 0.0, (label, gap / scale)
 
 
 @pytest.mark.parametrize("bad", [0., float("nan")])

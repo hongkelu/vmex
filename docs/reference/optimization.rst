@@ -506,7 +506,7 @@ are not differentiated.
 .. _free-boundary-seed-lu:
 
 Reusing a dense seed as a matrix-free preconditioner
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For an explicit continuation loop, ``forward_dense_jax`` with
 ``adjoint_fail="error"`` can retain one dense seed LU and solve subsequent

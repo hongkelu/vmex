@@ -503,6 +503,70 @@ delegates to the existing scalar adjoint at the saved endpoint. Profiles stay
 fixed in this initial continuation API. Solver iterations and anchor selection
 are not differentiated.
 
+.. _free-boundary-seed-lu:
+
+Reusing a dense seed as a matrix-free preconditioner
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For an explicit continuation loop, ``forward_dense_jax`` with
+``adjoint_fail="error"`` can retain one dense seed LU and solve subsequent
+adjoints and predictors with current-root matrix-vector products::
+
+    dense = vmex.free_boundary_continuation_state_pullback(
+        accepted, continuation, rhs_batch, return_linearization=True)
+    seed = dense.preconditioner(
+        rtol=1e-11, tangent_rtol=1e-11, restart=100, max_restarts=3,
+        rhs_batch_size=3, require_adjoint_convergence=False)
+    dense.close()  # the seed owns an independent float64 host copy
+    try:
+        current = vmex.free_boundary_continuation_state_pullback(
+            accepted, continuation, rhs_batch, preconditioner=seed,
+            return_linearization=True)
+        try:
+            implicit_gradient_rows = current.field_jacobian
+            response = current.tangent(accepted, continuation, coil_direction)
+        finally:
+            current.close()
+    finally:
+        seed.close()
+
+Repeat the inner pullback at each newly certified root, with that root's
+cotangents, using the same seed. Add the objective's explicit field derivatives
+to ``field_jacobian``. The seed only preconditions the solve: it never replaces
+the current Jacobian. Identical or opposite cotangents reuse a solution within
+one batch; arbitrary row counts are supported. Predictor ownership and full
+residual checks remain the same as in the dense path.
+
+``FreeBoundaryLUPreconditioner`` is bound to one continuation configuration,
+state layout and active basis. A different resolution or mask requires a new
+seed, as does reanchoring into a new continuation configuration. There is no
+global cache, automatic factor refresh or dense fallback in this core API.
+The requested Krylov tolerance is distinct from ``adjoint_residual_rtol``,
+which checks the actual full projected equation. Failure raises instead of
+returning an unchecked gradient. Set the full residual tolerance explicitly;
+the vacuum scalar pilot used ``adjoint_residual_rtol=1e-9``.
+``require_adjoint_convergence=True`` additionally requires Krylov's stopping
+flag; otherwise acceptance depends on the finite, full residual.
+``tangent_rtol`` independently controls predictor stopping and inherits
+``rtol`` when omitted. ``rhs_batch_size`` groups one to four independent
+adjoints, each with its own convergence and full-residual checks.
+Closing a seed prevents further pullbacks;
+already-created predictor objects retain their own factor references.
+
+This removes repeated dense assembly, not the initial dense setup or storage.
+The caller may also use ``linearization.offload_factors()`` on the ordinary
+dense path to keep its factors in host memory between predictor calls. Both
+paths are host-eager and require float64. The scalar custom VJP is unchanged.
+Qualification still requires independent, reconverged finite differences at
+representative equilibria. A correct adjoint of an under-resolved equilibrium
+does not establish physical accuracy at higher resolution.
+
+Dense remains the default. This low-level option does not change
+``FreeBoundaryProblem`` or its projected optimizer. Callers implementing dense
+recovery must check the same certified trial and promote replacement factors
+only after optimizer acceptance. A short vacuum pilot does not qualify long
+optimization runs or finite-beta equilibria.
+
 Exact targets use a bounded memo (eight endpoints by default). A failed path
 does not update the memo or anchor. ``force_recompute=True`` requests a fresh
 path from the same anchor; failure preserves a previously accepted endpoint.

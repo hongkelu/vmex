@@ -145,6 +145,11 @@ class DenseRootLinearization:
     _direction: object = None
     _response: object = None
     _rhs: object = None
+    _tangent_backend = 'reused_dense_lu'
+
+    def _solve_tangent(self, rhs):
+        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=0)
+        return _expand(solution, self.z, self.space), 1
 
     def close(self):
         """Release root-specific arrays/tapes and permanently invalidate reuse."""
@@ -178,11 +183,11 @@ class DenseRootLinearization:
                 direction = im._device_pin(self.cfg.implicit, jnp.asarray(vector))
                 rhs = jax.jvp(lambda p:self.residual(self.z,self.params,p,self.frozen,self.rcon,self.zcon),
                               (self.field,), (direction,))[1]
-                solution = jsl.lu_solve(self.factors, -_compress(rhs,self.space), trans=0)
-                response = _expand(solution,self.z,self.space)
+                response, iterations = self._solve_tangent(rhs)
             else:
                 response = jax.tree.map(lambda x:scale*x,self._response)
                 rhs = jax.tree.map(lambda x:scale*x,self._rhs)
+                iterations = 0
             # Independent full matrix-free residual, also for scaled responses.
             defect = jax.tree.map(lambda ax,b:ax+b,self.action(response),rhs)
             norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
@@ -195,11 +200,11 @@ class DenseRootLinearization:
             if diagnostics is not None:
                 diagnostics.append(dict(row=None,residual_norm=norm,rhs_norm=rhs_norm,
                     relative_residual=norm/rhs_norm if rhs_norm else (0. if norm == 0 else float('inf')),
-                    tolerance=tolerance,iterations=1,accepted=bool(accepted),
-                    backend='reused_dense_lu',scaled_reuse=scale is not None))
+                    tolerance=tolerance,iterations=iterations,accepted=bool(accepted),
+                    backend=self._tangent_backend,scaled_reuse=scale is not None))
             if not accepted:
-                im._raise_adjoint_unconverged(self.cfg.implicit,iterations=1,
-                    residual_norm=norm,tolerance=tolerance,method='reused_dense_lu tangent')
+                im._raise_adjoint_unconverged(self.cfg.implicit,iterations=iterations,
+                    residual_norm=norm,tolerance=tolerance,method=self._tangent_backend+' tangent')
             if scale is None:
                 self._direction = vector.copy()
                 self._response, self._rhs = response, rhs

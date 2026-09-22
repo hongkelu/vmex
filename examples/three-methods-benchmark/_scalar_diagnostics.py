@@ -29,7 +29,10 @@ def check_control_settings(settings, control):
             if constants[name.upper()] != value:
                 raise ValueError(f"{name}: free {value} differs from control {constants[name.upper()]}")
             matched[name] = value
-    free_only = {"device", "max_trials", "adjoint_batch_size", "root_tolerance", "equilibrium_ftol"}
+    free_only = {
+        "device", "max_trials", "adjoint_batch_size", "root_tolerance",
+        "equilibrium_ftol", "gradient_check_ftol", "matrixfree_rhs_batch_size",
+    }
     if set(matched) != set(asdict(settings)) - free_only:
         raise ValueError("missing controlled settings")
     return matched

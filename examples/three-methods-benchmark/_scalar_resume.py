@@ -53,3 +53,43 @@ def load_endpoint(run, manifest, repo, settings, args, script):
         step_offset=summary.get("absolute_step", step), optimizer_state="fresh SLSQP state; Hessian not saved",
         previous_final=summary["final"], previous_verified=summary.get("verified"),
         previous_unmet=summary.get("unmet"), unchanged_physics=True)
+
+
+def save_adjoint_failure(out, candidate, accepted, trial, accepted_step, error):
+    """Preserve the failed trial and its accepted anchor without promoting either."""
+    import numpy as np
+
+    paths = {}
+    for label, root in (("trial", candidate), ("anchor", accepted)):
+        path = out / f"failed_adjoint_{trial:04d}_{label}.npz"
+        arrays = {name: np.asarray(getattr(root.state, name)) for name in
+                  ("R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin")}
+        with path.open("xb") as stream:
+            np.savez_compressed(stream, parameters=root.parameters, rcon0=root.rcon0,
+                                zcon0=root.zcon0, **arrays)
+        paths[label] = dict(file=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    with (out / f"failed_adjoint_{trial:04d}.json").open("x") as stream:
+        json.dump(dict(trial=trial, accepted_step=accepted_step,
+                       error=f"{type(error).__name__}: {error}",
+                       trial_accepted=False, acceptance_status_at_capture='unaccepted',
+                       checkpoints=paths), stream, indent=2)
+        stream.write("\n")
+
+
+def load_seed_checkpoint(path, expected_sha256):
+    """Authenticate an explicit diagnostic seed; certification still follows."""
+    import numpy as np
+
+    path = path.resolve()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != expected_sha256:
+        raise ValueError("initial checkpoint SHA256 mismatch")
+    names = {"parameters", "rcon0", "zcon0", "R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin"}
+    with np.load(path, allow_pickle=False) as saved:
+        if set(saved.files) != names:
+            raise ValueError("initial checkpoint must contain parameters, state and constraint baselines")
+        arrays = {name: saved[name].copy() for name in names}
+    if not all(np.all(np.isfinite(value)) for value in arrays.values()):
+        raise ValueError("initial checkpoint contains nonfinite values")
+    return arrays, dict(source=str(path), sha256=digest,
+                        optimizer_state="fresh SLSQP state; no optimizer history restored")

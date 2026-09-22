@@ -20,9 +20,8 @@ import numpy as np
 from .problem import FunctionProblem
 from .optimize import Equilibrium
 from .coil_parameters import CoilParameters
-from .projected_optimization import TrialRejected
 from . import freeboundary_continuation as fc, freeboundary_implicit as fbi, implicit as im
-from .errors import AdjointSolveError, VmecError
+from .errors import AdjointSolveError, TrialRejected, VmecError
 
 
 @jax.custom_jvp

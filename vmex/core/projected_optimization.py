@@ -8,9 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import OptimizeResult
 
-
-class TrialRejected(Exception):
-    """An expected numerical rejection; backtracking may try a smaller step."""
+from .errors import TrialRejected as TrialRejected
 
 
 @dataclass(frozen=True)

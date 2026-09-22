@@ -18,6 +18,14 @@ from vmex.core.coil_parameters import CoilParameters
 from vmex.core.projected_optimization import TrialRejected
 
 
+def test_trial_rejection_keeps_public_and_legacy_import_identity():
+    from vmex.core.errors import TrialRejected as SharedTrialRejected
+
+    assert opt.TrialRejected is TrialRejected is SharedTrialRejected
+    with pytest.raises(TrialRejected, match="uncertified trial"):
+        raise opt.TrialRejected("uncertified trial")
+
+
 @dataclass(frozen=True, eq=False)
 class Root:
     parameters: np.ndarray

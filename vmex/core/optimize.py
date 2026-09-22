@@ -210,7 +210,10 @@ def __getattr__(name: str):  # PEP 562 lazy re-export
     if name == "CoilParameters":
         from .coil_parameters import CoilParameters
         return CoilParameters
-    if name in ("minimize_projected", "ProjectedOptions", "TrialRejected"):
+    if name == "TrialRejected":
+        from .errors import TrialRejected
+        return TrialRejected
+    if name in ("minimize_projected", "ProjectedOptions"):
         from . import projected_optimization
         return getattr(projected_optimization, name)
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,

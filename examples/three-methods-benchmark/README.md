@@ -63,8 +63,10 @@ import private VMEX modules or a local driver/setup helper.
 scalar gradient, including the moving surface in coil-surface clearance.
 `accept_x` promotes only optimizer-accepted states. The example's importable
 `build_problem` defines one initialization/objective path for production and
-qualification. No local numerical helper module is used; historical drivers
-and frozen run snapshots remain unchanged.
+qualification. The superseded private scalar driver and its unused gradient
+and resume helpers have been removed; they remain available in Git history.
+The fixed-boundary reference still uses `_scalar_constraints.py` and
+`_scalar_diagnostics.py`. Saved run outputs are unchanged.
 
 Run expensive qualification once for the desired configuration, then reuse its
 fitted coils and certified initial checkpoint:

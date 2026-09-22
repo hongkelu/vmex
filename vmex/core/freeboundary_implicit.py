@@ -1191,12 +1191,6 @@ def _transpose_matvec(value, pullback, template):
     return ravel_pytree(pullback(unravel(value))[0])[0]
 
 
-# Retain the fork's helper names for continuation and shared-RHS callers,
-# using the same prepared tape and matvec as upstream's scalar adjoint.
-_prepare_host_transpose = _prepare_transpose
-_prepared_transpose_matvec = _transpose_matvec
-
-
 @functools.partial(jax.jit, static_argnames=("residual",))
 def _prepare_reverse_transpose(z, p, field, base, rcon, zcon, *, residual):
     """Transpose an already linearized root, as in the local reverse backend.
@@ -1215,7 +1209,7 @@ def _reverse_gcrot_core(transpose, rhs, *, rtol, m, k, max_restarts):
     flat, unravel = ravel_pytree(rhs)
 
     def action(value):
-        return _prepared_transpose_matvec(value, transpose, rhs)
+        return _transpose_matvec(value, transpose, rhs)
 
     solution = _solvax_gcrot(
         action, flat, rtol=rtol, atol=0.0,
@@ -1286,7 +1280,7 @@ def _host_adjoint(
             residual=residual)
 
     def matvec(value):
-        return _prepared_transpose_matvec(value, pullback, rhs)
+        return _transpose_matvec(value, pullback, rhs)
 
     matvec(rhs_flat).block_until_ready()
     dtype = np.asarray(rhs_flat).dtype
@@ -1345,12 +1339,6 @@ def _host_adjoint(
     return unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
 
 
-def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", row=None):
-    """Solve one shared RHS with upstream's certified host-adjoint implementation."""
-    return _host_adjoint(None, None, None, None, None, None, None, rhs, cfg,
-                         x0=x0, fail=fail, pullback=pullback, row=row)
-
-
 @functools.partial(jax.jit, static_argnames=("residual",))
 def _prepare_parameter_pullback(z, p, field, base, rcon, zcon, *, residual):
     return jax.vjp(
@@ -1370,8 +1358,7 @@ def _host_pullback_multi_rhs(
     residual_rtol=None, diagnostics=None,
 ):
     """Share numerical tapes; certify each independent sequential solve."""
-    prepare = _prepare_reverse_transpose if backend == "reverse_gcrot" else _prepare_host_transpose
-    solve = _solve_prepared_reverse_adjoint if backend == "reverse_gcrot" else _solve_prepared_host_adjoint
+    prepare = _prepare_reverse_transpose if backend == "reverse_gcrot" else _prepare_transpose
     transpose = prepare(
         z_star, params, field_parameters, frozen, rcon0, zcon0,
         residual=residual)
@@ -1381,8 +1368,14 @@ def _host_pullback_multi_rhs(
     rows = []
     for index in range(jax.tree.leaves(rhs_batch)[0].shape[0]):
         rhs = jax.tree.map(lambda value: value[index], rhs_batch)
-        options = dict(residual_rtol=residual_rtol, diagnostics=diagnostics) if backend == "reverse_gcrot" else {}
-        adjoint = solve(transpose, rhs, cfg, fail=fail, row=index, **options)
+        if backend == "reverse_gcrot":
+            adjoint = _solve_prepared_reverse_adjoint(
+                transpose, rhs, cfg, fail=fail, row=index,
+                residual_rtol=residual_rtol, diagnostics=diagnostics)
+        else:
+            adjoint = _host_adjoint(
+                residual, z_star, params, field_parameters, frozen, rcon0,
+                zcon0, rhs, cfg, pullback=transpose, fail=fail, row=index)
         rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
     return jax.tree.map(lambda *values: jnp.stack(values), *rows)
 

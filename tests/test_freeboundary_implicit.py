@@ -555,7 +555,7 @@ def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, 
     params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
     rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
     counts = {'state':0, 'parameter':0}
-    state_name = "_prepare_reverse_transpose" if backend == "reverse_gcrot" else "_prepare_host_transpose"
+    state_name = "_prepare_reverse_transpose" if backend == "reverse_gcrot" else "_prepare_transpose"
     prepare_state, prepare_parameter = getattr(fbi, state_name), fbi._prepare_parameter_pullback
     def counted_state(*args, **kwargs):
         counts['state'] += 1

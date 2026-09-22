@@ -1,13 +1,17 @@
 """Run the documented examples at reduced, deterministic CI budgets.
 
-Each script reads ``VMEX_EXAMPLES_CI=1``; the tests require a clean exit,
-physics progress where applicable, and the documented output artifacts.
+Every test sets ``VMEX_EXAMPLES_CI=1`` and requires a clean exit, physics
+progress where applicable, and the documented output artifacts.  Most scripts
+read the variable to shrink their work; a few have no smoke path and run as
+shipped, among them ``vmex_get_B_gradB.py`` and ``vmex_get_B_outside_plasma.py``,
+whose cost is XLA compilation that a coarser equilibrium does not reduce.
 Commented optional objective terms are exercised by their physics/AD unit tests;
 this module keeps their example wiring explicit.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -36,6 +40,7 @@ ESSOS_COIL_EXAMPLES = (
     EXAMPLES / "vmex_fieldline_tracing_vacuum.py",
     EXAMPLES / "vmex_fieldline_tracing_finite_beta.py",
     EXAMPLES / "optimization" / "single_stage_optimization.py",
+    EXAMPLES / "optimization" / "single_stage_optimization_penalty.py",
     EXAMPLES / "optimization" / "single_stage_optimization_finite_beta.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_finite_beta.py",
@@ -97,33 +102,121 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
         assert hasattr(Coils, name), name
 
 
-#: Shipped examples that no test runs, each with the reason it is exempt.
+#: Shipped examples that no test RUNS, each with the reason it is exempt.
 #: The QH, QI and QP entries drive the same code as a tested QA sibling on a
 #: different symmetry class, so the driver is covered and only the deck is not.
 #: Keeping the list explicit is what makes the gap reviewable: a new example
-#: that nothing tests fails the guard below until it is either tested or
-#: listed here on purpose.
+#: that nothing runs fails the guard below until it is either run or listed
+#: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
+#: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
+    "examples/m=3n=3iota=0p2/case.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2/checkpoint.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2/optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2/run.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/campaign.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/case.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/checkpoint.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/diagnostics.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/monitor_both.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/run.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/test_campaign.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/test_workflow.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_angular_case.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_diagnostics.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_iota02_aspect5_fresh.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/m=3n=3iota=0p2aspect=5angular48x40/workflow.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/compare_scalar_steps.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/free_boundary_single_stage_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/qa_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/single_stage_free_boundary_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/single_stage_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/solve_free_boundary_initial_coils.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/verify_free_boundary_single_stage.py": "research workflow; API/callback tests, separate numerical qualification",
+
     "examples/mirror/pleiades_mirror_reference.py": "needs an unshipped reference deck",
     "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py": "mirror hybrid, covered by tests/mirror",
     "examples/mirror/stellarator_mirror_hybrid.py": "mirror hybrid, covered by tests/mirror",
-    "examples/optimization/QA_optimization_bootstrap.py": "bootstrap driver covered by tests/test_bootstrap.py",
-    "examples/optimization/QH_optimization_bootstrap.py": "QA sibling is tested",
     "examples/optimization/QH_optimization_finite_beta_scalar.py": "QA sibling is tested",
     "examples/optimization/QH_optimization_scalar.py": "QA sibling is tested",
-    "examples/optimization/QI_optimization_bootstrap.py": "QA sibling is tested",
     "examples/optimization/QI_optimization_finite_beta_scalar.py": "QA sibling is tested",
     "examples/optimization/QI_optimization_scalar.py": "QA sibling is tested",
-    "examples/optimization/QP_optimization.py": "QA sibling is tested",
     "examples/optimization/QP_optimization_finite_beta_scalar.py": "QA sibling is tested",
     "examples/optimization/QP_optimization_scalar.py": "QA sibling is tested",
     "examples/optimization/QP_optimization_scipy.py": "QA sibling is tested",
+    "examples/optimization/QA_maxJ_continuation.py": "covered by the source test above; a run is the QI sibling's",
+    "examples/optimization/QA_optimization_DMerc_vacuum.py": "covered by the source test above; its certificate lane has no smoke path",
+    "examples/optimization/QA_optimization_global.py": "covered by the source test above; basin hopping has no meaningful smoke budget",
     "examples/optimization/stellarator_asymmetry/QA_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/optimization/stellarator_asymmetry/QH_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/optimization/stellarator_asymmetry/QI_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
-    "examples/optimization/stellarator_asymmetry/QP_optimization.py": "asymmetric variants share the symmetric drivers",
     "examples/optimization/stellarator_asymmetry/QP_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
+}
+
+
+#: Shipped examples that a test in this module actually executes.  This is a
+#: declaration, not a search: ``_run_example`` refuses to run a script that is
+#: not listed, and the guard below requires this set and ``UNTESTED_EXAMPLES``
+#: to partition the shipped examples exactly.
+#:
+#: The previous guard searched the test sources for each example's *basename*,
+#: which silently accepted any example whose name another file shares.  That
+#: masked all four ``optimization/stellarator_asymmetry`` vacuum scripts behind
+#: their symmetric namesakes: none of them had ever run, and
+#: ``QH_optimization.py`` exited non-zero when it finally did.
+EXECUTED_EXAMPLES = {
+    "examples/epsilon_effective.py",
+    "examples/finite_beta_scan.py",
+    "examples/fixed_boundary_run.py",
+    "examples/force_balance_polishing.py",
+    "examples/free_boundary_beta_scan.py",
+    "examples/free_boundary_essos_coils.py",
+    "examples/free_boundary_mgrid.py",
+    "examples/hot_restart_scan.py",
+    "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
+    "examples/mirror/mirror_free_boundary_beta_scan.py",
+    "examples/optimization/QA_optimization.py",
+    "examples/optimization/QA_optimization_ballooning.py",
+    "examples/optimization/QA_optimization_bootstrap.py",
+    "examples/optimization/QA_optimization_finite_beta_scalar.py",
+    "examples/optimization/QA_optimization_scalar.py",
+    "examples/optimization/QA_optimization_scipy.py",
+    "examples/optimization/QH_optimization.py",
+    "examples/optimization/QH_optimization_bootstrap.py",
+    "examples/optimization/QI_maxJ_continuation.py",
+    "examples/optimization/QI_optimization.py",
+    "examples/optimization/QI_optimization_bootstrap.py",
+    "examples/optimization/QI_optimization_jaxopt.py",
+    "examples/optimization/QI_optimization_optax.py",
+    "examples/optimization/QI_optimization_scipy.py",
+    "examples/optimization/QP_optimization.py",
+    "examples/optimization/omnigenity_epsilon_gammac_maxj.py",
+    "examples/optimization/single_stage_free_boundary_optimization.py",
+    "examples/optimization/single_stage_free_boundary_optimization_finite_beta.py",
+    "examples/optimization/single_stage_optimization.py",
+    "examples/optimization/single_stage_optimization_finite_beta.py",
+    "examples/optimization/single_stage_optimization_penalty.py",
+    "examples/optimization/stellarator_asymmetry/QA_optimization.py",
+    "examples/optimization/stellarator_asymmetry/QH_optimization.py",
+    "examples/optimization/stellarator_asymmetry/QI_optimization.py",
+    "examples/optimization/stellarator_asymmetry/QP_optimization.py",
+    "examples/parallel_ensemble_scan.py",
+    "examples/plot_and_boozer.py",
+    "examples/profiles_power_and_spline.py",
+    "examples/run_from_json.py",
+    "examples/take_fixed_boundary_gradients.py",
+    "examples/take_free_boundary_gradients.py",
+    "examples/take_gradients.py",
+    "examples/vmex_essos_workflow.py",
+    "examples/vmex_fieldline_tracing_finite_beta.py",
+    "examples/vmex_fieldline_tracing_vacuum.py",
+    "examples/vmex_fixed_free_boundary_comparison.py",
+    "examples/vmex_get_B_gradB.py",
+    "examples/vmex_get_B_outside_plasma.py",
 }
 
 
@@ -138,8 +231,6 @@ def test_every_example_parses() -> None:
     do -- a removed import guard, a stranded ``except`` -- without running any
     of them.
     """
-    import ast
-
     for script in _shipped_examples():
         try:
             ast.parse(script.read_text(), filename=str(script))
@@ -147,44 +238,113 @@ def test_every_example_parses() -> None:
             raise AssertionError(f"{script.relative_to(REPO)}: {error}") from error
 
 
-# Fork research cases have separate case suites and frozen provenance snapshots.
-# Keep their support modules out of the standalone-example coverage registry;
-# test_every_example_parses still checks their syntax. New unlisted roots remain
-# subject to the registry, so adding another case requires an explicit decision.
-RESEARCH_CASE_ROOTS = {
-    "three-methods-benchmark",  # callback/API tests; full GPU campaign is separate
-    "m=3n=3iota=0p2",
-    "m=3n=3iota=0p2aspect=5angular48x40",
-    "m=3n=3iota=0p2aspect=5finitebeta",
-    "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40",
-    "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage",
-    "m=3n=3iota=0p2aspect=5fresh",
-}
+def _smoke_block_clobbers(tree: ast.Module) -> list[str]:
+    """Values a ``ci_smoke`` block sets that a later statement discards.
+
+    Two shapes count.  ``X = replace(X, kw=...)`` inside the block followed by
+    an unconditional ``X = replace(X, kw=...)`` re-supplying the same keyword,
+    and a smoke-assigned name rebound later by an expression that never reads
+    it.  A later ``replace`` naming *other* keywords carries the smoke value
+    forward and is correct, so it is not reported.
+    """
+    def assigned(node):
+        names = []
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names.append(target.id)
+            elif isinstance(target, ast.Tuple):
+                names += [e.id for e in target.elts if isinstance(e, ast.Name)]
+        return names
+
+    def replace_keywords(node):
+        value = node.value
+        if not isinstance(value, ast.Call):
+            return set()
+        function = value.func
+        name = (function.attr if isinstance(function, ast.Attribute)
+                else getattr(function, "id", ""))
+        if name != "replace":
+            return set()
+        return {k.arg for k in value.keywords if k.arg}
+
+    smoke_names: dict[str, int] = {}
+    smoke_keywords: dict[tuple[str, str], int] = {}
+    problems: list[str] = []
+    for node in tree.body:
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                and node.test.id in ("ci_smoke", "CI", "ci")):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Assign):
+                    keywords = replace_keywords(inner)
+                    for name in assigned(inner):
+                        smoke_names.setdefault(name, inner.lineno)
+                        for keyword in keywords:
+                            smoke_keywords.setdefault((name, keyword), inner.lineno)
+            continue
+        if not isinstance(node, ast.Assign):
+            continue
+        keywords = replace_keywords(node)
+        for name in assigned(node):
+            for keyword in keywords:
+                if (name, keyword) in smoke_keywords:
+                    problems.append(
+                        f"line {smoke_keywords[(name, keyword)]} sets {name}.{keyword} "
+                        f"under the smoke switch; line {node.lineno} supplies it again")
+            reads = any(isinstance(n, ast.Name) and n.id == name
+                        and isinstance(n.ctx, ast.Load)
+                        for n in ast.walk(node.value))
+            if name in smoke_names and not reads:
+                problems.append(
+                    f"line {smoke_names[name]} sets {name} under the smoke switch; "
+                    f"line {node.lineno} rebuilds it without reading it")
+    return problems
 
 
-def test_every_example_is_tested_or_listed_as_untested() -> None:
-    """No example is uncovered by accident."""
-    # The UNTESTED_EXAMPLES entries above are themselves test source, so drop
-    # those lines before searching or every listed example would look covered.
-    tests_text = "\n".join(
-        line
-        for path in sorted((REPO / "tests").rglob("test_*.py"))
-        for line in path.read_text().splitlines()
-        if not line.lstrip().startswith('"examples/'))
-    uncovered = {
-        str(script.relative_to(REPO))
-        for script in _shipped_examples()
-        if script.relative_to(EXAMPLES).parts[0] not in RESEARCH_CASE_ROOTS
-        and script.name not in tests_text
-    }
-    assert uncovered == set(UNTESTED_EXAMPLES), {
-        "missing a test or an entry": sorted(uncovered - set(UNTESTED_EXAMPLES)),
-        "listed but now tested": sorted(set(UNTESTED_EXAMPLES) - uncovered),
+def test_smoke_budgets_are_not_silently_discarded() -> None:
+    """A ``ci_smoke`` block must not be undone by a later unconditional line.
+
+    ``stellarator_asymmetry/QA_optimization.py`` and ``QH_optimization.py``
+    both reduced the radial grid under the switch and then overwrote
+    ``ns_array``/``ftol_array``/``niter_array`` three statements later, so the
+    smoke budget never applied.  Every trial hit the iteration cap, its
+    residual came back non-finite, and least squares stopped at iteration 0 on
+    the 1e6 sentinel while reporting ``gtol`` success -- QH then exited 1 in
+    ``monitor.plot``.  The failure is invisible in review and silent at run
+    time, so it is worth a parser.
+    """
+    problems = {}
+    for script in _shipped_examples():
+        found = _smoke_block_clobbers(ast.parse(script.read_text()))
+        if found:
+            problems[str(script.relative_to(REPO))] = found
+    assert not problems, problems
+
+
+def test_every_example_is_run_or_listed_as_untested() -> None:
+    """Every shipped example is either run by a test or listed as exempt.
+
+    The two sets must partition the shipped examples.  Matching on basenames
+    is what let four never-run examples pass as covered, so this compares
+    whole repository-relative paths and requires the sets to be disjoint.
+    """
+    shipped = {str(script.relative_to(REPO)) for script in _shipped_examples()}
+    listed = set(UNTESTED_EXAMPLES)
+    assert not (EXECUTED_EXAMPLES & listed), {
+        "both run and listed as untested": sorted(EXECUTED_EXAMPLES & listed)}
+    assert shipped == EXECUTED_EXAMPLES | listed, {
+        "shipped but neither run nor listed": sorted(shipped - EXECUTED_EXAMPLES - listed),
+        "named but not shipped": sorted((EXECUTED_EXAMPLES | listed) - shipped),
     }
 
 
 def _run_example(script: Path, cwd: Path, timeout: int = 2400,
                  args: tuple[str, ...] = (), **extra_env: str) -> str:
+    if script.is_relative_to(EXAMPLES):
+        # Keeps EXECUTED_EXAMPLES honest from the other side: a new test that
+        # runs an example fails here until the example is declared.
+        assert str(script.relative_to(REPO)) in EXECUTED_EXAMPLES, (
+            f"{script.relative_to(REPO)} is run by a test but is not listed in "
+            "EXECUTED_EXAMPLES")
     env = dict(os.environ, VMEX_EXAMPLES_CI="1", **extra_env)
     env.pop("JAX_DISABLE_JIT", None)
     proc = subprocess.run(
@@ -328,6 +488,14 @@ def test_force_balance_polishing_example(tmp_path):
     for stage, stem in (("before", "shaped_tokamak_before_polish"),
                         ("after", "shaped_tokamak_pressure_polished")):
         assert (outdir / stage / f"{stem}_summary.png").stat().st_size > 10_000
+    # the fair comparison: both files on one mesh, certified the same way; the
+    # near-axis error is where the polish gain lives
+    assert "both WOUT files on ns = 129, read back and certified the same way" in out
+    near_axis = re.search(r"rho < 0\.2\s+\[N m\^-3\]\s+([0-9.eE+-]+) => ([0-9.eE+-]+)", out)
+    assert near_axis is not None, out
+    initial, final = (float(g) for g in near_axis.groups())
+    assert final < 0.1 * initial, out
+    assert (outdir / "polish_before_after.webp").stat().st_size > 10_000
 
 
 def test_hot_restart_scan(tmp_path):
@@ -435,14 +603,28 @@ def test_qa_optimization_keeps_explicit_least_squares_lane():
 @pytest.mark.parametrize("case", ["QA", "QH", "QP", "QI"])
 @pytest.mark.parametrize("finite_beta", [False, True])
 def test_scalar_optimization_examples_expose_one_adjoint_lane(case, finite_beta):
-    """All eight scalar examples share wiring but keep physics visible."""
+    """All eight scalar examples keep the one-adjoint lane visible in the file.
+
+    They used to import ``run_scalar_stage`` from ``_scalar_driver.py``, so the
+    part that did the optimizing lived in a second file.  It is inlined now:
+    each script is readable end to end, and these assertions are what keep the
+    lane explicit rather than drifting back behind a helper.
+    """
     suffix = "_finite_beta_scalar" if finite_beta else "_scalar"
     text = (EXAMPLES / "optimization" / f"{case}_optimization{suffix}.py").read_text()
-    assert "from _scalar_driver import run_scalar_stage" in text
+    assert "_scalar_driver" not in text
     assert "objective_terms" in text
-    assert "run_scalar_stage(" in text
     assert "POLISH_FORCE_BALANCE = False" in text
-    assert f"input.{case}_" in text and f"wout_{case}_" in text
+    # one stem drives input., wout_ and the monitor files
+    assert f'OUTPUT_NAME = "{case}_' in text
+    assert 'to_indata(f"input.{OUTPUT_NAME}")' in text
+    assert 'write_wout(f"wout_{OUTPUT_NAME}.nc"' in text
+    # the scalar lane itself: one aggregate loss, differentiated once per step
+    assert "VmecProblem.from_loss" in text
+    assert "residuals_from_tuples" in text
+    assert "0.5 * jnp.vdot(rows, rows)" in text
+    assert "compile_value_and_gradient" in text
+    assert 'method="L-BFGS-B"' in text
     if finite_beta:
         assert "TARGET_BETA" in text
         assert "opt.volume_average_beta" in text
@@ -450,13 +632,6 @@ def test_scalar_optimization_examples_expose_one_adjoint_lane(case, finite_beta)
         assert "opt.glasser_stability_residual" in text
     else:
         assert "TARGET_BETA" not in text
-
-    helper = (EXAMPLES / "optimization" / "_scalar_driver.py").read_text()
-    assert "VmecProblem.from_loss" in helper
-    assert "residuals_from_tuples" in helper
-    assert "0.5 * jnp.vdot(rows, rows)" in helper
-    assert "compile_value_and_gradient" in helper
-    assert 'method="L-BFGS-B"' in helper
 
 
 @pytest.mark.parametrize("case", ["QA", "QH", "QP", "QI"])
@@ -471,6 +646,31 @@ def test_stellarator_asymmetry_examples_expose_all_boundary_families(case, suffi
     assert "ess_alpha=ESS_ALPHA" in source
     if suffix:
         assert "TARGET_BETA" in source and "opt.volume_average_beta" in source
+
+
+@pytest.mark.full  # nightly: four LASYM stages, twice the dofs of a symmetric one
+@pytest.mark.parametrize("case", ["QA", "QH", "QI", "QP"])
+def test_stellarator_asymmetry_vacuum_examples_run(case, tmp_path):
+    """The four vacuum LASYM examples converge and descend.
+
+    Until the coverage guard was made path-aware these had never run: each was
+    masked by the symmetric example of the same basename.  ``QH`` exited 1 when
+    it first did, because the smoke block's radial grid was overwritten by the
+    unconditional ``replace`` below it, so every trial hit the iteration cap and
+    returned the non-finite-residual sentinel.
+    """
+    if case == "QI":
+        pytest.importorskip("booz_xform_jax")
+    script = (EXAMPLES / "optimization" / "stellarator_asymmetry"
+              / f"{case}_optimization.py")
+    out = _run_example(script, tmp_path, timeout=1800)
+    _assert_cost_decreased(out, f"LASYM {case}")
+    # The point of the LASYM lane: the boundary must leave the symmetric subspace.
+    norm = re.search(r"asymmetric boundary norm = ([0-9.eE+-]+)", out)
+    assert norm is not None and float(norm.group(1)) > 0.0, out[-2000:]
+    assert (tmp_path / f"input.{case}_LASYM_optimized").exists()
+    assert (tmp_path / f"wout_{case}_LASYM_optimized.nc").exists()
+    assert (tmp_path / f"{case}_LASYM_optimization_objectives.png").exists()
 
 
 def test_qa_maxj_example_states_its_physical_scope():
@@ -848,6 +1048,37 @@ def test_scalar_optimizer_examples(script_name, dependency, output, tmp_path):
     assert (tmp_path / output).exists()
 
 
+@pytest.mark.full  # nightly: the penalized companion, one L-BFGS-B solve
+def test_fixed_boundary_single_stage_penalty(tmp_path):
+    """The simple companion runs the same physics with plain penalties.
+
+    It must fall and produce the same diagnostics as the augmented-Lagrangian
+    example; which of the two reaches the targets at full budget is recorded in
+    the examples README, not asserted here, because smoke mode reaches neither.
+    """
+    pytest.importorskip("essos")
+    out = _run_example(
+        EXAMPLES / "optimization" / "single_stage_optimization_penalty.py",
+        tmp_path, timeout=1800)
+    match = re.search(r"Objective: ([0-9.eE+-]+) -> ([0-9.eE+-]+)", out)
+    assert match is not None and float(match.group(2)) < float(match.group(1))
+    # One solve, no stage loop: the line that proves the machinery is gone.
+    assert re.search(r"\[solve\] \d+ L-BFGS-B iterations, \d+ trials, status ", out)
+    assert "[stage 1]" not in out
+    for diagnostic in ("B.n/B: area-weighted RMS", "Minimum coil-surface distance",
+                       "Minimum coil-coil distance", "Maximum curvature", "Coil lengths",
+                       "Minimum |iota| = ", "Aspect ratio = "):
+        assert diagnostic in out
+    summary = json.loads((tmp_path / "single_stage_penalty_summary.json").read_text())
+    assert summary["smoke"] and summary["trials"] >= 1
+    assert summary["met"] == (not summary["unmet"])
+    assert "stages" not in summary
+    for name in ("wout_single_stage_penalty_optimized.nc",
+                 "single_stage_penalty_objectives.png",
+                 "coils_single_stage_penalty_optimized.vtu"):
+        assert (tmp_path / name).exists()
+
+
 @pytest.mark.full  # nightly: exact VMEX+ESSOS reverse-mode graph and ParaView output
 def test_fixed_boundary_single_stage_optimization(tmp_path):
     pytest.importorskip("essos")
@@ -913,7 +1144,14 @@ def test_field_query_examples_cover_inside_outside_and_vjps() -> None:
     assert "ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json" in exterior
 
 
-@pytest.mark.full  # nightly: two bounded high-order field/VJP compilations (~3 min)
+# Wall time here is XLA compilation of a few large graphs: the order-3 forward
+# derivative plus one parameter adjoint per order. It is set by that structure,
+# not by resolution or by the number of evaluated points, so a coarser smoke
+# equilibrium does not move it. Taking those derivatives in flux coordinates at
+# the root, rather than through the inverse map, cut it roughly in half: cold,
+# on two cores, 2.8 min (interior) and 3.8 min (exterior), from 5.5 and 5.9.
+# This lane runs with ``-n 2``, so a four-core runner gives each test that share.
+@pytest.mark.full  # nightly: two bounded high-order field/VJP compilations
 @pytest.mark.parametrize(("script", "message"), [
     ("vmex_get_B_gradB.py", "gradgradgradB VJP shapes"),
     ("vmex_get_B_outside_plasma.py", "uses virtual casing = True"),
@@ -922,8 +1160,14 @@ def test_field_query_examples_run(script, message, tmp_path):
     if "outside" in script:
         pytest.importorskip("essos")
         pytest.importorskip("virtual_casing_jax")
-    out = _run_example(EXAMPLES / script, tmp_path, timeout=360)
+    out = _run_example(EXAMPLES / script, tmp_path, timeout=600)
     assert message in out and "dof_names =" in out
+    # A clean exit is not a field: a stalled inversion used to print NaN here.
+    for label in (r"B \[T\]", r"\|B\| \[T\]", "largest VJP entries"):
+        line = re.search(rf"^{label} = (.*)$", out, flags=re.MULTILINE)
+        assert line is not None, label
+        values = [float(v) for v in re.findall(r"[-+]?(?:\d[\d.]*(?:e[-+]?\d+)?|nan|inf)", line.group(1))]
+        assert values and np.all(np.isfinite(values)) and np.any(np.abs(values) > 0.0), line.group(0)
 
 
 def test_fieldline_example_uses_vmex_virtual_casing_and_actual_essos_coils() -> None:
@@ -967,7 +1211,11 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
         assert "_summary.json" in source
 
 
-@pytest.mark.full  # nightly: two bounded ESSOS tracing integrations (~40 s total)
+# Cold, on two cores, the finite-beta script takes 1.4 min; most of it is the
+# virtual-casing and tracing compilations, and this lane runs with ``-n 2``.
+# Nothing here changed, so this budget stays where it is: 300 s is the value
+# that timed out on a runner.
+@pytest.mark.full  # nightly: two bounded ESSOS tracing integrations
 @pytest.mark.parametrize(("script", "message", "output"), [
     ("vmex_fieldline_tracing_vacuum.py", "VMEX exterior API outside", "vmex_fieldline_tracing_vacuum.png"),
     ("vmex_fieldline_tracing_finite_beta.py", "VMEX coil + virtual-casing field outside",
@@ -976,7 +1224,7 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
 def test_vmex_fieldline_tracing_examples(script, message, output, tmp_path):
     pytest.importorskip("essos")
     pytest.importorskip("virtual_casing_jax")
-    out = _run_example(EXAMPLES / script, tmp_path, timeout=300)
+    out = _run_example(EXAMPLES / script, tmp_path, timeout=600)
     assert message in out
     if "finite_beta" in script:
         alignment = re.search(r"Boundary field alignment = ([0-9.eE+-]+)", out)

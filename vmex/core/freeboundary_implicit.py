@@ -29,10 +29,12 @@ from solvax import SpluFactorization, gcrot as _solvax_gcrot
 from . import implicit as im
 from .device import AUTO, resolve_implicit_device
 from .freeboundary import (
+    _edge_fourier_jax,
     _presf_ns_scale,
     _presf_ns_scale_traceable,
     _solve_free_boundary_stage,
     _vacuum_executables,
+    _vacuum_scalars,
     free_boundary_resolution,
 )
 from .errors import VmecError
@@ -40,6 +42,13 @@ from .input import VmecInput
 from .solver import SpectralState, evaluate_forces
 
 Array = Any
+
+#: ``coupled_gcrot`` is the certified default; ``boundary_schur`` eliminates
+#: the radial bulk and assembles the edge system column by column;
+#: ``edge_response`` iterates the coupled transpose on a dense model of
+#: NESTOR.
+_ADJOINT_SOLVERS = ("boundary_schur", "coupled_gcrot", "edge_response",
+                    "reverse_gcrot", "forward_dense", "forward_dense_jax")
 
 
 @dataclass(frozen=True, eq=False)
@@ -90,6 +99,7 @@ def make_free_boundary_config(
     adjoint_dense_max_dofs: int = 4096,
     field_from_parameters: Callable[[Any], Any] | None = None,
     device: Any = AUTO,
+    max_fsq_ratio: float = 1.0,
 ) -> FreeBoundaryImplicitConfig:
     """Build a coupled free-boundary derivative configuration.
 
@@ -108,10 +118,27 @@ def make_free_boundary_config(
     Both dense backends require float64 host-eager gradients.
     ``"boundary_schur"`` selects the advanced radial-elimination path, which
     stays well conditioned on marginally converged roots where the coupled
-    Krylov solve stalls. ``adjoint_fail="best_effort"`` returns the stalled
+    Krylov solve stalls.  ``"edge_response"`` is the coupled Krylov solve
+    with NESTOR's response to the edge built once as a dense matrix instead
+    of re-swept in reverse mode on every iteration: the matvec then costs no
+    NESTOR call, the answer is certified on the exact coupled transpose, and
+    a certificate that misses continues on that exact operator, so the lane
+    is never less accurate than the default -- only cheaper.
+    ``adjoint_fail="best_effort"`` returns the stalled
     Krylov solution with a warning instead of raising, so one bad trial in an
     optimization is a poor search direction the line search rejects rather
     than a dead run; a non-finite adjoint always raises.
+
+    ``max_fsq_ratio`` is the largest ``(fsqr + fsqz + fsql) / ftol`` at which
+    :func:`solve_free_boundary_implicit_status` still certifies a solve that
+    ran out of iterations.  It governs only those: a solve VMEC calls
+    converged is certified whatever the ratio, and because that flag is per
+    component (``fsqr``, ``fsqz`` and ``fsql`` each under ``ftol``) a converged
+    solve routinely carries a summed ratio near 1.5 and up to 3.  The default
+    of 1 therefore certifies the converged solves and nothing else, where the
+    previous 1e6 also admitted roots that stopped 49x past ``ftol``; an
+    uncertified state is a failed trial (status 2), because its adjoint is
+    taken off the root and its value depends on the path there.
     """
     if adjoint_residual_rtol is not None:
         if not np.isfinite(adjoint_residual_rtol) or adjoint_residual_rtol <= 0:
@@ -131,13 +158,14 @@ def make_free_boundary_config(
         inp, ns=resolution.ns, ftol=ftol, max_iterations=max_iterations,
         adjoint_tol=adjoint_tol, adjoint_maxiter=adjoint_maxiter,
         adjoint_gcrot_m=adjoint_gcrot_m, adjoint_gcrot_k=adjoint_gcrot_k,
-        device=solve_device,
+        device=solve_device, max_fsq_ratio=max_fsq_ratio,
     )
     if cfg.resolution != resolution:
         cfg = dataclasses.replace(cfg, resolution=resolution)
-    if adjoint_solver not in {"boundary_schur", "coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"}:
+    if adjoint_solver not in _ADJOINT_SOLVERS:
         raise ValueError(
-            "adjoint_solver must be 'boundary_schur' or 'coupled_gcrot' or 'reverse_gcrot' or 'forward_dense' or 'forward_dense_jax'")
+            "adjoint_solver must be one of " + ", ".join(
+                repr(name) for name in sorted(_ADJOINT_SOLVERS)))
     if adjoint_fail not in {"error", "best_effort"}:
         raise ValueError("adjoint_fail must be 'error' or 'best_effort'")
     if schur_probe_chunk_size < 1:
@@ -182,18 +210,74 @@ def _vacuum_program(cfg: FreeBoundaryImplicitConfig):
     )[1]
 
 
+def _vacuum_inputs(state: SpectralState, rt) -> tuple:
+    """NESTOR's own plasma inputs ``(edge coefficients, ctor, axis R, axis Z)``.
+
+    Everything the plasma sends to the vacuum solver passes through this
+    short tuple, and reaching it from the state costs no NESTOR work.
+    """
+    ctor, _, axis_r, axis_z, _, _ = _vacuum_scalars(state, rt)
+    return (*_edge_fourier_jax(state, rt), ctor, axis_r, axis_z)
+
+
+# Module scope with ``cfg`` the only static key: every per-gradient array is
+# an argument, so one executable serves a whole optimization and no trial's
+# arrays are baked into a cached trace.
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _edge_response(cfg: FreeBoundaryImplicitConfig, params, field_parameters,
+                   frozen, rcon0, zcon0):
+    """Dense NESTOR edge response ``(value, dbsqvac/dh, h)``, built once.
+
+    ``bsqvac`` depends on the plasma only through :func:`_vacuum_inputs`, so
+    one forward-mode column per edge coefficient, one for ``ctor`` and two
+    per toroidal axis point capture NESTOR's whole linearization exactly.
+    The plasma-side ``dh/dz`` that follows is VMEC-only and costs no vacuum
+    solve, so every later coupled matvec becomes a dense multiply instead of
+    a NESTOR reverse sweep.
+    """
+    icfg = cfg.implicit
+    field = cfg.field_from_parameters(field_parameters)
+    rt = dataclasses.replace(
+        im.runtime_from_params(params, icfg), rcon0=rcon0, zcon0=zcon0,
+        lfreeb=True, jmax=int(icfg.resolution.ns),
+        presf_ns_scale=_presf_ns_scale_traceable(
+            params, icfg.inp, int(icfg.resolution.ns)),
+    )
+    flat, unflatten = ravel_pytree(_vacuum_inputs(frozen, rt))
+
+    def kernel(vector):
+        return cfg.vacuum_program.bsq_edge(*unflatten(vector), field)
+
+    value, jacobian = jax.vmap(
+        lambda tangent: jax.jvp(kernel, (flat,), (tangent,)),
+        out_axes=(None, -1),
+    )(jnp.eye(flat.size, dtype=flat.dtype))
+    return jax.lax.stop_gradient((value, jacobian, flat))
+
+
+def _linearized_bsqvac(state, rt, response):
+    """NESTOR's edge pressure through its dense response at the root."""
+    value, jacobian, base = response
+    delta = ravel_pytree(_vacuum_inputs(state, rt))[0] - base
+    return value + jnp.tensordot(jacobian, delta, axes=1)
+
+
 def _projected_residual(
     cfg: FreeBoundaryImplicitConfig,
     dof_mask: SpectralState,
     *,
     formulation: str = "preconditioned",
     fixed_bsqvac: Array | None = None,
+    response: tuple | None = None,
 ) -> Callable:
     """Return a projected coupled root in preconditioned or raw form.
 
     ``fixed_bsqvac`` freezes only NESTOR's edge pressure.  The resulting raw
     Jacobian is exactly block tridiagonal in radius and is the bulk operator
-    used by the boundary-Schur adjoint.
+    used by the boundary-Schur adjoint.  ``response`` instead replaces the
+    NESTOR call by :func:`_edge_response`'s dense model of it, which is exact
+    in value and first derivative at the root the response was built on and
+    is therefore an exact linearization there, at the cost of a multiply.
 
     The returned closure is memoized on ``(cfg, formulation, mask content)``
     (``fixed_bsqvac=None`` only): the host callback hands each backward pass
@@ -210,12 +294,17 @@ def _projected_residual(
     def residual(z, params, field_parameters, frozen, rcon0, zcon0):
         return _projected_residual_lane(
             z, params, field_parameters, frozen, rcon0, zcon0, dof_mask,
-            fixed_bsqvac, cfg=cfg, formulation=formulation)
+            fixed_bsqvac, response, cfg=cfg, formulation=formulation)
 
-    if fixed_bsqvac is not None:
+    leaves = jax.tree.leaves(dof_mask)
+    if fixed_bsqvac is not None or response is not None or any(
+            isinstance(leaf, jax.core.Tracer) for leaf in leaves):
+        # Under an outer jax.jit the mask is a tracer, so it has no bytes to
+        # key on; the whole pullback is staged once anyway, which is what the
+        # cache buys the eager path.
         return residual
     key = (cfg, formulation, tuple(
-        np.asarray(leaf).tobytes() for leaf in jax.tree.leaves(dof_mask)))
+        np.asarray(leaf).tobytes() for leaf in leaves))
     cached = _RESIDUAL_CLOSURE_CACHE.get(key)
     if cached is None:
         _RESIDUAL_CLOSURE_CACHE[key] = cached = residual
@@ -228,6 +317,7 @@ _RESIDUAL_CLOSURE_CACHE: dict[tuple, Callable] = {}
 _RESIDUAL_CLOSURE_CACHE_MAX = 8
 
 
+
 # Module scope with ``cfg``/``formulation`` static and the per-iterate arrays
 # (mask included) as traced arguments, the ``implicit.
 # _preconditioned_residual_lane`` idiom: the previous per-call ``@jax.jit``
@@ -237,7 +327,7 @@ _RESIDUAL_CLOSURE_CACHE_MAX = 8
 # formulations plus the Schur frozen root) before its first adjoint matvec.
 @functools.partial(jax.jit, static_argnames=("cfg", "formulation"))
 def _projected_residual_lane(z, params, field_parameters, frozen, rcon0,
-                             zcon0, dof_mask, fixed_bsqvac, *,
+                             zcon0, dof_mask, fixed_bsqvac, response=None, *,
                              cfg: FreeBoundaryImplicitConfig,
                              formulation: str):
     icfg = cfg.implicit
@@ -252,7 +342,9 @@ def _projected_residual_lane(z, params, field_parameters, frozen, rcon0,
         presf_ns_scale=_presf_ns_scale_traceable(
             params, icfg.inp, int(icfg.resolution.ns)),
     )
-    if fixed_bsqvac is None:
+    if response is not None:
+        bsqvac = _linearized_bsqvac(state, rt, response)
+    elif fixed_bsqvac is None:
         # The executable/topology was fixed concretely when the config was
         # built; all equilibrium and coil values stay dynamic traced arrays.
         external_field = cfg.field_from_parameters(field_parameters)
@@ -268,7 +360,12 @@ def _projected_residual_lane(z, params, field_parameters, frozen, rcon0,
 
 
 _FREE_MASK_CACHE: dict[tuple, SpectralState] = {}
-_FREE_HOT_CACHE: dict[FreeBoundaryImplicitConfig, SpectralState] = {}
+
+#: One reference stage per configuration; every solve restarts from it.  It is
+#: kept whether or not it converged: a configuration with no reachable root
+#: must still answer deterministically, and :func:`_host_solve_and_mask_status`
+#: is what reports the miss.
+_FREE_HOT_CACHE: dict[FreeBoundaryImplicitConfig, Any] = {}
 _FREE_LAST_RESULT: dict[FreeBoundaryImplicitConfig, Any] = {}
 
 
@@ -288,6 +385,50 @@ def _host_solve_and_mask(
         )
 
 
+def _cold_reference(solve, icfg, inp, field):
+    """Solve cold, falling back to a coarse rung when one rung cannot converge.
+
+    A single fine rung started from the input guess can stall above ``ftol``
+    at any iteration budget, where a ``[ns // 2, ns]`` ladder converges in a
+    few hundred iterations: at ns = 31 on the finite-beta free-boundary deck
+    fsq is 9.3e-8 after 2500 iterations and 9.3e-7 after 12000, against
+    ftol = 1e-9, while the ladder reaches 1.4e-9 in 106; on the ns = 8 lasym
+    deck at ftol = 1e-8 the single rung stops at fsq 4.9e-7 after 2500 where
+    the ``[4, 8]`` ladder converges in 163.
+
+    The ladder is not free -- it compiles and solves a second resolution -- so
+    a deck whose single rung already converges never pays for it.
+    """
+    stage = solve(initial_state=None)
+    ns = int(icfg.resolution.ns)
+    if bool(stage.result.converged) or ns < 8:
+        return stage
+    from .multigrid import solve_free_boundary_multigrid
+
+    return solve(initial_state=solve_free_boundary_multigrid(
+        inp, ns_array=np.array([max(3, ns // 2), ns]),
+        ftol_array=np.full(2, icfg.ftol),
+        niter_array=np.full(2, icfg.max_iterations), external_field=field,
+        raise_on_max_iterations=False).state)
+
+
+def _continuation(stage) -> dict:
+    """Restart arguments that continue ``stage`` instead of repeating turn-on.
+
+    Every solve of a configuration restarts from the same reference, never
+    from the previous trial, so the returned state is a function of the
+    parameters alone.  The constraint and residual continuation travel with
+    the state, as they do between multigrid rungs; the vacuum continuation is
+    a starting guess for this trial's field, which differs from the
+    reference's, so its caches are rebuilt rather than reused.
+    """
+    return dict(
+        initial_state=stage.continuation_state, vacuum_continuation=stage.vacuum,
+        constraint_continuation=(stage.rcon0, stage.zcon0),
+        residual_continuation=(
+            stage.result.fsqr, stage.result.fsqz, stage.result.fsql))
+
+
 def _host_solve_and_mask_impl(
     cfg, params_np, field_parameters_np, *, error_on_no_convergence=True,
 ):
@@ -298,27 +439,31 @@ def _host_solve_and_mask_impl(
         icfg, jax.tree.map(jnp.asarray, field_parameters_np))
     field = cfg.field_from_parameters(field_parameters)
     inp = im.input_with_params(icfg.inp, params)
-    seed = _FREE_HOT_CACHE.get(cfg)
+    solve = functools.partial(
+        _solve_free_boundary_stage, inp, external_field=field,
+        resolution=icfg.resolution, ftol=icfg.ftol,
+        max_iterations=icfg.max_iterations,
+        error_on_no_convergence=error_on_no_convergence, use_fft=False,
+        include_edge_in_convergence=getattr(cfg, "include_edge_in_convergence", False),
+        edge_force_tolerance=getattr(cfg, "edge_force_tolerance", None))
+    reference = _FREE_HOT_CACHE.get(cfg)
+    if reference is None:
+        reference = _FREE_HOT_CACHE[cfg] = _cold_reference(solve, icfg, inp, field)
     try:
-        stage = _solve_free_boundary_stage(
-            inp, external_field=field, resolution=icfg.resolution,
-            ftol=icfg.ftol, max_iterations=icfg.max_iterations,
-            error_on_no_convergence=error_on_no_convergence,
-            initial_state=seed, use_fft=False,
-            include_edge_in_convergence=getattr(cfg, "include_edge_in_convergence", False),
-            edge_force_tolerance=getattr(cfg, "edge_force_tolerance", None),
-        )
+        stage = solve(**_continuation(reference))
     except VmecError:
-        if seed is None:
-            raise
-        stage = _solve_free_boundary_stage(
-            inp, external_field=field, resolution=icfg.resolution,
-            ftol=icfg.ftol, max_iterations=icfg.max_iterations,
-            error_on_no_convergence=error_on_no_convergence, use_fft=False,
-            include_edge_in_convergence=getattr(cfg, "include_edge_in_convergence", False),
-            edge_force_tolerance=getattr(cfg, "edge_force_tolerance", None),
-        )
-    _FREE_HOT_CACHE[cfg] = stage.continuation_state
+        # The reference may be too far from this trial; start over cold.
+        stage = _cold_reference(solve, icfg, inp, field)
+    else:
+        if not bool(stage.result.converged):
+            # A restart carries the reference's state, and far enough from it
+            # that state is a worse start than none: measured, a 2 % change in
+            # every coil current stalls at the iteration cap and lands 9.2e-3
+            # away from the cold answer, which converges in 76. Solve this
+            # trial cold instead. The stored reference is deliberately NOT
+            # replaced, so every call stays a function of its own parameters
+            # and the one reference, making repeated calls bit-identical.
+            stage = _cold_reference(solve, icfg, inp, field)
     _FREE_LAST_RESULT[cfg] = stage.result
     return _linearization_from_stage(cfg, params, stage, inp=inp)
 
@@ -371,10 +516,10 @@ def _host_solve_and_mask_status(cfg, params_np, field_parameters_np):
         )
     except VmecError:
         icfg = cfg.implicit
-        state = _FREE_HOT_CACHE.get(cfg)
+        reference = _FREE_HOT_CACHE.get(cfg)
         runtime = im._template_runtime(icfg)
-        if state is None:
-            state = im._initial_state(runtime.setup)
+        state = (im._initial_state(runtime.setup) if reference is None
+                 else reference.continuation_state)
         mask = _FREE_MASK_CACHE.get(_mask_key(cfg))
         if mask is None:
             mask = jax.tree.map(jnp.zeros_like, state)
@@ -556,6 +701,17 @@ def _solve_bwd_impl(cfg, saved, state_bar):
         # An outer jax.jit needs a staged Krylov loop. Ordinary SciPy/JAXopt
         # drivers call the concrete lane below, which compiles only one
         # transpose matvec and has a much smaller cold memory peak.
+        if cfg.adjoint_solver == "boundary_schur":
+            warnings.warn(
+                "adjoint_solver='boundary_schur' is a host lane and is not "
+                "available under jax.jit; this pullback uses the staged "
+                "coupled GCROT solve instead. That is a different solver, so "
+                "the gradient agrees only to the Krylov tolerance, and it is "
+                "the slower of the two -- measured on the free-boundary "
+                "single-stage deck at ns = 25, one warm value-and-gradient "
+                "costs 5.1 s through the Schur lane against 38.6 s staged. "
+                "Call the objective eagerly to keep the solver you asked for.",
+                RuntimeWarning, stacklevel=2)
         _, state_pullback = jax.vjp(
             lambda z: residual(
                 z, params, field_parameters, frozen, rcon0, zcon0), z_star
@@ -568,6 +724,16 @@ def _solve_bwd_impl(cfg, saved, state_bar):
             mask, rhs, fail=cfg.adjoint_fail,
         )
         residual = _projected_residual(cfg, mask, formulation="raw")
+    elif cfg.adjoint_solver == "edge_response":
+        response = _edge_response(
+            cfg, params, field_parameters, frozen, rcon0, zcon0)
+        lam = _host_adjoint(
+            residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
+            rhs, cfg.implicit, fail=cfg.adjoint_fail,
+            pullback=_prepare_response_transpose(
+                z_star, params, field_parameters, frozen, rcon0, zcon0, mask,
+                response, cfg=cfg),
+            certify=True)
     else:
         lam = _host_adjoint(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
@@ -582,6 +748,195 @@ def _solve_bwd_impl(cfg, saved, state_bar):
         jax.tree.map(jnp.negative, lam)
     )
     return params_bar, field_bar
+
+
+def _packers(cfg: FreeBoundaryImplicitConfig, dof_mask):
+    """``(project, pack, unpack)`` for one mask, built at trace time.
+
+    Called only from inside the jitted helpers below, so the arrays these
+    close over are that trace's own arguments and never a cached constant.
+    """
+    icfg = cfg.implicit
+    fields = im._active_state_fields(icfg)
+    ns, mn = int(icfg.resolution.ns), int(dof_mask.R_cos.shape[1])
+    project = im._dof_projector(icfg, dof_mask)
+
+    def pack(tree):
+        return jnp.concatenate(
+            [getattr(tree, name) for name in fields], axis=1)
+
+    def unpack(matrix):
+        parts = dict(zip(fields, jnp.split(matrix, len(fields), axis=1)))
+        return SpectralState(**{
+            name: parts.get(name, jnp.zeros((ns, mn), matrix.dtype))
+            for name in im._STATE_FIELDS})
+
+    return project, pack, unpack
+
+
+# Every helper below is at module scope with ``cfg`` its only static key, and
+# takes each per-gradient array -- the bulk blocks, the mask, the saved
+# pullback -- as an argument. A jitted closure defined inside the adjoint
+# instead is a fresh jit key on every backward pass, which both recompiles the
+# lane and strands that trial's arrays in JAX's trace cache as jaxpr
+# constants; the boundary-Schur lane used to leak a whole block system
+# (ns x block x block) per successful gradient that way.
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _frozen_bulk_blocks(params, field_parameters, frozen, rcon0, zcon0,
+                        dof_mask, z_star, bsqvac, *, cfg):
+    """Radial block tridiagonal of the raw Jacobian at frozen edge pressure."""
+    icfg = cfg.implicit
+    runtime = dataclasses.replace(
+        im.runtime_from_params(params, icfg), rcon0=rcon0, zcon0=zcon0,
+        lfreeb=True, jmax=int(icfg.resolution.ns),
+        presf_ns_scale=_presf_ns_scale_traceable(
+            params, icfg.inp, int(icfg.resolution.ns)),
+        bsqvac_edge=bsqvac,
+    )
+
+    def frozen_root(z, payload):
+        return _projected_residual_lane(
+            z, payload[0], payload[1], frozen, rcon0, zcon0, dof_mask,
+            bsqvac, None, cfg=cfg, formulation="raw")
+
+    system = im._raw_block_system(
+        (params, field_parameters), icfg, frozen, dof_mask,
+        im._active_state_fields(icfg),
+        probe_chunk_size=cfg.schur_probe_chunk_size, residual=frozen_root,
+        z_star=z_star, runtime=runtime, physical_state=frozen,
+        include_edge=True, factor=False,
+    )
+    return (system.lower, system.diagonal, system.upper,
+            system.row_scale, system.column_scale)
+
+
+@functools.partial(jax.jit, static_argnames=("cfg", "chunk"))
+def _edge_probe_columns(edge_values, pullback, lower, diagonal, upper,
+                        dof_mask, edge_basis, *, cfg, chunk):
+    """``(J^T - A^T)`` applied to a batch of edge directions, packed.
+
+    ``pullback`` is a saved transpose: the exact coupled one assembles the
+    true Schur complement, a response-linearized one a preconditioner for it.
+    """
+    project, pack, unpack = _packers(cfg, dof_mask)
+    ns, block_size = diagonal.shape[0], diagonal.shape[1]
+
+    def band(tangent):
+        return project(unpack(im.block_tridiag_matvec(
+            lower, diagonal, upper, pack(project(tangent)))))
+
+    zero = unpack(jnp.zeros((ns, block_size), edge_basis.dtype))
+    band_t = jax.vjp(band, zero)[1]
+
+    def column(edge_value):
+        matrix = jnp.zeros((ns, block_size), edge_basis.dtype)
+        cotangent = project(unpack(matrix.at[-1].set(edge_basis @ edge_value)))
+        return pack(project(jax.tree.map(
+            jnp.subtract, pullback(cotangent)[0], band_t(cotangent)[0])))
+
+    return im.chunk_map(
+        column, edge_values,
+        chunk_size=min(chunk, int(edge_values.shape[0])))
+
+
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _edge_rows_of_tree(tree, dof_mask, edge_basis, *, cfg):
+    """Edge-basis coordinates of a state tree."""
+    project, pack, _ = _packers(cfg, dof_mask)
+    return edge_basis.T @ pack(project(tree))[-1]
+
+
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _edge_rows(packed, dof_mask, edge_basis, *, cfg):
+    """Edge-basis coordinates of a batch of packed radial rows."""
+    project, pack, unpack = _packers(cfg, dof_mask)
+    return jax.vmap(
+        lambda matrix: edge_basis.T @ pack(project(unpack(matrix)))[-1])(packed)
+
+
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _pack_projected(tree, dof_mask, *, cfg):
+    """Pack a projected state into radial rows."""
+    project, pack, _ = _packers(cfg, dof_mask)
+    return pack(project(tree))
+
+
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _pack_state(tree, dof_mask, *, cfg):
+    """Pack a state into radial rows without projecting it."""
+    _, pack, _ = _packers(cfg, dof_mask)
+    return pack(tree)
+
+
+@jax.jit
+def _apply_pullback(pullback, cotangent):
+    """Apply a saved transpose to one state cotangent."""
+    return pullback(cotangent)[0]
+
+
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _unpack_projected(matrix, dof_mask, *, cfg):
+    """Unpack radial rows into a projected state."""
+    project, _, unpack = _packers(cfg, dof_mask)
+    return project(unpack(matrix))
+
+
+def _edge_basis(cfg: FreeBoundaryImplicitConfig, dof_mask, packed_mask, dtype):
+    """Orthonormal columns spanning the active evolved edge directions."""
+    icfg = cfg.implicit
+    active_fields = im._active_state_fields(icfg)
+    mn = int(dof_mask.R_cos.shape[1])
+    paired, columns = {}, []
+    if bool(icfg.lconm1) and int(icfg.resolution.ntor) > 0:
+        positive, negative = im._m1_pair_columns(icfg)
+        for pos, neg in zip(positive, negative):
+            paired[("Z_sin", int(pos))] = (int(neg), 1.0)
+            if bool(icfg.resolution.lasym):
+                paired[("Z_cos", int(pos))] = (int(neg), -1.0)
+    for field_index, name in enumerate(active_fields):
+        for mode in range(mn):
+            index = field_index * mn + mode
+            if packed_mask[index] == 0.0:
+                continue
+            pair = paired.get((name, mode))
+            if any(name == pair_name and mode == pair_value[0]
+                   for (pair_name, _), pair_value in paired.items()):
+                continue
+            column = np.zeros_like(packed_mask)
+            if pair is None:
+                column[index] = 1.0
+            else:
+                other, sign = pair
+                column[index] = 1.0 / np.sqrt(2.0)
+                column[field_index * mn + other] = sign / np.sqrt(2.0)
+            columns.append(column)
+    return jnp.asarray(np.stack(columns, axis=1), dtype=dtype)
+
+
+def _balanced_dense_solver(schur):
+    """Two-sided balanced dense solve of one small edge Schur matrix."""
+    tiny = np.finfo(schur.dtype).tiny
+    row_scale = 1.0 / np.maximum(np.max(np.abs(schur), axis=1), tiny)
+    row_scaled = row_scale[:, None] * schur
+    column_scale = 1.0 / np.maximum(np.max(np.abs(row_scaled), axis=0), tiny)
+    balanced = row_scaled * column_scale[None, :]
+    condition = np.linalg.cond(balanced)
+
+    def solve_reduced(value):
+        scaled_rhs = row_scale * value
+        if np.isfinite(condition) and condition < 1.0 / np.finfo(
+                schur.dtype).eps:
+            balanced_solution = np.linalg.solve(balanced, scaled_rhs)
+        else:
+            # The edge system can inherit redundant m=1 directions. A
+            # rank-revealing solve avoids amplifying them; the exact
+            # coupled-residual certificate below remains authoritative.
+            balanced_solution = np.linalg.lstsq(
+                balanced, scaled_rhs,
+                rcond=np.finfo(schur.dtype).eps * max(schur.shape))[0]
+        return column_scale * balanced_solution
+
+    return solve_reduced, condition
 
 
 def _host_boundary_schur_adjoint(
@@ -603,7 +958,6 @@ def _host_boundary_schur_adjoint(
     answer is certified against the original coupled transpose operator.
     """
     icfg = cfg.implicit
-    project = im._dof_projector(icfg, mask)
     field = cfg.field_from_parameters(field_parameters)
     rt = dataclasses.replace(
         im.runtime_from_params(params, icfg), rcon0=rcon0, zcon0=zcon0,
@@ -612,100 +966,39 @@ def _host_boundary_schur_adjoint(
             params, icfg.inp, int(icfg.resolution.ns)),
     )
     bsqvac = jax.lax.stop_gradient(cfg.vacuum_program.bsq(frozen, rt, field))
-    frozen_residual = _projected_residual(
-        cfg, mask, formulation="raw", fixed_bsqvac=bsqvac)
-    frozen_root = lambda z, p: frozen_residual(  # noqa: E731
-        z, p, field_parameters, frozen, rcon0, zcon0)
-    system = im._raw_block_system(
-        params, icfg, frozen, mask, im._active_state_fields(icfg),
-        probe_chunk_size=cfg.schur_probe_chunk_size, residual=frozen_root,
-        z_star=z_star, runtime=dataclasses.replace(rt, bsqvac_edge=bsqvac),
-        physical_state=frozen, include_edge=True, factor=False,
-    )
+    lower_blocks, diagonal, upper_blocks, row_scale, column_scale = (
+        _frozen_bulk_blocks(params, field_parameters, frozen, rcon0, zcon0,
+                            mask, z_star, bsqvac, cfg=cfg))
     coupled_residual = _projected_residual(cfg, mask, formulation="raw")
-    _, coupled_pullback = jax.vjp(
-        lambda z: coupled_residual(
-            z, params, field_parameters, frozen, rcon0, zcon0), z_star)
-    if im._adjoint_debug_enabled():
-        coupled_jvp = jax.jvp(
-            lambda z: coupled_residual(
-                z, params, field_parameters, frozen, rcon0, zcon0),
-            (z_star,), (rhs,))[1]
-        edge_response = jax.tree.map(
-            jnp.subtract, coupled_jvp, system.band_operator(rhs))
-        print("[vmex adjoint] Schur E row norms:",
-              np.asarray(jnp.linalg.norm(system.pack(edge_response), axis=1)))
+    coupled_pullback = _prepare_transpose(
+        z_star, params, field_parameters, frozen, rcon0, zcon0,
+        residual=coupled_residual)
 
-    boundary_rows = 1
-    active_fields = im._active_state_fields(icfg)
-    mn = int(mask.R_cos.shape[1])
-    packed_mask = np.asarray(system.pack(mask)[-boundary_rows:]).reshape(-1)
-    columns = []
-    paired = {}
-    if bool(icfg.lconm1) and int(icfg.resolution.ntor) > 0:
-        positive, negative = im._m1_pair_columns(icfg)
-        for pos, neg in zip(positive, negative):
-            paired[("Z_sin", int(pos))] = (int(neg), 1.0)
-            if bool(icfg.resolution.lasym):
-                paired[("Z_cos", int(pos))] = (int(neg), -1.0)
-    for radial_row in range(boundary_rows):
-        row_start = radial_row * len(active_fields) * mn
-        for field_index, name in enumerate(active_fields):
-            for mode in range(mn):
-                index = row_start + field_index * mn + mode
-                if packed_mask[index] == 0.0:
-                    continue
-                pair = paired.get((name, mode))
-                if any(name == pair_name and mode == pair_value[0]
-                       for (pair_name, _), pair_value in paired.items()):
-                    continue
-                column = np.zeros_like(packed_mask)
-                if pair is None:
-                    column[index] = 1.0
-                else:
-                    other, sign = pair
-                    column[index] = 1.0 / np.sqrt(2.0)
-                    column[row_start + field_index * mn + other] = (
-                        sign / np.sqrt(2.0))
-                columns.append(column)
-    edge_basis = jnp.asarray(np.stack(columns, axis=1), dtype=rhs.R_cos.dtype)
-
-    def edge_pack(tree):
-        values = system.pack(project(tree))[-boundary_rows:].reshape(-1)
-        return edge_basis.T @ values
-
-    def edge_unpack(vector):
-        block_size = len(active_fields) * mn
-        matrix = jnp.zeros(
-            (int(icfg.resolution.ns), block_size), dtype=vector.dtype)
-        matrix = matrix.at[-boundary_rows:].set(
-            (edge_basis @ vector).reshape((boundary_rows, block_size)))
-        return project(system.unpack(matrix))
-
-    def edge_correction(cotangent):
-        coupled = coupled_pullback(cotangent)[0]
-        bulk = system.band_operator_t(cotangent)
-        return jax.tree.map(jnp.subtract, coupled, bulk)
+    dtype = rhs.R_cos.dtype
+    packed_mask = np.asarray(_pack_state(mask, mask, cfg=cfg)[-1])
+    edge_basis = _edge_basis(cfg, mask, packed_mask, dtype)
+    nedge = int(edge_basis.shape[1])
+    chunk = int(cfg.schur_probe_chunk_size)
 
     # The raw radial system is strongly scaled near the magnetic axis. A
     # globally pivoted sparse LU is materially more accurate there than the
     # no-pivot block-Thomas elimination, while retaining O(ns) block storage.
-    ns, block_size = np.asarray(system.diagonal).shape[:2]
-    bulk_row_scale = np.asarray(system.row_scale)
-    bulk_column_scale = np.asarray(system.column_scale)
+    ns, block_size = np.asarray(diagonal).shape[:2]
+    bulk_row_scale = np.asarray(row_scale)
+    bulk_column_scale = np.asarray(column_scale)
     previous = np.maximum(np.arange(ns) - 1, 0)
     following = np.minimum(np.arange(ns) + 1, ns - 1)
-    lower = (bulk_row_scale[:, :, None] * np.asarray(system.lower)
+    lower = (bulk_row_scale[:, :, None] * np.asarray(lower_blocks)
              * bulk_column_scale[previous, None, :])
-    diagonal = (bulk_row_scale[:, :, None] * np.asarray(system.diagonal)
-                * bulk_column_scale[:, None, :])
-    upper = (bulk_row_scale[:, :, None] * np.asarray(system.upper)
+    middle = (bulk_row_scale[:, :, None] * np.asarray(diagonal)
+              * bulk_column_scale[:, None, :])
+    upper = (bulk_row_scale[:, :, None] * np.asarray(upper_blocks)
              * bulk_column_scale[following, None, :])
     blocks, indices, indptr = [], [], [0]
     for radial_row in range(ns):
         if radial_row:
             blocks.append(lower[radial_row]); indices.append(radial_row - 1)
-        blocks.append(diagonal[radial_row]); indices.append(radial_row)
+        blocks.append(middle[radial_row]); indices.append(radial_row)
         if radial_row + 1 < ns:
             blocks.append(upper[radial_row]); indices.append(radial_row + 1)
         indptr.append(len(blocks))
@@ -731,112 +1024,61 @@ def _host_boundary_schur_adjoint(
 
     def sparse_inverse(tree, *, transpose):
         packed = sparse_inverse_packed(
-            np.asarray(system.pack(system.project(tree))),
+            np.asarray(_pack_projected(tree, mask, cfg=cfg)),
             transpose=transpose)
-        return system.project(system.unpack(jnp.asarray(packed)))
+        return _unpack_projected(jnp.asarray(packed), mask, cfg=cfg)
+
+    def probe(edge_values, pullback):
+        """Schur columns for a batch of edge directions, exact or modelled."""
+        packed = _edge_probe_columns(
+            jnp.asarray(edge_values, dtype), pullback, lower_blocks, diagonal,
+            upper_blocks, mask, edge_basis, cfg=cfg, chunk=chunk)
+        solved = sparse_inverse_packed(np.asarray(packed), transpose=True)
+        return np.asarray(edge_values) + np.asarray(
+            _edge_rows(jnp.asarray(solved), mask, edge_basis, cfg=cfg))
 
     base = sparse_inverse(rhs, transpose=True)
-    if im._adjoint_debug_enabled():
-        bulk_defect = jax.tree.map(
-            jnp.subtract, rhs, system.band_operator_t(base))
-        print("[vmex adjoint] bulk inverse defect row norms:",
-              np.asarray(jnp.linalg.norm(system.pack(bulk_defect), axis=1)))
-
-    @jax.jit
-    def correction_packed(edge_value):
-        return system.pack(system.project(
-            edge_correction(edge_unpack(edge_value))))
-
-    @jax.jit
-    def solved_to_edge(packed):
-        return edge_pack(system.project(system.unpack(packed)))
-
-    def schur_matvec(edge_value):
-        packed = correction_packed(jnp.asarray(edge_value, edge_basis.dtype))
-        solved = sparse_inverse_packed(np.asarray(packed), transpose=True)
-        return np.asarray(edge_value) + np.asarray(
-            solved_to_edge(jnp.asarray(solved)))
-
-    edge_rhs = edge_pack(base)
-    warm_value = schur_matvec(edge_rhs)
-    edge_rhs_np = np.asarray(edge_rhs)
-    if im._adjoint_debug_enabled():
-        print(f"[vmex adjoint] Schur size={edge_rhs.size} "
-              f"rhs={np.linalg.norm(edge_rhs_np):.3e} "
-              f"action={np.linalg.norm(np.asarray(warm_value)):.3e} "
-              f"finite={np.all(np.isfinite(np.asarray(warm_value)))}")
+    edge_rhs = np.asarray(_edge_rows_of_tree(base, mask, edge_basis, cfg=cfg))
     calls = 0
 
     def apply(value):
         nonlocal calls
         calls += 1
-        return schur_matvec(value)
+        return probe(np.atleast_2d(value), coupled_pullback)[0]
 
-    nedge = int(edge_rhs.size)
-    matrix = LinearOperator((nedge, nedge), matvec=apply,
-                            dtype=edge_rhs_np.dtype)
+    apply(edge_rhs)
 
-    if nedge <= 512:
-        eye = jnp.eye(nedge, dtype=edge_rhs.dtype)
-        packed_corrections = im.chunk_map(
-            correction_packed, eye,
-            chunk_size=cfg.schur_probe_chunk_size)
-        solved = sparse_inverse_packed(
-            np.asarray(packed_corrections), transpose=True)
-        schur = np.asarray(
-            eye + jax.vmap(solved_to_edge)(jnp.asarray(solved))).T
-        calls += nedge
-        tiny = np.finfo(schur.dtype).tiny
-        row_scale = 1.0 / np.maximum(np.max(np.abs(schur), axis=1), tiny)
-        row_scaled = row_scale[:, None] * schur
-        column_scale = 1.0 / np.maximum(
-            np.max(np.abs(row_scaled), axis=0), tiny)
-        balanced = row_scaled * column_scale[None, :]
-        condition = np.linalg.cond(balanced)
-        def solve_reduced(value):
-            scaled_rhs = row_scale * value
-            if np.isfinite(condition) and condition < 1.0 / np.finfo(
-                    schur.dtype).eps:
-                balanced_solution = np.linalg.solve(balanced, scaled_rhs)
-            else:
-                # The edge system can inherit redundant m=1 directions. A
-                # rank-revealing solve avoids amplifying them; the exact
-                # coupled-residual certificate below remains authoritative.
-                balanced_solution = np.linalg.lstsq(
-                    balanced, scaled_rhs,
-                    rcond=np.finfo(schur.dtype).eps * max(schur.shape))[0]
-            return column_scale * balanced_solution
+    identity = np.eye(nedge, dtype=np.asarray(edge_rhs).dtype)
+    schur = probe(identity, coupled_pullback).T
+    calls += nedge
+    solve_reduced, condition = _balanced_dense_solver(schur)
+    edge_solution = solve_reduced(edge_rhs)
+    # Dense iterative refinement is cheap at edge size and recovers the
+    # residual digits lost to the raw near-axis scaling.
+    for _ in range(3):
+        edge_solution += solve_reduced(edge_rhs - schur @ edge_solution)
+    if im._adjoint_debug_enabled():
+        print(f"[vmex adjoint] balanced Schur condition={condition:.3e}")
 
-        edge_solution = solve_reduced(edge_rhs_np)
-        # Dense iterative refinement is cheap at edge size and recovers the
-        # residual digits lost to the raw near-axis scaling.
-        for _ in range(3):
-            edge_solution += solve_reduced(
-                edge_rhs_np - schur @ edge_solution)
-        if im._adjoint_debug_enabled():
-            print(f"[vmex adjoint] balanced Schur condition={condition:.3e}")
-    else:
-        edge_solution, _info = gcrotmk(
-            matrix, edge_rhs_np, rtol=icfg.adjoint_tol, atol=0.0,
-            m=min(icfg.adjoint_gcrot_m, nedge),
-            k=min(icfg.adjoint_gcrot_k, nedge), maxiter=icfg.adjoint_maxiter,
-        )
-    correction = sparse_inverse(
-        edge_correction(edge_unpack(jnp.asarray(edge_solution))),
-        transpose=True)
+    correction_rows = _edge_probe_columns(
+        jnp.asarray(np.atleast_2d(edge_solution), dtype), coupled_pullback,
+        lower_blocks, diagonal, upper_blocks, mask, edge_basis, cfg=cfg,
+        chunk=chunk)[0]
+    correction = _unpack_projected(
+        jnp.asarray(sparse_inverse_packed(
+            np.asarray(correction_rows), transpose=True)), mask, cfg=cfg)
     solution = jax.tree.map(jnp.subtract, base, correction)
-    defect = jax.tree.map(jnp.subtract, rhs, coupled_pullback(solution)[0])
+    defect = jax.tree.map(
+        jnp.subtract, rhs, _apply_pullback(coupled_pullback, solution))
     residual_norm = float(im._tree_norm(defect))
     rhs_norm = float(im._tree_norm(rhs))
     tolerance = float(im._adjoint_acceptance(icfg, rhs_norm))
-    if im._adjoint_debug_enabled():
-        print("[vmex adjoint] Schur defect row norms:",
-              np.asarray(jnp.linalg.norm(system.pack(defect), axis=1)))
     if not np.isfinite(residual_norm) or residual_norm > tolerance:
         # The raw near-axis scaling can leave the reduced solve a few ulps
         # outside the strict certificate. Continue from it with the original
         # coupled operator; this changes no mathematics and usually needs only
         # a small correction rather than a cold whole-state Krylov search.
+        im._count(icfg, adjoint_certificate_fallbacks=1)
         return _host_adjoint(
             coupled_residual, z_star, params, field_parameters, frozen, rcon0,
             zcon0, rhs, icfg, x0=solution, fail=fail)
@@ -926,6 +1168,22 @@ def _prepare_transpose(z, p, field, base, rcon, zcon, *, residual):
     )[1]
 
 
+# ``response`` is a per-gradient value, so the response-linearized lane cannot
+# be keyed on a closure the way :func:`_prepare_transpose` is without either
+# recompiling every backward pass or reading a stale linearization. Taking the
+# mask and the response as traced arguments leaves ``cfg`` the only static key,
+# so one compiled transpose serves every gradient in a process.
+@functools.partial(jax.jit, static_argnames=("cfg",))
+def _prepare_response_transpose(z, p, field, base, rcon, zcon, dof_mask,
+                                response, *, cfg):
+    """Save the response-linearized transpose of the coupled root."""
+    return jax.vjp(
+        lambda zz: _projected_residual_lane(
+            zz, p, field, base, rcon, zcon, dof_mask, None, response,
+            cfg=cfg, formulation="preconditioned"), z,
+    )[1]
+
+
 @jax.jit
 def _transpose_matvec(value, pullback, template):
     """Apply the saved transpose without repeating the NESTOR/VMEC primal."""
@@ -1003,7 +1261,7 @@ def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=No
 
 def _host_adjoint(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0, rhs, cfg,
-    *, x0=None, fail="error",
+    *, x0=None, fail="error", pullback=None, certify=False, row=None,
 ):
     """Solve one adjoint while reusing a separately compiled JAX matvec.
 
@@ -1013,16 +1271,19 @@ def _host_adjoint(
     host and calls one compiled JAX operator; only vectors cross the boundary.
     Saved primal intermediates stay on the device for this solve and are
     rebuilt at the next linearization point.
+
+    ``pullback`` iterates on a cheaper transpose than ``residual``'s own --
+    today the response-linearized one.  ``certify`` then re-measures the
+    accepted solution on ``residual``'s exact transpose and, if the cheaper
+    operator's answer misses the same acceptance every lane uses, continues
+    from it on that exact operator instead of returning it.
     """
-    pullback = _prepare_host_transpose(
-        z_star, params, field_parameters, frozen, rcon0, zcon0,
-        residual=residual)
-    return _solve_prepared_host_adjoint(pullback, rhs, cfg, x0=x0, fail=fail)
-
-
-def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", row=None):
-    """Solve and certify one RHS against an already prepared transpose."""
     rhs_flat, unravel = ravel_pytree(rhs)
+
+    if pullback is None:
+        pullback = _prepare_transpose(
+            z_star, params, field_parameters, frozen, rcon0, zcon0,
+            residual=residual)
 
     def matvec(value):
         return _prepared_transpose_matvec(value, pullback, rhs)
@@ -1045,9 +1306,27 @@ def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", r
         k=min(cfg.adjoint_gcrot_k, shape[0]),
         maxiter=cfg.adjoint_maxiter, x0=x0_flat,
     )
-    residual_norm = float(np.linalg.norm(np.asarray(rhs_flat) - apply(solution)))
     tolerance = float(im._adjoint_acceptance(
         cfg, np.linalg.norm(np.asarray(rhs_flat))))
+    if certify:
+        exact = _prepare_transpose(
+            z_star, params, field_parameters, frozen, rcon0, zcon0,
+            residual=residual)
+        residual_norm = float(np.linalg.norm(
+            np.asarray(rhs_flat) - np.asarray(_transpose_matvec(
+                jnp.asarray(solution, dtype=rhs_flat.dtype), exact, z_star))))
+        if np.isfinite(residual_norm) and residual_norm <= tolerance:
+            return unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
+        # The cheaper operator did not certify here; finish on the exact one
+        # rather than hand back a derivative this lane cannot vouch for, and
+        # count it: a lane that always lands here has silently lost its gain.
+        im._count(cfg, adjoint_certificate_fallbacks=1)
+        warm = (unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
+                if np.all(np.isfinite(solution)) else None)
+        return _host_adjoint(
+            residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
+            rhs, cfg, x0=warm, fail=fail)
+    residual_norm = float(np.linalg.norm(np.asarray(rhs_flat) - apply(solution)))
     if not np.isfinite(residual_norm) or residual_norm > tolerance:
         if fail != "best_effort" or not np.isfinite(residual_norm):
             im._raise_adjoint_unconverged(
@@ -1064,6 +1343,12 @@ def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", r
             RuntimeWarning, stacklevel=2,
         )
     return unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
+
+
+def _solve_prepared_host_adjoint(pullback, rhs, cfg, *, x0=None, fail="error", row=None):
+    """Solve one shared RHS with upstream's certified host-adjoint implementation."""
+    return _host_adjoint(None, None, None, None, None, None, None, rhs, cfg,
+                         x0=x0, fail=fail, pullback=pullback, row=row)
 
 
 @functools.partial(jax.jit, static_argnames=("residual",))

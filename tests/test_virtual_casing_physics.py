@@ -404,3 +404,180 @@ def test_cth_gradient_fd_validates():
     # (c) pressure-balance residual is finite and differentiable too.
     jp = jax.grad(lambda d: prob.pressure_balance_objective(_essos_coil_field(d, currents, nfp=nfp)))(d0)
     assert bool(jnp.all(jnp.isfinite(jp)))
+
+
+# ---------------------------------------------------------------------------
+# curl-free (current-conserving) projection of the LCFS source data
+# ---------------------------------------------------------------------------
+
+
+def _covariant_pair(nphi, ntheta, nfp, coefficients):
+    """Build ``(B_theta, B_phi)`` from named Fourier content."""
+    theta = jnp.linspace(0.0, 2 * jnp.pi, ntheta, endpoint=False)
+    phi = jnp.linspace(0.0, 2 * jnp.pi / nfp, nphi, endpoint=False)
+    ph, th = jnp.meshgrid(phi, theta, indexing="ij")
+    b_theta = jnp.zeros_like(th)
+    b_phi = jnp.zeros_like(th)
+    for (m, n), (gradient, curl) in coefficients.items():
+        angle = m * th - n * nfp * ph
+        # grad_s of cos(m theta - n nfp phi) / 1, plus a divergence-free part
+        b_theta = b_theta - gradient * m * jnp.sin(angle) - curl * n * nfp * jnp.sin(angle)
+        b_phi = b_phi + gradient * n * nfp * jnp.sin(angle) - curl * m * jnp.sin(angle)
+    return b_theta, b_phi
+
+
+def _surface_current_divergence(b_theta, b_phi, nfp):
+    """``d_theta B_phi - d_phi B_theta`` spectrally; zero iff the pair is a gradient."""
+    nphi, ntheta = b_theta.shape
+    k_theta = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[None, :]
+    k_phi = (jnp.fft.fftfreq(nphi, 1.0 / nphi) * nfp)[:, None]
+    residual = 1j * k_theta * jnp.fft.fft2(b_phi) - 1j * k_phi * jnp.fft.fft2(b_theta)
+    return float(jnp.max(jnp.abs(jnp.fft.ifft2(residual))))
+
+
+def test_projection_keeps_a_surface_gradient_and_removes_the_rest():
+    """The projection is the identity on gradients and kills the divergence-free part."""
+    nfp = 3
+    gradient_only = _covariant_pair(16, 16, nfp, {(1, 0): (0.7, 0.0), (2, 1): (0.3, 0.0)})
+    assert _surface_current_divergence(*gradient_only, nfp) < 1e-12
+    kept = VC._project_covariant_to_surface_gradient(*gradient_only, nfp)
+    np.testing.assert_allclose(np.asarray(kept[0]), np.asarray(gradient_only[0]),
+                               rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(kept[1]), np.asarray(gradient_only[1]),
+                               rtol=0.0, atol=1e-12)
+
+    mixed = _covariant_pair(16, 16, nfp, {(1, 0): (0.7, 0.0), (2, 1): (0.3, 0.5)})
+    assert _surface_current_divergence(*mixed, nfp) > 1e-3
+    projected = VC._project_covariant_to_surface_gradient(*mixed, nfp)
+    assert _surface_current_divergence(*projected, nfp) < 1e-12
+    # what survives is exactly the gradient part that was put in
+    np.testing.assert_allclose(np.asarray(projected[0]), np.asarray(gradient_only[0]),
+                               rtol=0.0, atol=1e-12)
+
+
+def test_projection_preserves_the_net_currents():
+    """The (0, 0) mode is the net poloidal and toroidal current, and is not a gradient."""
+    nfp = 2
+    b_theta, b_phi = _covariant_pair(12, 12, nfp, {(1, 1): (0.4, 0.6)})
+    b_theta, b_phi = b_theta + 3.0, b_phi - 5.0
+    projected = VC._project_covariant_to_surface_gradient(b_theta, b_phi, nfp)
+    assert abs(float(jnp.mean(projected[0])) - 3.0) < 1e-12
+    assert abs(float(jnp.mean(projected[1])) + 5.0) < 1e-12
+
+
+def test_projection_is_off_by_default_and_differentiable_when_on():
+    """The keyword changes the field; it must not change differentiability."""
+    surface = _synthetic_surface(nphi=12, ntheta=12, nfp=2)
+
+    def assemble(scale, project):
+        return VC._assemble_surface_field_data(
+            nfp=2, ns=3, j=2,
+            xm=jnp.array([0.0, 1.0]), xn=jnp.array([0.0, 2.0]),
+            xmn=jnp.array([0.0, 1.0]), xnn=jnp.array([0.0, 2.0]),
+            rmnc=jnp.array([[1.0, 0.0], [1.0, 0.1], [1.0, 0.3 * scale]]),
+            zmns=jnp.array([[0.0, 0.0], [0.0, 0.1], [0.0, 0.3 * scale]]),
+            rmns=None, zmnc=None,
+            bsupu=jnp.array([[0.0, 0.0], [0.5, 0.05], [1.0, 0.1]]),
+            bsupv=jnp.array([[0.0, 0.0], [0.5, 0.05], [1.0, 0.2]]),
+            bsupu_s=None, bsupv_s=None, lasym=False, use_stellsym=True, signgs=1,
+            nphi=12, ntheta=12, source_convention="synthetic",
+            project_current=project).B_total
+
+    default = assemble(1.0, False)
+    np.testing.assert_array_equal(np.asarray(default),
+                                  np.asarray(assemble(1.0, False)))
+    assert not np.allclose(np.asarray(assemble(1.0, True)), np.asarray(default))
+
+    for project in (False, True):
+        cost = lambda x, p=project: jnp.sum(assemble(x, p) ** 2)  # noqa: E731
+        ad = float(jax.grad(cost)(1.0))
+        step = 1e-6
+        fd = float((cost(1.0 + step) - cost(1.0 - step)) / (2.0 * step))
+        assert abs(ad - fd) <= 1e-6 * abs(fd), (project, ad, fd)
+    assert surface.nfp == 2
+
+
+# ---------------------------------------------------------------------------
+# per-order accuracy: B has been checked since the estimate landed, its
+# derivatives never were, and they are the ones that lose accuracy fastest
+# ---------------------------------------------------------------------------
+
+
+def _per_order_available(field):
+    """Whether the installed virtual-casing-jax carries the a-priori estimate.
+
+    Probed at a realistic stand-off: a target far outside the machine sends the
+    complex root off to where ``exp(|m| |Im t|)`` overflows, which is a real
+    (if benign) roughness in the estimate and not something to trip over here.
+    """
+    probe = _torus_points(3.0 * _finest_spacing(field), count=1)
+    try:
+        field.B_error_estimate(jnp.asarray(probe), order=1)
+    except NotImplementedError:
+        return False
+    return True
+
+
+def test_the_estimate_grows_with_derivative_order():
+    """A grid that gives the field its digits need not give its curvature them."""
+    surface = _synthetic_surface(nphi=16, ntheta=16, nfp=2)
+    field = VmecExtender.from_surface_data(surface, digits=4, accuracy_check="off")
+    if not _per_order_available(field):
+        pytest.skip("per-order estimate needs virtual-casing-jax >= 0.0.7")
+    points = jnp.asarray(_torus_points(2.0 * _finest_spacing(field)))
+
+    by_order = [float(np.max(np.asarray(field.B_error_estimate(points, order=k))))
+                for k in range(4)]
+    assert by_order == sorted(by_order), by_order
+    assert by_order[3] > by_order[0]
+
+
+def test_a_traced_per_order_estimate_says_so_instead_of_failing_obscurely():
+    """The host-side path must name the alternative, not raise from inside NumPy."""
+    surface = _synthetic_surface(nphi=12, ntheta=12, nfp=1)
+    field = VmecExtender.from_surface_data(surface, digits=4, accuracy_check="off")
+    if not _per_order_available(field):
+        pytest.skip("per-order estimate needs virtual-casing-jax >= 0.0.7")
+    points = jnp.asarray(_torus_points(3.0 * _finest_spacing(field)))
+
+    # order 0 stays traceable, as it always was
+    np.testing.assert_allclose(
+        np.asarray(jax.jit(field.B_error_estimate)(points)),
+        np.asarray(field.B_error_estimate(points)), rtol=1e-10, atol=1e-14)
+
+    with pytest.raises(NotImplementedError, match="cannot be traced"):
+        jax.jit(lambda p: field.B_error_estimate(p, order=2))(points)
+
+
+def test_eager_derivatives_check_at_their_own_order():
+    """gradgradgradB warns where B does not, on the same points and grid."""
+    surface = _synthetic_surface(nphi=12, ntheta=12, nfp=1)
+    field = VmecExtender.from_surface_data(surface, digits=4, accuracy_check="off")
+    if not _per_order_available(field):
+        pytest.skip("per-order estimate needs virtual-casing-jax >= 0.0.7")
+    points = jnp.asarray(_torus_points(1.2 * _finest_spacing(field)))
+
+    quiet_B = np.asarray(field.B(points))
+    quiet_third = np.asarray(field.gradgradgradB(points))
+    field.accuracy_check = "warn"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loud_third = field.gradgradgradB(points)
+    assert any(issubclass(w.category, ExteriorFieldAccuracyWarning) for w in caught)
+    assert any("order-3 derivative" in str(w.message) for w in caught)
+    # the check reports; it does not change the value
+    np.testing.assert_array_equal(np.asarray(loud_third), quiet_third)
+    assert np.all(np.isfinite(quiet_B))
+
+
+def test_the_derivative_check_does_not_fire_far_from_the_surface():
+    """Otherwise it would be noise rather than a signal."""
+    surface = _synthetic_surface(nphi=16, ntheta=16, nfp=1)
+    field = VmecExtender.from_surface_data(surface, digits=3, accuracy_check="warn")
+    if not _per_order_available(field):
+        pytest.skip("per-order estimate needs virtual-casing-jax >= 0.0.7")
+    points = jnp.asarray(_torus_points(6.0 * _finest_spacing(field)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        field.gradB(points)
+        field.gradgradB(points)

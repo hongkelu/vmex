@@ -127,7 +127,7 @@ def _require_vcj() -> None:
             "vmex.core.virtual_casing requires the optional dependency "
             "'virtual_casing_jax' (canonical repository "
             "https://github.com/uwplasma/virtual_casing_jax). Install it "
-            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.5)."
+            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.7)."
         ) from _IMPORT_ERROR
 
 
@@ -192,6 +192,7 @@ def surface_field_data_from_wout(
     ntheta: int = 32,
     s_index: int = -1,
     use_stellsym: bool = True,
+    project_current: bool = False,
 ) -> "VmecSurfaceFieldData":
     """Build a :class:`~virtual_casing_jax.VmecSurfaceFieldData` from a wout.
 
@@ -239,13 +240,68 @@ def surface_field_data_from_wout(
         lasym=lasym, use_stellsym=use_stellsym,
         signgs=int(getattr(wout, "signgs", -1)),
         nphi=nphi, ntheta=ntheta, source_convention="vmex_wout",
+        project_current=bool(project_current),
     )
+
+
+def _project_covariant_to_surface_gradient(b_theta, b_phi, nfp: int):
+    """Keep the part of a covariant boundary pair that is a surface gradient.
+
+    Virtual casing of tangential boundary data is the field of the sheet
+    current ``K = n x B``.  Outside the surface that field is curl-free only if
+    the sheet current is conserved, ``div_s K = 0``, i.e.
+
+        ``d_theta B_phi - d_phi B_theta = mu0 sqrt(g) J^s = 0``,
+
+    which VMEC's discrete ``J^s`` satisfies only to truncation.  The residual is
+    not small in its effect: the exterior field it produces has
+    ``|curl B| / |grad B|`` of order ``5e-3`` one minor radius out, rising to
+    ``0.2`` near the boundary.  It is a property of the source data, invisible
+    to any quadrature error estimate, and a higher-order edge extrapolation does
+    not remove it.
+
+    The true pair is a surface gradient, ``(B_theta, B_phi) = grad_s nu`` with
+    ``nu = I theta + G phi + periodic``, so mode by mode the admissible pairs are
+    those parallel to ``(k_theta, k_phi)``.  This takes the orthogonal projection
+    onto that line, which cannot increase the source-data error in the same norm.
+
+    Two families are left alone or dropped rather than projected.  The ``(0, 0)``
+    mode is the net poloidal and toroidal current, which is not a gradient of a
+    periodic function and is not removable, so it is kept exactly.  A Nyquist
+    mode has no representable derivative on the grid -- its difference aliases to
+    zero -- so it cannot belong to a surface gradient at all, and is dropped.
+
+    ``b_theta`` and ``b_phi`` have shape ``(nphi, ntheta)`` with ``phi`` covering
+    ONE field period, so the toroidal wavenumbers carry the ``nfp`` factor.
+    Everything is ``jnp``, so this differentiates in the boundary like the rest
+    of the assembly.
+    """
+    nphi, ntheta = b_theta.shape
+    k_theta = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[None, :]
+    k_phi = (jnp.fft.fftfreq(nphi, 1.0 / nphi) * float(nfp))[:, None]
+    f_theta = jnp.fft.fft2(b_theta)
+    f_phi = jnp.fft.fft2(b_phi)
+
+    k_squared = k_theta**2 + k_phi**2
+    weight = (k_theta * f_theta + k_phi * f_phi) / jnp.where(k_squared > 0.0, k_squared, 1.0)
+    p_theta = k_theta * weight
+    p_phi = k_phi * weight
+
+    p_theta = p_theta.at[0, 0].set(f_theta[0, 0])
+    p_phi = p_phi.at[0, 0].set(f_phi[0, 0])
+    if ntheta % 2 == 0:
+        p_theta = p_theta.at[:, ntheta // 2].set(0.0)
+        p_phi = p_phi.at[:, ntheta // 2].set(0.0)
+    if nphi % 2 == 0:
+        p_theta = p_theta.at[nphi // 2, :].set(0.0)
+        p_phi = p_phi.at[nphi // 2, :].set(0.0)
+    return jnp.real(jnp.fft.ifft2(p_theta)), jnp.real(jnp.fft.ifft2(p_phi))
 
 
 def _assemble_surface_field_data(
     *, nfp, ns, j, xm, xn, xmn, xnn, rmnc, zmns, rmns, zmnc,
     bsupu, bsupv, bsupu_s, bsupv_s, lasym, use_stellsym, signgs,
-    nphi, ntheta, source_convention,
+    nphi, ntheta, source_convention, project_current: bool = False,
 ) -> "VmecSurfaceFieldData":
     """Assemble a :class:`VmecSurfaceFieldData` from boundary Fourier spectra.
 
@@ -295,6 +351,20 @@ def _assemble_surface_field_data(
 
     bu = _nyquist_synth(bu_edge, bu_edge_s, xmn, xnn, theta, phi)
     bv = _nyquist_synth(bv_edge, bv_edge_s, xmn, xnn, theta, phi)
+
+    if project_current:
+        # go through the covariant pair, project, and come back: the metric is
+        # exact here because the field is tangential by construction
+        g_tt = jnp.sum(e_theta * e_theta, axis=0)
+        g_tp = jnp.sum(e_theta * e_phi, axis=0)
+        g_pp = jnp.sum(e_phi * e_phi, axis=0)
+        b_theta, b_phi = _project_covariant_to_surface_gradient(
+            bu * g_tt + bv * g_tp, bu * g_tp + bv * g_pp, nfp
+        )
+        determinant = g_tt * g_pp - g_tp * g_tp
+        bu = (g_pp * b_theta - g_tp * b_phi) / determinant
+        bv = (g_tt * b_phi - g_tp * b_theta) / determinant
+
     B_total = bu[None, :, :] * e_theta + bv[None, :, :] * e_phi
 
     # -- normal / area, oriented outward --
@@ -411,21 +481,35 @@ def _state_field_spectra(inp, state, runtime=None):
     bsupumnc = _wrout_cos_coeffs_jax(fields.bsupu, nyq_modes, trig)
     bsupvmnc = _wrout_cos_coeffs_jax(fields.bsupv, nyq_modes, trig)
 
+    # These are the wout geometry coefficients and must be built exactly as
+    # wout_from_state builds them: m1_constrained_to_physical has already
+    # returned physical amplitudes, so mode_scale is the only factor left.  An
+    # extra sqrt(s) on the odd-m rows here shrank every interior surface
+    # towards the axis, which left adjacent surfaces crossing on a shaped
+    # boundary and put B at the wrong place.
     mode_scale = 1.0 / physical_to_internal_scale(modes, trig)
-    radial_scale = jnp.where(
-        (jnp.asarray(modes.m) % 2)[None, :] == 1,
-        jnp.sqrt(jnp.asarray(grids.s_full))[:, None], 1.0)
-    rmnc = R_cos_p * radial_scale * mode_scale[None, :]
-    zmns = Z_sin_p * radial_scale * mode_scale[None, :]
-    rmns = R_sin_p * radial_scale * mode_scale[None, :] if lasym else None
-    zmnc = Z_cos_p * radial_scale * mode_scale[None, :] if lasym else None
+    rmnc = R_cos_p * mode_scale[None, :]
+    zmns = Z_sin_p * mode_scale[None, :]
+    rmns = R_sin_p * mode_scale[None, :] if lasym else None
+    zmnc = Z_cos_p * mode_scale[None, :] if lasym else None
     xm = jnp.asarray(modes.m, dtype=float)
     xn = jnp.asarray(modes.n, dtype=float) * float(nfp)
 
+    # The native field form (extender._contravariant_native) builds B from
+    # these rather than from the fitted B^u/B^v tables: ``lmns`` carries VMEC's
+    # internal ``lamscale`` factor and the same mode scaling as ``rmnc``, and
+    # ``phipf``/``chipf`` are the internal flux derivatives.  ``chips`` lives on
+    # the half mesh, while the extender evaluates the Jacobian continuously in
+    # ``s``, so it is moved to the full mesh here.
+    from .extender import _half_to_full_profile
+
+    lmns = lambda_sin * jnp.asarray(fields.lamscale) * mode_scale[None, :]
     return dict(
         nfp=nfp, ns=ns, xm=xm, xn=xn, xmn=xm_nyq, xnn=xn_nyq,
         rmnc=rmnc, zmns=zmns, rmns=rmns, zmnc=zmnc,
         bsupu=bsupumnc, bsupv=bsupvmnc, bsupu_s=None, bsupv_s=None,
+        lmns=lmns, phipf=jnp.asarray(prof["phipf"]),
+        chipf=_half_to_full_profile(fields.chips),
         lasym=lasym, signgs=signgs)
 
 
@@ -438,6 +522,7 @@ def surface_field_data_from_state(
     ntheta: int = 32,
     s_index: int = -1,
     use_stellsym: bool = True,
+    project_current: bool = False,
 ) -> "VmecSurfaceFieldData":
     """Traceable :class:`VmecSurfaceFieldData` straight from a ``SpectralState``.
 
@@ -447,10 +532,14 @@ def surface_field_data_from_state(
     pressure parameters remain in the graph.  Stellarator symmetry is the
     currently validated live-state path.
     """
-    spectra = _state_field_spectra(inp, state, runtime)
+    # The live-state spectra also carry lambda and the flux derivatives, which
+    # the interior field's native form needs and the surface assembly does not.
+    spectra = {key: value for key, value in _state_field_spectra(inp, state, runtime).items()
+               if key not in ("lmns", "phipf", "chipf")}
     return _assemble_surface_field_data(
         **spectra, j=int(s_index % spectra["ns"]), use_stellsym=use_stellsym,
-        nphi=nphi, ntheta=ntheta, source_convention="vmex_state")
+        nphi=nphi, ntheta=ntheta, source_convention="vmex_state",
+        project_current=bool(project_current))
 
 
 def _carries_asymmetric_harmonics(state) -> bool:
@@ -553,11 +642,6 @@ def surface_field_data_from_high_order(
 # ---------------------------------------------------------------------------
 
 
-def _default_levels(nphi: int, ntheta: int) -> tuple[tuple[int, int], ...]:
-    base = max(int(nphi), int(ntheta))
-    return ((base, base), (2 * base, 2 * base))
-
-
 def plan_vc_precision(
     surface_data: "VmecSurfaceFieldData",
     *,
@@ -578,7 +662,6 @@ def plan_vc_precision(
     _require_vcj()
     cfg = ExteriorFieldConfig(
         digits=int(digits),
-        levels=_default_levels(int(surface_data.gamma.shape[1]), int(surface_data.gamma.shape[2])),
         chunk_size=chunk_size,
         target_chunk_size=8,
         dtype="float64",
@@ -615,7 +698,6 @@ def plasma_field_on_boundary(
     if field is None:
         cfg = ExteriorFieldConfig(
             digits=int(digits),
-            levels=_default_levels(int(surface_data.gamma.shape[1]), int(surface_data.gamma.shape[2])),
             chunk_size=chunk_size,
             target_chunk_size=8,
             dtype="float64",
@@ -640,36 +722,65 @@ def plasma_field_on_boundary(
 # ---------------------------------------------------------------------------
 
 
-def offsurface_error_estimate(field, xyz, B_plasma=None) -> jax.Array:
+def _apriori_error_estimate(field, xyz, order: int):
+    """Order-aware a-priori estimate, for derivatives the two-level one cannot see.
+
+    Each spatial derivative multiplies the trapezoid error by roughly the grid
+    count, so a grid that gives six digits of ``B`` can give two of its
+    curvature.  The a-posteriori estimate differences two levels of the FIELD
+    and is blind to that; this one carries the order in its exponent.
+
+    Host-side NumPy, like the grid sizing it shares a module with, so it cannot
+    be traced.  A traced caller is told that here rather than meeting it as a
+    tracer error from inside the estimate.
+    """
+    try:
+        from virtual_casing_jax.error_estimate import (
+            boundary_series_from_gamma,
+            density_magnitude_from_surface,
+            kst_error_estimate,
+        )
+    except ImportError as error:  # pragma: no cover - exercised by the floor
+        raise NotImplementedError(
+            "a per-order error estimate needs virtual-casing-jax >= 0.0.7"
+        ) from error
+
+    points = jnp.asarray(xyz)
+    if isinstance(points, jax.core.Tracer):
+        raise NotImplementedError(
+            "B_error_estimate(order > 0) is host-side and cannot be traced. "
+            "Use order=0, which is traceable, or size the grid outside the "
+            "trace with virtual_casing_jax.plan_levels and pin the level."
+        )
+    surface = getattr(field, "surface_data", None)
+    if surface is None:
+        raise RuntimeError("the exterior field carries no surface data to estimate from")
+
+    series = boundary_series_from_gamma(np.asarray(surface.gamma), int(surface.nfp))
+    scale = float(np.sqrt(np.mean(np.sum(np.asarray(surface.B_total) ** 2, axis=0))))
+    absolute = kst_error_estimate(
+        series, np.asarray(points, dtype=float), field.schedule_levels[-1], order,
+        density_magnitude_from_surface(surface))
+    return jnp.asarray(absolute / scale)
+
+
+def offsurface_error_estimate(field, xyz, B_plasma=None, *, order: int = 0) -> jax.Array:
     """Estimated relative error of the direct off-surface plasma field.
 
-    ``virtual_casing_jax`` evaluates the exterior plasma field with a periodic
-    trapezoid rule on a fixed schedule of source grids (levels are full-torus
-    ``(n_toroidal, n_poloidal)`` counts).  Target by target it returns the
-    first level whose double-layer self-test ``min(|1 + U|, |U|)`` is at most
-    ``10**-digits``, or the last level, and discards that test (release
-    0.0.5).  The self-test alone is not an error estimate: it cannot see
-    source-grid resolution, and because it accepts ``U`` near either ``0`` or
-    ``-1`` it can pass a badly resolved target.  This function reproduces the
-    level selection and reports, per target,
+    Delegates to ``virtual_casing_jax``'s own achieved-error estimate, which
+    also drives the schedule's level choice (>= 0.0.6).  Per target it reports
+    ``max(min(|U|, |1 + U|), (relative change between the last two levels) ** 2)``:
+    ``U`` is the double-layer potential of a unit density, exactly 0 at a
+    target outside the surface and -1 inside it, and halving the spacing
+    squares the trapezoid error factor ``exp(-2 pi d / h)``, so the squared
+    change extrapolates the finest level's error.  Differences are divided by
+    the RMS of ``|B_total|`` on the surface, so the result is dimensionless
+    and compares with ``10**-digits``.
 
-    - for a target returned on a coarser level, ``|B_returned - B_finest|``:
-      the returned field's error against the finest level, which carries both
-      quadrature and source-resolution error;
-    - for a target returned on the finest level, the larger of ``|U|`` on that
-      level (the double-layer quadrature error for a point outside the surface,
-      where the exact ``U`` is zero) and the square of the relative change
-      between the last two levels.  Halving the spacing squares the trapezoid
-      error factor ``exp(-2 pi d / h)``, so that square extrapolates the finest
-      level's error from the coarser one.
-
-    Field differences are divided by the RMS of ``|B_total|`` on the surface, so
-    the estimate is dimensionless and compares with ``10**-digits``.  Targets
-    must lie outside the surface; an inside target reports about 1.  The cost is
-    one double-layer evaluation per visited level plus one field evaluation on
-    each of the last two levels: warm, 1.2 to 1.5 times the field evaluation
-    itself for 1000 targets on 24 x 24 and 48 x 48 torus grids.  The function
-    is traceable.
+    Valid on either side of the surface; a target closer than about two
+    source-grid spacings reports a large error.  It certifies the field only:
+    each spatial derivative taken through the same level loses roughly a
+    factor of the grid count.  The function is traceable.
 
     Parameters
     ----------
@@ -679,73 +790,34 @@ def offsurface_error_estimate(field, xyz, B_plasma=None) -> jax.Array:
     xyz:
         Cartesian target points, shape ``(n, 3)``, in metres.
     B_plasma:
-        Optional already computed ``field.B_plasma_xyz(xyz)``, shape ``(n, 3)``,
-        to avoid evaluating it twice.
+        Accepted and ignored.  The estimate now comes back from the same call
+        that produces the field, so there is nothing to avoid recomputing.
+    order:
+        Highest spatial derivative the caller intends to take.  ``0``, the
+        default, is the a-posteriori estimate above and is traceable.  A higher
+        order uses the a-priori estimate instead, since each derivative
+        multiplies the quadrature error by roughly the grid count and the
+        two-level difference cannot see that.  The a-priori estimate is
+        host-side planning code and is **not traceable**.
 
     Returns
     -------
     Array of shape ``(n,)``, dimensionless.
     """
     _require_vcj()
-    from virtual_casing_jax.integrals import laplace_dx_u_eval
-    from virtual_casing_jax.surface_ops import grad2d, resample, surf_normal_area_elem
-
+    order = int(order)
+    if order < 0:
+        raise ValueError(f"order must be non-negative, got {order}")
+    if order > 0:
+        return _apriori_error_estimate(field, xyz, order)
     if not bool(getattr(field.config, "use_jit_schedule", True)):
         raise NotImplementedError("the estimate reproduces the jitted schedule only")
     if getattr(field.config, "branch", "internal") != "internal":
         raise NotImplementedError("the estimate covers the internal branch only")
-    digits = int(field.config.digits)
-    X_src, _, _ = field._vc._offsurface_densities(field.B_total, digits)
-    nt0, np0 = int(X_src.shape[1]), int(X_src.shape[2])
-    points = jnp.asarray(xyz, dtype=X_src.dtype)
-    targets = points.T
-    tolerance = 10.0 ** (-digits)
-    chunk_size, target_chunk_size = field._vc._resolve_chunk_sizes(
-        "boff", field.config.chunk_size, field.config.target_chunk_size,
-        nsrc=nt0 * np0, ntrg=int(targets.shape[1]))
-
-    def double_layer(nt, npol):
-        X = resample(X_src, nt0, np0, nt, npol)
-        normal, area = surf_normal_area_elem(grad2d(X, nt, npol), X)
-        return jnp.asarray(laplace_dx_u_eval(
-            X, normal, targets, jnp.ones((nt, npol), dtype=X.dtype), area,
-            chunk_size=chunk_size, target_chunk_size=target_chunk_size)).reshape(-1)
-
-    def self_test(potential):
-        return jnp.minimum(jnp.abs(1.0 + potential), jnp.abs(potential))
-
-    levels = tuple((int(nt), int(npol)) for nt, npol in field.schedule_levels)
-    potential = double_layer(*levels[0])
-    level = jnp.zeros(potential.shape, dtype=jnp.int32)
-    for index, (nt, npol) in enumerate(levels[1:], start=1):
-        def refine(state, index=index, nt=nt, npol=npol):
-            previous, previous_level = state
-            move = self_test(previous) > tolerance
-            return (jnp.where(move, double_layer(nt, npol), previous),
-                    jnp.where(move, index, previous_level))
-
-        potential, level = jax.lax.cond(
-            jnp.any(self_test(potential) > tolerance), refine, lambda state: state,
-            (potential, level))
-
-    scale = jnp.sqrt(jnp.mean(jnp.sum(jnp.asarray(field.B_total) ** 2, axis=0)))
-    on_finest = level == len(levels) - 1
-    if len(levels) == 1:
-        return jnp.abs(potential)
-    if B_plasma is None:
-        B_plasma = field.B_plasma_xyz(points)
-
-    def level_field(nt, npol):
-        return field._vc.compute_internal_B_offsurf_schedule(
-            field.B_total, X_trg=targets, levels=((nt, npol),), digits=digits,
-            chunk_size=field.config.chunk_size,
-            target_chunk_size=field.config.target_chunk_size).T
-
-    finest = level_field(*levels[-1])
-    coarse_error = jnp.linalg.norm(jnp.asarray(B_plasma) - finest, axis=1) / scale
-    change = jnp.linalg.norm(finest - level_field(*levels[-2]), axis=1) / scale
-    finest_error = jnp.maximum(jnp.abs(potential), change ** 2)
-    return jnp.where(on_finest, finest_error, coarse_error)
+    if not hasattr(field, "B_plasma_error_estimate"):
+        raise NotImplementedError(
+            "the achieved-error estimate needs virtual-casing-jax >= 0.0.6")
+    return field.B_plasma_error_estimate(jnp.asarray(xyz))
 
 
 # ---------------------------------------------------------------------------

@@ -1772,6 +1772,7 @@ def _make_finite_difference_problem(
             "vary_major_radius": vary_major_radius,
             "term_slices": term_slices,
             "holder": holder,
+            "input": inp,
         },
     )
     if loss is not None:
@@ -1825,7 +1826,7 @@ def make_problem(
     fd_rel_step: float | None = None,
     workers: int | None = None,
     weight_semantics: str = "cost",
-    jacobian_batch_size: int | str | None = 1,
+    jacobian_batch_size: int | str | None = "auto",
     implicit_jacobian_method: str = "auto",
     adjoint_tol: float = 1e-6,
     jacobian_adjoint_tol: float = 1e-4,
@@ -1875,12 +1876,18 @@ def make_problem(
     :class:`AdjointSolveError`; transformable JAX methods use the same reverse
     fallback because Python exceptions cannot be raised reliably under jit.
 
-    ``jacobian_batch_size=1`` is the default for QI/QS problems through
-    ``max_mode=5``: it minimizes cold compilation complexity and peak memory.
-    ``"auto"`` batches response columns and improves warm throughput, so it is
-    preferable for long same-shape continuation campaigns that amortize the
-    larger first compilation.  This public name maps to the compatibility
-    drivers' established ``jac_chunk_size`` implementation.
+    ``jacobian_batch_size="auto"`` is the default: it sizes the batch of
+    probe rows the block system assembles at once from the available
+    memory.  The width acts on that probe assembly, not on the response
+    columns, which is why it is where the cost is: a warm QI Jacobian
+    measures 3.0-3.9 s at ``1`` against 0.83 s at ``"auto"`` and 0.56 s at
+    ``None`` (full width), for a Jacobian that agrees to 6e-11 across every
+    width from ``(1, 1)`` to ``(150, 150)`` and to 4e-12 end to end against
+    a problem rebuilt at ``None``.  ``1`` is the serial ``lax.map`` and is
+    the setting to fall back to when peak memory, not throughput, is the
+    binding constraint; ``None`` is the widest and the most memory-hungry.
+    This public name maps to the compatibility drivers' established
+    ``jac_chunk_size`` implementation.
 
     Set ``progress=True`` to report elapsed-time heartbeats while validating
     the seed equilibrium and building resolution-dependent solver data.
@@ -3471,7 +3478,8 @@ def _least_squares_implicit(
         x: np.ndarray, *, newton_iterations: int = 10
     ) -> Equilibrium:
         """Materialize the exact accepted state already used by the objective."""
-        from .extender import VmecExtender, VmecInteriorField
+        from .extender import (
+            VmecExtender, VmecInteriorField, _source_nphi_for_digits)
 
         x = np.asarray(x, dtype=float)
         params_np = jax.tree.map(
@@ -3495,8 +3503,19 @@ def _least_squares_implicit(
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )
+        # The objective reads the fixed-point-refined state, not the host
+        # solve.  The factory preflight caches only the host solve, so refine
+        # it here (a memo hit: no new equilibrium solve, no objective graph).
+        refined = imp._LAST_REFINED.get(cfg)
+        if refined is None or refined[0] != hit[0]:
+            imp._host_solve_and_mask_status(cfg, params_np)
+            refined = imp._LAST_REFINED.get(cfg)
+        if refined is None or refined[0] != hit[0]:
+            raise RuntimeError(
+                "decision vector did not produce a usable VMEC equilibrium"
+            )
         result_input = input_from_x(x)
-        result = hit[1]
+        result = dataclasses.replace(hit[1], state=refined[1])
         ns = int(np.shape(result.state.R_cos)[0])
         runtime = prepare_runtime(
             result_input,
@@ -3506,13 +3525,19 @@ def _least_squares_implicit(
         def exterior_field_factory(**kwargs):
             from . import virtual_casing as vc
 
-            nphi = int(kwargs.pop("nphi", 32)); ntheta = int(kwargs.pop("ntheta", 32))
+            nphi = kwargs.pop("nphi", None); ntheta = kwargs.pop("ntheta", None)
+            accuracy_check = kwargs.pop("accuracy_check", "warn")
             external_field = kwargs.pop("external_field", None)
             external_parameters = kwargs.pop("external_parameters", None)
             external_field_from_parameters = kwargs.pop(
                 "external_field_from_parameters", None)
             external_dof_names = tuple(kwargs.pop("external_dof_names", ()))
             digits = int(kwargs.pop("digits", 6)); levels = kwargs.pop("levels", None)
+            # The boundary-sized source grid of the VmecExtender classmethods,
+            # not a fixed 32: a high-aspect boundary needs far more.
+            chosen = _source_nphi_for_digits(inp, digits)
+            nphi = chosen if nphi is None else int(nphi)
+            ntheta = chosen if ntheta is None else int(ntheta)
             chunk_size = kwargs.pop("chunk_size", "auto")
             target_chunk_size = kwargs.pop("target_chunk_size", "auto")
             plasma = kwargs.pop("plasma", "auto")
@@ -3535,7 +3560,8 @@ def _least_squares_implicit(
                 external_field_from_parameters=external_field_from_parameters,
                 external_dof_names=external_dof_names,
                 digits=digits, levels=levels, chunk_size=chunk_size,
-                target_chunk_size=target_chunk_size, dof_names=tuple(names))
+                target_chunk_size=target_chunk_size, dof_names=tuple(names),
+                accuracy_check=accuracy_check)
 
         return Equilibrium(
             inp=result_input,

@@ -20,6 +20,7 @@
     ["tests/mirror/test_model_basis.py", "mirror", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-mirror-equilibrium", "full-mirror-equilibrium"]],
     ["tests/mirror/test_output.py", "mirror", "unit", "fast", "cpu", "none", "golden", ["pr-mirror-spline", "full-mirror-spline"]],
     ["tests/mirror/test_qi_hybrid.py", "mirror", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-mirror-spline", "full-mirror-spline"]],
+    ["tests/mirror/test_sample_closed_polyline.py", "mirror", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-mirror-spline", "full-mirror-spline"]],
     ["tests/mirror/test_splines.py", "mirror", "integration", "slow", "cpu-gpu", "none", "analytic", ["pr-mirror-spline", "full-mirror-spline"]],
     ["tests/mirror/test_turbulence.py", "mirror", "ad", "medium", "cpu-gpu", "none", "fd", ["pr-mirror-field", "full-mirror-field"]],
     ["tests/test_baseline_benchmark.py", "infrastructure", "oracle", "fast", "cpu", "golden", "golden", ["pr-parity-c1", "full-core-a-c"]],
@@ -44,7 +45,7 @@
     ["tests/test_fetch_assets.py", "infrastructure", "unit", "fast", "cpu", "none", "none", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
     ["tests/test_figure_provenance.py", "infrastructure", "unit", "fast", "cpu", "none", "none", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
     ["tests/test_first_divergence.py", "infrastructure", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c1", "full-core-d-f0"]],
-    ["tests/test_force_oracle.py", "equilibrium", "oracle", "medium", "cpu", "golden", "vmec2000", ["pr-parity-c1", "full-core-d-f0"]],
+    ["tests/test_force_oracle.py", "equilibrium", "oracle", "medium", "cpu", "golden", "vmec2000", ["pr-parity-c7", "full-core-d-f0"]],
     ["tests/test_forces_residuals.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "full-core-d-f0"]],
     ["tests/test_fourier_transforms.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
     ["tests/test_freeboundary.py", "free-boundary", "integration", "slow", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a1", "full-core-fb-a"]],
@@ -72,7 +73,8 @@
     ["tests/test_lasym_free_convergence.py", "free-boundary", "campaign", "campaign", "cpu-gpu", "generated", "vmec2000", ["pr-full-only", "full-core-j-m"]],
     ["tests/test_lgradb.py", "diagnostics", "ad", "medium", "cpu-gpu", "none", "fd", ["pr-parity-c3", "full-core-j-m"]],
     ["tests/test_maxj.py", "diagnostics", "ad", "slow", "cpu-gpu", "none", "fd", ["pr-parity-c4", "full-core-j-m"]],
-    ["tests/test_mgrid.py", "free-boundary", "unit", "fast", "cpu", "generated", "analytic", ["pr-parity-c1", "full-core-j-m"]],
+    ["tests/test_mgrid.py", "free-boundary", "unit", "fast", "cpu", "generated", "analytic", ["pr-parity-c6", "full-core-j-m"]],
+    ["tests/test_native_interior_form.py", "equilibrium", "oracle", "medium", "cpu", "none", "analytic", ["pr-parity-c1", "full-core-g-h"]],
     ["tests/test_monitoring.py", "optimization", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-d", "pr-fast", "pr-implicit-response", "full-core-n-s"]],
     ["tests/test_multigrid_interp.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "full-core-j-m"]],
     ["tests/test_multigrid_ladder.py", "equilibrium", "oracle", "slow", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a2", "full-core-j-m"]],
@@ -110,26 +112,27 @@
     ["tests/test_qi_sheet_gate.py", "free-boundary", "campaign", "campaign", "cpu-gpu", "generated", "vmec2000", ["pr-parity-a1"]],
     ["tests/test_radial_basis.py", "equilibrium", "unit", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "full-core-n-s"]],
     ["tests/test_restart.py", "equilibrium", "integration", "medium", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a2", "full-core-n-s"]],
-    ["tests/test_refine_staging.py", "ad", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
+    ["tests/test_refine_staging.py", "ad", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c5", "full-core-n-s"]],
     ["tests/test_runtime_recompile_keys.py", "equilibrium", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
-    ["tests/test_scaling.py", "equilibrium", "oracle", "slow", "cpu-gpu", "reference-nc", "analytic", ["pr-parity-c2", "full-core-n-s"]],
+    ["tests/test_scaling.py", "equilibrium", "oracle", "slow", "cpu-gpu", "reference-nc", "analytic", ["pr-parity-c5", "full-core-n-s"]],
     ["tests/test_setup.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
     ["tests/test_setup_extras.py", "equilibrium", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
     ["tests/test_single_stage_simultaneous.py", "optimization", "ad", "slow", "cpu-gpu", "reference-nc", "fd", ["pr-parity-c2", "optional", "full-core-n-s"]],
-    ["tests/test_solver_axis_initialization.py", "equilibrium", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
+    ["tests/test_solver_axis_initialization.py", "equilibrium", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c5", "full-core-n-s"]],
     ["tests/test_solver_end_to_end.py", "equilibrium", "oracle", "slow", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a2", "full-core-n-s"]],
     ["tests/test_stability.py", "diagnostics", "oracle", "slow", "cpu-gpu", "golden", "external", ["pr-parity-c4", "full-core-n-s"]],
     ["tests/test_step_control.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
-    ["tests/test_strong_force.py", "equilibrium", "oracle", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "full-core-n-s"]],
-    ["tests/test_strong_force_solovev.py", "equilibrium", "oracle", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "full-core-n-s"]],
+    ["tests/test_strong_force.py", "equilibrium", "oracle", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c6", "full-core-n-s"]],
+    ["tests/test_strong_force_solovev.py", "equilibrium", "oracle", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-c7", "full-core-n-s"]],
     ["tests/test_stress_high_force.py", "equilibrium", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
     ["tests/test_trace_budgets.py", "infrastructure", "unit", "medium", "cpu", "none", "golden", ["pr-parity-c2", "full-core-t-z"]],
     ["tests/test_tracing.py", "diagnostics", "integration", "medium", "cpu", "none", "analytic", ["pr-parity-c2", "optional", "full-core-t-z"]],
     ["tests/test_turbulence.py", "diagnostics", "oracle", "slow", "cpu-gpu", "reference-nc", "external", ["pr-parity-c4", "optional", "full-core-t-z"]],
-    ["tests/test_vacuum_analytic_recurrence.py", "free-boundary", "oracle", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-t-z"]],
+    ["tests/test_vacuum_analytic_recurrence.py", "free-boundary", "oracle", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-c5", "full-core-t-z"]],
     ["tests/test_validation_guards.py", "diagnostics", "unit", "fast", "cpu", "none", "none", ["pr-parity-c2", "full-core-t-z"]],
     ["tests/test_vmec2000_feature_stress.py", "equilibrium", "oracle", "medium", "cpu", "generated", "vmec2000", ["pr-parity-c2", "full-core-t-z"]],
     ["tests/test_vmec2000_live.py", "equilibrium", "oracle", "campaign", "cpu", "external", "vmec2000", ["pr-external", "full-core-t-z"]],
+    ["tests/test_wout_from_result.py", "equilibrium", "unit", "medium", "cpu", "none", "analytic", ["pr-parity-c5", "full-core-t-z"]],
     ["tests/test_wout_golden.py", "equilibrium", "oracle", "slow", "cpu", "golden", "vmec2000", ["pr-parity-b", "full-core-t-z"]]
   ],
   "excluded": {
@@ -188,7 +191,7 @@
     ],
     "pr-free-boundary-adjoint": [
       "tests/test_freeboundary_implicit.py::test_host_adjoint_best_effort_warns_instead_of_raising",
-      "tests/test_freeboundary_implicit.py::test_free_boundary_host_adjoint_rejects_a_false_solver_success"
+      "tests/test_freeboundary_implicit.py::test_free_boundary_host_adjoint_rejects_a_false_solver_success", "tests/test_freeboundary_implicit.py::test_edge_response_models_nestor_and_drives_the_adjoint_lane", "tests/test_freeboundary_implicit.py::test_schur_lanes_are_reusable_and_leak_nothing_per_gradient", "tests/test_freeboundary_implicit.py::test_edge_basis_pairs_the_constrained_m1_columns", "tests/test_freeboundary_implicit.py::test_balanced_dense_solver_survives_a_rank_deficient_edge_system", "tests/test_freeboundary_implicit.py::test_cheaper_transpose_is_accepted_only_on_the_exact_one", "tests/test_freeboundary_implicit.py::test_free_boundary_config_validates_adjoint_solver"
     ],
     "pr-implicit-response-a": [
       "tests/test_input_profiles.py::test_change_resolution_preserves_representable_coefficients",
@@ -275,7 +278,7 @@
       "tests/mirror/test_free_boundary.py::test_unbounded_exterior_beta_observables_converge_with_resolution"
     ],
     "weekly-free-boundary-adjoint": [
-      "tests/test_freeboundary_implicit.py::test_free_boundary_pressure_gradient_matches_resolve_finite_difference",
+      "tests/test_freeboundary_implicit.py::test_free_boundary_pressure_gradient_is_certified_at_one_root",
       "tests/test_freeboundary_implicit.py::test_ncsx_free_boundary_current_gradient_matches_resolve_finite_difference"
     ]
   },

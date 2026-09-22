@@ -914,10 +914,9 @@ A matched GPU qualification and pilot are still needed before claiming
 production timing or physical convergence.
 
 
-Strict accepted-state examples
-------------------------------
+Accepted-state certification
+----------------------------
 
-``examples/m=3n=3iota=0p2/run.py`` uses the existing reverse-GCROT backend.
 ``make_free_boundary_continuation_config_from_state`` imports an equilibrium
 with explicit constraint baselines and freshly certifies it without invoking
 an equilibrium solver. ``certify_free_boundary_continuation_state`` returns

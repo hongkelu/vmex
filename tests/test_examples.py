@@ -110,23 +110,6 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 #: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
 #: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
-    "examples/m=3n=3iota=0p2/case.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2/checkpoint.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2/optimization.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2/run.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/campaign.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/case.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/checkpoint.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/diagnostics.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/monitor_both.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/optimization.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/run.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/test_campaign.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/test_workflow.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_angular_case.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_diagnostics.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/tests/test_iota02_aspect5_fresh.py": "research workflow; API/callback tests, separate numerical qualification",
-    "examples/m=3n=3iota=0p2aspect=5angular48x40/workflow.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/compare_scalar_steps.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",

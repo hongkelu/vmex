@@ -49,7 +49,6 @@
     ["tests/test_fourier_transforms.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
     ["tests/test_freeboundary.py", "free-boundary", "integration", "slow", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_freeboundary_turnon_convergence.py", "free-boundary", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "pr-fast", "full-core-fb-a"]],
-    ["tests/test_m3n3_iota02_example.py", "free-boundary", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-free-boundary-adjoint"]],
     ["tests/test_freeboundary_continuation.py", "free-boundary", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-free-boundary-adjoint"]],
     ["tests/test_freeboundary_implicit.py", "free-boundary", "ad", "slow", "cpu-gpu", "none", "fd", ["pr-parity-a1", "full-free-boundary-adjoint"]],
     ["tests/test_virtual_casing_api.py", "virtual-casing", "unit", "fast", "cpu", "none", "none", ["pr-parity-a1", "full-core-fb-a"]],

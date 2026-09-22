@@ -145,8 +145,8 @@ unless they are compact reviewed documentation artifacts.
 Published-equilibrium comparisons and reproducibility studies belong in
 `../benchmarks/`, not among the user-facing optimization examples.
 
-## M3/N3 single-stage cases
+## Three-method single-stage comparison
 
-- [m=3n=3iota=0p2](m=3n=3iota=0p2/README.md)
-
-- [m=3n=3iota=0p2aspect=5angular48x40](m=3n=3iota=0p2aspect=5angular48x40/README.md)
+The maintained custom workflow is in [three-methods-benchmark](three-methods-benchmark/README.md),
+including the free-boundary scalar and L-BFGS-B entry points and their separate
+qualification script. Earlier case-specific drivers have been retired.

@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .problem import FunctionProblem
+from .problem import FunctionProblem, _nonlinear_constraint
 from .optimize import Equilibrium
 from .coil_parameters import CoilParameters
 from . import freeboundary_continuation as fc, freeboundary_implicit as fbi, implicit as im
@@ -92,10 +92,17 @@ class FreeBoundaryProblem(FunctionProblem):
         Coil coordinates, solver options, checkpoint and continuation controls
         follow :meth:`from_loss`. Normalization defaults to the initial norm.
         """
+        coil_current_dofs = kwargs.pop("coil_current_dofs", None)
+        if coil_current_dofs is not None:
+            if "current_dofs" in kwargs:
+                raise ValueError("use coil_current_dofs or current_dofs, not both")
+            kwargs["current_dofs"] = coil_current_dofs
         return cls._build(inp, objective_terms, **kwargs)
 
     @classmethod
-    def from_loss(cls, inp, loss, *, quantities=(), **kwargs):
+    def from_loss(cls, inp, loss, *, coils=None, coil_current_dofs=None,
+                  parameterization=None, scales=None, restart_from=None,
+                  solver_options=None, quantities=(), **kwargs):
         """Build a scalar ``loss(state, runtime, coils)`` for any host optimizer.
 
         ``quantities`` are scalar ``function(state, runtime)`` observables for
@@ -103,19 +110,28 @@ class FreeBoundaryProblem(FunctionProblem):
         The total gradient includes both the equilibrium response and explicit
         coil dependence. The scalar loss is used without normalization.
 
-        Supply coils with explicit current_dofs, or a CoilParameters chart.
+        Supply coils with explicit coil_current_dofs (indices, or () to fix
+        all coil currents), or a CoilParameters chart. The older current_dofs
+        keyword still means coil currents here; it never varies the plasma
+        current profile. Pressure and plasma-current profiles come from inp.
         solver_options configure the equilibrium and full adjoint residual gate.
         restart_from accepts a state or WOUT path; checkpoint plus its SHA256
         restores an authenticated accepted root. Ordinary evaluations never
         promote a root: call accept_x only after optimizer acceptance.
         """
+        if coil_current_dofs is not None:
+            if "current_dofs" in kwargs:
+                raise ValueError("use coil_current_dofs or current_dofs, not both")
+            kwargs["current_dofs"] = coil_current_dofs
         quantities = tuple(quantities)
         if not callable(loss) or not all(callable(q) for q in quantities):
             raise TypeError("loss and quantities must be callable")
         if "constraints" in kwargs or "objective_normalization" in kwargs:
             raise ValueError("scalar losses use quantities and no normalization")
         return cls._build(inp, (), loss=loss, quantities=tuple(quantities),
-                          objective_normalization=1.0, **kwargs)
+                          objective_normalization=1.0, coils=coils,
+                          parameterization=parameterization, scales=scales,
+                          restart_from=restart_from, solver_options=solver_options, **kwargs)
 
     @classmethod
     def _build(
@@ -691,6 +707,10 @@ class FreeBoundaryProblem(FunctionProblem):
         record = self._record(x)
         return self._derivatives(record)[1:].copy() * self.constraint_scales[:, None]
 
+    def nonlinear_constraint(self, lower, upper, *, scales=1.0):
+        """Bound the physical quantities supplied to from_loss, in their units."""
+        return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
+
     def coils_from_x(self, x):
         """Reconstruct coils, without solving or changing the accepted equilibrium."""
         return self.parameterization.coils_from_x(self._validate_x(x))
@@ -737,6 +757,20 @@ class FreeBoundaryProblem(FunctionProblem):
         """Save the accepted root and optimizer reference for exact authenticated resume."""
         from ._freeboundary_checkpoint import write
         return write(self, path)
+
+    def state_from_checkpoint(self, path, *, sha256, parameters=None):
+        """Read an authenticated snapshot for plotting, without solving or promotion.
+
+        The input/profile/coil/objective identity must match this problem.
+        This is stored-state replay, not a new equilibrium certification.
+        """
+        from . import _freeboundary_checkpoint as storage
+        from .solver import SpectralState
+
+        data = storage.read(path, sha256, self.checkpoint_identity)
+        if parameters is not None and not np.array_equal(data["parameters"], parameters):
+            raise ValueError("checkpoint parameters differ from the requested iterate")
+        return SpectralState(*(jnp.asarray(data[name]) for name in storage.FIELDS))
 
     def close(self):
         """Release retained derivative factors without altering accepted results."""

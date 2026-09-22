@@ -611,6 +611,14 @@ def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch
     try:
         assert restored.accepted_step == 0 and restored.fun(restored.x0) == 6
         np.testing.assert_array_equal(restored.accepted.state.R_cos, state.R_cos)
+        anchor = restored.accepted
+        replay = restored.state_from_checkpoint(path, sha256=info["sha256"], parameters=restored.x0)
+        np.testing.assert_array_equal(replay.R_cos, state.R_cos)
+        assert restored.accepted is anchor and restored.accepted_step == 0
+        with pytest.raises(ValueError, match="SHA256"):
+            restored.state_from_checkpoint(path, sha256="wrong")
+        with pytest.raises(ValueError, match="parameters"):
+            restored.state_from_checkpoint(path, sha256=info["sha256"], parameters=restored.x0+1)
     finally:
         restored.close()
 
@@ -678,14 +686,13 @@ def test_lbfgsb_production_uses_real_problem_and_accepted_callbacks(scalar, monk
     p.enable_matrix_free()
     initial = p.fun(p.x0)
     anchors = []
-    result = entry.run_optimizer(p, p.scales, None, None,
-        SimpleNamespace(accepted_steps=budget),
+    result = entry.run_optimizer(p, SimpleNamespace(accepted_steps=budget),
         lambda: anchors.append((p.accepted.parameters.copy(), p.fun(p.accepted.parameters))),
         method="L-BFGS-B")
     assert anchors and p.accepted_step == len(anchors) <= budget
     assert anchors[-1][1] < initial
-    np.testing.assert_array_equal(p.accepted.parameters, result.x*p.scales)
-    assert np.max(np.abs(result.x)) <= .01
+    np.testing.assert_array_equal(p.accepted.parameters, result.x)
+    assert np.max(np.abs(result.x/p.scales)) <= .01 + 1e-14
     assert len(stats["seeds"]) == 1
     if budget == 1:
         assert not result.success and p.accepted_step == 1
@@ -704,7 +711,28 @@ def test_lbfgsb_failed_equilibrium_keeps_accepted_root(scalar, monkeypatch):
     p.enable_matrix_free()
     anchor = p.accepted
     stats["fail"] = True
-    with pytest.raises(opt.TrialRejected):
-        entry.run_optimizer(p, p.scales, None, None, SimpleNamespace(accepted_steps=20),
+    result = entry.run_optimizer(p, SimpleNamespace(accepted_steps=20),
                             lambda: pytest.fail("failed trial promoted"), method="L-BFGS-B")
+    assert not result.success and result.stop_reason == "equilibrium_trial_rejected"
+    np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
+
+
+@pytest.mark.parametrize("budget", [1, 5])
+def test_shared_slsqp_promotes_only_certified_points(scalar, budget):
+    p, stats, *_ = scalar
+    seen = []
+    constraints = p.nonlinear_constraint([-1e6, -1e6], [1e6, 1e6])
+    result = opt.minimize(p, method="SLSQP", constraints=constraints,
+        callback=lambda x: seen.append(x.copy()), options={"maxiter": budget, "ftol": 1e-10})
+    assert 0 < p.accepted_step == len(seen) <= budget
+    np.testing.assert_array_equal(p.accepted.parameters, result.x)
+    for x in seen:
+        assert np.all(np.isfinite(x))
+
+
+def test_scalar_coil_current_alias_rejects_ambiguous_names(analytic):
+    p, *_ = analytic
+    with pytest.raises(ValueError, match="not both"):
+        opt.FreeBoundaryProblem.from_loss(p.inp, lambda *a: 0.,
+            coil_current_dofs=(), current_dofs=())

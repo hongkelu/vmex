@@ -55,7 +55,7 @@ python -B single_stage_optimization_scalar.py --constrained --device gpu \
 `free_boundary_single_stage_optimization_scalar.py` (formerly
 `free_boundary_single_stage_fast.py`) follows the scalar reference directly:
 editable parameters, weighted plasma/coil objectives, a public VMEX problem,
-SciPy SLSQP, and endpoint reporting all appear in the example. It imports
+`opt.minimize`, and endpoint reporting all appear in the example. It imports
 `vmex` and `vmex.optimize`, with ESSOS for coils and surfaces. It does not
 import private VMEX modules or a local driver/setup helper.
 
@@ -67,6 +67,20 @@ qualification. The superseded private scalar driver and its unused gradient
 and resume helpers have been removed; they remain available in Git history.
 The fixed-boundary reference still uses `_scalar_constraints.py` and
 `_scalar_diagnostics.py`. Saved run outputs are unchanged.
+
+Read the example in four phases: `build_problem` loads input/WOUT, fits or
+restores coils and defines the loss; `run_optimizer` chooses physical bounds and
+calls `opt.minimize`; `verify_endpoint` independently solves the final coils;
+`postprocess` exports accepted-state diagnostics, plots, VTK and the movie.
+The library owns optimizer coordinate scaling and accepted-state promotion.
+Qualification authentication, checkpoint replay and coil-motion metrics also
+use public VMEX APIs. The objective formulas and targets remain in the example.
+
+Inspect settings without a solve or output files:
+
+```sh
+python -B free_boundary_single_stage_optimization_scalar.py --dry-run
+```
 
 Run expensive qualification once for the desired configuration, then reuse its
 fitted coils and certified initial checkpoint:
@@ -100,7 +114,7 @@ probes. If a proposal cannot provide a certified equilibrium/gradient, it stops
 and preserves the last accepted state; no replacement gradient is fabricated.
 The summary identifies the optimizer and whether nonlinear constraints were
 applied. Both entry-point sources are included in the qualification contract
-and saved provenance, so this rename requires fresh qualification.
+and saved provenance. This API/default-tolerance refactor requires fresh qualification.
 
 All commands default to GPU. Each output directory must be new. `--dry-run`
 prints configuration without creating files or initializing JAX. Production
@@ -116,7 +130,7 @@ Initialization is defined in the production example:
 
 - With no input option, use the rotating ellipse at `(MPOL, NTOR, NS) =
   (8, 8, 51)` and grid `64 x 64`.
-- `--input input.case` preserves that deck's profiles and resolution unless
+- `--input input.case` requires a vacuum deck and preserves its resolution unless
   `--resolution MPOL NTOR NS` or `--grid NTHETA NZETA` is explicitly supplied.
 - `--input input.case --wout wout_case.nc` takes the boundary and restart state
   from WOUT. The matching input deck remains required for pressure/current
@@ -141,7 +155,7 @@ It writes `gradient_check.json`, `matrixfree_check.json`, and a passing
 `qualification.json` only after all gates pass. Failed attempts keep their
 available diagnostics and a report with `passed: false`; no SLSQP run starts.
 
-Production retains force/edge tolerance `1e-15`, adjoint full relative residual
+Production uses force/edge tolerance `1e-11`, adjoint full relative residual
 `1e-9`, Krylov request `1e-11`, 100 accepted steps and final independent
 verification at NS=201, force tolerance `1e-15`. A failed matrix-free adjoint
 gets one checked dense retry; its LU replaces the seed only if accepted.
@@ -182,3 +196,34 @@ WOUT, coil JSON and VTK exports.
 The previous private-driver experiments and commands are preserved in Git history.
 Their timings and qualification results do not qualify these new entry points.
 A matched GPU qualification and bounded pilot remain necessary before a long run.
+
+## Preparing finite-beta support
+
+The shared optimizer is independent of vacuum/finite-beta physics. The current
+three-method production builder is deliberately vacuum-only and rejects
+nonzero pressure or total plasma current. Its stage-two fit and scalar B.n/B
+checks use the coil field alone, which is not the total field at finite beta.
+
+The upstream reference is
+`../optimization/single_stage_optimization_finite_beta.py`. It:
+
+1. Sets kinetic density/temperature profiles, calibrates pressure to a seed beta
+   target of 0.025, and initializes plasma current with `self_consistent_bootstrap`.
+2. Optimizes boundary modes, spline plasma-current shape and total current,
+   plus coil geometry/currents. `RedlBootstrapMismatch` joins QA, aspect, iota,
+   beta and coil penalties in the objective.
+3. Uses `PlasmaVacuumInterface`/virtual casing for the required external field,
+   B.n and total-pressure balance, and reports bootstrap and interface diagnostics.
+
+The native `../optimization/single_stage_free_boundary_optimization_finite_beta.py`
+already demonstrates a coil-only finite-beta objective with prescribed input
+profiles and a bootstrap mismatch term. It does not vary those plasma-current
+profiles and is not a qualification of this accepted-state scalar workflow.
+
+Extend the production path in two stages: first prescribed finite-beta profiles,
+plasma-aware stage-two fitting and matching total-field/interface diagnostics;
+then joint plasma-current variables and their implicit derivatives if bootstrap
+self-consistency is required. Preserve the upstream edge-pressure assumptions.
+Each stage needs independent reconverged finite-difference checks at finite beta
+and a bounded accepted-state pilot. Changing beta or passing a pressure deck
+alone does not establish bootstrap self-consistency or numerical qualification.

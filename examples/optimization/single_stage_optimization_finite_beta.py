@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import minimize
 
 import vmex as vj
 from vmex import optimize as opt
@@ -256,7 +255,7 @@ print(f"dof_names = {dof_names}")
 joint_problem = vj.FunctionProblem.from_functions(
     np.zeros_like(x0), value_and_grad=value_and_grad)
 joint_problem.compile_value_and_gradient(report_interval=10.0)
-result = minimize(joint_problem.value_and_grad, joint_problem.x0, jac=True, method=METHOD,
+result = opt.minimize(joint_problem, method=METHOD,
     bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size if METHOD == "L-BFGS-B" else None,
     callback=monitor, options=OPTIONS)
 

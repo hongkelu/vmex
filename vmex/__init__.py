@@ -46,6 +46,8 @@ links to the module that documents it.
   — differentiable state, endpoint diagnostics, and work counters
 - :class:`~vmex.core.freeboundary_continuation.FreeBoundaryContinuationLinearization`
   — root-owned reusable derivative factors
+- :class:`~vmex.core.freeboundary_continuation.FreeBoundaryLUPreconditioner`
+  — explicit seed factors for current-root matrix-free adjoints and predictors
 - :func:`~vmex.core.freeboundary_continuation.free_boundary_continuation_state_pullback` /
   :func:`~vmex.core.freeboundary_implicit.free_boundary_state_pullback_multi_rhs`
   — shared implicit pullbacks at the same certified root
@@ -293,6 +295,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.freeboundary_continuation", "reanchor_free_boundary_continuation_config"),
     "free_boundary_continuation_state_pullback": (
         ".core.freeboundary_continuation", "free_boundary_continuation_state_pullback"),
+    "FreeBoundaryLUPreconditioner": (
+        ".core.freeboundary_continuation", "FreeBoundaryLUPreconditioner"),
     "FreeBoundaryContinuationLinearization": (
         ".core.freeboundary_continuation", "FreeBoundaryContinuationLinearization"),
     "solve_free_boundary_continuation": (

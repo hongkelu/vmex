@@ -382,6 +382,23 @@ def reanchor_free_boundary_continuation_config(cfg, accepted):
 
 
 @dataclass(eq=False)
+class FreeBoundaryLUPreconditioner:
+    """An explicit seed LU shared across roots of one continuation configuration.
+
+    Create with ``linearization.preconditioner()``. Closing the original dense
+    linearization does not close this seed. No refresh or fallback is implicit.
+    """
+    _cfg: Any = field(repr=False)
+    _seed: Any = field(repr=False)
+
+    def close(self):
+        """Release the seed and prohibit future pullbacks with this preconditioner."""
+        if self._seed is not None:
+            self._seed.close()
+        self._seed = self._cfg = None
+
+
+@dataclass(eq=False)
 class FreeBoundaryContinuationLinearization:
     """A gradient and reusable tangent factors owned by one accepted root.
 
@@ -393,6 +410,40 @@ class FreeBoundaryContinuationLinearization:
     _accepted: Any = field(repr=False)
     _cfg: Any = field(repr=False)
     _dense: Any = field(repr=False)
+
+    def preconditioner(
+        self, *, rtol=1e-11, restart=30, max_restarts=10,
+        require_adjoint_convergence=False, rhs_batch_size=1, tangent_rtol=None,
+    ):
+        """Copy certified dense seed factors for bounded matrix-free solves.
+
+        ``rtol`` is the Krylov request; the solver's ``adjoint_residual_rtol``
+        still gates the actual full residual. Factors are float64 host arrays.
+        ``require_adjoint_convergence`` additionally rejects adjoints that miss
+        the requested Krylov tolerance; it does not change the tangent policy.
+        ``rhs_batch_size`` (1 through 4) groups independent adjoints on the device;
+        every row retains its own convergence and full-residual checks.
+        ``tangent_rtol`` independently controls the predictor Krylov request;
+        when omitted it inherits ``rtol``. Full tangent checks remain required.
+        """
+        from ._freeboundary_matrixfree import SeedLU
+        if self._dense is None:
+            raise ValueError('continuation linearization is closed')
+        seed = SeedLU.from_root(self._dense, rtol=rtol, restart=restart, max_restarts=max_restarts,
+                                require_adjoint_convergence=require_adjoint_convergence,
+                                rhs_batch_size=rhs_batch_size, tangent_rtol=tangent_rtol)
+        return FreeBoundaryLUPreconditioner(self._cfg, seed)
+
+    def offload_factors(self):
+        """Move dense factors to immutable host storage between predictor calls."""
+        if self._dense is None:
+            raise ValueError('continuation linearization is closed')
+        factors = self._dense.factors
+        if not all(isinstance(x, np.ndarray) and not x.flags.writeable for x in factors):
+            factors = tuple(np.array(x, copy=True) for x in factors)
+            for value in factors:
+                value.setflags(write=False)
+            self._dense.factors = factors
 
     def tangent(self, accepted, cfg, direction, *, diagnostics=None):
         """Return the certified tangent using this accepted root's factors."""
@@ -413,22 +464,31 @@ class FreeBoundaryContinuationLinearization:
 
 def free_boundary_continuation_state_pullback(
     accepted, cfg, state_cotangents, *, diagnostics=None, return_linearization=False,
+    preconditioner=None,
 ):
     """Shared implicit field-parameter derivatives at the supplied exact root.
 
     Cotangent leaves have a leading RHS axis. This delegates to main's shared
     selected adjoint backend; add explicit objective field derivatives yourself.
     The saved record prevents a later memo refresh from changing the root.
-    ``return_linearization=True`` retains the certified dense factors and returns
+    ``return_linearization=True`` retains a certified predictor and returns
     a :class:`FreeBoundaryContinuationLinearization` instead of the field rows.
+    Pass a seed from ``linearization.preconditioner()`` to avoid repeated dense
+    assembly. The current root, mask and constraint baselines are still used.
     """
     if accepted._owner is not cfg._owner:
         raise ValueError("accepted root belongs to a different continuation config")
+    options = {}
+    if preconditioner is not None:
+        if not isinstance(preconditioner, FreeBoundaryLUPreconditioner) or preconditioner._cfg is not cfg:
+            raise ValueError('preconditioner is closed or belongs to a different continuation config')
+        options['preconditioner'] = preconditioner._seed
     result = fbi.free_boundary_state_pullback_multi_rhs(
         cfg.params, jnp.asarray(accepted.parameters), cfg.solver,
         accepted.state, accepted.dof_mask, state_cotangents,
         rcon0=accepted.rcon0, zcon0=accepted.zcon0,
         root_residual_atol=cfg.root_residual_atol, diagnostics=diagnostics,
+        **options,
         **({'return_linearization': True} if return_linearization else {}))
     if return_linearization:
         (_, field_bar), dense = result
@@ -496,4 +556,5 @@ __all__ = [
     'free_boundary_continuation_stats', 'reanchor_free_boundary_continuation_config',
     'free_boundary_continuation_state_pullback', 'solve_free_boundary_continuation',
     'FreeBoundaryContinuationLinearization',
+    'FreeBoundaryLUPreconditioner',
 ]

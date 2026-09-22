@@ -11,6 +11,7 @@
     ["tests/test_freeboundary_prediction.py", "optimization", "ad", "fast", "cpu-gpu", "generated", "analytic", ["pr-parity-d", "pr-fast", "full-free-boundary-adjoint"]],
     ["tests/test_coil_parameters.py", "optimization", "ad", "fast", "cpu-gpu", "generated", "fd", ["pr-parity-d", "pr-fast", "full-core-a-c"]],
     ["tests/test_freeboundary_linearization.py", "free-boundary", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "pr-fast", "full-free-boundary-adjoint"]],
+    ["tests/test_freeboundary_matrixfree.py", "free-boundary", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "pr-fast", "full-free-boundary-adjoint"]],
     ["tests/test_freeboundary_problem_api.py", "optimization", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-d", "pr-fast", "full-free-boundary-adjoint"]],
     ["tests/mirror/test_analytic.py", "mirror", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-mirror-spline", "full-mirror-spline"]],
     ["tests/mirror/test_boundary_conditions.py", "mirror", "oracle", "slow", "cpu-gpu", "none", "analytic", ["pr-mirror-equilibrium", "full-mirror-equilibrium"]],

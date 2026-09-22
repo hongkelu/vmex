@@ -22,7 +22,7 @@ from .optimize import Equilibrium
 from .coil_parameters import CoilParameters
 from .projected_optimization import TrialRejected
 from . import freeboundary_continuation as fc, freeboundary_implicit as fbi, implicit as im
-from .errors import VmecError
+from .errors import AdjointSolveError, VmecError
 
 
 @jax.custom_jvp
@@ -81,17 +81,51 @@ class _Equilibrium(Equilibrium):
 class FreeBoundaryProblem(FunctionProblem):
     """Weighted plasma objectives and derivatives with respect to coil variables.
 
-    Build with from_tuples(). The host-side equilibrium/adjoint machinery is
+    Build with from_tuples() or from_loss(). The equilibrium/adjoint machinery is
     eager; the state objective functions are JIT compiled. No files, environment
     variables, CLI state, or signal handlers are owned by this class.
     """
 
     @classmethod
-    def from_tuples(
+    def from_tuples(cls, inp, objective_terms, **kwargs):
+        """Build weighted state/runtime residuals with optional TargetBand constraints.
+
+        Coil coordinates, solver options, checkpoint and continuation controls
+        follow :meth:`from_loss`. Normalization defaults to the initial norm.
+        """
+        return cls._build(inp, objective_terms, **kwargs)
+
+    @classmethod
+    def from_loss(cls, inp, loss, *, quantities=(), **kwargs):
+        """Build a scalar ``loss(state, runtime, coils)`` for any host optimizer.
+
+        ``quantities`` are scalar ``function(state, runtime)`` observables for
+        constraint_values/constraint_jac; the optimizer defines their bounds.
+        The total gradient includes both the equilibrium response and explicit
+        coil dependence. The scalar loss is used without normalization.
+
+        Supply coils with explicit current_dofs, or a CoilParameters chart.
+        solver_options configure the equilibrium and full adjoint residual gate.
+        restart_from accepts a state or WOUT path; checkpoint plus its SHA256
+        restores an authenticated accepted root. Ordinary evaluations never
+        promote a root: call accept_x only after optimizer acceptance.
+        """
+        quantities = tuple(quantities)
+        if not callable(loss) or not all(callable(q) for q in quantities):
+            raise TypeError("loss and quantities must be callable")
+        if "constraints" in kwargs or "objective_normalization" in kwargs:
+            raise ValueError("scalar losses use quantities and no normalization")
+        return cls._build(inp, (), loss=loss, quantities=tuple(quantities),
+                          objective_normalization=1.0, **kwargs)
+
+    @classmethod
+    def _build(
         cls,
         inp,
         objective_terms,
         *,
+        loss=None,
+        quantities=(),
         coils=None,
         parameterization=None,
         current_dofs=None,
@@ -122,7 +156,7 @@ class FreeBoundaryProblem(FunctionProblem):
         checkpoint plus checkpoint_sha256 restores an accepted state without
         solving it again; certification must preserve every stored array.
         checkpoint_identity must describe the objective and optimizer settings.
-        Only state/runtime objective terms are supported in this first API.
+        Residual terms use state/runtime; scalar losses also receive coils.
         """
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary implicit optimization requires JAX_ENABLE_X64=1")
@@ -157,11 +191,13 @@ class FreeBoundaryProblem(FunctionProblem):
         if checkpoint is not None:
             if identity is None:
                 raise ValueError("checkpoint_identity is required to authenticate objective and optimizer settings")
-            if objective_normalization != "initial":
+            if loss is None and objective_normalization != "initial":
                 raise ValueError("checkpoint owns the objective normalization")
             saved = storage.read(checkpoint, checkpoint_sha256, identity)
             x0 = saved["parameters"]
             objective_normalization = float(saved["loss_scale"])
+            if loss is not None and objective_normalization != 1.0:
+                raise ValueError("scalar checkpoint must have unit objective normalization")
         if continuation is not None:
             if any(x is not None for x in (restart_from, solver_options, x0)):
                 raise ValueError("continuation already specifies solver, seed and initial parameters")
@@ -256,6 +292,7 @@ class FreeBoundaryProblem(FunctionProblem):
             objective_normalization,
             event=event,
             deadline=deadline,
+            loss=loss, quantities=quantities,
         )
         problem.checkpoint_identity = identity
         if saved is not None:
@@ -264,10 +301,15 @@ class FreeBoundaryProblem(FunctionProblem):
         return problem
 
     def __init__(
-        self, inp, parameterization, cfg, objective_terms, constraints, normalization, *, event=None, deadline=None
+        self, inp, parameterization, cfg, objective_terms, constraints, normalization, *,
+        event=None, deadline=None, loss=None, quantities=()
     ):
         from .optimize import residuals_from_tuples
 
+        self._scalar_loss = loss is not None
+        self._accepted_linearization = self._accepted_jac = None
+        self._preconditioner = self._matrixfree_options = None
+        self._recovered = False
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
         self.solver, self.params = cfg.solver, cfg.params
         self.rt = im.runtime_from_params(self.params, self.solver.implicit)
@@ -286,10 +328,10 @@ class FreeBoundaryProblem(FunctionProblem):
         self._records = {self._key(self.accepted.parameters): self.accepted}
 
         def raw(state):
-            return residuals_from_tuples(state, self.rt, objective_terms)
+            return residuals_from_tuples(state, self.rt, objective_terms) if objective_terms else jnp.empty(0)
 
         first = np.asarray(raw(self.accepted.state))
-        if first.size == 0 or not np.all(np.isfinite(first)):
+        if not self._scalar_loss and (first.size == 0 or not np.all(np.isfinite(first))):
             raise ValueError("objective must provide finite nonempty residuals")
         if isinstance(normalization, str):
             if normalization != "initial":
@@ -301,7 +343,8 @@ class FreeBoundaryProblem(FunctionProblem):
         self._residual_state = jax.jit(lambda state: raw(state) / self.loss_scale)
 
         def physical(state):
-            values = [jnp.asarray(c.function(state, self.rt)) for c in constraints]
+            functions = quantities if self._scalar_loss else [c.function for c in constraints]
+            values = [jnp.asarray(function(state, self.rt)) for function in functions]
             if any(v.shape != () for v in values):
                 raise ValueError("TargetBand quantities must be scalar")
             return jnp.stack(values) if values else jnp.empty((0,), dtype=first.dtype)
@@ -315,8 +358,19 @@ class FreeBoundaryProblem(FunctionProblem):
             ]
 
         self._compact_state = jax.jit(compact)
+        if self._scalar_loss:
+            self.constraint_scales = np.ones(len(quantities))
+
+            def scalar_rows(state, x):
+                value = jnp.asarray(loss(state, self.rt, parameterization.coils_from_x(x)))
+                if value.shape != ():
+                    raise ValueError("loss must return a scalar")
+                return jnp.r_[value, physical(state)]
+
+            self._scalar_rows = jax.jit(scalar_rows)
+            self._scalar_jac = jax.jit(jax.jacrev(scalar_rows, argnums=(0, 1)))
         # Validate quantities eagerly; an invalid definition must not start an optimizer.
-        initial = np.asarray(self._compact_state(self.accepted.state))
+        initial = self.optimizer_rows(self.accepted)
         if not np.all(np.isfinite(initial)):
             raise ValueError("nonfinite objective or physical constraints")
         super().__init__(
@@ -325,8 +379,8 @@ class FreeBoundaryProblem(FunctionProblem):
             scales=parameterization.scales,
             fun=self._value,
             value_and_grad=self._value_gradient,
-            residual=self._residual_values,
-            residual_and_jac=self._residual_jacobian,
+            residual=None if self._scalar_loss else self._residual_values,
+            residual_and_jac=None if self._scalar_loss else self._residual_jacobian,
             metadata={"holder": {"failed_trials": 0}},
         )
 
@@ -358,37 +412,131 @@ class FreeBoundaryProblem(FunctionProblem):
         return self._records[key]
 
     def _close_linearization(self):
-        if self._linearization is not None:
+        if self._linearization is not None and self._linearization is not self._accepted_linearization:
             self._linearization.close()
         self._linearization = self._linearization_record = self._compact_jac = None
 
     def _derivatives(self, record):
         self._check_time()
-        if self._linearization_record is not record:
-            self._close_linearization()
-            diagnostics = []
-            self._emit("adjoint_start")
-            started = time.monotonic()
+        if self._linearization_record is record:
+            return self._compact_jac
+        self._close_linearization()
+        if record is self.accepted and self._accepted_linearization is not None:
+            self._linearization, self._compact_jac = self._accepted_linearization, self._accepted_jac
+            self._linearization_record = record
+            return self._compact_jac
+        diagnostics = []
+        self._emit("adjoint_start")
+        started = time.monotonic()
+        self._recovered = False
+        try:
+            if self._scalar_loss:
+                rhs, direct = self._scalar_jac(record.state, jnp.asarray(record.parameters))
+            else:
+                rhs, direct = jax.jacrev(self._compact_state)(record.state), 0.0
+            options = {} if self._preconditioner is None else {"preconditioner": self._preconditioner}
             try:
-                rhs = jax.jacrev(self._compact_state)(record.state)
-                self._linearization = fc.free_boundary_continuation_state_pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True
-                )
-                self._linearization_record = record
-                self._compact_jac = np.asarray(self._linearization.field_jacobian)
-            finally:
-                self._emit("adjoint", seconds=time.monotonic() - started, rows=diagnostics)
+                linearization = fc.free_boundary_continuation_state_pullback(
+                    record, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True, **options)
+            except AdjointSolveError as error:
+                if self._preconditioner is None:
+                    raise
+                # One checked dense retry at this certified root. A rejected
+                # candidate cannot replace the accepted preconditioner.
+                import traceback
+                traceback.clear_frames(error.__traceback__)
+                self._emit("dense_recovery", candidate=record, error=str(error))
+                linearization = fc.free_boundary_continuation_state_pullback(
+                    record, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True)
+                self._recovered = True
+            jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
+            if not np.all(np.isfinite(jac)):
+                linearization.close()
+                raise FloatingPointError("nonfinite total derivative")
+            self._linearization = linearization
+            self._linearization_record, self._compact_jac = record, jac
+            if self._scalar_loss:
+                linearization.offload_factors()
+                if record is self.accepted:
+                    self._accepted_linearization, self._accepted_jac = linearization, jac
+        finally:
+            self._emit("adjoint", seconds=time.monotonic() - started, rows=diagnostics)
         return self._compact_jac
 
+    def enable_matrix_free(self, direction=None, *, rtol=1e-11, restart=100, max_restarts=3,
+                           rhs_batch_size=3, parity_rtol=1e-6):
+        """Initialize matrix-free reuse from a checked dense LU at the accepted root.
+
+        Supply direction only for qualification: compare gradients and that
+        tangent with dense and return a parity report. With no direction this
+        performs necessary seed construction only, returning None. All actual
+        solves still enforce their residual checks in either mode.
+
+        Full residuals still obey solver_options['adjoint_residual_rtol'].
+        A failed trial adjoint gets one dense retry. Its seed replaces the old
+        one only on acceptance. This policy is available for scalar losses.
+        """
+        if not self._scalar_loss or self._preconditioner is not None:
+            raise ValueError("enable matrix-free once on a scalar-loss problem")
+        options = dict(rtol=rtol, restart=restart, max_restarts=max_restarts, rhs_batch_size=rhs_batch_size)
+        if direction is None:
+            self._derivatives(self.accepted)
+            self._preconditioner = self._linearization.preconditioner(**options)
+            self._matrixfree_options = options
+            return None
+        direction = self._validate_x(direction)
+        if not np.any(direction) or not np.isfinite(parity_rtol) or parity_rtol <= 0:
+            raise ValueError("nonzero direction and positive finite parity tolerance required")
+        from jax.flatten_util import ravel_pytree
+
+        dense_jac = self._derivatives(self.accepted).copy()
+        dense = self._linearization
+        tangent = dense.tangent(self.accepted, self.cfg, jnp.asarray(direction))
+        seed = dense.preconditioner(**options)
+        trial = None
+        try:
+            rhs, direct = self._scalar_jac(self.accepted.state, jnp.asarray(self.accepted.parameters))
+            trial = fc.free_boundary_continuation_state_pullback(
+                self.accepted, self.cfg, rhs, return_linearization=True, preconditioner=seed)
+            jac = np.asarray(trial.field_jacobian) + np.asarray(direct)
+            errors = np.linalg.norm(jac-dense_jac, axis=1) / np.maximum(np.linalg.norm(dense_jac, axis=1), 1e-30)
+            test_tangent = trial.tangent(self.accepted, self.cfg, jnp.asarray(direction))
+            difference = ravel_pytree(jax.tree.map(jnp.subtract, test_tangent, tangent))[0]
+            tangent_error = float(jnp.linalg.norm(difference) / jnp.maximum(jnp.linalg.norm(ravel_pytree(tangent)[0]), 1e-30))
+            report = dict(gradient_relative_errors=errors.tolist(), tangent_relative_error=tangent_error,
+                          rtol=parity_rtol, passed=bool(np.all(errors < parity_rtol) and tangent_error < parity_rtol))
+            self._emit("matrixfree_check", **report)
+            if not report["passed"]:
+                raise AdjointSolveError("matrix-free seed differs from dense reference")
+            trial.offload_factors()
+        except BaseException:
+            if trial is not None:
+                trial.close()
+            seed.close()
+            raise
+        dense.close()
+        self._preconditioner, self._matrixfree_options = seed, options
+        self._accepted_linearization = self._linearization = trial
+        self._accepted_jac = self._compact_jac = jac
+        self._linearization_record = self.accepted
+        self._vg_cache = None
+        return report
+
     def optimizer_rows(self, record):
-        """Return objective norm and scaled target errors without a derivative solve."""
+        """Return compact objective/constraint rows without a derivative solve."""
+        if self._scalar_loss:
+            return np.asarray(self._scalar_rows(record.state, jnp.asarray(record.parameters)))
         return np.asarray(self._compact_state(record.state))
 
     def linearize(self):
-        """Return compact objective/constraint rows and derivatives at the accepted root."""
+        """Return compact objective/constraint rows and derivatives at the accepted root.
+
+        The first row is the scalar loss for from_loss, the residual norm for
+        from_tuples. Remaining rows are physical quantities or scaled bands.
+        """
         return self.optimizer_rows(self.accepted), self._derivatives(self.accepted).copy()
 
-    def _trial(self, delta, trial):
+    def _trial(self, delta, trial, *, predict=True, ftol=None):
         from .freeboundary import _solve_free_boundary_stage
 
         self._check_time()
@@ -396,16 +544,25 @@ class FreeBoundaryProblem(FunctionProblem):
         count = max(1, int(np.ceil(np.max(np.abs(delta / self.scales)) / self.cfg.continuation_step)))
         if count > self.cfg.max_continuation_steps:
             raise TrialRejected("continuation budget exceeded")
-        self._derivatives(self.accepted)
-        self._emit("proposal", delta=delta.copy(), trial=trial, points=count, jacobian=self._compact_jac.copy())
+        if predict:
+            self._derivatives(self.accepted)
+        self._emit("proposal", delta=delta.copy(), trial=trial, points=count,
+                   jacobian=self._compact_jac.copy() if predict else None)
+        # Scalar optimization corrects a single tangent proposal, matching the
+        # fast path. The continuation distance remains bounded before solving.
+        if self._scalar_loss:
+            count = 1
+        tolerance = self.solver.implicit.ftol if ftol is None else float(ftol)
+        if not np.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError("positive finite force tolerance required")
         last_stage = point = None
         try:
             diagnostics = []
             started = time.monotonic()
             try:
-                tangent = self._linearization.tangent(
+                tangent = (self._linearization.tangent(
                     self.accepted, self.cfg, jnp.asarray(delta), diagnostics=diagnostics
-                )
+                ) if predict else jax.tree.map(jnp.zeros_like, self.accepted.state))
             finally:
                 self._emit("tangent", trial=trial, seconds=time.monotonic() - started, rows=diagnostics)
             previous = self.accepted
@@ -418,12 +575,12 @@ class FreeBoundaryProblem(FunctionProblem):
                     self.inp,
                     external_field=self.parameterization(jnp.asarray(point)),
                     resolution=self.solver.resolution,
-                    ftol=self.solver.implicit.ftol,
+                    ftol=tolerance,
                     max_iterations=self.solver.implicit.max_iterations,
                     initial_state=predicted,
                     constraint_continuation=(previous.rcon0, previous.zcon0),
                     include_edge_in_convergence=True,
-                    edge_force_tolerance=self.solver.edge_force_tolerance,
+                    edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
                     error_on_no_convergence=False,
                     jacobian_retries=0,
                     allow_initial_axis_reguess=False,
@@ -458,10 +615,14 @@ class FreeBoundaryProblem(FunctionProblem):
         finally:
             self._emit("candidate", stage=last_stage, parameters=point, trial=trial)
 
-    def evaluate_trial(self, delta, trial):
-        """Evaluate a proposal from the accepted anchor without promotion."""
+    def evaluate_trial(self, delta, trial=0, *, predict=True, ftol=None):
+        """Evaluate a bounded proposal without promotion.
+
+        predict=False bypasses the tangent for independent finite differences;
+        ftol optionally tightens both ordinary and edge force convergence.
+        """
         delta = self._validate_x(delta)
-        candidate = self._trial(delta, trial)
+        candidate = self._trial(delta, trial, predict=predict, ftol=ftol)
         self._records = {self._key(self.accepted.parameters): self.accepted, self._key(candidate.parameters): candidate}
         return candidate, self.optimizer_rows(candidate)
 
@@ -469,21 +630,48 @@ class FreeBoundaryProblem(FunctionProblem):
         """Promote a candidate returned by this problem after optimizer acceptance."""
         if self._records.get(self._key(candidate.parameters)) is not candidate:
             raise ValueError("candidate is not a current evaluation of this problem")
-        self.cfg = fc.reanchor_free_boundary_continuation_config(self.cfg, candidate)
-        self.accepted = self.cfg._anchor
+        if candidate is self.accepted:
+            return
+        if self._scalar_loss:
+            self._derivatives(candidate)
+            replacement = (self._linearization.preconditioner(**self._matrixfree_options)
+                           if self._recovered else None)
+            if self._accepted_linearization is not None:
+                self._accepted_linearization.close()
+            self.accepted = candidate
+            self._accepted_linearization, self._accepted_jac = self._linearization, self._compact_jac
+            if replacement is not None:
+                self._preconditioner.close()
+                self._preconditioner = replacement
+                self._emit("preconditioner_refresh")
+            # Keep the immutable numerical context: seeds and tapes must not
+            # cross configuration identities. All proposals use self.accepted,
+            # never the config's generic memoized continuation solver.
+        else:
+            self.cfg = fc.reanchor_free_boundary_continuation_config(self.cfg, candidate)
+            self.accepted = self.cfg._anchor
+            self._close_linearization()
         self.accepted_step += 1
-        self._close_linearization()
         self._records = {self._key(self.accepted.parameters): self.accepted}
         self._vg_cache = self._rj_cache = None
 
+    def accept_x(self, x):
+        """Promote an already evaluated point after the optimizer accepts it."""
+        candidate = self._records.get(self._key(self._validate_x(x)))
+        if candidate is None:
+            raise ValueError("evaluate the candidate before accepting it")
+        self.accept(candidate)
+
     def _value(self, x):
         rows = self.optimizer_rows(self._record(x))
-        return 0.5 * float(rows[0]) ** 2
+        return float(rows[0]) if self._scalar_loss else 0.5 * float(rows[0]) ** 2
 
     def _value_gradient(self, x):
         record = self._record(x)
         rows = self.optimizer_rows(record)
         jac = self._derivatives(record)
+        if self._scalar_loss:
+            return float(rows[0]), jac[0].copy()
         return 0.5 * float(rows[0]) ** 2, rows[0] * jac[0]
 
     def _residual_values(self, x):
@@ -515,6 +703,8 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def tune_adjoint_batch(self):
         """Compare batches 32/64 at this root and retain the certified winner's factors."""
+        if self._scalar_loss:
+            raise ValueError("batch tuning is available for residual problems")
         from ._freeboundary_dense import BATCH_SIZES, tune_adjoint_batch
 
         self._check_time()
@@ -552,6 +742,11 @@ class FreeBoundaryProblem(FunctionProblem):
     def close(self):
         """Release retained derivative factors without altering accepted results."""
         self._close_linearization()
+        if self._accepted_linearization is not None:
+            self._accepted_linearization.close()
+        if self._preconditioner is not None:
+            self._preconditioner.close()
+        self._accepted_linearization = self._accepted_jac = self._preconditioner = None
 
     def _wout(self, record):
         from .wout import wout_from_state

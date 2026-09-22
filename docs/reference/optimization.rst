@@ -856,6 +856,58 @@ and independent finite-difference qualification remain necessary. Dense
 methods are optional alternatives; coupled_gcrot remains the default.
 
 
+Scalar free-boundary problems
+-----------------------------
+
+``opt.FreeBoundaryProblem.from_loss(inp, loss, ...)`` follows the scalar
+``VmecProblem.from_loss`` convention. The JAX-traceable loss receives
+``(state, runtime, coils)`` and returns one scalar. Its gradient includes the
+implicit equilibrium response and explicit coil derivative. Optional
+``quantities=(function, ...)`` use the usual ``(state, runtime)`` signature;
+``constraint_values(x)`` and ``constraint_jac(x)`` expose physical values and
+rows for an external optimizer to bound. Values alone do not compute adjoints.
+
+Use ``opt.boundary_from_state(state, runtime)`` for differentiable physical
+``(RBC, ZBS, RBS, ZBC)`` edge arrays, indexed by ``(n+NTOR, m)``. This undoes
+the m=1 constraint and Fourier normalization; moving-surface coil terms must
+be inside the scalar loss to include their equilibrium response.
+``opt.boundary_from_wout(wout, mpol=..., ntor=...)`` supplies the same physical
+edge arrays from WOUT, retaining/truncating/padding Fourier modes as requested.
+Use the matching input deck for profiles and ``vmex.state_from_wout`` for the
+spectral restart.
+
+Ordinary evaluations never promote a trial. Call ``problem.accept_x(x)`` only
+after optimizer acceptance. Scalar problems retain the accepted tangent and
+use one bounded correction from that state. Residual ``from_tuples`` problems
+retain their existing continuation and projected-optimizer behavior.
+
+``problem.enable_matrix_free(...)`` constructs a checked dense seed at the
+accepted root and retains its host LU for production. Passing an explicit
+``direction`` additionally compares matrix-free gradients and that tangent
+against dense, returning a qualification report. Omitting the direction skips
+only that comparison; it never disables actual residual checks.
+The solver's ``adjoint_residual_rtol`` still checks full residuals independently
+of the Krylov request. Failed trial adjoints get one dense retry; the seed is
+refreshed only after accepting that recovered trial. ``close()`` releases
+retained factors. Independent derivative checks can call
+``evaluate_trial(delta, predict=False, ftol=...)`` to bypass the predictor and
+correct from the accepted state at a tighter force tolerance.
+
+See ``examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py`` for
+SLSQP with fixed currents, stage-two coil fitting, scalar plasma/coil penalties
+and final verification. ``free_boundary_single_stage_optimization.py`` uses
+the same workflow with bounded L-BFGS-B. It optimizes the same weighted loss
+without SLSQP's nonlinear inequalities; physical iota/radius limits remain
+endpoint checks. Only its accepted-iteration callback promotes the warm-start
+state, never its line-search gradient evaluations.
+``verify_free_boundary_single_stage.py`` imports the
+same problem builder for independent derivative checks and saves a qualified
+initial checkpoint. Production requires its matching report and re-certifies
+that checkpoint without repeating initial solves or qualification experiments.
+A matched GPU qualification and pilot are still needed before claiming
+production timing or physical convergence.
+
+
 Strict accepted-state examples
 ------------------------------
 

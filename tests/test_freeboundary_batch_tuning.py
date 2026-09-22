@@ -106,6 +106,9 @@ def test_native_run_tunes_once_and_retains_matching_config(tuner,monkeypatch,tmp
     monkeypatch.setattr(fc,'free_boundary_continuation_state_pullback',linearize)
     monkeypatch.setattr(jax,'jacrev',lambda rows:lambda state:None)
     problem = FreeBoundaryProblem.__new__(FreeBoundaryProblem)
+    problem._scalar_loss = False
+    problem._accepted_linearization = None
+    problem._preconditioner = None
     problem.deadline = None
     problem._linearization = None
     problem._linearization_record = None

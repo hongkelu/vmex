@@ -1,5 +1,8 @@
 # Examples
 
+The [qualified free-boundary examples](three-methods-benchmark/README.md)
+provide SLSQP and L-BFGS-B production with a separate derivative qualification.
+
 All runnable examples live under this single `examples/` tree. The coil and
 exterior-field examples need ESSOS 0.17 or newer: `pip install "vmex[coils]"`,
 or `pip install "vmex[all]"` for everything the examples use.

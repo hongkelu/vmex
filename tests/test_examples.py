@@ -152,6 +152,7 @@ def test_every_example_parses() -> None:
 # test_every_example_parses still checks their syntax. New unlisted roots remain
 # subject to the registry, so adding another case requires an explicit decision.
 RESEARCH_CASE_DIRS = {
+    "three-methods-benchmark",  # qualified production; callback/API tests run separately
     "m=3n=3iota=0p2aspect=5finitebeta",
     "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40",
     "m=3n=3iota=0p2aspect=5finitebeta-ellipse-matched48x40-single-stage",

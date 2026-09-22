@@ -64,7 +64,7 @@ def analytic(monkeypatch):
             return float(np.max(np.abs(delta))), 0.0
 
         def coils_from_x(self, x):
-            return np.asarray(x).copy()
+            return jnp.asarray(x)
 
     chart = Chart()
     inp = SimpleNamespace(lfreeb=True)
@@ -78,29 +78,56 @@ def analytic(monkeypatch):
     )
     anchor = Root(chart.x0.copy(), state(chart.x0))
     cfg = Config(solver, None, anchor, chart.scales)
-    stats = dict(rhs=[], solves=0, closed=0, fail=False, gradient_calls=0)
+    stats = dict(rhs=[], solves=0, closed=0, fail=False, gradient_calls=0, seeds=[], factors=[],
+                 matrixfree_fail=False, dense_fail=False, parity_error=0.0, predictions=[])
     monkeypatch.setattr(api.im, "runtime_from_params", lambda *a: None)
 
-    def pullback(record, config, rhs, *, diagnostics=None, return_linearization=False):
+    def pullback(record, config, rhs, *, diagnostics=None, return_linearization=False, preconditioner=None):
         stats["rhs"].append(rhs.shape[0])
+        if preconditioner is not None:
+            assert not preconditioner.closed and preconditioner.config is config
+            if stats["matrixfree_fail"]:
+                raise api.AdjointSolveError("matrix-free failed")
+        elif stats["dense_fail"]:
+            raise api.AdjointSolveError("dense failed")
         jac = np.asarray(rhs) @ derivative(record.parameters)
+        if preconditioner is not None:
+            jac = jac + stats["parity_error"]
         if not return_linearization:
             return jac
 
         class Linearization:
             field_jacobian = jac
+            closed = False
+
+            def offload_factors(self):
+                pass
+
+            def preconditioner(self, **kwargs):
+                class Seed:
+                    closed = False
+                    def close(self):
+                        self.closed = True
+                seed = Seed()
+                seed.config = config
+                stats["seeds"].append(seed)
+                return seed
 
             def tangent(self, current, current_config, delta, **kwargs):
-                assert current is record and current_config is config
+                assert current is record and current_config is config and not self.closed
                 return jnp.asarray(derivative(record.parameters) @ delta)
 
             def close(self):
                 stats["closed"] += 1
+                self.closed = True
 
-        return Linearization()
+        root = Linearization()
+        stats["factors"].append(root)
+        return root
 
     def correct(inp, *, external_field, **kwargs):
         stats["solves"] += 1
+        stats["predictions"].append(kwargs)
         return SimpleNamespace(
             result=SimpleNamespace(state=state(external_field), converged=not stats["fail"]), rcon0=None, zcon0=None
         )
@@ -363,3 +390,313 @@ def test_equilibrium_preserves_standard_type_and_lazy_fixed_geometry_wout(analyt
     assert eq.solution is problem.accepted.state and seen == []
     assert eq.wout is output and eq.wout is output
     assert seen == [problem.accepted] and stats["solves"] == 0
+
+
+@pytest.fixture
+def scalar(analytic):
+    """A joint state/coil loss has an explicit and an implicit derivative."""
+    p, stats, state, derivative = analytic
+    def loss(s, rt, coils):
+        return 0.5*jnp.sum(s*s) + jnp.sum(coils*s) + 3*jnp.sum(coils*coils)
+    problem = opt.FreeBoundaryProblem.from_loss(p.inp, loss, quantities=(lambda s, rt: s[0], lambda s, rt: s[1]),
+                                               parameterization=p.parameterization, continuation=p.cfg)
+    yield problem, stats, state, derivative
+    problem.close()
+
+
+def test_scalar_total_gradient_and_constraints_share_three_rows(scalar):
+    p, stats, state, derivative = scalar
+    x = np.full(5, .002)
+    value, gradient = p.value_and_grad(x)
+    expected = np.asarray(state(x))
+    np.testing.assert_allclose(value, .5*expected@expected + x@expected + 3*x@x)
+    np.testing.assert_allclose(gradient, (expected+x)@derivative(x) + expected + 6*x, rtol=1e-13)
+    np.testing.assert_allclose(p.constraint_jac(x), derivative(x)[:2], rtol=1e-13)
+    calls = len(stats["rhs"])
+    direction = np.arange(1., 6.)/10
+    h = 1e-5
+    rows = [p.evaluate_trial(x + sign*h*direction, predict=False, ftol=1e-15)[1] for sign in (1, -1)]
+    np.testing.assert_allclose((rows[0]-rows[1])/(2*h), np.r_[gradient@direction, derivative(x)[:2]@direction], rtol=1e-8)
+    assert len(stats["rhs"]) == calls  # Independent FD does not request a tangent or adjoint.
+    assert stats["predictions"][-1]["ftol"] == stats["predictions"][-1]["edge_force_tolerance"] == 1e-15
+    np.testing.assert_array_equal(stats["predictions"][-1]["initial_state"], p.accepted.state)
+    assert p.accepted_step == 0
+
+
+def test_scalar_acceptance_reuses_current_gradient_and_tangent(scalar):
+    p, stats, *_ = scalar
+    p.enable_matrix_free(np.ones(5)*.001)
+    seed, config = stats["seeds"][0], p.cfg
+    x = np.full(5, .002)
+    p.value_and_grad(x)
+    factor = stats["factors"][-1]
+    p.accept_x(x)
+    assert p.cfg is config and p.accepted_step == 1 and not factor.closed
+    calls = len(stats["rhs"])
+    p.fun(x+np.ones(5)*.001)
+    assert len(stats["rhs"]) == calls and len(stats["seeds"]) == 1 and not seed.closed
+    np.testing.assert_array_equal(p.accepted.parameters, x)
+
+
+def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar):
+    p, stats, *_ = scalar
+    p.enable_matrix_free(np.ones(5)*.001)
+    seed = stats["seeds"][0]
+    stats["matrixfree_fail"] = True
+    p.value_and_grad(np.full(5, .002))
+    rejected = stats["factors"][-1]
+    assert len(stats["seeds"]) == 1 and not seed.closed
+    p.value_and_grad(np.full(5, .001))
+    assert rejected.closed and not seed.closed
+    p.accept_x(np.full(5, .001))
+    assert seed.closed and len(stats["seeds"]) == 2 and not stats["seeds"][-1].closed
+
+
+def test_failed_recovery_does_not_promote_or_retry_forever(scalar):
+    p, stats, *_ = scalar
+    p.enable_matrix_free(np.ones(5)*.001)
+    anchor, seed = p.accepted, stats["seeds"][0]
+    stats["matrixfree_fail"] = stats["dense_fail"] = True
+    calls = len(stats["rhs"])
+    with pytest.raises(api.AdjointSolveError, match="dense failed"):
+        p.value_and_grad(np.full(5, .001))
+    assert len(stats["rhs"]) == calls+2 and p.accepted is anchor and not seed.closed
+
+
+def test_matrixfree_parity_failure_retains_dense_seed(scalar):
+    p, stats, *_ = scalar
+    p.value_and_grad(p.x0)
+    dense = stats["factors"][-1]
+    stats["parity_error"] = .1
+    with pytest.raises(api.AdjointSolveError, match="dense reference"):
+        p.enable_matrix_free(np.ones(5)*.001)
+    assert stats["seeds"][0].closed and not dense.closed
+    assert p._preconditioner is None
+    p.fun(np.full(5, .001))
+
+
+def test_scalar_api_rejects_invalid_loss_and_unseen_acceptance(analytic):
+    p, *_ = analytic
+    with pytest.raises(ValueError, match="scalar"):
+        opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, coils: s,
+            parameterization=p.parameterization, continuation=p.cfg)
+    with pytest.raises(ValueError, match="evaluate"):
+        p.accept_x(np.ones(5))
+    with pytest.raises(ValueError, match="no normalization"):
+        opt.FreeBoundaryProblem.from_loss(p.inp, lambda *a: 0., objective_normalization=1.)
+
+
+@pytest.mark.parametrize("lasym", [False, True])
+def test_public_boundary_coefficients_roundtrip_and_derivative(lasym):
+    from pathlib import Path
+    from vmex import VmecInput
+    from vmex.core.solver import prepare_runtime, resolution_from_input, _initial_state
+
+    inp = VmecInput.from_file(Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark/input.rotating_ellipse")
+    inp = inp.change_resolution(mpol=3, ntor=2, ntheta=12, nzeta=12)
+    inp = replace(inp, lasym=lasym)
+    if lasym:
+        rbs, zbc = np.zeros_like(inp.rbc), np.zeros_like(inp.zbs)
+        rbs[inp.ntor+1, 1], zbc[inp.ntor+1, 1] = .01, .02
+        inp = replace(inp, rbs=rbs, zbc=zbc)
+    rt = prepare_runtime(inp, resolution_from_input(inp, ns=5))
+    state = _initial_state(rt.setup)
+    arrays = opt.boundary_from_state(state, rt)
+    for actual, expected in zip(arrays, (inp.rbc, inp.zbs, inp.rbs, inp.zbc)):
+        np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-14)
+    def loss(s):
+        return sum(jnp.sum(a*a) for a in opt.boundary_from_state(s, rt))
+    direction = jax.tree.map(jnp.ones_like, state)
+    analytic = jax.jvp(loss, (state,), (direction,))[1]
+    plus = jax.tree.map(lambda a, d: a+1e-5*d, state, direction)
+    minus = jax.tree.map(lambda a, d: a-1e-5*d, state, direction)
+    np.testing.assert_allclose(analytic, (loss(plus)-loss(minus))/(2e-5), rtol=1e-9, atol=1e-9)
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_scalar_api_with_real_dense_and_matrixfree_pullbacks(monkeypatch):
+    """Exercise the public scalar API through the actual LU/FGMRES machinery."""
+    from vmex.core import freeboundary_implicit as fbi, implicit as im
+
+    matrix = jnp.array([[3., 2.], [-1., 4.]])
+    coupling = jnp.array([[1., -2.], [3., 1.]])
+    residual = jax.jit(lambda z, p, x, *_: matrix @ z + coupling @ x - p)
+    chart = SimpleNamespace(x0=np.zeros(2), scales=np.ones(2), dof_names=("a", "b"), coils_from_x=lambda x: x)
+    inp = SimpleNamespace(lfreeb=True)
+    solver = SimpleNamespace(implicit=SimpleNamespace(inp=inp, device=None, lconm1=False, adjoint_tol=1e-11, adjoint_maxiter=10),
+        adjoint_dense_batch_size=2, adjoint_dense_max_dofs=10, adjoint_solver="forward_dense_jax",
+        adjoint_fail="error", adjoint_residual_rtol=1e-9, include_edge_in_convergence=True, field_from_parameters=chart)
+    owner = object()
+    root = SimpleNamespace(_owner=owner, parameters=np.zeros(2), state=jnp.zeros(2), dof_mask=jnp.ones(2), rcon0=None, zcon0=None)
+    cfg = SimpleNamespace(_owner=owner, _anchor=root, params=jnp.zeros(2), solver=solver,
+                          root_residual_atol=2e-6, parameter_scales=chart.scales)
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_: residual)
+    monkeypatch.setattr(im, "_dof_projector", lambda _, mask: lambda x: x*mask)
+    monkeypatch.setattr(im, "runtime_from_params", lambda *_: None)
+    p = opt.FreeBoundaryProblem.from_loss(inp, lambda s, rt, c: jnp.sum((s-1)**2)+jnp.sum(c),
+        quantities=(lambda s, rt: s[0], lambda s, rt: s[1]), parameterization=chart, continuation=cfg)
+    try:
+        expected = -np.linalg.solve(matrix, coupling)
+        np.testing.assert_allclose(p.grad(p.x0), -2*expected.sum(axis=0)+1, rtol=1e-13)
+        report = p.enable_matrix_free(np.array([.01, -.02]), restart=2, max_restarts=2)
+        assert report["passed"]
+        np.testing.assert_allclose(p.grad(p.x0), -2*expected.sum(axis=0)+1, rtol=1e-13)
+        np.testing.assert_allclose(p.constraint_jac(p.x0), expected, rtol=1e-13)
+    finally:
+        p.close()
+
+
+def test_slsqp_scalar_problem_accepts_only_gradient_points(scalar):
+    from scipy.optimize import minimize
+    p, stats, *_ = scalar
+    p.enable_matrix_free(np.ones(5)*.001)
+    anchors = []
+
+    def gradient(x):
+        value, grad = p.value_and_grad(x)
+        if not np.array_equal(x, p.accepted.parameters):
+            p.accept_x(x)
+            anchors.append((x.copy(), value))
+        return grad
+
+    # Tight box keeps this analytic test inside the production proposal bound.
+    result = minimize(p.fun, p.x0, jac=gradient, method="SLSQP", bounds=[(-.01, .01)]*5,
+                      constraints=[dict(type="ineq", fun=lambda x: p.constraint_values(x)[0]-.19,
+                                        jac=lambda x: p.constraint_jac(x)[0])],
+                      options=dict(maxiter=10, ftol=1e-10))
+    gradient(result.x)
+    assert result.success and anchors and p.accepted_step == len(anchors)
+    np.testing.assert_array_equal(p.accepted.parameters, result.x)
+    assert len(stats["seeds"]) == 1
+    assert all(after[1] <= before[1] for before, after in zip(anchors, anchors[1:]))
+
+
+def test_production_matrixfree_setup_uses_no_parity_experiment(scalar):
+    p, stats, *_ = scalar
+    assert p.enable_matrix_free() is None
+    assert len(stats["rhs"]) == 1 and len(stats["seeds"]) == 1
+    np.testing.assert_allclose(p.grad(p.x0), p._accepted_jac[0])
+    assert len(stats["rhs"]) == 1
+    p.value_and_grad(np.full(5, .001))
+    assert len(stats["rhs"]) == 2
+
+
+def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch, tmp_path):
+    from vmex.core import _freeboundary_checkpoint as storage, freeboundary
+    from vmex.core.solver import SpectralState
+    p, _, _, _ = analytic
+    state = SpectralState(*(jnp.ones((2, 3)) for _ in storage.FIELDS))
+    baselines = np.zeros((2, 3, 1))
+    root = Root(np.zeros(5), state, baselines, baselines, state)
+    holder = SimpleNamespace(checkpoint_identity="contract", accepted=root, accepted_step=0,
+                             initial_gradient_norm=None, loss_scale=1.)
+    path = tmp_path/"seed.npz"
+    info = storage.write(holder, path)
+    monkeypatch.setattr(storage, "identity", lambda *a, **k: "contract")
+    monkeypatch.setattr(api.fbi, "make_free_boundary_config", lambda *a, **k: p.solver)
+    monkeypatch.setattr(api.im, "params_from_input", lambda *a: None)
+    monkeypatch.setattr(api.fc, "make_free_boundary_continuation_config_from_state",
+                        lambda *a, **k: replace(p.cfg, _anchor=root))
+    monkeypatch.setattr(freeboundary, "_solve_free_boundary_stage", lambda *a, **k: pytest.fail("checkpoint must not solve again"))
+    restored = opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, coils: jnp.sum(s.R_cos),
+        parameterization=p.parameterization, checkpoint=path, checkpoint_sha256=info["sha256"], checkpoint_identity="case")
+    try:
+        assert restored.accepted_step == 0 and restored.fun(restored.x0) == 6
+        np.testing.assert_array_equal(restored.accepted.state.R_cos, state.R_cos)
+    finally:
+        restored.close()
+
+
+@pytest.mark.parametrize("wrong_gradient", [False, True])
+def test_separate_qualification_checks_shared_scalar_problem(scalar, monkeypatch, tmp_path, wrong_gradient):
+    from pathlib import Path
+    import importlib
+    import json
+
+    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    monkeypatch.syspath_prepend(str(example))
+    verifier = importlib.import_module("verify_free_boundary_single_stage")
+    p, stats, *_ = scalar
+    anchor = p.accepted
+    stage = SimpleNamespace(problem=p, chart=p.parameterization,
+                            constraint_transform=np.array([[1., 0], [0, 1.], [0, -1.]]),
+                            inequalities=lambda values: np.r_[values, -values[1]])
+    if wrong_gradient:
+        original = p.value_and_grad
+        def corrupted(x):
+            value, gradient = original(x)
+            return value, gradient+1
+        monkeypatch.setattr(p, "value_and_grad", corrupted)
+        with pytest.raises(RuntimeError, match="derivative check failed"):
+            verifier.verify_problem(stage, tmp_path)
+        assert not stats["seeds"]
+        assert not json.loads((tmp_path/"gradient_check.json").read_text())["passed"]
+    else:
+        report = verifier.verify_problem(stage, tmp_path)
+        assert report["finite_difference"]["passed"] and report["matrix_free"]["passed"]
+        assert len(stats["predictions"]) == 4
+        assert all(item["ftol"] == 1e-20 for item in stats["predictions"])
+        assert all(item["initial_state"] is anchor.state or np.array_equal(item["initial_state"], anchor.state)
+                   for item in stats["predictions"])
+    assert p.accepted is anchor and p.accepted_step == 0
+
+
+def test_boundary_from_wout_preserves_physical_modes_and_asymmetry():
+    wout = SimpleNamespace(mpol=3, ntor=1, nfp=2, ns=2,
+        xm=np.array([0, 1, 1, 2]), xn=np.array([0, -2, 2, 0]),
+        rmnc=np.array([[0., 0., 0., 0.], [1., .2, .3, .4]]),
+        zmns=np.array([[0., 0., 0., 0.], [0., -.2, .3, .1]]),
+        rmns=np.ones((2, 4))*.01, zmnc=np.ones((2, 4))*.02)
+    rbc, zbs, rbs, zbc = opt.boundary_from_wout(wout)
+    assert rbc.shape == (3, 3) and rbc[0, 1] == .2 and rbc[2, 1] == .3
+    assert zbs[0, 1] == -.2 and rbs[2, 1] == .01 and zbc[0, 1] == .02
+    cropped = opt.boundary_from_wout(wout, mpol=2, ntor=0)[0]
+    np.testing.assert_array_equal(cropped, [[1., 0.]])
+    padded = opt.boundary_from_wout(wout, mpol=4, ntor=2)[0]
+    np.testing.assert_array_equal(padded[1:4, :3], rbc)
+    assert not padded[:, 3].any()
+
+
+@pytest.mark.parametrize("budget", [1, 20])
+def test_lbfgsb_production_uses_real_problem_and_accepted_callbacks(scalar, monkeypatch, budget):
+    from pathlib import Path
+    import importlib
+
+    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    monkeypatch.syspath_prepend(str(example))
+    entry = importlib.import_module("free_boundary_single_stage_optimization_scalar")
+    monkeypatch.setattr(entry, "PARAMETER_BOUND", .01)
+    p, stats, *_ = scalar
+    p.enable_matrix_free()
+    initial = p.fun(p.x0)
+    anchors = []
+    result = entry.run_optimizer(p, p.scales, None, None,
+        SimpleNamespace(accepted_steps=budget),
+        lambda: anchors.append((p.accepted.parameters.copy(), p.fun(p.accepted.parameters))),
+        method="L-BFGS-B")
+    assert anchors and p.accepted_step == len(anchors) <= budget
+    assert anchors[-1][1] < initial
+    np.testing.assert_array_equal(p.accepted.parameters, result.x*p.scales)
+    assert np.max(np.abs(result.x)) <= .01
+    assert len(stats["seeds"]) == 1
+    if budget == 1:
+        assert not result.success and p.accepted_step == 1
+    else:
+        assert result.success
+
+
+def test_lbfgsb_failed_equilibrium_keeps_accepted_root(scalar, monkeypatch):
+    from pathlib import Path
+    import importlib
+
+    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    monkeypatch.syspath_prepend(str(example))
+    entry = importlib.import_module("free_boundary_single_stage_optimization_scalar")
+    p, stats, *_ = scalar
+    p.enable_matrix_free()
+    anchor = p.accepted
+    stats["fail"] = True
+    with pytest.raises(opt.TrialRejected):
+        entry.run_optimizer(p, p.scales, None, None, SimpleNamespace(accepted_steps=20),
+                            lambda: pytest.fail("failed trial promoted"), method="L-BFGS-B")
+    assert p.accepted is anchor and p.accepted_step == 0

@@ -25,6 +25,9 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
     monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', solve)
     monkeypatch.setattr(fc, 'certify_free_boundary_continuation_state', cert)
     problem = FreeBoundaryProblem.__new__(FreeBoundaryProblem)
+    problem._scalar_loss = False
+    problem._accepted_linearization = None
+    problem._preconditioner = None
     problem.x0 = problem.scales = np.ones(1)
     problem.deadline = None
     problem.accepted = anchor

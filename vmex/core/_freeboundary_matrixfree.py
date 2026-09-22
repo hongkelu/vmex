@@ -16,10 +16,18 @@ from solvax.krylov import gmres
 
 from . import implicit as im
 from ._freeboundary_dense import DenseRootLinearization, _active_space, _compress, _expand
+from .errors import AdjointSolveError
 
 
 def _signature(tree):
     return jax.tree.structure(tree), [(x.shape, x.dtype) for x in jax.tree.leaves(tree)]
+
+
+def _rhs_key(value):
+    """Identify exact RHS equality while treating signed zeros as equal."""
+    canonical = np.array(value, copy=True)
+    canonical[canonical == 0] = 0.0
+    return canonical.tobytes()
 
 
 @dataclass(eq=False)
@@ -34,23 +42,55 @@ class SeedLU:
     rtol: float
     restart: int
     max_restarts: int
+    require_adjoint_convergence: bool = False
+    rhs_batch_size: int = 1
+    tangent_rtol: float = 1e-11
 
     @classmethod
-    def from_root(cls, root, *, rtol=1e-11, restart=30, max_restarts=10):
+    def from_root(
+        cls,
+        root,
+        *,
+        rtol=1e-11,
+        restart=30,
+        max_restarts=10,
+        require_adjoint_convergence=False,
+        rhs_batch_size=1,
+        tangent_rtol=None,
+    ):
         """Snapshot a dense seed without retaining its numerical differentiation tape."""
         if type(root) is not DenseRootLinearization or root.factors is None:
             raise ValueError("a live dense linearization is required to create a seed LU")
+        tangent_rtol = rtol if tangent_rtol is None else tangent_rtol
+        if not np.isfinite(tangent_rtol) or not 0 < tangent_rtol < 1:
+            raise ValueError("tangent_rtol must be finite and in (0, 1)")
         if not np.isfinite(rtol) or not 0 < rtol < 1:
             raise ValueError("Krylov rtol must be finite and in (0, 1)")
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (restart, max_restarts)):
             raise ValueError("restart and max_restarts must be positive integers")
+        if not isinstance(require_adjoint_convergence, bool):
+            raise ValueError("require_adjoint_convergence must be boolean")
+        if isinstance(rhs_batch_size, bool) or not isinstance(rhs_batch_size, int) or not 1 <= rhs_batch_size <= 4:
+            raise ValueError("rhs_batch_size must be an integer in [1, 4]")
         factors = tuple(np.array(x, copy=True) for x in root.factors)
         space = jax.tree.map(lambda x: np.array(x, copy=True), root.space)
         if factors[0].dtype != np.float64:
             raise TypeError("seed LU requires float64")
         for value in (*factors, *space):
             value.setflags(write=False)
-        return cls(factors, space, _signature(root.z), root.field.shape, root.cfg, rtol, restart, max_restarts)
+        return cls(
+            factors,
+            space,
+            _signature(root.z),
+            root.field.shape,
+            root.cfg,
+            rtol,
+            restart,
+            max_restarts,
+            require_adjoint_convergence,
+            rhs_batch_size,
+            tangent_rtol,
+        )
 
     def validate(self, z, field, space, cfg):
         """Reject closed seeds and changes to the solver, state layout or active basis."""
@@ -79,8 +119,8 @@ def prepare(z, params, field, frozen, rcon, zcon, *, residual):
     return jax.tree_util.Partial(_forward_from_transpose, transpose, z)
 
 
-@partial(jax.jit, static_argnames=("transpose", "rtol", "restart", "max_restarts"))
-def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, max_restarts):
+@partial(jax.jit, static_argnames=("transpose", "rtol", "restart", "max_restarts", "return_info"))
+def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, max_restarts, return_info=False):
     """Bounded right-preconditioned FGMRES; the caller certifies the full equation."""
 
     def operator(vector):
@@ -97,7 +137,48 @@ def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, ma
         restart=min(restart, rhs.size),
         max_restarts=max_restarts,
     )
+    if return_info:
+        return answer.x, answer.iterations, answer.residual_norm, answer.converged
     return answer.x, answer.iterations
+
+
+@partial(jax.jit, static_argnames=("rtol", "restart", "max_restarts"))
+def _solve_many(action, template, space, factors, rhs, *, rtol, restart, max_restarts):
+    """Batch independent solves, retaining each row's stopping diagnostics."""
+    return jax.vmap(
+        lambda vector: solve(
+            action,
+            template,
+            space,
+            factors,
+            vector,
+            transpose=True,
+            rtol=rtol,
+            restart=restart,
+            max_restarts=max_restarts,
+            return_info=True,
+        )
+    )(rhs)
+
+
+def _solve_unique(action, template, space, factors, reduced, *, batch_size, **options):
+    """Group distinct nonzero rows without solving equal or opposite RHS twice."""
+    unique, seen = [], set()
+    for vector in reduced:
+        host = np.asarray(vector)
+        if not np.all(np.isfinite(host)):
+            raise ValueError("nonfinite adjoint right-hand side")
+        key, opposite = _rhs_key(host), _rhs_key(-host)
+        if np.any(host) and key not in seen and opposite not in seen:
+            unique.append((key, vector))
+            seen.add(key)
+    solved = {}
+    for start in range(0, len(unique), batch_size):
+        group = unique[start : start + batch_size]
+        result = _solve_many(action, template, space, factors, jnp.stack([v for _, v in group]), **options)
+        for index, (key, _) in enumerate(group):
+            solved[key] = tuple(value[index] for value in result)
+    return solved
 
 
 @dataclass(eq=False)
@@ -150,21 +231,35 @@ def solve_matrixfree_adjoint(
     action = prepare(z, params, field, frozen, rcon, zcon, residual=residual)
     reduced = jax.vmap(lambda value: _compress(value, space))(rhs_batch)
     options = dict(rtol=preconditioner.rtol, restart=preconditioner.restart, max_restarts=preconditioner.max_restarts)
+    solved = (
+        _solve_unique(action, z, space, factors, reduced, batch_size=preconditioner.rhs_batch_size, **options)
+        if preconditioner.rhs_batch_size > 1
+        else None
+    )
     adjoints, cache = [], {}
     for row in range(reduced.shape[0]):
         vector = reduced[row]
         host = np.asarray(vector)
         if not np.all(np.isfinite(host)):
             raise ValueError("nonfinite adjoint right-hand side")
-        key, opposite = host.tobytes(), (-host).tobytes()
+        key, opposite = _rhs_key(host), _rhs_key(-host)
         reused = key in cache or opposite in cache
         if not np.any(host):
             solution, iterations = jnp.zeros_like(vector), 0
+            krylov_norm, converged = 0.0, True
         elif reused:
-            solution = cache[key] if key in cache else -cache[opposite]
+            solution, krylov_norm, converged = cache[key] if key in cache else cache[opposite]
+            if key not in cache:
+                solution = -solution
             iterations = 0
         else:
-            solution, iterations = solve(action, z, space, factors, vector, transpose=True, **options)
+            if solved is None:
+                solution, iterations, krylov_norm, converged = solve(
+                    action, z, space, factors, vector, transpose=True, return_info=True, **options
+                )
+            else:
+                solution, iterations, krylov_norm, converged = solved[key]
+            krylov_norm, converged = float(krylov_norm), bool(converged)
         adjoint = _expand(solution, z, space)
         rhs = jax.tree.map(lambda value: value[row], rhs_batch)
         applied = jax.linear_transpose(action, z)(adjoint)[0]
@@ -173,7 +268,8 @@ def solve_matrixfree_adjoint(
         rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
         rtol = cfg.adjoint_residual_rtol
         tolerance = float(im._adjoint_acceptance(cfg.implicit, rhs_norm)) if rtol is None else rtol * rhs_norm
-        passed = bool(jnp.all(jnp.isfinite(solution))) and np.isfinite(norm) and norm <= tolerance
+        full_passed = bool(jnp.all(jnp.isfinite(solution))) and bool(np.isfinite(norm) and norm <= tolerance)
+        passed = full_passed and (converged or not preconditioner.require_adjoint_convergence)
         if diagnostics is not None:
             diagnostics.append(
                 dict(
@@ -184,24 +280,54 @@ def solve_matrixfree_adjoint(
                     tolerance=tolerance,
                     iterations=int(iterations),
                     accepted=passed,
+                    full_residual_accepted=full_passed,
+                    krylov_converged=converged,
+                    krylov_residual_norm=krylov_norm,
+                    krylov_tolerance=preconditioner.rtol * float(np.linalg.norm(host)),
+                    require_adjoint_convergence=preconditioner.require_adjoint_convergence,
                     backend="matrixfree_seed_lu",
+                    rhs_batch_size=preconditioner.rhs_batch_size,
                     reused_rhs=reused,
+                    requested_rtol=preconditioner.rtol,
+                    restart=min(preconditioner.restart, vector.size),
+                    max_cycles=preconditioner.max_restarts,
                 )
             )
         if not passed:
-            im._raise_adjoint_unconverged(
-                cfg.implicit,
+            reason = (
+                f"full residual {norm:.3e} exceeds acceptance {tolerance:.3e} or is nonfinite"
+                if not full_passed
+                else "requested Krylov tolerance was not met"
+            )
+            raise AdjointSolveError(
+                message=(
+                    f"implicit adjoint matrixfree_seed_lu row {row} solve did not converge: "
+                    f"{reason} after {int(iterations)} "
+                    f"Krylov iterations (restart={min(preconditioner.restart, vector.size)}, "
+                    f"max_cycles={preconditioner.max_restarts}, requested_rtol={preconditioner.rtol:g})"
+                ),
+                hint="Inspect the current operator and preconditioner; the failed adjoint was not returned.",
                 iterations=int(iterations),
                 residual_norm=norm,
                 tolerance=tolerance,
-                method=f"matrixfree_seed_lu row {row}",
             )
-        cache[key] = solution
+        cache[key] = solution, krylov_norm, converged
         adjoints.append(adjoint)
     result = jax.tree.map(lambda *values: jnp.stack(values), *adjoints)
     if return_linearization:
         root = MatrixFreeRootLinearization(
-            residual, z, params, field, frozen, rcon, zcon, space, preconditioner.factors, action, cfg, **options
+            residual,
+            z,
+            params,
+            field,
+            frozen,
+            rcon,
+            zcon,
+            space,
+            preconditioner.factors,
+            action,
+            cfg,
+            **(options | {"rtol": preconditioner.tangent_rtol}),
         )
         return result, root
     return result

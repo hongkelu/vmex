@@ -340,3 +340,65 @@ def test_invalid_predictor_tolerance_is_rejected(monkeypatch, value):
             root.preconditioner(tangent_rtol=value)
     finally:
         root.close()
+
+
+@pytest.mark.parametrize("rhs_batch_size", [1, 3])
+def test_nonfinite_cotangents_are_rejected_before_krylov(monkeypatch, rhs_batch_size):
+    accepted, cfg, _, _ = fixture(monkeypatch)
+    root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
+    seed = root.preconditioner(rhs_batch_size=rhs_batch_size)
+    monkeypatch.setattr(mf, "solve", lambda *a, **k: pytest.fail("nonfinite RHS reached Krylov"))
+    try:
+        with pytest.raises(ValueError, match="nonfinite adjoint right-hand side"):
+            fc.free_boundary_continuation_state_pullback(
+                accepted, cfg, jnp.array([[1.0, jnp.nan]]), preconditioner=seed
+            )
+    finally:
+        seed.close()
+        root.close()
+
+
+def test_closed_linearization_cannot_create_or_offload_seed(monkeypatch):
+    accepted, cfg, _, _ = fixture(monkeypatch)
+    root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
+    dense_root = root._dense
+    root.close()
+    for operation in (root.preconditioner, root.offload_factors):
+        with pytest.raises(ValueError, match="closed"):
+            operation()
+    with pytest.raises(ValueError, match="live dense linearization"):
+        mf.SeedLU.from_root(dense_root)
+
+
+def test_seed_rejects_changed_solver_closed_storage_and_single_precision(monkeypatch):
+    accepted, cfg, _, _ = fixture(monkeypatch)
+    root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
+    dense_root = root._dense
+    seed = root.preconditioner()
+    with pytest.raises(ValueError, match="different solver or state layout"):
+        seed._seed.validate(accepted.state, accepted.parameters, dense_root.space, NS(**vars(cfg.solver)))
+    seed._seed.close()
+    with pytest.raises(ValueError, match="closed"):
+        seed._seed.validate(accepted.state, accepted.parameters, dense_root.space, cfg.solver)
+    with pytest.raises(ValueError, match="Krylov rtol"):
+        root.preconditioner(rtol=np.nan, tangent_rtol=1e-11)
+    factors, pivots = dense_root.factors
+    dense_root.factors = (factors.astype(jnp.float32), pivots)
+    with pytest.raises(TypeError, match="float64"):
+        root.preconditioner()
+    seed.close()
+    root.close()
+
+
+@pytest.mark.parametrize("backend, failure", [("coupled_gcrot", "error"), ("forward_dense_jax", "best_effort")])
+def test_seed_cannot_bypass_strict_backend_policy(monkeypatch, backend, failure):
+    accepted, cfg, _, _ = fixture(monkeypatch)
+    root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
+    seed = root.preconditioner()
+    cfg.solver.adjoint_solver, cfg.solver.adjoint_fail = backend, failure
+    try:
+        with pytest.raises(ValueError, match="seed LU requires"):
+            fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), preconditioner=seed)
+    finally:
+        seed.close()
+        root.close()

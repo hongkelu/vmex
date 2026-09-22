@@ -79,17 +79,17 @@ class SeedLU:
         for value in (*factors, *space):
             value.setflags(write=False)
         return cls(
-            factors,
-            space,
-            _signature(root.z),
-            root.field.shape,
-            root.cfg,
-            rtol,
-            restart,
-            max_restarts,
-            require_adjoint_convergence,
-            rhs_batch_size,
-            tangent_rtol,
+            factors=factors,
+            space=space,
+            signature=_signature(root.z),
+            field_shape=root.field.shape,
+            cfg=root.cfg,
+            rtol=rtol,
+            restart=restart,
+            max_restarts=max_restarts,
+            require_adjoint_convergence=require_adjoint_convergence,
+            rhs_batch_size=rhs_batch_size,
+            tangent_rtol=tangent_rtol,
         )
 
     def validate(self, z, field, space, cfg):

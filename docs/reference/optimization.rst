@@ -506,7 +506,7 @@ are not differentiated.
 .. _free-boundary-seed-lu:
 
 Reusing a dense seed as a matrix-free preconditioner
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For an explicit continuation loop, ``forward_dense_jax`` with
 ``adjoint_fail="error"`` can retain one dense seed LU and solve subsequent
@@ -1013,7 +1013,7 @@ The caller owns checkpoint authentication and numerical qualification.
 
 
 Standalone rotating-ellipse example
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The free-boundary example has one optimization script and one diagnostics
 helper in ``examples/optimization/``. Its three scientific inputs live in

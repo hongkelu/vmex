@@ -3,6 +3,7 @@ from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -89,3 +90,60 @@ def write(problem, path):
         np.savez_compressed(stream, **data)
     return dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 accepted_step=problem.accepted_step)
+
+
+class OptimizationQualification(NamedTuple):
+    """A passing numerical report and its authenticated, colocated artifacts.
+
+    Numerical tests remain in the verification program. This class only binds
+    settings/code/runtime and authenticates the report for production reuse.
+    """
+
+    report: dict
+    artifacts: dict
+
+    @staticmethod
+    def signature(*, parameters, input_path, wout_path=None, sources=(), **configuration):
+        """Fingerprint physics, numerical controls, sources and the active runtime."""
+        from importlib.metadata import version
+        import jax
+
+        def digest(path):
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+        source_paths = [Path(p) for p in sources]
+        if len({p.name for p in source_paths}) != len(source_paths):
+            raise ValueError("qualification source filenames must be unique")
+        result = dict(parameters=parameters, input_sha256=digest(input_path),
+            wout_sha256=None if wout_path is None else digest(wout_path),
+            hardware=jax.devices()[0].device_kind, **configuration,
+            dependencies={name: version(name) for name in
+                ("jax", "jaxlib", "numpy", "scipy", "essos", "solvax", "booz_xform_jax", "virtual-casing-jax")},
+            source_sha256={p.name: digest(p) for p in source_paths},
+            core_sha256={p.name: digest(p) for p in sorted(Path(__file__).parent.glob("*.py"))})
+        return json.loads(_json(result))
+
+    @classmethod
+    def read(cls, path, *, contract, required_checks=("finite_difference", "matrix_free")):
+        """Require passing checks, an identical contract, and unchanged artifacts."""
+        path = Path(path).resolve()
+        report = json.loads(path.read_text())
+        if report.get("schema") != "vmex.single-stage-qualification/v1" or report.get("passed") is not True:
+            raise ValueError("qualification report has not passed")
+        if any(report.get("checks", {}).get(name, {}).get("passed") is not True for name in required_checks):
+            raise ValueError("qualification checks have not passed")
+        if report.get("contract") != contract:
+            raise ValueError("qualification differs from current code, input, physics, resolution or runtime")
+        assets = {}
+        for name in ("coils", "checkpoint"):
+            item = report["artifacts"][name]
+            filename = item["file"]
+            if not filename or Path(filename).name != filename or filename in (".", ".."):
+                raise ValueError("qualification artifacts must be files beside the report")
+            asset = path.parent / filename
+            if asset.resolve().parent != path.parent:
+                raise ValueError("qualification artifacts must remain beside the report")
+            if hashlib.sha256(asset.read_bytes()).hexdigest() != item["sha256"]:
+                raise ValueError(f"qualified {name} hash mismatch")
+            assets[name] = asset
+        return cls(report, assets)

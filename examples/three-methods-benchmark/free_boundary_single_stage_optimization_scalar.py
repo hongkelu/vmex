@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """Scalar free-boundary single-stage optimization through the public VMEX API.
 
-Like single_stage_optimization_scalar.py, this example defines its objective
-and calls SciPy directly. VMEX owns equilibrium solves, total derivatives and
-accepted-state prediction. Edit the parameters below; --dry-run only prints them.
+Edit the parameters below, then follow build_problem -> run_optimizer ->
+verify_endpoint -> postprocess. Like the fixed-boundary examples, the loss is
+visible here; opt.minimize owns scaling and optimizer acceptance. VMEX owns
+solves, total derivatives and prediction from the last accepted equilibrium.
+Run the separate verification script first; --dry-run only prints settings.
+This example is vacuum-only; finite-beta API requirements are in the README.
 """
 
 import argparse
@@ -11,7 +14,6 @@ import csv
 from dataclasses import replace
 from functools import lru_cache
 import hashlib
-from importlib.metadata import version
 import json
 import math
 import os
@@ -38,7 +40,7 @@ COIL_STEP = 0.05
 MAX_TRIALS = 500
 RESOLUTION = (8, 8, 51)  # MPOL, NTOR, NS
 GRID = (64, 64)  # NTHETA, NZETA
-EQUILIBRIUM_FTOL = 1e-15
+EQUILIBRIUM_FTOL = 1e-11
 ROOT_TOLERANCE = 2e-6
 INITIALIZATION_SECONDS = 3600
 OPTIMIZATION_SECONDS = 43200
@@ -153,46 +155,29 @@ def setup_run(args):
 
 
 def qualification_contract(args):
-    """Bind qualification to numerical settings, inputs, code and runtime."""
-    import jax
+    """Identify the numerical setup shared by verification and production."""
+    from vmex import optimize as opt
+
     excluded = {"HERE", "INPUT", "COILS", "ACCEPTED_STEPS", "MAX_TRIALS", "MAKE_MOVIE", "MOVIE_SURFACE_COLOR"}
     parameters = {name: value for name, value in globals().items()
                   if name.isupper() and name not in excluded and not name.endswith("_SECONDS")}
-    contract = dict(parameters=parameters, input_sha256=sha(args.input),
-        wout_sha256=None if args.wout is None else sha(args.wout),
-        resolution=args.resolution, grid=args.grid, ftol=args.ftol,
-        device=args.device, hardware=jax.devices()[0].device_kind,
-        dependencies={name: version(name) for name in ("jax", "jaxlib", "numpy", "scipy", "essos", "solvax")},
-        script_sha256=sha(__file__),
-        lbfgsb_script_sha256=sha(HERE / "free_boundary_single_stage_optimization.py"), verification_sha256=sha(HERE / "verify_free_boundary_single_stage.py"),
-        core_sha256={p.name: sha(p) for p in sorted((HERE.parents[1]/"vmex/core").glob("*.py"))})
-    return json.loads(json.dumps(contract))
+    return opt.OptimizationQualification.signature(parameters=parameters,
+        input_path=args.input, wout_path=args.wout, resolution=args.resolution,
+        grid=args.grid, ftol=args.ftol, device=args.device,
+        sources=[__file__, HERE / "free_boundary_single_stage_optimization.py",
+                 HERE / "verify_free_boundary_single_stage.py"])
 
 
 def read_qualification(args):
-    """Validate a passing report and its fitted coils/checkpoint before reuse."""
+    """Reuse the same authenticated fitted coils and accepted seed."""
+    from vmex import optimize as opt
+
     if args.qualification is None:
         raise ValueError("production requires --qualification from verify_free_boundary_single_stage.py")
-    report = json.loads(args.qualification.read_text())
-    if report.get("schema") != "vmex.single-stage-qualification/v1" or report.get("passed") is not True:
-        raise ValueError("qualification report has not passed")
-    if any(report.get("checks", {}).get(name, {}).get("passed") is not True
-           for name in ("finite_difference", "matrix_free")):
-        raise ValueError("qualification checks have not passed")
-    if report["contract"] != qualification_contract(args):
-        raise ValueError("qualification differs from current code, input, physics, resolution or runtime; qualify this setup first")
-    assets = {}
-    for name in ("coils", "checkpoint"):
-        item = report["artifacts"][name]
-        if Path(item["file"]).name != item["file"]:
-            raise ValueError("qualification artifacts must be files beside the report")
-        path = args.qualification.resolve().parent / item["file"]
-        if sha(path) != item["sha256"]:
-            raise ValueError(f"qualified {name} hash mismatch")
-        assets[name] = path
-    if args.coils is not None and sha(args.coils) != report["artifacts"]["coils"]["sha256"]:
+    qualified = opt.OptimizationQualification.read(args.qualification, contract=qualification_contract(args))
+    if args.coils is not None and sha(args.coils) != qualified.report["artifacts"]["coils"]["sha256"]:
         raise ValueError("supplied coils differ from the qualified fitted coils")
-    return report, assets
+    return qualified
 
 
 def build_problem(args, *, event=None, qualified=None):
@@ -215,6 +200,11 @@ def build_problem(args, *, event=None, qualified=None):
 
     out = args.output.resolve()
     inp = vj.VmecInput.from_file(args.input.resolve())
+    has_pressure = any(values is not None and np.any(np.asarray(values) != 0)
+                       for values in (inp.am, inp.am_aux_f))
+    if (inp.pres_scale != 0 and has_pressure) or inp.curtor != 0:
+        raise ValueError("this vacuum example requires zero pressure and plasma current; "
+                         "finite beta needs plasma-aware coil fitting and interface diagnostics")
     mpol, ntor, ns = args.resolution or (inp.mpol, inp.ntor, int(inp.ns_array[-1]))
     ntheta, nphi = args.grid or (inp.ntheta, inp.nzeta)
     inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=ntheta, nzeta=nphi)
@@ -338,186 +328,41 @@ def build_problem(args, *, event=None, qualified=None):
                            constraint_transform=constraint_transform, contract=contract)
 
 
-def run_optimizer(problem, scales, inequalities, constraint_transform, args, record_step, *, method):
-    """Run SciPy while promoting only iterates accepted by the chosen optimizer."""
+def run_optimizer(problem, args, record_step, *, method):
+    """Choose the optimizer and physical bounds; VMEX owns scaling and acceptance."""
     import numpy as np
-    from scipy.optimize import minimize
+    from scipy.optimize import Bounds
     from vmex import optimize as opt
 
-    def accept_step(u):
-        x = scales*u
-        if not np.array_equal(x, problem.accepted.parameters):
-            problem.accept_x(x)
-            record_step()
-            if problem.accepted_step >= args.accepted_steps:
-                raise StopIteration("accepted step budget reached")
-
-    if method == "L-BFGS-B":
-        def value_and_grad(u):
-            # A line search requests gradients at unaccepted points. Never
-            # promote here or fabricate a gradient for a failed equilibrium.
-            value, gradient = problem.value_and_grad(scales*u)
-            return value, gradient*scales
-
-        return minimize(value_and_grad, problem.x0/scales, jac=True, method=method,
-            bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)]*problem.x0.size, callback=accept_step,
-            options=dict(maxiter=args.accepted_steps, maxfun=MAX_TRIALS, ftol=OPTIMIZER_FTOL,
-                         gtol=OPTIMIZER_GTOL, maxcor=LBFGSB_MAXCOR, maxls=LBFGSB_MAXLS))
-
-    if method != "SLSQP":
-        raise ValueError(f"unsupported optimizer: {method}")
-
-    def objective(u):
-        try:
-            return problem.fun(scales*u)
-        except opt.TrialRejected:
-            return np.inf
-
-    def constraint_values(u):
-        try:
-            return inequalities(problem.constraint_values(scales*u))
-        except opt.TrialRejected:
-            return np.full(3, -1e6)
-
-    def constraint_jacobian(u):
-        return (constraint_transform @ problem.constraint_jac(scales*u))*scales
-
-    def slsqp_gradient(u):
-        # SLSQP requests gradients after accepting its line search; its major
-        # iteration callback can precede backtracking and must not promote.
-        _, gradient = problem.value_and_grad(scales*u)
-        accept_step(u)
-        return gradient*scales
-
-    result = minimize(objective, problem.x0/scales, jac=slsqp_gradient, method=method,
-        constraints=[dict(type="ineq", fun=constraint_values, jac=constraint_jacobian)],
-        options=dict(maxiter=args.accepted_steps+1, ftol=OPTIMIZER_FTOL))
-    slsqp_gradient(result.x)
-    return result
+    options = dict(maxiter=args.accepted_steps, ftol=OPTIMIZER_FTOL)
+    constraints, bounds = (), None
+    if method == "SLSQP":
+        width = RADIUS_TOLERANCE - RADIUS_MARGIN
+        constraints = problem.nonlinear_constraint(
+            [IOTA_FLOOR + IOTA_MARGIN, RADIUS_TARGET - width],
+            [np.inf, RADIUS_TARGET + width], scales=[IOTA_FLOOR, RADIUS_TOLERANCE])
+    else:
+        bounds = Bounds(-PARAMETER_BOUND*problem.scales, PARAMETER_BOUND*problem.scales)
+        options.update(maxfun=MAX_TRIALS, gtol=OPTIMIZER_GTOL,
+                       maxcor=LBFGSB_MAXCOR, maxls=LBFGSB_MAXLS)
+    return opt.minimize(problem, method=method, bounds=bounds, constraints=constraints,
+                        callback=lambda x: record_step(), options=options)
 
 
-def main(argv=None, *, method="SLSQP"):
-    """Restore a qualified start, optimize and independently verify the endpoint."""
-    if method not in ("SLSQP", "L-BFGS-B"):
-        raise ValueError(f"unsupported optimizer: {method}")
-    args = parse_args(argv)
-    settings = {name: value for name, value in globals().items() if name.isupper() and name != "HERE"}
-    if args.dry_run:
-        print(json.dumps(dict(optimizer=method, parameters=settings, arguments=vars(args)), indent=2, default=str))
-        return 0
-    if args.qualification is None:
-        raise ValueError("run verify_free_boundary_single_stage.py first, then pass --qualification REPORT")
-    out = setup_run(args)
+def verify_endpoint(stage, args, summary, history, initial_equilibrium):
+    """Re-solve the final coils at higher resolution and report physical limits."""
     import jax
-    import jax.numpy as jnp
     import numpy as np
     import vmex as vj
     from vmex import optimize as opt
     from essos.fields import BiotSavart
     from essos.surfaces import SurfaceRZFourier
-    qualified = read_qualification(args)
 
-    def write_json(name, data):
-        (out / name).write_text(json.dumps(data, indent=2, default=str, allow_nan=False) + "\n")
-
-    def timeout(*_):
-        raise TimeoutError("phase wall-time budget reached")
-
-    previous_handler = signal.signal(signal.SIGALRM, timeout)
-    signal.alarm(INITIALIZATION_SECONDS)
-    problem = verification = None
-    phase = "initialization"
-    started = time.perf_counter()
+    out = args.output.resolve()
+    problem, inp, qs = stage.problem, stage.inp, stage.qs
+    method = summary["optimizer"]
+    verification = None
     try:
-        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0)
-        trials = 0
-
-        def event(name, **data):
-            nonlocal trials
-            if name in timings:
-                timings[name] += data["seconds"]
-            if name == "proposal":
-                trials += 1
-                if trials > MAX_TRIALS:
-                    raise StopIteration("trial budget reached")
-            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh"):
-                # Keep diagnostic rows and failure reasons without serializing root arrays.
-                record = {key: value for key, value in data.items() if key != "candidate"}
-                with (out / "solver_events.jsonl").open("a") as stream:
-                    stream.write(json.dumps(dict(event=name, trial=trials, **record), default=str) + "\n")
-
-        stage = build_problem(args, event=event, qualified=qualified)
-        problem, inp, chart, coils0 = stage.problem, stage.inp, stage.chart, stage.coils
-        qs, surface, coil_costs = stage.qs, stage.surface, stage.coil_costs
-        inequalities, constraint_transform = stage.inequalities, stage.constraint_transform
-        scales = chart.scales
-        initial_equilibrium = problem.equilibrium_from_x(problem.x0)
-        monitor = opt.OptimizationMonitor(stream=None)
-        history = []
-        cycle_started = time.perf_counter()
-
-        def record_step():
-            nonlocal cycle_started
-            x = problem.accepted.parameters
-            eq = problem.equilibrium_from_x(x)
-            iota, radius = problem.constraint_values(x)
-            row = dict(step=problem.accepted_step, objective=problem.fun(x),
-                qa=float(qs.total_state(eq.state, eq.runtime)), aspect=float(opt.aspect_ratio(eq.state, eq.runtime)),
-                min_abs_iota=float(iota), major_radius_m=float(radius),
-                rbc00_m=float(opt.boundary_from_state(eq.state, eq.runtime)[0][inp.ntor, 0]),
-                radius_error_m=float(radius-RADIUS_TARGET), iota_constraint_slack=float(iota-IOTA_FLOOR),
-                radius_constraint_slack_m=float(RADIUS_TOLERANCE-abs(radius-RADIUS_TARGET)),
-                optimizer_constraints_feasible=bool(np.min(inequalities((iota, radius))) >= -1e-8),
-                constraints_feasible=bool(iota >= IOTA_FLOOR and abs(radius-RADIUS_TARGET) <= RADIUS_TOLERANCE),
-                gradient_seconds=timings["adjoint"], predictor_seconds=timings["tangent"], solve_seconds=timings["correction"],
-                step_seconds=time.perf_counter()-cycle_started, elapsed_seconds=time.perf_counter()-started,
-                **{key: float(getattr(eq.result, key)) for key in ("fsqr", "fsqz", "fsql", "fedge")})
-            history.append(row)
-            write_json("accepted_steps.json", history)
-            write_json(f"checkpoint_{problem.accepted_step:04d}.json", problem.save_checkpoint(out/f"accepted_{problem.accepted_step:04d}.npz"))
-            monitor.record(x, cost=row["objective"], iteration=problem.accepted_step)
-            monitor.save(out / "free_boundary_scalar_objectives.csv")
-            print(f"[step {problem.accepted_step}] objective {row['objective']:.6e}; QA {row['qa']:.6e}; "
-                  f"gradient {row['gradient_seconds']:.2f}s, predictor {row['predictor_seconds']:.2f}s, "
-                  f"correction {row['solve_seconds']:.2f}s", flush=True)
-            timings.update(dict.fromkeys(timings, 0.0))
-            cycle_started = time.perf_counter()
-
-        # Production constructs its own checked LU; parity/FD experiments live
-        # exclusively in verify_free_boundary_single_stage.py.
-        problem.enable_matrix_free(rtol=MATRIXFREE_RTOL, restart=MATRIXFREE_RESTART,
-            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE)
-        record_step()
-        phase = "optimization"
-        optimization_started = time.perf_counter()
-        signal.alarm(OPTIMIZATION_SECONDS)
-
-        status, result = "iteration_budget_reached", None
-        try:
-            result = run_optimizer(problem, scales, inequalities, constraint_transform, args, record_step, method=method)
-            if problem.accepted_step >= args.accepted_steps:
-                status = "accepted_step_budget_reached"
-            elif result.success:
-                status = "converged"
-            else:
-                budget_status = 1 if method == "L-BFGS-B" else 9
-                status = "iteration_or_evaluation_budget_reached" if result.status == budget_status else "optimizer_failed"
-        except StopIteration as error:
-            status = str(error).replace(" ", "_")
-        except TimeoutError:
-            status = "optimization_time_budget_reached"
-        except opt.TrialRejected as error:
-            # L-BFGS-B needs a gradient for every proposal. Stop cleanly at the
-            # last certified accepted state when a proposal cannot supply one.
-            status = "equilibrium_trial_rejected"
-            write_json("rejected_trial.json", dict(error=str(error)))
-        summary = dict(optimizer=method, nonlinear_constraints=method == "SLSQP", status=status, optimizer_success=status == "converged", accepted_steps=problem.accepted_step,
-            optimization_seconds=time.perf_counter()-optimization_started,
-            derivative_qualified=True, qualification=str(args.qualification.resolve()), initial=history[0], final=history[-1], verification="not run",
-            optimizer_message=None if result is None else str(result.message))
-        write_json("optimization_summary.json", summary)
-
-        phase = "verification"
         signal.alarm(VERIFICATION_SECONDS)
         accepted_eq = problem.equilibrium_from_x(problem.accepted.parameters)
         initial_wout = vj.write_wout(out / "wout_initial.nc", initial_equilibrium.wout)
@@ -530,7 +375,7 @@ def main(argv=None, *, method="SLSQP"):
         final_input.to_indata(out / "input.optimized")
         problem.close()
         verification = opt.FreeBoundaryProblem.from_tuples(final_input, [(qs.residuals_state, 0, 1)],
-            coils=final_coils, current_dofs=(), restart_from=accepted_wout, objective_normalization=1.0,
+            coils=final_coils, coil_current_dofs=(), restart_from=accepted_wout, objective_normalization=1.0,
             solver_options=dict(device=args.device, ftol=VERIFY_FTOL, edge_force_tolerance=VERIFY_FTOL,
                                 max_iterations=VERIFY_MAXITER))
         verified = verification.equilibrium_from_x(verification.x0)
@@ -588,111 +433,227 @@ def main(argv=None, *, method="SLSQP"):
                           radius_error_m=radius-RADIUS_TARGET, iota_constraint_slack=iota-IOTA_FLOOR,
                           radius_constraint_slack_m=RADIUS_TOLERANCE-abs(radius-RADIUS_TARGET),
                           full_mesh_min_abs_iota=float(np.min(np.abs(verified.wout.iotaf)))))
-        write_json("optimization_summary.json", summary)
+        write_json(out / "optimization_summary.json", summary)
 
+        return SimpleNamespace(initial_wout=initial_wout, wout_path=wout_path,
+                               final_coils=final_coils, surface=surf)
+    finally:
+        if verification is not None:
+            verification.close()
+
+
+def postprocess(stage, args, summary, monitor, history, initial_equilibrium, verified):
+    """Export accepted-state diagnostics, geometry, figures, movie and WOUT plots."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    import vmex as vj
+    from vmex import optimize as opt
+    from essos.fields import BiotSavart
+    from essos.surfaces import SurfaceRZFourier
+
+    out = args.output.resolve()
+    problem, inp, chart, coils0 = stage.problem, stage.inp, stage.chart, stage.coils
+    surface, coil_costs, scales = stage.surface, stage.coil_costs, stage.chart.scales
+    initial_wout, wout_path = verified.initial_wout, verified.wout_path
+    surf, final_coils = verified.surface, verified.final_coils
+    _phase = "postprocessing"
+    signal.alarm(POSTPROCESSING_SECONDS)
+    postprocessing_started = time.perf_counter()
+    seed_surface = SurfaceRZFourier.from_wout_file(initial_wout, nphi=60, ntheta=60)
+    for label, export_surface, export_coils in (("initial", seed_surface, coils0), ("optimized", surf, final_coils)):
+        export_surface.to_vtk(str(out / f"surface_{label}"), field=BiotSavart(export_coils))
+        export_coils.to_vtk(str(out / f"coils_{label}"))
+
+    # Replay saved accepted roots, never solve previous iterates again.
+    points = monitor.x_history
+    frame_steps = {tuple(x): step for step, x in enumerate(points)}
+
+    @lru_cache(maxsize=1)
+    def accepted_frame(step):
+        checkpoint = out / f"accepted_{step:04d}.npz"
+        identity = json.loads((out / f"checkpoint_{step:04d}.json").read_text())
+        state = problem.state_from_checkpoint(checkpoint, sha256=identity["sha256"], parameters=points[step])
+        return state, surface(state, initial_equilibrium.runtime), chart.coils_from_x(jnp.asarray(points[step]))
+
+    post_monitor = opt.OptimizationMonitor(stream=None)
+    coil_cost_values = jax.jit(coil_costs)
+    coil_diagnostics = opt.CoilDiagnostics(scales, coefficient_step=COIL_STEP)
+    for step, (x, row) in enumerate(zip(points, history)):
+        _, step_surface, step_coils = accepted_frame(step)
+        row.update(coil_diagnostics.record(x, step_coils, path=out / f"step_{step:04d}.npz"))
+        coil_field = np.asarray(jax.vmap(BiotSavart(step_coils).B)(step_surface.gamma.reshape(-1, 3))).reshape(step_surface.gamma.shape)
+        normal_field = np.sum(coil_field*np.asarray(step_surface.unitnormal), axis=-1)/np.linalg.norm(coil_field, axis=-1)
+        area = np.asarray(step_surface.area_element)
+        row.update(qa_residual_l2=float(np.sqrt(row["qa"])), aspect_error=row["aspect"]-ASPECT_TARGET,
+            iota_violation=max(IOTA_FLOOR-row["min_abs_iota"], 0.0),
+            normal_field_rms=float(np.sqrt(np.sum(area*normal_field**2)/area.sum())),
+            normal_field_max=float(np.max(np.abs(normal_field))))
+        if not all(np.isfinite(value) for value in row.values()):
+            raise ValueError(f"nonfinite accepted-step diagnostics at step {step}")
+        terms = dict(quasisymmetry=0.5*row["qa"], aspect=0.5*ASPECT_WEIGHT*row["aspect_error"]**2,
+                     **{"iota floor": 0.5*IOTA_WEIGHT*row["iota_violation"]**2})
+        terms.update(zip(("coil length", "coil curvature", "coil separation", "coil-surface separation"),
+                         map(float, np.asarray(coil_cost_values(step_coils, step_surface)))))
+        np.testing.assert_allclose(sum(terms.values()), row["objective"], rtol=1e-10, atol=1e-12)
+        post_monitor.record(x, cost=row["objective"], iteration=step, terms=terms)
+    with (out / "accepted_steps.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(history[0]))
+        writer.writeheader()
+        writer.writerows(history)
+    write_json(out / "accepted_steps.json", history)
+    post_monitor.save(out / "free_boundary_scalar_objectives.csv")
+
+    if not args.no_plots:
+        vj.plot_optimization_objects(out / "optimization.png", ("Initial", seed_surface, coils0), ("Optimized", surf, final_coils))
+        post_monitor.plot(out / "objectives.png", title="Single-stage objective terms")
+        if args.movie:
+            def objects_from_x(x):
+                return accepted_frame(frame_steps[tuple(x)])[1:]
+
+            def movie_colors(x, objects):
+                state = accepted_frame(frame_steps[tuple(x)])[0]
+                data = vj.surface_field_data_from_state(inp, state, runtime=initial_equilibrium.runtime,
+                                                       nphi=NPHI, ntheta=NTHETA)
+                magnitude = jnp.linalg.norm(data.B_total, axis=0)
+                if MOVIE_SURFACE_COLOR == "absB":
+                    return magnitude
+                interface = vj.PlasmaVacuumInterface.from_surface_data(data, digits=4)
+                return interface.bnormal_residual(chart(jnp.asarray(x)))/magnitude
+
+            post_monitor.movie(out / "optimization.gif", objects_from_x,
+                color_factory=movie_colors if MOVIE_SURFACE_COLOR is not None else None,
+                color_label=MOVIE_SURFACE_COLOR, cmap="jet")
+        for path in vj.plot_wout(wout_path, out).values():
+            print(f"Wrote {path}")
+    summary.update(postprocessing="complete", postprocessing_seconds=time.perf_counter()-postprocessing_started)
+    write_json(out / "optimization_summary.json", summary)
+
+
+def main(argv=None, *, method="SLSQP"):
+    """Restore a qualified start, optimize and independently verify the endpoint."""
+    if method not in ("SLSQP", "L-BFGS-B"):
+        raise ValueError(f"unsupported optimizer: {method}")
+    args = parse_args(argv)
+    settings = {name: value for name, value in globals().items() if name.isupper() and name != "HERE"}
+    if args.dry_run:
+        print(json.dumps(dict(optimizer=method, parameters=settings, arguments=vars(args)), indent=2, default=str))
+        return 0
+    if args.qualification is None:
+        raise ValueError("run verify_free_boundary_single_stage.py first, then pass --qualification REPORT")
+    out = setup_run(args)
+    import numpy as np
+    from vmex import optimize as opt
+    qualified = read_qualification(args)
+
+    def timeout(*_):
+        raise TimeoutError("phase wall-time budget reached")
+
+    previous_handler = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(INITIALIZATION_SECONDS)
+    problem = None
+    phase = "initialization"
+    started = time.perf_counter()
+    try:
+        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0)
+        trials = 0
+
+        def event(name, **data):
+            nonlocal trials
+            if name in timings:
+                timings[name] += data["seconds"]
+            if name == "proposal":
+                trials += 1
+                if trials > MAX_TRIALS:
+                    raise StopIteration("trial budget reached")
+            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh"):
+                # Keep diagnostic rows and failure reasons without serializing root arrays.
+                record = {key: value for key, value in data.items() if key != "candidate"}
+                with (out / "solver_events.jsonl").open("a") as stream:
+                    stream.write(json.dumps(dict(event=name, trial=trials, **record), default=str) + "\n")
+
+        stage = build_problem(args, event=event, qualified=qualified)
+        problem, inp = stage.problem, stage.inp
+        qs, inequalities = stage.qs, stage.inequalities
+        initial_equilibrium = problem.equilibrium_from_x(problem.x0)
+        monitor = opt.OptimizationMonitor(stream=None)
+        history = []
+        cycle_started = time.perf_counter()
+
+        def record_step():
+            nonlocal cycle_started
+            x = problem.accepted.parameters
+            eq = problem.equilibrium_from_x(x)
+            iota, radius = problem.constraint_values(x)
+            row = dict(step=problem.accepted_step, objective=problem.fun(x),
+                qa=float(qs.total_state(eq.state, eq.runtime)), aspect=float(opt.aspect_ratio(eq.state, eq.runtime)),
+                min_abs_iota=float(iota), major_radius_m=float(radius),
+                rbc00_m=float(opt.boundary_from_state(eq.state, eq.runtime)[0][inp.ntor, 0]),
+                radius_error_m=float(radius-RADIUS_TARGET), iota_constraint_slack=float(iota-IOTA_FLOOR),
+                radius_constraint_slack_m=float(RADIUS_TOLERANCE-abs(radius-RADIUS_TARGET)),
+                optimizer_constraints_feasible=bool(np.min(inequalities((iota, radius))) >= -1e-8),
+                constraints_feasible=bool(iota >= IOTA_FLOOR and abs(radius-RADIUS_TARGET) <= RADIUS_TOLERANCE),
+                gradient_seconds=timings["adjoint"], predictor_seconds=timings["tangent"], solve_seconds=timings["correction"],
+                step_seconds=time.perf_counter()-cycle_started, elapsed_seconds=time.perf_counter()-started,
+                **{key: float(getattr(eq.result, key)) for key in ("fsqr", "fsqz", "fsql", "fedge")})
+            history.append(row)
+            write_json(out / "accepted_steps.json", history)
+            write_json(out / f"checkpoint_{problem.accepted_step:04d}.json", problem.save_checkpoint(out/f"accepted_{problem.accepted_step:04d}.npz"))
+            monitor.record(x, cost=row["objective"], iteration=problem.accepted_step)
+            monitor.save(out / "free_boundary_scalar_objectives.csv")
+            print(f"[step {problem.accepted_step}] objective {row['objective']:.6e}; QA {row['qa']:.6e}; "
+                  f"gradient {row['gradient_seconds']:.2f}s, predictor {row['predictor_seconds']:.2f}s, "
+                  f"correction {row['solve_seconds']:.2f}s", flush=True)
+            timings.update(dict.fromkeys(timings, 0.0))
+            cycle_started = time.perf_counter()
+
+        # Production constructs its own checked LU; parity/FD experiments live
+        # exclusively in verify_free_boundary_single_stage.py.
+        problem.enable_matrix_free(rtol=MATRIXFREE_RTOL, restart=MATRIXFREE_RESTART,
+            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE)
+        record_step()
+        phase = "optimization"
+        optimization_started = time.perf_counter()
+        signal.alarm(OPTIMIZATION_SECONDS)
+
+        status, result = "iteration_budget_reached", None
+        try:
+            result = run_optimizer(problem, args, record_step, method=method)
+            if result.stop_reason:
+                status = result.stop_reason
+            elif result.success:
+                status = "converged"
+            else:
+                budget_status = 1 if method == "L-BFGS-B" else 9
+                status = "iteration_or_evaluation_budget_reached" if result.status == budget_status else "optimizer_failed"
+        except StopIteration as error:
+            status = str(error).replace(" ", "_")
+        except TimeoutError:
+            status = "optimization_time_budget_reached"
+        except opt.TrialRejected as error:
+            # L-BFGS-B needs a gradient for every proposal. Stop cleanly at the
+            # last certified accepted state when a proposal cannot supply one.
+            status = "equilibrium_trial_rejected"
+            write_json(out / "rejected_trial.json", dict(error=str(error)))
+        summary = dict(optimizer=method, nonlinear_constraints=method == "SLSQP", status=status, optimizer_success=status == "converged", accepted_steps=problem.accepted_step,
+            optimization_seconds=time.perf_counter()-optimization_started,
+            derivative_qualified=True, qualification=str(args.qualification.resolve()), initial=history[0], final=history[-1], verification="not run",
+            optimizer_message=None if result is None else str(result.message))
+        write_json(out / "optimization_summary.json", summary)
+
+        phase = "verification"
+        verified = verify_endpoint(stage, args, summary, history, initial_equilibrium)
         phase = "postprocessing"
-        signal.alarm(POSTPROCESSING_SECONDS)
-        postprocessing_started = time.perf_counter()
-        seed_surface = SurfaceRZFourier.from_wout_file(initial_wout, nphi=60, ntheta=60)
-        for label, export_surface, export_coils in (("initial", seed_surface, coils0), ("optimized", surf, final_coils)):
-            export_surface.to_vtk(str(out / f"surface_{label}"), field=BiotSavart(export_coils))
-            export_coils.to_vtk(str(out / f"coils_{label}"))
-
-        # Replay saved accepted roots, never solve previous iterates again.
-        points = monitor.x_history
-        frame_steps = {tuple(x): step for step, x in enumerate(points)}
-
-        @lru_cache(maxsize=1)
-        def accepted_frame(step):
-            checkpoint = out / f"accepted_{step:04d}.npz"
-            identity = json.loads((out / f"checkpoint_{step:04d}.json").read_text())
-            if sha(checkpoint) != identity["sha256"]:
-                raise ValueError(f"accepted checkpoint hash mismatch at step {step}")
-            with np.load(checkpoint, allow_pickle=False) as saved:
-                np.testing.assert_array_equal(saved["parameters"], points[step])
-                state = replace(initial_equilibrium.state, **{
-                    name: jnp.asarray(saved[name]) for name in
-                    ("R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin")})
-            return state, surface(state, initial_equilibrium.runtime), chart.coils_from_x(jnp.asarray(points[step]))
-
-        post_monitor = opt.OptimizationMonitor(stream=None)
-        coil_cost_values = jax.jit(coil_costs)
-        previous = initial_gamma = None
-        for step, x in enumerate(points):
-            _, step_surface, step_coils = accepted_frame(step)
-            row = history[step]
-            dofs = np.asarray(step_coils.curves.dofs).ravel()
-            raw = np.asarray(step_coils.curves.dofs)/np.asarray(step_coils.curves.scaling)
-            gamma, currents = np.asarray(step_coils.gamma), np.asarray(step_coils.dofs_currents_raw)
-            current = dict(u=x/scales, dofs=dofs, raw=raw, gamma=gamma, currents=currents)
-            if previous is None:
-                previous, initial_gamma = current, gamma.copy()
-            du, coil_du = current["u"]-previous["u"], (dofs-previous["dofs"])/COIL_STEP
-            displacement = np.linalg.norm(gamma-previous["gamma"], axis=-1)
-            coil_field = np.asarray(jax.vmap(BiotSavart(step_coils).B)(step_surface.gamma.reshape(-1, 3))).reshape(step_surface.gamma.shape)
-            normal_field = np.sum(coil_field*np.asarray(step_surface.unitnormal), axis=-1)/np.linalg.norm(coil_field, axis=-1)
-            area = np.asarray(step_surface.area_element)
-            row.update(qa_residual_l2=float(np.sqrt(row["qa"])), aspect_error=row["aspect"]-ASPECT_TARGET,
-                iota_violation=max(IOTA_FLOOR-row["min_abs_iota"], 0.0),
-                step_u_l2=float(np.linalg.norm(du)), step_u_linf=float(np.max(np.abs(du))),
-                coil_step_u_l2=float(np.linalg.norm(coil_du)), coil_step_u_linf=float(np.max(np.abs(coil_du))),
-                coil_coefficient_step_l2_m=float(np.linalg.norm(raw-previous["raw"])),
-                coil_displacement_rms_m=float(np.sqrt(np.mean(displacement**2))),
-                coil_displacement_max_m=float(displacement.max()),
-                coil_displacement_from_start_max_m=float(np.linalg.norm(gamma-initial_gamma, axis=-1).max()),
-                current_step_max_A=float(np.max(np.abs(currents-previous["currents"]))),
-                normal_field_rms=float(np.sqrt(np.sum(area*normal_field**2)/area.sum())),
-                normal_field_max=float(np.max(np.abs(normal_field))))
-            if not all(np.isfinite(value) for value in row.values()):
-                raise ValueError(f"nonfinite accepted-step diagnostics at step {step}")
-            terms = dict(quasisymmetry=0.5*row["qa"], aspect=0.5*ASPECT_WEIGHT*row["aspect_error"]**2,
-                         **{"iota floor": 0.5*IOTA_WEIGHT*row["iota_violation"]**2})
-            terms.update(zip(("coil length", "coil curvature", "coil separation", "coil-surface separation"),
-                             map(float, np.asarray(coil_cost_values(step_coils, step_surface)))))
-            np.testing.assert_allclose(sum(terms.values()), row["objective"], rtol=1e-10, atol=1e-12)
-            post_monitor.record(x, cost=row["objective"], iteration=step, terms=terms)
-            np.savez_compressed(out / f"step_{step:04d}.npz", **current)
-            previous = current
-        with (out / "accepted_steps.csv").open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(history[0]))
-            writer.writeheader()
-            writer.writerows(history)
-        write_json("accepted_steps.json", history)
-        post_monitor.save(out / "free_boundary_scalar_objectives.csv")
-
-        if not args.no_plots:
-            vj.plot_optimization_objects(out / "optimization.png", ("Initial", seed_surface, coils0), ("Optimized", surf, final_coils))
-            post_monitor.plot(out / "objectives.png", title="Single-stage objective terms")
-            if args.movie:
-                def objects_from_x(x):
-                    return accepted_frame(frame_steps[tuple(x)])[1:]
-
-                def movie_colors(x, objects):
-                    state = accepted_frame(frame_steps[tuple(x)])[0]
-                    data = vj.surface_field_data_from_state(inp, state, runtime=initial_equilibrium.runtime,
-                                                           nphi=NPHI, ntheta=NTHETA)
-                    magnitude = jnp.linalg.norm(data.B_total, axis=0)
-                    if MOVIE_SURFACE_COLOR == "absB":
-                        return magnitude
-                    interface = vj.PlasmaVacuumInterface.from_surface_data(data, digits=4)
-                    return interface.bnormal_residual(chart(jnp.asarray(x)))/magnitude
-
-                post_monitor.movie(out / "optimization.gif", objects_from_x,
-                    color_factory=movie_colors if MOVIE_SURFACE_COLOR is not None else None,
-                    color_label=MOVIE_SURFACE_COLOR, cmap="jet")
-            for path in vj.plot_wout(wout_path, out).values():
-                print(f"Wrote {path}")
-        summary.update(postprocessing="complete", postprocessing_seconds=time.perf_counter()-postprocessing_started)
-        write_json("optimization_summary.json", summary)
-        print(f"{status}; numerical verification passed; physical limits met: {feasible}. Results: {out}", flush=True)
-        return 0 if summary["optimizer_success"] and feasible else 1
+        postprocess(stage, args, summary, monitor, history, initial_equilibrium, verified)
+        print(f"{status}; numerical verification passed; physical limits met: "
+              f"{summary['inequalities_met']}. Results: {out}", flush=True)
+        return 0 if summary["optimizer_success"] and summary["inequalities_met"] else 1
     except Exception as error:
-        write_json("failure.json", dict(phase=phase, error=f"{type(error).__name__}: {error}"))
+        write_json(out / "failure.json", dict(phase=phase, error=f"{type(error).__name__}: {error}"))
         raise
     finally:
-        for item in (verification, problem):
-            if item is not None:
-                item.close()
+        if problem is not None:
+            problem.close()
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
 

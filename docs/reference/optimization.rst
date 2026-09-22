@@ -42,6 +42,52 @@ profiles, and transforms (it is not elapsed run time). Use
 :meth:`~vmex.core.problem.FunctionProblem.from_functions` when the user already
 has decision-vector-level functions and derivatives.
 
+Shared scalar optimizer
+-----------------------
+
+``opt.minimize(problem, ...)`` accepts ``VmecProblem``,
+``FreeBoundaryProblem`` or ``FunctionProblem``. BFGS, L-BFGS-B and SLSQP
+share the same call; equilibrium and adjoint controls belong in the problem
+constructor. The older ``opt.minimize(objective_terms, inp, ...)`` call remains
+available.
+
+.. code-block:: python
+
+   problem = opt.FreeBoundaryProblem.from_loss(
+       inp, loss, coils=coils, coil_current_dofs=(),
+       quantities=(opt.min_abs_iota, opt.major_radius),
+       solver_options=dict(ftol=1e-11, edge_force_tolerance=1e-11,
+                           adjoint_residual_rtol=1e-9))
+   limits = problem.nonlinear_constraint(
+       [0.19, 0.99], [float("inf"), 1.01], scales=[0.19, 0.01])
+   result = opt.minimize(problem, method="SLSQP", constraints=limits,
+                         options=dict(maxiter=100, ftol=1e-11))
+
+The loss remains an ordinary ``loss(state, runtime, coils)`` function in the
+example. Coordinates, bounds, callbacks, returned gradients and ``result.x``
+use the problem's units. ``problem.scales`` conditions internal optimizer
+steps about the initial point. ``nonlinear_constraint`` normalizes constraint
+rows, including their analytic Jacobian. For ``FunctionProblem`` and
+``VmecProblem`` it bounds residual rows; for scalar ``FreeBoundaryProblem`` it
+bounds the supplied physical ``quantities``. Explicit SciPy ``Bounds``,
+``LinearConstraint`` and ``NonlinearConstraint`` objects are also accepted;
+nonlinear constraints must supply an analytic Jacobian.
+
+Free-boundary promotion belongs to this adapter: L-BFGS-B/BFGS accept iteration
+callbacks, while SLSQP accepts the next Jacobian request after its line search.
+A rejected probe never becomes the warm-start anchor. Its ``maxiter`` limits
+accepted steps; a budget stop is not convergence. An unrecoverable trial returns
+``success=False``, ``stop_reason="equilibrium_trial_rejected"`` and the last
+accepted point. Callbacks run after promotion. ``StopIteration`` from a callback
+also returns the last accepted point. Inspect success, stop reason and physical
+endpoint checks separately.
+
+``coil_current_dofs`` explicitly selects coil currents in the free-boundary
+constructors (``()`` fixes them); the legacy ``current_dofs`` spelling remains
+supported. Fixed-boundary ``VmecProblem.current_dofs`` instead selects the
+plasma-current profile. Free-boundary pressure/current profiles currently come
+from ``inp`` and are held fixed by this coil parameterization.
+
 Vector least squares or one scalar adjoint
 -------------------------------------------
 
@@ -910,6 +956,18 @@ initial checkpoint. Production requires its matching report and re-certifies
 that checkpoint without repeating initial solves or qualification experiments.
 A matched GPU qualification and pilot are still needed before claiming
 production timing or physical convergence.
+
+The example exposes ``build_problem``, ``run_optimizer``, ``verify_endpoint``
+and ``postprocess``. ``opt.OptimizationQualification.signature/read`` binds
+numerical reports to their code, configuration, runtime and saved artifacts.
+``problem.state_from_checkpoint`` authenticates accepted snapshots for replay
+without another equilibrium solve; it does not re-certify them.
+``opt.CoilDiagnostics`` reports physical coil motion and current changes without
+an equilibrium/field evaluation. Expensive numerical qualification stays in the
+separate verification program. Default production force tolerance is ``1e-11``;
+independent endpoint verification uses ``1e-15``. These changed defaults and
+source hashes require a fresh qualification report.
+
 
 
 Accepted-state certification

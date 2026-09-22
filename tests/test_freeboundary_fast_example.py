@@ -21,7 +21,7 @@ verify_spec.loader.exec_module(verify)
 
 def test_defaults_preserve_fast_profile():
     args = entry.parse_args([])
-    assert args.ftol == 1e-15
+    assert args.ftol == 1e-11
     assert verify.GRADIENT_CHECK_FTOL == 1e-20
     assert entry.ADJOINT_RESIDUAL_RTOL == 1e-9
     assert verify.LINEARIZATION_PARITY_RTOL == 1e-6
@@ -41,7 +41,7 @@ def test_dry_run_creates_no_output(tmp_path, capsys):
     output = tmp_path / "not-created"
     assert entry.main(["--dry-run", "--output", str(output)]) == 0
     config = json.loads(capsys.readouterr().out)
-    assert config["arguments"]["ftol"] == 1e-15
+    assert config["arguments"]["ftol"] == 1e-11
     assert config["parameters"]["IOTA_FLOOR"] == .19
     assert not output.exists()
 
@@ -170,7 +170,15 @@ def replay_namespace(tmp_path):
         np.savez(checkpoint, parameters=point, **{name: np.full((1, 1), .03*step) for name in fields})
         (tmp_path / f"checkpoint_{step:04d}.json").write_text(json.dumps({"sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest()}))
         history.append(dict(step=step, objective=cost, qa=2*cost, aspect=5., min_abs_iota=.2, constraints_feasible=True))
+    def load_state(path, *, sha256, parameters):
+        if hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha256:
+            raise ValueError("checkpoint hash mismatch")
+        with np.load(path) as saved:
+            np.testing.assert_array_equal(saved["parameters"], parameters)
+            return State(*(jnp.asarray(saved[name]) for name in fields))
+
     namespace = dict(vars(entry), np=np, jnp=jnp, out=tmp_path, monitor=monitor, history=history,
+        problem=SimpleNamespace(state_from_checkpoint=load_state),
         initial_wout=tmp_path/"initial.nc", wout_path=tmp_path/"verified.nc", coils0=Coils(np.zeros(2)),
         final_coils=Coils(np.array([.03, -.01])), surf=Surface(.03),
         SurfaceRZFourier=SimpleNamespace(from_wout_file=lambda *a, **k: Surface()),
@@ -184,11 +192,10 @@ def replay_namespace(tmp_path):
         vj=SimpleNamespace(plot_optimization_objects=vj.plot_optimization_objects,
                            surface_field_data_from_state=surface_field, plot_wout=plot_wout))
     tree = ast.parse(Path(entry.__file__).read_text())
-    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
-    run = next(n for n in main.body if isinstance(n, ast.Try))
+    run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "postprocess")
     start = next(i for i, n in enumerate(run.body) if isinstance(n, ast.Assign)
                  and isinstance(n.value, ast.Constant) and n.value.value == "postprocessing")
-    code = compile(ast.Module(body=run.body[start:-2], type_ignores=[]), str(entry.__file__), "exec")
+    code = compile(ast.Module(body=run.body[start:], type_ignores=[]), str(entry.__file__), "exec")
     return namespace, code, exports, colors, wout_calls
 
 
@@ -387,19 +394,23 @@ def test_lbfgsb_entry_uses_shared_production_and_no_output_on_dry_run(tmp_path, 
     assert not output.exists()
 
 
-def test_lbfgsb_backtracking_does_not_promote_gradient_probes():
+@pytest.mark.parametrize("method", ["L-BFGS-B", "SLSQP"])
+def test_optimizer_backtracking_does_not_promote_gradient_probes(method):
     from types import SimpleNamespace
 
-    class Rosenbrock:
+    from vmex import optimize as opt
+
+    class Rosenbrock(opt.FunctionProblem):
         x0 = np.zeros(2)
         accepted_step = 0
 
         def __init__(self):
+            super().__init__(np.zeros(2), value_and_grad=self.evaluate, scales=np.array([.5, .3]))
             self.accepted = SimpleNamespace(parameters=self.x0.copy())
             self.evaluated = []
             self.promoted = []
 
-        def value_and_grad(self, x):
+        def evaluate(self, x):
             self.evaluated.append((x.copy(), self.accepted.parameters.copy()))
             self.last = x.copy()
             value = (1-x[0])**2 + 100*(x[1]-x[0]**2)**2
@@ -412,14 +423,14 @@ def test_lbfgsb_backtracking_does_not_promote_gradient_probes():
             self.accepted_step += 1
 
     problem = Rosenbrock()
-    scales = np.array([.5, .3])
     recorded = []
-    result = entry.run_optimizer(problem, scales, None, None, SimpleNamespace(accepted_steps=100),
-                                 lambda: recorded.append(problem.accepted.parameters.copy()), method="L-BFGS-B")
+    result = opt.minimize(problem, method=method,
+        callback=lambda x: recorded.append(problem.accepted.parameters.copy()),
+        options=dict(maxiter=100, ftol=1e-12))
     assert result.success and len(recorded) == problem.accepted_step
     assert len(problem.evaluated) > len(recorded)+1  # real line-search probes occurred
     np.testing.assert_allclose(problem.accepted.parameters, [1., 1.], atol=1e-5)
-    np.testing.assert_array_equal(problem.accepted.parameters, result.x*scales)
+    np.testing.assert_array_equal(problem.accepted.parameters, result.x)
     anchor = problem.x0
     next_accepted = iter(problem.promoted)
     accepted = next(next_accepted, None)
@@ -427,3 +438,33 @@ def test_lbfgsb_backtracking_does_not_promote_gradient_probes():
         np.testing.assert_array_equal(origin, anchor)
         if accepted is not None and np.array_equal(point, accepted):
             anchor, accepted = accepted, next(next_accepted, None)
+
+
+@pytest.mark.parametrize("profiles", [dict(am=np.array([1., -1.])),
+    dict(pmass_type="cubic_spline", am_aux_s=np.array([0., 1.]), am_aux_f=np.array([1., 0.])), dict(curtor=1e5)])
+def test_vacuum_builder_rejects_finite_beta_before_solving(tmp_path, monkeypatch, profiles):
+    from dataclasses import replace
+    import vmex as vj
+    args = entry.parse_args(["--output", str(tmp_path)])
+    inp = replace(vj.VmecInput.from_file(args.input), pres_scale=1.0, **profiles)
+    monkeypatch.setattr(vj.VmecInput, "from_file", lambda *a: inp)
+    import essos.coils
+    monkeypatch.setattr(essos.coils, "CreateEquallySpacedCurves",
+                        lambda *a, **k: pytest.fail("guard must run before coil fitting"))
+    monkeypatch.setattr(vj.optimize, "solve_equilibrium", lambda *a, **k: pytest.fail("guard must run before solving"))
+    with pytest.raises(ValueError, match="plasma-aware"):
+        entry.build_problem(args)
+
+
+def test_qualification_requires_checks_and_local_artifacts(tmp_path):
+    from vmex import optimize as opt
+    path, report = qualification_bundle(tmp_path)
+    report["checks"].pop("finite_difference")
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="checks have not passed"):
+        opt.OptimizationQualification.read(path, contract=report["contract"])
+    report["checks"]["finite_difference"] = dict(passed=True)
+    report["artifacts"]["coils"]["file"] = "../coils.json"
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="beside the report"):
+        opt.OptimizationQualification.read(path, contract=report["contract"])

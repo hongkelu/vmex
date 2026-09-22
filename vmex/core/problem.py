@@ -22,6 +22,17 @@ Array = Any
 HostFun = Callable[[np.ndarray], Any]
 
 
+def _nonlinear_constraint(values, jacobian, lower, upper, scales):
+    from scipy.optimize import NonlinearConstraint
+
+    lo, hi, scale = np.broadcast_arrays(np.asarray(lower, dtype=float),
+        np.asarray(upper, dtype=float), np.asarray(scales, dtype=float))
+    if np.any(np.isnan(lo) | np.isnan(hi) | (lo > hi)) or np.any(~np.isfinite(scale) | (scale <= 0)):
+        raise ValueError("ordered bounds and finite positive constraint scales required")
+    return NonlinearConstraint(lambda x: np.asarray(values(x))/scale, lo/scale, hi/scale,
+                               jac=lambda x: np.asarray(jacobian(x))/scale[..., None])
+
+
 def _slice_bounds(bounds: Any, free: np.ndarray, size: int) -> Any:
     """Restrict carried box constraints to the ``free`` decision variables.
 
@@ -742,6 +753,15 @@ class FunctionProblem:
             evaluation_progress=self.evaluation_progress,
             report_interval=self.report_interval,
         )
+
+    def nonlinear_constraint(self, lower, upper, *, scales=1.0):
+        """Bound residual values in their original units, with analytic derivatives.
+
+        Return a SciPy NonlinearConstraint for ``opt.minimize(problem, ...)``
+        or SciPy. Positive row scales condition values, bounds and Jacobians
+        together without changing the feasible set.
+        """
+        return _nonlinear_constraint(self.residual, self.residual_jac, lower, upper, scales)
 
     def compile_value_and_gradient(
         self,

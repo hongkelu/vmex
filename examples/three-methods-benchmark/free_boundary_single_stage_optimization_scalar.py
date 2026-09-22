@@ -40,8 +40,10 @@ class Settings:
     coil_order: int = 5
     n_segments: int = 64
     adjoint_batch_size: int = 32
+    matrixfree_rhs_batch_size: int = 3  # independent adjoint rows; dense default is unchanged
     root_tolerance: float = 2e-06
-    equilibrium_ftol: float = 1e-20  # needed for independently converged derivatives
+    equilibrium_ftol: float = 1e-11  # user-selected optimization force/edge tolerance
+    gradient_check_ftol: float = 1e-20  # independent reference solves only
 
 
 settings = Settings()

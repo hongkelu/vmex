@@ -20,6 +20,9 @@ from pathlib import Path
 import signal
 import sys
 import time
+import traceback
+
+from _scalar_resume import load_seed_checkpoint, save_adjoint_failure
 
 
 def gradient_check_passes(checks, objective_rtol, fine_only, constrained):
@@ -43,12 +46,28 @@ def run(script_path, settings, plasma_costs, coil_costs):
     parser.add_argument("--output", type=Path, default=here / "runs" / time.strftime("free-scalar-%Y%m%d-%H%M%S"))
     parser.add_argument("--resume-from", type=Path, help="completed free run whose accepted endpoint seeds this segment")
     parser.add_argument("--resume-manifest", type=Path, help="SHA256 download manifest authenticating the prior run")
+    parser.add_argument("--initial-checkpoint", type=Path,
+                        help="explicit diagnostic seed; requires its SHA256 and fresh qualification")
+    parser.add_argument("--initial-checkpoint-sha256", help="expected hash of the diagnostic seed")
     parser.add_argument("--maxiter", type=int, default=settings.maxiter)
     parser.add_argument("--method", choices=("BFGS", "L-BFGS-B"), default=settings.method)
     parser.add_argument("--max-trials", type=int, default=settings.max_trials)
     parser.add_argument("--accepted-steps", type=int, help="optional accepted-step budget")
     parser.add_argument("--adjoint", choices=("dense", "matrixfree"), default="dense",
                         help="matrixfree retains a dense seed LU as a preconditioner")
+    parser.add_argument("--matrixfree-restart", type=int, default=30,
+                        help="Krylov vectors per restart cycle (default: 30)")
+    parser.add_argument("--matrixfree-max-cycles", type=int, default=10,
+                        help="maximum restart cycles; product with restart must not exceed 300")
+    parser.add_argument("--matrixfree-rhs-batch-size", type=int,
+                        default=getattr(settings, "matrixfree_rhs_batch_size", 1),
+                        help="independent adjoint rows per GPU batch (1 through 4; 1 selects serial solves)")
+    parser.add_argument("--matrixfree-rtol", type=float, default=1e-11)
+    parser.add_argument("--predictor-rtol", type=float, default=1e-11)
+    parser.add_argument("--adjoint-residual-rtol", type=float, default=1e-9)
+    parser.add_argument("--matrixfree-convergence-policy", choices=("requested", "residual"), default="residual")
+    parser.add_argument("--matrixfree-refresh-on-failure", action="store_true",
+                        help="try one checked dense recovery on failure; refresh LU only on optimizer acceptance")
     parser.add_argument("--adjoint-max-dofs", type=int, default=4096,
                         help="explicit memory bound for the dense seed")
     parser.add_argument("--adjoint-batch-size", type=int, default=settings.adjoint_batch_size,
@@ -57,8 +76,8 @@ def run(script_path, settings, plasma_costs, coil_costs):
     parser.add_argument("--grid", type=int, nargs=2, metavar=("NTHETA", "NPHI"))
     parser.add_argument("--no-boundary-error", action="store_true",
                         help="remove both normal-field objective terms; keep diagnostics")
-    parser.add_argument("--fd-ftol", type=float,
-                        help="validation-only force/edge tolerance; defaults to --ftol")
+    parser.add_argument("--fd-ftol", type=float, default=getattr(settings, "gradient_check_ftol", None),
+                        help="validation-only force/edge tolerance; defaults to settings.gradient_check_ftol, or --ftol if unset")
     parser.add_argument("--check-gradient", action=argparse.BooleanOptionalAction, default=True,
                         help="check the scalar adjoint with independently corrected centered differences")
     parser.add_argument("--gradient-rtol", type=float, default=1e-3,
@@ -71,10 +90,10 @@ def run(script_path, settings, plasma_costs, coil_costs):
     parser.add_argument("--verification-seconds", type=int, default=1800)
     parser.add_argument("--initial-ftol", type=float,
                         help="fixed-boundary initialization tolerance; otherwise use the input deck")
-    parser.add_argument("--ftol", type=float, help="override the equilibrium force tolerance")
+    parser.add_argument("--ftol", type=float, help="override settings.equilibrium_ftol for optimization force/edge checks")
     parser.add_argument("--verify-ns", type=int, default=101)
     parser.add_argument("--verify-maxiter", type=int, default=8000)
-    parser.add_argument("--verify-ftol", type=float, default=1.0e-14)
+    parser.add_argument("--verify-ftol", type=float, default=1.0e-15)
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--constrained", action="store_true", help="SLSQP with shared iota and physical-radius inequalities")
     args = parser.parse_args()
@@ -82,9 +101,15 @@ def run(script_path, settings, plasma_costs, coil_costs):
     if args.constrained:
         args.method = "SLSQP"
     if args.ftol is None:
-        args.ftol = limits.FORCE_TOLERANCE if args.constrained else settings.equilibrium_ftol
+        args.ftol = settings.equilibrium_ftol
     if args.adjoint == "matrixfree" and not args.check_gradient:
         parser.error("matrixfree requires starting-point derivative qualification")
+    if any(not 0 < value < 1 for value in (args.matrixfree_rtol, args.adjoint_residual_rtol, args.predictor_rtol)):
+        parser.error("adjoint tolerances must be finite and between zero and one")
+    if args.matrixfree_refresh_on_failure and args.adjoint != "matrixfree":
+        parser.error("--matrixfree-refresh-on-failure requires --adjoint matrixfree")
+    if min(args.matrixfree_restart, args.matrixfree_max_cycles) < 1 or args.matrixfree_restart*args.matrixfree_max_cycles > 300:
+        parser.error("matrixfree restart/cycle limits must be positive and allow at most 300 iterations")
     if args.accepted_steps is not None and args.accepted_steps < 1:
         parser.error("--accepted-steps must be positive")
     if min(args.adjoint_max_dofs, args.adjoint_batch_size, args.verification_seconds) < 1:
@@ -97,6 +122,8 @@ def run(script_path, settings, plasma_costs, coil_costs):
         parser.error("invalid M/N/NS resolution")
     if args.grid and min(args.grid)<3:
         parser.error("angular grid sizes must be at least 3")
+    if not 1 <= args.matrixfree_rhs_batch_size <= 4:
+        parser.error("--matrixfree-rhs-batch-size must be between 1 and 4")
     if args.fd_ftol is not None and not 0 < args.fd_ftol < 1:
         parser.error("--fd-ftol must be between zero and one")
     if args.resume_from and (args.resolution or args.grid):
@@ -111,11 +138,16 @@ def run(script_path, settings, plasma_costs, coil_costs):
         parser.error("--gradient-rtol must be between zero and one")
     if bool(args.resume_from) != bool(args.resume_manifest):
         parser.error("--resume-from and --resume-manifest must be used together")
+    if bool(args.initial_checkpoint) != bool(args.initial_checkpoint_sha256):
+        parser.error("--initial-checkpoint and --initial-checkpoint-sha256 must be used together")
+    if args.initial_checkpoint and (args.resume_from or not args.check_gradient):
+        parser.error("an explicit initial checkpoint requires fresh gradient qualification and cannot be combined with resume")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)  # never overwrite an earlier run
     (out / script_path.name).write_text(script_path.read_text())
     (out / Path(__file__).name).write_text(Path(__file__).read_text())
-    (out / "_scalar_gradient_check.py").write_text((here / "_scalar_gradient_check.py").read_text())
+    for name in ("_scalar_gradient_check.py", "_scalar_resume.py"):
+        (out / name).write_text((here / name).read_text())
     for key in ("TMPDIR", "XDG_CACHE_HOME", "MPLCONFIGDIR", "CUDA_CACHE_PATH"):
         path = out / "cache" / key
         path.mkdir(parents=True)
@@ -140,7 +172,7 @@ def run(script_path, settings, plasma_costs, coil_costs):
     from vmex.core.coil_parameters import CoilParameters
     from vmex.core.residuals import m1_constrained_to_physical
     from vmex.core.transforms import physical_to_internal_scale
-    from vmex.core.errors import VmecError
+    from vmex.core.errors import VmecError, AdjointSolveError
     from vmex.core.solver import SpectralState
     from _scalar_resume import load_endpoint
     from essos.coils import Coils
@@ -150,10 +182,11 @@ def run(script_path, settings, plasma_costs, coil_costs):
     from essos.surfaces import surfacerzfourier_from_boundary
     from _scalar_diagnostics import StepHistory, check_control_settings
 
-    restored, continuation = None, None
+    restored, continuation, initial_checkpoint = None, None, None
+    if args.initial_checkpoint:
+        restored, initial_checkpoint = load_seed_checkpoint(args.initial_checkpoint, args.initial_checkpoint_sha256)
     if args.resume_from:
         restored, continuation = load_endpoint(args.resume_from, args.resume_manifest, repo, asdict(settings), args, script_path)
-        (out / "_scalar_resume.py").write_text((here / "_scalar_resume.py").read_text())
     step_offset = continuation["step_offset"] if continuation else 0
     matched_settings = check_control_settings(settings, here / "single_stage_optimization_scalar.py")
     (out / "_scalar_diagnostics.py").write_text((here / "_scalar_diagnostics.py").read_text())
@@ -213,7 +246,7 @@ def run(script_path, settings, plasma_costs, coil_costs):
         matched_constants=matched_settings, example_settings=asdict(settings), core_sha256={str(p.relative_to(repo)): sha(p)
             for p in sorted((repo / "vmex/core").glob("*.py"))}, settings=vars(args),
         currents_A=chart.currents.tolist(), stage_two_included_in_timing=False, stage_two=metadata,
-        continuation=continuation))
+        continuation=continuation, initial_checkpoint=initial_checkpoint))
     write_json("constraint_settings.json", dict(enabled=args.constrained,
         **{k:v for k,v in vars(limits).items() if k.isupper()}))
     seed_surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs),
@@ -236,7 +269,7 @@ def run(script_path, settings, plasma_costs, coil_costs):
         field_from_parameters=chart, device=args.device, ftol=ftol, max_iterations=niter,
         include_edge_in_convergence=True, edge_force_tolerance=ftol,
         adjoint_solver="forward_dense_jax", adjoint_dense_batch_size=settings.adjoint_batch_size,
-        adjoint_fail="error", adjoint_residual_rtol=1.0e-6, adjoint_dense_max_dofs=args.adjoint_max_dofs)
+        adjoint_fail="error", adjoint_residual_rtol=args.adjoint_residual_rtol, adjoint_dense_max_dofs=args.adjoint_max_dofs)
     rt = im.runtime_from_params(im.params_from_input(inp), solver.implicit)
     if restored is None:
         print("[seed] solving and certifying free equilibrium...", flush=True)
@@ -248,7 +281,8 @@ def run(script_path, settings, plasma_costs, coil_costs):
         rcon0, zcon0 = seed_stage.rcon0, seed_stage.zcon0
         seed_iterations = int(seed_stage.result.iterations)
     else:
-        print(f"[resume] certifying saved accepted step {step_offset}; fresh SLSQP state", flush=True)
+        label = "provided initial checkpoint" if initial_checkpoint else f"saved accepted step {step_offset}"
+        print(f"[seed] certifying {label}; fresh SLSQP state", flush=True)
         seed_x = restored["parameters"]
         seed_state = SpectralState(*(jnp.asarray(restored[k]) for k in
             ("R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin")))
@@ -310,7 +344,8 @@ def run(script_path, settings, plasma_costs, coil_costs):
     step_history = StepHistory(out)
     accepted_linearization = candidate_linearization = None
     candidate = accepted
-    counts = dict(trials=0, solves=int(restored is None), failed_trials=0, accepted=0)
+    counts = dict(trials=0, solves=int(restored is None), failed_trials=0, failed_adjoint_trials=0,
+                  dense_recovery_attempts=0, dense_recoveries=0, preconditioner_refreshes=0, accepted=0)
     last = {}
     preconditioner = None
     cycle_started = time.perf_counter()
@@ -466,15 +501,58 @@ def run(script_path, settings, plasma_costs, coil_costs):
         else:
             (value, costs), (state_bar, direct_gradient) = local_value_grad(candidate.state, jnp.asarray(x))
             rhs = jax.tree.map(lambda a: a[None], state_bar)
-        diagnostics = []
+        diagnostics, recovery_diagnostics = [], []
+        recovered = False
+        adjoint_failure = failure_capture_error = None
         backend = 'dense' if preconditioner is None else 'matrixfree'
         try:
             linearization = fc.free_boundary_continuation_state_pullback(
                 candidate, cfg, rhs, return_linearization=True, preconditioner=preconditioner,
                 diagnostics=diagnostics)
+        except Exception as exc:
+            adjoint_failure = f'{type(exc).__name__}: {exc}'
+            counts['failed_adjoint_trials'] = counts.get('failed_adjoint_trials', 0) + 1
+            try:
+                save_adjoint_failure(out, candidate, accepted, counts['trials'], counts['accepted'], exc)
+            except Exception as evidence_error:
+                failure_capture_error = str(evidence_error)
+                exc.add_note(f"Failed to save adjoint replay evidence: {evidence_error}")
+            if not (args.matrixfree_refresh_on_failure and optimization_started is not None
+                    and preconditioner is not None
+                    and isinstance(exc, AdjointSolveError)):
+                raise
+            counts['dense_recovery_attempts'] = counts.get('dense_recovery_attempts', 0) + 1
+            # Finished traceback frames otherwise retain the failed Krylov
+            # tape and device LU throughout the dense allocation. Keep the
+            # traceback locations and exception chain, but release their locals.
+            traceback.clear_frames(exc.__traceback__)
+            print('  matrix-free adjoint qualification failed; one dense recovery at this certified trial', flush=True)
+            try:
+                linearization = fc.free_boundary_continuation_state_pullback(
+                    candidate, cfg, rhs, return_linearization=True, diagnostics=recovery_diagnostics)
+            except Exception as recovery_error:
+                recovery_error.add_note(f"Matrix-free attempt failed first: {exc}")
+                raise recovery_error from exc
+            recovered = True
+            counts['dense_recoveries'] = counts.get('dense_recoveries', 0) + 1
         finally:
-            write_json(f"adjoint_{counts['trials']:04d}_{backend}.json", dict(
-                accepted_step=counts['accepted'], checks=diagnostics))
+            active_error = sys.exception()
+            try:
+                # JSON has no NaN/Infinity numbers; preserve their spelling so
+                # a recorded failed solve cannot break a successful recovery.
+                checks, recovery_checks = [[
+                    {key: str(value) if isinstance(value, float) and not np.isfinite(value) else value
+                     for key, value in row.items()} for row in rows]
+                    for rows in (diagnostics, recovery_diagnostics)]
+                write_json(f"adjoint_{counts['trials']:04d}_{backend}.json", dict(
+                    accepted_step=counts['accepted'], checks=checks,
+                    recovered_with_dense=recovered, dense_recovery_checks=recovery_checks,
+                    failure=adjoint_failure, failure_capture_error=failure_capture_error))
+            except Exception as evidence_error:
+                if active_error is None:
+                    linearization.close()
+                    raise
+                active_error.add_note(f"Failed to save adjoint diagnostics: {evidence_error}")
         gradient = (np.asarray(linearization.field_jacobian)[0] + np.asarray(direct_gradient)) * scales
         if not np.isfinite(float(value)) or not np.all(np.isfinite(gradient)):
             linearization.close()
@@ -495,7 +573,8 @@ def run(script_path, settings, plasma_costs, coil_costs):
         gradient_seconds = time.perf_counter()-t1
         cycle_gradient_seconds += gradient_seconds
         last.update(key=x.tobytes(), value=float(value), gradient=gradient.copy(), root=candidate,
-                    terms=dict(zip(term_names, map(float, np.asarray(costs)))))
+                    terms=dict(zip(term_names, map(float, np.asarray(costs)))),
+                    adjoint_backend='dense_recovery' if recovered else backend)
         if args.constrained:
             last.update(constraints=np.asarray(rows[1:]),
                 constraint_jacobian=(np.asarray(linearization.field_jacobian)[1:]+np.asarray(direct_rows)[1:])*scales)
@@ -505,6 +584,7 @@ def run(script_path, settings, plasma_costs, coil_costs):
 
     def callback(u):
         nonlocal accepted, accepted_linearization, cycle_started, cycle_gradient_seconds, cycle_solve_seconds
+        nonlocal preconditioner
         x = np.asarray(initial.parameters) if np.array_equal(u, initial_u) else scales*np.asarray(u)
         if last.get("key") != x.tobytes():
             raise RuntimeError("SciPy accepted a trial without a finite certified evaluation")
@@ -512,13 +592,34 @@ def run(script_path, settings, plasma_costs, coil_costs):
             raise RuntimeError("cannot accept a trial before its certified gradient")
         if np.array_equal(last["root"].parameters, accepted.parameters):
             return
+        replacement = None
+        refresh_seconds = 0.0
+        if last.get('adjoint_backend') == 'dense_recovery':
+            refresh_started = time.perf_counter()
+            replacement = candidate_linearization.preconditioner(
+                restart=args.matrixfree_restart, max_restarts=args.matrixfree_max_cycles,
+                rtol=args.matrixfree_rtol, tangent_rtol=args.predictor_rtol,
+                require_adjoint_convergence=(args.matrixfree_convergence_policy == "requested"),
+                rhs_batch_size=getattr(args, "matrixfree_rhs_batch_size", 1))
+            refresh_seconds = time.perf_counter()-refresh_started
+            cycle_gradient_seconds += refresh_seconds
         if accepted_linearization is not None:
             accepted_linearization.close()
         accepted = last["root"]
         accepted_linearization = candidate_linearization
+        if replacement is not None:
+            preconditioner.close()
+            preconditioner = replacement
+            counts['preconditioner_refreshes'] = counts.get('preconditioner_refreshes', 0) + 1
         counts["accepted"] += 1
         record_step(last["value"], last["terms"], cycle_gradient_seconds, cycle_solve_seconds,
                     time.perf_counter()-cycle_started)
+        if replacement is not None:
+            write_json(f"preconditioner_refresh_{counts['accepted']:04d}.json", dict(
+                trial=counts['trials'], accepted_step=counts['accepted'],
+                reason='certified dense recovery accepted by optimizer',
+                factor_snapshot_seconds=refresh_seconds,
+                restart=args.matrixfree_restart, max_cycles=args.matrixfree_max_cycles))
         cycle_started = time.perf_counter()
         cycle_gradient_seconds = cycle_solve_seconds = 0.0
         if args.accepted_steps is not None and counts['accepted'] >= args.accepted_steps:
@@ -568,7 +669,11 @@ def run(script_path, settings, plasma_costs, coil_costs):
             dense_rows = np.vstack((last['gradient'], last['constraint_jacobian'])) if args.constrained else last['gradient'][None]
             delta = jnp.asarray(scales*direction*1e-3)
             dense_tangent = accepted_linearization.tangent(accepted, cfg, delta)
-            preconditioner = accepted_linearization.preconditioner()
+            preconditioner = accepted_linearization.preconditioner(
+                restart=args.matrixfree_restart, max_restarts=args.matrixfree_max_cycles,
+                rtol=args.matrixfree_rtol, tangent_rtol=args.predictor_rtol,
+                require_adjoint_convergence=(args.matrixfree_convergence_policy == "requested"),
+                rhs_batch_size=getattr(args, "matrixfree_rhs_batch_size", 1))
             last['gradient'] = None
             value_and_grad(initial_u)
             rows = np.vstack((last['gradient'], last['constraint_jacobian'])) if args.constrained else last['gradient'][None]
@@ -639,7 +744,7 @@ def run(script_path, settings, plasma_costs, coil_costs):
 
     optimization_seconds = 0.0 if optimization_started is None else time.perf_counter()-optimization_started
     summary = dict(example=script_path.name, status=status, failure=failure, method=args.method, **counts,
-        absolute_step=step_offset+counts["accepted"], continuation=continuation,
+        absolute_step=step_offset+counts["accepted"], continuation=continuation, initial_checkpoint=initial_checkpoint,
         optimization_seconds=optimization_seconds, stage_two=metadata,
         free_initialization_and_optimization_seconds=time.perf_counter()-free_started,
         seed=metrics(initial), final=metrics(accepted),

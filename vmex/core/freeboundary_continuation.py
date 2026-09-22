@@ -411,16 +411,27 @@ class FreeBoundaryContinuationLinearization:
     _cfg: Any = field(repr=False)
     _dense: Any = field(repr=False)
 
-    def preconditioner(self, *, rtol=1e-11, restart=30, max_restarts=10):
+    def preconditioner(
+        self, *, rtol=1e-11, restart=30, max_restarts=10,
+        require_adjoint_convergence=False, rhs_batch_size=1, tangent_rtol=None,
+    ):
         """Copy certified dense seed factors for bounded matrix-free solves.
 
         ``rtol`` is the Krylov request; the solver's ``adjoint_residual_rtol``
         still gates the actual full residual. Factors are float64 host arrays.
+        ``require_adjoint_convergence`` additionally rejects adjoints that miss
+        the requested Krylov tolerance; it does not change the tangent policy.
+        ``rhs_batch_size`` (1 through 4) groups independent adjoints on the device;
+        every row retains its own convergence and full-residual checks.
+        ``tangent_rtol`` independently controls the predictor Krylov request;
+        when omitted it inherits ``rtol``. Full tangent checks remain required.
         """
         from ._freeboundary_matrixfree import SeedLU
         if self._dense is None:
             raise ValueError('continuation linearization is closed')
-        seed = SeedLU.from_root(self._dense, rtol=rtol, restart=restart, max_restarts=max_restarts)
+        seed = SeedLU.from_root(self._dense, rtol=rtol, restart=restart, max_restarts=max_restarts,
+                                require_adjoint_convergence=require_adjoint_convergence,
+                                rhs_batch_size=rhs_batch_size, tangent_rtol=tangent_rtol)
         return FreeBoundaryLUPreconditioner(self._cfg, seed)
 
     def offload_factors(self):

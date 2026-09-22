@@ -55,25 +55,26 @@ python -B single_stage_optimization_scalar.py --constrained --device gpu \
   --maxiter 100 --output runs/fixed-scalar
 ```
 
-The current free-boundary research configuration is:
+For a bounded free-boundary matrix-free pilot:
 
 ```sh
 python -B free_boundary_single_stage_optimization_scalar.py \
   --device gpu --constrained --adjoint matrixfree \
   --resolution 8 8 51 --grid 64 64 \
-  --adjoint-max-dofs 20000 --adjoint-batch-size 16 --no-boundary-error \
-  --initial-ftol 1e-18 --ftol 1e-18 --fd-ftol 1e-20 \
-  --maxiter 101 --accepted-steps 100 --max-trials 400 \
-  --wall-seconds 5400 --optimization-seconds 43200 \
-  --verification-seconds 1800 --verify-ns 201 \
-  --verify-maxiter 12000 --verify-ftol 1e-14 \
+  --adjoint-max-dofs 20000 --adjoint-batch-size 32 --no-boundary-error \
+  --initial-ftol 1e-18 --ftol 1e-11 --fd-ftol 1e-20 \
+  --matrixfree-restart 100 --matrixfree-max-cycles 3 --matrixfree-refresh-on-failure \
+  --maxiter 10 --accepted-steps 2 --max-trials 40 \
+  --wall-seconds 5400 --optimization-seconds 1800 \
+  --verification-seconds 1800 --verify-ns 51 \
+  --verify-maxiter 12000 --verify-ftol 1e-15 \
   --output runs/free-scalar-matrixfree --no-plots
 ```
 
 This free configuration is not resolution/objective matched to the fixed
 command above. Use a suitable GPU allocation and external finite watchdog
 for long runs. The driver creates a new output directory and refuses to
-overwrite one. The 400-evaluation budget includes qualification endpoints.
+overwrite one. The evaluation budget includes qualification endpoints.
 
 SLSQP uses `ftol=1e-10` and explicit iota/radius inequalities. The physical
 limits are minimum half-mesh |iota| >= 0.19 and major radius 0.99–1.01 m;
@@ -82,19 +83,20 @@ can violate those guards. QA, aspect and coil geometry contribute to the
 weighted objective. `--no-boundary-error` removes both normal-field objective
 terms while retaining their final diagnostics. B0 is diagnostic only.
 
-The native matrix-free adjoint and tangent use a fixed initial LU
+The native matrix-free adjoint and tangent use a retained LU
 preconditioner, current-root JVP/VJP operations and bounded FGMRES. Fresh
 finite-difference qualification is required at both h=0.003 and h=0.001,
 with objective and constraint relative errors below 0.001. Dense/matrix-free
 gradient and tangent parity must be below 1e-8; true linear residual checks
-retain their 1e-6 gate. There is no automatic factor refresh or fallback.
+use a 1e-9 gate. Dense recovery is opt-in and factors refresh only after
+optimizer acceptance, as described below.
 
 ## Validation status
 
 This is research code, not a completed three-method scientific qualification.
-The native two-step pilot passed fresh derivative/parity/residual checks and
-independent M8/N8/NS201 physical verification. The full 100-step run was
-still in progress when this directory was published on 2026-09-21.
+The earlier native pilot passed independent M8/N8/NS201 physical checks.
+The later recovery/tolerance pilot described below used same-resolution final
+verification. Neither establishes a completed 100-step qualification.
 An accepted-step budget stop does not establish optimizer convergence.
 
 `QA total` is the sum of squared quasisymmetry residuals, evaluated on ten
@@ -107,3 +109,38 @@ Local campaign directories, raw checkpoints, machine configuration and
 monitoring scripts are excluded from this publication. The active campaign
 retains its original local `three-way-benchmark` path so its immutable source
 hashes and monitor continue working.
+
+
+## Optional matrix-free adjoints
+
+Dense adjoints remain the default and reference. To use a retained dense LU
+as a preconditioner for current-root Krylov solves, add these options to the
+free-boundary command above:
+
+```sh
+--adjoint matrixfree --matrixfree-restart 100 --matrixfree-max-cycles 3 \
+--matrixfree-rhs-batch-size 3 --matrixfree-rtol 1e-11 \
+--adjoint-residual-rtol 1e-9 --predictor-rtol 1e-11 \
+--matrixfree-convergence-policy residual --matrixfree-refresh-on-failure \
+--ftol 1e-11 --verify-ftol 1e-15
+```
+
+The Krylov stopping request and the independently evaluated full adjoint
+residual are different checks. The `residual` policy accepts a finite solution
+only when the full residual passes; `requested` additionally requires Krylov's
+convergence flag. Predictor stopping is independent. Starting-point derivative
+qualification is mandatory; its finite-difference equilibrium tolerance stays
+at `1e-20` by default and is excluded from optimization timing.
+
+After qualification, a failed matrix-free adjoint can trigger one checked
+dense solve at the same certified trial. Its factors replace the retained LU
+only if the optimizer accepts that trial. Failed trials and their last accepted
+anchors are saved for replay. Recovery cost is included in gradient/step timing.
+An explicit `--initial-checkpoint` requires its `--initial-checkpoint-sha256`
+and fresh qualification; it starts fresh optimizer history.
+
+The vacuum M8/N8/NS51, 64x64 pilot passed two accepted steps from the formerly
+blocked step 10, with a same-resolution final force check at `1e-15`. That
+bounded result does not establish long-run convergence, finite-beta accuracy,
+or equivalence to the separate projected optimizer on `main`. Keep this path
+opt-in until a matched longer run passes numerical and physical checks.

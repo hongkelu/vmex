@@ -31,7 +31,7 @@ def saved_problem(monkeypatch, tmp_path):
               result=NS(fedge=0.))
     solver = NS(implicit=NS(inp=inp, ftol=1e-11, max_iterations=12000), resolution=None,
                 edge_force_tolerance=1e-11, include_edge_in_convergence=True,
-                adjoint_solver='forward_dense_jax', field_from_parameters=chart)
+                adjoint_solver='forward_dense_jax', adjoint_fail='error', field_from_parameters=chart)
     monkeypatch.setattr(api.im, 'runtime_from_params', lambda *a: None)
     monkeypatch.setattr(api.im, 'params_from_input', lambda *a: None)
     monkeypatch.setattr(api.fbi, 'make_free_boundary_config', lambda *a, **kw: solver)

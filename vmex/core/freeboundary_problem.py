@@ -236,8 +236,8 @@ class FreeBoundaryProblem(FunctionProblem):
             opts.setdefault("adjoint_solver", "forward_dense_jax")
             opts.setdefault("adjoint_fail", "error")
             opts.setdefault("adjoint_dense_batch_size", 32)
-            if opts["adjoint_solver"] != "forward_dense_jax":
-                raise ValueError("this API currently requires the forward_dense_jax derivative backend")
+            if opts["adjoint_fail"] != "error":
+                raise ValueError("optimization requires adjoint_fail=error")
             solver = fbi.make_free_boundary_config(
                 inp, parameterization(jnp.asarray(point)), field_from_parameters=parameterization, **opts
             )
@@ -294,8 +294,8 @@ class FreeBoundaryProblem(FunctionProblem):
                     raise VmecError("ordinary/fresh edge residual disagreement")
         if not cfg.solver.include_edge_in_convergence:
             raise ValueError("a strict edge-certified continuation config is required")
-        if cfg.solver.adjoint_solver != "forward_dense_jax":
-            raise ValueError("this API currently requires the forward_dense_jax derivative backend")
+        if cfg.solver.adjoint_solver not in fbi._ADJOINT_SOLVERS or cfg.solver.adjoint_fail != "error":
+            raise ValueError("optimization requires a supported adjoint solver with adjoint_fail=error")
         if not np.array_equal(cfg.parameter_scales, parameterization.scales):
             raise ValueError("continuation and coil coordinate scales differ")
         problem = cls(
@@ -475,8 +475,21 @@ class FreeBoundaryProblem(FunctionProblem):
                 if record is self.accepted:
                     self._accepted_linearization, self._accepted_jac = linearization, jac
         finally:
-            self._emit("adjoint", seconds=time.monotonic() - started, rows=diagnostics)
+            self._emit("adjoint", seconds=time.monotonic() - started, rows=diagnostics, solver=self.solver_info)
         return self._compact_jac
+
+    @property
+    def solver_info(self):
+        """Configured adjoint, reuse policy and predictor; actual solves report rows."""
+        method = self.solver.adjoint_solver
+        reuse = self._preconditioner is not None
+        return dict(adjoint_solver=method,
+            active_adjoint="matrixfree_seed_lu" if reuse else method,
+            preconditioner="seed_lu" if reuse else None,
+            recovery="forward_dense_jax" if reuse else None,
+            predictor=("matrixfree_seed_lu" if reuse else "reused_dense_lu"
+                       if method.startswith("forward_dense") else "reverse_gcrot_tangent"),
+            adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None))
 
     def enable_matrix_free(self, direction=None, *, rtol=1e-11, restart=100, max_restarts=3,
                            rhs_batch_size=3, parity_rtol=1e-6):
@@ -493,6 +506,8 @@ class FreeBoundaryProblem(FunctionProblem):
         """
         if not self._scalar_loss or self._preconditioner is not None:
             raise ValueError("enable matrix-free once on a scalar-loss problem")
+        if self.solver.adjoint_solver != "forward_dense_jax":
+            raise ValueError("seed-LU reuse requires adjoint_solver='forward_dense_jax'")
         options = dict(rtol=rtol, restart=restart, max_restarts=max_restarts, rhs_batch_size=rhs_batch_size)
         if direction is None:
             self._derivatives(self.accepted)

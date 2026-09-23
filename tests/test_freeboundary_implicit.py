@@ -394,6 +394,22 @@ def test_schur_lanes_are_reusable_and_leak_nothing_per_gradient():
     assert after == before + 1
     np.testing.assert_allclose(forced, elimination, rtol=1.0e-6, atol=0.0)
 
+    # Exercise the public multi-row Schur dispatch on the very same physical
+    # state. This is an integration check, not the production root tolerance.
+    p, external, state, mask, rcon, zcon = saved[:6]
+    residual = fbi._projected_residual(cfg, mask)
+    root_norm = float(im._tree_norm(residual(state, p, external, state, rcon, zcon)))
+    rows = jax.tree.map(lambda value: jnp.stack([value, -value]), state_bar)
+    reports = []
+    (_, gradient), linearization = fbi.free_boundary_state_pullback_multi_rhs(
+        p, external, cfg, state, mask, rows, rcon0=rcon, zcon0=zcon,
+        root_residual_atol=max(1e-5, 1.01*root_norm), diagnostics=reports,
+        return_linearization=True)
+    np.testing.assert_allclose(gradient, np.stack([elimination, -elimination]), rtol=1e-6, atol=1e-12)
+    assert any(row["backend"] == "boundary_schur" for row in reports)
+    assert {row["row"] for row in reports if row["accepted"]} == {0, 1}
+    linearization.close()
+
 
 def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
     """Under an outer jax.jit the pullback is taken at the root, then staged GCROT."""
@@ -528,7 +544,7 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data(backend):
         jacobian = matrix + jnp.diag((params + field + base + rcon + zcon) * z)
         expected = np.linalg.solve(np.asarray(jacobian.T), np.asarray(rhs))
         if backend == "reverse_gcrot":
-            tape = fbi._prepare_reverse_transpose(*args, residual=residual)
+            tape = fbi._prepare_linearized_transpose(*args, residual=residual)
             result = fbi._solve_prepared_reverse_adjoint(tape, rhs, cfg)
         else:
             result = fbi._host_adjoint(residual, *args, rhs, cfg)
@@ -555,7 +571,7 @@ def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, 
     params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
     rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
     counts = {'state':0, 'parameter':0}
-    state_name = "_prepare_reverse_transpose" if backend == "reverse_gcrot" else "_prepare_transpose"
+    state_name = "_prepare_linearized_transpose" if backend == "reverse_gcrot" else "_prepare_transpose"
     prepare_state, prepare_parameter = getattr(fbi, state_name), fbi._prepare_parameter_pullback
     def counted_state(*args, **kwargs):
         counts['state'] += 1
@@ -1452,7 +1468,7 @@ def test_reverse_gcrot_independently_rejects_false_success(monkeypatch, bad):
                           adjoint_gcrot_m=3, adjoint_gcrot_k=1)
     def residual(z, *args):
         return 2*z
-    tape = fbi._prepare_reverse_transpose(jnp.zeros(3),None,None,None,None,None,residual=residual)
+    tape = fbi._prepare_linearized_transpose(jnp.zeros(3),None,None,None,None,None,residual=residual)
     native = fbi._solvax_gcrot
     def faulty(action, rhs, **kw):
         return native(action,rhs,**kw)._replace(x=jnp.full_like(rhs,bad),converged=jnp.array(True))
@@ -1587,3 +1603,38 @@ def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
     actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),
         adjoint_solver=backend,adjoint_residual_rtol=1e-9)
     assert actual.adjoint_residual_rtol==1e-9
+
+
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
+def test_shared_adjoint_report_enforces_strict_true_residual(monkeypatch, backend):
+    controls = SimpleNamespace(device=None, adjoint_tol=1e-3, adjoint_maxiter=10,
+                               adjoint_gcrot_m=3, adjoint_gcrot_k=1)
+    residual = jax.jit(lambda z, p, f, *_: 2*z-p-f)
+    if backend == "coupled_gcrot":
+        monkeypatch.setattr(fbi, "gcrotmk", lambda *a, **k: (np.ones(3)*.500001, 0))
+    else:
+        monkeypatch.setattr(fbi, "_reverse_gcrot_core", lambda *a, **k:
+            (jnp.ones(3)*.500001, 2e-6*np.sqrt(3), np.sqrt(3), 1))
+    records = []
+    with pytest.raises(Exception, match="did not converge"):
+        fbi._host_pullback_multi_rhs(residual, jnp.zeros(3), jnp.zeros(3), jnp.zeros(3),
+            jnp.zeros(3), None, None, jnp.ones((1,3)), controls, backend=backend,
+            residual_rtol=1e-9, diagnostics=records)
+    assert records[-1]["backend"] == backend and not records[-1]["accepted"]
+    assert records[-1]["tolerance"] == pytest.approx(1e-9*np.sqrt(3))
+
+
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "boundary_schur", "edge_response"])
+def test_traced_upstream_adjoint_honors_explicit_residual_gate(monkeypatch, backend):
+    from contextlib import nullcontext
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *a, **k: lambda z, p, f, *_: 2*z-p-f)
+    monkeypatch.setattr(im, "_dof_projector", lambda *a: lambda x: x)
+    monkeypatch.setattr(im, "_adjoint_solve_gcrot", lambda action, rhs, cfg: (rhs/2+1e-6, None))
+    cfg = SimpleNamespace(implicit=SimpleNamespace(adjoint_tol=1e-3), adjoint_solver=backend,
+                          adjoint_fail="error", adjoint_residual_rtol=1e-9)
+    zero = jnp.zeros(2)
+    saved = (zero, zero, zero, None, None, None)
+    context = pytest.warns(RuntimeWarning, match="not available under jax.jit") if backend == "boundary_schur" else nullcontext()
+    with context:
+        gradient = jax.jit(lambda rhs: fbi._solve_bwd_impl(cfg, saved, rhs))(jnp.ones(2))
+    assert all(np.all(np.isnan(value)) for value in jax.tree.leaves(gradient))

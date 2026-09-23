@@ -503,8 +503,11 @@ carry recycle spaces between objectives. A projected preconditioned root
 residual check (``root_residual_atol``, default ``1e-5``) precedes the solves;
 this numerical gate does not establish physical gradient accuracy.
 
-This interface is host-eager and supports ``coupled_gcrot``, ``reverse_gcrot``,
-``forward_dense``, and ``forward_dense_jax``.
+This interface is host-eager and supports all six free-boundary adjoint
+backends, including upstream ``boundary_schur`` and ``edge_response``.
+For Schur, both the adjoint and parameter pullback use the raw residual;
+other methods use their existing preconditioned residual. Schur currently
+factors each cotangent row independently.
 The existing scalar custom VJP, traced solver path, and ``boundary_schur``
 interface retain their behavior. Use independent re-solve finite differences
 and root-convergence studies to qualify a new physical response.
@@ -834,6 +837,40 @@ The main entry points are :func:`vmex.core.optimize.make_problem`,
 :class:`vmex.core.monitoring.EquilibriumReporter`.
 
 
+Optimizer and adjoint choices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The outer optimizer and equilibrium linear solver are independent choices.
+Use ``opt.minimize(problem, method="SLSQP")`` for nonlinear constraints or
+``method="L-BFGS-B"`` for box bounds; BFGS is also available for unconstrained
+problems. Both upstream free-boundary single-stage examples use this same
+adapter. ``minimize_projected`` remains a separate research algorithm because
+its target restoration and stationarity criterion differ from SLSQP.
+
+Free-boundary adjoint backends are ``coupled_gcrot`` (host iterations),
+``reverse_gcrot`` (device iterations), ``boundary_schur`` (bulk elimination),
+``edge_response`` (cached vacuum response), ``forward_dense`` (SciPy LU), and
+``forward_dense_jax`` (JAX LU). They share acceptance/reporting conventions and
+one accepted-root continuation interface. Dense methods retain their factors
+for prediction; the other methods use the existing ``reverse_gcrot_tangent``
+forward solve. A Schur adjoint does not yet retain Schur factors for its tangent.
+Changing methods still requires independent derivative and progress checks.
+
+The three-method production examples keep ``forward_dense_jax`` plus
+``problem.enable_matrix_free()``: current-root GMRES with a seed-LU
+preconditioner, and one checked dense retry. They do not call the
+``reverse_gcrot`` solver. ``problem.solver_info`` reports the configured
+adjoint, active reuse policy, recovery and predictor; event rows identify the
+actual solver and true residual, including unsuccessful attempts before a
+recovery. The optimization summary also saves this policy. The shared
+linearized-transpose helper prepares an operator; its use does not select GCROT.
+
+Seed-LU reuse remains specific to ``forward_dense_jax``. Other adjoint choices
+are opt-in API alternatives, not qualified replacements for the production
+configuration. Compare gradient and predictor accuracy, correction iterations,
+and total gradient-plus-predictor time including factor construction before
+changing the default. No timing advantage is implied by the common interface.
+
 Reverse GCROT free-boundary adjoints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -983,7 +1020,7 @@ The free-boundary solver accepts opt-in ``include_edge_in_convergence`` and
 ``edge_force_tolerance`` controls; ``SolveResult.fedge`` reports the spectral
 edge-force residual. Fresh certification checks the exact returned state.
 
-For ``reverse_gcrot`` and the dense backends, ``adjoint_residual_rtol``
+For every free-boundary backend, ``adjoint_residual_rtol``
 optionally specifies a strict
 true-residual acceptance threshold independently of ``adjoint_tol``. Its
 ``None`` default retains the existing tenfold acceptance margin. The shared
@@ -1101,10 +1138,11 @@ it does not reconverge or replace the accepted equilibrium.
 Limits and results
 ~~~~~~~~~~~~~~~~~~
 
-This first public implementation requires float64 JAX and
-``forward_dense_jax`` derivatives. Objective and constraint functions depend
-on ``(state, runtime)``. Direct coil-objective terms need an explicit direct
-parameter derivative and are not part of this interface yet. Calls stay eager
+This interface requires float64 JAX and ``adjoint_fail="error"``. Choose
+any supported backend through ``solver_options["adjoint_solver"]``.
+Residual ``from_tuples`` objectives and constraints depend on
+``(state, runtime)``; scalar ``from_loss`` additionally includes explicit
+coil-objective derivatives. Calls stay eager
 outside the compiled state functions; do not wrap the problem in ``jax.jit``.
 
 ``minimize_projected`` preserves projected descent, adaptive target restoration,

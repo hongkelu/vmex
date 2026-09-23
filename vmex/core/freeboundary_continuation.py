@@ -400,16 +400,16 @@ class FreeBoundaryLUPreconditioner:
 
 @dataclass(eq=False)
 class FreeBoundaryContinuationLinearization:
-    """A gradient and reusable tangent factors owned by one accepted root.
+    """A gradient and checked tangent solver owned by one accepted root.
 
     Pass the current accepted record and configuration on every tangent call.
-    Identity checks prevent factors from crossing roots, masks or constraint
+    Identity checks prevent solvers from crossing roots, masks or constraint
     baselines. Close at promotion or when abandoning the current direction.
     """
     field_jacobian: Any
     _accepted: Any = field(repr=False)
     _cfg: Any = field(repr=False)
-    _dense: Any = field(repr=False)
+    _root: Any = field(repr=False)
 
     def preconditioner(
         self, *, rtol=1e-11, restart=30, max_restarts=10,
@@ -427,39 +427,34 @@ class FreeBoundaryContinuationLinearization:
         when omitted it inherits ``rtol``. Full tangent checks remain required.
         """
         from ._freeboundary_matrixfree import SeedLU
-        if self._dense is None:
+        if self._root is None:
             raise ValueError('continuation linearization is closed')
-        seed = SeedLU.from_root(self._dense, rtol=rtol, restart=restart, max_restarts=max_restarts,
+        seed = SeedLU.from_root(self._root, rtol=rtol, restart=restart, max_restarts=max_restarts,
                                 require_adjoint_convergence=require_adjoint_convergence,
                                 rhs_batch_size=rhs_batch_size, tangent_rtol=tangent_rtol)
         return FreeBoundaryLUPreconditioner(self._cfg, seed)
 
     def offload_factors(self):
         """Move dense factors to immutable host storage between predictor calls."""
-        if self._dense is None:
+        if self._root is None:
             raise ValueError('continuation linearization is closed')
-        factors = self._dense.factors
-        if not all(isinstance(x, np.ndarray) and not x.flags.writeable for x in factors):
-            factors = tuple(np.array(x, copy=True) for x in factors)
-            for value in factors:
-                value.setflags(write=False)
-            self._dense.factors = factors
+        self._root.offload_factors()
 
     def tangent(self, accepted, cfg, direction, *, diagnostics=None):
         """Return the certified tangent using this accepted root's factors."""
-        if self._dense is None:
+        if self._root is None:
             raise ValueError('continuation linearization is closed')
         if accepted is not self._accepted or cfg is not self._cfg:
             raise ValueError('linearization belongs to a different accepted root or configuration')
         if accepted._owner is not cfg._owner:
             raise ValueError('accepted root belongs to a different continuation config')
-        return self._dense.tangent(direction,diagnostics=diagnostics)
+        return self._root.tangent(direction,diagnostics=diagnostics)
 
     def close(self):
         """Release the retained linearization and invalidate subsequent reuse."""
-        if self._dense is not None:
-            self._dense.close()
-        self._dense = self._accepted = self._cfg = self.field_jacobian = None
+        if self._root is not None:
+            self._root.close()
+        self._root = self._accepted = self._cfg = self.field_jacobian = None
 
 
 def free_boundary_continuation_state_pullback(

@@ -82,7 +82,7 @@ def analytic(monkeypatch):
         edge_force_tolerance=1e-11,
         field_from_parameters=chart,
         include_edge_in_convergence=True,
-        adjoint_solver="forward_dense_jax",
+        adjoint_solver="forward_dense_jax", adjoint_fail="error",
     )
     anchor = Root(chart.x0.copy(), state(chart.x0))
     cfg = Config(solver, None, anchor, chart.scales)
@@ -522,17 +522,22 @@ def test_public_boundary_coefficients_roundtrip_and_derivative(lasym):
 
 
 @pytest.mark.usefixtures("_module_jit_enabled")
-def test_scalar_api_with_real_dense_and_matrixfree_pullbacks(monkeypatch):
+@pytest.mark.parametrize("backend", ["forward_dense_jax", "forward_dense", "coupled_gcrot", "reverse_gcrot"])
+def test_scalar_api_with_real_dense_and_matrixfree_pullbacks(monkeypatch, backend):
     """Exercise the public scalar API through the actual LU/FGMRES machinery."""
     from vmex.core import freeboundary_implicit as fbi, implicit as im
 
+    if backend == "forward_dense_jax":
+        monkeypatch.setattr(fbi, "_reverse_gcrot_core",
+                            lambda *a, **k: pytest.fail("production must not invoke reverse_gcrot"))
     matrix = jnp.array([[3., 2.], [-1., 4.]])
     coupling = jnp.array([[1., -2.], [3., 1.]])
     residual = jax.jit(lambda z, p, x, *_: matrix @ z + coupling @ x - p)
     chart = SimpleNamespace(x0=np.zeros(2), scales=np.ones(2), dof_names=("a", "b"), coils_from_x=lambda x: x)
     inp = SimpleNamespace(lfreeb=True)
-    solver = SimpleNamespace(implicit=SimpleNamespace(inp=inp, device=None, lconm1=False, adjoint_tol=1e-11, adjoint_maxiter=10),
-        adjoint_dense_batch_size=2, adjoint_dense_max_dofs=10, adjoint_solver="forward_dense_jax",
+    solver = SimpleNamespace(implicit=SimpleNamespace(inp=inp, device=None, lconm1=False, adjoint_tol=1e-11,
+        adjoint_maxiter=10, adjoint_gcrot_m=2, adjoint_gcrot_k=1),
+        adjoint_dense_batch_size=2, adjoint_dense_max_dofs=10, adjoint_solver=backend,
         adjoint_fail="error", adjoint_residual_rtol=1e-9, include_edge_in_convergence=True, field_from_parameters=chart)
     owner = object()
     root = SimpleNamespace(_owner=owner, parameters=np.zeros(2), state=jnp.zeros(2), dof_mask=jnp.ones(2), rcon0=None, zcon0=None)
@@ -546,8 +551,17 @@ def test_scalar_api_with_real_dense_and_matrixfree_pullbacks(monkeypatch):
     try:
         expected = -np.linalg.solve(matrix, coupling)
         np.testing.assert_allclose(p.grad(p.x0), -2*expected.sum(axis=0)+1, rtol=1e-13)
+        assert p.solver_info["active_adjoint"] == backend
+        np.testing.assert_allclose(p.constraint_jac(p.x0), expected, rtol=1e-13)
+        if backend != "forward_dense_jax":
+            with pytest.raises(ValueError, match="seed-LU reuse requires"):
+                p.enable_matrix_free()
+            assert p.accepted is root
+            return
         report = p.enable_matrix_free(np.array([.01, -.02]), restart=2, max_restarts=2)
         assert report["passed"]
+        assert p.solver_info["active_adjoint"] == "matrixfree_seed_lu"
+        assert p.solver_info["recovery"] == "forward_dense_jax"
         np.testing.assert_allclose(p.grad(p.x0), -2*expected.sum(axis=0)+1, rtol=1e-13)
         np.testing.assert_allclose(p.constraint_jac(p.x0), expected, rtol=1e-13)
     finally:

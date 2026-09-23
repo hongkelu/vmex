@@ -143,8 +143,6 @@ def make_free_boundary_config(
     if adjoint_residual_rtol is not None:
         if not np.isfinite(adjoint_residual_rtol) or adjoint_residual_rtol <= 0:
             raise ValueError("adjoint_residual_rtol must be finite and positive")
-        if adjoint_solver not in {"reverse_gcrot", "forward_dense", "forward_dense_jax"}:
-            raise ValueError("explicit adjoint_residual_rtol requires reverse_gcrot or a dense backend")
     if type(include_edge_in_convergence) is not bool:
         raise TypeError("include_edge_in_convergence must be bool")
     if edge_force_tolerance is not None and (not include_edge_in_convergence or
@@ -682,7 +680,7 @@ def _solve_bwd_impl(cfg, saved, state_bar):
         return _apply_parameter_pullback(lam,parameter_pullback)
 
     if cfg.adjoint_solver == "reverse_gcrot":
-        transpose = _prepare_reverse_transpose(
+        transpose = _prepare_linearized_transpose(
             z_star, params, field_parameters, frozen, rcon0, zcon0,
             residual=residual)
         lam = _solve_prepared_reverse_adjoint(
@@ -718,6 +716,12 @@ def _solve_bwd_impl(cfg, saved, state_bar):
         )
         lam, _ = im._adjoint_solve_gcrot(
             lambda cotangent: state_pullback(cotangent)[0], rhs, cfg.implicit)
+        strict_rtol = getattr(cfg, "adjoint_residual_rtol", None)
+        if strict_rtol is not None:
+            defect = jax.tree.map(jnp.subtract, state_pullback(lam)[0], rhs)
+            norm, rhs_norm = im._tree_norm(defect), im._tree_norm(rhs)
+            passed = jnp.isfinite(norm) & (norm <= strict_rtol * rhs_norm)
+            lam = jax.tree.map(lambda value: jnp.where(passed, value, jnp.nan), lam)
     elif cfg.adjoint_solver == "boundary_schur":
         lam = _host_boundary_schur_adjoint(
             cfg, z_star, params, field_parameters, frozen, rcon0, zcon0,
@@ -733,11 +737,13 @@ def _solve_bwd_impl(cfg, saved, state_bar):
             pullback=_prepare_response_transpose(
                 z_star, params, field_parameters, frozen, rcon0, zcon0, mask,
                 response, cfg=cfg),
-            certify=True)
+            certify=True, backend="edge_response",
+            residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
     else:
         lam = _host_adjoint(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-            rhs, cfg.implicit, fail=cfg.adjoint_fail)
+            rhs, cfg.implicit, fail=cfg.adjoint_fail,
+            residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
 
     _, parameter_pullback = jax.vjp(
         lambda p, field: residual(
@@ -941,7 +947,7 @@ def _balanced_dense_solver(schur):
 
 def _host_boundary_schur_adjoint(
     cfg, z_star, params, field_parameters, frozen, rcon0, zcon0, mask, rhs,
-    *, fail="error",
+    *, fail="error", row=None, diagnostics=None,
 ):
     """Solve the coupled adjoint through an exact edge Schur complement.
 
@@ -1072,8 +1078,12 @@ def _host_boundary_schur_adjoint(
         jnp.subtract, rhs, _apply_pullback(coupled_pullback, solution))
     residual_norm = float(im._tree_norm(defect))
     rhs_norm = float(im._tree_norm(rhs))
-    tolerance = float(im._adjoint_acceptance(icfg, rhs_norm))
-    if not np.isfinite(residual_norm) or residual_norm > tolerance:
+    report = im._adjoint_diagnostic(icfg, residual_norm=residual_norm, rhs_norm=rhs_norm,
+        iterations=calls, backend="boundary_schur", row=row,
+        residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
+    if diagnostics is not None:
+        diagnostics.append(report)
+    if not report["accepted"]:
         # The raw near-axis scaling can leave the reduced solve a few ulps
         # outside the strict certificate. Continue from it with the original
         # coupled operator; this changes no mathematics and usually needs only
@@ -1081,7 +1091,8 @@ def _host_boundary_schur_adjoint(
         im._count(icfg, adjoint_certificate_fallbacks=1)
         return _host_adjoint(
             coupled_residual, z_star, params, field_parameters, frozen, rcon0,
-            zcon0, rhs, icfg, x0=solution, fail=fail)
+            zcon0, rhs, icfg, x0=solution, fail=fail, row=row, diagnostics=diagnostics,
+            residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
     return solution
 
 
@@ -1192,8 +1203,8 @@ def _transpose_matvec(value, pullback, template):
 
 
 @functools.partial(jax.jit, static_argnames=("residual",))
-def _prepare_reverse_transpose(z, p, field, base, rcon, zcon, *, residual):
-    """Transpose an already linearized root, as in the local reverse backend.
+def _prepare_linearized_transpose(z, p, field, base, rcon, zcon, *, residual):
+    """Prepare an operator used by both device GCROT and seed-LU GMRES.
 
     Keep numerical tape leaves dynamic, including the frozen state and
     constraint baselines, so executable reuse cannot reuse an old root.
@@ -1220,7 +1231,7 @@ def _reverse_gcrot_core(transpose, rhs, *, rtol, m, k, max_restarts):
 
 
 def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=None,
-                                    residual_rtol=None, diagnostics=None):
+                                    residual_rtol=None, diagnostics=None, backend="reverse_gcrot"):
     """Certify Solvax using main's true-residual tolerance and failure policy."""
     lam, norm, rhs_norm, iterations = _reverse_gcrot_core(
         transpose, rhs, rtol=cfg.adjoint_tol, m=cfg.adjoint_gcrot_m,
@@ -1236,9 +1247,9 @@ def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=No
         # call cannot synchronously raise the host's typed solve exception.
         return jax.tree.map(lambda x: jnp.where(accepted, x, jnp.nan), lam)
     if diagnostics is not None:
-        diagnostics.append(dict(row=row, residual_norm=float(norm), rhs_norm=float(rhs_norm),
-            relative_residual=float(norm / rhs_norm) if float(rhs_norm) > 0 else (0.0 if float(norm) == 0 else float("inf")),
-            tolerance=float(tolerance), iterations=int(iterations), accepted=bool(accepted)))
+        diagnostics.append(im._adjoint_diagnostic(cfg, row=row, residual_norm=norm,
+            rhs_norm=rhs_norm, iterations=iterations, backend=backend,
+            residual_rtol=residual_rtol, finite=bool(finite)))
     if not bool(accepted):
         method = "reverse GCROT" if row is None else f"reverse GCROT row {row}"
         if fail != "best_effort" or not bool(finite):
@@ -1256,6 +1267,7 @@ def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=No
 def _host_adjoint(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0, rhs, cfg,
     *, x0=None, fail="error", pullback=None, certify=False, row=None,
+    residual_rtol=None, diagnostics=None, backend="coupled_gcrot",
 ):
     """Solve one adjoint while reusing a separately compiled JAX matvec.
 
@@ -1300,8 +1312,9 @@ def _host_adjoint(
         k=min(cfg.adjoint_gcrot_k, shape[0]),
         maxiter=cfg.adjoint_maxiter, x0=x0_flat,
     )
-    tolerance = float(im._adjoint_acceptance(
-        cfg, np.linalg.norm(np.asarray(rhs_flat))))
+    rhs_norm = float(np.linalg.norm(np.asarray(rhs_flat)))
+    tolerance = float(im._adjoint_acceptance(cfg, rhs_norm) if residual_rtol is None
+                      else residual_rtol * rhs_norm)
     if certify:
         exact = _prepare_transpose(
             z_star, params, field_parameters, frozen, rcon0, zcon0,
@@ -1309,7 +1322,12 @@ def _host_adjoint(
         residual_norm = float(np.linalg.norm(
             np.asarray(rhs_flat) - np.asarray(_transpose_matvec(
                 jnp.asarray(solution, dtype=rhs_flat.dtype), exact, z_star))))
-        if np.isfinite(residual_norm) and residual_norm <= tolerance:
+        report = im._adjoint_diagnostic(cfg, residual_norm=residual_norm, rhs_norm=rhs_norm,
+            iterations=calls, backend=backend, row=row, residual_rtol=residual_rtol,
+            finite=np.all(np.isfinite(solution)))
+        if diagnostics is not None:
+            diagnostics.append(report)
+        if report["accepted"]:
             return unravel(jnp.asarray(solution, dtype=rhs_flat.dtype))
         # The cheaper operator did not certify here; finish on the exact one
         # rather than hand back a derivative this lane cannot vouch for, and
@@ -1319,10 +1337,16 @@ def _host_adjoint(
                 if np.all(np.isfinite(solution)) else None)
         return _host_adjoint(
             residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-            rhs, cfg, x0=warm, fail=fail)
+            rhs, cfg, x0=warm, fail=fail, row=row,
+            residual_rtol=residual_rtol, diagnostics=diagnostics)
     residual_norm = float(np.linalg.norm(np.asarray(rhs_flat) - apply(solution)))
-    if not np.isfinite(residual_norm) or residual_norm > tolerance:
-        if fail != "best_effort" or not np.isfinite(residual_norm):
+    report = im._adjoint_diagnostic(cfg, residual_norm=residual_norm, rhs_norm=rhs_norm,
+        iterations=calls, backend=backend, row=row, residual_rtol=residual_rtol,
+        finite=np.all(np.isfinite(solution)))
+    if diagnostics is not None:
+        diagnostics.append(report)
+    if not report["accepted"]:
+        if fail != "best_effort" or not np.isfinite(residual_norm) or not np.all(np.isfinite(solution)):
             im._raise_adjoint_unconverged(
                 cfg, iterations=calls, residual_norm=residual_norm,
                 tolerance=tolerance,
@@ -1358,7 +1382,7 @@ def _host_pullback_multi_rhs(
     residual_rtol=None, diagnostics=None,
 ):
     """Share numerical tapes; certify each independent sequential solve."""
-    prepare = _prepare_reverse_transpose if backend == "reverse_gcrot" else _prepare_transpose
+    prepare = _prepare_linearized_transpose if backend == "reverse_gcrot" else _prepare_transpose
     transpose = prepare(
         z_star, params, field_parameters, frozen, rcon0, zcon0,
         residual=residual)
@@ -1375,7 +1399,8 @@ def _host_pullback_multi_rhs(
         else:
             adjoint = _host_adjoint(
                 residual, z_star, params, field_parameters, frozen, rcon0,
-                zcon0, rhs, cfg, pullback=transpose, fail=fail, row=index)
+                zcon0, rhs, cfg, pullback=transpose, fail=fail, row=index,
+                residual_rtol=residual_rtol, diagnostics=diagnostics)
         rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
     return jax.tree.map(lambda *values: jnp.stack(values), *rows)
 
@@ -1397,8 +1422,9 @@ def free_boundary_state_pullback_multi_rhs(
     explicit objective dependence on profiles or field parameters.
 
     With ``return_linearization=True``, return ``((params_bar, field_bar), root)``
-    where ``root`` owns the shared dense factors for subsequent tangent solves.
-    This requires ``forward_dense_jax`` and strict adjoint failure handling.
+    where ``root`` owns a checked predictor at this same root. Dense backends
+    retain their LU factors; other backends use the existing GCROT tangent.
+    Every retained backend requires strict adjoint failure handling.
     An explicit seed LU ``preconditioner`` replaces dense reassembly with a
     current-root matrix-free solve; the seed never changes automatically.
 
@@ -1409,18 +1435,20 @@ def free_boundary_state_pullback_multi_rhs(
 
     This host-eager helper also supports ``forward_dense`` and
     ``forward_dense_jax`` (one matrix assembly and factorization per batch).
-    The Krylov alternatives are ``coupled_gcrot`` and ``reverse_gcrot``.
-    The latter keeps the Krylov iterations in JAX/Solvax. Both share state and
+    ``boundary_schur`` and ``edge_response`` delegate to the upstream host
+    solvers; Schur currently factors each row independently. The Krylov choices
+    are ``coupled_gcrot`` and ``reverse_gcrot``. The latter keeps iterations in
+    JAX/Solvax. Both share state and
     parameter preparation, with independent sequential solves and residual
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
-    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
-        raise ValueError('retained linearization requires forward_dense_jax with adjoint_fail=error')
+    if return_linearization and cfg.adjoint_fail != 'error':
+        raise ValueError('retained linearization requires adjoint_fail=error')
     if preconditioner is not None and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
         raise ValueError('seed LU requires forward_dense_jax with adjoint_fail=error')
-    if cfg.adjoint_solver not in {"coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"}:
-        raise ValueError("multi-RHS state pullback requires coupled_gcrot, reverse_gcrot, forward_dense, or forward_dense_jax")
+    if cfg.adjoint_solver not in _ADJOINT_SOLVERS:
+        raise ValueError("unknown free-boundary adjoint solver")
     if not np.isfinite(root_residual_atol) or root_residual_atol <= 0:
         raise ValueError("root_residual_atol must be finite and positive")
     values = (params, field_parameters, state, dof_mask, state_cotangents, rcon0, zcon0)
@@ -1471,11 +1499,38 @@ def free_boundary_state_pullback_multi_rhs(
                 for index in range(count)]
             bars = jax.tree.map(lambda *values:jnp.stack(values),*rows)
             return (bars, linearization) if return_linearization else bars
-        return _host_pullback_multi_rhs(
-            residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-            jax.vmap(project)(state_cotangents), icfg, fail=cfg.adjoint_fail,
-            backend=cfg.adjoint_solver,
-            residual_rtol=getattr(cfg, "adjoint_residual_rtol", None), diagnostics=diagnostics)
+        rhs_batch = jax.vmap(project)(state_cotangents)
+        if cfg.adjoint_solver in {"boundary_schur", "edge_response"}:
+            response = (_edge_response(cfg, params, field_parameters, frozen, rcon0, zcon0)
+                        if cfg.adjoint_solver == "edge_response" else None)
+            if cfg.adjoint_solver == "boundary_schur":
+                residual = _projected_residual(cfg, dof_mask, formulation="raw")
+            transpose = (_prepare_response_transpose(z_star, params, field_parameters, frozen,
+                         rcon0, zcon0, dof_mask, response, cfg=cfg) if response is not None else None)
+            parameter_pullback = _prepare_parameter_pullback(
+                z_star, params, field_parameters, frozen, rcon0, zcon0, residual=residual)
+            rows = []
+            for index in range(count):
+                rhs = jax.tree.map(lambda value: value[index], rhs_batch)
+                if cfg.adjoint_solver == "boundary_schur":
+                    adjoint = _host_boundary_schur_adjoint(cfg, z_star, params, field_parameters,
+                        frozen, rcon0, zcon0, dof_mask, rhs, fail=cfg.adjoint_fail,
+                        row=index, diagnostics=diagnostics)
+                else:
+                    adjoint = _host_adjoint(residual, z_star, params, field_parameters,
+                        frozen, rcon0, zcon0, rhs, icfg, fail=cfg.adjoint_fail,
+                        pullback=transpose, certify=True, row=index, diagnostics=diagnostics,
+                        backend="edge_response", residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
+                rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
+            bars = jax.tree.map(lambda *values: jnp.stack(values), *rows)
+        else:
+            bars = _host_pullback_multi_rhs(
+                residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
+                rhs_batch, icfg, fail=cfg.adjoint_fail, backend=cfg.adjoint_solver,
+                residual_rtol=getattr(cfg, "adjoint_residual_rtol", None), diagnostics=diagnostics)
+        if return_linearization:
+            return bars, _KrylovRootLinearization(params, field_parameters, cfg, state, dof_mask, rcon0, zcon0)
+        return bars
 
 
 solve_free_boundary_implicit.defvjp(_solve_fwd, _solve_bwd)
@@ -1524,4 +1579,38 @@ def free_boundary_state_tangent(params, field_parameters, cfg, state, dof_mask,
                       (field_parameters,), (direction,))[1]
         return _solve_prepared_reverse_adjoint(action, jax.tree.map(jnp.negative, rhs),
             cfg.implicit, residual_rtol=cfg.adjoint_residual_rtol,
-            diagnostics=diagnostics, fail="error")
+            diagnostics=diagnostics, fail="error", backend="reverse_gcrot_tangent")
+
+
+@dataclass(eq=False)
+class _KrylovRootLinearization:
+    """One immutable root for the existing checked Krylov tangent interface.
+
+    Schur adjoints currently factor each row independently. This object does
+    not claim to retain Schur factors or to use Schur for its forward tangent.
+    """
+    params: Any
+    field: Any
+    cfg: Any
+    state: Any
+    mask: Any
+    rcon: Any
+    zcon: Any
+
+    def tangent(self, direction, *, diagnostics=None):
+        if self.cfg is None:
+            raise ValueError("root linearization is closed")
+        if any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(direction)):
+            raise ValueError("root tangent requires host-eager inputs")
+        vector = np.asarray(direction)
+        if vector.shape != self.field.shape or np.iscomplexobj(vector) or not np.all(np.isfinite(vector)):
+            raise ValueError("tangent direction must be finite, real and match field parameters")
+        return free_boundary_state_tangent(self.params, self.field, self.cfg, self.state, self.mask,
+            jnp.asarray(vector), rcon0=self.rcon, zcon0=self.zcon, diagnostics=diagnostics)
+
+    def offload_factors(self):
+        pass  # This backend owns no dense factors.
+
+    def close(self):
+        for name in self.__dataclass_fields__:
+            setattr(self, name, None)

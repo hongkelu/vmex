@@ -553,7 +553,7 @@ def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():
         assert "residuals_from_tuples" in text
         assert "jax.value_and_grad" in text
         assert "FunctionProblem.from_functions" in text
-        assert "minimize(free_problem.value_and_grad" in text
+        assert "opt.minimize(free_problem, method=METHOD" in text
         assert "pack_boundary" not in text
         assert "mgrid file" in text
 

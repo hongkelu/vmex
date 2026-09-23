@@ -113,9 +113,9 @@ def _forward_from_transpose(transpose, template, vector):
 
 def prepare(z, params, field, frozen, rcon, zcon, *, residual):
     """Keep tape arrays dynamic so changed roots do not create new JIT callables."""
-    from .freeboundary_implicit import _prepare_reverse_transpose
+    from .freeboundary_implicit import _prepare_linearized_transpose
 
-    transpose = _prepare_reverse_transpose(z, params, field, frozen, rcon, zcon, residual=residual)
+    transpose = _prepare_linearized_transpose(z, params, field, frozen, rcon, zcon, residual=residual)
     return jax.tree_util.Partial(_forward_from_transpose, transpose, z)
 
 
@@ -266,33 +266,20 @@ def solve_matrixfree_adjoint(
         defect = jax.tree.map(jnp.subtract, applied, rhs)
         norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
         rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
-        rtol = cfg.adjoint_residual_rtol
-        tolerance = float(im._adjoint_acceptance(cfg.implicit, rhs_norm)) if rtol is None else rtol * rhs_norm
-        full_passed = bool(jnp.all(jnp.isfinite(solution))) and bool(np.isfinite(norm) and norm <= tolerance)
+        report = im._adjoint_diagnostic(cfg.implicit, row=row, residual_norm=norm,
+            rhs_norm=rhs_norm, iterations=iterations, backend="matrixfree_seed_lu",
+            residual_rtol=cfg.adjoint_residual_rtol, finite=bool(jnp.all(jnp.isfinite(solution))))
+        tolerance, full_passed = report["tolerance"], report["accepted"]
         passed = full_passed and (converged or not preconditioner.require_adjoint_convergence)
         if diagnostics is not None:
-            diagnostics.append(
-                dict(
-                    row=row,
-                    residual_norm=norm,
-                    rhs_norm=rhs_norm,
-                    relative_residual=norm / rhs_norm if rhs_norm else (0.0 if norm == 0 else float("inf")),
-                    tolerance=tolerance,
-                    iterations=int(iterations),
-                    accepted=passed,
-                    full_residual_accepted=full_passed,
-                    krylov_converged=converged,
-                    krylov_residual_norm=krylov_norm,
-                    krylov_tolerance=preconditioner.rtol * float(np.linalg.norm(host)),
-                    require_adjoint_convergence=preconditioner.require_adjoint_convergence,
-                    backend="matrixfree_seed_lu",
-                    rhs_batch_size=preconditioner.rhs_batch_size,
-                    reused_rhs=reused,
-                    requested_rtol=preconditioner.rtol,
-                    restart=min(preconditioner.restart, vector.size),
-                    max_cycles=preconditioner.max_restarts,
-                )
-            )
+            report.update(accepted=passed, full_residual_accepted=full_passed,
+                krylov_converged=converged, krylov_residual_norm=krylov_norm,
+                krylov_tolerance=preconditioner.rtol * float(np.linalg.norm(host)),
+                require_adjoint_convergence=preconditioner.require_adjoint_convergence,
+                rhs_batch_size=preconditioner.rhs_batch_size, reused_rhs=reused,
+                requested_rtol=preconditioner.rtol, restart=min(preconditioner.restart, vector.size),
+                max_cycles=preconditioner.max_restarts)
+            diagnostics.append(report)
         if not passed:
             reason = (
                 f"full residual {norm:.3e} exceeds acceptance {tolerance:.3e} or is nonfinite"

@@ -1006,7 +1006,7 @@ predictor. If an explicit tighter ``ftol`` is requested, the refined force
 diagnostics must also satisfy it. Polishing and residual gates do not replace
 independent derivative or resolution tests.
 
-See ``examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py`` for
+See ``examples/single-stage-benchmarks/free_boundary_single_stage_optimization_scalar.py`` for
 SLSQP with fixed currents, stage-two coil fitting, scalar plasma/coil penalties
 and final verification. ``free_boundary_single_stage_optimization.py`` uses
 the same workflow with bounded L-BFGS-B. It optimizes the same weighted loss
@@ -1090,7 +1090,7 @@ For an input with ``lfreeb=True`` and a confining initial coil set:
    equilibrium = problem.equilibrium_from_x(result.x)
    problem.close()
 
-The scalar production examples in ``examples/three-methods-benchmark/``
+The scalar production examples in ``examples/single-stage-benchmarks/``
 use ``from_loss`` with direct coil penalties. The residual interface above
 remains available for objectives expressed as tuples.
 
@@ -1209,3 +1209,28 @@ Pass the saved gradient reference to ``minimize_projected`` on resume.
 The default dense batch size remains 32. ``problem.tune_adjoint_batch()`` is
 optional: it compares 32/64 at the unchanged root, checks gradient agreement,
 and retains only the selected certified factors.
+
+Coil geometry constraints
+-------------------------
+
+``FreeBoundaryProblem.from_loss`` accepts ``coil_quantities``, scalar callables
+with signature ``function(state, runtime, coils)``. These rows follow the
+ordinary ``quantities`` in ``constraint_values`` and ``constraint_jac``. Their
+derivatives include both explicit coil dependence and the equilibrium response.
+For example, a coil-to-plasma clearance must move both the coils and the plasma
+boundary. Coil-only quantities should use direct optimizer constraints to avoid
+adding unnecessary equilibrium adjoint right-hand sides.
+
+``examples/coil-constraints-benchmarks/`` provides matched fixed/free-boundary
+SLSQP drivers and a shared ``parameters.py``. The filament bounds include
+per-coil length, maximum and arc-length-averaged squared curvature, intercoil
+distance including symmetry copies, and clearance to the moving plasma surface.
+Nonadjacent segment intersection and parametrization speed checks supplement
+these bounds. The seed is infeasible; reducing QA alone is not a constrained
+solution.
+
+Geometry uses denser sampling than field quadrature. Endpoint checks refine
+curvature peaks and compare mean-squared curvature on two grids. The surface
+clearance check uses multiple continuous-coordinate searches, which do not
+certify a global minimum or finite-winding-pack manufacturability. The example
+README records the sampling, numerical guards and separate qualification steps.

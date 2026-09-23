@@ -129,11 +129,15 @@ class FreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, *, coils=None, coil_current_dofs=None,
                   parameterization=None, scales=None, restart_from=None,
-                  solver_options=None, quantities=(), **kwargs):
+                  solver_options=None, quantities=(), coil_quantities=(), **kwargs):
         """Build a scalar ``loss(state, runtime, coils)`` for any host optimizer.
 
         ``quantities`` are scalar ``function(state, runtime)`` observables for
         constraint_values/constraint_jac; the optimizer defines their bounds.
+        ``coil_quantities`` append scalar ``function(state, runtime, coils)``
+        observables, including both explicit coil and equilibrium derivatives.
+        Use ordinary optimizer constraints for quantities depending only on
+        coils to avoid unnecessary equilibrium adjoint right-hand sides.
         The total gradient includes both the equilibrium response and explicit
         coil dependence. The scalar loss is used without normalization.
 
@@ -151,11 +155,12 @@ class FreeBoundaryProblem(FunctionProblem):
                 raise ValueError("use coil_current_dofs or current_dofs, not both")
             kwargs["current_dofs"] = coil_current_dofs
         quantities = tuple(quantities)
-        if not callable(loss) or not all(callable(q) for q in quantities):
+        coil_quantities = tuple(coil_quantities)
+        if not callable(loss) or not all(callable(q) for q in quantities + coil_quantities):
             raise TypeError("loss and quantities must be callable")
         if "constraints" in kwargs or "objective_normalization" in kwargs:
             raise ValueError("scalar losses use quantities and no normalization")
-        return cls._build(inp, (), loss=loss, quantities=tuple(quantities),
+        return cls._build(inp, (), loss=loss, quantities=quantities, coil_quantities=coil_quantities,
                           objective_normalization=1.0, coils=coils,
                           parameterization=parameterization, scales=scales,
                           restart_from=restart_from, solver_options=solver_options, **kwargs)
@@ -168,6 +173,7 @@ class FreeBoundaryProblem(FunctionProblem):
         *,
         loss=None,
         quantities=(),
+        coil_quantities=(),
         coils=None,
         parameterization=None,
         current_dofs=None,
@@ -334,7 +340,7 @@ class FreeBoundaryProblem(FunctionProblem):
             objective_normalization,
             event=event,
             deadline=deadline,
-            loss=loss, quantities=quantities,
+            loss=loss, quantities=quantities, coil_quantities=coil_quantities,
         )
         problem.checkpoint_identity = identity
         if saved is not None:
@@ -344,7 +350,7 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def __init__(
         self, inp, parameterization, cfg, objective_terms, constraints, normalization, *,
-        event=None, deadline=None, loss=None, quantities=()
+        event=None, deadline=None, loss=None, quantities=(), coil_quantities=()
     ):
         from .optimize import residuals_from_tuples
 
@@ -406,13 +412,17 @@ class FreeBoundaryProblem(FunctionProblem):
 
         self._compact_state = jax.jit(compact)
         if self._scalar_loss:
-            self.constraint_scales = np.ones(len(quantities))
+            self.constraint_scales = np.ones(len(quantities) + len(coil_quantities))
 
             def scalar_rows(state, x):
-                value = jnp.asarray(loss(state, self.rt, parameterization.coils_from_x(x)))
+                coils = parameterization.coils_from_x(x)
+                value = jnp.asarray(loss(state, self.rt, coils))
                 if value.shape != ():
                     raise ValueError("loss must return a scalar")
-                return jnp.r_[value, physical(state)]
+                coil_values = [jnp.asarray(function(state, self.rt, coils)) for function in coil_quantities]
+                if any(v.shape != () for v in coil_values):
+                    raise ValueError("coil quantities must be scalar")
+                return jnp.r_[value, physical(state), jnp.stack(coil_values) if coil_values else jnp.empty(0)]
 
             self._scalar_rows = jax.jit(scalar_rows)
             self._scalar_jac = jax.jit(jax.jacrev(scalar_rows, argnums=(0, 1)))
@@ -916,7 +926,10 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def constraint_values(self, x):
         """Return unscaled physical quantities, in their original units."""
-        return np.asarray(self._physical_state(self._record(x).state))
+        record = self._record(x)
+        if self._scalar_loss:
+            return self.optimizer_rows(record)[1:]
+        return np.asarray(self._physical_state(record.state))
 
     def constraint_jac(self, x):
         """Return derivatives of the physical quantities with respect to x."""

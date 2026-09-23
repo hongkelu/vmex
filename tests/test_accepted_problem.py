@@ -16,7 +16,7 @@ from vmex.core.solver import SpectralState
 
 def source_problem():
     inp = VmecInput.from_file(Path(__file__).resolve().parents[1] /
-                             "examples/three-methods-benchmark/input.rotating_ellipse")
+                             "examples/single-stage-benchmarks/input.rotating_ellipse")
     inp = inp.change_resolution(mpol=2, ntor=0, ntheta=8, nzeta=8)
     inp = replace(inp, ns_array=np.array([3]))
 

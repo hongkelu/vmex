@@ -110,8 +110,7 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 #: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
 #: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
-    "examples/mirror/pleiades_mirror_reference.py": "needs an unshipped reference deck",
-    "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py": "mirror hybrid, covered by tests/mirror",
+    "examples/mirror/pleiades_mirror_reference.py": "needs an external Pleiades checkout",
     "examples/mirror/stellarator_mirror_hybrid.py": "mirror hybrid, covered by tests/mirror",
     "examples/optimization/QH_optimization_finite_beta_scalar.py": "QA sibling is tested",
     "examples/optimization/QH_optimization_scalar.py": "QA sibling is tested",
@@ -152,6 +151,7 @@ EXECUTED_EXAMPLES = {
     "examples/hot_restart_scan.py",
     "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
     "examples/mirror/mirror_free_boundary_beta_scan.py",
+    "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py",
     "examples/optimization/QA_optimization.py",
     "examples/optimization/QA_optimization_ballooning.py",
     "examples/optimization/QA_optimization_bootstrap.py",
@@ -183,7 +183,6 @@ EXECUTED_EXAMPLES = {
     "examples/run_from_json.py",
     "examples/take_fixed_boundary_gradients.py",
     "examples/take_free_boundary_gradients.py",
-    "examples/take_gradients.py",
     "examples/vmex_essos_workflow.py",
     "examples/vmex_fieldline_tracing_finite_beta.py",
     "examples/vmex_fieldline_tracing_vacuum.py",
@@ -371,15 +370,6 @@ def test_profiles_power_and_spline(tmp_path):
     assert match is not None and float(match.group(1)) < 1e-3
 
 
-@pytest.mark.full  # nightly: ~1 min (2 adjoint grads + 4 FD solves, subprocess cold-start)
-def test_take_gradients(tmp_path):
-    out = _run_example(EXAMPLES / "take_gradients.py", tmp_path, timeout=900)
-    # both implicit-adjoint gradients agree with central finite differences
-    rels = [float(m) for m in re.findall(r"rel=([0-9.eE+-]+)", out)]
-    assert len(rels) == 2, f"expected two AD-vs-FD checks, got {rels}"
-    assert max(rels) < 1e-4, f"adjoint gradient disagrees with FD: rel={rels}"
-
-
 def test_run_from_json(tmp_path):
     out = _run_example(EXAMPLES / "run_from_json.py", tmp_path, timeout=900)
     match = re.search(r"\|diff\|=([0-9.eE+-]+)", out)
@@ -495,20 +485,19 @@ def test_free_boundary_mgrid(tmp_path):
     assert (tmp_path / "output_free_boundary_mgrid" / "wout_cth_like_free_bdy.nc").exists()
 
 
-@pytest.mark.full  # one fixed solve, its adjoint, and two re-solves for the FD
+@pytest.mark.full  # nightly: ~1 min (2 adjoint grads + 4 FD solves, subprocess cold-start)
 def test_take_fixed_boundary_gradients(tmp_path):
-    """The fixed-boundary counterpart certifies against a difference quotient.
+    """Both implicit-adjoint gradients agree with central finite differences.
 
     Unlike the free boundary, a fixed-boundary re-solve follows the same path,
-    so the quotient is usable: at the shipped settings the example reports
-    1.1e-07, and the smoke settings (ns 11, mpol 3, ftol 1e-9) stay well inside
-    the bound below.
+    so the difference quotient is a usable reference for the boundary
+    coefficient and for phiedge alike.
     """
     out = _run_example(EXAMPLES / "take_fixed_boundary_gradients.py", tmp_path,
                        timeout=900)
-    match = re.search(r"relative error = ([0-9.eE+-]+)", out)
-    assert match is not None, out[-2000:]
-    assert float(match.group(1)) < 1.0e-3, out[-2000:]
+    rels = [float(m) for m in re.findall(r"rel=([0-9.eE+-]+)", out)]
+    assert len(rels) == 2, f"expected two AD-vs-FD checks, got {rels}"
+    assert max(rels) < 1e-4, f"adjoint gradient disagrees with FD: rel={rels}"
 
 
 @pytest.mark.full  # one free solve and both adjoint solvers
@@ -739,6 +728,25 @@ def test_mirror_fixed_boundary_nonaxisymmetric_example(tmp_path):
     for case in summary:
         for suffix in ("3d", "cross_sections", "modB", "summary"):
             assert (outdir / f"{case}_{suffix}.png").stat().st_size > 10_000
+
+
+@pytest.mark.full
+def test_qi_mirror_hybrid_example(tmp_path):
+    """The QI-mirror hybrid script runs end to end on its smoke budget.
+
+    tests/mirror covers the library calls; this covers the script, which
+    once imported a private helper after it was made public and crashed
+    before its first solve.
+    """
+    import json
+    _run_example(EXAMPLES / "mirror" / "qi_mirror_hybrid_fourier_vs_bspline.py",
+                 tmp_path, timeout=900)
+    outdir = tmp_path / "results" / "qi_mirror_hybrid"
+    summary = json.loads((outdir / "summary.json").read_text())
+    assert len(summary["cut_phi"]) == 4
+    assert summary["splice_closure"] < 1.0e-12
+    assert summary["hybrid_divergence_rms"] < 1.0e-10
+    assert (outdir / "qi_mirror_hybrid.webp").stat().st_size > 10_000
 
 
 @pytest.mark.full

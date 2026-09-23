@@ -149,8 +149,9 @@ qualification evidence; rerun the separate verifier to establish new evidence.
 
 All commands default to GPU. Each output directory must be new. `--dry-run`
 prints configuration without creating files or initializing JAX. Production
-never runs finite differences or dense/matrix-free comparisons. Its dense LU
-initialization, root and linear residual checks remain necessary solver work.
+never runs finite-difference or predictor-parity experiments. Its dense LU
+initialization, coupled-root polishing, linear residual checks and derivative
+agreement checks during adaptive LU rebuilds remain necessary solver work.
 A run without a report records `derivative_qualified: false`; a supplied report
 must pass authentication and records `derivative_qualified: true`. No report
 is generated automatically during production. The optional report binds input/WOUT contents,
@@ -189,17 +190,36 @@ It writes `gradient_check.json`, `matrixfree_check.json`, and a passing
 `qualification.json` only after all gates pass. Failed attempts keep their
 available diagnostics and a report with `passed: false`; no SLSQP run starts.
 
-Production uses force/edge tolerance `1e-11`, adjoint full relative residual
+Production uses force/edge tolerance `1e-15`, coupled-root polishing to `1e-12`, adjoint full relative residual
 `1e-9`, Krylov request `1e-11`, 100 accepted steps and final independent
 verification at NS=201, force tolerance `1e-15`. A failed matrix-free adjoint
 gets one checked dense retry; its LU replaces the seed only if accepted.
+Polishing retains constraint baselines and inactive coordinates, then freshly
+recomputes force and vacuum diagnostics. It is bounded to three Newton steps
+and eight damping probes per step, with one temporary dense recovery. Failed
+refinement rejects the candidate without changing the accepted state.
+
+The public API performs the solver work; the example exposes its accuracy and
+optimization parameters near the top. `LU_REFRESH_HORIZON = 10` enables adaptive
+refresh: after two warm-up accepted steps, the latest three-step median of
+gradient, predictor and polishing costs is compared with the best warm median.
+A rebuild occurs when expected savings exceed its measured cost. The horizon
+is capped by the remaining step budget; the last accepted step does not trigger
+a cost-only rebuild. New derivative rows must agree within `1e-6` before the
+new factors replace the accepted seed. Dense recovery remains available.
 Each production run saves provenance, solver events, accepted checkpoints,
 WOUT/coil outputs and `optimization_summary.json`. Predictor, correction and
-gradient times remain separate. The startup budget is one hour, optimization
+gradient and polishing times remain separate. The startup budget is one hour, optimization
 twelve hours, final verification thirty minutes. Qualification separately has
 a one-hour budget. A budget endpoint or numerical check is not convergence or
 physical feasibility. No new full GPU qualification/pilot has been run as part
-of this code refactor.
+of this integration. The earlier isolated M8/N8/NS51 campaign supplies the
+method's performance evidence, not qualification of this new API integration.
+That campaign also exposed curvature peaks between the 64 coil sample points;
+the sampled curvature penalty and check in this example do not certify the
+continuous curve's maximum. A denser independent engineering check is required
+before claiming feasibility. This integration preserves the physics objective
+and does not silently change its quadrature or penalty weights.
 
 Post-processing matches the fixed-boundary scalar example: the equilibrium
 report includes QA, aspect, mean iota and magnetic well, followed by coil
@@ -240,6 +260,10 @@ with different target restoration and convergence semantics.
 
 Production uses JAX dense LU to initialize and precondition current-root GMRES.
 A failed matrix-free adjoint gets a checked dense retry.
+The scalar example enables `problem.enable_root_polishing(tolerance=1e-12)`
+before `problem.enable_matrix_free(refresh_horizon=10, refresh_max_steps=...)`.
+These policies are opt-in in the library and shared by the SLSQP and L-BFGS-B
+example entry points; they do not change the library's default solver behavior.
 `problem.solver_info`, solver-event rows and the final summary
 identify the policy and actual linear solves.
 

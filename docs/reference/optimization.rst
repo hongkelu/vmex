@@ -964,6 +964,48 @@ retained factors. Independent derivative checks can call
 ``evaluate_trial(delta, predict=False, ftol=...)`` to bypass the predictor and
 correct from the accepted state at a tighter force tolerance.
 
+Adaptive refresh is opt-in: ``problem.enable_matrix_free(refresh_horizon=10)``
+compares the latest three-step median of adjoint, predictor and root-polishing time with the
+best warm median since the seed was built. It rebuilds when the estimated
+savings over ten further accepted steps exceed the measured dense rebuild
+cost. The first two accepted steps after each seed are excluded to avoid
+compilation-driven refreshes. Rejected trials do not contribute samples.
+The rebuild uses ``forward_dense_jax`` at the optimizer-accepted candidate;
+checked factors replace the old seed only after the rebuild succeeds.
+The rebuilt total-derivative rows must agree with the current rows within
+``parity_rtol`` (default ``1e-6``). A failed rebuild or disagreement preserves
+the accepted root, retained factors and refresh policy. Set
+``refresh_max_steps`` to the remaining accepted-step budget to limit the
+payback horizon and skip a cost-triggered rebuild on the last step.
+All force, root and full linear residual tolerances remain unchanged.
+The horizon is a cost estimate, not a guaranteed speedup or a fixed rebuild
+interval. Omit it to retain refresh-on-failure only. Events report the refresh
+reason and measured cost; production setup does not add gradient experiments.
+
+Coupled-root polishing is also opt-in, for scalar losses using
+``forward_dense_jax``. Before enabling matrix-free reuse or starting the
+optimizer, call::
+
+    problem.enable_root_polishing(tolerance=1e-12)
+    problem.enable_matrix_free(refresh_horizon=10, refresh_max_steps=100)
+
+The first call refines the initial equilibrium if necessary and enables the
+same refinement for subsequent candidates, before values or gradients are
+returned. It takes at most three Newton steps and eight damping probes per
+step, using the retained LU as a preconditioner when available. A failed
+matrix-free refinement receives one temporary dense retry. Temporary trial
+factors never replace the accepted seed. Changed states receive fresh vacuum,
+force and coupled-residual certification, retaining inactive coordinates and
+constraint baselines. Initialization failures leave the original root usable;
+trial failures are rejected. Already-polished checkpoints retain their exact
+state, and enabling the option does not count as an optimizer step.
+
+``evaluate_trial(..., predict=False)`` still starts from the last accepted
+equilibrium and applies the same root refinement; it does not use a tangent
+predictor. If an explicit tighter ``ftol`` is requested, the refined force
+diagnostics must also satisfy it. Polishing and residual gates do not replace
+independent derivative or resolution tests.
+
 See ``examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py`` for
 SLSQP with fixed currents, stage-two coil fitting, scalar plasma/coil penalties
 and final verification. ``free_boundary_single_stage_optimization.py`` uses

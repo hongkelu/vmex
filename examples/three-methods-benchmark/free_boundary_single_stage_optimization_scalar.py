@@ -41,8 +41,9 @@ COIL_STEP = 0.05
 MAX_TRIALS = 500
 RESOLUTION = (8, 8, 51)  # MPOL, NTOR, NS
 GRID = (64, 64)  # NTHETA, NZETA
-EQUILIBRIUM_FTOL = 1e-11
-ROOT_TOLERANCE = 2e-6
+EQUILIBRIUM_FTOL = 1e-15
+ROOT_TOLERANCE = 2e-6  # ordinary-root admission before coupled Newton refinement
+ROOT_POLISH_TOLERANCE = 1e-12
 INITIALIZATION_SECONDS = 3600
 OPTIMIZATION_SECONDS = 43200
 VERIFICATION_SECONDS = 1800
@@ -67,6 +68,7 @@ ADJOINT_RESIDUAL_RTOL = 1e-9
 ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 32, 20000
 MATRIXFREE_RTOL = 1e-11
 MATRIXFREE_RESTART, MATRIXFREE_MAX_CYCLES, MATRIXFREE_RHS_BATCH_SIZE = 100, 3, 3
+LU_REFRESH_HORIZON = 10  # rebuild when estimated savings repay its measured cost
 VERIFY_NS, VERIFY_FTOL, VERIFY_MAXITER = 201, 1e-15, 12000
 
 # Match the scalar reference: figures, accepted-iterate movie and WOUT plots.
@@ -324,6 +326,11 @@ def build_problem(args, *, event=None, qualified=None):
     if problem.accepted_step != 0:
         problem.close()
         raise ValueError("qualification must describe an initial equilibrium at accepted step zero")
+    try:
+        problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
+    except BaseException:
+        problem.close()
+        raise
     return SimpleNamespace(problem=problem, inp=inp, chart=chart, coils=coils0, qs=qs,
                            surface=surface, coil_costs=coil_costs, inequalities=inequalities,
                            constraint_transform=constraint_transform, contract=contract)
@@ -554,18 +561,18 @@ def main(argv=None, *, method="SLSQP"):
     phase = "initialization"
     started = time.perf_counter()
     try:
-        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0)
+        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0, root_polish=0.0)
         trials = 0
 
         def event(name, **data):
             nonlocal trials
-            if name in timings:
-                timings[name] += data["seconds"]
+            if name in timings and 'seconds' in data:
+                timings[name] += data.get('total_seconds', data['seconds'])
             if name == "proposal":
                 trials += 1
                 if trials > MAX_TRIALS:
                     raise StopIteration("trial budget reached")
-            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh"):
+            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh", "preconditioner_refresh_start", "root_polish"):
                 # Keep diagnostic rows and failure reasons without serializing root arrays.
                 record = {key: value for key, value in data.items() if key != "candidate"}
                 with (out / "solver_events.jsonl").open("a") as stream:
@@ -593,6 +600,7 @@ def main(argv=None, *, method="SLSQP"):
                 optimizer_constraints_feasible=bool(np.min(inequalities((iota, radius))) >= -1e-8),
                 constraints_feasible=bool(iota >= IOTA_FLOOR and abs(radius-RADIUS_TARGET) <= RADIUS_TOLERANCE),
                 gradient_seconds=timings["adjoint"], predictor_seconds=timings["tangent"], solve_seconds=timings["correction"],
+                polish_seconds=timings['root_polish'], root_residual=float(problem.accepted.root_residual_norm),
                 step_seconds=time.perf_counter()-cycle_started, elapsed_seconds=time.perf_counter()-started,
                 **{key: float(getattr(eq.result, key)) for key in ("fsqr", "fsqz", "fsql", "fedge")})
             history.append(row)
@@ -609,7 +617,8 @@ def main(argv=None, *, method="SLSQP"):
         # Production constructs its own checked LU; parity/FD experiments live
         # exclusively in verify_free_boundary_single_stage.py.
         problem.enable_matrix_free(rtol=MATRIXFREE_RTOL, restart=MATRIXFREE_RESTART,
-            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE)
+            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE,
+            refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.accepted_steps)
         record_step()
         phase = "optimization"
         optimization_started = time.perf_counter()

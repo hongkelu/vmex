@@ -77,6 +77,33 @@ class _Equilibrium(Equilibrium):
         return self._wout_factory()
 
 
+@dataclass
+class _LURefresh:
+    """Estimate whether warm solve savings can repay a dense rebuild."""
+
+    horizon: int
+    dense_seconds: float
+    warmup: int = 2
+    costs: list = field(default_factory=list)
+    best_seconds: float = float("inf")
+    remaining: int | None = None
+
+    def observe(self, seconds):
+        if self.remaining is not None:
+            self.remaining = max(0, self.remaining - 1)
+        # The first two accepted steps can compile new adjoint/predictor paths.
+        if self.warmup:
+            self.warmup -= 1
+            return False
+        self.costs = (self.costs + [seconds])[-3:]
+        if len(self.costs) < 3:
+            return False
+        recent = float(np.median(self.costs))
+        self.best_seconds = min(self.best_seconds, recent)
+        horizon = self.horizon if self.remaining is None else min(self.horizon, self.remaining)
+        return (recent - self.best_seconds) * horizon > self.dense_seconds
+
+
 class FreeBoundaryProblem(FunctionProblem):
     """Weighted plasma objectives and derivatives with respect to coil variables.
 
@@ -324,6 +351,11 @@ class FreeBoundaryProblem(FunctionProblem):
         self._scalar_loss = loss is not None
         self._accepted_linearization = self._accepted_jac = None
         self._preconditioner = self._matrixfree_options = None
+        self._lu_refresh = None
+        self._adjoint_seconds = self._tangent_seconds = self._dense_seconds = 0.0
+        self._polish_seconds = 0.0
+        self._root_polish_options = None
+        self._refresh_parity_rtol = 1e-6
         self._recovered = False
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
         self.solver, self.params = cfg.solver, cfg.params
@@ -443,6 +475,7 @@ class FreeBoundaryProblem(FunctionProblem):
         diagnostics = []
         self._emit("adjoint_start")
         started = time.monotonic()
+        dense_started = started if self._preconditioner is None else None
         self._recovered = False
         try:
             if self._scalar_loss:
@@ -461,6 +494,7 @@ class FreeBoundaryProblem(FunctionProblem):
                 import traceback
                 traceback.clear_frames(error.__traceback__)
                 self._emit("dense_recovery", candidate=record, error=str(error))
+                dense_started = time.monotonic()
                 linearization = fc.free_boundary_continuation_state_pullback(
                     record, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True)
                 self._recovered = True
@@ -475,7 +509,11 @@ class FreeBoundaryProblem(FunctionProblem):
                 if record is self.accepted:
                     self._accepted_linearization, self._accepted_jac = linearization, jac
         finally:
-            self._emit("adjoint", seconds=time.monotonic() - started, rows=diagnostics, solver=self.solver_info)
+            finished = time.monotonic()
+            self._adjoint_seconds = finished - started
+            if dense_started is not None:
+                self._dense_seconds = finished - dense_started
+            self._emit("adjoint", seconds=self._adjoint_seconds, rows=diagnostics, solver=self.solver_info)
         return self._compact_jac
 
     @property
@@ -489,10 +527,89 @@ class FreeBoundaryProblem(FunctionProblem):
             recovery="forward_dense_jax" if reuse else None,
             predictor=("matrixfree_seed_lu" if reuse else "reused_dense_lu"
                        if method.startswith("forward_dense") else "gcrot_tangent"),
+            refresh_horizon=None if self._lu_refresh is None else self._lu_refresh.horizon,
+            root_polish_atol=None if self._root_polish_options is None else self._root_polish_options['tolerance'],
             adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None))
 
+    def enable_root_polishing(self, *, tolerance=1e-12, max_steps=3):
+        """Polish the initial root and every subsequent trial before evaluation.
+
+        Opt-in for scalar losses with forward_dense_jax, before enabling
+        matrix-free reuse or accepting optimization steps. Ordinary equilibrium
+        convergence is still required. Each bounded Newton refinement retains
+        inactive coordinates and constraint baselines, then freshly certifies
+        the coupled residual and physical forces. Independent FD trials receive
+        the same polishing, without a predictor. No optimizer step is accepted.
+        """
+        if (not self._scalar_loss or self.solver.adjoint_solver != 'forward_dense_jax'
+                or self._preconditioner is not None or self.accepted_step != 0):
+            raise ValueError('enable root polishing on a scalar dense problem before matrix-free setup and optimization')
+        if (not np.isfinite(tolerance) or tolerance <= 0 or isinstance(max_steps, bool)
+                or not isinstance(max_steps, int) or max_steps < 1):
+            raise ValueError('positive finite tolerance and integer max_steps required')
+        options = dict(tolerance=tolerance, max_steps=max_steps)
+        polished = self._polish_record(self.accepted, options=options)
+        # Initialization is transactional: failures leave the original root and
+        # derivative caches usable; changing a root invalidates all old caches.
+        if polished is not self.accepted:
+            self._close_linearization()
+            if self._accepted_linearization is not None:
+                self._accepted_linearization.close()
+            self._accepted_linearization = self._accepted_jac = None
+            self.accepted = polished
+            self._records = {self._key(polished.parameters): polished}
+            self._vg_cache = self._rj_cache = None
+        self._root_polish_options = options
+        return self.accepted
+
+    def _polish_record(self, record, *, options=None):
+        options = self._root_polish_options if options is None else options
+        if options is None or record.root_residual_norm <= options['tolerance']:
+            return record
+        from ._freeboundary_root_polish import refine, polish_with_recovery
+
+        self._check_time()
+        started = time.monotonic()
+
+        def build_dense(root):
+            self._check_time()
+            rhs, _ = self._scalar_jac(root.state, jnp.asarray(root.parameters))
+            dense = fc.free_boundary_continuation_state_pullback(
+                root, self.cfg, rhs, return_linearization=True)
+            try:
+                seed = dense.preconditioner(**(self._matrixfree_options or dict(
+                    rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)))
+            except BaseException:
+                dense.close()
+                raise
+            return dense, seed
+
+        def report(evidence):
+            details = dict(evidence)
+            details['phase'] = details.pop('event')
+            self._emit('root_polish', **details)
+
+        try:
+            if self._preconditioner is not None:
+                return polish_with_recovery(record, self.cfg, self._preconditioner,
+                    build_dense, report, check_time=self._check_time, **options)
+            # Bootstrap uses temporary factors. No failed or rejected trial
+            # can replace the accepted root's retained preconditioner.
+            dense, seed = build_dense(record)
+            try:
+                polished, evidence = refine(record, self.cfg, seed,
+                    check_time=self._check_time, **options)
+                report(dict(event='polished', recovered_with_dense=False, **evidence))
+                return polished
+            finally:
+                seed.close()
+                dense.close()
+        finally:
+            self._polish_seconds += time.monotonic() - started
+
     def enable_matrix_free(self, direction=None, *, rtol=1e-11, restart=100, max_restarts=3,
-                           rhs_batch_size=3, parity_rtol=1e-6):
+                           rhs_batch_size=3, parity_rtol=1e-6, refresh_horizon=None,
+                           refresh_max_steps=None):
         """Initialize matrix-free reuse from a checked dense LU at the accepted root.
 
         Supply direction only for qualification: compare gradients and that
@@ -503,16 +620,39 @@ class FreeBoundaryProblem(FunctionProblem):
         Full residuals still obey solver_options['adjoint_residual_rtol'].
         A failed trial adjoint gets one dense retry. Its seed replaces the old
         one only on acceptance. This policy is available for scalar losses.
+
+        Optional refresh_horizon is the number of future accepted steps over
+        which estimated warm solve savings should repay a dense rebuild. Only
+        accepted steps contribute timings. Skip the first two after each seed,
+        then compare the latest three-step median with the best median. None
+        retains refresh-on-failure only. Refresh never relaxes residual gates.
+        refresh_max_steps optionally bounds the remaining accepted-step budget,
+        avoiding rebuilds that cannot pay back before the optimizer stops.
+        Rebuild derivatives must agree with the current rows within parity_rtol.
         """
         if not self._scalar_loss or self._preconditioner is not None:
             raise ValueError("enable matrix-free once on a scalar-loss problem")
         if self.solver.adjoint_solver != "forward_dense_jax":
             raise ValueError("seed-LU reuse requires adjoint_solver='forward_dense_jax'")
+        if refresh_horizon is not None and (
+            isinstance(refresh_horizon, bool) or not isinstance(refresh_horizon, int) or refresh_horizon < 1
+        ):
+            raise ValueError("refresh_horizon must be a positive integer or None")
+        if refresh_max_steps is not None and (
+            refresh_horizon is None or isinstance(refresh_max_steps, bool)
+            or not isinstance(refresh_max_steps, int) or refresh_max_steps < 1
+        ):
+            raise ValueError('refresh_max_steps requires a refresh horizon and a positive integer')
+        if not np.isfinite(parity_rtol) or parity_rtol <= 0:
+            raise ValueError('positive finite parity tolerance required')
+        self._refresh_parity_rtol = parity_rtol
         options = dict(rtol=rtol, restart=restart, max_restarts=max_restarts, rhs_batch_size=rhs_batch_size)
         if direction is None:
             self._derivatives(self.accepted)
             self._preconditioner = self._linearization.preconditioner(**options)
             self._matrixfree_options = options
+            if refresh_horizon is not None:
+                self._lu_refresh = _LURefresh(refresh_horizon, self._dense_seconds, remaining=refresh_max_steps)
             return None
         direction = self._validate_x(direction)
         if not np.any(direction) or not np.isfinite(parity_rtol) or parity_rtol <= 0:
@@ -546,6 +686,8 @@ class FreeBoundaryProblem(FunctionProblem):
             raise
         dense.close()
         self._preconditioner, self._matrixfree_options = seed, options
+        if refresh_horizon is not None:
+            self._lu_refresh = _LURefresh(refresh_horizon, self._dense_seconds, remaining=refresh_max_steps)
         self._accepted_linearization = self._linearization = trial
         self._accepted_jac = self._compact_jac = jac
         self._linearization_record = self.accepted
@@ -570,6 +712,7 @@ class FreeBoundaryProblem(FunctionProblem):
         from .freeboundary import _solve_free_boundary_stage
 
         self._check_time()
+        self._polish_seconds = 0.0
         x = np.asarray(x, dtype=float)
         delta = x - self.accepted.parameters
         count = max(1, int(np.ceil(np.max(np.abs(delta / self.scales)) / self.cfg.continuation_step)))
@@ -595,7 +738,9 @@ class FreeBoundaryProblem(FunctionProblem):
                     self.accepted, self.cfg, jnp.asarray(delta), diagnostics=diagnostics
                 ) if predict else jax.tree.map(jnp.zeros_like, self.accepted.state))
             finally:
-                self._emit("tangent", trial=trial, seconds=time.monotonic() - started, rows=diagnostics)
+                seconds = time.monotonic() - started
+                self._tangent_seconds = seconds if predict else 0.0
+                self._emit("tangent", trial=trial, seconds=seconds, rows=diagnostics)
             previous = self.accepted
             for index in range(1, count + 1):
                 self._check_time()
@@ -638,6 +783,12 @@ class FreeBoundaryProblem(FunctionProblem):
                     zcon0=last_stage.zcon0,
                     result=last_stage.result,
                 )
+                previous = self._polish_record(previous)
+                if ftol is not None and self._root_polish_options is not None:
+                    forces = [float(getattr(previous.result, name))
+                              for name in ('fsqr', 'fsqz', 'fsql', 'fedge')]
+                    if not all(np.isfinite(value) and value <= tolerance for value in forces):
+                        raise TrialRejected('polished trial exceeds requested force tolerance')
                 self._emit("certification", candidate=previous, trial=trial, index=index)
             return previous
         except (VmecError, TrialRejected) as exc:
@@ -667,16 +818,63 @@ class FreeBoundaryProblem(FunctionProblem):
             return
         if self._scalar_loss:
             self._derivatives(candidate)
-            replacement = (self._linearization.preconditioner(**self._matrixfree_options)
-                           if self._recovered else None)
+            linearization, jac = self._linearization, self._compact_jac
+            reason = "recovery" if self._recovered else None
+            refresh = (None if self._lu_refresh is None else
+                       replace(self._lu_refresh, costs=list(self._lu_refresh.costs)))
+            if refresh is not None and not self._recovered and refresh.observe(
+                self._adjoint_seconds + self._tangent_seconds + self._polish_seconds
+            ):
+                reason = "cost"
+                self._check_time()
+                diagnostics = []
+                started = time.monotonic()
+                self._emit("preconditioner_refresh_start", reason=reason,
+                    recent_seconds=float(np.median(refresh.costs)), best_seconds=refresh.best_seconds,
+                    dense_seconds=refresh.dense_seconds, horizon=refresh.horizon)
+                rhs, direct = self._scalar_jac(candidate.state, jnp.asarray(candidate.parameters))
+                linearization = fc.free_boundary_continuation_state_pullback(
+                    candidate, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True)
+                try:
+                    jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
+                    if not np.all(np.isfinite(jac)):
+                        raise FloatingPointError("nonfinite total derivative")
+                    errors = np.linalg.norm(jac-self._compact_jac, axis=1) / np.maximum(
+                        np.linalg.norm(jac, axis=1), 1e-30)
+                    if not np.all(errors <= self._refresh_parity_rtol):
+                        raise AdjointSolveError(f'dense refresh changed derivative rows: {errors}')
+                    linearization.offload_factors()
+                except BaseException:
+                    linearization.close()
+                    raise
+                self._dense_seconds = time.monotonic() - started
+                self._emit("adjoint", seconds=self._dense_seconds, rows=diagnostics,
+                    solver=self.solver_info, reason="preconditioner_refresh",
+                    gradient_relative_errors=errors.tolist())
+            try:
+                replacement = (linearization.preconditioner(**self._matrixfree_options)
+                               if reason is not None else None)
+            except BaseException:
+                if linearization is not self._linearization:
+                    linearization.close()
+                raise
+            if linearization is not self._linearization:
+                self._linearization.close()
             if self._accepted_linearization is not None:
                 self._accepted_linearization.close()
             self.accepted = candidate
-            self._accepted_linearization, self._accepted_jac = self._linearization, self._compact_jac
+            self._lu_refresh = refresh
+            self._accepted_linearization = self._linearization = linearization
+            self._accepted_jac = self._compact_jac = jac
             if replacement is not None:
                 self._preconditioner.close()
                 self._preconditioner = replacement
-                self._emit("preconditioner_refresh")
+                if refresh is not None:
+                    remaining = refresh.remaining
+                    if self._recovered and remaining is not None:
+                        remaining = max(0, remaining - 1)
+                    self._lu_refresh = _LURefresh(refresh.horizon, self._dense_seconds, remaining=remaining)
+                self._emit("preconditioner_refresh", reason=reason, seconds=self._dense_seconds)
             # Keep the immutable numerical context: seeds and tapes must not
             # cross configuration identities. All proposals use self.accepted,
             # never the config's generic memoized continuation solver.

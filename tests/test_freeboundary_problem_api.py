@@ -465,9 +465,10 @@ def test_acceptance_preserves_exact_requested_parameters(request, fixture):
     assert stats["solves"] == solves and problem.accepted_step == 2
 
 
-def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar):
+@pytest.mark.parametrize("refresh_horizon", [None, 10])
+def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar, refresh_horizon):
     p, stats, *_ = scalar
-    p.enable_matrix_free(np.ones(5)*.001)
+    p.enable_matrix_free(np.ones(5)*.001, refresh_horizon=refresh_horizon)
     seed = stats["seeds"][0]
     stats["matrixfree_fail"] = True
     p.value_and_grad(np.full(5, .002))
@@ -477,6 +478,8 @@ def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar):
     assert rejected.closed and not seed.closed
     p.accept_x(np.full(5, .001))
     assert seed.closed and len(stats["seeds"]) == 2 and not stats["seeds"][-1].closed
+    if refresh_horizon is not None:
+        assert p._lu_refresh.warmup == 2 and not p._lu_refresh.costs
 
 
 def test_failed_recovery_does_not_promote_or_retry_forever(scalar):
@@ -620,6 +623,112 @@ def test_production_matrixfree_setup_uses_no_parity_experiment(scalar):
     assert len(stats["rhs"]) == 1
     p.value_and_grad(np.full(5, .001))
     assert len(stats["rhs"]) == 2
+
+
+@pytest.mark.parametrize("horizon", [0, -1, True, 1.5, float("nan")])
+def test_invalid_refresh_horizon_does_not_build_factors(scalar, horizon):
+    p, stats, *_ = scalar
+    with pytest.raises(ValueError, match="refresh_horizon"):
+        p.enable_matrix_free(refresh_horizon=horizon)
+    assert not stats["rhs"] and not stats["seeds"]
+
+
+def test_lu_refresh_ignores_compilation_and_isolated_spikes():
+    refresh = api._LURefresh(horizon=10, dense_seconds=100.)
+    # Compilation is expensive; neither first-use time nor a single spike
+    # should replace good factors. A sustained slowdown should.
+    assert not any(refresh.observe(cost) for cost in [300., 200., 5., 5., 5., 100., 5., 5.])
+    assert not refresh.observe(20.)
+    assert refresh.observe(20.)
+
+
+@pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity"])
+def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypatch, failed_refresh):
+    p, stats, *_ = scalar
+    clock = [0.]
+    cost = [5.]
+    pullback = api.fc.free_boundary_continuation_state_pullback
+
+    def timed_pullback(*args, preconditioner=None, **kwargs):
+        value = pullback(*args, preconditioner=preconditioner, **kwargs)
+        clock[0] += 100. if preconditioner is None else cost[0]
+        tangent = value.tangent
+
+        def timed_tangent(*args, **kwargs):
+            result = tangent(*args, **kwargs)
+            clock[0] += 1.
+            return result
+
+        value.tangent = timed_tangent
+        if failed_refresh == "seed" and preconditioner is None and stats["seeds"]:
+            def fail_seed(**kwargs):
+                raise api.AdjointSolveError("seed failed")
+            value.preconditioner = fail_seed
+        if failed_refresh == 'parity' and preconditioner is None and stats['seeds']:
+            value.field_jacobian = value.field_jacobian + .1
+        return value
+
+    monkeypatch.setattr(api.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(api.fc, "free_boundary_continuation_state_pullback", timed_pullback)
+    events = []
+    p._emit = lambda name, **data: events.append((name, data))
+    p.enable_matrix_free(refresh_horizon=10)
+    seed = stats["seeds"][0]
+    for step in range(1, 6):
+        x = np.full(5, step*.001)
+        p.value_and_grad(x)
+        p.accept_x(x)
+    anchor = p.accepted
+    cost[0] = 20.
+    # Slow rejected trials do not advance the policy or replace its factors.
+    for step in range(6, 10):
+        x = np.full(5, step*.001)
+        p.value_and_grad(x)
+    assert p.accepted is anchor and len(stats["seeds"]) == 1
+    assert p._lu_refresh.costs == [6., 6., 6.]
+    p.accept_x(x)
+    x = np.full(5, .010)
+    expected = p.value_and_grad(x)[1].copy()
+    anchor = p.accepted
+    candidate_linearization = p._linearization
+    policy_before = p._lu_refresh
+    stats["dense_fail"] = failed_refresh == "solve"
+    if failed_refresh is not None:
+        with pytest.raises(api.AdjointSolveError, match="failed|changed derivative"):
+            p.accept_x(x)
+        assert p.accepted is anchor and not seed.closed
+        assert p._lu_refresh is policy_before
+        assert not candidate_linearization.closed and len(stats["seeds"]) == 1
+        if failed_refresh in ('seed', 'parity'):
+            assert stats["factors"][-1].closed
+        np.testing.assert_array_equal(p.grad(x), expected)
+    else:
+        p.accept_x(x)
+        assert p.accepted_step == 7 and seed.closed and candidate_linearization.closed
+        assert len(stats["seeds"]) == 2 and p._lu_refresh.dense_seconds == 100.
+        np.testing.assert_array_equal(p.grad(x), expected)
+        calls = len(stats["rhs"])
+        p.fun(x+.001)  # Next predictor uses the refreshed accepted factors.
+        assert len(stats["rhs"]) == calls
+        refresh_events = [data for name, data in events if name == "preconditioner_refresh"]
+        assert len(refresh_events) == 1 and refresh_events[0]["reason"] == "cost"
+
+
+def test_refresh_budget_avoids_final_step_rebuild():
+    policy = api._LURefresh(horizon=10, dense_seconds=100., warmup=0,
+                           costs=[20., 20.], best_seconds=1., remaining=1)
+    assert not policy.observe(20.)
+    assert policy.remaining == 0
+    policy.remaining = 3
+    assert not policy.observe(20.)  # Two remaining steps cannot repay 100 s.
+
+
+@pytest.mark.parametrize('budget', [0, -1, True, 1.5])
+def test_invalid_refresh_budget_builds_no_factors(scalar, budget):
+    p, stats, *_ = scalar
+    with pytest.raises(ValueError, match='refresh_max_steps'):
+        p.enable_matrix_free(refresh_horizon=10, refresh_max_steps=budget)
+    assert not stats['rhs']
 
 
 def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch, tmp_path):

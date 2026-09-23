@@ -7,6 +7,27 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
+### Added
+
+- Opt-in coupled-root polishing and measured LU refresh for free-boundary
+  scalar optimization, with bounded dense recovery and derivative agreement
+  checks before replacing retained factors.
+- Public fixed-boundary accepted-state views and composed-objective acceptance
+  hooks, so both scalar single-stage examples use the same optimizer and
+  physical-constraint interface without accessing private solver caches.
+
+### Changed
+
+- Fixed- and free-boundary scalar examples share input/WOUT loading, coil
+  initialization, and run options. Both default to SLSQP, fit generated or
+  supplied initial coils, and accept saved fitted coils without refitting.
+  Derivative verification remains a separate workflow.
+
+### Fixed
+
+- Fixed scalar restarts use the public `restart_from` constructor argument;
+  stage-two fitting varies coil coordinates alone and preserves currents.
+
 ## 0.11.0 - 2026-09-21
 
 See the GitHub release for this version in full.

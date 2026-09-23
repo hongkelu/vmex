@@ -838,7 +838,7 @@ The main entry points are :func:`vmex.core.optimize.make_problem`,
 
 
 Optimizer and adjoint choices
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The outer optimizer and equilibrium linear solver are independent choices.
 Use ``opt.minimize(problem, method="SLSQP")`` for nonlinear constraints or
@@ -871,7 +871,7 @@ and total gradient-plus-predictor time including factor construction before
 changing the default. No timing advantage is implied by the common interface.
 
 GCROT free-boundary prediction
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Non-dense adjoint methods use the existing device GCROT forward tangent,
 reported as ``gcrot_tangent``. This solves the parameter-direction response

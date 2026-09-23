@@ -264,17 +264,13 @@ def build_problem(args, *, event=None, qualified=None):
 
 def run_optimizer(problem, args, record_step, *, method):
     """Choose the optimizer and physical bounds; VMEX owns scaling and acceptance."""
-    import numpy as np
     from scipy.optimize import Bounds
     from vmex import optimize as opt
 
     options = dict(maxiter=args.accepted_steps, ftol=OPTIMIZER_FTOL)
     constraints, bounds = (), None
     if method == "SLSQP":
-        width = RADIUS_TOLERANCE - RADIUS_MARGIN
-        constraints = problem.nonlinear_constraint(
-            [IOTA_FLOOR + IOTA_MARGIN, RADIUS_TARGET - width],
-            [np.inf, RADIUS_TARGET + width], scales=[IOTA_FLOOR, RADIUS_TOLERANCE])
+        constraints = common.physical_constraint(problem, parameters=globals())
     else:
         bounds = Bounds(-PARAMETER_BOUND*problem.scales, PARAMETER_BOUND*problem.scales)
         options.update(maxfun=MAX_TRIALS, gtol=OPTIMIZER_GTOL,

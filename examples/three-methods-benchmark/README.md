@@ -77,19 +77,45 @@ is step 0. Matching the interface does not make their objectives identical.
 | Input/WOUT read and remap | Public `VmecInput`, `read_wout`, `state_from_wout`, `boundary_from_wout` | Same |
 | Coil JSON, geometry and Biot–Savart | ESSOS | ESSOS; public VMEX `CoilParameters` adapter |
 | Equilibrium and scalar derivative | Public `VmecProblem.from_loss` | Public `FreeBoundaryProblem.from_loss` |
-| Optimizer | SciPy over `FunctionProblem` | VMEX `opt.minimize` over SciPy |
-| Accepted-state seeding | Still uses private `implicit` caches | Public problem owns acceptance and prediction |
+| Optimizer | VMEX `opt.minimize` over SciPy | Same |
+| Accepted-state seeding | Public `with_accepted_state` / `with_acceptance` | Public problem owns acceptance and prediction |
 | Coupled polishing, matrix-free solve, adaptive LU and dense recovery | Different fixed-boundary solver path | Public `enable_root_polishing` / `enable_matrix_free` |
 | File exports and final equilibrium solve | Public VMEX + ESSOS | Public VMEX + ESSOS |
 
-The free numerical kernels are integrated into VMEX on this integration branch;
-this is not a claim that the branch is already merged into `main`. The fixed
-driver still accesses `_LAST_SOLVE`, `_HOT_CACHE`, and `_PERTURB_SEED` to preserve
-its last-accepted equilibrium policy. Removing those accesses needs a separate
-public fixed-problem acceptance API and validation. Objectives, physical
-parameters, stage-two SciPy fitting, and plotting orchestration intentionally
-remain in the examples. The shared adapter contains no equilibrium or adjoint
-implementation. Standalone derivative verification remains separate.
+Both numerical paths use public VMEX APIs on this integration branch; this is
+not a claim that the branch is already merged into `main`. Neither scalar
+driver reads or writes private VMEX caches. Objectives, physical parameters,
+stage-two SciPy fitting, and plotting orchestration intentionally remain in the
+examples. The shared adapter contains no equilibrium or adjoint implementation.
+Standalone derivative verification remains separate.
+
+The shared structure is **construct problem → define constraints →
+`opt.minimize` → verify/export**. For the fixed formulation, the public
+accepted-state view wraps its existing numerical backend:
+
+```python
+plasma = opt.VmecProblem.from_loss(inp, plasma_loss, warm_start="state")
+plasma = plasma.with_accepted_state()
+joint = opt.FunctionProblem.from_functions(x0, value_and_grad=total_value_and_grad)
+joint = joint.with_acceptance(lambda x: plasma.accept_x(boundary_coordinates(x)))
+result = opt.minimize(joint, method="SLSQP", constraints=constraints,
+                      callback=record_step, options=options)
+```
+
+The code above is a structural sketch: the example supplies the coordinate map
+and combined coil/plasma gradient. The free problem already owns acceptance,
+so it goes directly into the same `opt.minimize` call. Both use
+`problem.nonlinear_constraint(...)`; the shared `physical_constraint` helper
+supplies identical iota/radius limits and row scales.
+
+The fixed view starts every host trial from `plasma.accepted.equilibrium` and
+advances only on `accept_x`. A separate constraint problem can use
+`restart_from(plasma.accepted.equilibrium)` without accepting a trial. Failed
+promotion retains the previous anchor, and the existing implicit-derivative
+force gate still applies. These views are for serial host optimization; do not
+optimize their source concurrently or use them as JAX-traced optimizers. Create
+any subproblem before adding acceptance ownership. Both scalar runs report
+actual accepted steps and retain the accepted endpoint on budget exhaustion.
 
 `coils.initial.scalar.json` is a saved initial coil fit, with its generation
 metadata beside it. The separately included

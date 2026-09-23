@@ -89,7 +89,8 @@ def test_fixed_file_workflow_real_coil_fit(entries, tmp_path, monkeypatch, mode)
     import jax.numpy as jnp
     import vmex as vj
     from vmex import optimize as opt
-    from vmex.core import implicit as im
+    import inspect
+    from vmex.core.optimize import make_problem
     from essos.coils import Coils
 
     fixed, free = entries
@@ -113,24 +114,21 @@ def test_fixed_file_workflow_real_coil_fit(entries, tmp_path, monkeypatch, mode)
     captured = []
     real_loader = fixed.common.load_input
     monkeypatch.setattr(fixed.common, "load_input", lambda args, **kw: (real_loader(args)[0], seed))
-    class Config:
-        pass
-
-    config = Config()
     def boundary(x):
         return (jnp.asarray(inp.rbc).at[inp.ntor, 1].add(x[0]),
                 jnp.asarray(inp.zbs).at[inp.ntor, 1].add(x[1]))
 
     fake_problem = SimpleNamespace(x0=np.zeros(2), scales=np.ones(2), dof_names=("r", "z"),
-                                   metadata={"config": config}, boundary_from_x=boundary)
+                                   metadata={}, boundary_from_x=boundary)
+    fake_problem.with_accepted_state = lambda: fake_problem
 
     def plasma(inp, terms, **kw):
+        inspect.signature(make_problem).bind(inp, **kw)
         captured.append(kw)
         return fake_problem
 
     monkeypatch.setattr(opt.VmecProblem, "from_loss", plasma)
     monkeypatch.setattr(opt.VmecProblem, "from_tuples", plasma)
-    monkeypatch.setitem(im._LAST_SOLVE, config, (None, SimpleNamespace(state=seed)))
 
     class FitFinished(Exception):
         pass
@@ -143,7 +141,7 @@ def test_fixed_file_workflow_real_coil_fit(entries, tmp_path, monkeypatch, mode)
     monkeypatch.chdir(output)
     with pytest.raises(FitFinished):
         fixed.run(fixed.parse_args(flags))
-    assert len(captured) == 2 and all(call["initial_state"] is seed for call in captured)
+    assert len(captured) == 2 and all(call["restart_from"] is seed for call in captured)
     fitted = Coils.from_json(str(output / "coils.stage2.json"))
     np.testing.assert_array_equal(fitted.dofs_currents_raw, seed_coils.dofs_currents_raw)
     report = json.loads((output / "stage_two.json").read_text())

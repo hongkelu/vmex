@@ -123,3 +123,13 @@ def initial_coils(inp, path, *, parameters):
             or coils.dofs_curves.shape != (p["N_COILS"], 3, 2*p["COIL_ORDER"]+1)):
         raise ValueError("coils must match symmetry, count, Fourier order and quadrature")
     return coils
+
+
+def physical_constraint(problem, *, parameters):
+    """Use the same public iota/radius bounds and conditioning in both arms."""
+    p = parameters
+    width = p["RADIUS_TOLERANCE"] - p["RADIUS_MARGIN"]
+    return problem.nonlinear_constraint(
+        [p["IOTA_FLOOR"] + p["IOTA_MARGIN"], p["RADIUS_TARGET"] - width],
+        [math.inf, p["RADIUS_TARGET"] + width],
+        scales=[p["IOTA_FLOOR"], p["RADIUS_TOLERANCE"]])

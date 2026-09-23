@@ -107,7 +107,6 @@ def run(args):
 
     import vmex as vj
     from vmex import optimize as opt
-    from vmex.core import implicit as im
 
     import jax
     import jax.numpy as jnp
@@ -165,7 +164,7 @@ def run(args):
 
     plasma_problem = opt.VmecProblem.from_loss(
         inp, plasma_loss, max_mode=MAX_MODE, vary_major_radius=VARY_MAJOR_RADIUS or args.constrained,
-        use_ess=True, ess_alpha=ESS_ALPHA, progress=not ci_smoke, device=args.device, initial_state=seed)
+        use_ess=True, ess_alpha=ESS_ALPHA, progress=not ci_smoke, device=args.device, restart_from=seed, warm_start="state")
 
     # Both examples generate identical circles, or load the same ESSOS JSON.
     coils0 = common.initial_coils(inp, args.coils or args.initial_coils,
@@ -259,33 +258,29 @@ def run(args):
                 coils, surface, COIL_SURFACE_DISTANCE_LIMIT, block_size=32),
         ])])
 
-    solver_config = plasma_problem.metadata["config"]
-    accepted_state = im._LAST_SOLVE[solver_config][1].state
+    plasma_problem = plasma_problem.with_accepted_state()
 
     if args.constrained:
         constraint_problem = opt.VmecProblem.from_tuples(inp,
             [(opt.min_abs_iota, 0.0, 1.0), (opt.major_radius, 0.0, 1.0)],
             max_mode=MAX_MODE, vary_major_radius=True, use_ess=True, ess_alpha=ESS_ALPHA,
-            implicit_jacobian_method="reverse_adjoint", device=args.device, initial_state=seed)
+            implicit_jacobian_method="reverse_adjoint", device=args.device, restart_from=seed, warm_start="state")
 
         def constraint_values(u):
-            im._HOT_CACHE[constraint_problem.metadata["config"]] = accepted_state
+            constraint_problem.restart_from(plasma_problem.accepted.equilibrium)
             x = x0 + scales*np.asarray(u)
             values = constraint_problem.residual(x[:x_boundary0.size])
-            return np.asarray(limits.inequalities(values))
+            return np.asarray(values)
 
         def constraint_jacobian(u):
             constraint_values(u)
             x = x0 + scales*np.asarray(u)
-            values = constraint_problem.residual(x[:x_boundary0.size])
-            jac = np.asarray(jax.jacfwd(limits.inequalities)(jnp.asarray(values))) @ constraint_problem.residual_jac(x[:x_boundary0.size])
+            jac = constraint_problem.residual_jac(x[:x_boundary0.size])
             return np.pad(jac*scales[:x_boundary0.size], ((0,0),(0,n_curve_dofs)))
 
 
     def plasma_component(u):
-        # Every trial starts from the last accepted equilibrium.
-        im._HOT_CACHE[solver_config] = accepted_state
-        im._PERTURB_SEED.pop(solver_config, None)
+        # The public stateful view seeds every trial from the accepted equilibrium.
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         x_boundary = x[:x_boundary0.size]
         value, gradient = plasma_problem.value_and_grad(np.asarray(x_boundary))
@@ -358,19 +353,18 @@ def run(args):
           f"status: {coil_fit.message}\nWrote {coil_fit_path}", flush=True)
     print("\n[single stage] Starting joint optimization from the fitted coils...", flush=True)
     joint_problem = vj.FunctionProblem.from_functions(
-        coil_fit.x, value_and_grad=value_and_grad)
+        coil_fit.x, value_and_grad=value_and_grad).with_acceptance(
+            lambda u: plasma_problem.accept_x((x0 + scales*u)[:x_boundary0.size]))
     joint_problem.compile_value_and_gradient(report_interval=10.0)
     history = StepHistory(Path.cwd())
 
 
     def record_step(u):
-        nonlocal accepted_state
         monitor(u)
         x = x0 + scales * u
         eq = plasma_problem.equilibrium_from_x(x[:x_boundary0.size])
-        accepted_state = eq.state
         surface, coils = objects_from_x(jnp.asarray(x))
-        result_state = im._LAST_SOLVE[solver_config][1]
+        result_state = eq.result
         history.record(u, coils, surface, objective=monitor.records[-1].cost,
             qa=float(qs.total_state(eq.state, eq.runtime)),
             aspect=float(opt.aspect_ratio(eq.state, eq.runtime)),
@@ -409,23 +403,15 @@ def run(args):
     Path("_scalar_diagnostics.py").write_text((HERE/"_scalar_diagnostics.py").read_text())
     Path("_scalar_constraints.py").write_text((HERE/"_scalar_constraints.py").read_text())
     record_step(joint_problem.x0)
-    # Derivative experiments live in verify_single_stage_constraints.py.
-    def slsqp_gradient(u):
-        # SLSQP asks for gradients after accepting its line search. Its callback
-        # instead fires at the first trial of a major iteration, before backtracking.
-        _, gradient = joint_problem.value_and_grad(u)
-        if not np.array_equal(u, history.previous["u"]):
-            record_step(u)
-        return gradient
-
-
-    result = minimize(joint_problem.fun if args.constrained else joint_problem.value_and_grad, joint_problem.x0,
-                      jac=slsqp_gradient if args.constrained else True, method=METHOD,
-                      bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size if METHOD == "L-BFGS-B" else None,
-                      constraints=[dict(type="ineq", fun=constraint_values, jac=constraint_jacobian)] if args.constrained else (),
-                      callback=None if args.constrained else record_step, options=OPTIONS)
-    if args.constrained and not np.array_equal(result.x, history.previous["u"]):
-        record_step(result.x)
+    # Both formulations use public constraints and the same accepted-step optimizer.
+    constraints = ()
+    if args.constrained:
+        quantities = opt.FunctionProblem.from_functions(coil_fit.x,
+            residual=constraint_values, residual_jac=constraint_jacobian)
+        constraints = common.physical_constraint(quantities, parameters=globals())
+    result = opt.minimize(joint_problem, method=METHOD,
+        bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size if METHOD == "L-BFGS-B" else None,
+        constraints=constraints, callback=record_step, options=OPTIONS)
     initial_value = monitor.records[0].cost
 
     x_final = x0 + scales * result.x
@@ -508,7 +494,7 @@ def run(args):
     Path("optimization_summary.json").write_text(json.dumps(dict(
         optimizer_success=bool(result.success), message=str(result.message),
         derivative_qualified=False,
-        accepted_steps=len(history.rows)-1, optimizer_iterations=int(result.nit), evaluations=int(result.nfev),
+        accepted_steps=int(result.accepted_steps), optimizer_iterations=int(result.nit), evaluations=int(result.nfev),
         best_feasible_step=min((row for row in history.rows if row["constraints_feasible"]), key=lambda row:row["objective"], default={}).get("step"),
         final_qa=float(qs.total(final_equilibrium)), final_aspect=final_aspect,
         **limits.diagnostics(final_equilibrium.state, final_equilibrium.runtime),

@@ -53,6 +53,14 @@ README: value, residual, and derivative functions with the contracts SciPy,
 JAXopt, Optax, and user code consume, and no optimization algorithm of their
 own.
 
+Both fixed- and free-boundary host problems can use ``opt.minimize`` and
+``problem.nonlinear_constraint``. For fixed-boundary optimization,
+``VmecProblem.with_accepted_state()`` returns a view that seeds each trial from
+the last accepted equilibrium. ``FunctionProblem.with_acceptance(on_accept)``
+connects a composed plasma/coil objective to that owner without promoting trial
+evaluations. The free-boundary problem owns this lifecycle directly. Solver
+backends remain specific to each formulation.
+
 .. automodule:: vmex.core.problem
    :members:
 
@@ -60,7 +68,7 @@ own.
    :members:
 
 Coil optimization through a free-boundary equilibrium uses the same objective
-interface, with explicit physical target bands and a separate optimizer.
+interface and shared host optimizer, with explicit physical target bands.
 
 .. automodule:: vmex.core.coil_parameters
    :members:

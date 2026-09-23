@@ -127,7 +127,7 @@ def _require_vcj() -> None:
             "vmex.core.virtual_casing requires the optional dependency "
             "'virtual_casing_jax' (canonical repository "
             "https://github.com/uwplasma/virtual_casing_jax). Install it "
-            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.7)."
+            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.8)."
         ) from _IMPORT_ERROR
 
 
@@ -742,7 +742,7 @@ def _apriori_error_estimate(field, xyz, order: int):
         )
     except ImportError as error:  # pragma: no cover - exercised by the floor
         raise NotImplementedError(
-            "a per-order error estimate needs virtual-casing-jax >= 0.0.7"
+            "a per-order error estimate needs virtual-casing-jax >= 0.0.8"
         ) from error
 
     points = jnp.asarray(xyz)

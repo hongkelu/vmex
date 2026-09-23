@@ -59,6 +59,15 @@ own.
 .. automodule:: vmex.core.monitoring
    :members:
 
+Coil optimization through a free-boundary equilibrium uses the same objective
+interface, with explicit physical target bands and a separate optimizer.
+
+.. automodule:: vmex.core.coil_parameters
+   :members:
+
+.. automodule:: vmex.core.freeboundary_problem
+   :members:
+
 .. automodule:: vmex.core.parallel
    :members:
 

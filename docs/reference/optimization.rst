@@ -615,9 +615,7 @@ representative equilibria. A correct adjoint of an under-resolved equilibrium
 does not establish physical accuracy at higher resolution.
 
 Dense remains the default. This low-level option does not change
-the residual ``FreeBoundaryProblem.from_tuples`` or its projected optimizer.
-Scalar ``from_loss`` problems can opt into the checked recovery policy
-described below. Callers implementing dense
+``FreeBoundaryProblem`` or its projected optimizer. Callers implementing dense
 recovery must check the same certified trial and promote replacement factors
 only after optimizer acceptance. A short vacuum pilot does not qualify long
 optimization runs or finite-beta equilibria.
@@ -975,8 +973,11 @@ endpoint checks. Only its accepted-iteration callback promotes the warm-start
 state, never its line-search gradient evaluations.
 ``verify_free_boundary_single_stage.py`` imports the
 same problem builder for independent derivative checks and saves a qualified
-initial checkpoint. Production requires its matching report and re-certifies
-that checkpoint without repeating initial solves or qualification experiments.
+initial checkpoint. Production can start directly from input/WOUT and coils,
+or optionally restore a matching report and re-certify its checkpoint. Neither
+route runs finite differences or parity experiments. Runs without a supplied
+report record ``derivative_qualified=False``; residual checks and the final
+equilibrium solve remain part of production.
 A matched GPU qualification and pilot are still needed before claiming
 production timing or physical convergence.
 
@@ -988,8 +989,8 @@ without another equilibrium solve; it does not re-certify them.
 ``opt.CoilDiagnostics`` reports physical coil motion and current changes without
 an equilibrium/field evaluation. Expensive numerical qualification stays in the
 separate verification program. Default production force tolerance is ``1e-11``;
-independent endpoint verification uses ``1e-15``. These changed defaults and
-source hashes require a fresh qualification report.
+independent endpoint verification uses ``1e-15``. A changed configuration or
+source needs a fresh standalone report to claim derivative qualification.
 
 
 
@@ -1013,3 +1014,156 @@ true-residual acceptance threshold independently of ``adjoint_tol``. Its
 pullback accepts an optional ``diagnostics`` list populated with each
 row's residual norm, RHS norm, threshold and iterations. No extra equilibrium
 or linear solve is performed for this reporting.
+
+Free-boundary coil variables
+----------------------------
+
+``opt.FreeBoundaryProblem`` uses the same ``FunctionProblem`` interface as
+``VmecProblem``. Its design vector contains coil currents and Cartesian
+Fourier coefficients; the LCFS is the result of the free-boundary equilibrium.
+The class owns no files, command-line arguments, or signal handlers.
+
+For an input with ``lfreeb=True`` and a confining initial coil set:
+
+.. code-block:: python
+
+   qs = opt.QuasisymmetryRatioResidual(
+       (0.25, 0.5, 0.75, 1.0), helicity_m=1, helicity_n=0)
+   problem = opt.FreeBoundaryProblem.from_tuples(
+       inp, [(qs, 0.0, 1.0)],
+       coils=coils, current_dofs=(1, 2, 3), max_coil_mode=4,
+       restart_from=initial_state,
+       constraints=[
+           opt.TargetBand(opt.mean_iota, 0.2, rtol=0.01, scale=0.005),
+           opt.TargetBand(opt.aspect_ratio, 5.0, rtol=0.01, scale=0.05),
+       ],
+       solver_options=dict(
+           ftol=1e-11, edge_force_tolerance=1e-11,
+           max_iterations=12000, adjoint_solver="forward_dense_jax",
+           adjoint_tol=2e-5, adjoint_residual_rtol=2e-5),
+   )
+   monitor = opt.OptimizationMonitor(problem)
+   result = opt.minimize_projected(problem, maxiter=10, callback=monitor)
+   coils_final = problem.coils_from_x(result.x)
+   equilibrium = problem.equilibrium_from_x(result.x)
+   problem.close()
+
+The scalar production examples in ``examples/three-methods-benchmark/``
+use ``from_loss`` with direct coil penalties. The residual interface above
+remains available for objectives expressed as tuples.
+
+Coordinates and constraints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``CoilParameters`` places selected relative current changes first, followed
+by additive coefficients in metres in ``(coil, Cartesian coordinate, Fourier
+coefficient)`` order. Fourier order is constant, sine-1, cosine-1, sine-2,
+cosine-2, and so on. Unselected currents and higher modes stay fixed. Base
+currents are physical amperes, not ESSOS's scaled current DOFs. Symmetry copies
+are not independent variables. ``dof_names`` and ``scales`` follow this exact
+ordering; pass an explicit ``parameterization`` to retain an existing chart.
+
+ESSOS compatibility
+~~~~~~~~~~~~~~~~~~~
+
+This free-boundary interface supports unmodified ESSOS ``main`` (validated at
+``c9b41222e06aed62c246ca3b35349e427a3ea239``) and the research branch. Its ESSOS
+adapter is contained in ``vmex/core/coil_parameters.py``; no ESSOS patches or
+version-specific branches are needed. ``from_coils`` reads physical currents
+through ``dofs_currents_raw`` and removes ``curves.scaling`` from public Fourier
+DOFs once, when constructing the parameterization. Non-default ESSOS scaling
+therefore preserves the physical geometry and currents.
+
+The traced field path uses standard ``Curves``/``Coils`` construction and passes
+geometry/current arrays to ``DirectCoilField``. It does not pass a ``Coils``
+pytree through the equilibrium solver, so it does not require the research
+branch's dynamic current-scale metadata fix. The projected optimizer, compact
+derivatives, retained tangent factors and batching policy are unchanged.
+
+``tests/test_coil_parameters.py`` covers scaled inputs, standard JSON round
+trips, and nested JIT forward/reverse derivatives. Run it with the selected
+ESSOS source root first on ``PYTHONPATH``. ``benchmarks/coil_parameters.py``
+compares field values, both Jacobians, compiler input hashes, compilation time
+and synchronized warm timings. These local coil checks do not measure a whole
+GPU equilibrium or optimizer step.
+
+Use ``Coils.to_json`` / ``Coils.from_json`` for new exports. Legacy fork JSON
+with normalized ``dofs_currents`` has different loader semantics on upstream;
+convert such inputs to explicit physical arrays before using this interface.
+The maintained example uses standard ESSOS JSON with physical currents.
+
+Target bands
+~~~~~~~~~~~~
+
+``TargetBand`` is a physical constraint, not an objective penalty. Its
+acceptance tolerance is ``atol + rtol * abs(target)``; its independent
+``scale`` conditions the target error and its Jacobian. A zero target requires
+positive ``atol``. The initial normalization is
+``max(norm(weighted_objective_residuals), 0.001)``. Pass the saved positive
+numeric normalization when resuming; it is never reset after promotion.
+
+Derivatives and evaluation ownership
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``value_and_grad`` and ``constraint_jac`` share a compact pullback with one
+objective-norm row plus one row per physical constraint. The full pointwise
+objective Jacobian is built only by ``residual_jac`` / ``residual_and_jac``.
+``compile_value_and_gradient`` warms the compact path;
+``compile_residual_and_jacobian`` explicitly requests the full path.
+
+Every trial uses tangent prediction, ordinary correction, and strict force,
+edge, and projected-root certification. Evaluation does not move the accepted
+anchor. ``accept(candidate)`` is called only after the optimizer's nonlinear
+acceptance checks, and invalidates old derivative factors and evaluation caches.
+The retained linearization belongs to one root and configuration.
+
+``coils_from_x`` performs no equilibrium solve. ``equilibrium_from_x`` reuses
+the most recent evaluation or solves/certifies the requested parameters without
+promoting them. Its WOUT property computes vacuum data on that exact geometry;
+it does not reconverge or replace the accepted equilibrium.
+
+Limits and results
+~~~~~~~~~~~~~~~~~~
+
+This interface requires float64 JAX and ``adjoint_fail="error"``. Choose
+any supported backend through ``solver_options["adjoint_solver"]``.
+Residual ``from_tuples`` objectives and constraints depend on
+``(state, runtime)``; scalar ``from_loss`` additionally includes explicit
+coil-objective derivatives. Calls stay eager
+outside the compiled state functions; do not wrap the problem in ``jax.jit``.
+
+``minimize_projected`` preserves projected descent, adaptive target restoration,
+physical coil/current step caps and finite backtracking. ``maxiter`` counts
+new accepted steps. Its result includes ``x``, ``fun``, ``constraints``,
+``feasible``, ``accepted``, ``nit``, ``nfev`` (trial evaluations), ``njev``
+(linearization requests), and the original projected-gradient reference.
+The callback receives an ``OptimizeResult`` after each accepted step; raising
+``StopIteration`` returns the last accepted state with ``callback_stopped``.
+
+``success=True`` means feasible equality-tangent stationarity. It is not a
+full inequality KKT certificate or independent physical qualification.
+``step_budget_reached`` and ``stagnated`` both have ``success=False``.
+The caller owns checkpoint authentication and numerical qualification.
+
+
+Checkpoint restoration and batch tuning
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``restart_from`` accepts a lossless spectral seed path and performs one ordinary
+solve and fresh certification. It does not treat the seed as a certified root.
+
+For an exact optimizer resume, supply ``checkpoint``, ``checkpoint_sha256`` and
+``checkpoint_identity`` to ``FreeBoundaryProblem.from_tuples``. The identity
+must describe the objective definitions and optimizer options. The library also
+binds the input, coil chart, target bands, solver options and continuation gates.
+Checkpoint storage requires construction with ``solver_options``; attaching an
+existing ``continuation`` remains a separate in-memory interface.
+Changed numerical settings are rejected before certification. Certification
+must preserve the saved state, masks and constraint baselines exactly and never
+launches an ordinary solve. The problem exposes ``accepted_step`` and
+``initial_gradient_norm`` and writes accepted states with ``save_checkpoint``.
+Pass the saved gradient reference to ``minimize_projected`` on resume.
+
+The default dense batch size remains 32. ``problem.tune_adjoint_batch()`` is
+optional: it compares 32/64 at the unchanged root, checks gradient agreement,
+and retains only the selected certified factors.

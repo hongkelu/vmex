@@ -1,41 +1,9 @@
-"""Identical accepted-step measurements for the fixed and free scalar arms."""
+"""Accepted-step measurements for the fixed-boundary scalar reference."""
 import csv
-import ast
-from dataclasses import asdict
 from pathlib import Path
 import time
 
 import numpy as np
-
-
-def check_control_settings(settings, control):
-    """Read constants without executing the control; refuse silent setup drift."""
-    constants = {}
-    for node in ast.parse(Path(control).read_text()).body:
-        if not isinstance(node, ast.Assign):
-            continue
-        try:
-            value = ast.literal_eval(node.value)
-        except (ValueError, TypeError):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name):
-                constants[target.id] = value
-            elif isinstance(target, ast.Tuple):
-                constants.update(zip((item.id for item in target.elts), value))
-    matched = {}
-    for name, value in asdict(settings).items():
-        if name.upper() in constants:
-            if constants[name.upper()] != value:
-                raise ValueError(f"{name}: free {value} differs from control {constants[name.upper()]}")
-            matched[name] = value
-    free_only = {
-        "device", "max_trials", "adjoint_batch_size", "root_tolerance",
-        "equilibrium_ftol", "gradient_check_ftol", "matrixfree_rhs_batch_size",
-    }
-    if set(matched) != set(asdict(settings)) - free_only:
-        raise ValueError("missing controlled settings")
-    return matched
 
 
 class StepHistory:

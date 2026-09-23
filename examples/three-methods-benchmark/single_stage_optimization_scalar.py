@@ -3,7 +3,8 @@
 
 Use the commented ``Coils.from_simsopt`` line to replace the generated coils
 with a SIMSOPT coil JSON while keeping the objective and derivative code.
-Preview: this script needs ESSOS branch ``rj/vmex-optimization-interfaces``.
+Install the optional coil dependencies with ``vmex[coils]``. Derivative
+checks run separately in ``verify_single_stage_constraints.py``.
 """
 
 from dataclasses import replace
@@ -65,8 +66,7 @@ try:
     from essos.surfaces import surfacerzfourier_from_boundary
 except ImportError as error:
     raise ImportError(
-        "This example needs ESSOS branch rj/vmex-optimization-interfaces "
-        "(uwplasma/ESSOS#58)."
+        "This example needs the optional coil dependencies: install vmex[coils]."
     ) from error
 
 nfp = 2  # number of field periods
@@ -259,9 +259,8 @@ solver_config = plasma_problem.metadata["config"]
 accepted_state = im._LAST_SOLVE[solver_config][1].state
 
 if args.constrained:
-    from vmex.core.statephysics import major_radius
     constraint_problem = opt.VmecProblem.from_tuples(inp,
-        [(opt.min_abs_iota, 0.0, 1.0), (major_radius, 0.0, 1.0)],
+        [(opt.min_abs_iota, 0.0, 1.0), (opt.major_radius, 0.0, 1.0)],
         max_mode=MAX_MODE, vary_major_radius=True, use_ess=True, ess_alpha=ESS_ALPHA,
         implicit_jacobian_method="reverse_adjoint", device=args.device)
 
@@ -402,18 +401,7 @@ Path("control_source.py").write_text(Path(__file__).read_text())
 Path("_scalar_diagnostics.py").write_text((HERE/"_scalar_diagnostics.py").read_text())
 Path("_scalar_constraints.py").write_text((HERE/"_scalar_constraints.py").read_text())
 record_step(joint_problem.x0)
-if args.constrained:
-    direction = np.random.default_rng(0).normal(size=x0.size)
-    direction /= np.linalg.norm(direction)
-    analytic = constraint_jacobian(joint_problem.x0) @ direction
-    checks = []
-    for h in (3e-3, 1e-3):
-        fd = (constraint_values(joint_problem.x0+h*direction)-constraint_values(joint_problem.x0-h*direction))/(2*h)
-        errors = np.abs(fd-analytic)/np.maximum(np.maximum(np.abs(fd),np.abs(analytic)),1e-8)
-        checks.append(dict(h=h, analytic=analytic.tolist(), finite_difference=fd.tolist(), relative_error=errors.tolist()))
-    Path("constraint_gradient_check.json").write_text(json.dumps(checks,indent=2)+"\n")
-    if any(not all(np.isfinite(e) and e < 1e-3 for e in check["relative_error"]) for check in checks):
-        raise RuntimeError("constraint directional derivative check failed")
+# Derivative experiments live in verify_single_stage_constraints.py.
 def slsqp_gradient(u):
     # SLSQP asks for gradients after accepting its line search. Its callback
     # instead fires at the first trial of a major iteration, before backtracking.
@@ -511,6 +499,7 @@ print("Wrote initial and optimized surface/coils VTK files")
 
 Path("optimization_summary.json").write_text(json.dumps(dict(
     optimizer_success=bool(result.success), message=str(result.message),
+    derivative_qualified=False,
     accepted_steps=int(result.nit), evaluations=int(result.nfev),
     best_feasible_step=min((row for row in history.rows if row["constraints_feasible"]), key=lambda row:row["objective"], default={}).get("step"),
     final_qa=float(qs.total(final_equilibrium)), final_aspect=final_aspect,

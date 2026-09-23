@@ -219,14 +219,7 @@ qualification of a case.
 .. automodule:: vmex.core.freeboundary_continuation
    :members:
 
-The field chart and explicit optimization interfaces use those same certified
-roots and retained linearizations.
-
-.. automodule:: vmex.core.coil_parameters
-   :members:
-
-.. automodule:: vmex.core.freeboundary_problem
-   :members:
+The projected optimizer is a separate research method with target restoration.
 
 .. automodule:: vmex.core.projected_optimization
    :members:

@@ -1215,3 +1215,41 @@ def test_vmex_fieldline_tracing_examples(script, message, output, tmp_path):
         bounded = re.search(r"Exterior trace QA: (\d+)/(\d+) lines remained", out)
         assert bounded is not None and int(bounded.group(1)) > 0
     assert (tmp_path / output).stat().st_size > 10_000
+
+
+def test_fixed_scalar_derivative_checks_are_standalone(tmp_path, monkeypatch, capsys):
+    """The comparison production script never runs its constraint FD audit."""
+    import ast
+    import importlib.util
+    import json
+    from types import SimpleNamespace
+    import numpy as np
+
+    folder = Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark"
+    source = (folder / "single_stage_optimization_scalar.py").read_text()
+    tree = ast.parse(source)
+    assert "constraint_gradient_check.json" not in source
+    assert "finite_difference" not in source
+    assert not any(isinstance(node, ast.Name) and node.id == "checks" for node in ast.walk(tree))
+    monkeypatch.syspath_prepend(str(folder))
+    spec = importlib.util.spec_from_file_location("fixed_constraint_checks", folder / "verify_single_stage_constraints.py")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    output = tmp_path / "not-created"
+    assert verifier.main(["--dry-run", "--output", str(output)]) == 0
+    assert json.loads(capsys.readouterr().out)["ftol"] == 1e-22
+    assert not output.exists()
+
+    matrix = np.array([[2., .3], [-.2, 1.], [.4, -.5]])
+    problem = SimpleNamespace(x0=np.zeros(2), scales=np.array([.5, 2.]))
+    def values(x):
+        return matrix @ x
+    good = verifier.check_constraints(problem, values, lambda x: matrix)
+    assert good["passed"] and len(good["checks"]) == 2
+    assert not verifier.check_constraints(problem, values, lambda x: matrix*2)["passed"]
+    failed = verifier.check_constraints(problem, lambda x: np.full(3, np.nan), lambda x: matrix)
+    assert not failed["passed"]
+    json.dumps(failed, allow_nan=False)
+
+    import _scalar_constraints as limits
+    assert limits.FORCE_TOLERANCE == 1e-11

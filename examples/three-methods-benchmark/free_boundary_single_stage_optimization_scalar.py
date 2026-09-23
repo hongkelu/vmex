@@ -5,7 +5,8 @@ Edit the parameters below, then follow build_problem -> run_optimizer ->
 verify_endpoint -> postprocess. Like the fixed-boundary examples, the loss is
 visible here; opt.minimize owns scaling and optimizer acceptance. VMEX owns
 solves, total derivatives and prediction from the last accepted equilibrium.
-Run the separate verification script first; --dry-run only prints settings.
+Derivative tests live in verify_free_boundary_single_stage.py and run separately.
+Use --qualification to reuse a checked seed; --dry-run only prints settings.
 This example is vacuum-only; finite-beta API requirements are in the README.
 """
 
@@ -79,7 +80,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--wout", type=Path, help="WOUT restart; requires its corresponding input deck")
-    parser.add_argument("--qualification", type=Path, help="passing report from verify_free_boundary_single_stage.py")
+    parser.add_argument("--qualification", type=Path, help="optional passing report to reuse a verified seed without refitting")
     coils = parser.add_mutually_exclusive_group()
     coils.add_argument("--coils", type=Path, default=COILS, help="reuse fitted coils without stage two")
     coils.add_argument("--initial-coils", type=Path, help="fit these coils instead of generating circles")
@@ -164,8 +165,7 @@ def qualification_contract(args):
     return opt.OptimizationQualification.signature(parameters=parameters,
         input_path=args.input, wout_path=args.wout, resolution=args.resolution,
         grid=args.grid, ftol=args.ftol, device=args.device,
-        sources=[__file__, HERE / "free_boundary_single_stage_optimization.py",
-                 HERE / "verify_free_boundary_single_stage.py"])
+        sources=[__file__, HERE / "free_boundary_single_stage_optimization.py"])
 
 
 def read_qualification(args):
@@ -173,7 +173,7 @@ def read_qualification(args):
     from vmex import optimize as opt
 
     if args.qualification is None:
-        raise ValueError("production requires --qualification from verify_free_boundary_single_stage.py")
+        return None
     qualified = opt.OptimizationQualification.read(args.qualification, contract=qualification_contract(args))
     if args.coils is not None and sha(args.coils) != qualified.report["artifacts"]["coils"]["sha256"]:
         raise ValueError("supplied coils differ from the qualified fitted coils")
@@ -183,9 +183,9 @@ def read_qualification(args):
 def build_problem(args, *, event=None, qualified=None):
     """Prepare the input, stage-two coils and common scalar VMEX problem.
 
-    Qualification calls this without qualified to solve and certify a seed.
-    Production supplies the checked report/assets to restore that exact seed,
-    skipping both stage-two fitting and the initial equilibrium solve.
+    Without a qualification bundle, load or fit coils and solve the seed from
+    input/WOUT. A supplied bundle restores its exact checked seed, skipping
+    stage-two fitting and the initial equilibrium solve. No derivative tests run.
     """
     import jax
     import jax.numpy as jnp
@@ -292,7 +292,8 @@ def build_problem(args, *, event=None, qualified=None):
             raise RuntimeError("stage-two fitting returned invalid or worse coils")
         currents = np.asarray(coils0.dofs_currents_raw).copy()
         coils0 = coils0.with_dofs(jnp.concatenate((jnp.asarray(x0)+COIL_STEP*fit.x, coils0.dofs_currents)))
-        np.testing.assert_array_equal(coils0.dofs_currents_raw, currents)
+        if not np.array_equal(coils0.dofs_currents_raw, currents):
+            raise RuntimeError("stage-two fitting changed fixed coil currents")
         fit_report = dict(reused=False, iterations=int(fit.nit), optimizer_success=bool(fit.success),
                           message=str(fit.message), initial_objective=initial_cost, objective=float(fit.fun))
     # Reload the saved representation once so qualification and production
@@ -531,7 +532,7 @@ def postprocess(stage, args, summary, monitor, history, initial_equilibrium, ver
 
 
 def main(argv=None, *, method="SLSQP"):
-    """Restore a qualified start, optimize and independently verify the endpoint."""
+    """Prepare or restore a start, optimize and independently solve the endpoint."""
     if method not in ("SLSQP", "L-BFGS-B"):
         raise ValueError(f"unsupported optimizer: {method}")
     args = parse_args(argv)
@@ -539,8 +540,6 @@ def main(argv=None, *, method="SLSQP"):
     if args.dry_run:
         print(json.dumps(dict(optimizer=method, parameters=settings, arguments=vars(args)), indent=2, default=str))
         return 0
-    if args.qualification is None:
-        raise ValueError("run verify_free_boundary_single_stage.py first, then pass --qualification REPORT")
     out = setup_run(args)
     import numpy as np
     from vmex import optimize as opt
@@ -637,7 +636,9 @@ def main(argv=None, *, method="SLSQP"):
             write_json(out / "rejected_trial.json", dict(error=str(error)))
         summary = dict(optimizer=method, linear_solver=problem.solver_info, nonlinear_constraints=method == "SLSQP", status=status, optimizer_success=status == "converged", accepted_steps=problem.accepted_step,
             optimization_seconds=time.perf_counter()-optimization_started,
-            derivative_qualified=True, qualification=str(args.qualification.resolve()), initial=history[0], final=history[-1], verification="not run",
+            derivative_qualified=qualified is not None,
+            qualification=None if args.qualification is None else str(args.qualification.resolve()),
+            initial=history[0], final=history[-1], verification="not run",
             optimizer_message=None if result is None else str(result.message))
         write_json(out / "optimization_summary.json", summary)
 

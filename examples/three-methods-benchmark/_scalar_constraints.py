@@ -8,14 +8,13 @@ RADIUS_TARGET = 1.0  # physical major radius, metres; not RBC(0,0)
 RADIUS_TOLERANCE = 0.01
 IOTA_MARGIN = 0.0005
 RADIUS_MARGIN = 0.001
-FORCE_TOLERANCE = 1e-22  # required by the independent iota derivative check
+FORCE_TOLERANCE = 1e-11  # production force tolerance; derivative tests run separately
 
 
 def physical_values(state, runtime):
     import jax.numpy as jnp
     from vmex import optimize as opt
-    from vmex.core.statephysics import major_radius
-    return jnp.stack((opt.min_abs_iota(state, runtime), major_radius(state, runtime)))
+    return jnp.stack((opt.min_abs_iota(state, runtime), opt.major_radius(state, runtime)))
 
 
 def inequalities(values):

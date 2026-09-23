@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Qualify the shared free-boundary scalar problem before production.
+"""Run the shared free-boundary scalar derivative tests independently of production.
 
 Prepare/freeze stage-two coils, certify the initial equilibrium, compare total
 objective/constraint derivatives against independent finite differences, and
@@ -74,7 +74,8 @@ def main(argv=None):
     signal.alarm(QUALIFICATION_SECONDS)
     problem = None
     started = time.perf_counter()
-    report = dict(schema="vmex.single-stage-qualification/v1", passed=False)
+    report = dict(schema="vmex.single-stage-qualification/v1", passed=False,
+                  verification_source_sha256=example.sha(__file__))
     try:
         stage = example.build_problem(args)
         problem = stage.problem

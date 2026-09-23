@@ -8,7 +8,7 @@ single-stage optimization with the coils determining the plasma boundary.
 | Workflow | Entry point | Optimizer |
 |---|---|---|
 | Prescribed-boundary QA | `qa_optimization.py` | Staged least squares |
-| Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP with `--constrained`; BFGS otherwise |
+| Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP |
 | Free-boundary scalar single stage | `free_boundary_single_stage_optimization_scalar.py` | SLSQP |
 | Free-boundary bounded single stage | `free_boundary_single_stage_optimization.py` | L-BFGS-B |
 
@@ -25,7 +25,71 @@ Use this checkout's VMEX source with the dependencies in the root
 Run commands from this directory with that checkout importable. The input
 defines zero pressure/current, major radius 1 m, area-equivalent aspect 5,
 and PHIEDGE 0.1255044894897643 Wb. Its default resolution is M3/N3/NS31
-with a 48x40 angular grid; the free driver supports explicit overrides.
+with a 48x40 angular grid. Both scalar drivers use M8/N8/NS51 and a 64x64
+grid when launched without `--input`; an explicit `--input` preserves the
+deck resolution unless `--resolution` or `--grid` overrides it.
+
+## Identical scalar entry-point usage
+
+Both scalar scripts accept the same ordinary options and use the same file
+adapter (`single_stage_common.py`):
+
+```sh
+python -B single_stage_optimization_scalar.py \
+  --input input.rotating_ellipse --resolution 8 8 51 --grid 64 64 \
+  --device gpu --ftol 1e-15 --accepted-steps 100 --output runs/fixed-new
+python -B free_boundary_single_stage_optimization_scalar.py \
+  --input input.rotating_ellipse --resolution 8 8 51 --grid 64 64 \
+  --device gpu --ftol 1e-15 --accepted-steps 100 --output runs/free-new
+```
+
+- Neither coil option: generate the same circular seed and fit its geometry
+  on the frozen input/WOUT boundary, holding currents fixed.
+- `--initial-coils initial.json`: load ESSOS coils and perform that fit.
+- `--coils fitted.json`: reuse ESSOS coils, including their currents, and skip fitting.
+- `--wout wout.nc --input input.case`: use the WOUT boundary and spectral state,
+  with profiles, flux and solver settings from the corresponding input deck.
+  WOUT alone is insufficient. VMEX remaps the seed to the selected resolution.
+- `--coil-fit-maxiter`, `--accepted-steps`, `--ftol`, `--resolution`, `--grid`,
+  `--device`, `--output`, `--no-plots`, `--no-movie`, and `--dry-run` work in both.
+
+Parameters remain editable at the beginning of each script. Both default to
+SLSQP, GPU, 100 optimizer iterations/steps, equilibrium FTOL=1e-15, and final
+verification at NS=201/FTOL=1e-15. Optimizers can stop before their budget;
+the saved history and `accepted_steps` report actual accepted changes.
+`--maxiter` is an alias for `--accepted-steps`; the old fixed `--constrained`
+flag is accepted for compatibility. `--qualification` remains a free-only
+advanced option. Both write `coils.stage2.json` and `stage_two.json`.
+Neither production script runs finite-difference derivative experiments.
+For a controlled comparison, pass the same saved `coils.stage2.json` through
+`--coils` in both runs, so independently fitted starting geometries cannot drift.
+
+The formulations remain different: fixed-boundary optimization varies boundary
+modes (default `MAX_MODE=3`, independently of equilibrium MPOL/NTOR) and coils,
+including the normal-field penalty. Free-boundary optimization varies coils;
+the coil-supported equilibrium determines the boundary, and its polished state
+is step 0. Matching the interface does not make their objectives identical.
+
+### Library API integration status
+
+| Operation | Fixed scalar | Free scalar |
+|---|---|---|
+| Input/WOUT read and remap | Public `VmecInput`, `read_wout`, `state_from_wout`, `boundary_from_wout` | Same |
+| Coil JSON, geometry and Biot–Savart | ESSOS | ESSOS; public VMEX `CoilParameters` adapter |
+| Equilibrium and scalar derivative | Public `VmecProblem.from_loss` | Public `FreeBoundaryProblem.from_loss` |
+| Optimizer | SciPy over `FunctionProblem` | VMEX `opt.minimize` over SciPy |
+| Accepted-state seeding | Still uses private `implicit` caches | Public problem owns acceptance and prediction |
+| Coupled polishing, matrix-free solve, adaptive LU and dense recovery | Different fixed-boundary solver path | Public `enable_root_polishing` / `enable_matrix_free` |
+| File exports and final equilibrium solve | Public VMEX + ESSOS | Public VMEX + ESSOS |
+
+The free numerical kernels are integrated into VMEX on this integration branch;
+this is not a claim that the branch is already merged into `main`. The fixed
+driver still accesses `_LAST_SOLVE`, `_HOT_CACHE`, and `_PERTURB_SEED` to preserve
+its last-accepted equilibrium policy. Removing those accesses needs a separate
+public fixed-problem acceptance API and validation. Objectives, physical
+parameters, stage-two SciPy fitting, and plotting orchestration intentionally
+remain in the examples. The shared adapter contains no equilibrium or adjoint
+implementation. Standalone derivative verification remains separate.
 
 `coils.initial.scalar.json` is a saved initial coil fit, with its generation
 metadata beside it. The separately included
@@ -45,18 +109,17 @@ Run the two SLSQP entry points with a small optimization budget and ordinary fin
 verification and plots. Use new output directories for each invocation:
 
 ```sh
-python -B single_stage_optimization_scalar.py --device gpu --constrained \
+python -B single_stage_optimization_scalar.py --device gpu --input input.rotating_ellipse \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
-  --ftol 1e-11 --maxiter 2 --output runs/fixed-two-step
+  --ftol 1e-15 --accepted-steps 2 --output runs/fixed-two-step
 python -B free_boundary_single_stage_optimization_scalar.py --device gpu \
   --input input.rotating_ellipse \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
   --accepted-steps 2 --output runs/free-slsqp-two-step
 ```
 
-The explicit free-boundary input preserves M3/N3/NS31 and the 48x40 grid.
-Fixed-boundary SciPy's `--maxiter` limits optimizer iterations. Check the saved
-histories for the actual accepted steps. Free-boundary drivers return nonzero at a step-budget
+The explicit input preserves M3/N3/NS31 and the 48x40 grid in both scripts.
+Check the saved histories for the actual accepted steps. Both drivers return nonzero at an iteration-budget
 stop even when verification and post-processing complete; inspect
 `optimization_summary.json` and any `failure.json` to distinguish that stop
 from an execution failure. Two steps do not establish convergence or derivative
@@ -67,9 +130,9 @@ qualification.
 For a fixed-boundary comparison using the saved common coils:
 
 ```sh
-python -B single_stage_optimization_scalar.py --constrained --device gpu \
+python -B single_stage_optimization_scalar.py --device gpu \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
-  --maxiter 100 --output runs/fixed-scalar
+  --accepted-steps 100 --output runs/fixed-scalar
 ```
 
 ## Free-boundary production and separate derivative tests
@@ -79,7 +142,8 @@ python -B single_stage_optimization_scalar.py --constrained --device gpu \
 editable parameters, weighted plasma/coil objectives, a public VMEX problem,
 `opt.minimize`, and endpoint reporting all appear in the example. It imports
 `vmex` and `vmex.optimize`, with ESSOS for coils and surfaces. It does not
-import private VMEX modules or a local driver/setup helper.
+import private VMEX modules. Both scalar scripts share a small CLI/file adapter;
+the free solver and derivative implementation live in VMEX.
 
 `opt.FreeBoundaryProblem.from_loss` owns equilibrium correction and the total
 scalar gradient, including the moving surface in coil-surface clearance.

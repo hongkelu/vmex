@@ -15,6 +15,7 @@ import free_boundary_single_stage_optimization_scalar as example
 
 GRADIENT_CHECK_FTOL = 1e-20
 GRADIENT_RTOL = 1e-3
+GRADIENT_ATOL = 1e-7
 LINEARIZATION_PARITY_RTOL = 1e-6
 QUALIFICATION_SECONDS = 3600
 GRADIENT_STEPS = (3e-4, 1e-4, 3e-5, 1e-5)
@@ -33,20 +34,31 @@ def verify_problem(stage, output):
     analytic = np.r_[gradient @ delta, stage.constraint_transform @ problem.constraint_jac(problem.x0) @ delta,
                      stage.coil_constraint.jac(problem.x0) @ delta]
     checks = []
-    example.write_json(output / "gradient_check.json", dict(passed=False, checks=checks, seed=0, predictor=False))
+    policy = dict(seed=0, predictor=False, force_tolerance=GRADIENT_CHECK_FTOL,
+                  rtol=GRADIENT_RTOL, atol=GRADIENT_ATOL,
+                  error_rule="abs(FD-AD) <= atol + rtol*abs(AD)",
+                  initial_root_residual=float(anchor.root_residual_norm))
+    example.write_json(output / "gradient_check.json", dict(passed=False, checks=checks, **policy))
     consecutive_passes = 0
     for h in GRADIENT_STEPS:
         rows = []
+        endpoints = []
         for sign in (1, -1):
             print(f"Independent derivative endpoint: h={h:g}, sign={sign:+d}", flush=True)
-            _, values = problem.evaluate_trial(sign*h*delta, predict=False, ftol=GRADIENT_CHECK_FTOL)
+            candidate, values = problem.evaluate_trial(sign*h*delta, predict=False, ftol=GRADIENT_CHECK_FTOL)
+            endpoints.append(dict(sign=sign, root_residual=float(candidate.root_residual_norm),
+                **{name: float(getattr(candidate.result, name)) for name in ("fsqr", "fsqz", "fsql", "fedge")}))
             rows.append(np.r_[values[0], stage.inequalities(values[1:]),
                               stage.coil_constraint.fun(problem.x0+sign*h*delta)])
         fd = (rows[0]-rows[1])/(2*h)
         errors = np.abs(fd-analytic)/np.maximum(np.maximum(np.abs(fd), np.abs(analytic)), 1e-8)
-        passed = bool(np.all(np.isfinite(errors) & (errors < GRADIENT_RTOL)))
-        checks.append(dict(h=h, passed=passed, analytic=analytic.tolist(), finite_difference=fd.tolist(), relative_errors=errors.tolist()))
-        example.write_json(output / "gradient_check.json", dict(passed=False, checks=checks, seed=0, predictor=False, force_tolerance=GRADIENT_CHECK_FTOL))
+        absolute_errors = np.abs(fd-analytic)
+        allowed_errors = GRADIENT_ATOL + GRADIENT_RTOL*np.abs(analytic)
+        passed = bool(np.all(np.isfinite(fd)) and np.all(absolute_errors <= allowed_errors))
+        checks.append(dict(h=h, passed=passed, analytic=analytic.tolist(), finite_difference=fd.tolist(),
+            relative_errors=errors.tolist(), absolute_errors=absolute_errors.tolist(),
+            allowed_absolute_errors=allowed_errors.tolist(), endpoints=endpoints))
+        example.write_json(output / "gradient_check.json", dict(passed=False, checks=checks, **policy))
         print(f"Derivative h={h:g}: passed={passed}; max relative error={errors.max():.6g}", flush=True)
         consecutive_passes = consecutive_passes + 1 if passed else 0
         if consecutive_passes >= 2:
@@ -55,12 +67,12 @@ def verify_problem(stage, output):
         raise RuntimeError("independent objective/constraint derivative check failed to pass two successive refined steps")
     if problem.accepted is not anchor:
         raise RuntimeError("qualification changed the accepted equilibrium")
-    example.write_json(output / "gradient_check.json", dict(passed=True, checks=checks, seed=0, predictor=False, force_tolerance=GRADIENT_CHECK_FTOL))
+    example.write_json(output / "gradient_check.json", dict(passed=True, checks=checks, **policy))
     parity = problem.enable_matrix_free(delta*1e-3, rtol=example.MATRIXFREE_RTOL,
         restart=example.MATRIXFREE_RESTART, max_restarts=example.MATRIXFREE_MAX_CYCLES,
         rhs_batch_size=example.MATRIXFREE_RHS_BATCH_SIZE, parity_rtol=LINEARIZATION_PARITY_RTOL)
     example.write_json(output / "matrixfree_check.json", parity)
-    return dict(finite_difference=dict(passed=True, rtol=GRADIENT_RTOL, force_tolerance=GRADIENT_CHECK_FTOL),
+    return dict(finite_difference=dict(passed=True, **policy),
                 matrix_free=parity)
 
 
@@ -72,7 +84,8 @@ def main(argv=None):
     if args.dry_run:
         import json
         print(json.dumps(dict(arguments=vars(args), gradient_force_tolerance=GRADIENT_CHECK_FTOL,
-                              gradient_rtol=GRADIENT_RTOL, parity_rtol=LINEARIZATION_PARITY_RTOL), indent=2, default=str))
+                              gradient_rtol=GRADIENT_RTOL, gradient_atol=GRADIENT_ATOL,
+                              parity_rtol=LINEARIZATION_PARITY_RTOL), indent=2, default=str))
         return 0
     output = example.setup_run(args)
     (output / Path(__file__).name).write_text(Path(__file__).read_text())

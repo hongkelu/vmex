@@ -42,6 +42,7 @@ RESOLUTION = P.RESOLUTION
 GRID = P.GRID
 EQUILIBRIUM_FTOL = P.EQUILIBRIUM_FTOL
 ROOT_TOLERANCE = 2e-6
+ROOT_POLISH_TOLERANCE = 1e-12
 INITIALIZATION_SECONDS = 3600
 OPTIMIZATION_SECONDS = 43200
 VERIFICATION_SECONDS = 1800
@@ -331,6 +332,17 @@ def build_problem(args, *, event=None, qualified=None):
     if problem.accepted_step != 0:
         problem.close()
         raise ValueError("qualification must describe an initial equilibrium at accepted step zero")
+    before = problem.accepted.root_residual_norm
+    print(f"Polishing initial coupled root: residual={before:.6g}", flush=True)
+    try:
+        problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
+        write_json(out / "root_polish_initial.json", dict(
+            tolerance=ROOT_POLISH_TOLERANCE, before=float(before),
+            after=float(problem.accepted.root_residual_norm), solver=problem.solver_info))
+    except BaseException:
+        problem.close()
+        raise
+    print(f"Polished initial coupled root: residual={problem.accepted.root_residual_norm:.6g}", flush=True)
     return SimpleNamespace(problem=problem, inp=inp, chart=chart, coils=coils0, qs=qs,
                            surface=surface, coil_costs=coil_costs, inequalities=inequalities,
                            constraint_transform=constraint_transform, contract=contract,

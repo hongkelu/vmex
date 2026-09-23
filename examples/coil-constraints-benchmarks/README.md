@@ -83,8 +83,11 @@ maximum curvature is 5.18588 m⁻¹ and its three lengths are 5.09079, 5.04095
 and 5.00535 m. `seed_geometry.json` records the source hash and sampled metrics.
 A run must restore feasibility before a lower QA value is a valid constrained
 comparison. Free-boundary derivative qualification is separate and includes
-all coil inequalities and moving-surface clearance. It requires every row to
-meet the unchanged 0.1% relative error gate at two successive perturbation sizes
+all coil inequalities and moving-surface clearance. The initial free-boundary
+root and every trial are polished to a coupled residual tolerance of `1e-12`,
+before derivatives or objective values are used. Initial and finite-difference
+endpoint residuals are recorded. Qualification uses the same mixed error rule
+as the fixed arm: `abs(FD-AD) <= 1e-7 + 1e-3*abs(AD)`, for every row at two successive perturbation sizes
 from `3e-4, 1e-4, 3e-5, 1e-5`. A failed larger perturbation is retained in the
 report and refined, since a sampled minimum or maximum can change its active
 point. Every endpoint is solved independently from the same accepted seed;

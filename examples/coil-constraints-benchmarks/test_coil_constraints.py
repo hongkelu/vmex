@@ -174,9 +174,10 @@ def test_free_qualification_requires_two_successive_refined_passes(tmp_path, coe
         assert kwargs == dict(predict=False, ftol=1e-20)
         calls.append(float(delta[0]))
         x = float(delta[0])
-        return None, np.array([x*(1+coefficient*x*x)])
+        return SimpleNamespace(root_residual_norm=1e-14,
+            result=SimpleNamespace(fsqr=1e-22, fsqz=1e-22, fsql=1e-22, fedge=1e-22)), np.array([x*(1+coefficient*x*x)])
 
-    anchor = object()
+    anchor = SimpleNamespace(root_residual_norm=1e-13)
     problem = SimpleNamespace(accepted=anchor, x0=np.zeros(1),
         value_and_grad=lambda x: (0., np.ones(1)), constraint_jac=lambda x: np.empty((0, 1)),
         evaluate_trial=evaluate, enable_matrix_free=lambda *a, **k: reuse.append(True) or {"passed": True})
@@ -186,6 +187,7 @@ def test_free_qualification_requires_two_successive_refined_passes(tmp_path, coe
     namespace = dict(example=SimpleNamespace(write_json=write, MATRIXFREE_RTOL=1e-11,
         MATRIXFREE_RESTART=100, MATRIXFREE_MAX_CYCLES=3, MATRIXFREE_RHS_BATCH_SIZE=3),
         GRADIENT_STEPS=(3e-4, 1e-4, 3e-5, 1e-5), GRADIENT_RTOL=1e-3,
+        GRADIENT_ATOL=1e-7,
         GRADIENT_CHECK_FTOL=1e-20, LINEARIZATION_PARITY_RTOL=1e-6)
     exec(compile(ast.Module(body=[function], type_ignores=[]), "qualification", "exec"), namespace)
     if expected_pass:

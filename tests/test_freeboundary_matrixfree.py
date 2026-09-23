@@ -361,7 +361,7 @@ def test_nonfinite_cotangents_are_rejected_before_krylov(monkeypatch, rhs_batch_
 def test_closed_linearization_cannot_create_or_offload_seed(monkeypatch):
     accepted, cfg, _, _ = fixture(monkeypatch)
     root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
-    dense_root = root._dense
+    dense_root = root._root
     root.close()
     for operation in (root.preconditioner, root.offload_factors):
         with pytest.raises(ValueError, match="closed"):
@@ -373,7 +373,7 @@ def test_closed_linearization_cannot_create_or_offload_seed(monkeypatch):
 def test_seed_rejects_changed_solver_closed_storage_and_single_precision(monkeypatch):
     accepted, cfg, _, _ = fixture(monkeypatch)
     root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
-    dense_root = root._dense
+    dense_root = root._root
     seed = root.preconditioner()
     with pytest.raises(ValueError, match="different solver or state layout"):
         seed._seed.validate(accepted.state, accepted.parameters, dense_root.space, NS(**vars(cfg.solver)))

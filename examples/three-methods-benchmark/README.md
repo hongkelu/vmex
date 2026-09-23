@@ -197,6 +197,26 @@ The previous private-driver experiments and commands are preserved in Git histor
 Their timings and qualification results do not qualify these new entry points.
 A matched GPU qualification and bounded pilot remain necessary before a long run.
 
+## Optimizer and linear-solver choices
+
+SLSQP and L-BFGS-B share `opt.minimize`; BFGS is available through the same
+library adapter. The upstream vacuum and finite-beta free-boundary examples
+also use that adapter. `minimize_projected` remains a separate research method
+with different target restoration and convergence semantics.
+
+Production uses JAX dense LU to initialize and precondition current-root GMRES.
+A failed matrix-free adjoint gets a checked dense retry. **It does not run
+`reverse_gcrot`.** `problem.solver_info`, solver-event rows and the final summary
+identify the policy and actual linear solves.
+
+The accepted-root API now also accepts upstream `boundary_schur`,
+`coupled_gcrot` and `edge_response`, plus `reverse_gcrot` and host dense LU,
+through `solver_options["adjoint_solver"]`. Dense methods reuse LU for their
+predictor; other choices use the existing GCROT tangent. Schur currently
+factors each adjoint row separately. These alternatives need matched physical
+qualification and timing before replacing the production default; enabling
+seed-LU reuse with a non-JAX-dense backend is rejected explicitly.
+
 ## Preparing finite-beta support
 
 The shared optimizer is independent of vacuum/finite-beta physics. The current

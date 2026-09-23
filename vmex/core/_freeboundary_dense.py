@@ -148,8 +148,19 @@ class DenseRootLinearization:
     _tangent_backend = 'reused_dense_lu'
 
     def _solve_tangent(self, rhs):
-        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=0)
+        solve = sl.lu_solve if self.cfg.adjoint_solver == "forward_dense" else jsl.lu_solve
+        solution = solve(self.factors, -_compress(rhs, self.space), trans=0)
         return _expand(solution, self.z, self.space), 1
+
+    def offload_factors(self):
+        """Move dense factors to immutable host storage between predictor calls."""
+        if self.factors is None:
+            raise ValueError("root linearization is closed")
+        if not all(isinstance(x, np.ndarray) and not x.flags.writeable for x in self.factors):
+            factors = tuple(np.array(x, copy=True) for x in self.factors)
+            for value in factors:
+                value.setflags(write=False)
+            self.factors = factors
 
     def close(self):
         """Release root-specific arrays/tapes and permanently invalidate reuse."""
@@ -218,8 +229,8 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     This interface is host-eager even for the JAX matrix backend: the runtime
     mask determines the active dimension. No Krylov fallback is substituted.
     """
-    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
-        raise ValueError('retained linearization requires forward_dense_jax with adjoint_fail=error')
+    if return_linearization and (cfg.adjoint_solver not in {'forward_dense', 'forward_dense_jax'} or cfg.adjoint_fail != 'error'):
+        raise ValueError('retained dense linearization requires a dense backend with adjoint_fail=error')
     values = (z,params,field,frozen,rcon,zcon,rhs_batch,mask)
     if any(isinstance(x,jax.core.Tracer) for x in jax.tree.leaves(values)):
         raise ValueError("dense free-boundary adjoints require host-eager inputs; "
@@ -265,11 +276,9 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
         finite = bool(jnp.isfinite(norms[row]) & jnp.all(jnp.isfinite(solution[row])))
         accepted = finite and float(norms[row]) <= float(tolerances[row])
         if diagnostics is not None:
-            norm, rhs_norm = float(norms[row]), float(rhs_norms[row])
-            diagnostics.append(dict(row=row,residual_norm=norm,rhs_norm=rhs_norm,
-                relative_residual=norm/rhs_norm if rhs_norm > 0 else (0. if norm == 0 else float('inf')),
-                tolerance=float(tolerances[row]),iterations=1,accepted=accepted,
-                backend=cfg.adjoint_solver))
+            diagnostics.append(im._adjoint_diagnostic(cfg.implicit,
+                residual_norm=norms[row], rhs_norm=rhs_norms[row], iterations=1,
+                row=row, backend=cfg.adjoint_solver, residual_rtol=residual_rtol, finite=finite))
         if not accepted:
             if cfg.adjoint_fail != 'best_effort' or not finite:
                 reject(row,norms[row],tolerances[row])

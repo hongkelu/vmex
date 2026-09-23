@@ -14,7 +14,7 @@ def fixture(monkeypatch):
     matrix=jnp.array([[3.,2.],[-1.,4.]])
     coupling=jnp.array([[1.,-2.],[3.,1.]])
     residual=jax.jit(lambda z,p,f,*_:matrix@z+coupling@f-p)
-    cfg=NS(implicit=NS(device=None,lconm1=False,adjoint_tol=1e-11,adjoint_maxiter=10),
+    cfg=NS(implicit=NS(device=None,lconm1=False,adjoint_tol=1e-11,adjoint_maxiter=10,adjoint_gcrot_m=2,adjoint_gcrot_k=1),
         adjoint_dense_batch_size=2,adjoint_dense_max_dofs=10,adjoint_solver='forward_dense_jax',
         adjoint_fail='error',adjoint_residual_rtol=2e-5)
     monkeypatch.setattr(fbi,'_projected_residual',lambda *_:residual)
@@ -50,7 +50,7 @@ def test_shared_factorization_orientation_and_scaling(monkeypatch):
 def test_original_operator_catches_corrupt_factors(monkeypatch):
     accepted,cfg,_,_=fixture(monkeypatch)
     root=fc.free_boundary_continuation_state_pullback(accepted,cfg,jnp.eye(2), return_linearization=True)
-    root._dense.factors=jsl.lu_factor(jnp.eye(2))
+    root._root.factors=jsl.lu_factor(jnp.eye(2))
     rows=[]
     with pytest.raises(Exception,match='reused_dense_lu'):
         root.tangent(accepted,cfg,jnp.ones(2),diagnostics=rows)
@@ -80,8 +80,7 @@ def test_zero_invalid_directions_and_jit_rejection(monkeypatch):
         jax.jit(lambda d:root.tangent(accepted,cfg,d))(jnp.ones(2))
 
 
-@pytest.mark.parametrize('backend,fail',[('coupled_gcrot','error'),('reverse_gcrot','error'),
-    ('forward_dense','error'),('forward_dense_jax','best_effort')])
+@pytest.mark.parametrize('backend,fail', [(name, 'best_effort') for name in fbi._ADJOINT_SOLVERS])
 def test_unsupported_policy_cannot_fall_back(monkeypatch,backend,fail):
     accepted,cfg,_,_=fixture(monkeypatch)
     cfg.solver.adjoint_solver=backend;cfg.solver.adjoint_fail=fail
@@ -98,6 +97,43 @@ def test_new_root_refactors_and_preserves_root_gate(monkeypatch):
     first=fc.free_boundary_continuation_state_pullback(accepted,cfg,jnp.eye(2), return_linearization=True)
     other=NS(**vars(accepted))
     second=fc.free_boundary_continuation_state_pullback(other,cfg,jnp.eye(2), return_linearization=True)
-    assert first._dense is not second._dense
+    assert first._root is not second._root
     first.close()
     assert np.all(np.isfinite(second.tangent(other,cfg,jnp.ones(2))))
+
+
+@pytest.mark.parametrize("backend", fbi._ADJOINT_SOLVERS)
+def test_all_backends_share_owned_gradient_and_predictor_interface(monkeypatch, backend):
+    accepted, cfg, matrix, coupling = fixture(monkeypatch)
+    cfg.solver.adjoint_solver = backend
+    residual = jax.jit(lambda z, p, f, *_: matrix @ z + coupling @ f - p)
+    raw = jax.jit(lambda z, p, f, *_: 7 * residual(z, p, f))
+    monkeypatch.setattr(fbi, "_projected_residual",
+        lambda *a, **k: raw if k.get("formulation") == "raw" else residual)
+    calls = []
+    def schur(solver, z, p, field, frozen, rcon, zcon, mask, rhs, **kwargs):
+        calls.append(kwargs["row"])
+        return jnp.linalg.solve(7 * matrix.T, rhs)
+    monkeypatch.setattr(fbi, "_host_boundary_schur_adjoint", schur)
+    monkeypatch.setattr(fbi, "_edge_response", lambda *a: object())
+    monkeypatch.setattr(fbi, "_prepare_response_transpose", lambda z, p, f, base, rc, zc, *a, **k:
+        jax.vjp(lambda zz: residual(zz, p, f, base, rc, zc), z)[1])
+    root = fc.free_boundary_continuation_state_pullback(accepted, cfg, jnp.eye(2), return_linearization=True)
+    np.testing.assert_allclose(root.field_jacobian, -np.linalg.solve(matrix, coupling), atol=1e-11)
+    if backend == "boundary_schur":
+        assert calls == [0, 1]  # Uses the upstream Schur entry, with raw parameter derivatives.
+    root.offload_factors()
+    reports = []
+    direction = jnp.array([.2, -.3])
+    np.testing.assert_allclose(root.tangent(accepted, cfg, direction, diagnostics=reports),
+                              -np.linalg.solve(matrix, coupling @ direction), atol=1e-11)
+    expected = "reused_dense_lu" if backend.startswith("forward_dense") else "reverse_gcrot_tangent"
+    assert reports[-1]["backend"] == expected and reports[-1]["accepted"]
+    if not backend.startswith("forward_dense"):
+        with pytest.raises(ValueError, match="live dense"):
+            root.preconditioner()
+    with pytest.raises(ValueError, match="different accepted root"):
+        root.tangent(NS(**vars(accepted)), cfg, direction)
+    root.close()
+    with pytest.raises(ValueError, match="closed"):
+        root.tangent(accepted, cfg, direction)

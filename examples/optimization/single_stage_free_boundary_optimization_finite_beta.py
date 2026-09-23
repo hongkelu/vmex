@@ -10,7 +10,6 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.optimize import minimize
 
 import vmex as vj
 from vmex import optimize as opt
@@ -149,7 +148,7 @@ first = free_problem.compile_value_and_gradient(progress=not ci_smoke, report_in
 if ci_smoke:
     final_cost, optimized_u, iterations = first.value, np.zeros_like(x0), 0
 else:
-    result = minimize(free_problem.value_and_grad, np.zeros_like(x0), jac=True, method=METHOD,
+    result = opt.minimize(free_problem, method=METHOD,
         bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
         callback=monitor, options=OPTIONS)
     optimized_u, final_cost, iterations = result.x, result.fun, result.nit

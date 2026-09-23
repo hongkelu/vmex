@@ -635,7 +635,7 @@ def main(argv=None, *, method="SLSQP"):
             # last certified accepted state when a proposal cannot supply one.
             status = "equilibrium_trial_rejected"
             write_json(out / "rejected_trial.json", dict(error=str(error)))
-        summary = dict(optimizer=method, nonlinear_constraints=method == "SLSQP", status=status, optimizer_success=status == "converged", accepted_steps=problem.accepted_step,
+        summary = dict(optimizer=method, linear_solver=problem.solver_info, nonlinear_constraints=method == "SLSQP", status=status, optimizer_success=status == "converged", accepted_steps=problem.accepted_step,
             optimization_seconds=time.perf_counter()-optimization_started,
             derivative_qualified=True, qualification=str(args.qualification.resolve()), initial=history[0], final=history[-1], verification="not run",
             optimizer_message=None if result is None else str(result.message))

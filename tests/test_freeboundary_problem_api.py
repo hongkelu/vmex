@@ -446,6 +446,25 @@ def test_scalar_acceptance_reuses_current_gradient_and_tangent(scalar):
     np.testing.assert_array_equal(p.accepted.parameters, x)
 
 
+@pytest.mark.parametrize("fixture", ["analytic", "scalar"])
+def test_acceptance_preserves_exact_requested_parameters(request, fixture):
+    problem, stats, state, _ = request.getfixturevalue(fixture)
+    anchor = np.full(5, .1)
+    problem.value_and_grad(anchor)
+    problem.accept_x(anchor)
+    target = np.full(5, -.2)
+    # Reconstructing the target from its increment changes the last bit.
+    assert not np.array_equal(anchor + (target - anchor), target)
+    problem.value_and_grad(target)
+    problem.accept_x(target)
+    np.testing.assert_array_equal(problem.accepted.parameters, target)
+    np.testing.assert_array_equal(problem.accepted.state, state(target))
+    solves = stats["solves"]
+    problem.fun(target)
+    problem.constraint_values(target)
+    assert stats["solves"] == solves and problem.accepted_step == 2
+
+
 def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar):
     p, stats, *_ = scalar
     p.enable_matrix_free(np.ones(5)*.001)

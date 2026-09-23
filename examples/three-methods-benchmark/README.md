@@ -39,6 +39,29 @@ is optimization step 0, so its boundary and QA can differ from the prescribed
 ellipse. Every subsequent candidate and retry starts from the last accepted
 equilibrium.
 
+## Two-step SLSQP execution check
+
+Run the two SLSQP entry points with a small optimization budget and ordinary final
+verification and plots. Use new output directories for each invocation:
+
+```sh
+python -B single_stage_optimization_scalar.py --device gpu --constrained \
+  --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
+  --ftol 1e-11 --maxiter 2 --output runs/fixed-two-step
+python -B free_boundary_single_stage_optimization_scalar.py --device gpu \
+  --input input.rotating_ellipse \
+  --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
+  --accepted-steps 2 --output runs/free-slsqp-two-step
+```
+
+The explicit free-boundary input preserves M3/N3/NS31 and the 48x40 grid.
+Fixed-boundary SciPy's `--maxiter` limits optimizer iterations. Check the saved
+histories for the actual accepted steps. Free-boundary drivers return nonzero at a step-budget
+stop even when verification and post-processing complete; inspect
+`optimization_summary.json` and any `failure.json` to distinguish that stop
+from an execution failure. Two steps do not establish convergence or derivative
+qualification.
+
 ## Fixed-boundary reference
 
 For a fixed-boundary comparison using the saved common coils:

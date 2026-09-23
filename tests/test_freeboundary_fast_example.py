@@ -357,11 +357,14 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
 
     def build(args, *, event, qualified):
         assert (qualified is not None) == supplied
+        stage.event = event
         calls.append("build")
         return stage
 
     def optimize(*args, **kwargs):
         calls.append(kwargs["method"])
+        stage.event("proposal", trial=0)
+        stage.event("tangent", trial=0, seconds=.2, rows=[], candidate=object())
         return SimpleNamespace(stop_reason=None, success=True, status=0, message="converged")
 
     def endpoint(stage, args, summary, *rest):
@@ -389,6 +392,8 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
     assert summary["derivative_qualified"] is qualified
     assert (summary["qualification"] is not None) is qualified
     assert calls == ["build", "seed LU", method, "endpoint", "close"]
+    event = json.loads((output / "solver_events.jsonl").read_text())
+    assert event == dict(event="tangent", trial=1, seconds=.2, rows=[])
 
 
 def test_shared_builder_fits_fixed_currents_and_restores_without_solves(tmp_path, monkeypatch):

@@ -569,7 +569,7 @@ def main(argv=None, *, method="SLSQP"):
                 # Keep diagnostic rows and failure reasons without serializing root arrays.
                 record = {key: value for key, value in data.items() if key != "candidate"}
                 with (out / "solver_events.jsonl").open("a") as stream:
-                    stream.write(json.dumps(dict(event=name, trial=trials, **record), default=str) + "\n")
+                    stream.write(json.dumps({**record, "event": name, "trial": trials}, default=str) + "\n")
 
         stage = build_problem(args, event=event, qualified=qualified)
         problem, inp = stage.problem, stage.inp

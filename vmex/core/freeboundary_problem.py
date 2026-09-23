@@ -421,7 +421,7 @@ class FreeBoundaryProblem(FunctionProblem):
         x = self._validate_x(x)
         key = self._key(x)
         if key not in self._records:
-            self._records[key] = self._trial(x - self.accepted.parameters, 0)
+            self._records[key] = self._trial(x, 0)
             # Retain at most the anchor and most recently evaluated trial.
             self._records = {self._key(self.accepted.parameters): self.accepted, key: self._records[key]}
         return self._records[key]
@@ -566,11 +566,12 @@ class FreeBoundaryProblem(FunctionProblem):
         """
         return self.optimizer_rows(self.accepted), self._derivatives(self.accepted).copy()
 
-    def _trial(self, delta, trial, *, predict=True, ftol=None):
+    def _trial(self, x, trial, *, predict=True, ftol=None):
         from .freeboundary import _solve_free_boundary_stage
 
         self._check_time()
-        delta = np.asarray(delta, dtype=float)
+        x = np.asarray(x, dtype=float)
+        delta = x - self.accepted.parameters
         count = max(1, int(np.ceil(np.max(np.abs(delta / self.scales)) / self.cfg.continuation_step)))
         if count > self.cfg.max_continuation_steps:
             raise TrialRejected("continuation budget exceeded")
@@ -598,7 +599,9 @@ class FreeBoundaryProblem(FunctionProblem):
             previous = self.accepted
             for index in range(1, count + 1):
                 self._check_time()
-                point = self.accepted.parameters + delta * (index / count)
+                # Correct the exact requested endpoint: reconstructing x from
+                # its increment can change its last bit and break cache identity.
+                point = x if index == count else self.accepted.parameters + delta * (index / count)
                 predicted = jax.tree.map(lambda x, dx: x + dx / count, previous.state, tangent)
                 started = time.monotonic()
                 last_stage = _solve_free_boundary_stage(
@@ -652,7 +655,7 @@ class FreeBoundaryProblem(FunctionProblem):
         ftol optionally tightens both ordinary and edge force convergence.
         """
         delta = self._validate_x(delta)
-        candidate = self._trial(delta, trial, predict=predict, ftol=ftol)
+        candidate = self._trial(self.accepted.parameters + delta, trial, predict=predict, ftol=ftol)
         self._records = {self._key(self.accepted.parameters): self.accepted, self._key(candidate.parameters): candidate}
         return candidate, self.optimizer_rows(candidate)
 

@@ -48,7 +48,7 @@ Array = Any
 #: ``edge_response`` iterates the coupled transpose on a dense model of
 #: NESTOR.
 _ADJOINT_SOLVERS = ("boundary_schur", "coupled_gcrot", "edge_response",
-                    "reverse_gcrot", "forward_dense", "forward_dense_jax")
+                    "forward_dense", "forward_dense_jax")
 
 
 @dataclass(frozen=True, eq=False)
@@ -111,8 +111,6 @@ def make_free_boundary_config(
     accelerator host unless the process already pins JAX placement; pass an
     explicit device to override that measured lower-memory default.
     ``adjoint_solver="coupled_gcrot"`` is the default host Krylov path;
-    ``"reverse_gcrot"`` uses JAX/Solvax Krylov iterations on the transpose
-    of the linearized projected residual, with the same acceptance policy.
     ``"forward_dense"`` and ``"forward_dense_jax"`` assemble the active
     Jacobian with forward JVPs and solve its transpose using SciPy or JAX LU.
     Both dense backends require float64 host-eager gradients.
@@ -679,18 +677,6 @@ def _solve_bwd_impl(cfg, saved, state_bar):
             z_star,params,field_parameters,frozen,rcon0,zcon0,residual=residual)
         return _apply_parameter_pullback(lam,parameter_pullback)
 
-    if cfg.adjoint_solver == "reverse_gcrot":
-        transpose = _prepare_linearized_transpose(
-            z_star, params, field_parameters, frozen, rcon0, zcon0,
-            residual=residual)
-        lam = _solve_prepared_reverse_adjoint(
-            transpose, project(state_bar), cfg.implicit, fail=cfg.adjoint_fail,
-            residual_rtol=getattr(cfg, "adjoint_residual_rtol", None))
-        parameter_pullback = _prepare_parameter_pullback(
-            z_star, params, field_parameters, frozen, rcon0, zcon0,
-            residual=residual)
-        return _apply_parameter_pullback(lam, parameter_pullback)
-
     rhs = project(state_bar)
     traced = any(
         isinstance(value, jax.core.Tracer) for value in jax.tree.leaves(rhs)
@@ -1204,7 +1190,7 @@ def _transpose_matvec(value, pullback, template):
 
 @functools.partial(jax.jit, static_argnames=("residual",))
 def _prepare_linearized_transpose(z, p, field, base, rcon, zcon, *, residual):
-    """Prepare an operator used by both device GCROT and seed-LU GMRES.
+    """Prepare the transpose used by seed-LU GMRES.
 
     Keep numerical tape leaves dynamic, including the frozen state and
     constraint baselines, so executable reuse cannot reuse an old root.
@@ -1215,12 +1201,12 @@ def _prepare_linearized_transpose(z, p, field, base, rcon, zcon, *, residual):
 
 
 @functools.partial(jax.jit, static_argnames=("rtol", "m", "k", "max_restarts"))
-def _reverse_gcrot_core(transpose, rhs, *, rtol, m, k, max_restarts):
+def _tangent_gcrot_core(operator, rhs, *, rtol, m, k, max_restarts):
     """Device Krylov loop with an independently recomputed true residual."""
     flat, unravel = ravel_pytree(rhs)
 
     def action(value):
-        return _transpose_matvec(value, transpose, rhs)
+        return _transpose_matvec(value, operator, rhs)
 
     solution = _solvax_gcrot(
         action, flat, rtol=rtol, atol=0.0,
@@ -1230,38 +1216,21 @@ def _reverse_gcrot_core(transpose, rhs, *, rtol, m, k, max_restarts):
     return unravel(solution.x), norm, jnp.linalg.norm(flat), solution.iterations
 
 
-def _solve_prepared_reverse_adjoint(transpose, rhs, cfg, *, fail="error", row=None,
-                                    residual_rtol=None, diagnostics=None, backend="reverse_gcrot"):
-    """Certify Solvax using main's true-residual tolerance and failure policy."""
-    lam, norm, rhs_norm, iterations = _reverse_gcrot_core(
-        transpose, rhs, rtol=cfg.adjoint_tol, m=cfg.adjoint_gcrot_m,
+def _solve_gcrot_tangent(operator, rhs, cfg, *, residual_rtol=None, diagnostics=None):
+    """Certify the forward tangent with an independently evaluated residual."""
+    tangent, norm, rhs_norm, iterations = _tangent_gcrot_core(
+        operator, rhs, rtol=cfg.adjoint_tol, m=cfg.adjoint_gcrot_m,
         k=cfg.adjoint_gcrot_k, max_restarts=cfg.adjoint_maxiter)
-    tolerance = (im._adjoint_acceptance(cfg, rhs_norm) if residual_rtol is None
-                 else residual_rtol * rhs_norm)
-    finite = jnp.isfinite(norm) & jnp.isfinite(rhs_norm)
-    for leaf in jax.tree.leaves(lam):
-        finite = finite & jnp.all(jnp.isfinite(leaf))
-    accepted = finite & (norm <= tolerance)
-    if isinstance(norm, jax.core.Tracer):
-        # As in main's traced scalar path, poison failed gradients. A traced
-        # call cannot synchronously raise the host's typed solve exception.
-        return jax.tree.map(lambda x: jnp.where(accepted, x, jnp.nan), lam)
+    finite = all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(tangent))
+    report = im._adjoint_diagnostic(cfg, residual_norm=norm, rhs_norm=rhs_norm,
+        iterations=iterations, backend="gcrot_tangent", residual_rtol=residual_rtol,
+        finite=finite)
     if diagnostics is not None:
-        diagnostics.append(im._adjoint_diagnostic(cfg, row=row, residual_norm=norm,
-            rhs_norm=rhs_norm, iterations=iterations, backend=backend,
-            residual_rtol=residual_rtol, finite=bool(finite)))
-    if not bool(accepted):
-        method = "reverse GCROT" if row is None else f"reverse GCROT row {row}"
-        if fail != "best_effort" or not bool(finite):
-            im._raise_adjoint_unconverged(
-                cfg, iterations=int(iterations), residual_norm=float(norm),
-                tolerance=float(tolerance), method=method)
-        warnings.warn(
-            f"free-boundary {method} stalled: residual {float(norm):.3e} > "
-            f"acceptance {float(tolerance):.3e}; returning the best-effort "
-            "solution because adjoint_fail='best_effort'. The gradient is inaccurate.",
-            RuntimeWarning, stacklevel=2)
-    return lam
+        diagnostics.append(report)
+    if not report["accepted"]:
+        im._raise_adjoint_unconverged(cfg, iterations=int(iterations),
+            residual_norm=float(norm), tolerance=report["tolerance"], method="GCROT tangent")
+    return tangent
 
 
 def _host_adjoint(
@@ -1378,12 +1347,11 @@ def _apply_parameter_pullback(adjoint, pullback):
 
 def _host_pullback_multi_rhs(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-    rhs_batch, cfg, *, fail="error", backend="coupled_gcrot",
+    rhs_batch, cfg, *, fail="error",
     residual_rtol=None, diagnostics=None,
 ):
     """Share numerical tapes; certify each independent sequential solve."""
-    prepare = _prepare_linearized_transpose if backend == "reverse_gcrot" else _prepare_transpose
-    transpose = prepare(
+    transpose = _prepare_transpose(
         z_star, params, field_parameters, frozen, rcon0, zcon0,
         residual=residual)
     parameter_pullback = _prepare_parameter_pullback(
@@ -1392,15 +1360,10 @@ def _host_pullback_multi_rhs(
     rows = []
     for index in range(jax.tree.leaves(rhs_batch)[0].shape[0]):
         rhs = jax.tree.map(lambda value: value[index], rhs_batch)
-        if backend == "reverse_gcrot":
-            adjoint = _solve_prepared_reverse_adjoint(
-                transpose, rhs, cfg, fail=fail, row=index,
-                residual_rtol=residual_rtol, diagnostics=diagnostics)
-        else:
-            adjoint = _host_adjoint(
-                residual, z_star, params, field_parameters, frozen, rcon0,
-                zcon0, rhs, cfg, pullback=transpose, fail=fail, row=index,
-                residual_rtol=residual_rtol, diagnostics=diagnostics)
+        adjoint = _host_adjoint(
+            residual, z_star, params, field_parameters, frozen, rcon0,
+            zcon0, rhs, cfg, pullback=transpose, fail=fail, row=index,
+            residual_rtol=residual_rtol, diagnostics=diagnostics)
         rows.append(_apply_parameter_pullback(adjoint, parameter_pullback))
     return jax.tree.map(lambda *values: jnp.stack(values), *rows)
 
@@ -1436,10 +1399,8 @@ def free_boundary_state_pullback_multi_rhs(
     This host-eager helper also supports ``forward_dense`` and
     ``forward_dense_jax`` (one matrix assembly and factorization per batch).
     ``boundary_schur`` and ``edge_response`` delegate to the upstream host
-    solvers; Schur currently factors each row independently. The Krylov choices
-    are ``coupled_gcrot`` and ``reverse_gcrot``. The latter keeps iterations in
-    JAX/Solvax. Both share state and
-    parameter preparation, with independent sequential solves and residual
+    solvers; Schur currently factors each row independently. ``coupled_gcrot``
+    shares state and parameter preparation, with sequential solves and residual
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
@@ -1526,7 +1487,7 @@ def free_boundary_state_pullback_multi_rhs(
         else:
             bars = _host_pullback_multi_rhs(
                 residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
-                rhs_batch, icfg, fail=cfg.adjoint_fail, backend=cfg.adjoint_solver,
+                rhs_batch, icfg, fail=cfg.adjoint_fail,
                 residual_rtol=getattr(cfg, "adjoint_residual_rtol", None), diagnostics=diagnostics)
         if return_linearization:
             return bars, _KrylovRootLinearization(params, field_parameters, cfg, state, dof_mask, rcon0, zcon0)
@@ -1577,9 +1538,9 @@ def free_boundary_state_tangent(params, field_parameters, cfg, state, dof_mask,
                                           residual=residual)
         rhs = jax.jvp(lambda p: residual(z, params, p, state, rcon0, zcon0),
                       (field_parameters,), (direction,))[1]
-        return _solve_prepared_reverse_adjoint(action, jax.tree.map(jnp.negative, rhs),
+        return _solve_gcrot_tangent(action, jax.tree.map(jnp.negative, rhs),
             cfg.implicit, residual_rtol=cfg.adjoint_residual_rtol,
-            diagnostics=diagnostics, fail="error", backend="reverse_gcrot_tangent")
+            diagnostics=diagnostics)
 
 
 @dataclass(eq=False)

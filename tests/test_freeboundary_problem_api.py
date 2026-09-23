@@ -522,14 +522,14 @@ def test_public_boundary_coefficients_roundtrip_and_derivative(lasym):
 
 
 @pytest.mark.usefixtures("_module_jit_enabled")
-@pytest.mark.parametrize("backend", ["forward_dense_jax", "forward_dense", "coupled_gcrot", "reverse_gcrot"])
+@pytest.mark.parametrize("backend", ["forward_dense_jax", "forward_dense", "coupled_gcrot"])
 def test_scalar_api_with_real_dense_and_matrixfree_pullbacks(monkeypatch, backend):
     """Exercise the public scalar API through the actual LU/FGMRES machinery."""
     from vmex.core import freeboundary_implicit as fbi, implicit as im
 
     if backend == "forward_dense_jax":
-        monkeypatch.setattr(fbi, "_reverse_gcrot_core",
-                            lambda *a, **k: pytest.fail("production must not invoke reverse_gcrot"))
+        monkeypatch.setattr(fbi, "_tangent_gcrot_core",
+                            lambda *a, **k: pytest.fail("production must not invoke GCROT"))
     matrix = jnp.array([[3., 2.], [-1., 4.]])
     coupling = jnp.array([[1., -2.], [3., 1.]])
     residual = jax.jit(lambda z, p, x, *_: matrix @ z + coupling @ x - p)

@@ -488,7 +488,7 @@ class FreeBoundaryProblem(FunctionProblem):
             preconditioner="seed_lu" if reuse else None,
             recovery="forward_dense_jax" if reuse else None,
             predictor=("matrixfree_seed_lu" if reuse else "reused_dense_lu"
-                       if method.startswith("forward_dense") else "reverse_gcrot_tangent"),
+                       if method.startswith("forward_dense") else "gcrot_tangent"),
             adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None))
 
     def enable_matrix_free(self, direction=None, *, rtol=1e-11, restart=100, max_restarts=3,

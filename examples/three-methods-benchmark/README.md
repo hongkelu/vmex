@@ -205,14 +205,15 @@ also use that adapter. `minimize_projected` remains a separate research method
 with different target restoration and convergence semantics.
 
 Production uses JAX dense LU to initialize and precondition current-root GMRES.
-A failed matrix-free adjoint gets a checked dense retry. **It does not run
-`reverse_gcrot`.** `problem.solver_info`, solver-event rows and the final summary
+A failed matrix-free adjoint gets a checked dense retry.
+`problem.solver_info`, solver-event rows and the final summary
 identify the policy and actual linear solves.
 
 The accepted-root API now also accepts upstream `boundary_schur`,
-`coupled_gcrot` and `edge_response`, plus `reverse_gcrot` and host dense LU,
+`coupled_gcrot` and `edge_response`, plus host dense LU,
 through `solver_options["adjoint_solver"]`. Dense methods reuse LU for their
-predictor; other choices use the existing GCROT tangent. Schur currently
+predictor; other choices use `gcrot_tangent`, a forward prediction solver.
+The former `reverse_gcrot` adjoint option has been removed. Schur currently
 factors each adjoint row separately. These alternatives need matched physical
 qualification and timing before replacing the production default; enabling
 seed-LU reuse with a non-JAX-dense backend is rejected explicitly.

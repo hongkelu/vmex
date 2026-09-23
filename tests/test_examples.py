@@ -110,6 +110,7 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 #: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
 #: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
+    "examples/three-methods-benchmark/single_stage_common.py": "shared CLI and file adapter; tested in test_single_stage_interface.py",
     "examples/three-methods-benchmark/compare_scalar_steps.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",

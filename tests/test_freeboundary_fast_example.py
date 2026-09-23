@@ -21,7 +21,9 @@ verify_spec.loader.exec_module(verify)
 
 def test_defaults_preserve_fast_profile():
     args = entry.parse_args([])
-    assert args.ftol == 1e-11
+    assert args.ftol == 1e-15
+    assert entry.ROOT_POLISH_TOLERANCE == 1e-12
+    assert entry.LU_REFRESH_HORIZON == 10
     assert verify.GRADIENT_CHECK_FTOL == 1e-20
     assert entry.ADJOINT_RESIDUAL_RTOL == 1e-9
     assert verify.LINEARIZATION_PARITY_RTOL == 1e-6
@@ -41,7 +43,7 @@ def test_dry_run_creates_no_output(tmp_path, capsys):
     output = tmp_path / "not-created"
     assert entry.main(["--dry-run", "--output", str(output)]) == 0
     config = json.loads(capsys.readouterr().out)
-    assert config["arguments"]["ftol"] == 1e-11
+    assert config["arguments"]["ftol"] == 1e-15
     assert config["parameters"]["IOTA_FLOOR"] == .19
     assert not output.exists()
 
@@ -327,11 +329,12 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
     class Problem:
         x0 = np.zeros(2)
         accepted_step = 0
-        accepted = SimpleNamespace(parameters=x0)
+        accepted = SimpleNamespace(parameters=x0, root_residual_norm=1e-13)
         solver_info = {"active_adjoint": "matrixfree_seed_lu"}
 
         def enable_matrix_free(self, *args, **kwargs):
             assert not args and "parity_rtol" not in kwargs
+            assert kwargs['refresh_horizon'] == 10 and kwargs['refresh_max_steps'] == 100
             calls.append("seed LU")
 
         def equilibrium_from_x(self, x):
@@ -408,7 +411,8 @@ def test_shared_builder_fits_fixed_currents_and_restores_without_solves(tmp_path
 
     def from_loss(inp, loss, **kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(x0=kwargs["parameterization"].x0, accepted_step=0)
+        return SimpleNamespace(x0=kwargs["parameterization"].x0, accepted_step=0,
+            enable_root_polishing=lambda **kw: kwargs.update(polishing=kw))
 
     monkeypatch.setattr(opt.FreeBoundaryProblem, "from_loss", from_loss)
     first = tmp_path/"fitted"
@@ -420,6 +424,7 @@ def test_shared_builder_fits_fixed_currents_and_restores_without_solves(tmp_path
     np.testing.assert_array_equal(prepared.chart.currents, [entry.COIL_CURRENT])
     assert prepared.chart.current_dofs == () and calls[0] == "fixed"
     assert calls[1]["restart_from"] == "fixed state"
+    assert calls[1]['polishing'] == {'tolerance': 1e-12}
     fitted = Coils.from_json(str(first/"coils.stage2.json"))
     np.testing.assert_array_equal(fitted.dofs_currents_raw, [entry.COIL_CURRENT])
     restored = tmp_path/"restored"
@@ -452,7 +457,8 @@ def test_shared_builder_wout_seed_uses_source_boundary_and_input_profiles(tmp_pa
     monkeypatch.setattr(opt, "solve_equilibrium", lambda *a, **k: pytest.fail("WOUT must avoid the fixed solve"))
     captured = {}
     monkeypatch.setattr(opt.FreeBoundaryProblem, "from_loss", lambda inp, loss, **kw:
-                        captured.update(inp=inp, **kw) or SimpleNamespace(accepted_step=0))
+                        captured.update(inp=inp, **kw) or SimpleNamespace(accepted_step=0,
+                            enable_root_polishing=lambda **options: captured.update(polishing=options)))
     stage = entry.build_problem(args)
     assert captured["restart_from"] == "wout seed"
     assert stage.inp.rbc[stage.inp.ntor, 0] == 1.2

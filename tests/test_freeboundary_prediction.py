@@ -28,6 +28,7 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
     problem._scalar_loss = False
     problem._accepted_linearization = None
     problem._preconditioner = None
+    problem._root_polish_options = None
     problem.x0 = problem.scales = np.ones(1)
     problem.deadline = None
     problem.accepted = anchor

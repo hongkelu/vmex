@@ -8,7 +8,7 @@ single-stage optimization with the coils determining the plasma boundary.
 | Workflow | Entry point | Optimizer |
 |---|---|---|
 | Prescribed-boundary QA | `qa_optimization.py` | Staged least squares |
-| Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP with `--constrained`; BFGS otherwise |
+| Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP |
 | Free-boundary scalar single stage | `free_boundary_single_stage_optimization_scalar.py` | SLSQP |
 | Free-boundary bounded single stage | `free_boundary_single_stage_optimization.py` | L-BFGS-B |
 
@@ -25,7 +25,97 @@ Use this checkout's VMEX source with the dependencies in the root
 Run commands from this directory with that checkout importable. The input
 defines zero pressure/current, major radius 1 m, area-equivalent aspect 5,
 and PHIEDGE 0.1255044894897643 Wb. Its default resolution is M3/N3/NS31
-with a 48x40 angular grid; the free driver supports explicit overrides.
+with a 48x40 angular grid. Both scalar drivers use M8/N8/NS51 and a 64x64
+grid when launched without `--input`; an explicit `--input` preserves the
+deck resolution unless `--resolution` or `--grid` overrides it.
+
+## Identical scalar entry-point usage
+
+Both scalar scripts accept the same ordinary options and use the same file
+adapter (`single_stage_common.py`):
+
+```sh
+python -B single_stage_optimization_scalar.py \
+  --input input.rotating_ellipse --resolution 8 8 51 --grid 64 64 \
+  --device gpu --ftol 1e-15 --accepted-steps 100 --output runs/fixed-new
+python -B free_boundary_single_stage_optimization_scalar.py \
+  --input input.rotating_ellipse --resolution 8 8 51 --grid 64 64 \
+  --device gpu --ftol 1e-15 --accepted-steps 100 --output runs/free-new
+```
+
+- Neither coil option: generate the same circular seed and fit its geometry
+  on the frozen input/WOUT boundary, holding currents fixed.
+- `--initial-coils initial.json`: load ESSOS coils and perform that fit.
+- `--coils fitted.json`: reuse ESSOS coils, including their currents, and skip fitting.
+- `--wout wout.nc --input input.case`: use the WOUT boundary and spectral state,
+  with profiles, flux and solver settings from the corresponding input deck.
+  WOUT alone is insufficient. VMEX remaps the seed to the selected resolution.
+- `--coil-fit-maxiter`, `--accepted-steps`, `--ftol`, `--resolution`, `--grid`,
+  `--device`, `--output`, `--no-plots`, `--no-movie`, and `--dry-run` work in both.
+
+Parameters remain editable at the beginning of each script. Both default to
+SLSQP, GPU, 100 optimizer iterations/steps, equilibrium FTOL=1e-15, and final
+verification at NS=201/FTOL=1e-15. Optimizers can stop before their budget;
+the saved history and `accepted_steps` report actual accepted changes.
+`--maxiter` is an alias for `--accepted-steps`; the old fixed `--constrained`
+flag is accepted for compatibility. `--qualification` remains a free-only
+advanced option. Both write `coils.stage2.json` and `stage_two.json`.
+Neither production script runs finite-difference derivative experiments.
+For a controlled comparison, pass the same saved `coils.stage2.json` through
+`--coils` in both runs, so independently fitted starting geometries cannot drift.
+
+The formulations remain different: fixed-boundary optimization varies boundary
+modes (default `MAX_MODE=3`, independently of equilibrium MPOL/NTOR) and coils,
+including the normal-field penalty. Free-boundary optimization varies coils;
+the coil-supported equilibrium determines the boundary, and its polished state
+is step 0. Matching the interface does not make their objectives identical.
+
+### Library API integration status
+
+| Operation | Fixed scalar | Free scalar |
+|---|---|---|
+| Input/WOUT read and remap | Public `VmecInput`, `read_wout`, `state_from_wout`, `boundary_from_wout` | Same |
+| Coil JSON, geometry and Biot–Savart | ESSOS | ESSOS; public VMEX `CoilParameters` adapter |
+| Equilibrium and scalar derivative | Public `VmecProblem.from_loss` | Public `FreeBoundaryProblem.from_loss` |
+| Optimizer | VMEX `opt.minimize` over SciPy | Same |
+| Accepted-state seeding | Public `with_accepted_state` / `with_acceptance` | Public problem owns acceptance and prediction |
+| Coupled polishing, matrix-free solve, adaptive LU and dense recovery | Different fixed-boundary solver path | Public `enable_root_polishing` / `enable_matrix_free` |
+| File exports and final equilibrium solve | Public VMEX + ESSOS | Public VMEX + ESSOS |
+
+Both numerical paths use public VMEX APIs on this integration branch; this is
+not a claim that the branch is already merged into `main`. Neither scalar
+driver reads or writes private VMEX caches. Objectives, physical parameters,
+stage-two SciPy fitting, and plotting orchestration intentionally remain in the
+examples. The shared adapter contains no equilibrium or adjoint implementation.
+Standalone derivative verification remains separate.
+
+The shared structure is **construct problem → define constraints →
+`opt.minimize` → verify/export**. For the fixed formulation, the public
+accepted-state view wraps its existing numerical backend:
+
+```python
+plasma = opt.VmecProblem.from_loss(inp, plasma_loss, warm_start="state")
+plasma = plasma.with_accepted_state()
+joint = opt.FunctionProblem.from_functions(x0, value_and_grad=total_value_and_grad)
+joint = joint.with_acceptance(lambda x: plasma.accept_x(boundary_coordinates(x)))
+result = opt.minimize(joint, method="SLSQP", constraints=constraints,
+                      callback=record_step, options=options)
+```
+
+The code above is a structural sketch: the example supplies the coordinate map
+and combined coil/plasma gradient. The free problem already owns acceptance,
+so it goes directly into the same `opt.minimize` call. Both use
+`problem.nonlinear_constraint(...)`; the shared `physical_constraint` helper
+supplies identical iota/radius limits and row scales.
+
+The fixed view starts every host trial from `plasma.accepted.equilibrium` and
+advances only on `accept_x`. A separate constraint problem can use
+`restart_from(plasma.accepted.equilibrium)` without accepting a trial. Failed
+promotion retains the previous anchor, and the existing implicit-derivative
+force gate still applies. These views are for serial host optimization; do not
+optimize their source concurrently or use them as JAX-traced optimizers. Create
+any subproblem before adding acceptance ownership. Both scalar runs report
+actual accepted steps and retain the accepted endpoint on budget exhaustion.
 
 `coils.initial.scalar.json` is a saved initial coil fit, with its generation
 metadata beside it. The separately included
@@ -45,18 +135,17 @@ Run the two SLSQP entry points with a small optimization budget and ordinary fin
 verification and plots. Use new output directories for each invocation:
 
 ```sh
-python -B single_stage_optimization_scalar.py --device gpu --constrained \
+python -B single_stage_optimization_scalar.py --device gpu --input input.rotating_ellipse \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
-  --ftol 1e-11 --maxiter 2 --output runs/fixed-two-step
+  --ftol 1e-15 --accepted-steps 2 --output runs/fixed-two-step
 python -B free_boundary_single_stage_optimization_scalar.py --device gpu \
   --input input.rotating_ellipse \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
   --accepted-steps 2 --output runs/free-slsqp-two-step
 ```
 
-The explicit free-boundary input preserves M3/N3/NS31 and the 48x40 grid.
-Fixed-boundary SciPy's `--maxiter` limits optimizer iterations. Check the saved
-histories for the actual accepted steps. Free-boundary drivers return nonzero at a step-budget
+The explicit input preserves M3/N3/NS31 and the 48x40 grid in both scripts.
+Check the saved histories for the actual accepted steps. Both drivers return nonzero at an iteration-budget
 stop even when verification and post-processing complete; inspect
 `optimization_summary.json` and any `failure.json` to distinguish that stop
 from an execution failure. Two steps do not establish convergence or derivative
@@ -67,9 +156,9 @@ qualification.
 For a fixed-boundary comparison using the saved common coils:
 
 ```sh
-python -B single_stage_optimization_scalar.py --constrained --device gpu \
+python -B single_stage_optimization_scalar.py --device gpu \
   --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
-  --maxiter 100 --output runs/fixed-scalar
+  --accepted-steps 100 --output runs/fixed-scalar
 ```
 
 ## Free-boundary production and separate derivative tests
@@ -79,7 +168,8 @@ python -B single_stage_optimization_scalar.py --constrained --device gpu \
 editable parameters, weighted plasma/coil objectives, a public VMEX problem,
 `opt.minimize`, and endpoint reporting all appear in the example. It imports
 `vmex` and `vmex.optimize`, with ESSOS for coils and surfaces. It does not
-import private VMEX modules or a local driver/setup helper.
+import private VMEX modules. Both scalar scripts share a small CLI/file adapter;
+the free solver and derivative implementation live in VMEX.
 
 `opt.FreeBoundaryProblem.from_loss` owns equilibrium correction and the total
 scalar gradient, including the moving surface in coil-surface clearance.
@@ -149,8 +239,9 @@ qualification evidence; rerun the separate verifier to establish new evidence.
 
 All commands default to GPU. Each output directory must be new. `--dry-run`
 prints configuration without creating files or initializing JAX. Production
-never runs finite differences or dense/matrix-free comparisons. Its dense LU
-initialization, root and linear residual checks remain necessary solver work.
+never runs finite-difference or predictor-parity experiments. Its dense LU
+initialization, coupled-root polishing, linear residual checks and derivative
+agreement checks during adaptive LU rebuilds remain necessary solver work.
 A run without a report records `derivative_qualified: false`; a supplied report
 must pass authentication and records `derivative_qualified: true`. No report
 is generated automatically during production. The optional report binds input/WOUT contents,
@@ -189,17 +280,36 @@ It writes `gradient_check.json`, `matrixfree_check.json`, and a passing
 `qualification.json` only after all gates pass. Failed attempts keep their
 available diagnostics and a report with `passed: false`; no SLSQP run starts.
 
-Production uses force/edge tolerance `1e-11`, adjoint full relative residual
+Production uses force/edge tolerance `1e-15`, coupled-root polishing to `1e-12`, adjoint full relative residual
 `1e-9`, Krylov request `1e-11`, 100 accepted steps and final independent
 verification at NS=201, force tolerance `1e-15`. A failed matrix-free adjoint
 gets one checked dense retry; its LU replaces the seed only if accepted.
+Polishing retains constraint baselines and inactive coordinates, then freshly
+recomputes force and vacuum diagnostics. It is bounded to three Newton steps
+and eight damping probes per step, with one temporary dense recovery. Failed
+refinement rejects the candidate without changing the accepted state.
+
+The public API performs the solver work; the example exposes its accuracy and
+optimization parameters near the top. `LU_REFRESH_HORIZON = 10` enables adaptive
+refresh: after two warm-up accepted steps, the latest three-step median of
+gradient, predictor and polishing costs is compared with the best warm median.
+A rebuild occurs when expected savings exceed its measured cost. The horizon
+is capped by the remaining step budget; the last accepted step does not trigger
+a cost-only rebuild. New derivative rows must agree within `1e-6` before the
+new factors replace the accepted seed. Dense recovery remains available.
 Each production run saves provenance, solver events, accepted checkpoints,
 WOUT/coil outputs and `optimization_summary.json`. Predictor, correction and
-gradient times remain separate. The startup budget is one hour, optimization
+gradient and polishing times remain separate. The startup budget is one hour, optimization
 twelve hours, final verification thirty minutes. Qualification separately has
 a one-hour budget. A budget endpoint or numerical check is not convergence or
 physical feasibility. No new full GPU qualification/pilot has been run as part
-of this code refactor.
+of this integration. The earlier isolated M8/N8/NS51 campaign supplies the
+method's performance evidence, not qualification of this new API integration.
+That campaign also exposed curvature peaks between the 64 coil sample points;
+the sampled curvature penalty and check in this example do not certify the
+continuous curve's maximum. A denser independent engineering check is required
+before claiming feasibility. This integration preserves the physics objective
+and does not silently change its quadrature or penalty weights.
 
 Post-processing matches the fixed-boundary scalar example: the equilibrium
 report includes QA, aspect, mean iota and magnetic well, followed by coil
@@ -240,6 +350,10 @@ with different target restoration and convergence semantics.
 
 Production uses JAX dense LU to initialize and precondition current-root GMRES.
 A failed matrix-free adjoint gets a checked dense retry.
+The scalar example enables `problem.enable_root_polishing(tolerance=1e-12)`
+before `problem.enable_matrix_free(refresh_horizon=10, refresh_max_steps=...)`.
+These policies are opt-in in the library and shared by the SLSQP and L-BFGS-B
+example entry points; they do not change the library's default solver behavior.
 `problem.solver_info`, solver-event rows and the final summary
 identify the policy and actual linear solves.
 

@@ -10,13 +10,11 @@ Use --qualification to reuse a checked seed; --dry-run only prints settings.
 This example is vacuum-only; finite-beta API requirements are in the README.
 """
 
-import argparse
 import csv
 from dataclasses import replace
 from functools import lru_cache
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import signal
@@ -25,6 +23,11 @@ import time
 from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
+# Also support importlib-based tooling without initializing VMEX.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+import single_stage_common as common
+
 INPUT = HERE / "input.rotating_ellipse"
 COILS = None  # supply --coils to reuse a fitted set; otherwise perform stage two
 COIL_FIT_MAXITER = 200
@@ -41,8 +44,9 @@ COIL_STEP = 0.05
 MAX_TRIALS = 500
 RESOLUTION = (8, 8, 51)  # MPOL, NTOR, NS
 GRID = (64, 64)  # NTHETA, NZETA
-EQUILIBRIUM_FTOL = 1e-11
-ROOT_TOLERANCE = 2e-6
+EQUILIBRIUM_FTOL = 1e-15
+ROOT_TOLERANCE = 2e-6  # ordinary-root admission before coupled Newton refinement
+ROOT_POLISH_TOLERANCE = 1e-12
 INITIALIZATION_SECONDS = 3600
 OPTIMIZATION_SECONDS = 43200
 VERIFICATION_SECONDS = 1800
@@ -67,6 +71,7 @@ ADJOINT_RESIDUAL_RTOL = 1e-9
 ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 32, 20000
 MATRIXFREE_RTOL = 1e-11
 MATRIXFREE_RESTART, MATRIXFREE_MAX_CYCLES, MATRIXFREE_RHS_BATCH_SIZE = 100, 3, 3
+LU_REFRESH_HORIZON = 10  # rebuild when estimated savings repay its measured cost
 VERIFY_NS, VERIFY_FTOL, VERIFY_MAXITER = 201, 1e-15, 12000
 
 # Match the scalar reference: figures, accepted-iterate movie and WOUT plots.
@@ -77,55 +82,7 @@ POSTPROCESSING_SECONDS = 1800
 
 def parse_args(argv=None):
     """Read ordinary example options without initializing JAX or writing files."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path)
-    parser.add_argument("--wout", type=Path, help="WOUT restart; requires its corresponding input deck")
-    parser.add_argument("--qualification", type=Path, help="optional passing report to reuse a verified seed without refitting")
-    coils = parser.add_mutually_exclusive_group()
-    coils.add_argument("--coils", type=Path, default=COILS, help="reuse fitted coils without stage two")
-    coils.add_argument("--initial-coils", type=Path, help="fit these coils instead of generating circles")
-    parser.add_argument("--coil-fit-maxiter", type=int, default=COIL_FIT_MAXITER)
-    parser.add_argument("--output", type=Path, default=HERE / "runs" / f"free-boundary-{time.time_ns()}")
-    parser.add_argument("--device", choices=("cpu", "gpu"))
-    parser.add_argument("--accepted-steps", type=int, default=ACCEPTED_STEPS)
-    parser.add_argument("--ftol", type=float)
-    parser.add_argument("--resolution", type=int, nargs=3)
-    parser.add_argument("--grid", type=int, nargs=2)
-    parser.add_argument("--no-plots", action="store_true")
-    parser.add_argument("--plots", dest="no_plots", action="store_false")
-    parser.add_argument("--movie", action=argparse.BooleanOptionalAction, default=MAKE_MOVIE)
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
-    custom_input = args.input is not None
-    if args.qualification is not None:
-        report = json.loads(args.qualification.read_text())
-        for name in ("input", "wout", "resolution", "grid", "ftol", "device"):
-            if getattr(args, name) is None:
-                value = report["configuration"][name]
-                setattr(args, name, Path(value) if name in ("input", "wout") and value else value)
-        if args.initial_coils is not None:
-            parser.error("a qualified run reuses fitted coils; --initial-coils requires new qualification")
-    elif args.wout is not None and args.input is None:
-        parser.error("--wout requires --input to define the pressure/current profiles and solver settings")
-    if args.input is None:
-        args.input = INPUT
-    if not custom_input and args.wout is None and args.qualification is None:
-        args.resolution = RESOLUTION if args.resolution is None else args.resolution
-        args.grid = GRID if args.grid is None else args.grid
-    args.ftol = EQUILIBRIUM_FTOL if args.ftol is None else args.ftol
-    args.device = args.device or "gpu"
-    if args.coil_fit_maxiter < 1:
-        parser.error("positive coil-fit iteration budget required")
-    if args.accepted_steps < 1 or not math.isfinite(args.ftol) or args.ftol <= 0:
-        parser.error("positive step budget and finite positive force tolerance required")
-    if ((args.resolution is not None and (args.resolution[0] < 1 or args.resolution[1] < 0 or args.resolution[2] < 3))
-            or (args.grid is not None and min(args.grid) < 4)):
-        parser.error("invalid equilibrium resolution or grid")
-    if not 0 <= RADIUS_MARGIN < RADIUS_TOLERANCE < RADIUS_TARGET or IOTA_MARGIN < 0:
-        parser.error("invalid physical constraint margins")
-    if MOVIE_SURFACE_COLOR not in ("absB", "B.n/B", None):
-        parser.error("movie surface color must be absB, B.n/B or None")
-    return args
+    return common.parse_options(argv, parameters=globals(), description=__doc__, formulation="free")
 
 
 def sha(path):
@@ -165,7 +122,7 @@ def qualification_contract(args):
     return opt.OptimizationQualification.signature(parameters=parameters,
         input_path=args.input, wout_path=args.wout, resolution=args.resolution,
         grid=args.grid, ftol=args.ftol, device=args.device,
-        sources=[__file__, HERE / "free_boundary_single_stage_optimization.py"])
+        sources=[__file__, HERE / "free_boundary_single_stage_optimization.py", HERE / "single_stage_common.py"])
 
 
 def read_qualification(args):
@@ -191,36 +148,14 @@ def build_problem(args, *, event=None, qualified=None):
     import jax.numpy as jnp
     import numpy as np
     from scipy.optimize import minimize
-    import vmex as vj
     from vmex import optimize as opt
-    from essos.coils import Coils, CreateEquallySpacedCurves
+    from essos.coils import Coils
     from essos.fields import BiotSavart
     from essos.objective_functions import loss_coil_separation, loss_coil_surface_distance
     from essos.surfaces import surfacerzfourier_from_boundary
 
     out = args.output.resolve()
-    inp = vj.VmecInput.from_file(args.input.resolve())
-    has_pressure = any(values is not None and np.any(np.asarray(values) != 0)
-                       for values in (inp.am, inp.am_aux_f))
-    if (inp.pres_scale != 0 and has_pressure) or inp.curtor != 0:
-        raise ValueError("this vacuum example requires zero pressure and plasma current; "
-                         "finite beta needs plasma-aware coil fitting and interface diagnostics")
-    mpol, ntor, ns = args.resolution or (inp.mpol, inp.ntor, int(inp.ns_array[-1]))
-    ntheta, nphi = args.grid or (inp.ntheta, inp.nzeta)
-    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=ntheta, nzeta=nphi)
-    inp = replace(inp, ns_array=np.array([ns]), lfreeb=False)
-    if inp.lasym:
-        raise ValueError("this example requires stellarator symmetry")
-    seed = None
-    if args.wout is not None:
-        wout = vj.read_wout(args.wout)
-        # VMEX checks NFP/symmetry and remaps the radial/Fourier coordinates.
-        if qualified is None:
-            seed = vj.state_from_wout(wout, inp=inp, ns=ns)
-        elif int(wout.nfp) != inp.nfp or bool(wout.lasym):
-            raise ValueError("WOUT symmetry differs from the input")
-        rbc, zbs, rbs, zbc = opt.boundary_from_wout(wout, mpol=mpol, ntor=ntor)
-        inp = replace(inp, rbc=rbc, zbs=zbs, rbs=rbs, zbc=zbc)
+    inp, seed = common.load_input(args, restore_state=qualified is None)
     qs = opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), 1, 0)
 
     def surface(state, runtime):
@@ -256,15 +191,7 @@ def build_problem(args, *, event=None, qualified=None):
     constraint_transform = np.array([[1/IOTA_FLOOR, 0], [0, 1/RADIUS_TOLERANCE], [0, -1/RADIUS_TOLERANCE]])
 
     coil_path = qualified[1]["coils"] if qualified is not None else args.coils or args.initial_coils
-    if coil_path is not None:
-        coils0 = Coils.from_json(str(coil_path.resolve()))
-    else:
-        curves = CreateEquallySpacedCurves(N_COILS, COIL_ORDER, COIL_MAJOR_RADIUS, COIL_MINOR_RADIUS,
-                                          n_segments=N_SEGMENTS, nfp=inp.nfp, stellsym=True)
-        coils0 = Coils(curves, jnp.full(N_COILS, COIL_CURRENT))
-    if (coils0.nfp != inp.nfp or not coils0.stellsym or coils0.n_segments != N_SEGMENTS
-            or coils0.dofs_curves.shape != (N_COILS, 3, 2*COIL_ORDER+1)):
-        raise ValueError("coils must match symmetry, count, Fourier order and quadrature")
+    coils0 = common.initial_coils(inp, coil_path, parameters=globals())
     fit_report = dict(reused=True, iterations=0)
     if qualified is None and args.coils is None:
         # Stage two changes only geometry on the frozen input/WOUT surface.
@@ -286,7 +213,7 @@ def build_problem(args, *, event=None, qualified=None):
         fit_gradient = jax.jit(jax.value_and_grad(fit_loss))
         initial_cost = float(fit_loss(jnp.zeros_like(jnp.asarray(x0))))
         fit = minimize(fit_gradient, np.zeros_like(x0), jac=True, method="L-BFGS-B",
-                       bounds=[(-5., 5.)]*x0.size,
+                       bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)]*x0.size,
                        options=dict(maxiter=args.coil_fit_maxiter, maxcor=20, ftol=1e-15, gtol=1e-10))
         if not np.isfinite(fit.fun) or not np.all(np.isfinite(fit.x)) or fit.fun > initial_cost + 1e-10:
             raise RuntimeError("stage-two fitting returned invalid or worse coils")
@@ -316,6 +243,7 @@ def build_problem(args, *, event=None, qualified=None):
     (out / Path(__file__).name).write_text(Path(__file__).read_text())
     lbfgsb_source = HERE / "free_boundary_single_stage_optimization.py"
     (out / lbfgsb_source.name).write_text(lbfgsb_source.read_text())
+    (out / "single_stage_common.py").write_text((HERE / "single_stage_common.py").read_text())
     problem = opt.FreeBoundaryProblem.from_loss(inp, loss, quantities=(opt.min_abs_iota, opt.major_radius),
         parameterization=chart, root_residual_atol=ROOT_TOLERANCE, event=event, checkpoint_identity=contract,
         solver_options=dict(device=args.device, ftol=args.ftol, edge_force_tolerance=args.ftol,
@@ -324,6 +252,11 @@ def build_problem(args, *, event=None, qualified=None):
     if problem.accepted_step != 0:
         problem.close()
         raise ValueError("qualification must describe an initial equilibrium at accepted step zero")
+    try:
+        problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
+    except BaseException:
+        problem.close()
+        raise
     return SimpleNamespace(problem=problem, inp=inp, chart=chart, coils=coils0, qs=qs,
                            surface=surface, coil_costs=coil_costs, inequalities=inequalities,
                            constraint_transform=constraint_transform, contract=contract)
@@ -331,17 +264,13 @@ def build_problem(args, *, event=None, qualified=None):
 
 def run_optimizer(problem, args, record_step, *, method):
     """Choose the optimizer and physical bounds; VMEX owns scaling and acceptance."""
-    import numpy as np
     from scipy.optimize import Bounds
     from vmex import optimize as opt
 
     options = dict(maxiter=args.accepted_steps, ftol=OPTIMIZER_FTOL)
     constraints, bounds = (), None
     if method == "SLSQP":
-        width = RADIUS_TOLERANCE - RADIUS_MARGIN
-        constraints = problem.nonlinear_constraint(
-            [IOTA_FLOOR + IOTA_MARGIN, RADIUS_TARGET - width],
-            [np.inf, RADIUS_TARGET + width], scales=[IOTA_FLOOR, RADIUS_TOLERANCE])
+        constraints = common.physical_constraint(problem, parameters=globals())
     else:
         bounds = Bounds(-PARAMETER_BOUND*problem.scales, PARAMETER_BOUND*problem.scales)
         options.update(maxfun=MAX_TRIALS, gtol=OPTIMIZER_GTOL,
@@ -554,18 +483,18 @@ def main(argv=None, *, method="SLSQP"):
     phase = "initialization"
     started = time.perf_counter()
     try:
-        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0)
+        timings = dict(adjoint=0.0, tangent=0.0, correction=0.0, root_polish=0.0)
         trials = 0
 
         def event(name, **data):
             nonlocal trials
-            if name in timings:
-                timings[name] += data["seconds"]
+            if name in timings and 'seconds' in data:
+                timings[name] += data.get('total_seconds', data['seconds'])
             if name == "proposal":
                 trials += 1
                 if trials > MAX_TRIALS:
                     raise StopIteration("trial budget reached")
-            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh"):
+            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh", "preconditioner_refresh_start", "root_polish"):
                 # Keep diagnostic rows and failure reasons without serializing root arrays.
                 record = {key: value for key, value in data.items() if key != "candidate"}
                 with (out / "solver_events.jsonl").open("a") as stream:
@@ -593,6 +522,7 @@ def main(argv=None, *, method="SLSQP"):
                 optimizer_constraints_feasible=bool(np.min(inequalities((iota, radius))) >= -1e-8),
                 constraints_feasible=bool(iota >= IOTA_FLOOR and abs(radius-RADIUS_TARGET) <= RADIUS_TOLERANCE),
                 gradient_seconds=timings["adjoint"], predictor_seconds=timings["tangent"], solve_seconds=timings["correction"],
+                polish_seconds=timings['root_polish'], root_residual=float(problem.accepted.root_residual_norm),
                 step_seconds=time.perf_counter()-cycle_started, elapsed_seconds=time.perf_counter()-started,
                 **{key: float(getattr(eq.result, key)) for key in ("fsqr", "fsqz", "fsql", "fedge")})
             history.append(row)
@@ -609,7 +539,8 @@ def main(argv=None, *, method="SLSQP"):
         # Production constructs its own checked LU; parity/FD experiments live
         # exclusively in verify_free_boundary_single_stage.py.
         problem.enable_matrix_free(rtol=MATRIXFREE_RTOL, restart=MATRIXFREE_RESTART,
-            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE)
+            max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE,
+            refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.accepted_steps)
         record_step()
         phase = "optimization"
         optimization_started = time.perf_counter()

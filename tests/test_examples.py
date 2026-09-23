@@ -110,9 +110,14 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 #: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
 #: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
+    "examples/three-methods-benchmark/compare_scalar_steps.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/free_boundary_single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/qa_optimization.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/single_stage_optimization_scalar.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/solve_free_boundary_initial_coils.py": "research workflow; API/callback tests, separate numerical qualification",
     "examples/three-methods-benchmark/verify_free_boundary_single_stage.py": "research workflow; API/callback tests, separate numerical qualification",
+    "examples/three-methods-benchmark/verify_single_stage_constraints.py": "standalone derivative audit; analytic and dry-run tests below, separate numerical qualification",
 
     "examples/mirror/pleiades_mirror_reference.py": "needs an unshipped reference deck",
     "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py": "mirror hybrid, covered by tests/mirror",
@@ -558,7 +563,6 @@ def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():
         assert "mgrid file" in text
 
 
-
 def test_global_optimization_example_exposes_optimizer_contract():
     """The global example keeps SciPy, exact gradients, and local polish visible."""
     text = (EXAMPLES / "optimization" / "QA_optimization_global.py").read_text()
@@ -687,7 +691,6 @@ def test_vacuum_free_boundary_single_stage_optimization(tmp_path):
                  "single_stage_free_boundary_optimization.png",
                  "single_stage_free_boundary_objectives.png"):
         assert (tmp_path / name).stat().st_size > 0
-
 
 
 @pytest.mark.full
@@ -1174,6 +1177,7 @@ def test_single_stage_examples_use_general_surface_output_and_movie_colors() -> 
 def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
     """Targets are constraints checked at the end; a missed one is a non-zero exit."""
     fixed = (EXAMPLES / "optimization" / "single_stage_optimization.py").read_text()
+    free = (EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py").read_text()
     assert "def augmented_lagrangian(" in fixed and 'method="L-BFGS-B"' in fixed
     for constraint in ("IOTA_CONSTRAINT", "ASPECT_CONSTRAINT", "NORMAL_FIELD_CONSTRAINT"):
         assert constraint in fixed
@@ -1181,12 +1185,12 @@ def test_single_stage_examples_enforce_targets_and_fail_loudly() -> None:
     # Jacobian lane and no second residual callback.
     assert "jax_objective_from_state" in fixed
     assert "jax_value_and_grad" not in fixed and "jax_residual" not in fixed
-    assert "did NOT meet its stated targets" in fixed
-    assert "if unmet and not ci_smoke:\n    raise SystemExit(1)" in fixed
-    assert "_summary.json" in fixed
-    # Vacuum target-band rejection and accepted-state ownership are exercised
-    # numerically in test_freeboundary_problem_api.py and the maintained case suite.
-
+    # The free-boundary pullback is host-eager; everything after the solve is jitted.
+    assert "@jax.jit\ndef accepted_terms(" in free
+    for source in (fixed, free):
+        assert "did NOT meet its stated targets" in source
+        assert "if unmet and not ci_smoke:\n    raise SystemExit(1)" in source
+        assert "_summary.json" in source
 
 
 # Cold, on two cores, the finite-beta script takes 1.4 min; most of it is the
@@ -1210,3 +1214,41 @@ def test_vmex_fieldline_tracing_examples(script, message, output, tmp_path):
         bounded = re.search(r"Exterior trace QA: (\d+)/(\d+) lines remained", out)
         assert bounded is not None and int(bounded.group(1)) > 0
     assert (tmp_path / output).stat().st_size > 10_000
+
+
+def test_fixed_scalar_derivative_checks_are_standalone(tmp_path, monkeypatch, capsys):
+    """The comparison production script never runs its constraint FD audit."""
+    import ast
+    import importlib.util
+    import json
+    from types import SimpleNamespace
+    import numpy as np
+
+    folder = Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark"
+    source = (folder / "single_stage_optimization_scalar.py").read_text()
+    tree = ast.parse(source)
+    assert "constraint_gradient_check.json" not in source
+    assert "finite_difference" not in source
+    assert not any(isinstance(node, ast.Name) and node.id == "checks" for node in ast.walk(tree))
+    monkeypatch.syspath_prepend(str(folder))
+    spec = importlib.util.spec_from_file_location("fixed_constraint_checks", folder / "verify_single_stage_constraints.py")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    output = tmp_path / "not-created"
+    assert verifier.main(["--dry-run", "--output", str(output)]) == 0
+    assert json.loads(capsys.readouterr().out)["ftol"] == 1e-22
+    assert not output.exists()
+
+    matrix = np.array([[2., .3], [-.2, 1.], [.4, -.5]])
+    problem = SimpleNamespace(x0=np.zeros(2), scales=np.array([.5, 2.]))
+    def values(x):
+        return matrix @ x
+    good = verifier.check_constraints(problem, values, lambda x: matrix)
+    assert good["passed"] and len(good["checks"]) == 2
+    assert not verifier.check_constraints(problem, values, lambda x: matrix*2)["passed"]
+    failed = verifier.check_constraints(problem, lambda x: np.full(3, np.nan), lambda x: matrix)
+    assert not failed["passed"]
+    json.dumps(failed, allow_nan=False)
+
+    import _scalar_constraints as limits
+    assert limits.FORCE_TOLERANCE == 1e-11

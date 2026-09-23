@@ -1,7 +1,58 @@
-# Free-boundary production and separate derivative tests
+# Three-methods benchmark
+
+Three optimization workflows share the NFP=2 vacuum rotating ellipse in
+[`input.rotating_ellipse`](input.rotating_ellipse): prescribed-boundary QA,
+fixed-boundary single-stage plasma/coil optimization, and free-boundary
+single-stage optimization with the coils determining the plasma boundary.
+
+| Workflow | Entry point | Optimizer |
+|---|---|---|
+| Prescribed-boundary QA | `qa_optimization.py` | Staged least squares |
+| Fixed-boundary scalar single stage | `single_stage_optimization_scalar.py` | SLSQP with `--constrained`; BFGS otherwise |
+| Free-boundary scalar single stage | `free_boundary_single_stage_optimization_scalar.py` | SLSQP |
+| Free-boundary bounded single stage | `free_boundary_single_stage_optimization.py` | L-BFGS-B |
+
+The methods share an input, but the default scripts are not an automatically
+matched performance comparison. Match resolution, coils, objective terms,
+constraints and budgets explicitly before comparing results. These workflows
+are maintained together on `main`; a separate comparison branch is unnecessary.
+The superseded custom AugLag drivers remain available in Git history.
+
+## Environment and inputs
+
+Use this checkout's VMEX source with the dependencies in the root
+`pyproject.toml`, including the optional coil dependencies (`vmex[coils]`).
+Run commands from this directory with that checkout importable. The input
+defines zero pressure/current, major radius 1 m, area-equivalent aspect 5,
+and PHIEDGE 0.1255044894897643 Wb. Its default resolution is M3/N3/NS31
+with a 48x40 angular grid; the free driver supports explicit overrides.
+
+`coils.initial.scalar.json` is a saved initial coil fit, with its generation
+metadata beside it. The separately included
+`coils_single_stage_scalar_fitted_1789769333906005000.json` is the common
+stage-two fit available through `--coils` during qualification. Currents remain fixed.
+Neither file is a final plasma/coil optimization checkpoint.
+
+The free-boundary initialization first solves the prescribed ellipse, then
+converges the equilibrium supported by the fitted coils. That second state
+is optimization step 0, so its boundary and QA can differ from the prescribed
+ellipse. Every subsequent candidate and retry starts from the last accepted
+equilibrium.
+
+## Fixed-boundary reference
+
+For a fixed-boundary comparison using the saved common coils:
+
+```sh
+python -B single_stage_optimization_scalar.py --constrained --device gpu \
+  --coils coils_single_stage_scalar_fitted_1789769333906005000.json \
+  --maxiter 100 --output runs/fixed-scalar
+```
+
+## Free-boundary production and separate derivative tests
 
 `free_boundary_single_stage_optimization_scalar.py` (formerly
-`free_boundary_single_stage_fast.py`) uses the scalar VMEX API directly:
+`free_boundary_single_stage_fast.py`) follows the scalar reference directly:
 editable parameters, weighted plasma/coil objectives, a public VMEX problem,
 `opt.minimize`, and endpoint reporting all appear in the example. It imports
 `vmex` and `vmex.optimize`, with ESSOS for coils and surfaces. It does not
@@ -11,8 +62,10 @@ import private VMEX modules or a local driver/setup helper.
 scalar gradient, including the moving surface in coil-surface clearance.
 `accept_x` promotes only optimizer-accepted states. The example's importable
 `build_problem` defines one initialization/objective path for production and
-qualification. No local numerical helper module is used; historical drivers
-and frozen run snapshots remain unchanged.
+qualification. The superseded private scalar driver and its unused gradient
+and resume helpers have been removed; they remain available in Git history.
+The fixed-boundary reference still uses `_scalar_constraints.py` and
+`_scalar_diagnostics.py`. Saved run outputs are unchanged.
 
 Read the example in four phases: `build_problem` loads input/WOUT, fits or
 restores coils and defines the loss; `run_optimizer` chooses physical bounds and
@@ -149,11 +202,11 @@ the plasma-vacuum interface API. `--no-movie` skips only the movie;
 WOUT, coil JSON and VTK exports.
 
 
-## Comparison workflows
+## Historical validation
 
-The `free-vs-fixed-single-stage` branch contains the additional prescribed- and
-fixed-boundary reference scripts. These production entry points share the same
-rotating-ellipse input and qualified free-boundary workflow on both branches.
+The previous private-driver experiments and commands are preserved in Git history.
+Their timings and qualification results do not qualify these new entry points.
+A matched GPU qualification and bounded pilot remain necessary before a long run.
 
 ## Optimizer and linear-solver choices
 
@@ -175,6 +228,24 @@ The former `reverse_gcrot` adjoint option has been removed. Schur currently
 factors each adjoint row separately. These alternatives need matched physical
 qualification and timing before replacing the production default; enabling
 seed-LU reuse with a non-JAX-dense backend is rejected explicitly.
+
+## Fixed-boundary derivative tests
+
+The constrained fixed-boundary scalar production script also starts without
+finite differences. Its production force tolerance is `1e-11`. Run its
+constraint derivative audit separately:
+
+```sh
+python -B verify_single_stage_constraints.py --output runs/fixed-constraint-check
+```
+
+This standalone check uses a separate `1e-22` force tolerance and compares the
+constraint adjoint with independent equilibrium re-solves. It records the
+input, source/runtime contract, direction seed, step sizes and componentwise
+errors in `constraint_gradient_check.json`; it never fits coils or starts an
+optimization. A passing constraint test alone does not qualify the full
+plasma/coil objective. Upstream documents that changes in frozen coordinates
+can create a re-solve/adjoint gap, which this test reports rather than hides.
 
 ## Preparing finite-beta support
 

@@ -1,7 +1,8 @@
 # Examples
 
-The [qualified free-boundary examples](three-methods-benchmark/README.md)
-provide SLSQP and L-BFGS-B production with a separate derivative qualification.
+The [three-methods benchmark](three-methods-benchmark/README.md) provides
+shared rotating-ellipse inputs and prescribed-boundary QA, fixed-boundary
+single-stage, and free-boundary single-stage research examples.
 
 All runnable examples live under this single `examples/` tree. The coil and
 exterior-field examples need ESSOS 0.17 or newer: `pip install "vmex[coils]"`,
@@ -104,11 +105,9 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   `QI_optimization_bootstrap.py` also vary
   a stage-refined current spline against self-consistent Redl, DMerc, and DR
   targets. `single_stage_optimization_finite_beta.py` *(preview)* adds virtual
-  casing and coil derivatives. `single_stage_free_boundary_optimization.py`
-  launches the maintained 48×40 vacuum case through `FreeBoundaryProblem` and
-  projected QA/target restoration. Its LCFS is implicit; only coil shape and
-  current vary. Supply `--output-dir` and use `--help` for bounded run options.
-  The separate finite-beta free-boundary example retains its bootstrap model.
+  casing and coil derivatives. The free-boundary single-stage previews leave
+  the LCFS implicit and vary only coil shape and current through the coupled
+  NESTOR adjoint.
   `QA_optimization_DMerc_vacuum.py` screens a vacuum candidate with the
   frozen-geometry pressure proxies before re-solving at finite pressure, and
   `QA_optimization_global.py` explores basins with SciPy basin hopping before

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Bounded L-BFGS-B free-boundary single-stage optimization.
 
-Use the scalar example's qualified initialization, weighted objective and full
+Use the scalar example's initialization, weighted objective and full
 post-processing. Iota/radius feasibility is reported at the endpoint; L-BFGS-B
 applies coil-parameter bounds, not nonlinear constraints. Currents stay fixed.
 """

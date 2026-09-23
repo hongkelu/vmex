@@ -219,6 +219,11 @@ qualification of a case.
 .. automodule:: vmex.core.freeboundary_continuation
    :members:
 
+The projected optimizer is a separate research method with target restoration.
+
+.. automodule:: vmex.core.projected_optimization
+   :members:
+
 .. automodule:: vmex.core.virtual_casing
    :members:
 

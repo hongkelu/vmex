@@ -256,13 +256,11 @@ def test_movie_uses_saved_total_field_and_plasma_interface(quantity, expected):
     assert calls == (["plasma interface"] if quantity == "B.n/B" else [])
 
 
-def test_verification_is_separate_and_production_requires_report(tmp_path, capsys):
+def test_verification_is_separate_from_production(tmp_path, capsys):
     assert verify.main(["--dry-run", "--output", str(tmp_path/"unused")]) == 0
     assert json.loads(capsys.readouterr().out)["gradient_force_tolerance"] == 1e-20
     assert not (tmp_path/"unused").exists()
-    with pytest.raises(ValueError, match="verify_free_boundary"):
-        entry.main(["--output", str(tmp_path/"production")])
-    assert not (tmp_path/"production").exists()
+    assert entry.read_qualification(entry.parse_args([])) is None
     tree = ast.parse(Path(entry.__file__).read_text())
     calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
     assert "evaluate_trial" not in calls
@@ -310,6 +308,87 @@ def test_qualification_matching_and_artifact_integrity(tmp_path, monkeypatch):
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError, match="has not passed"):
         entry.read_qualification(args)
+
+
+@pytest.mark.parametrize("method", ["SLSQP", "L-BFGS-B"])
+@pytest.mark.parametrize("qualified", [False, True])
+def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method, qualified):
+    """Both entry points optimize with or without a separately supplied report."""
+    from types import SimpleNamespace
+    from vmex import optimize as opt
+
+    report, _ = qualification_bundle(tmp_path)
+    output = tmp_path / "production"
+    output.mkdir()
+    calls = []
+    equilibrium = SimpleNamespace(state=None, runtime=None,
+        result=SimpleNamespace(fsqr=1e-12, fsqz=1e-12, fsql=1e-12, fedge=1e-12))
+
+    class Problem:
+        x0 = np.zeros(2)
+        accepted_step = 0
+        accepted = SimpleNamespace(parameters=x0)
+        solver_info = {"active_adjoint": "matrixfree_seed_lu"}
+
+        def enable_matrix_free(self, *args, **kwargs):
+            assert not args and "parity_rtol" not in kwargs
+            calls.append("seed LU")
+
+        def equilibrium_from_x(self, x):
+            return equilibrium
+
+        def constraint_values(self, x):
+            return np.array([.2, 1.])
+
+        def fun(self, x):
+            return 1.
+
+        def evaluate_trial(self, *args, **kwargs):
+            pytest.fail("production must not run finite-difference trials")
+
+        def save_checkpoint(self, path):
+            return {"file": str(path)}
+
+        def close(self):
+            calls.append("close")
+
+    stage = SimpleNamespace(problem=Problem(), inp=SimpleNamespace(ntor=0),
+        qs=SimpleNamespace(total_state=lambda *a: .1), inequalities=lambda x: np.ones(3))
+
+    def build(args, *, event, qualified):
+        assert (qualified is not None) == supplied
+        calls.append("build")
+        return stage
+
+    def optimize(*args, **kwargs):
+        calls.append(kwargs["method"])
+        return SimpleNamespace(stop_reason=None, success=True, status=0, message="converged")
+
+    def endpoint(stage, args, summary, *rest):
+        calls.append("endpoint")
+        summary.update(inequalities_met=True)
+        return None
+
+    supplied = qualified
+    monkeypatch.setattr(entry, "setup_run", lambda args: output)
+    monkeypatch.setattr(entry, "build_problem", build)
+    monkeypatch.setattr(entry, "run_optimizer", optimize)
+    monkeypatch.setattr(entry, "verify_endpoint", endpoint)
+    monkeypatch.setattr(entry, "postprocess", lambda stage, args, summary, *rest:
+                        entry.write_json(output / "optimization_summary.json", summary))
+    monkeypatch.setattr(entry.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(entry.signal, "alarm", lambda *a: None)
+    monkeypatch.setattr(opt, "aspect_ratio", lambda *a: 5.)
+    monkeypatch.setattr(opt, "boundary_from_state", lambda *a: (np.ones((1, 1)),))
+    monkeypatch.setattr(verify, "verify_problem", lambda *a: pytest.fail("derivative verifier called"))
+    args = ["--output", str(output)]
+    if qualified:
+        args += ["--qualification", str(report)]
+    assert entry.main(args, method=method) == 0
+    summary = json.loads((output / "optimization_summary.json").read_text())
+    assert summary["derivative_qualified"] is qualified
+    assert (summary["qualification"] is not None) is qualified
+    assert calls == ["build", "seed LU", method, "endpoint", "close"]
 
 
 def test_shared_builder_fits_fixed_currents_and_restores_without_solves(tmp_path, monkeypatch):
@@ -389,8 +468,6 @@ def test_lbfgsb_entry_uses_shared_production_and_no_output_on_dry_run(tmp_path, 
     config = json.loads(capsys.readouterr().out)
     assert config["optimizer"] == "L-BFGS-B" and not output.exists()
     assert lbfgsb.run is entry.main
-    with pytest.raises(ValueError, match="verify_free_boundary"):
-        lbfgsb.main(["--output", str(output)])
     assert not output.exists()
 
 

@@ -1,4 +1,4 @@
-# Qualified free-boundary production
+# Free-boundary production and separate derivative tests
 
 `free_boundary_single_stage_optimization_scalar.py` (formerly
 `free_boundary_single_stage_fast.py`) uses the scalar VMEX API directly:
@@ -28,8 +28,16 @@ Inspect settings without a solve or output files:
 python -B free_boundary_single_stage_optimization_scalar.py --dry-run
 ```
 
-Run expensive qualification once for the desired configuration, then reuse its
-fitted coils and certified initial checkpoint:
+Production runs directly from input/WOUT and coils, with no finite-difference or
+matrix-free/dense parity tests at startup:
+
+```sh
+python -B free_boundary_single_stage_optimization_scalar.py --output runs/production-new
+python -B free_boundary_single_stage_optimization.py --output runs/production-lbfgsb-new
+```
+
+Run derivative qualification separately for a configuration. Its passing report
+can optionally reuse fitted coils and the certified initial checkpoint:
 
 ```sh
 python -B verify_free_boundary_single_stage.py --output runs/qualification-new
@@ -60,13 +68,16 @@ probes. If a proposal cannot provide a certified equilibrium/gradient, it stops
 and preserves the last accepted state; no replacement gradient is fabricated.
 The summary identifies the optimizer and whether nonlinear constraints were
 applied. Both entry-point sources are included in the qualification contract
-and saved provenance. This API/default-tolerance refactor requires fresh qualification.
+and saved provenance. Changes to the numerical configuration or source invalidate old
+qualification evidence; rerun the separate verifier to establish new evidence.
 
 All commands default to GPU. Each output directory must be new. `--dry-run`
 prints configuration without creating files or initializing JAX. Production
-requires a passing matching report; it does not rerun finite differences or
-dense/matrix-free comparisons. Its own dense LU initialization and all actual
-residual checks are still necessary. The report binds input/WOUT contents,
+never runs finite differences or dense/matrix-free comparisons. Its dense LU
+initialization, root and linear residual checks remain necessary solver work.
+A run without a report records `derivative_qualified: false`; a supplied report
+must pass authentication and records `derivative_qualified: true`. No report
+is generated automatically during production. The optional report binds input/WOUT contents,
 physics and solver controls, source hashes, dependency versions, device kind,
 fitted coils and the initial checkpoint. A changed numerical configuration or
 source requires fresh qualification. Budgets and plot flags may be changed via
@@ -87,9 +98,10 @@ Initialization is defined in the production example:
   geometry instead. `--coil-fit-maxiter` bounds this fit (default 200).
 - `--coils fitted.json` reuses a fitted set, skipping stage two.
 
-Qualification calls this shared preparation once. Production inherits the
-input and resolution options from the report and restores the exact qualified
-seed; it performs neither stage-two refitting nor an initial ordinary solve.
+The separate verifier calls this shared preparation once. With `--qualification`,
+production inherits input and resolution options from the report and restores
+the exact checked seed, without stage-two refitting or an initial ordinary solve.
+Without a report, production prepares its start directly as described above.
 The source input/WOUT and report artifacts must remain available. Restored
 states are freshly certified before use.
 

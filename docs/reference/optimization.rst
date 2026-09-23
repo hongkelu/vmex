@@ -973,8 +973,11 @@ endpoint checks. Only its accepted-iteration callback promotes the warm-start
 state, never its line-search gradient evaluations.
 ``verify_free_boundary_single_stage.py`` imports the
 same problem builder for independent derivative checks and saves a qualified
-initial checkpoint. Production requires its matching report and re-certifies
-that checkpoint without repeating initial solves or qualification experiments.
+initial checkpoint. Production can start directly from input/WOUT and coils,
+or optionally restore a matching report and re-certify its checkpoint. Neither
+route runs finite differences or parity experiments. Runs without a supplied
+report record ``derivative_qualified=False``; residual checks and the final
+equilibrium solve remain part of production.
 A matched GPU qualification and pilot are still needed before claiming
 production timing or physical convergence.
 
@@ -986,8 +989,8 @@ without another equilibrium solve; it does not re-certify them.
 ``opt.CoilDiagnostics`` reports physical coil motion and current changes without
 an equilibrium/field evaluation. Expensive numerical qualification stays in the
 separate verification program. Default production force tolerance is ``1e-11``;
-independent endpoint verification uses ``1e-15``. These changed defaults and
-source hashes require a fresh qualification report.
+independent endpoint verification uses ``1e-15``. A changed configuration or
+source needs a fresh standalone report to claim derivative qualification.
 
 
 

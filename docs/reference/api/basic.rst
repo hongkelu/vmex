@@ -68,9 +68,6 @@ interface, with explicit physical target bands and a separate optimizer.
 .. automodule:: vmex.core.freeboundary_problem
    :members:
 
-.. automodule:: vmex.core.projected_optimization
-   :members:
-
 .. automodule:: vmex.core.parallel
    :members:
 

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 import _coil_constraints as C
 
@@ -155,3 +156,46 @@ def test_order16_field_quadrature_on_perturbed_seed():
     a=jax.vmap(BiotSavart(higher).B)(target)
     b=jax.vmap(BiotSavart(fine).B)(target)
     np.testing.assert_allclose(a,b,rtol=1e-7,atol=1e-9)
+
+
+@pytest.mark.parametrize("coefficient,expected_pass", [(1e6, True), (1e10, False)])
+def test_free_qualification_requires_two_successive_refined_passes(tmp_path, coefficient, expected_pass):
+    """A coarse failure must refine, while persistent mismatches still block reuse."""
+    import ast
+    import json
+    source = Path(__file__).with_name("verify_free_boundary_single_stage.py").read_text()
+    function = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "verify_problem")
+    reports, calls, reuse = {}, [], []
+
+    def write(path, value):
+        reports[path.name] = json.loads(json.dumps(value))
+
+    def evaluate(delta, **kwargs):
+        assert kwargs == dict(predict=False, ftol=1e-20)
+        calls.append(float(delta[0]))
+        x = float(delta[0])
+        return None, np.array([x*(1+coefficient*x*x)])
+
+    anchor = object()
+    problem = SimpleNamespace(accepted=anchor, x0=np.zeros(1),
+        value_and_grad=lambda x: (0., np.ones(1)), constraint_jac=lambda x: np.empty((0, 1)),
+        evaluate_trial=evaluate, enable_matrix_free=lambda *a, **k: reuse.append(True) or {"passed": True})
+    stage = SimpleNamespace(problem=problem, chart=SimpleNamespace(scales=np.ones(1)),
+        constraint_transform=np.empty((0, 0)), inequalities=lambda x: x,
+        coil_constraint=SimpleNamespace(fun=lambda x: 2*x, jac=lambda x: np.array([[2.]])))
+    namespace = dict(example=SimpleNamespace(write_json=write, MATRIXFREE_RTOL=1e-11,
+        MATRIXFREE_RESTART=100, MATRIXFREE_MAX_CYCLES=3, MATRIXFREE_RHS_BATCH_SIZE=3),
+        GRADIENT_STEPS=(3e-4, 1e-4, 3e-5, 1e-5), GRADIENT_RTOL=1e-3,
+        GRADIENT_CHECK_FTOL=1e-20, LINEARIZATION_PARITY_RTOL=1e-6)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "qualification", "exec"), namespace)
+    if expected_pass:
+        namespace["verify_problem"](stage, tmp_path)
+        assert reports["gradient_check.json"]["passed"]
+        assert [r["passed"] for r in reports["gradient_check.json"]["checks"]] == [False, False, True, True]
+        assert reuse == [True]
+    else:
+        with pytest.raises(RuntimeError, match="two successive"):
+            namespace["verify_problem"](stage, tmp_path)
+        assert not reports["gradient_check.json"]["passed"]
+        assert reuse == []
+    assert len(calls) == 8 and problem.accepted is anchor

@@ -19,22 +19,30 @@ revision it was measured at, and the pages that cite it.
 - **Stalled free-boundary restarts ran to `max_iterations`.** A restart from
   the configuration's reference now gets the iterations the cold reference
   needed before the deterministic cold retry of #416.
-- **An exterior field built from a free-boundary wout without coil currents
-  had no coils.** `VmecExtender.from_wout` filled missing `EXTCUR` with
-  zeros, so a wout that names an MGRID but records `nextcur = 0` (as
-  `solve_file` writes one) extended with an identically zero coil field. It
-  now raises and says how to supply the coil field.
-- **The eager derivative accuracy check warned far from the surface.** The
-  per-order error estimate of virtual-casing-jax 0.0.7 returns NaN, with
-  hundreds of NumPy warnings, for targets tens of minor radii away, and
-  `gradB`/`gradgradB`/`gradgradgradB` reported an error "up to inf" there.
-  Fixed upstream (uwplasma/virtual_casing_jax#15); the `freeb` extra now
-  requires `virtual-casing-jax>=0.0.8`.
+- `VmecExtender.from_wout` raises on a wout that names an MGRID but records
+  no coil currents, instead of extending with a zero coil field.
+- The eager derivative accuracy check no longer warns "up to inf" far from
+  the surface (virtual-casing-jax 0.0.8, now the `freeb` floor).
 
 ### Added
 
-- `VmecExtender.from_wout` and `from_state` accept `project_current`
-  (default off), the curl-free source projection of #381.
+- `from_wout`/`from_state` accept `project_current` (off by default, #381).
+- **The exterior field is accurate next to the plasma surface.** Eager
+  `VmecExtender` calls switch each point the direct quadrature cannot resolve
+  to a target-graded rule (`near_surface="auto"`, default): 1e-12 in B down to
+  0.01 minor radii on the 2.5 % beta QA deck, where the default grid was off
+  by order one. `with_graded_quadrature()` uses it everywhere, under `jit` too.
+
+### Changed
+
+- Direct-path derivatives use the closed-form layer kernels (same values to
+  1e-12): first `B`..`gradgradgradB` calls 6.0 s -> 2.9 s, warm
+  `gradgradgradB` 4-6x faster (`benchmarks/extender_ab_20260923.json`).
+
+### Removed
+
+- `VmecExtender.with_near_surface_continuation` and `near_surface_plan`
+  (1.6-2.4 % error floor, 18.5 GB to prepare); use `with_graded_quadrature()`.
 
 ## 0.11.0 - 2026-09-21
 
@@ -126,55 +134,12 @@ See the GitHub release for this version in full.
 
 ## 0.9.1 - 2026-09-16
 
-Optimization gradients now compile on a machine that has a GPU, the coil
-examples install from PyPI, and the exterior field sizes its source grid from
-the boundary.
-
-### Fixed
-
-- **Optimization gradients could not be compiled on any machine with a GPU.**
-  The implicit path is deliberately stood down to the CPU on an accelerator
-  backend and the host callback was pinned there, but JAX requires a pinned
-  device to be in the enclosing computation's device assignment and a jit
-  compiled for `cuda:0` does not contain `cpu:0`. Every jitted
-  `jax_value_and_grad` died in JAX's lowering with
-  `ValueError: tuple.index(x): x not in tuple` and no VMEX frame
-  (jax-ml/jax#40722). The pin now applies only within one platform. On two RTX
-  A4000s all three ways of asking agree, peak device memory 0.16 GiB, warm
-  value-and-gradient 1.3–1.6 s against 2.15 s on that machine's CPU.
-- The "When the GPU pays off" snippet referred to an undefined `runtime` (#157).
-  That page now carries a full re-measurement of the CPU-vs-GPU sweep
-  (`benchmarks/gpu_a4000_2026-09-16.json`): on two RTX A4000s the GPU wins no
-  cell, warm gain 0.17x to 0.83x across every shipped deck and every point of
-  the synthetic size scan. The thresholds do not transfer between machines.
-
-### Changed
-
-- `max_fsq_ratio` defaults to `1e2`, not `1e6`. The implicit adjoint assumes
-  `F = 0`, so differentiating a trial whose residual is 1e-6 against a 1e-12
-  deck carries an O(norm(F)) error and lets a line search walk the design
-  somewhere the solver cannot resolve; that is what stalled the finite-beta
-  single stage (#361).
-- **The coil examples install from PyPI.** ESSOS 0.17 carries uwplasma/ESSOS#58,
-  so the `coils` extra pins `essos>=0.17` and the git-install instruction leaves
-  nine examples, five documentation pages and the examples README. A new `all`
-  extra installs everything the examples use.
-- **The exterior field sizes its source grid from the boundary.**
-  `VmecExtender.from_wout` hard-coded `nphi=ntheta=32`, and the level schedule
-  read a per-field-period sampling as a whole-torus count; on the shipped QA
-  wout (`R0/a` = 15.9) the achieved error one minor radius out was 2.46e-02
-  against a requested 1e-6. Sizing from the geometry gives 4.31e-07 at 0.116 s
-  per call against 0.226 s. A tokamak-like aspect ratio stays on the historical
-  floor; explicit `nphi`, `ntheta` or `levels` are honored unchanged.
-- `take_free_boundary_gradients.py` certifies against the second adjoint solver
-  rather than a central difference, which on a free boundary has no usable step;
-  the two adjoints agree to 1.6e-04.
-
-### Removed
-
-- Four files referenced by nothing in the tree: the QI sheet-current mgrid
-  builder under tools, a repo census and a stale profile record under
-  benchmarks, and the pre-commit config.
+Optimization gradients compile on a machine that has a GPU (the host-callback
+pin now applies only within one platform; jax-ml/jax#40722), the coil examples
+install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio` defaults to
+`1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07
+one minor radius out on the QA wout, against 2.46e-02 before). Full notes in
+the GitHub release.
 
 ## 0.9.0 - 2026-09-15
 

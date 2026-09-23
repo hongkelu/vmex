@@ -9,13 +9,13 @@ import pytest
 from vmex.core import freeboundary_implicit as fbi
 from vmex.core.errors import AdjointSolveError
 
-def test_explicit_adjoint_gate_rejects_default_slack(monkeypatch):
+def test_explicit_tangent_gate_rejects_default_slack(monkeypatch):
     cfg=SimpleNamespace(adjoint_tol=2e-5,adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10)
-    monkeypatch.setattr(fbi,'_reverse_gcrot_core',lambda *a,**k:(jnp.ones(3),jnp.array(1e-4),jnp.array(1.),jnp.array(2)))
-    fbi._solve_prepared_reverse_adjoint(None,None,cfg) # unchanged default 2e-4
+    monkeypatch.setattr(fbi,'_tangent_gcrot_core',lambda *a,**k:(jnp.ones(3),jnp.array(1e-4),jnp.array(1.),jnp.array(2)))
+    fbi._solve_gcrot_tangent(None,None,cfg) # unchanged default 2e-4
     diagnostics=[]
     with pytest.raises(AdjointSolveError):
-        fbi._solve_prepared_reverse_adjoint(None,None,cfg,residual_rtol=2e-5,diagnostics=diagnostics)
+        fbi._solve_gcrot_tangent(None,None,cfg,residual_rtol=2e-5,diagnostics=diagnostics)
     assert diagnostics[0]['accepted'] is False
     assert diagnostics[0]['tolerance']==2e-5
 

@@ -73,8 +73,9 @@ def test_free_boundary_config_rejects_fixed_boundary_input():
 
 def test_free_boundary_config_validates_adjoint_solver():
     inp, field = lasym_free_input(DATA), lasym_free_field()
-    with pytest.raises(ValueError, match="adjoint_solver must be one of"):
-        make_free_boundary_config(inp, field, adjoint_solver="dense")
+    for removed in ("dense", "reverse_gcrot"):
+        with pytest.raises(ValueError, match="adjoint_solver must be one of"):
+            make_free_boundary_config(inp, field, adjoint_solver=removed)
     for name in fbi._ADJOINT_SOLVERS:
         assert make_free_boundary_config(
             inp, field, adjoint_solver=name).adjoint_solver == name
@@ -521,8 +522,8 @@ def test_host_adjoint_best_effort_warns_instead_of_raising(monkeypatch):
     np.testing.assert_allclose(np.asarray(solution), np.zeros(4))
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
-def test_host_adjoint_prepared_transpose_tracks_changed_root_data(backend):
+@pytest.mark.parametrize("method", ["adjoint", "tangent"])
+def test_prepared_operators_track_changed_root_data(method):
     """Executable reuse must not reuse a previous root's numerical tape."""
     matrix = jnp.array([[4.0, 0.3, -0.2], [0.1, 3.0, 0.4], [0.2, -0.1, 5.0]])
 
@@ -542,10 +543,10 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data(backend):
             args[changed] = args[changed] + 0.25
         z, params, field, base, rcon, zcon = args
         jacobian = matrix + jnp.diag((params + field + base + rcon + zcon) * z)
-        expected = np.linalg.solve(np.asarray(jacobian.T), np.asarray(rhs))
-        if backend == "reverse_gcrot":
-            tape = fbi._prepare_linearized_transpose(*args, residual=residual)
-            result = fbi._solve_prepared_reverse_adjoint(tape, rhs, cfg)
+        expected = np.linalg.solve(np.asarray(jacobian if method == "tangent" else jacobian.T), np.asarray(rhs))
+        if method == "tangent":
+            tape = fbi._prepare_tangent_operator(*args, residual=residual)
+            result = fbi._solve_gcrot_tangent(tape, rhs, cfg)
         else:
             result = fbi._host_adjoint(residual, *args, rhs, cfg)
         np.testing.assert_allclose(result, expected, rtol=1e-9, atol=1e-11)
@@ -555,8 +556,7 @@ def test_host_adjoint_prepared_transpose_tracks_changed_root_data(backend):
             assert np.linalg.norm(expected - reference) > 1e-4
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
-def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, backend):
+def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch):
     """All rows, including a zero row, match an independent dense derivative."""
     matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
     profile_map = jnp.array([[1., 2.], [-1., .2], [.5, -.3]])
@@ -571,7 +571,7 @@ def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, 
     params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
     rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
     counts = {'state':0, 'parameter':0}
-    state_name = "_prepare_linearized_transpose" if backend == "reverse_gcrot" else "_prepare_transpose"
+    state_name = "_prepare_transpose"
     prepare_state, prepare_parameter = getattr(fbi, state_name), fbi._prepare_parameter_pullback
     def counted_state(*args, **kwargs):
         counts['state'] += 1
@@ -581,7 +581,7 @@ def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch, 
         return prepare_parameter(*args, **kwargs)
     monkeypatch.setattr(fbi, state_name, counted_state)
     monkeypatch.setattr(fbi, '_prepare_parameter_pullback', counted_parameter)
-    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg,backend=backend)
+    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg)
     jacobian = np.asarray(matrix + jnp.diag(.4*z))
     np.testing.assert_allclose(pb['drive'], np.asarray(rhs) @ np.linalg.solve(jacobian,profile_map), rtol=1e-9, atol=1e-11)
     np.testing.assert_allclose(fb['scale'], np.asarray(rhs) @ np.linalg.solve(jacobian,field_map), rtol=1e-9, atol=1e-11)
@@ -614,7 +614,7 @@ def test_multi_rhs_pullback_rejects_bad_batch_shape(cotangents):
             jnp.ones(3),cotangents,rcon0=None,zcon0=None)
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"])
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "forward_dense", "forward_dense_jax"])
 def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
     import vmex
     assert vmex.free_boundary_state_pullback_multi_rhs is fbi.free_boundary_state_pullback_multi_rhs
@@ -1462,31 +1462,26 @@ def test_free_boundary_root_is_a_function_of_the_parameters():
 
 
 @pytest.mark.parametrize("bad", [0., float("nan")])
-def test_reverse_gcrot_independently_rejects_false_success(monkeypatch, bad):
-    """A claimed Krylov success must not hide an incorrect or nonfinite row."""
+def test_gcrot_tangent_independently_rejects_false_success(monkeypatch, bad):
+    """A claimed Krylov success cannot hide an incorrect or nonfinite tangent."""
     cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
                           adjoint_gcrot_m=3, adjoint_gcrot_k=1)
     def residual(z, *args):
         return 2*z
-    tape = fbi._prepare_linearized_transpose(jnp.zeros(3),None,None,None,None,None,residual=residual)
+    tape = fbi._prepare_tangent_operator(jnp.zeros(3), None, None, None, None, None,
+                                         residual=residual)
     native = fbi._solvax_gcrot
     def faulty(action, rhs, **kw):
-        return native(action,rhs,**kw)._replace(x=jnp.full_like(rhs,bad),converged=jnp.array(True))
-    fbi._reverse_gcrot_core.clear_cache()
-    monkeypatch.setattr(fbi, '_solvax_gcrot', faulty)
+        return native(action, rhs, **kw)._replace(x=jnp.full_like(rhs, bad), converged=jnp.array(True))
+    fbi._tangent_gcrot_core.clear_cache()
+    monkeypatch.setattr(fbi, "_solvax_gcrot", faulty)
     try:
-        with pytest.raises(AdjointSolveError, match='reverse GCROT row 1'):
-            fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,row=1)
-        if np.isfinite(bad):
-            with pytest.warns(RuntimeWarning, match='best-effort'):
-                fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,fail='best_effort')
-        else:
-            with pytest.raises(AdjointSolveError):
-                fbi._solve_prepared_reverse_adjoint(tape,jnp.ones(3),cfg,fail='best_effort')
-        traced = jax.jit(lambda rhs:fbi._solve_prepared_reverse_adjoint(tape,rhs,cfg))(jnp.ones(3))
-        assert np.all(np.isnan(traced))
+        reports = []
+        with pytest.raises(AdjointSolveError, match="GCROT tangent"):
+            fbi._solve_gcrot_tangent(tape, jnp.ones(3), cfg, diagnostics=reports)
+        assert not reports[-1]["accepted"]
     finally:
-        fbi._reverse_gcrot_core.clear_cache()
+        fbi._tangent_gcrot_core.clear_cache()
 
 
 @pytest.mark.parametrize("backend", ["forward_dense", "forward_dense_jax"])
@@ -1605,22 +1600,17 @@ def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
     assert actual.adjoint_residual_rtol==1e-9
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot"])
-def test_shared_adjoint_report_enforces_strict_true_residual(monkeypatch, backend):
+def test_shared_adjoint_report_enforces_strict_true_residual(monkeypatch):
     controls = SimpleNamespace(device=None, adjoint_tol=1e-3, adjoint_maxiter=10,
                                adjoint_gcrot_m=3, adjoint_gcrot_k=1)
     residual = jax.jit(lambda z, p, f, *_: 2*z-p-f)
-    if backend == "coupled_gcrot":
-        monkeypatch.setattr(fbi, "gcrotmk", lambda *a, **k: (np.ones(3)*.500001, 0))
-    else:
-        monkeypatch.setattr(fbi, "_reverse_gcrot_core", lambda *a, **k:
-            (jnp.ones(3)*.500001, 2e-6*np.sqrt(3), np.sqrt(3), 1))
+    monkeypatch.setattr(fbi, "gcrotmk", lambda *a, **k: (np.ones(3)*.500001, 0))
     records = []
-    with pytest.raises(Exception, match="did not converge"):
+    with pytest.raises(AdjointSolveError, match="did not converge"):
         fbi._host_pullback_multi_rhs(residual, jnp.zeros(3), jnp.zeros(3), jnp.zeros(3),
-            jnp.zeros(3), None, None, jnp.ones((1,3)), controls, backend=backend,
+            jnp.zeros(3), None, None, jnp.ones((1,3)), controls,
             residual_rtol=1e-9, diagnostics=records)
-    assert records[-1]["backend"] == backend and not records[-1]["accepted"]
+    assert records[-1]["backend"] == "coupled_gcrot" and not records[-1]["accepted"]
     assert records[-1]["tolerance"] == pytest.approx(1e-9*np.sqrt(3))
 
 

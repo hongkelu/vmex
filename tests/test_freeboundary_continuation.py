@@ -166,7 +166,7 @@ def test_invalid_controls_do_not_solve_anchor(family,option,value):
     assert not family.calls
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "reverse_gcrot", "forward_dense", "forward_dense_jax"])
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "forward_dense", "forward_dense_jax"])
 def test_scalar_custom_vjp_and_shared_pullback_match_analytic_derivative(family, backend):
     cfg=family.make();p=jnp.array([.2,.1])
     cfg.solver.adjoint_solver=backend

@@ -127,7 +127,7 @@ def test_all_backends_share_owned_gradient_and_predictor_interface(monkeypatch, 
     direction = jnp.array([.2, -.3])
     np.testing.assert_allclose(root.tangent(accepted, cfg, direction, diagnostics=reports),
                               -np.linalg.solve(matrix, coupling @ direction), atol=1e-11)
-    expected = "reused_dense_lu" if backend.startswith("forward_dense") else "reverse_gcrot_tangent"
+    expected = "reused_dense_lu" if backend.startswith("forward_dense") else "gcrot_tangent"
     assert reports[-1]["backend"] == expected and reports[-1]["accepted"]
     if not backend.startswith("forward_dense"):
         with pytest.raises(ValueError, match="live dense"):

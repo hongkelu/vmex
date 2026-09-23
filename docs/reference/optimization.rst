@@ -503,7 +503,7 @@ carry recycle spaces between objectives. A projected preconditioned root
 residual check (``root_residual_atol``, default ``1e-5``) precedes the solves;
 this numerical gate does not establish physical gradient accuracy.
 
-This interface is host-eager and supports all six free-boundary adjoint
+This interface is host-eager and supports all five free-boundary adjoint
 backends, including upstream ``boundary_schur`` and ``edge_response``.
 For Schur, both the adjoint and parameter pullback use the raw residual;
 other methods use their existing preconditioned residual. Schur currently
@@ -848,18 +848,17 @@ adapter. ``minimize_projected`` remains a separate research algorithm because
 its target restoration and stationarity criterion differ from SLSQP.
 
 Free-boundary adjoint backends are ``coupled_gcrot`` (host iterations),
-``reverse_gcrot`` (device iterations), ``boundary_schur`` (bulk elimination),
+``boundary_schur`` (bulk elimination),
 ``edge_response`` (cached vacuum response), ``forward_dense`` (SciPy LU), and
 ``forward_dense_jax`` (JAX LU). They share acceptance/reporting conventions and
 one accepted-root continuation interface. Dense methods retain their factors
-for prediction; the other methods use the existing ``reverse_gcrot_tangent``
+for prediction; the other methods use the existing ``gcrot_tangent``
 forward solve. A Schur adjoint does not yet retain Schur factors for its tangent.
 Changing methods still requires independent derivative and progress checks.
 
 The three-method production examples keep ``forward_dense_jax`` plus
 ``problem.enable_matrix_free()``: current-root GMRES with a seed-LU
-preconditioner, and one checked dense retry. They do not call the
-``reverse_gcrot`` solver. ``problem.solver_info`` reports the configured
+preconditioner, and one checked dense retry. ``problem.solver_info`` reports the configured
 adjoint, active reuse policy, recovery and predictor; event rows identify the
 actual solver and true residual, including unsuccessful attempts before a
 recovery. The optimization summary also saves this policy. The shared
@@ -871,34 +870,19 @@ configuration. Compare gradient and predictor accuracy, correction iterations,
 and total gradient-plus-predictor time including factor construction before
 changing the default. No timing advantage is implied by the common interface.
 
-Reverse GCROT free-boundary adjoints
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+GCROT free-boundary prediction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Set ``adjoint_solver="reverse_gcrot"`` in ``make_free_boundary_config`` to
-use JAX/Solvax GCROT on the transpose of the already-linearized projected
-VMEX--NESTOR residual. This ports the local reverse Krylov method onto the
-same root, mask, constraint baselines, and parameter pullback as main.
-The nonlinear linearization is prepared once; Krylov iterations stay on
-the configured JAX device. ``coupled_gcrot`` remains the default and uses
-SciPy for eager Krylov iterations. Device placement is explicit; selecting
-this backend does not itself select a GPU.
+Non-dense adjoint methods use the existing device GCROT forward tangent,
+reported as ``gcrot_tangent``. This solves the parameter-direction response
+at the accepted root; it is not a separate adjoint backend. It retains the
+same root, mask, constraint baselines, iteration controls and independent
+true-residual check. Dense and seed-LU methods use their own retained factors
+for prediction.
 
-Scalar custom VJPs, shared multi-RHS pullbacks, and accepted-state
-continuation all honor this option. Shared calls prepare one state tape
-and one parameter tape, then solve rows sequentially. This port does not
-include parallel RHS batching, cross-row or cross-root recycling, or the
-old response-module API. GCROT still recycles within each solve.
-
-Controls remain ``adjoint_tol``, ``adjoint_gcrot_m``, ``adjoint_gcrot_k``,
-and ``adjoint_maxiter`` (the restart-cycle budget). Each returned adjoint
-is checked with a freshly evaluated transpose residual using main's
-acceptance threshold, ``10 * adjoint_tol * norm(rhs)``. Eager failures
-raise ``AdjointSolveError`` unless finite best-effort results were explicitly
-requested; traced failures produce NaN gradients. Convergence of the
-linear solve does not replace forward-root or finite-difference checks.
-No separate root-polishing step is required by this interface. Compilation,
-memory use, and speed depend on the case and device; this option does not
-imply a speedup over the default.
+The former ``adjoint_solver="reverse_gcrot"`` option has been removed.
+Configurations using it now raise ``ValueError``. Select a supported method
+explicitly and qualify its gradients before changing a production run.
 
 
 Dense free-boundary adjoints

@@ -1478,6 +1478,7 @@ def test_max_fsq_ratio_default_is_strict_on_every_entry_point():
     """
     import inspect
 
+    from vmex.core import implicit as im
     from vmex.core import optimize as optimize_module
 
     defaults = {
@@ -1486,6 +1487,12 @@ def test_max_fsq_ratio_default_is_strict_on_every_entry_point():
         if "max_fsq_ratio" in inspect.signature(fn).parameters
     }
     assert defaults, "no entry point exposes max_fsq_ratio"
+    # The implicit config builder and the dataclass it returns carry the same
+    # bar, so a status solve on a default config certifies nothing looser.
+    defaults["implicit.make_config"] = inspect.signature(
+        im.make_config).parameters["max_fsq_ratio"].default
+    defaults["implicit.ImplicitConfig"] = im.ImplicitConfig.__dataclass_fields__[
+        "max_fsq_ratio"].default
     assert set(defaults.values()) == {1.0e2}, defaults
 
 
@@ -1595,3 +1602,72 @@ def test_subproblem_ladder_compiles_once():
     assert compiles_after_second_rung == compiles_after_first_rung, (
         "the second ladder rung recompiled: "
         f"{compiles_after_second_rung - compiles_after_first_rung} programs")
+
+
+def test_eager_state_objective_gradient_compiles_once():
+    """An un-jitted value_and_grad over a state objective reuses its programs.
+
+    With the status branch as a ``lax.cond``, every eager call traced and
+    compiled the branch again, because each call's state and linearization
+    data entered it as new constants (7-15 s of XLA per call on this 5-surface
+    deck). A concrete status now takes its branch in Python, and the jitted
+    gradient, where the status is abstract, is unchanged.
+    """
+    import jax.monitoring
+
+    inp = VmecInput.from_file(DATA_DIR / "input.solovev")
+    inp = dataclasses.replace(
+        inp.change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4),
+        ns_array=np.asarray([5]), ftol_array=np.asarray([1.0e-10]),
+        niter_array=np.asarray([1000]))
+    problem = opt.VmecProblem.from_tuples(
+        inp, [(opt.aspect_ratio, 4.0, 1.0)], max_mode=1, use_ess=False)
+
+    def objective(x):
+        return problem.jax_objective_from_state(
+            x, lambda state, runtime: jnp.atleast_1d(opt.aspect_ratio(state, runtime)),
+            n_extra_terms=1)
+
+    eager = jax.value_and_grad(objective, has_aux=True)
+    points = [jnp.asarray(problem.x0) * (1.0 + 1.0e-3 * k) for k in range(3)]
+    eager(points[0])
+    eager(points[1])
+    compiles = []
+    jax.monitoring.register_event_duration_secs_listener(
+        lambda name, duration, **_: compiles.append(name)
+        if name.endswith("backend_compile_duration") else None)
+    (value, _), gradient = eager(points[2])
+    assert compiles == [], f"an eager repeat compiled {len(compiles)} programs"
+    (value_jit, _), gradient_jit = jax.jit(eager)(points[2])
+    np.testing.assert_allclose(float(value), float(value_jit), rtol=1.0e-12)
+    np.testing.assert_allclose(np.asarray(gradient), np.asarray(gradient_jit),
+                               rtol=1.0e-8, atol=1.0e-12)
+
+
+def test_host_state_runtime_is_the_unanchored_forward_solve(monkeypatch):
+    """Figures read a plain forward solve; only the adjoint lane anchors it."""
+    from vmex.core import implicit as imp
+
+    inp = VmecInput.from_file(DATA_DIR / "input.solovev")
+    inp = dataclasses.replace(
+        inp.change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4),
+        ns_array=np.asarray([5]), ftol_array=np.asarray([1.0e-10]),
+        niter_array=np.asarray([1000]))
+    problem = opt.VmecProblem.from_tuples(
+        inp, [(opt.aspect_ratio, 4.0, 1.0)], max_mode=1, use_ess=False)
+    reference = opt.solve_equilibrium(problem.input_from_x(problem.x0)).solution
+
+    def no_anchor(*args, **kwargs):
+        raise AssertionError("a figure must not pay for the derivative anchor")
+
+    monkeypatch.setattr(imp, "_refine_fixed_point", no_anchor)
+    # A cold forward solve: an earlier test on an equal config leaves a hot
+    # restart that converges to a different point within ftol.
+    for cache in (imp._LAST_SOLVE, imp._HOT_CACHE, imp._PERTURB_SEED):
+        cache.clear()
+    state, runtime = problem.metadata["host_state_runtime"](problem.x0)
+    assert type(runtime).__name__ == "SolverRuntime"
+    for field in ("R_cos", "Z_sin", "L_sin"):
+        np.testing.assert_allclose(
+            np.asarray(getattr(state, field)), np.asarray(getattr(reference, field)),
+            rtol=0.0, atol=1.0e-9)

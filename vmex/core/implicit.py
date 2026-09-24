@@ -351,8 +351,11 @@ class ImplicitConfig:
     #: 9-14% of a value-and-gradient across the gradient decks.
     refine_tol: float = 1.0e-10
     #: Largest ``(fsqr + fsqz + fsql) / ftol`` accepted for implicit
-    #: differentiation when a trial exhausts its iteration budget.
-    max_fsq_ratio: float = 1.0e6
+    #: differentiation when a trial exhausts its iteration budget.  The
+    #: adjoint assumes ``F = 0``, so this is the same strict ``1e2`` bar as
+    #: every :mod:`vmex.core.optimize` entry point; the free-boundary config
+    #: tightens it to ``1.0``.
+    max_fsq_ratio: float = 1.0e2
     #: seed repeated host solves from the last converged state of this config
     #: (optimization trials; the fixed point — hence the gradient — is
     #: unchanged, only the iteration count drops).  Makes the callback
@@ -387,11 +390,16 @@ def make_config(
     adjoint_gcrot_m: int = 100,
     adjoint_gcrot_k: int = 20,
     refine_tol: float = 1.0e-10,
-    max_fsq_ratio: float = 1.0e6,
+    max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
+
+    ``max_fsq_ratio`` is the largest ``(fsqr + fsqz + fsql) / ftol`` at which
+    an iteration-limited solve still counts as derivative-certified (status 0
+    of :func:`solve_implicit_status`); a converged solve always does.  The
+    default ``1e2`` matches :func:`vmex.core.optimize.make_problem`.
 
     ``device`` is the already-RESOLVED placement device (pass the result of
     :func:`vmex.core.device.resolve_implicit_device`, not a policy string) —
@@ -1317,7 +1325,9 @@ _COUNTERS = ("solves", "iterations", "solve_seconds", "refinements",
              "refinement_seconds", "jacobians", "jacobian_columns",
              "jacobian_krylov_iterations", "jacobian_seconds", "adjoints",
              "adjoint_krylov_iterations", "adjoint_seconds",
-             "adjoint_certificate_fallbacks")
+             "adjoint_certificate_fallbacks", "anchors", "anchor_steps",
+             "anchor_krylov_iterations", "anchor_factorizations",
+             "anchor_seconds")
 # Nested-time accumulators of the open ``_timed`` sections.  Host callbacks run
 # while their caller waits, so one process-wide stack nests correctly.
 _OPEN_SECTIONS: list[float] = []
@@ -1453,7 +1463,7 @@ _REFINE_MAX_RESTARTS = 20
 #: such a correction is not an inexact Newton direction, and later steps
 #: from it only wander.  A solve with three digits whose ``|F|`` rises is a
 #: Newton step outside its quadratic region and is continued.  Two measured
-#: decks (``benchmarks/newton_finish_arms_20260913.json``): the benchmark seed
+#: decks (`newton_finish_arms_20260913.json <https://github.com/uwplasma/vmex/blob/07a47279d5cea819bb23c5329fab7f14cced2456/benchmarks/newton_finish_arms_20260913.json>`_): the benchmark seed
 #: deck (mpol = ntor = 5) stalls at 4.2e-3 and is stopped; QA_lowres
 #: (mpol = ntor = 8) reaches 5.2e-5, raises ``|F|`` and certifies two steps later.
 _REFINE_MIN_PROGRESS = 1.0e-3
@@ -3152,12 +3162,15 @@ def _solve_implicit_status_bwd(cfg, res, gbar):
             cfg, (prm, solved, dof_mask), cotangent
         )[0]
 
-    gradient = jax.lax.cond(
-        status == 0,
-        success,
-        lambda _: zeros,
-        (params, state, mask, state_bar),
-    )
+    operands = (params, state, mask, state_bar)
+    if not isinstance(status, jax.core.Tracer):
+        # An un-jitted gradient runs this rule host-eagerly with a concrete
+        # status. A lax.cond here would be traced and compiled again on every
+        # call (the success branch captures per-call linearization data as
+        # constants); the free-boundary rule branches the same way.
+        gradient = success(operands) if int(status) == 0 else zeros
+    else:
+        gradient = jax.lax.cond(status == 0, success, lambda _: zeros, operands)
     return (_device_pin(cfg, gradient),)
 
 

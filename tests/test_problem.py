@@ -314,6 +314,14 @@ def test_vmec_problem_field_facades_validate_and_route(monkeypatch):
     with pytest.raises(ValueError, match="quantity"):
         problem.surface_field_values(problem.x0, "bootstrap")
 
+    # A plain forward solve, when the problem offers one, is what a figure
+    # reads: the differentiable (anchored) lane is not called.
+    calls = []
+    problem.metadata["host_state_runtime"] = lambda x: calls.append("host") or ("s", "r")
+    problem.metadata["jax_state_runtime"] = lambda x: calls.append("jax") or ("s", "r")
+    problem.surface_field_values(problem.x0, "absB", nphi=2, ntheta=3)
+    assert calls == ["host"]
+
 
 def test_vmec_problem_reports_under_converged_fsq():
     class Config:
@@ -1025,3 +1033,42 @@ def test_shared_minimize_offsets_linear_constraints(sparse):
     np.testing.assert_allclose(result.x, [.5, .5], atol=1e-6)
     with pytest.raises(TypeError, match="when building"):
         opt.minimize(p, forward_ftol=1e-11)
+
+
+def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
+    """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
+    import jax
+    import jax.numpy as jnp
+
+    from vmex.core import implicit as imp
+    from vmex.core.problem import _branch_on_status
+
+    taken = []
+
+    def accepted(_):
+        taken.append("accepted")
+        return jnp.asarray(1.0)
+
+    def rejected(_):
+        taken.append("rejected")
+        return jnp.asarray(2.0)
+
+    assert float(_branch_on_status(jnp.int32(0), accepted, rejected)) == 1.0
+    assert float(_branch_on_status(np.int32(3), accepted, rejected)) == 2.0
+    assert taken == ["accepted", "rejected"]
+    taken.clear()
+    with jax.disable_jit(False):
+        traced = jax.jit(lambda s: _branch_on_status(s, accepted, rejected))
+        assert float(traced(jnp.int32(0))) == 1.0
+        assert float(traced(jnp.int32(1))) == 2.0
+    assert set(taken) == {"accepted", "rejected"}  # both branches traced once
+
+    # The status reverse rule: a failed trial returns a zero pullback eagerly,
+    # without tracing the adjoint.
+    monkeypatch.setattr(imp, "_solve_implicit_bwd_impl", lambda *a: pytest.fail(
+        "a failed trial must not run the adjoint"))
+    params = {"rbc": jnp.ones(3)}
+    (gradient,) = imp._solve_implicit_status_bwd(
+        SimpleNamespace(device=None), (params, None, None, jnp.int32(2)),
+        (jnp.ones(2), None, None, None))
+    np.testing.assert_array_equal(np.asarray(gradient["rbc"]), np.zeros(3))

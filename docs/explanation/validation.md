@@ -42,8 +42,8 @@ python -c "import json,collections; print(collections.Counter(
     r[6] for r in json.load(open('tests/manifest.json'))['records']))"
 ```
 
-At the time of writing that reads `analytic` 46, `vmec2000` 18, `fd` 16,
-`none` 15, `external` 10, `golden` 7. Run it rather than trusting the
+On VMEX 0.11.0 that reads `analytic` 53, `vmec2000` 18, `fd` 17,
+`none` 17, `external` 10, `golden` 7. Run it rather than trusting the
 snapshot; it moves with every test added.
 
 ## VMEC2000 parity, tier by tier
@@ -152,7 +152,8 @@ Quote it by its measured maxima, never as "machine precision":
   recorded.
 
 `tests/test_performance_docs.py::test_fresh_deck_parity_artifact_is_provenanced_and_cited`
-guards the record's provenance and requires the docs to cite it by path.
+guards the record's provenance and requires {doc}`/reference/performance`
+to cite it by path.
 
 ## Continuous force, native states and WOUT reconstruction
 
@@ -288,14 +289,15 @@ preconditioned residual falls below `1e-10` within 300 matrix-vector
 products while the raw residual stays above `1e-6`, a ratio above `1e4`.
 
 **Free boundary** (`tests/test_freeboundary_implicit.py`). The coupled
-plasma-vacuum root's reverse derivative is certified factor by factor
-(relative error below `1e-6`), against independent free-boundary re-solves,
-and cross-checked between two adjoint formulations. The most informative
-gate is the honesty one: the gradient's agreement is bounded *both* sides,
-`1e-6 < gap < 1e-2`, so the test fails if the claimed agreement is tighter
-than the solver's own root reproducibility.
+plasma-vacuum root's reverse derivative is certified factor by factor at a
+frozen root, with no re-solve: each factor to relative error below `1e-6` and
+the transpose duality below `1e-11`. The coupled GCROT, edge-response and
+boundary-Schur adjoints must agree to `1e-6` relative. Coil-current gradients on
+an asymmetric DIII-D deck and on NCSX are also compared with central differences of
+independent free-boundary re-solves, at `rtol=2e-2`; that gate is set by
+where the solver stops, not by the adjoint.
 
-**End to end** (`tests/test_examples.py::test_take_gradients`). The bundled
+**End to end** (`tests/test_examples.py::test_take_fixed_boundary_gradients`). The bundled
 example prints its adjoint-versus-finite-difference agreement and the test
 fails above `1e-4`. Documentation quotes that gate rather than a particular
 run's number.
@@ -465,8 +467,8 @@ RUN_FULL=1 pytest -q $(python tools/test_manifest.py select full-core-d-f0)
 
 Four pytest markers gate the slower evidence: `full` (needs `RUN_FULL=1`),
 `weekly` (high-resolution campaigns, excluded from nightly), `gpu` (needs a
-real device) and `vmec2000_live` (needs `--run-vmec2000` and a local
-`xvmec2000`). There is no `nightly`, `slow` or `live` marker. Passing
+real device; no CI runner has one, so the `gpu-smoke` lane is local-only) and
+`vmec2000_live` (needs `--run-vmec2000` and a local `xvmec2000`). There is no `nightly`, `slow` or `live` marker. Passing
 `--vmex-report PATH` writes a machine-readable record of what ran, what was
 slowest, and — importantly for reading a green run — every test that skipped
 and why.

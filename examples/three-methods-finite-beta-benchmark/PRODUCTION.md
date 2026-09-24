@@ -72,6 +72,26 @@ fixed reference to select virtual-casing quadrature, but reuses the certified
 free seed and fitted coils. An absent report is recorded as
 `derivative_qualified=false`, not as a failed or implicitly passed check.
 
+Continue a saved accepted state without an ordinary equilibrium re-solve:
+
+```sh
+python examples/three-methods-finite-beta-benchmark/finite_beta_production.py \
+  --device gpu --resume-checkpoint runs/production-001/accepted_0005.npz \
+  --checkpoint-sha256 SHA256_FROM_CHECKPOINT_0005_JSON \
+  --accepted-steps 95 --output runs/production-step5-to100
+```
+
+The step budget counts **additional** accepted steps. This example retains the
+absolute step numbers 5 through 100 and starts a fresh SLSQP optimizer history.
+Use the original input, resolution, grid and stage-two coil chart, not the
+optimized coils as a new chart. The checkpoint preserves the exact accepted
+state, coil coordinates, masks, baselines and gradient reference. It is
+SHA256 authenticated and re-certified before optimization. It does not claim
+derivative qualification. `resume.json` records both lineage and the target.
+The initial production release is supported by one explicitly checked builder
+migration; changes to physics, numerical helpers, core or dependencies reject
+reuse. Historical campaign NPZ formats remain unsupported.
+
 Historical campaign checkpoints use a different format and cannot be passed as
 public-API qualification bundles. This example includes only the required input
 deck and fitted coils, with their SHA256 manifest.

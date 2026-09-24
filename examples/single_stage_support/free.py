@@ -291,8 +291,9 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
 
     @lru_cache(maxsize=1)
     def accepted_frame(step):
-        checkpoint = out / f"accepted_{step:04d}.npz"
-        identity = json.loads((out / f"checkpoint_{step:04d}.json").read_text())
+        accepted_step = history[step]["step"]
+        checkpoint = out / f"accepted_{accepted_step:04d}.npz"
+        identity = json.loads((out / f"checkpoint_{accepted_step:04d}.json").read_text())
         state = problem.state_from_checkpoint(checkpoint, sha256=identity["sha256"], parameters=points[step])
         return state, surface(state, initial_equilibrium.runtime), chart.coils_from_x(jnp.asarray(points[step]))
 
@@ -301,7 +302,7 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
     coil_diagnostics = opt.CoilDiagnostics(scales, coefficient_step=case.COIL_STEP)
     for step, (x, row) in enumerate(zip(points, history)):
         state, step_surface, step_coils = accepted_frame(step)
-        row.update(coil_diagnostics.record(x, step_coils, path=out / f"step_{step:04d}.npz"))
+        row.update(coil_diagnostics.record(x, step_coils, path=out / f"step_{row['step']:04d}.npz"))
         coil_field = np.asarray(jax.vmap(BiotSavart(step_coils).B)(step_surface.gamma.reshape(-1, 3))).reshape(step_surface.gamma.shape)
         normal_field = np.sum(coil_field*np.asarray(step_surface.unitnormal), axis=-1)/np.linalg.norm(coil_field, axis=-1)
         area = np.asarray(step_surface.area_element)
@@ -321,7 +322,7 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
             terms.update({key: float(value) for key, value in
                           stage.extra_objective_terms(state, initial_equilibrium.runtime, step_coils).items()})
         np.testing.assert_allclose(sum(terms.values()), row["objective"], rtol=1e-10, atol=1e-12)
-        post_monitor.record(x, cost=row["objective"], iteration=step, terms=terms)
+        post_monitor.record(x, cost=row["objective"], iteration=row["step"], terms=terms)
     with (out / "accepted_steps.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(history[0]))
         writer.writeheader()

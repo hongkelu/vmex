@@ -74,7 +74,19 @@ POSTPROCESSING_SECONDS = 1800
 
 
 def parse_args(argv=None):
-    return common.parse_options(argv, parameters=globals(), description=__doc__, formulation="free")
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--checkpoint-sha256")
+    resume, rest = parser.parse_known_args(argv)
+    if bool(resume.resume_checkpoint) != bool(resume.checkpoint_sha256):
+        parser.error("--resume-checkpoint and --checkpoint-sha256 must be supplied together")
+    args = common.parse_options(rest, parameters=globals(), description=__doc__, formulation="free")
+    if resume.resume_checkpoint and (args.qualification or args.wout or args.initial_coils):
+        parser.error("checkpoint continuation cannot also refit coils, use WOUT, or claim qualification")
+    args.resume_checkpoint = None if resume.resume_checkpoint is None else resume.resume_checkpoint.resolve()
+    args.checkpoint_sha256 = resume.checkpoint_sha256
+    return args
 
 def sha(path):
     """Identify an input, source or saved result by its contents."""
@@ -115,8 +127,44 @@ def qualification_contract(args):
         input_path=args.input, wout_path=args.wout, resolution=args.resolution,
         grid=args.grid, ftol=args.ftol, device=args.device,
         functions=(build_problem, configure_solver, run_optimizer,
-                   load_input, make_interface_functions, common.initial_coils, common.physical_constraint),
+                   load_input, make_interface_functions, checkpoint_restart,
+                   common.initial_coils, common.physical_constraint),
         sources=[HERE / "benchmark.json"])
+
+
+def checkpoint_restart(args, contract):
+    """Authenticate a continuation without turning it into derivative qualification.
+
+    The original production release had no checkpoint CLI. Its builder migration
+    is allowed only for one reviewed pair of executable-syntax hashes; every
+    other numerical setting, helper, dependency and core source must match.
+    The core constructor then checks the full input/chart identity and certifies
+    the saved state, mask and constraint baselines without an ordinary re-solve.
+    """
+    import copy
+    import numpy as np
+
+    path = getattr(args, "resume_checkpoint", None)
+    if path is None:
+        return None
+    if sha(path) != args.checkpoint_sha256:
+        raise ValueError("continuation checkpoint SHA256 mismatch")
+    with np.load(path, allow_pickle=False) as data:
+        saved = json.loads(str(data["identity"]))["context"]["objectives"]
+        step = int(data["accepted_step"])
+    if saved != contract:
+        previous_builder = "c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db"
+        continuation_builder = "b734d03290aae57b50c28f63ebda205b108e32f8abe73831c4452f3ffd70bd88"
+        compatible = copy.deepcopy(contract)
+        hashes = compatible["numerical_functions_sha256"]
+        if hashes["build_problem"] != continuation_builder:
+            raise ValueError("continuation builder is not the reviewed checkpoint migration")
+        hashes["build_problem"] = previous_builder
+        hashes.pop("checkpoint_restart")
+        if saved != compatible:
+            raise ValueError("continuation differs from saved code, physics, resolution or runtime")
+    return dict(checkpoint=path, checkpoint_sha256=args.checkpoint_sha256,
+                contract=saved, accepted_step=step)
 
 def read_qualification(args):
     """Reuse the same authenticated fitted coils and accepted seed."""
@@ -217,6 +265,8 @@ def build_problem(args, *, event=None, qualified=None):
     from essos.surfaces import surfacerzfourier_from_boundary
 
     out = args.output.resolve()
+    current_contract = qualification_contract(args)
+    resume = checkpoint_restart(args, current_contract)
     inp, seed = load_input(args, restore_state=qualified is None)
     # A concrete equilibrium selects VC quadrature once; the live state and its
     # plasma field remain differentiable inside every objective evaluation.
@@ -311,9 +361,14 @@ def build_problem(args, *, event=None, qualified=None):
         seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
                                      polish_force_balance=False).state
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ftol_array=np.array([args.ftol]))
-    contract = qualification_contract(args)
+    contract = current_contract if resume is None else resume["contract"]
     restart = dict(restart_from=seed) if qualified is None else dict(
         checkpoint=qualified[1]["checkpoint"], checkpoint_sha256=qualified[0]["artifacts"]["checkpoint"]["sha256"])
+    if resume is not None:
+        restart = {key: resume[key] for key in ("checkpoint", "checkpoint_sha256")}
+        write_json(out / "resume.json", dict(**resume, current_contract=current_contract,
+            optimizer_history="fresh SLSQP", additional_steps=args.accepted_steps,
+            target_step=resume["accepted_step"]+args.accepted_steps, derivative_qualified=False))
     write_json(out / "provenance.json", dict(contract=contract, arguments=vars(args), command=sys.argv, script_sha256=sha(__file__),
         currents_A=chart.currents.tolist(), scales=scales.tolist(), fitted_coils_sha256=sha(fitted_path)))
     (out / Path(__file__).name).write_text(Path(__file__).read_text())
@@ -336,15 +391,16 @@ def build_problem(args, *, event=None, qualified=None):
         solver_options=dict(device=args.device, ftol=args.ftol, edge_force_tolerance=args.ftol,
             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL), **restart)
-    if problem.accepted_step != 0:
+    if problem.accepted_step != (0 if resume is None else resume["accepted_step"]):
         problem.close()
-        raise ValueError("qualification must describe an initial equilibrium at accepted step zero")
+        raise ValueError("restored accepted step differs from the requested initial state")
     try:
         problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
     except BaseException:
         problem.close()
         raise
-    return SimpleNamespace(problem=problem, inp=inp, chart=chart, coils=coils0, qs=qs,
+    return SimpleNamespace(problem=problem, inp=inp, chart=chart,
+                           coils=coils0 if resume is None else problem.coils_from_x(problem.x0), qs=qs,
                            surface=surface, coil_costs=coil_costs, inequalities=inequalities,
                            constraint_transform=constraint_transform, contract=contract,
                            interface_metrics=interface_metrics, extra_objective_terms=extra_objective_terms,

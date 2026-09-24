@@ -163,7 +163,8 @@ def test_production_contains_no_qualification_calls():
     assert {'from_loss', 'minimize', 'enable_root_polishing', 'enable_matrix_free'} <= calls
 
 
-def test_builder_preserves_historical_scalar_objective_and_gradient(tmp_path, monkeypatch):
+@pytest.mark.parametrize('resuming', [False, True])
+def test_builder_preserves_historical_scalar_objective_and_gradient(tmp_path, monkeypatch, resuming):
     """Compare the two real loss implementations at identical manufactured physics."""
     from vmex import optimize as opt
     import vmex as vj
@@ -193,14 +194,28 @@ def test_builder_preserves_historical_scalar_objective_and_gradient(tmp_path, mo
         return normal, jnp.full((2, 2), .25), jnp.zeros((2, 2))
     monkeypatch.setattr(entry, 'make_interface_functions', lambda *a: (rows, lambda *a: {}))
     class Problem:
-        accepted_step = 0
+        accepted_step = 5 if resuming else 0
+        @property
+        def x0(self): return captured['options']['parameterization'].x0
+        def coils_from_x(self, x): return captured['options']['parameterization'].coils_from_x(x)
         def enable_root_polishing(self, **kw): captured['polishing'] = kw
         def close(self): pass
     def factory(inp, loss, **kwargs):
         captured.update(inp=inp, loss=loss, options=kwargs)
         return Problem()
     monkeypatch.setattr(opt.FreeBoundaryProblem, 'from_loss', factory)
-    stage = entry.build_problem(entry.parse_args(['--device', 'cpu', '--output', str(tmp_path)]))
+    args = entry.parse_args(['--device', 'cpu', '--output', str(tmp_path)])
+    if resuming:
+        args.resume_checkpoint = tmp_path / 'accepted_0005.npz'
+        np.savez(args.resume_checkpoint, accepted_step=5,
+            identity=json.dumps(dict(context=dict(objectives=entry.qualification_contract(args)))))
+        args.checkpoint_sha256 = entry.sha(args.resume_checkpoint)
+    stage = entry.build_problem(args)
+    if resuming:
+        assert captured['options']['checkpoint'] == args.resume_checkpoint
+        assert captured['options']['checkpoint_sha256'] == args.checkpoint_sha256
+        assert 'restart_from' not in captured['options']
+        assert json.loads((tmp_path / 'resume.json').read_text())['derivative_qualified'] is False
     assert stage.chart.x0.size == 99
     assert captured['inp'].curtor == 0 and captured['inp'].pres_scale == original.pres_scale
     assert captured['inp'].phiedge == original.phiedge
@@ -224,3 +239,37 @@ def test_builder_preserves_historical_scalar_objective_and_gradient(tmp_path, mo
     old_value, old_grad = jax.value_and_grad(old_loss)(point)
     np.testing.assert_allclose(new_value, old_value, rtol=1e-13)
     np.testing.assert_allclose(new_grad, old_grad, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize('flags', [
+    ['--resume-checkpoint', 'saved.npz'], ['--checkpoint-sha256', 'abc'],
+    ['--resume-checkpoint', 'saved.npz', '--checkpoint-sha256', 'abc', '--initial-coils', 'coils.json']])
+def test_resume_rejects_ambiguous_or_unauthenticated_cli(flags):
+    with pytest.raises(SystemExit):
+        entry.parse_args(flags)
+
+
+def test_checkpoint_migration_requires_exact_reviewed_contract(tmp_path):
+    import copy
+    args = entry.parse_args(['--device', 'cpu'])
+    current = entry.qualification_contract(args)
+    saved = copy.deepcopy(current)
+    saved['numerical_functions_sha256']['build_problem'] = 'c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db'
+    saved['numerical_functions_sha256'].pop('checkpoint_restart')
+    args.resume_checkpoint = tmp_path / 'step5.npz'
+    np.savez(args.resume_checkpoint, accepted_step=5, identity=json.dumps(dict(context=dict(objectives=saved))))
+    args.checkpoint_sha256 = entry.sha(args.resume_checkpoint)
+    restart = entry.checkpoint_restart(args, current)
+    assert restart['accepted_step'] == 5 and restart['contract'] == saved
+    for field in ('input_sha256', 'ftol', 'core_sha256', 'dependencies'):
+        wrong = copy.deepcopy(current)
+        wrong[field] = 'changed'
+        with pytest.raises(ValueError, match='differs'):
+            entry.checkpoint_restart(args, wrong)
+    wrong = copy.deepcopy(current)
+    wrong['numerical_functions_sha256']['build_problem'] = 'unreviewed'
+    with pytest.raises(ValueError, match='not the reviewed'):
+        entry.checkpoint_restart(args, wrong)
+    args.checkpoint_sha256 = 'bad'
+    with pytest.raises(ValueError, match='SHA256'):
+        entry.checkpoint_restart(args, current)

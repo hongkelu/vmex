@@ -254,7 +254,9 @@ def test_checkpoint_migration_requires_exact_reviewed_contract(tmp_path):
     args = entry.parse_args(['--device', 'cpu'])
     current = entry.qualification_contract(args)
     saved = copy.deepcopy(current)
-    saved['numerical_functions_sha256']['build_problem'] = 'c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db'
+    saved['numerical_functions_sha256']['build_problem'] = (
+        'c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db' if sys.version_info < (3, 12)
+        else '21322eac3eda172f95e19bb7b535fd17faed3b803909792d623217a9d0f8c149')
     saved['numerical_functions_sha256'].pop('checkpoint_restart')
     args.resume_checkpoint = tmp_path / 'step5.npz'
     np.savez(args.resume_checkpoint, accepted_step=5, identity=json.dumps(dict(context=dict(objectives=saved))))

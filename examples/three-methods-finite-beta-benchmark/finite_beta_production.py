@@ -153,13 +153,19 @@ def checkpoint_restart(args, contract):
         saved = json.loads(str(data["identity"]))["context"]["objectives"]
         step = int(data["accepted_step"])
     if saved != contract:
-        previous_builder = "c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db"
-        continuation_builder = "b734d03290aae57b50c28f63ebda205b108e32f8abe73831c4452f3ffd70bd88"
+        # Python 3.12 adds type_params to the executable AST. Both pairs refer
+        # to the same two reviewed source versions, parsed on 3.11 and 3.12.
+        migrations = {
+            "b734d03290aae57b50c28f63ebda205b108e32f8abe73831c4452f3ffd70bd88":
+                "c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db",
+            "2cd4e6871c43cacebcd6a248886b3eb7c57ca0921ad6c0e32977ce91b09fa6db":
+                "21322eac3eda172f95e19bb7b535fd17faed3b803909792d623217a9d0f8c149",
+        }
         compatible = copy.deepcopy(contract)
         hashes = compatible["numerical_functions_sha256"]
-        if hashes["build_problem"] != continuation_builder:
+        if hashes["build_problem"] not in migrations:
             raise ValueError("continuation builder is not the reviewed checkpoint migration")
-        hashes["build_problem"] = previous_builder
+        hashes["build_problem"] = migrations[hashes["build_problem"]]
         hashes.pop("checkpoint_restart")
         if saved != compatible:
             raise ValueError("continuation differs from saved code, physics, resolution or runtime")

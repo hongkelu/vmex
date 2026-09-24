@@ -94,6 +94,13 @@ restoration at a nonzero step. Polishing setup remains forbidden after any new
 accepted step. Other changes to physics, numerical helpers, core or dependencies
 reject reuse. Historical campaign NPZ formats remain unsupported.
 
+When relocating a checkpoint to another GPU model, add
+`--resume-on-new-hardware`. Only the hardware model comparison is relaxed;
+the backend, numerical settings, source migrations and dependencies must still
+match. The accepted state is re-certified on the destination. `resume.json`
+retains the original and current contracts, including both hardware models;
+derivative qualification is not transferred.
+
 Historical campaign checkpoints use a different format and cannot be passed as
 public-API qualification bundles. This example includes only the required input
 deck and fitted coils, with their SHA256 manifest.

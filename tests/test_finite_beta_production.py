@@ -242,6 +242,7 @@ def test_builder_preserves_historical_scalar_objective_and_gradient(tmp_path, mo
 
 
 @pytest.mark.parametrize('flags', [
+    ['--resume-on-new-hardware'],
     ['--resume-checkpoint', 'saved.npz'], ['--checkpoint-sha256', 'abc'],
     ['--resume-checkpoint', 'saved.npz', '--checkpoint-sha256', 'abc', '--initial-coils', 'coils.json']])
 def test_resume_rejects_ambiguous_or_unauthenticated_cli(flags):
@@ -276,3 +277,33 @@ def test_checkpoint_migration_requires_exact_reviewed_contract(tmp_path):
     args.checkpoint_sha256 = 'bad'
     with pytest.raises(ValueError, match='SHA256'):
         entry.checkpoint_restart(args, current)
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_checkpoint_hardware_relocation_keeps_numerical_contract(tmp_path, legacy):
+    import copy
+    args = entry.parse_args(['--device', 'cpu'])
+    current = entry.qualification_contract(args)
+    saved = copy.deepcopy(current)
+    saved['hardware'] = 'original GPU model'
+    if legacy:
+        saved['numerical_functions_sha256']['build_problem'] = (
+            'c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db' if sys.version_info < (3, 12)
+            else '21322eac3eda172f95e19bb7b535fd17faed3b803909792d623217a9d0f8c149')
+        saved['numerical_functions_sha256'].pop('checkpoint_restart')
+        saved['core_sha256']['freeboundary_problem.py'] = 'e22eaf79842da54b953048e614fee24d11fb519d1fcf7bc76e7bb9b8e15c447d'
+    args.resume_checkpoint = tmp_path / 'step10.npz'
+    np.savez(args.resume_checkpoint, accepted_step=10,
+             identity=json.dumps(dict(context=dict(objectives=saved))))
+    args.checkpoint_sha256 = entry.sha(args.resume_checkpoint)
+    with pytest.raises(ValueError, match='differs'):
+        entry.checkpoint_restart(args, current)
+    args.resume_on_new_hardware = True
+    restart = entry.checkpoint_restart(args, current)
+    assert restart['accepted_step'] == 10 and restart['contract'] == saved
+    assert current['hardware'] != saved['hardware']
+    for field in ('device', 'ftol', 'dependencies', 'input_sha256'):
+        wrong = copy.deepcopy(current)
+        wrong[field] = 'changed'
+        with pytest.raises(ValueError, match='differs'):
+            entry.checkpoint_restart(args, wrong)

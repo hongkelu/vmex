@@ -78,14 +78,18 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--checkpoint-sha256")
+    parser.add_argument("--resume-on-new-hardware", action="store_true")
     resume, rest = parser.parse_known_args(argv)
     if bool(resume.resume_checkpoint) != bool(resume.checkpoint_sha256):
         parser.error("--resume-checkpoint and --checkpoint-sha256 must be supplied together")
+    if resume.resume_on_new_hardware and not resume.resume_checkpoint:
+        parser.error("--resume-on-new-hardware requires an authenticated checkpoint")
     args = common.parse_options(rest, parameters=globals(), description=__doc__, formulation="free")
     if resume.resume_checkpoint and (args.qualification or args.wout or args.initial_coils):
         parser.error("checkpoint continuation cannot also refit coils, use WOUT, or claim qualification")
     args.resume_checkpoint = None if resume.resume_checkpoint is None else resume.resume_checkpoint.resolve()
     args.checkpoint_sha256 = resume.checkpoint_sha256
+    args.resume_on_new_hardware = resume.resume_on_new_hardware
     return args
 
 def sha(path):
@@ -142,6 +146,9 @@ def checkpoint_restart(args, contract):
     its source hashes are pinned too. All numerical kernels remain unchanged.
     The core constructor then checks the full input/chart identity and certifies
     the saved state, mask and constraint baselines without an ordinary re-solve.
+    Explicit hardware relocation changes only the device model comparison;
+    backend, precision and dependency requirements remain unchanged. It never
+    transfers derivative qualification to the new device.
     """
     import copy
     import numpy as np
@@ -154,7 +161,10 @@ def checkpoint_restart(args, contract):
     with np.load(path, allow_pickle=False) as data:
         saved = json.loads(str(data["identity"]))["context"]["objectives"]
         step = int(data["accepted_step"])
-    if saved != contract:
+    compatible = copy.deepcopy(contract)
+    if getattr(args, "resume_on_new_hardware", False):
+        compatible["hardware"] = saved["hardware"]
+    if saved != compatible:
         # Python 3.12 adds type_params to the executable AST. Both pairs refer
         # to the same two reviewed source versions, parsed on 3.11 and 3.12.
         migrations = {
@@ -163,7 +173,6 @@ def checkpoint_restart(args, contract):
             "2cd4e6871c43cacebcd6a248886b3eb7c57ca0921ad6c0e32977ce91b09fa6db":
                 "21322eac3eda172f95e19bb7b535fd17faed3b803909792d623217a9d0f8c149",
         }
-        compatible = copy.deepcopy(contract)
         hashes = compatible["numerical_functions_sha256"]
         if hashes["build_problem"] not in migrations:
             raise ValueError("continuation builder is not the reviewed checkpoint migration")

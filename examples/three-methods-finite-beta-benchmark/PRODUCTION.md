@@ -89,8 +89,10 @@ state, coil coordinates, masks, baselines and gradient reference. It is
 SHA256 authenticated and re-certified before optimization. It does not claim
 derivative qualification. `resume.json` records both lineage and the target.
 The initial production release is supported by one explicitly checked builder
-migration; changes to physics, numerical helpers, core or dependencies reject
-reuse. Historical campaign NPZ formats remain unsupported.
+migration, plus a source-pinned core fix allowing polishing immediately after
+restoration at a nonzero step. Polishing setup remains forbidden after any new
+accepted step. Other changes to physics, numerical helpers, core or dependencies
+reject reuse. Historical campaign NPZ formats remain unsupported.
 
 Historical campaign checkpoints use a different format and cannot be passed as
 public-API qualification bundles. This example includes only the required input

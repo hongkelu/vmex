@@ -137,7 +137,9 @@ def checkpoint_restart(args, contract):
 
     The original production release had no checkpoint CLI. Its builder migration
     is allowed only for one reviewed pair of executable-syntax hashes; every
-    other numerical setting, helper, dependency and core source must match.
+    other numerical setting, helper and dependency must match. The sole core
+    migration admits polishing immediately after a nonzero-step restoration;
+    its source hashes are pinned too. All numerical kernels remain unchanged.
     The core constructor then checks the full input/chart identity and certifies
     the saved state, mask and constraint baselines without an ordinary re-solve.
     """
@@ -167,6 +169,10 @@ def checkpoint_restart(args, contract):
             raise ValueError("continuation builder is not the reviewed checkpoint migration")
         hashes["build_problem"] = migrations[hashes["build_problem"]]
         hashes.pop("checkpoint_restart")
+        core = compatible["core_sha256"]
+        if (isinstance(core, dict) and core.get("freeboundary_problem.py")
+                == "fb795e9a49b4c877961c6c9f1935523e82cda5a02c1ca8bdf994052702bdcb35"):
+            core["freeboundary_problem.py"] = "e22eaf79842da54b953048e614fee24d11fb519d1fcf7bc76e7bb9b8e15c447d"
         if saved != compatible:
             raise ValueError("continuation differs from saved code, physics, resolution or runtime")
     return dict(checkpoint=path, checkpoint_sha256=args.checkpoint_sha256,

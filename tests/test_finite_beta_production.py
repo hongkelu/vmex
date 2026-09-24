@@ -258,6 +258,7 @@ def test_checkpoint_migration_requires_exact_reviewed_contract(tmp_path):
         'c5c2163f73b273b260662360c585aebe1dec8a6fba7b1ebc44e6f48e243e23db' if sys.version_info < (3, 12)
         else '21322eac3eda172f95e19bb7b535fd17faed3b803909792d623217a9d0f8c149')
     saved['numerical_functions_sha256'].pop('checkpoint_restart')
+    saved['core_sha256']['freeboundary_problem.py'] = 'e22eaf79842da54b953048e614fee24d11fb519d1fcf7bc76e7bb9b8e15c447d'
     args.resume_checkpoint = tmp_path / 'step5.npz'
     np.savez(args.resume_checkpoint, accepted_step=5, identity=json.dumps(dict(context=dict(objectives=saved))))
     args.checkpoint_sha256 = entry.sha(args.resume_checkpoint)

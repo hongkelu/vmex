@@ -57,6 +57,8 @@ def run(args, *, case, method="SLSQP", coil_limits=None):
 
         stage = case.build_problem(args, event=event, qualified=qualified)
         problem, inp = stage.problem, stage.inp
+        print(f"[initialization] accepted step {problem.accepted_step} certified; "
+              f"root residual {problem.accepted.root_residual_norm:.3e}; preparing linear solver", flush=True)
         qs, inequalities = stage.qs, stage.inequalities
         initial_equilibrium = problem.equilibrium_from_x(problem.x0)
         monitor = opt.OptimizationMonitor(stream=None)

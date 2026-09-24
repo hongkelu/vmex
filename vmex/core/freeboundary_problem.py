@@ -344,7 +344,7 @@ class FreeBoundaryProblem(FunctionProblem):
         )
         problem.checkpoint_identity = identity
         if saved is not None:
-            problem.accepted_step = int(saved["accepted_step"])
+            problem.accepted_step = problem._initial_accepted_step = int(saved["accepted_step"])
             problem.initial_gradient_norm = saved["gradient_reference"]
         return problem
 
@@ -367,7 +367,7 @@ class FreeBoundaryProblem(FunctionProblem):
         self.solver, self.params = cfg.solver, cfg.params
         self.rt = im.runtime_from_params(self.params, self.solver.implicit)
         self.accepted = cfg._anchor
-        self.accepted_step = 0
+        self.accepted_step = self._initial_accepted_step = 0
         self.initial_gradient_norm: float | None = None
         self.checkpoint_identity: str | None = None
         self.targets = np.array([c.target for c in constraints])
@@ -545,14 +545,15 @@ class FreeBoundaryProblem(FunctionProblem):
         """Polish the initial root and every subsequent trial before evaluation.
 
         Opt-in for scalar losses with forward_dense_jax, before enabling
-        matrix-free reuse or accepting optimization steps. Ordinary equilibrium
+        matrix-free reuse or accepting new optimization steps in this instance.
+        A restored checkpoint may start at a nonzero accepted step. Ordinary equilibrium
         convergence is still required. Each bounded Newton refinement retains
         inactive coordinates and constraint baselines, then freshly certifies
         the coupled residual and physical forces. Independent FD trials receive
         the same polishing, without a predictor. No optimizer step is accepted.
         """
         if (not self._scalar_loss or self.solver.adjoint_solver != 'forward_dense_jax'
-                or self._preconditioner is not None or self.accepted_step != 0):
+                or self._preconditioner is not None or self.accepted_step != self._initial_accepted_step):
             raise ValueError('enable root polishing on a scalar dense problem before matrix-free setup and optimization')
         if (not np.isfinite(tolerance) or tolerance <= 0 or isinstance(max_steps, bool)
                 or not isinstance(max_steps, int) or max_steps < 1):

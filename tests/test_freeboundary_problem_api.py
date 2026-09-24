@@ -731,14 +731,15 @@ def test_invalid_refresh_budget_builds_no_factors(scalar, budget):
     assert not stats['rhs']
 
 
-def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch, tmp_path):
+@pytest.mark.parametrize("accepted_step", [0, 5])
+def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch, tmp_path, accepted_step):
     from vmex.core import _freeboundary_checkpoint as storage, freeboundary
     from vmex.core.solver import SpectralState
     p, _, _, _ = analytic
     state = SpectralState(*(jnp.ones((2, 3)) for _ in storage.FIELDS))
     baselines = np.zeros((2, 3, 1))
     root = Root(np.zeros(5), state, baselines, baselines, state)
-    holder = SimpleNamespace(checkpoint_identity="contract", accepted=root, accepted_step=0,
+    holder = SimpleNamespace(checkpoint_identity="contract", accepted=root, accepted_step=accepted_step,
                              initial_gradient_norm=None, loss_scale=1.)
     path = tmp_path/"seed.npz"
     info = storage.write(holder, path)
@@ -748,21 +749,34 @@ def test_scalar_checkpoint_restores_without_ordinary_solve(analytic, monkeypatch
     monkeypatch.setattr(api.fc, "make_free_boundary_continuation_config_from_state",
                         lambda *a, **k: replace(p.cfg, _anchor=root))
     monkeypatch.setattr(freeboundary, "_solve_free_boundary_stage", lambda *a, **k: pytest.fail("checkpoint must not solve again"))
+    p.solver.implicit.lconm1 = False
+    p.solver.implicit.resolution = SimpleNamespace(ntor=0, lasym=False)
     restored = opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, coils: jnp.sum(s.R_cos),
         parameterization=p.parameterization, checkpoint=path, checkpoint_sha256=info["sha256"], checkpoint_identity="case")
     try:
-        assert restored.accepted_step == 0 and restored.fun(restored.x0) == 6
+        assert restored.accepted_step == accepted_step and restored.fun(restored.x0) == 6
+        assert restored.enable_root_polishing() is restored.accepted
+        assert restored.accepted_step == accepted_step
         np.testing.assert_array_equal(restored.accepted.state.R_cos, state.R_cos)
         anchor = restored.accepted
         replay = restored.state_from_checkpoint(path, sha256=info["sha256"], parameters=restored.x0)
         np.testing.assert_array_equal(replay.R_cos, state.R_cos)
-        assert restored.accepted is anchor and restored.accepted_step == 0
+        assert restored.accepted is anchor and restored.accepted_step == accepted_step
         with pytest.raises(ValueError, match="SHA256"):
             restored.state_from_checkpoint(path, sha256="wrong")
         with pytest.raises(ValueError, match="parameters"):
             restored.state_from_checkpoint(path, sha256=info["sha256"], parameters=restored.x0+1)
     finally:
         restored.close()
+
+
+def test_polishing_setup_still_rejects_new_accepted_steps(scalar):
+    p, *_ = scalar
+    point = p.x0 + .001
+    p.value_and_grad(point)
+    p.accept_x(point)
+    with pytest.raises(ValueError, match="before matrix-free setup and optimization"):
+        p.enable_root_polishing()
 
 
 @pytest.mark.parametrize("wrong_gradient", [False, True])

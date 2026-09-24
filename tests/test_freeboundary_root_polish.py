@@ -1,5 +1,5 @@
 """Coupled root refinement with real dense/FGMRES kernels on an analytic root."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import jax
@@ -63,6 +63,7 @@ def coupled(monkeypatch):
     monkeypatch.setattr(polish.fbi, '_projected_residual', lambda *_: residual)
     monkeypatch.setattr(polish.im, '_dof_projector', lambda _, m: lambda x: x*m)
     monkeypatch.setattr(api.im, 'runtime_from_params', lambda *_: None)
+    monkeypatch.setattr(polish, 'geometry_valid', lambda *a, **kw: True)
 
     def certify(config, point, state, *, rcon0, zcon0, **kw):
         assert config is cfg
@@ -235,3 +236,63 @@ def test_already_polished_initial_state_is_not_changed(coupled):
     anchor = p.accepted
     p.enable_root_polishing()
     assert p.accepted is anchor and p.accepted_step == 0
+
+
+@pytest.mark.usefixtures('_module_jit_enabled')
+def test_host_inactive_drift_is_removed_even_below_root_tolerance(coupled):
+    p, _ = coupled
+    p.enable_root_polishing()
+    p.enable_matrix_free()
+    anchor = p.accepted
+    drifted = replace(anchor, state=anchor.state.at[2].add(1e-5))
+    repaired = p._polish_record(drifted)
+    assert repaired.state[2] == anchor.state[2] == 7.
+    assert repaired.root_residual_norm <= 1e-12
+    assert p.accepted is anchor
+
+
+def test_invalid_newton_geometry_is_rejected_without_promotion(coupled, monkeypatch):
+    p, _ = coupled
+    anchor = p.accepted
+    monkeypatch.setattr(polish, 'geometry_valid', lambda *a, **kw: False)
+    with pytest.raises(polish.RootPolishError, match='starting geometry'):
+        p.enable_root_polishing()
+    assert p.accepted is anchor and p._root_polish_options is None
+
+
+@pytest.mark.parametrize('field', ['rcon0', 'zcon0', 'dof_mask'])
+def test_polished_fast_path_rejects_changed_anchor_contract(coupled, field):
+    p, _ = coupled
+    p.enable_root_polishing()
+    altered = replace(p.accepted, **{field: getattr(p.accepted, field)+1})
+    with pytest.raises(polish.RootPolishError, match=field):
+        p._polish_record(altered)
+
+
+@pytest.mark.usefixtures('_module_jit_enabled')
+@pytest.mark.parametrize('iteration,predict,expected_calls', [(1, True, 2), (2, True, 1), (1, False, 1)])
+def test_initial_bad_predictor_retries_unchanged_anchor_once(coupled, monkeypatch, iteration, predict, expected_calls):
+    from vmex.core import freeboundary
+    from vmex.core.errors import VmecJacobianError
+    p, _ = coupled
+    p.enable_root_polishing()
+    p.enable_matrix_free()
+    anchor, calls = p.accepted, []
+
+    def ordinary(inp, *, initial_state, constraint_continuation, **kw):
+        calls.append(np.asarray(initial_state).copy())
+        np.testing.assert_array_equal(constraint_continuation[0], anchor.rcon0)
+        if len(calls) == 1:
+            raise VmecJacobianError('bad predictor', iteration=iteration)
+        np.testing.assert_array_equal(initial_state, anchor.state)
+        return SimpleNamespace(result=SimpleNamespace(state=initial_state, converged=True, iterations=3),
+                               rcon0=anchor.rcon0, zcon0=anchor.zcon0)
+
+    monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', ordinary)
+    if expected_calls == 2:
+        root, _ = p.evaluate_trial(np.array([.001, -.002]), predict=predict)
+        assert root.root_residual_norm <= 1e-12
+    else:
+        with pytest.raises(api.TrialRejected):
+            p.evaluate_trial(np.array([.001, -.002]), predict=predict)
+    assert len(calls) == expected_calls and p.accepted is anchor

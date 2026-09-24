@@ -198,7 +198,7 @@ def replay_namespace(tmp_path):
                            surface_field_data_from_state=surface_field, plot_wout=plot_wout))
     from types import SimpleNamespace
     from functools import lru_cache
-    namespace.update(case=SimpleNamespace(**vars(entry)), lru_cache=lru_cache)
+    namespace.update(case=SimpleNamespace(**vars(entry)), stage=SimpleNamespace(), lru_cache=lru_cache)
     tree = ast.parse(Path(entry.free.__file__).read_text())
     run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "postprocess")
     start = next(i for i, n in enumerate(run.body) if isinstance(n, ast.Assign)
@@ -208,9 +208,17 @@ def replay_namespace(tmp_path):
 
 
 @pytest.mark.parametrize("plots,movie", [(True, True), (True, False), (False, True)])
-def test_saved_replay_exports_terms_diagnostics_and_movie(tmp_path, plots, movie):
+@pytest.mark.parametrize("first_step", [0, 5])
+def test_saved_replay_exports_terms_diagnostics_and_movie(tmp_path, plots, movie, first_step):
     from PIL import Image
     namespace, code, exports, colors, wout_calls = replay_namespace(tmp_path)
+    if first_step:
+        for row in namespace["history"]:
+            old_step = row["step"]
+            row["step"] += first_step
+            for prefix, suffix in (("accepted", "npz"), ("checkpoint", "json")):
+                (tmp_path / f"{prefix}_{old_step:04d}.{suffix}").rename(
+                    tmp_path / f"{prefix}_{row['step']:04d}.{suffix}")
     namespace["args"].no_plots = not plots
     namespace["args"].movie = movie
     exec(code, namespace)
@@ -219,7 +227,7 @@ def test_saved_replay_exports_terms_diagnostics_and_movie(tmp_path, plots, movie
     history = json.loads((tmp_path/"accepted_steps.json").read_text())
     assert history[0]["step_u_l2"] == 0 and history[1]["step_u_l2"] > 0
     assert history[1]["current_step_max_A"] == 0
-    assert (tmp_path/"accepted_steps.csv").exists() and (tmp_path/"step_0001.npz").exists()
+    assert (tmp_path/"accepted_steps.csv").exists() and (tmp_path/f"step_{first_step+1:04d}.npz").exists()
     columns = (tmp_path/"free_boundary_scalar_objectives.csv").read_text().splitlines()[0]
     assert "quasisymmetry" in columns and "coil-surface separation" in columns
     assert bool(wout_calls) == plots

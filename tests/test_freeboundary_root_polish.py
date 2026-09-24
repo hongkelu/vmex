@@ -122,6 +122,35 @@ def test_polish_failure_keeps_initial_root_and_caches(coupled):
 
 
 @pytest.mark.usefixtures('_module_jit_enabled')
+def test_polished_coil_quantity_matches_independent_endpoints(coupled, monkeypatch):
+    """A moving-surface-like row retains both direct and root-response terms."""
+    from vmex.core import freeboundary
+    p, _ = coupled
+    q = opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, c: jnp.sum(s[:2]**2),
+        coil_quantities=(lambda s, rt, c: s[0]*c[0] + s[1] + 2*c[1],),
+        parameterization=p.parameterization, continuation=p.cfg)
+    try:
+        q.enable_root_polishing()
+        anchor = q.accepted
+
+        def ordinary(inp, *, initial_state, **kwargs):
+            return SimpleNamespace(result=SimpleNamespace(state=initial_state, converged=True, iterations=3),
+                                   rcon0=anchor.rcon0, zcon0=anchor.zcon0)
+
+        monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', ordinary)
+        direction = np.array([.2, -.3])
+        expected = q.constraint_jac(q.x0) @ direction
+        for h in (3e-4, 1e-4):
+            plus, vp = q.evaluate_trial(h*direction, predict=False)
+            minus, vm = q.evaluate_trial(-h*direction, predict=False)
+            assert max(plus.root_residual_norm, minus.root_residual_norm) <= 1e-12
+            np.testing.assert_allclose((vp[1:]-vm[1:])/(2*h), expected, rtol=1e-7, atol=1e-9)
+            assert q.accepted is anchor and q.accepted_step == 0
+    finally:
+        q.close()
+
+
+@pytest.mark.usefixtures('_module_jit_enabled')
 def test_trial_polishing_preserves_accepted_seed_and_recertifies(coupled, monkeypatch):
     from vmex.core import freeboundary
     p, residual = coupled

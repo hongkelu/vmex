@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-EXAMPLES = Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark"
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples/single-stage-benchmarks"
 
 
 def load(name):

@@ -522,7 +522,7 @@ def test_public_boundary_coefficients_roundtrip_and_derivative(lasym):
     from vmex import VmecInput
     from vmex.core.solver import prepare_runtime, resolution_from_input, _initial_state
 
-    inp = VmecInput.from_file(Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark/input.rotating_ellipse")
+    inp = VmecInput.from_file(Path(__file__).resolve().parents[1] / "examples/single-stage-benchmarks/input.rotating_ellipse")
     inp = inp.change_resolution(mpol=3, ntor=2, ntheta=12, nzeta=12)
     inp = replace(inp, lasym=lasym)
     if lasym:
@@ -771,7 +771,7 @@ def test_separate_qualification_checks_shared_scalar_problem(scalar, monkeypatch
     import importlib
     import json
 
-    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    example = Path(__file__).resolve().parents[1]/"examples/single-stage-benchmarks"
     monkeypatch.syspath_prepend(str(example))
     verifier = importlib.import_module("verify_free_boundary_single_stage")
     p, stats, *_ = scalar
@@ -820,7 +820,7 @@ def test_lbfgsb_production_uses_real_problem_and_accepted_callbacks(scalar, monk
     from pathlib import Path
     import importlib
 
-    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    example = Path(__file__).resolve().parents[1]/"examples/single-stage-benchmarks"
     monkeypatch.syspath_prepend(str(example))
     entry = importlib.import_module("free_boundary_single_stage_optimization_scalar")
     monkeypatch.setattr(entry, "PARAMETER_BOUND", .01)
@@ -846,7 +846,7 @@ def test_lbfgsb_failed_equilibrium_keeps_accepted_root(scalar, monkeypatch):
     from pathlib import Path
     import importlib
 
-    example = Path(__file__).resolve().parents[1]/"examples/three-methods-benchmark"
+    example = Path(__file__).resolve().parents[1]/"examples/single-stage-benchmarks"
     monkeypatch.syspath_prepend(str(example))
     entry = importlib.import_module("free_boundary_single_stage_optimization_scalar")
     p, stats, *_ = scalar
@@ -878,3 +878,73 @@ def test_scalar_coil_current_alias_rejects_ambiguous_names(analytic):
     with pytest.raises(ValueError, match="not both"):
         opt.FreeBoundaryProblem.from_loss(p.inp, lambda *a: 0.,
             coil_current_dofs=(), current_dofs=())
+
+
+def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(analytic):
+    p, stats, state, derivative = analytic
+    q = opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, c: jnp.sum(s*s),
+        quantities=(lambda s, rt: s[0],),
+        coil_quantities=(lambda s, rt, c: jnp.dot(s, c) + 2*s[1],),
+        parameterization=p.parameterization, continuation=p.cfg)
+    try:
+        x = np.arange(5)*.001
+        expected = np.asarray(state(x))
+        jac = np.vstack([derivative(x)[0], (x+2*np.eye(5)[1])@derivative(x)+expected])
+        np.testing.assert_allclose(q.constraint_values(x), [expected[0], expected@x+2*expected[1]])
+        np.testing.assert_allclose(q.constraint_jac(x), jac, rtol=1e-13)
+        direction = np.arange(1., 6.)/10
+        h = 1e-5
+        fd = (q.constraint_values(x+h*direction)-q.constraint_values(x-h*direction))/(2*h)
+        np.testing.assert_allclose(fd, jac@direction, rtol=1e-9)
+        constraint = q.nonlinear_constraint([0.,0.], [np.inf,np.inf], scales=[.2, .4])
+        np.testing.assert_allclose(constraint.jac(x), jac/np.array([.2,.4])[:,None])
+        assert q.accepted_step == 0
+        assert stats['rhs'][-1] == 3
+    finally:
+        q.close()
+
+
+def test_coil_quantity_must_be_scalar(analytic):
+    p, *_ = analytic
+    with pytest.raises(ValueError, match='coil quantities must be scalar'):
+        opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, c: jnp.sum(s),
+            coil_quantities=(lambda s, rt, c: c,),
+            parameterization=p.parameterization, continuation=p.cfg)
+
+
+def test_coil_quantity_must_be_callable(analytic):
+    p, *_ = analytic
+    with pytest.raises(TypeError, match="callable"):
+        opt.FreeBoundaryProblem.from_loss(p.inp, lambda s, rt, c: jnp.sum(s),
+            coil_quantities=(1,), parameterization=p.parameterization, continuation=p.cfg)
+
+
+def test_qualification_records_absent_optional_analysis_dependencies(monkeypatch, tmp_path):
+    from importlib import metadata
+    deck=tmp_path/'input';deck.write_text('vacuum')
+    original=metadata.version
+    def version(name):
+        if name in ('booz_xform_jax','virtual-casing-jax'):
+            raise metadata.PackageNotFoundError(name)
+        return original(name)
+    monkeypatch.setattr(metadata,'version',version)
+    result=opt.OptimizationQualification.signature(parameters={},input_path=deck)
+    assert result['dependencies']['booz_xform_jax'] is None
+    assert result['dependencies']['virtual-casing-jax'] is None
+    assert result['dependencies']['jax']==jax.__version__
+
+
+def test_qualification_requires_core_dependency_metadata(monkeypatch, tmp_path):
+    from importlib import metadata
+    deck = tmp_path / "input"
+    deck.write_text("vacuum")
+    original = metadata.version
+
+    def version(name):
+        if name == "solvax":
+            raise metadata.PackageNotFoundError(name)
+        return original(name)
+
+    monkeypatch.setattr(metadata, "version", version)
+    with pytest.raises(metadata.PackageNotFoundError, match="solvax"):
+        opt.OptimizationQualification.signature(parameters={}, input_path=deck)

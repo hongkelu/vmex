@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples/three-methods-benchmark"
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples/single-stage-benchmarks"
 spec = importlib.util.spec_from_file_location("fast_example", EXAMPLE / "free_boundary_single_stage_optimization_scalar.py")
 entry = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(entry)

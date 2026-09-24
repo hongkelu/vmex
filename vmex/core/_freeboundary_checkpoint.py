@@ -105,11 +105,22 @@ class OptimizationQualification(NamedTuple):
     @staticmethod
     def signature(*, parameters, input_path, wout_path=None, sources=(), **configuration):
         """Fingerprint physics, numerical controls, sources and the active runtime."""
-        from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
         import jax
 
         def digest(path):
             return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+        def dependency_version(name):
+            try:
+                return version(name)
+            except PackageNotFoundError:
+                if name not in ("booz_xform_jax", "virtual-casing-jax"):
+                    raise
+                # Vacuum QA can run without these optional analysis packages.
+                # Record their absence explicitly so contracts still differ
+                # if one is installed before production or checkpoint reuse.
+                return None
 
         source_paths = [Path(p) for p in sources]
         if len({p.name for p in source_paths}) != len(source_paths):
@@ -117,7 +128,7 @@ class OptimizationQualification(NamedTuple):
         result = dict(parameters=parameters, input_sha256=digest(input_path),
             wout_sha256=None if wout_path is None else digest(wout_path),
             hardware=jax.devices()[0].device_kind, **configuration,
-            dependencies={name: version(name) for name in
+            dependencies={name: dependency_version(name) for name in
                 ("jax", "jaxlib", "numpy", "scipy", "essos", "solvax", "booz_xform_jax", "virtual-casing-jax")},
             source_sha256={p.name: digest(p) for p in source_paths},
             core_sha256={p.name: digest(p) for p in sorted(Path(__file__).parent.glob("*.py"))})

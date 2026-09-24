@@ -90,6 +90,12 @@ GitHub release for the full notes.
 
 ### Added
 
+- Matched fixed/free-boundary coil-constraint benchmarks: order-16 coils,
+  length, peak/mean-squared curvature, clearance and geometry verification.
+  Baseline examples moved to `examples/single-stage-benchmarks/`.
+- `FreeBoundaryProblem.from_loss(coil_quantities=...)` includes direct coil
+  and implicit equilibrium derivatives for moving-boundary constraints.
+- Qualification fingerprints record unavailable optional analysis metadata.
 - Opt-in coupled-root polishing and measured LU refresh for free-boundary
   scalar optimization, with bounded dense recovery and derivative agreement
   checks before replacing retained factors.

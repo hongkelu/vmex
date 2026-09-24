@@ -6,7 +6,8 @@ verify_endpoint -> postprocess. Like the fixed-boundary examples, the loss is
 visible here; opt.minimize owns scaling and optimizer acceptance. VMEX owns
 solves, total derivatives and prediction from the last accepted equilibrium.
 Derivative tests live in verify_free_boundary_single_stage.py and run separately.
-Use --qualification to reuse a checked seed; --dry-run only prints settings.
+Use --qualification for a matching report, or --seed for a prepared step-zero
+checkpoint. Neither repeats qualification; --dry-run only prints settings.
 This benchmark is vacuum-only.
 """
 
@@ -59,11 +60,13 @@ COIL_SURFACE_DISTANCE_LIMIT = P.COIL_SURFACE_DISTANCE_LIMIT
 # Free-boundary equilibrium determines B.n; it is a diagnostic, not a penalty.
 NORMAL_FIELD_LIMIT = 0.01
 
-# Checked matrix-free adjoints; dense recovery refreshes only on acceptance.
+# Checked matrix-free adjoints. VMEX shares a root-recovery LU with the trial's
+# adjoints and promotes it only on acceptance; the dense fallback stays enabled.
 ADJOINT_RESIDUAL_RTOL = 1e-9
 ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 32, 20000
 MATRIXFREE_RTOL = 1e-11
 MATRIXFREE_RESTART, MATRIXFREE_MAX_CYCLES, MATRIXFREE_RHS_BATCH_SIZE = 100, 3, 3
+LU_REFRESH_HORIZON = 10  # rebuild when estimated savings repay its measured cost
 VERIFY_NS, VERIFY_FTOL, VERIFY_MAXITER = P.VERIFY_NS, P.VERIFY_FTOL, 12000
 
 # Match the scalar reference: figures, accepted-iterate movie and WOUT plots.
@@ -128,9 +131,9 @@ def read_qualification(args):
 def build_problem(args, *, event=None, qualified=None):
     """Prepare the input, stage-two coils and common scalar VMEX problem.
 
-    Without a qualification bundle, load or fit coils and solve the seed from
-    input/WOUT. A supplied bundle restores its exact checked seed, skipping
-    stage-two fitting and the initial equilibrium solve. No derivative tests run.
+    Without a saved bundle, load or fit coils and solve the seed from input/WOUT.
+    A bundle restores the exact seed and coils, skipping fitting and the initial
+    solve. Seed manifests do not claim derivative qualification for new code.
     """
     import jax
     import jax.numpy as jnp
@@ -144,6 +147,11 @@ def build_problem(args, *, event=None, qualified=None):
     from essos.surfaces import surfacerzfourier_from_boundary
 
     out = args.output.resolve()
+    contract = qualification_contract(args)
+    if qualified is None and args.seed is not None:
+        qualified = common.read_seed(args.seed, contract=contract)
+        if args.coils is not None and sha(args.coils) != qualified[0]["artifacts"]["coils"]["sha256"]:
+            raise ValueError("supplied coils differ from the saved seed")
     inp, seed = common.load_input(args, restore_state=qualified is None)
     qs = opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), 1, 0)
 
@@ -236,7 +244,6 @@ def build_problem(args, *, event=None, qualified=None):
         seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
                                      polish_force_balance=False).state
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ftol_array=np.array([args.ftol]))
-    contract = qualification_contract(args)
     restart = dict(restart_from=seed) if qualified is None else dict(
         checkpoint=qualified[1]["checkpoint"], checkpoint_sha256=qualified[0]["artifacts"]["checkpoint"]["sha256"])
     write_json(out / "provenance.json", dict(contract=contract, arguments=vars(args), command=sys.argv, script_sha256=sha(__file__),
@@ -252,7 +259,7 @@ def build_problem(args, *, event=None, qualified=None):
             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL), **restart)
     if problem.accepted_step != 0:
         problem.close()
-        raise ValueError("qualification must describe an initial equilibrium at accepted step zero")
+        raise ValueError("saved seed must describe an initial equilibrium at accepted step zero")
     before = problem.accepted.root_residual_norm
     print(f"Polishing initial coupled root: residual={before:.6g}", flush=True)
     try:
@@ -272,7 +279,8 @@ def build_problem(args, *, event=None, qualified=None):
 def configure_solver(problem, args):
     """Prepare the production solver without qualification experiments."""
     problem.enable_matrix_free(rtol=MATRIXFREE_RTOL, restart=MATRIXFREE_RESTART,
-        max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE)
+        max_restarts=MATRIXFREE_MAX_CYCLES, rhs_batch_size=MATRIXFREE_RHS_BATCH_SIZE,
+        refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.accepted_steps)
 
 def run_optimizer(stage, args, record_step, *, method):
     """Choose the optimizer and physical bounds; VMEX owns scaling and acceptance."""

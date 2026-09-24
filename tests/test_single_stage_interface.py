@@ -46,6 +46,47 @@ def test_matching_validation(entries, flags):
             entry.parse_args(flags)
 
 
+@pytest.mark.parametrize('flag', ['--seed', '--qualification'])
+def test_saved_start_uses_its_coils_and_configuration(entries, tmp_path, flag):
+    _, free = entries
+    report = tmp_path/'start.json'
+    report.write_text(json.dumps({'configuration': dict(input=str(free.INPUT), wout=None,
+        resolution=[8, 8, 51], grid=[64, 64], ftol=1e-15, device='cpu')}))
+    args = free.parse_args([flag, str(report)])
+    assert args.coils is None  # default fitted coils cannot override the bundle
+    assert args.resolution == [8, 8, 51] and args.device == 'cpu'
+    assert free.parse_args([flag, str(report), '--coils', 'explicit.json']).coils.name == 'explicit.json'
+    with pytest.raises(SystemExit):
+        free.parse_args([flag, str(report), '--initial-coils', 'new.json'])
+    with pytest.raises(SystemExit):
+        free.parse_args(['--seed', str(report), '--qualification', str(report)])
+
+
+def test_seed_manifest_authenticates_case_and_artifacts(entries, tmp_path):
+    import hashlib
+    _, free = entries
+    paths = {name: tmp_path/(name+'.data') for name in ('coils', 'checkpoint')}
+    for name, path in paths.items():
+        path.write_text(name)
+    contract = {'physics': 'vacuum', 'code': 'current'}
+    manifest = dict(schema='vmex.single-stage-seed/v1', accepted_step=0, contract=contract,
+        artifacts={name: dict(file=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                   for name, path in paths.items()})
+    file = tmp_path/'seed.json'
+    file.write_text(json.dumps(manifest))
+    report, assets = free.common.read_seed(file, contract=contract)
+    assert assets == paths and 'passed' not in report
+    with pytest.raises(ValueError, match='differs from current'):
+        free.common.read_seed(file, contract={'physics': 'changed'})
+    paths['checkpoint'].write_text('changed')
+    with pytest.raises(ValueError, match='hash mismatch'):
+        free.common.read_seed(file, contract=contract)
+    manifest['artifacts']['checkpoint']['file'] = '../checkpoint'
+    file.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='beside the manifest'):
+        free.common.read_seed(file, contract=contract)
+
+
 def test_dry_runs_and_explicit_input_defaults(entries, tmp_path, capsys, monkeypatch):
     for entry in entries:
         output = tmp_path / Path(entry.__file__).stem
@@ -234,6 +275,10 @@ def test_coil_free_contract_tracks_bounds_and_uses_shared_input(monkeypatch, tmp
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
     args = entry.parse_args(["--device", "cpu", "--output", str(tmp_path)])
+    configured = []
+    entry.configure_solver(SimpleNamespace(enable_matrix_free=lambda **options: configured.append(options)), args)
+    assert configured[0]['refresh_horizon'] == 10
+    assert configured[0]['refresh_max_steps'] == args.accepted_steps
     original = entry.qualification_contract(args)
     monkeypatch.setattr(entry.P, "ACCEPTED_STEPS", 200)
     monkeypatch.setattr(entry, "ACCEPTED_STEPS", 200)

@@ -129,6 +129,7 @@ def run(args, *, case, method="SLSQP", coil_limits=None):
             optimization_seconds=time.perf_counter()-optimization_started,
             derivative_qualified=qualified is not None,
             qualification=None if args.qualification is None else str(args.qualification.resolve()),
+            seed_manifest=None if args.seed is None else str(args.seed.resolve()),
             initial=history[0], final=history[-1], verification="not run",
             optimizer_message=None if result is None else str(result.message))
         write_json(out / "optimization_summary.json", summary)

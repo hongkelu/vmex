@@ -102,6 +102,31 @@ before claiming qualification; budgets, plots and logging do not. Historical
 whole-file reports remain strict. Root certification and NS=201 endpoint checks
 remain in production.
 
+`--seed path/to/seed.json` restores an authenticated step-zero checkpoint after
+an explicitly audited code update. It skips fitting and the initial solve, but
+still freshly certifies the root and uses the normal derivative residual gates.
+It does not claim that the updated code has a new finite-difference qualification;
+the summary records the seed manifest separately. `--seed` and `--qualification`
+are mutually exclusive. A seed manifest binds the current contract and the SHA256
+of its colocated coils/checkpoint, and records the original report and any
+explicit checkpoint conversion. Original qualification files remain unchanged.
+
+Both free-boundary examples use the same cost-based LU refresh policy: rebuild
+at an accepted state when measured solve-time savings can repay the rebuild
+over up to ten remaining steps. A trial-local root-polish dense retry is bounded
+to one attempt. Its failed
+workspace is released before rebuilding, and the temporary dense workspace is
+closed before refinement uses the independent host-owned seed.
+After successful refinement, that seed also preconditions the candidate's
+adjoint at the newly polished root, retaining the same full-residual gates.
+It replaces the accepted seed only when the optimizer accepts that candidate;
+starting another proposal or closing the problem releases an unused trial seed.
+An adjoint failure still receives one fresh dense retry at the polished root.
+Dense adjoint rows that miss their residual gate receive at most three
+corrections using the existing LU. Passing rows are unchanged; a failed final
+residual still rejects the solve. The solver log records initial residuals and
+correction counts separately from equilibrium root polishing.
+
 Both folders use the shared implementation in `../single_stage_support/` for
 fixed setup, accepted-state optimization, run bookkeeping and final output.
 The fixed arm uses public `with_accepted_state` and `opt.minimize`, just as the

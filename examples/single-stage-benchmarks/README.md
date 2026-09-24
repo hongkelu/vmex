@@ -266,6 +266,15 @@ fitted coils and the initial checkpoint. A changed numerical configuration or
 source requires fresh qualification. Budgets and plot flags may be changed via
 CLI without repeating qualification.
 
+For an audited step-zero checkpoint prepared for the current code, use
+`--seed path/to/seed.json` instead of `--qualification`. The seed manifest binds
+the current case and hashes of its colocated coils/checkpoint; the public solver
+freshly certifies the stored equilibrium. This skips coil fitting and restores
+the saved numerical state without claiming new derivative qualification
+(`derivative_qualified: false`). Preparing a seed after a code change is an
+explicit, documented operation; production never rewrites old qualification
+reports or automatically runs their checks.
+
 Initialization is defined in the production example:
 
 - With no input option, use the rotating ellipse at `(MPOL, NTOR, NS) =

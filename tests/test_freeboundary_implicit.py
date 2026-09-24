@@ -1817,7 +1817,7 @@ def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(backend, co
     values = [jnp.array([.2,.3,.4])+.1*i for i in range(6)]
     rhs=jnp.array([[1.,0.,0.],[.1,.5,1.],[0.,0.,0.]])
     native=dense._factor_solve;calls=[]
-    def measured(*args):calls.append(1);return native(*args)
+    def measured(*args, **kwargs):calls.append(1);return native(*args, **kwargs)
     monkeypatch.setattr(dense,'_factor_solve',measured)
     for changed in (None,0,1,2,3,4,5):
         args=list(values)
@@ -1864,8 +1864,11 @@ def test_dense_failure_policy(backend,failure,monkeypatch):
         adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
     def residual(z,*args):return (0. if failure=='singular' else 2.)*z
     if failure!='singular':
-        monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend:
-                            jnp.full_like(rhs,jnp.nan if failure=='nonfinite' else 0.))
+        monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend,**kw:
+                            (jnp.full_like(rhs,jnp.nan if failure=='nonfinite' else 0.), None))
+        # A persistently broken solve must still fail after bounded correction.
+        module = dense.sl if backend == 'forward_dense' else dense.jsl
+        monkeypatch.setattr(module, 'lu_solve', lambda factors,rhs,**kw: jnp.zeros_like(rhs))
     def call():return dense.solve_dense_adjoint(residual,jnp.zeros(3),None,None,None,None,None,
                                               jnp.ones((2,3)),jnp.ones(3),cfg)
     with pytest.raises(AdjointSolveError):
@@ -1903,7 +1906,9 @@ def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
         adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
         adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100,
         adjoint_residual_rtol=None)
-    monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend:rhs/2+1e-7)
+    monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,backend,**kw:(rhs/2+1e-7,None))
+    module = dense.sl if backend == 'forward_dense' else dense.jsl
+    monkeypatch.setattr(module, 'lu_solve', lambda factors,rhs,**kw: jnp.zeros_like(rhs))
     def residual(z,*args):return 2*z
     def call(records):return dense.solve_dense_adjoint(residual,jnp.zeros(3),None,None,None,None,None,
         jnp.ones((2,3)),jnp.ones(3),cfg,diagnostics=records)
@@ -1917,6 +1922,66 @@ def test_dense_explicit_residual_gate_and_diagnostics(backend,monkeypatch):
     actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),
         adjoint_solver=backend,adjoint_residual_rtol=1e-9)
     assert actual.adjoint_residual_rtol==1e-9
+
+
+@pytest.mark.parametrize('backend', ['forward_dense', 'forward_dense_jax'])
+@pytest.mark.parametrize('retained', [False, True])
+def test_dense_defect_correction_reuses_lu_and_preserves_passed_rows(backend, retained, monkeypatch):
+    from vmex.core import _freeboundary_dense as dense
+    matrix = jnp.array([[3., 1., -.2], [-.1, 4., .3], [.5, -.4, 2.]])
+    rhs = jnp.array([[1., 2., -1.], [.1, -.2, .5], [0., 0., 0.]])
+    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False, adjoint_tol=1e-11,
+        adjoint_gcrot_m=3, adjoint_gcrot_k=1, adjoint_maxiter=10), adjoint_solver=backend,
+        adjoint_fail='error', adjoint_dense_batch_size=2, adjoint_dense_max_dofs=100,
+        adjoint_residual_rtol=1e-12)
+    factor = dense._factor_solve
+    original = []
+
+    def inaccurate_row(*args, **kwargs):
+        answer, factors = factor(*args, **kwargs)
+        original.append(np.asarray(answer).copy())
+        answer = jnp.asarray(answer).at[1, 0].add(1e-6)
+        return answer, factors
+
+    monkeypatch.setattr(dense, '_factor_solve', inaccurate_row)
+    reports = []
+    result = dense.solve_dense_adjoint(lambda z,*_: matrix @ z,
+        jnp.zeros(3), None, None, None, None, None, rhs, jnp.ones(3), cfg,
+        diagnostics=reports, return_linearization=retained)
+    answer = result[0] if retained else result
+    np.testing.assert_allclose(answer, np.linalg.solve(np.asarray(matrix.T), np.asarray(rhs.T)).T,
+                               rtol=1e-12, atol=1e-14)
+    np.testing.assert_array_equal(np.asarray(answer)[[0, 2]], original[0][[0, 2]])
+    assert len(original) == 1
+    assert [r['refinement_steps'] for r in reports] == [0, 1, 0]
+    assert all(r['accepted'] for r in reports)
+    assert reports[1]['initial_residual_norm'] > reports[1]['tolerance']
+    if retained:
+        result[1].close()
+
+
+@pytest.mark.parametrize('backend', ['forward_dense', 'forward_dense_jax'])
+def test_dense_correction_budget_fails_closed(backend, monkeypatch):
+    from vmex.core import _freeboundary_dense as dense
+    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False, adjoint_tol=1e-11,
+        adjoint_gcrot_m=3, adjoint_gcrot_k=1, adjoint_maxiter=10), adjoint_solver=backend,
+        adjoint_fail='error', adjoint_dense_batch_size=2, adjoint_dense_max_dofs=100,
+        adjoint_residual_rtol=1e-12)
+    module = dense.sl if backend == 'forward_dense' else dense.jsl
+    solve, calls = module.lu_solve, []
+
+    def inaccurate(*args, **kwargs):
+        calls.append(1)
+        return .5 * solve(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'lu_solve', inaccurate)
+    records = []
+    with pytest.raises(AdjointSolveError):
+        dense.solve_dense_adjoint(lambda z,*_: 2*z, jnp.zeros(3), None, None, None, None, None,
+            jnp.ones((1, 3)), jnp.ones(3), cfg, diagnostics=records)
+    assert len(calls) == 4  # Initial solve and at most three same-factor corrections.
+    assert records[0]['refinement_steps'] == 3 and not records[0]['accepted']
+    assert records[0]['residual_norm'] > records[0]['tolerance']
 
 
 def test_shared_adjoint_report_enforces_strict_true_residual(monkeypatch):

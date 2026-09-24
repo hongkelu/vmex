@@ -78,6 +78,15 @@ class _Equilibrium(Equilibrium):
 
 
 @dataclass
+class _TrialLU:
+    """Host factors from root recovery, owned by one unaccepted candidate."""
+
+    record: object
+    seed: fc.FreeBoundaryLUPreconditioner
+    seconds: float
+
+
+@dataclass
 class _LURefresh:
     """Estimate whether warm solve savings can repay a dense rebuild."""
 
@@ -357,6 +366,7 @@ class FreeBoundaryProblem(FunctionProblem):
         self._scalar_loss = loss is not None
         self._accepted_linearization = self._accepted_jac = None
         self._preconditioner = self._matrixfree_options = None
+        self._trial_lu = None
         self._lu_refresh = None
         self._adjoint_seconds = self._tangent_seconds = self._dense_seconds = 0.0
         self._polish_seconds = 0.0
@@ -473,6 +483,11 @@ class FreeBoundaryProblem(FunctionProblem):
             self._linearization.close()
         self._linearization = self._linearization_record = self._compact_jac = None
 
+    def _close_trial_lu(self):
+        if self._trial_lu is not None:
+            self._trial_lu.seed.close()
+            self._trial_lu = None
+
     def _derivatives(self, record):
         self._check_time()
         if self._linearization_record is record:
@@ -483,21 +498,24 @@ class FreeBoundaryProblem(FunctionProblem):
             self._linearization_record = record
             return self._compact_jac
         diagnostics = []
+        trial_lu = self._trial_lu
+        preconditioner = (trial_lu.seed if trial_lu is not None and trial_lu.record is record
+                          else self._preconditioner)
         self._emit("adjoint_start")
         started = time.monotonic()
-        dense_started = started if self._preconditioner is None else None
+        dense_started = started if preconditioner is None else None
         self._recovered = False
         try:
             if self._scalar_loss:
                 rhs, direct = self._scalar_jac(record.state, jnp.asarray(record.parameters))
             else:
                 rhs, direct = jax.jacrev(self._compact_state)(record.state), 0.0
-            options = {} if self._preconditioner is None else {"preconditioner": self._preconditioner}
+            options = {} if preconditioner is None else {"preconditioner": preconditioner}
             try:
                 linearization = fc.free_boundary_continuation_state_pullback(
                     record, self.cfg, rhs, diagnostics=diagnostics, return_linearization=True, **options)
             except AdjointSolveError as error:
-                if self._preconditioner is None:
+                if preconditioner is None:
                     raise
                 # One checked dense retry at this certified root. A rejected
                 # candidate cannot replace the accepted preconditioner.
@@ -518,6 +536,10 @@ class FreeBoundaryProblem(FunctionProblem):
                 linearization.offload_factors()
                 if record is self.accepted:
                     self._accepted_linearization, self._accepted_jac = linearization, jac
+        except BaseException:
+            if trial_lu is not None and trial_lu.record is record:
+                self._close_trial_lu()
+            raise
         finally:
             finished = time.monotonic()
             self._adjoint_seconds = finished - started
@@ -599,14 +621,22 @@ class FreeBoundaryProblem(FunctionProblem):
             details['phase'] = details.pop('event')
             self._emit('root_polish', **details)
 
+        def retain_recovery(polished, seed, seconds):
+            self._close_trial_lu()
+            self._trial_lu = _TrialLU(polished, seed, seconds)
+
         try:
             if self._preconditioner is not None:
                 return polish_with_recovery(record, self.cfg, self._preconditioner,
-                    build_dense, report, check_time=self._check_time, **options)
+                    build_dense, report, retain_recovery=retain_recovery,
+                    check_time=self._check_time, **options)
             # Bootstrap uses temporary factors. No failed or rejected trial
             # can replace the accepted root's retained preconditioner.
             dense, seed = build_dense(record)
             try:
+                # preconditioner() owns independent host factors; discard the
+                # temporary dense GPU factors/tape before creating the polish tape.
+                dense.close()
                 polished, evidence = refine(record, self.cfg, seed,
                     check_time=self._check_time, **options)
                 report(dict(event='polished', recovered_with_dense=False, **evidence))
@@ -722,6 +752,9 @@ class FreeBoundaryProblem(FunctionProblem):
         from .freeboundary import _solve_free_boundary_stage
 
         self._check_time()
+        # A new proposal abandons the previous candidate's recovery factors.
+        # Accepted factors and its predictor linearization remain independent.
+        self._close_trial_lu()
         self._polish_seconds = 0.0
         x = np.asarray(x, dtype=float)
         delta = x - self.accepted.parameters
@@ -802,10 +835,14 @@ class FreeBoundaryProblem(FunctionProblem):
                 self._emit("certification", candidate=previous, trial=trial, index=index)
             return previous
         except (VmecError, TrialRejected) as exc:
+            self._close_trial_lu()
             self.metadata["holder"]["failed_trials"] += 1
             if isinstance(exc, TrialRejected):
                 raise
             raise TrialRejected(f"{type(exc).__name__}: {exc}") from exc
+        except BaseException:
+            self._close_trial_lu()
+            raise
         finally:
             self._emit("candidate", stage=last_stage, parameters=point, trial=trial)
 
@@ -829,10 +866,12 @@ class FreeBoundaryProblem(FunctionProblem):
         if self._scalar_loss:
             self._derivatives(candidate)
             linearization, jac = self._linearization, self._compact_jac
-            reason = "recovery" if self._recovered else None
+            trial_lu = self._trial_lu
+            recovered_root = trial_lu is not None and trial_lu.record is candidate
+            reason = "recovery" if self._recovered else "root_recovery" if recovered_root else None
             refresh = (None if self._lu_refresh is None else
                        replace(self._lu_refresh, costs=list(self._lu_refresh.costs)))
-            if refresh is not None and not self._recovered and refresh.observe(
+            if refresh is not None and reason is None and refresh.observe(
                 self._adjoint_seconds + self._tangent_seconds + self._polish_seconds
             ):
                 reason = "cost"
@@ -862,7 +901,8 @@ class FreeBoundaryProblem(FunctionProblem):
                     solver=self.solver_info, reason="preconditioner_refresh",
                     gradient_relative_errors=errors.tolist())
             try:
-                replacement = (linearization.preconditioner(**self._matrixfree_options)
+                replacement = (trial_lu.seed if reason == "root_recovery" else
+                               linearization.preconditioner(**self._matrixfree_options)
                                if reason is not None else None)
             except BaseException:
                 if linearization is not self._linearization:
@@ -877,14 +917,18 @@ class FreeBoundaryProblem(FunctionProblem):
             self._accepted_linearization = self._linearization = linearization
             self._accepted_jac = self._compact_jac = jac
             if replacement is not None:
+                if reason == "root_recovery":
+                    self._dense_seconds = trial_lu.seconds
+                    self._trial_lu = None  # ownership moves to the accepted seed
                 self._preconditioner.close()
                 self._preconditioner = replacement
                 if refresh is not None:
                     remaining = refresh.remaining
-                    if self._recovered and remaining is not None:
+                    if reason in ("recovery", "root_recovery") and remaining is not None:
                         remaining = max(0, remaining - 1)
                     self._lu_refresh = _LURefresh(refresh.horizon, self._dense_seconds, remaining=remaining)
                 self._emit("preconditioner_refresh", reason=reason, seconds=self._dense_seconds)
+            self._close_trial_lu()
             # Keep the immutable numerical context: seeds and tapes must not
             # cross configuration identities. All proposals use self.accepted,
             # never the config's generic memoized continuation solver.
@@ -1004,6 +1048,7 @@ class FreeBoundaryProblem(FunctionProblem):
     def close(self):
         """Release retained derivative factors without altering accepted results."""
         self._close_linearization()
+        self._close_trial_lu()
         if self._accepted_linearization is not None:
             self._accepted_linearization.close()
         if self._preconditioner is not None:

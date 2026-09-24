@@ -124,6 +124,33 @@ def _factor_solve(matrix, rhs, backend, *, return_factors=False):
     return (solution, factors) if return_factors else solution
 
 
+def _refine_dense_solution(matrix, rhs, solution, factors, backend, tolerances):
+    """Correct failed rows with the same LU; retain only residual improvements."""
+    xp = np if backend == 'forward_dense' else jnp
+    solve = sl.lu_solve if backend == 'forward_dense' else jsl.lu_solve
+    rhs, solution = xp.asarray(rhs), xp.asarray(solution)
+    defect = rhs - solution @ matrix
+    norms = xp.linalg.norm(defect, axis=1)
+    initial = np.asarray(norms).copy()
+    steps = np.zeros(rhs.shape[0], dtype=int)
+    for _ in range(3):
+        failed = (norms > tolerances) & xp.isfinite(norms) & xp.all(xp.isfinite(solution), axis=1)
+        if not bool(xp.any(failed)):
+            break
+        correction = solve(factors, xp.where(failed[:, None], defect, 0.).T, trans=1).T
+        candidate = solution + correction
+        candidate_defect = rhs - candidate @ matrix
+        candidate_norms = xp.linalg.norm(candidate_defect, axis=1)
+        improved = failed & (candidate_norms < norms) & xp.all(xp.isfinite(candidate), axis=1)
+        steps += np.asarray(failed, dtype=int)
+        if not bool(xp.any(improved)):
+            break
+        solution = xp.where(improved[:, None], candidate, solution)
+        defect = xp.where(improved[:, None], candidate_defect, defect)
+        norms = xp.where(improved, candidate_norms, norms)
+    return solution, norms, initial, steps
+
+
 @dataclass(eq=False)
 class DenseRootLinearization:
     """Owned numerical factors and tape for exactly one certified root.
@@ -256,29 +283,27 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     if not bool(jnp.all(jnp.isfinite(matrix))):
         reject(0,np.inf,0.)
     try:
-        if return_linearization:
-            solution, factors = _factor_solve(matrix,rhs,cfg.adjoint_solver,return_factors=True)
-        else:
-            solution = _factor_solve(matrix,rhs,cfg.adjoint_solver)
+        solution, factors = _factor_solve(matrix,rhs,cfg.adjoint_solver,return_factors=True)
     except (np.linalg.LinAlgError, sl.LinAlgWarning):
         reject(0,np.inf,0.)
     # Check the actual dense equation after the solve, independently of the
     # factorization's status. Singular/nonfinite solutions always fail closed.
-    if cfg.adjoint_solver == 'forward_dense':
-        norms = np.linalg.norm(np.asarray(solution) @ matrix - np.asarray(rhs),axis=1)
-    else:
-        norms = jnp.linalg.norm(solution @ matrix - rhs,axis=1)
     rhs_norms = jnp.linalg.norm(rhs,axis=1)
     residual_rtol = getattr(cfg, 'adjoint_residual_rtol', None)
     tolerances = (im._adjoint_acceptance(cfg.implicit,rhs_norms) if residual_rtol is None
                   else residual_rtol * rhs_norms)
+    solution, norms, initial_norms, refinement_steps = _refine_dense_solution(
+        matrix, rhs, solution, factors, cfg.adjoint_solver, np.asarray(tolerances))
     for row in range(rhs.shape[0]):
         finite = bool(jnp.isfinite(norms[row]) & jnp.all(jnp.isfinite(solution[row])))
         accepted = finite and float(norms[row]) <= float(tolerances[row])
         if diagnostics is not None:
-            diagnostics.append(im._adjoint_diagnostic(cfg.implicit,
+            report = im._adjoint_diagnostic(cfg.implicit,
                 residual_norm=norms[row], rhs_norm=rhs_norms[row], iterations=1,
-                row=row, backend=cfg.adjoint_solver, residual_rtol=residual_rtol, finite=finite))
+                row=row, backend=cfg.adjoint_solver, residual_rtol=residual_rtol, finite=finite)
+            report.update(initial_residual_norm=float(initial_norms[row]),
+                          refinement_steps=int(refinement_steps[row]))
+            diagnostics.append(report)
         if not accepted:
             if cfg.adjoint_fail != 'best_effort' or not finite:
                 reject(row,norms[row],tolerances[row])

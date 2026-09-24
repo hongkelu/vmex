@@ -6,6 +6,7 @@ The examples supply physics/optimizer settings; public VMEX APIs own solvers.
 
 import argparse
 from dataclasses import replace
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -18,11 +19,13 @@ def parse_options(argv, *, parameters, description, formulation):
     parser.add_argument("--input", type=Path)
     parser.add_argument("--wout", type=Path, help="WOUT restart; requires its corresponding input deck")
     if formulation == "free":
-        parser.add_argument("--qualification", type=Path, help="optional passing report to reuse a verified seed without refitting")
+        start = parser.add_mutually_exclusive_group()
+        start.add_argument("--qualification", type=Path, help="passing report for this code and case")
+        start.add_argument("--seed", type=Path, help="authenticated step-zero seed manifest; no derivative qualification claim")
     else:
-        parser.set_defaults(qualification=None)
+        parser.set_defaults(qualification=None, seed=None)
     coils = parser.add_mutually_exclusive_group()
-    coils.add_argument("--coils", type=Path, default=p["COILS"], help="reuse fitted coils without stage two")
+    coils.add_argument("--coils", type=Path, help="reuse fitted coils without stage two")
     coils.add_argument("--initial-coils", type=Path, help="fit these coils instead of generating circles")
     parser.add_argument("--coil-fit-maxiter", type=int, default=p["COIL_FIT_MAXITER"])
     parser.add_argument("--output", type=Path, default=p["HERE"] / "runs" / f"{formulation}-boundary-{time.time_ns()}")
@@ -40,25 +43,28 @@ def parse_options(argv, *, parameters, description, formulation):
     parser.add_argument("--constrained", action="store_true", default=True, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     custom_input = args.input is not None
-    if args.qualification is not None:
-        report = json.loads(args.qualification.read_text())
+    bundle = args.qualification or args.seed
+    if bundle is not None:
+        report = json.loads(bundle.read_text())
         for name in ("input", "wout", "resolution", "grid", "ftol", "device"):
             if getattr(args, name) is None:
                 value = report["configuration"][name]
                 setattr(args, name, Path(value) if name in ("input", "wout") and value else value)
         if args.initial_coils is not None:
-            parser.error("a qualified run reuses fitted coils; --initial-coils requires new qualification")
+            parser.error("a saved seed reuses fitted coils; --initial-coils requires a fresh start")
     elif args.wout is not None and args.input is None:
         parser.error("--wout requires --input to define the pressure/current profiles and solver settings")
     if args.input is None:
         args.input = p["INPUT"]
-    if not custom_input and args.wout is None and args.qualification is None:
+    if not custom_input and args.wout is None and bundle is None:
         args.resolution = p["RESOLUTION"] if args.resolution is None else args.resolution
         args.grid = p["GRID"] if args.grid is None else args.grid
     args.ftol = p["EQUILIBRIUM_FTOL"] if args.ftol is None else args.ftol
     args.device = args.device or "gpu"
     if args.initial_coils is not None:
         args.coils = None  # Explicit initial coils override the editable COILS default.
+    elif args.coils is None and bundle is None:
+        args.coils = p["COILS"]
     if args.coil_fit_maxiter < 1:
         parser.error("positive coil-fit iteration budget required")
     if args.accepted_steps < 1 or not math.isfinite(args.ftol) or args.ftol <= 0:
@@ -71,10 +77,37 @@ def parse_options(argv, *, parameters, description, formulation):
     if p["MOVIE_SURFACE_COLOR"] not in ("absB", "B.n/B", None):
         parser.error("movie surface color must be absB, B.n/B or None")
     # Resolve before the fixed driver enters its output directory.
-    for name in ("input", "wout", "coils", "initial_coils", "qualification", "output"):
+    for name in ("input", "wout", "coils", "initial_coils", "qualification", "seed", "output"):
         if getattr(args, name) is not None:
             setattr(args, name, Path(getattr(args, name)).resolve())
     return args
+
+
+def read_seed(path, *, contract):
+    """Authenticate a seed's case and artifacts without claiming derivative checks.
+
+    Conversion from an older checkpoint is an explicit preparation step. The
+    public FreeBoundaryProblem API freshly certifies the stored equilibrium.
+    """
+    path = Path(path).resolve()
+    report = json.loads(path.read_text())
+    if report.get("schema") != "vmex.single-stage-seed/v1" or report.get("accepted_step") != 0:
+        raise ValueError("a step-zero seed manifest is required")
+    if report.get("contract") != contract:
+        raise ValueError("seed differs from current code, input, physics, resolution or runtime")
+    assets = {}
+    for name in ("coils", "checkpoint"):
+        item = report["artifacts"][name]
+        filename = item["file"]
+        if not filename or Path(filename).name != filename or filename in (".", ".."):
+            raise ValueError("seed artifacts must be files beside the manifest")
+        asset = path.parent / filename
+        if asset.resolve().parent != path.parent:
+            raise ValueError("seed artifacts must remain beside the manifest")
+        if hashlib.sha256(asset.read_bytes()).hexdigest() != item["sha256"]:
+            raise ValueError(f"seed {name} hash mismatch")
+        assets[name] = asset
+    return report, assets
 
 
 def load_input(args, *, restore_state=True):

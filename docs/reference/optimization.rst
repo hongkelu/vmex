@@ -1033,9 +1033,19 @@ numerical reports to their code, configuration, runtime and saved artifacts.
 without another equilibrium solve; it does not re-certify them.
 ``opt.CoilDiagnostics`` reports physical coil motion and current changes without
 an equilibrium/field evaluation. Expensive numerical qualification stays in the
-separate verification program. Default production force tolerance is ``1e-11``;
-independent endpoint verification uses ``1e-15``. A changed configuration or
-source needs a fresh standalone report to claim derivative qualification.
+separate verification programs. Both benchmark folders use shared production
+support under ``examples/single_stage_support/``. The fixed builder is shared
+between both folders and uses public accepted-state ownership and
+``opt.minimize``. ``verify_single_stage.py`` independently checks its objective
+and enabled constraints without starting joint optimization.
+
+Default production force tolerance and endpoint verification use ``1e-15``.
+Qualification signatures can bind explicit numerical functions through
+``functions=``. Their executable syntax excludes comments and docstrings;
+callers still bind numerical parameters, helpers, input, core and runtime.
+Reporting and budget edits outside those functions do not require repeated
+qualification. Numerical changes require a new standalone report before
+claiming derivative qualification; old whole-file contracts remain strict.
 
 
 

@@ -76,7 +76,7 @@ def test_fixed_run_restores_working_directory_on_failure(entries, tmp_path, monk
         assert args.input == old / "input.custom"
         raise RuntimeError("fixture failure")
 
-    monkeypatch.setattr(fixed, "run", fail)
+    monkeypatch.setattr(fixed, "build_problem", fail)
     with pytest.raises(RuntimeError, match="fixture failure"):
         fixed.main(["--device", "cpu", "--input", "input.custom", "--output", str(output)])
     assert Path.cwd() == old
@@ -162,3 +162,88 @@ def test_fixed_file_workflow_real_coil_fit(entries, tmp_path, monkeypatch, mode)
     # Scalar sums and squared residual vectors differ in floating-point reduction order.
     np.testing.assert_allclose(stage.coils.curves.dofs, fitted.curves.dofs, rtol=1e-9, atol=1e-10)
     np.testing.assert_array_equal(stage.coils.dofs_currents_raw, fitted.dofs_currents_raw)
+
+
+@pytest.mark.parametrize("folder", ["single-stage-benchmarks", "coil-constraints-benchmarks"])
+def test_production_and_qualification_are_separate(folder, tmp_path, monkeypatch, capsys):
+    """Both fixed entries use one builder, and qualification never optimizes."""
+    import os
+    import sys
+
+    directory = EXAMPLES.parent / folder
+    monkeypatch.syspath_prepend(str(directory))
+    for name in ("parameters", "single_stage_optimization_scalar", "_scalar_constraints", "_coil_constraints"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = importlib.util.spec_from_file_location("single_stage_optimization_scalar",
+        directory / "single_stage_optimization_scalar.py")
+    entry = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, entry)
+    spec.loader.exec_module(entry)
+    from single_stage_support import verification
+
+    assert entry.fixed is load("single_stage_optimization_scalar").fixed
+    assert entry.main(["--dry-run"]) == 0
+    assert verification.main(entry, ["--dry-run"]) == 0
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        entry.parse_args(["--check-gradients"])
+
+    for key in ("TMPDIR", "XDG_CACHE_HOME", "MPLCONFIGDIR", "CUDA_CACHE_PATH", "JAX_ENABLE_X64",
+                "JAX_PLATFORMS", "VMEX_COMPILATION_CACHE", "JAX_ENABLE_COMPILATION_CACHE", "MPLBACKEND"):
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+    calls, stage = [], object()
+    def build(args):
+        assert Path.cwd() == args.output
+        (args.output / "provenance.json").write_text("{}")
+        calls.append("build")
+        return stage
+    def check(actual, output):
+        assert actual is stage
+        calls.append("derivatives")
+        return {"passed": True}
+    monkeypatch.setattr(entry, "build_problem", build)
+    monkeypatch.setattr(entry, "run_optimizer", lambda actual, args: calls.append("optimize") or object())
+    monkeypatch.setattr(entry, "verify_endpoint", lambda *a: calls.append("endpoint") or 0)
+    monkeypatch.setattr(verification, "verify_problem", check)
+    cwd = Path.cwd()
+    assert entry.main(["--output", str(tmp_path / "production")]) == 0
+    assert calls == ["build", "optimize", "endpoint"] and Path.cwd() == cwd
+    calls.clear()
+    assert verification.main(entry, ["--output", str(tmp_path / "qualification")]) == 0
+    assert calls == ["build", "derivatives"] and Path.cwd() == cwd
+
+
+def test_fixed_qualification_rejects_wrong_and_nonfinite_rows(tmp_path):
+    from single_stage_support.verification import check_direction
+    matrix = np.array([[2., -.5], [1., 3.], [0., 0.]])
+    point, direction = np.zeros(2), np.array([.3, -.7])
+    analytic = matrix @ direction
+    assert check_direction(lambda x: matrix @ x, analytic, point, direction, output=tmp_path)["passed"]
+    assert not check_direction(lambda x: matrix @ x, 2*analytic, point, direction, output=tmp_path)["passed"]
+    assert not check_direction(lambda x: np.full(3, np.nan), analytic, point, direction, output=tmp_path)["passed"]
+
+
+def test_coil_free_contract_tracks_bounds_and_uses_shared_input(monkeypatch, tmp_path):
+    import sys
+    directory = EXAMPLES.parent / "coil-constraints-benchmarks"
+    monkeypatch.syspath_prepend(str(directory))
+    for name in ("parameters", "_coil_constraints", "_coil_resolution"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = importlib.util.spec_from_file_location("coil_free_case",
+        directory / "free_boundary_single_stage_optimization_scalar.py")
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    args = entry.parse_args(["--device", "cpu", "--output", str(tmp_path)])
+    original = entry.qualification_contract(args)
+    monkeypatch.setattr(entry.P, "ACCEPTED_STEPS", 200)
+    monkeypatch.setattr(entry, "ACCEPTED_STEPS", 200)
+    assert entry.qualification_contract(args) == original
+    monkeypatch.setattr(entry.P, "MSC_LIMIT", 4.)
+    assert entry.qualification_contract(args) != original
+
+    def load_input(actual, *, restore_state):
+        assert actual is args and restore_state
+        raise RuntimeError("shared input reached")
+    monkeypatch.setattr(entry.common, "load_input", load_input)
+    with pytest.raises(RuntimeError, match="shared input reached"):
+        entry.build_problem(args)

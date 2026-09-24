@@ -103,13 +103,38 @@ class OptimizationQualification(NamedTuple):
     artifacts: dict
 
     @staticmethod
-    def signature(*, parameters, input_path, wout_path=None, sources=(), **configuration):
-        """Fingerprint physics, numerical controls, sources and the active runtime."""
+    def signature(*, parameters, input_path, wout_path=None, sources=(), functions=(), **configuration):
+        """Fingerprint the numerical case, independently of its run/reporting code.
+
+        ``functions`` explicitly identifies the problem builder and optimizer
+        definitions when they share a file with logging or plotting. Their
+        executable syntax is hashed; comments and docstrings are ignored.
+        Callers must include every numerical helper/module in ``functions`` or
+        ``sources`` and every numerical global in ``parameters``. Whole-file
+        hashing remains the default for ``sources``; the core is always bound.
+        """
+        import ast
+        import inspect
+        import textwrap
         from importlib.metadata import PackageNotFoundError, version
         import jax
 
         def digest(path):
             return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+        class ExecutableSyntax(ast.NodeTransformer):
+            def visit_FunctionDef(self, node):
+                self.generic_visit(node)
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    node.body.pop(0)
+                return node
+
+        def function_digest(function):
+            tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+            syntax = ast.dump(ExecutableSyntax().visit(tree), include_attributes=False)
+            return hashlib.sha256(syntax.encode()).hexdigest()
 
         def dependency_version(name):
             try:
@@ -125,6 +150,9 @@ class OptimizationQualification(NamedTuple):
         source_paths = [Path(p) for p in sources]
         if len({p.name for p in source_paths}) != len(source_paths):
             raise ValueError("qualification source filenames must be unique")
+        functions = tuple(functions)
+        if len({f.__name__ for f in functions}) != len(functions):
+            raise ValueError("qualification function names must be unique")
         result = dict(parameters=parameters, input_sha256=digest(input_path),
             wout_sha256=None if wout_path is None else digest(wout_path),
             hardware=jax.devices()[0].device_kind, **configuration,
@@ -132,6 +160,8 @@ class OptimizationQualification(NamedTuple):
                 ("jax", "jaxlib", "numpy", "scipy", "essos", "solvax", "booz_xform_jax", "virtual-casing-jax")},
             source_sha256={p.name: digest(p) for p in source_paths},
             core_sha256={p.name: digest(p) for p in sorted(Path(__file__).parent.glob("*.py"))})
+        if functions:
+            result["numerical_functions_sha256"] = {f.__name__: function_digest(f) for f in functions}
         return json.loads(_json(result))
 
     @classmethod

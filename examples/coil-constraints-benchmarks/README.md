@@ -71,10 +71,11 @@ python single_stage_optimization_scalar.py --dry-run
 python free_boundary_single_stage_optimization_scalar.py --dry-run
 
 # Independent derivative qualification; does not run single-stage optimization.
+python verify_single_stage.py --device gpu --output runs/fixed-qualification
 python verify_free_boundary_single_stage.py --device gpu --output runs/free-qualification
 
 # Separate, fresh outputs; no existing job is stopped or resumed.
-python single_stage_optimization_scalar.py --device gpu --check-gradients --maxiter 100 --output runs/fixed
+python single_stage_optimization_scalar.py --device gpu --accepted-steps 100 --output runs/fixed
 python free_boundary_single_stage_optimization_scalar.py --device gpu --accepted-steps 100 --qualification runs/free-qualification/qualification.json --output runs/free
 ```
 
@@ -91,9 +92,23 @@ as the fixed arm: `abs(FD-AD) <= 1e-7 + 1e-3*abs(AD)`, for every row at two succ
 from `3e-4, 1e-4, 3e-5, 1e-5`. A failed larger perturbation is retained in the
 report and refined, since a sampled minimum or maximum can change its active
 point. Every endpoint is solved independently from the same accepted seed;
-persistent mismatches block production. Fixed-boundary production can run a seed objective/constraint FD check with
-`--check-gradients`. Full equilibrium qualification is separate from the CPU
-geometry checks below.
+persistent mismatches prevent calling a case derivative-qualified. Production
+never calls qualification. The fixed objective and all constraints are checked
+by `verify_single_stage.py`; both verification commands reuse their production
+builders. A passing free report is reusable for the same numerical case with
+`--qualification`, without repeating FD or dense-parity experiments. Physics,
+resolution, numerical code, dependency or hardware changes require a new report
+before claiming qualification; budgets, plots and logging do not. Historical
+whole-file reports remain strict. Root certification and NS=201 endpoint checks
+remain in production.
+
+Both folders use the shared implementation in `../single_stage_support/` for
+fixed setup, accepted-state optimization, run bookkeeping and final output.
+The fixed arm uses public `with_accepted_state` and `opt.minimize`, just as the
+free arm uses the public accepted-root problem and `opt.minimize`. The fixed
+boundary term and the independent boundary variables remain explicit formulation
+differences. Full equilibrium qualification is separate from the CPU geometry
+checks below.
 
 ```sh
 python -B -m pytest test_coil_constraints.py -q

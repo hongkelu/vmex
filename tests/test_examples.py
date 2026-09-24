@@ -111,6 +111,12 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 #: here on purpose.  ``EXECUTED_EXAMPLES`` is the other half of the partition;
 #: between them they must name every shipped example exactly once.
 UNTESTED_EXAMPLES = {
+    "examples/single_stage_support/verification.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/single_stage_support/fixed.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/single_stage_support/free.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/single_stage_support/common.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/single-stage-benchmarks/verify_single_stage.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/coil-constraints-benchmarks/verify_single_stage.py": "shared production support or separate qualification; tested in single-stage API suites",
     "examples/single-stage-benchmarks/single_stage_common.py": "shared CLI and file adapter; tested in test_single_stage_interface.py",
     "examples/coil-constraints-benchmarks/single_stage_optimization_scalar.py": "hard-constraint research workflow; shared geometry tests, separate equilibrium qualification",
     "examples/coil-constraints-benchmarks/free_boundary_single_stage_optimization_scalar.py": "hard-constraint research workflow; API and geometry tests, separate equilibrium qualification",

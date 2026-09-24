@@ -1,4 +1,4 @@
-# Three-methods benchmark
+# Single-stage benchmarks
 
 Three optimization workflows share the NFP=2 vacuum rotating ellipse in
 [`input.rotating_ellipse`](input.rotating_ellipse): prescribed-boundary QA,
@@ -32,7 +32,7 @@ deck resolution unless `--resolution` or `--grid` overrides it.
 ## Identical scalar entry-point usage
 
 Both scalar scripts accept the same ordinary options and use the same file
-adapter (`single_stage_common.py`):
+adapter (`../single_stage_support/common.py`):
 
 ```sh
 python -B single_stage_optimization_scalar.py \
@@ -82,12 +82,28 @@ is step 0. Matching the interface does not make their objectives identical.
 | Coupled polishing, matrix-free solve, adaptive LU and dense recovery | Different fixed-boundary solver path | Public `enable_root_polishing` / `enable_matrix_free` |
 | File exports and final equilibrium solve | Public VMEX + ESSOS | Public VMEX + ESSOS |
 
-Both numerical paths use public VMEX APIs on this integration branch; this is
-not a claim that the branch is already merged into `main`. Neither scalar
-driver reads or writes private VMEX caches. Objectives, physical parameters,
-stage-two SciPy fitting, and plotting orchestration intentionally remain in the
-examples. The shared adapter contains no equilibrium or adjoint implementation.
-Standalone derivative verification remains separate.
+Both numerical paths use public VMEX APIs. The production entries keep their
+editable physics and optimizer parameters at the top. Both fixed examples use
+one implementation in `../single_stage_support/fixed.py`; the free examples
+share run bookkeeping and endpoint output in `../single_stage_support/free.py`.
+Neither driver reads or writes private VMEX caches. The remaining differences
+are the boundary/coil variables, physical objective, constraints and equilibrium
+solver. The shared support contains no new equilibrium or adjoint solver.
+
+`verify_single_stage.py` calls the same fixed builder and checks the total
+objective and enabled constraint rows with independently re-solved FD endpoints.
+`verify_free_boundary_single_stage.py` checks the free builder. Neither is called
+by production. Reuse a passing free report with `--qualification`; qualification
+is needed once for an unchanged numerical case, not before each production run.
+Physics, resolution, numerical code, dependencies or hardware changes require a
+new report before calling that case derivative-qualified. Comments, docstrings,
+logging, plot settings and run budgets do not invalidate numerical function hashes.
+Older whole-file contracts remain strict and are not silently converted.
+
+```sh
+python -B verify_single_stage.py --device gpu --coils coils.initial.scalar.json --output runs/fixed-qualification
+python -B verify_free_boundary_single_stage.py --device gpu --coils coils.initial.scalar.json --output runs/free-qualification
+```
 
 The shared structure is **construct problem → define constraints →
 `opt.minimize` → verify/export**. For the fixed formulation, the public

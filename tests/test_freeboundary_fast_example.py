@@ -66,9 +66,12 @@ def test_example_imports_public_vmex_only():
 
 def function(name, **namespace):
     """Exercise the actual example objective without launching an equilibrium."""
-    tree = ast.parse(Path(entry.__file__).read_text())
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
-    scope = dict(vars(entry), np=np, jnp=jnp, **namespace)
+    from types import SimpleNamespace
+    nodes = [n for path in (entry.__file__, entry.free.__file__)
+             for n in ast.walk(ast.parse(Path(path).read_text()))]
+    node = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == name)
+    scope = dict({**vars(entry.free), **vars(entry)}, np=np, jnp=jnp, **namespace)
+    scope["case"] = SimpleNamespace(**{**vars(entry), **namespace})
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(entry.__file__), "exec"), scope)
     return scope[name]
 
@@ -179,7 +182,7 @@ def replay_namespace(tmp_path):
             np.testing.assert_array_equal(saved["parameters"], parameters)
             return State(*(jnp.asarray(saved[name]) for name in fields))
 
-    namespace = dict(vars(entry), np=np, jnp=jnp, out=tmp_path, monitor=monitor, history=history,
+    namespace = dict({**vars(entry.free), **vars(entry)}, np=np, jnp=jnp, out=tmp_path, monitor=monitor, history=history,
         problem=SimpleNamespace(state_from_checkpoint=load_state),
         initial_wout=tmp_path/"initial.nc", wout_path=tmp_path/"verified.nc", coils0=Coils(np.zeros(2)),
         final_coils=Coils(np.array([.03, -.01])), surf=Surface(.03),
@@ -193,7 +196,10 @@ def replay_namespace(tmp_path):
         write_json=lambda name, data: (tmp_path/name).write_text(json.dumps(data)),
         vj=SimpleNamespace(plot_optimization_objects=vj.plot_optimization_objects,
                            surface_field_data_from_state=surface_field, plot_wout=plot_wout))
-    tree = ast.parse(Path(entry.__file__).read_text())
+    from types import SimpleNamespace
+    from functools import lru_cache
+    namespace.update(case=SimpleNamespace(**vars(entry)), lru_cache=lru_cache)
+    tree = ast.parse(Path(entry.free.__file__).read_text())
     run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "postprocess")
     start = next(i for i, n in enumerate(run.body) if isinstance(n, ast.Assign)
                  and isinstance(n.value, ast.Constant) and n.value.value == "postprocessing")
@@ -319,7 +325,9 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
     from types import SimpleNamespace
     from vmex import optimize as opt
 
-    report, _ = qualification_bundle(tmp_path)
+    report, metadata = qualification_bundle(tmp_path)
+    # This orchestration fixture replaces numerical functions; pin its numerical contract.
+    monkeypatch.setattr(entry, "qualification_contract", lambda args: metadata["contract"])
     output = tmp_path / "production"
     output.mkdir()
     calls = []
@@ -382,8 +390,8 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
     monkeypatch.setattr(entry, "verify_endpoint", endpoint)
     monkeypatch.setattr(entry, "postprocess", lambda stage, args, summary, *rest:
                         entry.write_json(output / "optimization_summary.json", summary))
-    monkeypatch.setattr(entry.signal, "signal", lambda *a: None)
-    monkeypatch.setattr(entry.signal, "alarm", lambda *a: None)
+    monkeypatch.setattr(entry.free.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(entry.free.signal, "alarm", lambda *a: None)
     monkeypatch.setattr(opt, "aspect_ratio", lambda *a: 5.)
     monkeypatch.setattr(opt, "boundary_from_state", lambda *a: (np.ones((1, 1)),))
     monkeypatch.setattr(verify, "verify_problem", lambda *a: pytest.fail("derivative verifier called"))
@@ -396,7 +404,7 @@ def test_production_runs_without_derivative_tests(tmp_path, monkeypatch, method,
     assert (summary["qualification"] is not None) is qualified
     assert calls == ["build", "seed LU", method, "endpoint", "close"]
     event = json.loads((output / "solver_events.jsonl").read_text())
-    assert event == dict(event="tangent", trial=1, seconds=.2, rows=[])
+    assert event == dict(event="tangent", proposal_count=1, trial=0, seconds=.2, rows=[])
 
 
 def test_shared_builder_fits_fixed_currents_and_restores_without_solves(tmp_path, monkeypatch):
@@ -556,3 +564,28 @@ def test_qualification_requires_checks_and_local_artifacts(tmp_path):
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError, match="beside the report"):
         opt.OptimizationQualification.read(path, contract=report["contract"])
+
+
+def test_numerical_signature_ignores_reporting_but_detects_physics(tmp_path):
+    from vmex import optimize as opt
+
+    deck = tmp_path/'input'
+    deck.write_text('vacuum')
+    source = tmp_path/'case.py'
+
+    def signature(code, target=5.):
+        source.write_text(code)
+        # Execute the actual file text, avoiding stale import bytecode on rapid edits.
+        namespace = {}
+        exec(compile(code, str(source), 'exec'), namespace)
+        return opt.OptimizationQualification.signature(parameters={'target': target},
+            input_path=deck, functions=(namespace['build_problem'],))
+
+    code = 'def build_problem(x):\n    """Physics."""\n    return x*x\n\ndef log():\n    print("old")\n'
+    original = signature(code)
+    reporting = code.replace('Physics.', 'Clearer documentation.').replace('old', 'new')
+    assert signature(reporting) == original
+    assert signature(code.replace('x*x', 'x+x')) != original
+    assert signature(code, target=6.) != original
+    deck.write_text('changed physics input')
+    assert signature(code) != original

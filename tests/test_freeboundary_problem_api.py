@@ -828,7 +828,7 @@ def test_lbfgsb_production_uses_real_problem_and_accepted_callbacks(scalar, monk
     p.enable_matrix_free()
     initial = p.fun(p.x0)
     anchors = []
-    result = entry.run_optimizer(p, SimpleNamespace(accepted_steps=budget),
+    result = entry.run_optimizer(SimpleNamespace(problem=p), SimpleNamespace(accepted_steps=budget),
         lambda: anchors.append((p.accepted.parameters.copy(), p.fun(p.accepted.parameters))),
         method="L-BFGS-B")
     assert anchors and p.accepted_step == len(anchors) <= budget
@@ -853,7 +853,7 @@ def test_lbfgsb_failed_equilibrium_keeps_accepted_root(scalar, monkeypatch):
     p.enable_matrix_free()
     anchor = p.accepted
     stats["fail"] = True
-    result = entry.run_optimizer(p, SimpleNamespace(accepted_steps=20),
+    result = entry.run_optimizer(SimpleNamespace(problem=p), SimpleNamespace(accepted_steps=20),
                             lambda: pytest.fail("failed trial promoted"), method="L-BFGS-B")
     assert not result.success and result.stop_reason == "equilibrium_trial_rejected"
     np.testing.assert_array_equal(result.x, anchor.parameters)

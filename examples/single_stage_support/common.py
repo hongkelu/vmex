@@ -1,0 +1,168 @@
+"""Shared file and command-line interface for the two scalar examples.
+
+Importing this module does not initialize JAX, create files, or run a solve.
+The examples supply physics/optimizer settings; public VMEX APIs own solvers.
+"""
+
+import argparse
+from dataclasses import replace
+import json
+import math
+from pathlib import Path
+import time
+
+
+def parse_options(argv, *, parameters, description, formulation):
+    p = parameters
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--wout", type=Path, help="WOUT restart; requires its corresponding input deck")
+    if formulation == "free":
+        parser.add_argument("--qualification", type=Path, help="optional passing report to reuse a verified seed without refitting")
+    else:
+        parser.set_defaults(qualification=None)
+    coils = parser.add_mutually_exclusive_group()
+    coils.add_argument("--coils", type=Path, default=p["COILS"], help="reuse fitted coils without stage two")
+    coils.add_argument("--initial-coils", type=Path, help="fit these coils instead of generating circles")
+    parser.add_argument("--coil-fit-maxiter", type=int, default=p["COIL_FIT_MAXITER"])
+    parser.add_argument("--output", type=Path, default=p["HERE"] / "runs" / f"{formulation}-boundary-{time.time_ns()}")
+    parser.add_argument("--device", choices=("cpu", "gpu"))
+    parser.add_argument("--accepted-steps", "--maxiter", type=int, default=p["ACCEPTED_STEPS"],
+                        help="step/iteration budget; optimization can stop earlier")
+    parser.add_argument("--ftol", type=float, help="equilibrium force tolerance")
+    parser.add_argument("--resolution", type=int, nargs=3, metavar=("MPOL", "NTOR", "NS"))
+    parser.add_argument("--grid", type=int, nargs=2, metavar=("NTHETA", "NZETA"))
+    parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument("--plots", dest="no_plots", action="store_false")
+    parser.add_argument("--movie", action=argparse.BooleanOptionalAction, default=p["MAKE_MOVIE"])
+    parser.add_argument("--dry-run", action="store_true")
+    # Compatibility with older fixed-boundary command lines; SLSQP is now default.
+    parser.add_argument("--constrained", action="store_true", default=True, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    custom_input = args.input is not None
+    if args.qualification is not None:
+        report = json.loads(args.qualification.read_text())
+        for name in ("input", "wout", "resolution", "grid", "ftol", "device"):
+            if getattr(args, name) is None:
+                value = report["configuration"][name]
+                setattr(args, name, Path(value) if name in ("input", "wout") and value else value)
+        if args.initial_coils is not None:
+            parser.error("a qualified run reuses fitted coils; --initial-coils requires new qualification")
+    elif args.wout is not None and args.input is None:
+        parser.error("--wout requires --input to define the pressure/current profiles and solver settings")
+    if args.input is None:
+        args.input = p["INPUT"]
+    if not custom_input and args.wout is None and args.qualification is None:
+        args.resolution = p["RESOLUTION"] if args.resolution is None else args.resolution
+        args.grid = p["GRID"] if args.grid is None else args.grid
+    args.ftol = p["EQUILIBRIUM_FTOL"] if args.ftol is None else args.ftol
+    args.device = args.device or "gpu"
+    if args.initial_coils is not None:
+        args.coils = None  # Explicit initial coils override the editable COILS default.
+    if args.coil_fit_maxiter < 1:
+        parser.error("positive coil-fit iteration budget required")
+    if args.accepted_steps < 1 or not math.isfinite(args.ftol) or args.ftol <= 0:
+        parser.error("positive step budget and finite positive force tolerance required")
+    if ((args.resolution is not None and (args.resolution[0] < 1 or args.resolution[1] < 0 or args.resolution[2] < 3))
+            or (args.grid is not None and min(args.grid) < 4)):
+        parser.error("invalid equilibrium resolution or grid")
+    if not 0 <= p["RADIUS_MARGIN"] < p["RADIUS_TOLERANCE"] < p["RADIUS_TARGET"] or p["IOTA_MARGIN"] < 0:
+        parser.error("invalid physical constraint margins")
+    if p["MOVIE_SURFACE_COLOR"] not in ("absB", "B.n/B", None):
+        parser.error("movie surface color must be absB, B.n/B or None")
+    # Resolve before the fixed driver enters its output directory.
+    for name in ("input", "wout", "coils", "initial_coils", "qualification", "output"):
+        if getattr(args, name) is not None:
+            setattr(args, name, Path(getattr(args, name)).resolve())
+    return args
+
+
+def load_input(args, *, restore_state=True):
+    """Read input/WOUT through public VMEX APIs, preserving explicit deck grids."""
+    import numpy as np
+    import vmex as vj
+    from vmex import optimize as opt
+
+    inp = vj.VmecInput.from_file(args.input)
+    has_pressure = any(values is not None and np.any(np.asarray(values) != 0)
+                       for values in (inp.am, inp.am_aux_f))
+    if (inp.pres_scale != 0 and has_pressure) or inp.curtor != 0:
+        raise ValueError("these vacuum examples require zero pressure and plasma current; "
+                         "finite beta needs plasma-aware coil fitting and interface diagnostics")
+    mpol, ntor, ns = args.resolution or (inp.mpol, inp.ntor, int(inp.ns_array[-1]))
+    ntheta, nzeta = args.grid or (inp.ntheta, inp.nzeta)
+    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=ntheta, nzeta=nzeta)
+    inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([args.ftol]), lfreeb=False)
+    if inp.lasym:
+        raise ValueError("these examples require stellarator symmetry")
+    seed = None
+    if args.wout is not None:
+        wout = vj.read_wout(args.wout)
+        if int(wout.nfp) != inp.nfp or bool(wout.lasym):
+            raise ValueError("WOUT symmetry differs from the input")
+        rbc, zbs, rbs, zbc = opt.boundary_from_wout(wout, mpol=mpol, ntor=ntor)
+        inp = replace(inp, rbc=rbc, zbs=zbs, rbs=rbs, zbc=zbc)
+        if restore_state:
+            seed = vj.state_from_wout(wout, inp=inp, ns=ns)
+    return inp, seed
+
+
+def initial_coils(inp, path, *, parameters):
+    """Load ESSOS coils, or generate the same circular seed in either example."""
+    import jax.numpy as jnp
+    from essos.coils import Coils, CreateEquallySpacedCurves
+
+    p = parameters
+    if path is not None:
+        coils = Coils.from_json(str(path))
+    else:
+        curves = CreateEquallySpacedCurves(p["N_COILS"], p["COIL_ORDER"], p["COIL_MAJOR_RADIUS"],
+            p["COIL_MINOR_RADIUS"], n_segments=p["N_SEGMENTS"], nfp=inp.nfp, stellsym=True)
+        coils = Coils(curves, jnp.full(p["N_COILS"], p["COIL_CURRENT"]))
+    if (coils.nfp != inp.nfp or not coils.stellsym or coils.n_segments != p["N_SEGMENTS"]
+            or coils.dofs_curves.shape != (p["N_COILS"], 3, 2*p["COIL_ORDER"]+1)):
+        raise ValueError("coils must match symmetry, count, Fourier order and quadrature")
+    return coils
+
+
+def physical_constraint(problem, *, parameters):
+    """Use the same public iota/radius bounds and conditioning in both arms."""
+    p = parameters
+    width = p["RADIUS_TOLERANCE"] - p["RADIUS_MARGIN"]
+    return problem.nonlinear_constraint(
+        [p["IOTA_FLOOR"] + p["IOTA_MARGIN"], p["RADIUS_TARGET"] - width],
+        [math.inf, p["RADIUS_TARGET"] + width],
+        scales=[p["IOTA_FLOOR"], p["RADIUS_TOLERANCE"]])
+
+
+def setup_run(args):
+    """Create a fresh output directory and keep every runtime cache inside it."""
+    import os
+    args.output.mkdir(parents=True, exist_ok=False)
+    for key in ("TMPDIR", "XDG_CACHE_HOME", "MPLCONFIGDIR", "CUDA_CACHE_PATH"):
+        path = args.output / "cache" / key
+        path.mkdir(parents=True)
+        os.environ[key] = str(path)
+    os.environ.update(JAX_ENABLE_X64="1", JAX_PLATFORMS="cuda" if args.device == "gpu" else "cpu",
+                      VMEX_COMPILATION_CACHE="disabled", JAX_ENABLE_COMPILATION_CACHE="false", MPLBACKEND="Agg")
+    return args.output
+
+
+def run_fixed(args, *, settings, build_problem, run_optimizer, verify_endpoint):
+    """One production pipeline; qualification is a separate command."""
+    import os
+    args.constrained = settings.METHOD == "SLSQP"
+    if args.dry_run:
+        parameters = {k: v for k, v in vars(settings).items() if k.isupper() and k not in ("HERE", "P")}
+        print(json.dumps(dict(optimizer=settings.METHOD, parameters=parameters,
+                             arguments=vars(args)), indent=2, default=str))
+        return 0
+    setup_run(args)
+    previous_directory = Path.cwd()
+    try:
+        os.chdir(args.output)
+        stage = build_problem(args)
+        result = run_optimizer(stage, args)
+        return verify_endpoint(stage, args, result)
+    finally:
+        os.chdir(previous_directory)

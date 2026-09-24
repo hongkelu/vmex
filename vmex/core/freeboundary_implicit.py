@@ -483,11 +483,21 @@ def _host_solve_and_mask_impl(
             # repeated calls bit-identical.
             stage = _cold_reference(solve, icfg, inp, field)
     _FREE_LAST_RESULT[cfg] = stage.result
-    return _linearization_from_stage(cfg, params, stage, inp=inp)
+    return _linearization_from_stage(
+        cfg, params, stage, inp=inp, anchor=True,
+        field_parameters=field_parameters,
+        error_on_no_convergence=error_on_no_convergence)
 
 
-def _linearization_from_stage(cfg, params, stage, *, inp):
-    """Bind a completed stage to the canonical mask and constraint baselines."""
+def _linearization_from_stage(cfg, params, stage, *, inp, anchor=False,
+                              field_parameters=None, error_on_no_convergence=True):
+    """Bind a stage to its mask; optionally anchor the ordinary host solve.
+
+    Accepted-state continuation owns its separate coupled-root polishing and
+    certification, so it requests the mask/baselines without another anchor.
+    The ordinary implicit callback supplies its current field parameters and
+    failure policy to preserve upstream's root-anchoring contract.
+    """
     icfg = cfg.implicit
     state = stage.result.state
     rcon0, zcon0 = stage.rcon0, stage.zcon0
@@ -527,7 +537,7 @@ def _linearization_from_stage(cfg, params, stage, *, inp):
     report = None
     result = stage.result
     fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
-    if bool(result.converged) or fsq / icfg.ftol <= icfg.max_fsq_ratio:
+    if anchor and (bool(result.converged) or fsq / icfg.ftol <= icfg.max_fsq_ratio):
         with im._timed(icfg, "anchor"):
             state, report = _anchor_root(
                 cfg, params, field_parameters, state, mask, rcon0, zcon0)
@@ -539,7 +549,8 @@ def _linearization_from_stage(cfg, params, stage, *, inp):
                 "steps",
                 hint="tighten ftol, or pass refine_tol=inf to "
                      "make_free_boundary_config to skip the anchor")
-    _FREE_LAST_ANCHOR[cfg] = report
+    if anchor:
+        _FREE_LAST_ANCHOR[cfg] = report
 
     to_numpy = lambda tree: jax.tree.map(  # noqa: E731
         lambda value: np.asarray(value, dtype=np.float64), tree

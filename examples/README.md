@@ -7,6 +7,10 @@ single-stage, and free-boundary single-stage research examples.
 The [coil-constraints benchmarks](coil-constraints-benchmarks/README.md) add matched
 explicit coil inequalities and independent geometric verification.
 
+The [finite-beta scalar production case](three-methods-finite-beta-benchmark/PRODUCTION.md)
+uses the same free-boundary production workflow with fixed pressure and toroidal
+flux, zero prescribed plasma current, and a live virtual-casing plasma field.
+
 All runnable examples live under this single `examples/` tree. The coil and
 exterior-field examples need ESSOS 0.17 or newer: `pip install "vmex[coils]"`,
 or `pip install "vmex[all]"` for everything the examples use.

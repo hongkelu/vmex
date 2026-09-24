@@ -574,9 +574,14 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def _polish_record(self, record, *, options=None):
         options = self._root_polish_options if options is None else options
-        if options is None or record.root_residual_norm <= options['tolerance']:
+        if options is None:
             return record
-        from ._freeboundary_root_polish import refine, polish_with_recovery
+        from ._freeboundary_root_polish import refine, polish_with_recovery, check_anchor, inactive_drift
+
+        check_anchor(record, self.accepted)
+        if (record.root_residual_norm <= options['tolerance']
+                and inactive_drift(record, self.accepted, self.solver) <= 1e-12):
+            return record
 
         self._check_time()
         started = time.monotonic()
@@ -602,13 +607,13 @@ class FreeBoundaryProblem(FunctionProblem):
         try:
             if self._preconditioner is not None:
                 return polish_with_recovery(record, self.cfg, self._preconditioner,
-                    build_dense, report, check_time=self._check_time, **options)
+                    build_dense, report, anchor=self.accepted, check_time=self._check_time, **options)
             # Bootstrap uses temporary factors. No failed or rejected trial
             # can replace the accepted root's retained preconditioner.
             dense, seed = build_dense(record)
             try:
                 polished, evidence = refine(record, self.cfg, seed,
-                    check_time=self._check_time, **options)
+                    anchor=self.accepted, check_time=self._check_time, **options)
                 report(dict(event='polished', recovered_with_dense=False, **evidence))
                 return polished
             finally:
@@ -720,6 +725,7 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def _trial(self, x, trial, *, predict=True, ftol=None):
         from .freeboundary import _solve_free_boundary_stage
+        from .errors import VmecJacobianError
 
         self._check_time()
         self._polish_seconds = 0.0
@@ -759,21 +765,31 @@ class FreeBoundaryProblem(FunctionProblem):
                 point = x if index == count else self.accepted.parameters + delta * (index / count)
                 predicted = jax.tree.map(lambda x, dx: x + dx / count, previous.state, tangent)
                 started = time.monotonic()
-                last_stage = _solve_free_boundary_stage(
-                    self.inp,
-                    external_field=self.parameterization(jnp.asarray(point)),
-                    resolution=self.solver.resolution,
-                    ftol=tolerance,
-                    max_iterations=self.solver.implicit.max_iterations,
-                    initial_state=predicted,
-                    constraint_continuation=(previous.rcon0, previous.zcon0),
-                    include_edge_in_convergence=True,
-                    edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
-                    error_on_no_convergence=False,
-                    jacobian_retries=0,
-                    allow_initial_axis_reguess=False,
-                    use_fft=False,
-                )
+                def correct(start):
+                    return _solve_free_boundary_stage(
+                        self.inp,
+                        external_field=self.parameterization(jnp.asarray(point)),
+                        resolution=self.solver.resolution,
+                        ftol=tolerance,
+                        max_iterations=self.solver.implicit.max_iterations,
+                        initial_state=start,
+                        constraint_continuation=(previous.rcon0, previous.zcon0),
+                        include_edge_in_convergence=True,
+                        edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
+                        error_on_no_convergence=False,
+                        jacobian_retries=0,
+                        allow_initial_axis_reguess=False,
+                        use_fft=False,
+                    )
+                try:
+                    last_stage = correct(predicted)
+                except VmecJacobianError as error:
+                    if not predict or error.iteration != 1:
+                        raise
+                    self._emit("accepted_state_retry", trial=trial, error=str(error))
+                    # Same endpoint and constraint baselines; never retain an
+                    # invalid predictor or promote a rejected line-search trial.
+                    last_stage = correct(previous.state)
                 self._emit(
                     "correction",
                     stage=last_stage,

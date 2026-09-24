@@ -198,7 +198,7 @@ def replay_namespace(tmp_path):
                            surface_field_data_from_state=surface_field, plot_wout=plot_wout))
     from types import SimpleNamespace
     from functools import lru_cache
-    namespace.update(case=SimpleNamespace(**vars(entry)), lru_cache=lru_cache)
+    namespace.update(case=SimpleNamespace(**vars(entry)), stage=SimpleNamespace(), lru_cache=lru_cache)
     tree = ast.parse(Path(entry.free.__file__).read_text())
     run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "postprocess")
     start = next(i for i, n in enumerate(run.body) if isinstance(n, ast.Assign)

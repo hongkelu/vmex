@@ -49,7 +49,7 @@ def run(args, *, case, method="SLSQP", coil_limits=None):
                 trials += 1
                 if trials > case.MAX_TRIALS:
                     raise StopIteration("trial budget reached")
-            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh", "preconditioner_refresh_start", "root_polish"):
+            if name in ("adjoint", "tangent", "matrixfree_check", "dense_recovery", "preconditioner_refresh", "preconditioner_refresh_start", "root_polish", "accepted_state_retry"):
                 # Keep diagnostic rows and failure reasons without serializing root arrays.
                 record = {key: value for key, value in data.items() if key != "candidate"}
                 with (out / "solver_events.jsonl").open("a") as stream:
@@ -81,6 +81,8 @@ def run(args, *, case, method="SLSQP", coil_limits=None):
                 polish_seconds=timings['root_polish'], root_residual=float(problem.accepted.root_residual_norm),
                 step_seconds=time.perf_counter()-cycle_started, elapsed_seconds=time.perf_counter()-started,
                 **{key: float(getattr(eq.result, key)) for key in ("fsqr", "fsqz", "fsql", "fedge")})
+            if hasattr(stage, "interface_metrics"):
+                row.update(stage.interface_metrics(eq.state, eq.runtime, problem.coils_from_x(x)))
             if coil_limits is not None:
                 slack = float(np.min(stage.coil_constraint.fun(x)))
                 clearance = float(physical[2])
@@ -189,6 +191,10 @@ def verify_endpoint(case, coil_limits, stage, args, summary, history, initial_eq
         bn = np.sum(field*np.asarray(surf.unitnormal), axis=2)/np.linalg.norm(field, axis=2)
         weights = np.asarray(surf.area_element)
         rms, maximum = float(np.sqrt(np.sum(weights*bn**2)/weights.sum())), float(np.max(np.abs(bn)))
+        interface_metrics = {}
+        if hasattr(stage, "interface_metrics"):
+            interface_metrics = stage.interface_metrics(verified.state, verified.runtime, final_coils, 61, 64)
+            rms, maximum = interface_metrics["normal_field_rms"], interface_metrics["normal_field_max"]
         points, surface_points = np.asarray(final_coils.gamma), np.asarray(surf.gamma).reshape(-1, 3)
         coil_distance = min(float(np.linalg.norm(points[i][:, None]-points[j][None], axis=2).min())
                             for i in range(len(points)) for j in range(i+1, len(points)))
@@ -243,6 +249,9 @@ def verify_endpoint(case, coil_limits, stage, args, summary, history, initial_eq
                           radius_error_m=radius-case.RADIUS_TARGET, iota_constraint_slack=iota-case.IOTA_FLOOR,
                           radius_constraint_slack_m=case.RADIUS_TOLERANCE-abs(radius-case.RADIUS_TARGET),
                           full_mesh_min_abs_iota=float(np.min(np.abs(verified.wout.iotaf)))))
+        summary["verified"].update(interface_metrics)
+        if getattr(stage, "finite_beta", False):
+            summary.update(beta_policy="diagnostic only; fixed pressure and PHIEDGE", plasma_current_A=0.)
         write_json(out / "optimization_summary.json", summary)
 
         return SimpleNamespace(initial_wout=initial_wout, wout_path=wout_path,
@@ -271,7 +280,9 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
     postprocessing_started = time.perf_counter()
     seed_surface = SurfaceRZFourier.from_wout_file(initial_wout, nphi=60, ntheta=60)
     for label, export_surface, export_coils in (("initial", seed_surface, coils0), ("optimized", surf, final_coils)):
-        export_surface.to_vtk(str(out / f"surface_{label}"), field=BiotSavart(export_coils))
+        # A coil-only field is not the total field in a finite-beta plasma.
+        export_surface.to_vtk(str(out / f"surface_{label}"),
+                              **({} if getattr(stage, "finite_beta", False) else {"field": BiotSavart(export_coils)}))
         export_coils.to_vtk(str(out / f"coils_{label}"))
 
     # Replay saved accepted roots, never solve previous iterates again.
@@ -289,7 +300,7 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
     coil_cost_values = jax.jit(coil_costs)
     coil_diagnostics = opt.CoilDiagnostics(scales, coefficient_step=case.COIL_STEP)
     for step, (x, row) in enumerate(zip(points, history)):
-        _, step_surface, step_coils = accepted_frame(step)
+        state, step_surface, step_coils = accepted_frame(step)
         row.update(coil_diagnostics.record(x, step_coils, path=out / f"step_{step:04d}.npz"))
         coil_field = np.asarray(jax.vmap(BiotSavart(step_coils).B)(step_surface.gamma.reshape(-1, 3))).reshape(step_surface.gamma.shape)
         normal_field = np.sum(coil_field*np.asarray(step_surface.unitnormal), axis=-1)/np.linalg.norm(coil_field, axis=-1)
@@ -298,12 +309,17 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
             iota_violation=max(case.IOTA_FLOOR-row["min_abs_iota"], 0.0),
             normal_field_rms=float(np.sqrt(np.sum(area*normal_field**2)/area.sum())),
             normal_field_max=float(np.max(np.abs(normal_field))))
+        if hasattr(stage, "interface_metrics"):
+            row.update(stage.interface_metrics(state, initial_equilibrium.runtime, step_coils))
         if not all(np.isfinite(value) for value in row.values()):
             raise ValueError(f"nonfinite accepted-step diagnostics at step {step}")
         terms = dict(quasisymmetry=0.5*row["qa"], aspect=0.5*case.ASPECT_WEIGHT*row["aspect_error"]**2,
                      **{"iota floor": 0.5*case.IOTA_WEIGHT*row["iota_violation"]**2})
         terms.update(zip(("coil length", "coil curvature", "coil separation", "coil-surface separation"),
                          map(float, np.asarray(coil_cost_values(step_coils, step_surface)))))
+        if hasattr(stage, "extra_objective_terms"):
+            terms.update({key: float(value) for key, value in
+                          stage.extra_objective_terms(state, initial_equilibrium.runtime, step_coils).items()})
         np.testing.assert_allclose(sum(terms.values()), row["objective"], rtol=1e-10, atol=1e-12)
         post_monitor.record(x, cost=row["objective"], iteration=step, terms=terms)
     with (out / "accepted_steps.csv").open("w", newline="") as stream:

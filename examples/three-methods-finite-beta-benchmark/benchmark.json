@@ -1,0 +1,103 @@
+{
+  "name": "three-methods-finite-beta-benchmark",
+  "beta_target": 0.005,
+  "beta_percent": 0.5,
+  "beta_definition": "VMEX volume-averaged betatotal",
+  "beta_calibration_relative_tolerance": 1e-05,
+  "beta_endpoint_relative_tolerance": 0.01,
+  "pressure_profile": "p(s)=p0*(1-s); s=normalized toroidal flux",
+  "initial_pressure_guess_pa": 4000.0,
+  "plasma_current": {
+    "ncurr": 1,
+    "curtor_A": 0.0,
+    "ac": [
+      0.0
+    ],
+    "bootstrap": false
+  },
+  "coil_currents": "fixed at saved vacuum values",
+  "phiedge": "fixed at saved vacuum value; finite-beta B0 not recalibrated",
+  "methods": {
+    "fixed_stage_one": {
+      "status": "planned",
+      "variables": "boundary and log pressure",
+      "coils": false
+    },
+    "fixed_single_stage": {
+      "status": "implemented; derivative qualification pending",
+      "variables": "boundary, log pressure and 99 coil-shape coefficients"
+    },
+    "free_single_stage": {
+      "status": "planned; common-state matching not qualified",
+      "variables": "coil shape and log pressure; boundary follows equilibrium"
+    }
+  },
+  "optimizer": {
+    "kind": "scalar SLSQP",
+    "auglag": false,
+    "derivative_check_required": true,
+    "exploratory_bypass": false,
+    "candidate_initialization": "last accepted equilibrium only"
+  },
+  "plasma": {
+    "qa_weight": 1.0,
+    "qa_surfaces": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ],
+    "aspect_target": 5.0,
+    "aspect_weight": 1.0,
+    "minimum_abs_iota": 0.19,
+    "iota_margin": 0.0005,
+    "iota_penalty_weight": 10.0,
+    "major_radius_target_m": 1.0,
+    "major_radius_tolerance_m": 0.01,
+    "major_radius_margin_m": 0.001
+  },
+  "coil_penalties": {
+    "length_target_m": 5.0,
+    "length_weight": 1.0,
+    "curvature_limit_per_m": 7.0,
+    "curvature_hinge_per_m": 6.9,
+    "curvature_weight": 10.0,
+    "coil_coil_min_m": 0.15,
+    "coil_coil_weight": 1000.0,
+    "coil_plasma_min_m": 0.2,
+    "coil_plasma_weight": 1000.0,
+    "normal_field_weight": 1000.0,
+    "normal_field_max_limit": 0.01,
+    "normal_field_smooth_max_hinge": 0.008,
+    "normal_field_smooth_max_weight": 200000.0,
+    "enforcement": "soft penalties; sampled checks reported separately"
+  },
+  "preparation": {
+    "device": "cpu",
+    "float64": true,
+    "ftol": 1e-14,
+    "max_calibration_solves": 6,
+    "max_iterations_per_solve": 12000,
+    "wall_seconds": 180
+  },
+  "qualification": {
+    "common_fixed_free_seed": false,
+    "derivatives": false,
+    "optimization_started": false
+  },
+  "numerics": {
+    "max_boundary_mode": 3,
+    "boundary_scale": 0.1,
+    "coil_scale": 0.05,
+    "ess_alpha": 1.2,
+    "virtual_casing_nphi": 37,
+    "virtual_casing_ntheta": 32,
+    "virtual_casing_digits": 4
+  }
+}

@@ -1,10 +1,11 @@
 """Bounded Newton refinement of the full plasma/vacuum root.
 
 This helper never promotes an optimizer state or changes core defaults.
-It retains the input point's inactive coordinates and constraint baselines.
+It retains the accepted anchor's inactive coordinates and constraint baselines.
 """
 import time
 from dataclasses import replace
+from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -15,6 +16,7 @@ from . import freeboundary_continuation as fc
 from . import _freeboundary_matrixfree as mf
 from ._freeboundary_dense import _active_space, _compress, _expand
 from .errors import AdjointSolveError, VmecError
+from .geometry import real_space_geometry, half_mesh_jacobian
 
 
 class RootPolishError(VmecError):
@@ -25,7 +27,35 @@ def norm(tree):
     return float(jnp.linalg.norm(ravel_pytree(tree)[0]))
 
 
-def refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check_time=lambda: None):
+def check_anchor(record, anchor):
+    """The nonlinear solve and the adjoint must use the same active space."""
+    for name in ('dof_mask', 'rcon0', 'zcon0'):
+        a, b = getattr(record, name), getattr(anchor, name)
+        if jax.tree.structure(a) != jax.tree.structure(b) or any(
+                not np.array_equal(x, y) for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b), strict=True)):
+            raise RootPolishError(f'Root-polish accepted {name} changed')
+
+
+def inactive_drift(record, anchor, solver):
+    project = im._dof_projector(solver.implicit, anchor.dof_mask)
+    delta = jax.tree.map(jnp.subtract, record.state, anchor.state)
+    return norm(jax.tree.map(jnp.subtract, delta, project(delta)))
+
+
+@partial(jax.jit, static_argnames=('solver',))
+def geometry_valid(state, params, *, solver):
+    """Reject folded or nonfinite Newton geometries before residual evaluation."""
+    rt = im.runtime_from_params(params, solver.implicit)
+    coefficients = im._physical_coefficients(state, modes=rt.modes,
+        lthreed=rt.setup.lthreed, lasym=rt.setup.lasym, lconm1=rt.setup.lconm1)
+    geometry = real_space_geometry(**dict(zip(('R_cos', 'R_sin', 'Z_cos', 'Z_sin'), coefficients)),
+        lambda_cos=state.L_cos, lambda_sin=state.L_sin, modes=rt.modes, trig=rt.trig, s=rt.setup.s_full)
+    jacobian = half_mesh_jacobian(geometry, s=rt.setup.s_full)
+    return (~jacobian.jacobian_sign_changed & jnp.all(jnp.isfinite(jacobian.tau))
+            & (jnp.max(jnp.abs(jacobian.tau)) > 0))
+
+
+def refine(accepted, cfg, preconditioner, *, anchor=None, tolerance=1e-12, max_steps=3, check_time=lambda: None):
     """Return a newly certified root; reject failed refinement explicitly."""
     started = time.perf_counter()
     if not np.isfinite(tolerance) or tolerance <= 0 or isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
@@ -34,11 +64,14 @@ def refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check
     seed = preconditioner._seed
     if preconditioner._cfg is not cfg:
         raise ValueError('preconditioner configuration mismatch')
-    frozen = accepted.state
+    anchor = accepted if anchor is None else anchor
+    check_anchor(accepted, anchor)
+    frozen = anchor.state
     project = im._dof_projector(solver.implicit, accepted.dof_mask)
     residual = fbi._projected_residual(solver, accepted.dof_mask)
     field = jnp.asarray(accepted.parameters)
-    z = project(frozen)
+    z = project(accepted.state)
+    input_inactive_drift = inactive_drift(accepted, anchor, solver)
     space = _active_space(solver.implicit, accepted.dof_mask, solver.adjoint_dense_max_dofs)
     seed.validate(z, field, space, solver)
     space = jax.tree.map(jnp.asarray, space)
@@ -47,6 +80,11 @@ def refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check
     def evaluate(value):
         return residual(value, cfg.params, field, frozen, accepted.rcon0, accepted.zcon0)
 
+    def assemble(value):
+        return jax.tree.map(jnp.add, frozen, project(jax.tree.map(jnp.subtract, value, frozen)))
+
+    if not geometry_valid(assemble(z), cfg.params, solver=solver):
+        raise RootPolishError('invalid root-polish starting geometry')
     f = evaluate(z)
     initial = magnitude = norm(f)
     log = []
@@ -69,9 +107,11 @@ def refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check
             check_time()
             alpha = 0.5**backtrack
             trial = jax.tree.map(lambda a, b: a + alpha*b, z, delta)
+            if not geometry_valid(assemble(trial), cfg.params, solver=solver):
+                continue
             trial_f = evaluate(trial)
             trial_norm = norm(trial_f)
-            if np.isfinite(trial_norm) and trial_norm < magnitude:
+            if np.isfinite(trial_norm) and trial_norm < (1-1e-4*alpha)*magnitude:
                 break
         else:
             raise RootPolishError(f'Newton refinement did not reduce residual {magnitude}')
@@ -92,11 +132,13 @@ def refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check
     # Never attach the original host force diagnostics to a changed state.
     refined = fc.certify_free_boundary_continuation_state(
         cfg, accepted.parameters, state, rcon0=accepted.rcon0, zcon0=accepted.zcon0)
+    check_anchor(refined, anchor)
     if not np.isfinite(refined.root_residual_norm) or refined.root_residual_norm > tolerance:
         raise RootPolishError('refinement failed independently recomputed root gate')
     refined = replace(refined, result=replace(refined.result, iterations=accepted.result.iterations))
     return refined, dict(initial_residual=initial, final_residual=float(refined.root_residual_norm),
         tolerance=tolerance, steps=log, inactive_change=inactive_change,
+        input_inactive_drift=input_inactive_drift,
         state_change=norm(displacement), certification_seconds=time.perf_counter()-tick,
         seconds=time.perf_counter()-started)
 

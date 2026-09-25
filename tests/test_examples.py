@@ -114,10 +114,11 @@ UNTESTED_EXAMPLES = {
     "examples/single_stage_support/verification.py": "shared production support or separate qualification; tested in single-stage API suites",
     "examples/single_stage_support/fixed.py": "shared production support or separate qualification; tested in single-stage API suites",
     "examples/single_stage_support/free.py": "shared production support or separate qualification; tested in single-stage API suites",
+    "examples/single_stage_support/diagnostics.py": "shared example support; tested by single-stage suites",
+    "examples/single_stage_support/constraints.py": "shared example support; tested by single-stage suites",
     "examples/single_stage_support/common.py": "shared production support or separate qualification; tested in single-stage API suites",
     "examples/single-stage-benchmarks/verify_single_stage.py": "shared production support or separate qualification; tested in single-stage API suites",
     "examples/coil-constraints-benchmarks/verify_single_stage.py": "shared production support or separate qualification; tested in single-stage API suites",
-    "examples/single-stage-benchmarks/single_stage_common.py": "shared CLI and file adapter; tested in test_single_stage_interface.py",
     "examples/coil-constraints-benchmarks/single_stage_optimization_scalar.py": "hard-constraint research workflow; shared geometry tests, separate equilibrium qualification",
     "examples/coil-constraints-benchmarks/free_boundary_single_stage_optimization_scalar.py": "hard-constraint research workflow; API and geometry tests, separate equilibrium qualification",
     "examples/coil-constraints-benchmarks/verify_free_boundary_single_stage.py": "separate coupled derivative qualification; not executed by ordinary CI",
@@ -162,7 +163,6 @@ UNTESTED_EXAMPLES = {
 #: their symmetric namesakes: none of them had ever run, and
 #: ``QH_optimization.py`` exited non-zero when it finally did.
 EXECUTED_EXAMPLES = {
-    "examples/coil-constraints-benchmarks/test_coil_constraints.py",
     "examples/epsilon_effective.py",
     "examples/finite_beta_scan.py",
     "examples/fixed_boundary_run.py",
@@ -218,21 +218,6 @@ EXECUTED_EXAMPLES = {
 
 def _shipped_examples() -> list[Path]:
     return sorted(p for p in EXAMPLES.rglob("*.py") if not p.name.startswith("_"))
-
-
-def test_coil_constraint_geometry_suite(tmp_path) -> None:
-    """Exercise the shipped geometry checks without equilibrium solves."""
-    pytest.importorskip("essos")
-    folder = EXAMPLES / "coil-constraints-benchmarks"
-    env = dict(os.environ, JAX_PLATFORMS="cpu", JAX_ENABLE_X64="true",
-               VMEX_COMPILATION_CACHE="disabled", JAX_ENABLE_COMPILATION_CACHE="false",
-               PYTHONDONTWRITEBYTECODE="1", XDG_CACHE_HOME=str(tmp_path),
-               MPLCONFIGDIR=str(tmp_path), TMPDIR=str(tmp_path))
-    result = subprocess.run(
-        [sys.executable, "-B", "-m", "pytest", "-q", "-o", "addopts=",
-         "-p", "no:cacheprovider", "test_coil_constraints.py"],
-        cwd=folder, env=env, capture_output=True, text=True, timeout=180)
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_every_example_parses() -> None:
@@ -1394,5 +1379,6 @@ def test_fixed_scalar_derivative_checks_are_standalone(tmp_path, monkeypatch, ca
     assert not failed["passed"]
     json.dumps(failed, allow_nan=False)
 
-    import _scalar_constraints as limits
+    from single_stage_support.constraints import PhysicalConstraints
+    limits = PhysicalConstraints()
     assert limits.FORCE_TOLERANCE == 1e-11

@@ -4,6 +4,10 @@ The production entry supplies its physical problem and optimizer. Derivative
 qualification lives in separate verification programs and is never invoked here.
 """
 import csv
+import os
+from pathlib import Path
+import sys
+from . import common
 from dataclasses import replace
 import json
 from functools import lru_cache
@@ -12,7 +16,7 @@ import time
 from types import SimpleNamespace
 
 def write_json(path, data):
-    path.write_text(json.dumps(data, indent=2, default=str)+"\n")
+    Path(path).write_text(json.dumps(data, indent=2, default=str, allow_nan=False)+"\n")
 
 def run(args, *, case, method="SLSQP", coil_limits=None):
     """Prepare or restore a start, optimize and independently solve the endpoint."""
@@ -338,3 +342,202 @@ def postprocess(case, stage, args, summary, monitor, history, initial_equilibriu
             print(f"Wrote {path}")
     summary.update(postprocessing="complete", postprocessing_seconds=time.perf_counter()-postprocessing_started)
     write_json(out / "optimization_summary.json", summary)
+
+
+def setup_run(args):
+    """Set project-local output/cache paths before importing JAX."""
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    for name in ("TMPDIR", "XDG_CACHE_HOME", "MPLCONFIGDIR", "CUDA_CACHE_PATH"):
+        directory = out / "cache" / name
+        directory.mkdir(parents=True)
+        os.environ[name] = str(directory)
+    os.environ.update(JAX_ENABLE_X64="1", JAX_PLATFORMS="cuda,cpu" if args.device == "gpu" else "cpu",
+                      VMEX_COMPILATION_CACHE="disabled", JAX_ENABLE_COMPILATION_CACHE="false", MPLBACKEND="Agg")
+    import jax
+    if jax.default_backend() != args.device or not jax.config.x64_enabled:
+        raise RuntimeError("requested backend and float64 precision are required")
+    return out
+
+def qualification_contract(args, *, case):
+    """Fingerprint both the short entry and the shared numerical implementation."""
+    from vmex import optimize as opt
+    excluded = {"P", "HERE", "INPUT", "COILS", "ACCEPTED_STEPS", "MAX_TRIALS", "MAKE_MOVIE", "MOVIE_SURFACE_COLOR"}
+    parameters = {name: value for name, value in vars(case).items()
+                  if name.isupper() and name not in excluded and not name.endswith("_SECONDS")}
+    sources = [Path(__file__), Path(common.__file__)]
+    if getattr(case, "COIL_CONSTRAINTS", False):
+        parameters["coil_constraints"] = {name: value for name, value in vars(case.P).items()
+                                          if name.isupper() and name != "ACCEPTED_STEPS"}
+        sources.append(case.HERE / "_coil_constraints.py")
+    return opt.OptimizationQualification.signature(parameters=parameters,
+        input_path=args.input, wout_path=args.wout, resolution=args.resolution,
+        grid=args.grid, ftol=args.ftol, device=args.device, sources=sources,
+        functions=(case.build_problem, case.configure_solver, case.run_optimizer))
+
+def read_qualification(args, *, case):
+    """Reuse the same authenticated fitted coils and accepted seed."""
+    from vmex import optimize as opt
+
+    if args.qualification is None:
+        return None
+    qualified = opt.OptimizationQualification.read(args.qualification, contract=case.qualification_contract(args))
+    if args.coils is not None and common.sha(args.coils) != qualified.report["artifacts"]["coils"]["sha256"]:
+        raise ValueError("supplied coils differ from the qualified fitted coils")
+    return qualified
+
+def build_problem(args, *, case, event=None, qualified=None, coil_limits=None):
+    """Prepare the input, stage-two coils and common scalar VMEX problem.
+
+    Without a saved bundle, load or fit coils and solve the seed from input/WOUT.
+    A bundle restores the exact seed and coils, skipping fitting and the initial
+    solve. Seed manifests do not claim derivative qualification for new code.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from scipy.optimize import minimize
+    from vmex import optimize as opt
+    from essos.coils import Coils
+    from essos.fields import BiotSavart
+    from essos.objective_functions import loss_coil_separation, loss_coil_surface_distance
+    from essos.surfaces import surfacerzfourier_from_boundary
+
+    out = args.output.resolve()
+    contract = case.qualification_contract(args)
+    if qualified is None and args.seed is not None:
+        qualified = common.read_seed(args.seed, contract=contract)
+        if args.coils is not None and common.sha(args.coils) != qualified[0]["artifacts"]["coils"]["sha256"]:
+            raise ValueError("supplied coils differ from the saved seed")
+    inp, seed = common.load_input(args, restore_state=qualified is None)
+    qs = opt.QuasisymmetryRatioResidual(np.asarray(case.QA_SURFACES), 1, 0)
+
+    def surface(state, runtime):
+        rbc, zbs, _, _ = opt.boundary_from_state(state, runtime)
+        return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=case.NPHI, ntheta=case.NTHETA)
+
+    def iota_floor(state, runtime):
+        return jnp.maximum(case.IOTA_FLOOR-opt.min_abs_iota(state, runtime), 0.0)
+
+    plasma_terms = [(qs.residuals_state, 0.0, 1.0),
+                    (opt.aspect_ratio, case.ASPECT_TARGET, case.ASPECT_WEIGHT),
+                    (iota_floor, 0.0, case.IOTA_WEIGHT)]
+
+    def coil_costs(coils, surf):
+        if coil_limits is not None:
+            return jnp.empty(0)
+        return jnp.array([
+            0.5*case.LENGTH_WEIGHT*jnp.sum((coils.length[:case.N_COILS]-case.LENGTH_TARGET)**2),
+            0.5*case.CURVATURE_WEIGHT*jnp.sum(jnp.maximum(coils.curvature[:case.N_COILS]-case.CURVATURE_OBJECTIVE_LIMIT, 0)**2),
+            0.5*case.COIL_DISTANCE_WEIGHT*loss_coil_separation(coils, case.COIL_DISTANCE_LIMIT, block_size=32),
+            0.5*case.COIL_SURFACE_DISTANCE_WEIGHT*loss_coil_surface_distance(
+                coils, surf, case.COIL_SURFACE_DISTANCE_LIMIT, block_size=32)])
+
+    def loss(state, runtime, coils):
+        residuals = opt.residuals_from_tuples(state, runtime, plasma_terms)
+        return 0.5*jnp.vdot(residuals, residuals) + jnp.sum(coil_costs(coils, surface(state, runtime)))
+
+    def inequalities(values):
+        iota, radius = values[:2]
+        width = case.RADIUS_TOLERANCE-case.RADIUS_MARGIN
+        rows = [(iota-case.IOTA_FLOOR-case.IOTA_MARGIN)/case.IOTA_FLOOR,
+                         (radius-case.RADIUS_TARGET+width)/case.RADIUS_TOLERANCE,
+                         (case.RADIUS_TARGET+width-radius)/case.RADIUS_TOLERANCE]
+        if coil_limits is not None:
+            rows.append((values[2]-case.COIL_SURFACE_DISTANCE_LIMIT-case.DISTANCE_MARGIN)/case.COIL_SURFACE_DISTANCE_LIMIT)
+        return np.asarray(rows)
+
+    constraint_transform = np.array([[1/case.IOTA_FLOOR, 0], [0, 1/case.RADIUS_TOLERANCE], [0, -1/case.RADIUS_TOLERANCE]])
+
+    def clearance(state, runtime, coils):
+        rbc, zbs, _, _ = opt.boundary_from_state(state, runtime)
+        surf = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp,
+            nphi=coil_limits.SURFACE_GRID[0], ntheta=coil_limits.SURFACE_GRID[1])
+        return coil_limits.surface_distance(coils, surf)
+
+    if coil_limits is not None:
+        constraint_transform = np.pad(constraint_transform, ((0, 1), (0, 1)))
+        constraint_transform[-1, -1] = 1 / case.COIL_SURFACE_DISTANCE_LIMIT
+
+    coil_path = qualified[1]["coils"] if qualified is not None else args.coils or args.initial_coils
+    coils0 = common.initial_coils(inp, coil_path, parameters=vars(case), resize=coil_limits is not None)
+    fit_report = dict(reused=True, iterations=0)
+    if qualified is None and args.coils is None:
+        # Stage two changes only geometry on the frozen input/WOUT surface.
+        # These are the scalar reference's two B.n penalties plus coil terms.
+        seed_surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs),
+                                                      inp.nfp, nphi=case.NPHI, ntheta=case.NTHETA)
+        x0 = np.asarray(coils0.curves.dofs).ravel()
+
+        def fit_loss(u):
+            coils = coils0.with_dofs(jnp.concatenate((jnp.asarray(x0)+case.COIL_STEP*u, coils0.dofs_currents)))
+            field = jax.vmap(BiotSavart(coils).B)(seed_surface.gamma.reshape(-1, 3)).reshape(seed_surface.gamma.shape)
+            normal = jnp.sum(field*seed_surface.unitnormal, axis=-1)/jnp.linalg.norm(field, axis=-1)
+            weights = seed_surface.area_element/jnp.sum(seed_surface.area_element)
+            maximum = jax.scipy.special.logsumexp(2000*jnp.sqrt(normal**2+1e-12))/2000
+            return (0.5*case.NORMAL_FIELD_WEIGHT*jnp.sum(weights*normal**2)
+                    + 0.5*case.NORMAL_FIELD_LIMIT_WEIGHT*jnp.maximum(maximum-case.NORMAL_FIELD_OBJECTIVE_LIMIT, 0)**2
+                    + jnp.sum(coil_costs(coils, seed_surface)))
+
+        fit_gradient = jax.jit(jax.value_and_grad(fit_loss))
+        initial_cost = float(fit_loss(jnp.zeros_like(jnp.asarray(x0))))
+        fit = minimize(fit_gradient, np.zeros_like(x0), jac=True, method="L-BFGS-B",
+                       bounds=[(-5., 5.) if coil_limits is not None else (-case.PARAMETER_BOUND, case.PARAMETER_BOUND)]*x0.size,
+                       options=dict(maxiter=args.coil_fit_maxiter, maxcor=20, ftol=1e-15, gtol=1e-10))
+        if not np.isfinite(fit.fun) or not np.all(np.isfinite(fit.x)) or fit.fun > initial_cost + 1e-10:
+            raise RuntimeError("stage-two fitting returned invalid or worse coils")
+        currents = np.asarray(coils0.dofs_currents_raw).copy()
+        coils0 = coils0.with_dofs(jnp.concatenate((jnp.asarray(x0)+case.COIL_STEP*fit.x, coils0.dofs_currents)))
+        if not np.array_equal(coils0.dofs_currents_raw, currents):
+            raise RuntimeError("stage-two fitting changed fixed coil currents")
+        fit_report = dict(reused=False, iterations=int(fit.nit), optimizer_success=bool(fit.success),
+                          message=str(fit.message), initial_objective=initial_cost, objective=float(fit.fun))
+    # Reload the saved representation once so qualification and production
+    # construct identical charts, including floating-point serialization.
+    fitted_path = out / "coils.stage2.json"
+    coils0.to_json(str(fitted_path))
+    coils0 = Coils.from_json(str(fitted_path))
+    write_json(out / "stage_two.json", fit_report)
+    scales = case.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()
+    chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales)
+    if qualified is None and seed is None:
+        seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
+                                     polish_force_balance=False).state
+    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ftol_array=np.array([args.ftol]))
+    restart = dict(restart_from=seed) if qualified is None else dict(
+        checkpoint=qualified[1]["checkpoint"], checkpoint_sha256=qualified[0]["artifacts"]["checkpoint"]["sha256"])
+    write_json(out / "provenance.json", dict(contract=contract, arguments=vars(args), command=sys.argv, script_sha256=common.sha(case.__file__),
+        currents_A=chart.currents.tolist(), scales=scales.tolist(), fitted_coils_sha256=common.sha(fitted_path)))
+    for source in (Path(case.__file__), Path(__file__), Path(common.__file__)):
+        (out / source.name).write_bytes(source.read_bytes())
+    if coil_limits is not None:
+        for source in (case.HERE / "parameters.py", Path(coil_limits.__file__)):
+            (out / source.name).write_bytes(source.read_bytes())
+    problem = opt.FreeBoundaryProblem.from_loss(inp, loss, quantities=(opt.min_abs_iota, opt.major_radius),
+        coil_quantities=(clearance,) if coil_limits is not None else (),
+        parameterization=chart, root_residual_atol=case.ROOT_TOLERANCE, event=event, checkpoint_identity=contract,
+        solver_options=dict(device=args.device, ftol=args.ftol, edge_force_tolerance=args.ftol,
+            max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=case.ADJOINT_BATCH_SIZE,
+            adjoint_dense_max_dofs=case.ADJOINT_MAX_DOFS, adjoint_residual_rtol=case.ADJOINT_RESIDUAL_RTOL), **restart)
+    if problem.accepted_step != 0:
+        problem.close()
+        raise ValueError("saved seed must describe an initial equilibrium at accepted step zero")
+    before = problem.accepted.root_residual_norm if coil_limits is not None else None
+    try:
+        problem.enable_root_polishing(tolerance=case.ROOT_POLISH_TOLERANCE)
+    except BaseException:
+        problem.close()
+        raise
+    if coil_limits is not None:
+        write_json(out / "root_polish_initial.json", dict(tolerance=case.ROOT_POLISH_TOLERANCE,
+            before=float(before), after=float(problem.accepted.root_residual_norm), solver=problem.solver_info))
+    return SimpleNamespace(problem=problem, inp=inp, chart=chart, coils=coils0, qs=qs,
+                           surface=surface, coil_costs=coil_costs, inequalities=inequalities,
+                           constraint_transform=constraint_transform, contract=contract,
+                           coil_constraint=None if coil_limits is None else coil_limits.constraint(chart.coils_from_x))
+
+def configure_solver(problem, args, *, case):
+    """Prepare the production solver without qualification experiments."""
+    problem.enable_matrix_free(rtol=case.MATRIXFREE_RTOL, restart=case.MATRIXFREE_RESTART,
+        max_restarts=case.MATRIXFREE_MAX_CYCLES, rhs_batch_size=case.MATRIXFREE_RHS_BATCH_SIZE,
+        refresh_horizon=case.LU_REFRESH_HORIZON, refresh_max_steps=args.accepted_steps)

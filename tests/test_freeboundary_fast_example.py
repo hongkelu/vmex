@@ -70,7 +70,7 @@ def function(name, **namespace):
     nodes = [n for path in (entry.__file__, entry.free.__file__)
              for n in ast.walk(ast.parse(Path(path).read_text()))]
     node = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == name)
-    scope = dict({**vars(entry.free), **vars(entry)}, np=np, jnp=jnp, **namespace)
+    scope = dict({**vars(entry.free), **vars(entry)}, np=np, jnp=jnp, coil_limits=None, **namespace)
     scope["case"] = SimpleNamespace(**{**vars(entry), **namespace})
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(entry.__file__), "exec"), scope)
     return scope[name]
@@ -272,7 +272,8 @@ def test_verification_is_separate_from_production(tmp_path, capsys):
     tree = ast.parse(Path(entry.__file__).read_text())
     calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
     assert "evaluate_trial" not in calls
-    enable = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
+    shared_tree = ast.parse(Path(entry.free.__file__).read_text())
+    enable = next(node for node in ast.walk(shared_tree) if isinstance(node, ast.Call)
                   and isinstance(node.func, ast.Attribute) and node.func.attr == "enable_matrix_free")
     assert not enable.args and "parity_rtol" not in {kw.arg for kw in enable.keywords}
 
@@ -454,8 +455,8 @@ def test_shared_builder_wout_seed_uses_source_boundary_and_input_profiles(tmp_pa
 
     source = tmp_path/"source.nc"
     source.write_bytes(b"WOUT fixture")
-    coils = EXAMPLE / "coils_single_stage_scalar_fitted_1789769333906005000.json"
-    args = entry.parse_args(["--input", str(EXAMPLE/"input.rotating_ellipse"), "--wout", str(source),
+    coils = entry.common.DATA / "coils.fitted.json"
+    args = entry.parse_args(["--input", str(entry.common.DATA / "input.rotating_ellipse"), "--wout", str(source),
                             "--coils", str(coils), "--device", "cpu", "--output", str(tmp_path)])
     wout = SimpleNamespace(nfp=2, lasym=False, mpol=2, ntor=0, ns=3,
                            xm=np.array([0, 1]), xn=np.array([0, 0]),

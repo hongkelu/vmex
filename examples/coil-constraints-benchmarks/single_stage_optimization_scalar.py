@@ -13,8 +13,8 @@ from single_stage_support import common, fixed
 
 import parameters as P
 
-INPUT = HERE / "input.rotating_ellipse"
-COILS = HERE / "coils_single_stage_scalar_fitted_1789769333906005000.json"  # --coils skips fitting; --initial-coils chooses the fitting seed
+INPUT = common.DATA / "input.rotating_ellipse"
+COILS = common.DATA / "coils.fitted.json"  # --coils skips fitting; --initial-coils chooses the fitting seed
 MAKE_MOVIE = True  # set True for a compact GIF of accepted iterates
 # Surface colors: None, "absB", or "B.n/B".
 MOVIE_SURFACE_COLOR = "absB"

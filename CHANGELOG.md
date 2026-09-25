@@ -7,10 +7,10 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased fork changes
 
-Both benchmark folders share fixed-boundary construction and free-boundary
-run support, with editable parameters and public accepted-state optimizers.
-Qualification stays separate; numerical signatures exclude reporting edits.
-Upstream root anchoring receives field parameters and failure policy explicitly.
+Both scalar examples share setup and public accepted-state optimizers; separate qualification fingerprints shared code.
+Inputs/coils live in `examples/single_stage_support/data/`, geometry tests in `tests/`,
+and historical records in `benchmarks/single_stage_provenance/`. Constraint settings are per-case;
+physics defaults and input bytes are unchanged. Upstream root anchoring receives field parameters and failure policy explicitly.
 
 ## 0.11.1 - 2026-09-23
 

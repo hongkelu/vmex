@@ -33,7 +33,7 @@ ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 if ci_smoke:
     MAX_MODES, MAX_NFEV = [1], [4]
 
-DATA = Path(__file__).resolve().parent / "input.rotating_ellipse"
+DATA = Path(__file__).resolve().parents[1] / "single_stage_support/data/input.rotating_ellipse"
 inp = vj.VmecInput.from_file(DATA)
 # Use the shared input boundary and resolution unchanged.
 

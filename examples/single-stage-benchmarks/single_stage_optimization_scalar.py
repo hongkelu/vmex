@@ -11,7 +11,7 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE), str(HERE.parent), str(HERE.parents[1])]
 from single_stage_support import common, fixed
 
-INPUT = HERE / "input.rotating_ellipse"
+INPUT = common.DATA / "input.rotating_ellipse"
 COILS = None  # --coils skips fitting; --initial-coils chooses the fitting seed
 MAKE_MOVIE = True  # set True for a compact GIF of accepted iterates
 # Surface colors: None, "absB", or "B.n/B".

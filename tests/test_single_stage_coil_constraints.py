@@ -11,7 +11,28 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import _coil_constraints as C
+pytest.importorskip("essos")
+
+import importlib.util
+import sys
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples/coil-constraints-benchmarks"
+sys.path.insert(0, str(EXAMPLE.parent))
+from single_stage_support.common import DATA, resize_coils
+# Load this example's settings without depending on another test's module cache.
+spec = importlib.util.spec_from_file_location("parameters", EXAMPLE / "parameters.py")
+parameters = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(parameters)
+previous = sys.modules.get("parameters")
+sys.modules["parameters"] = parameters
+try:
+    spec = importlib.util.spec_from_file_location("coil_constraint_geometry", EXAMPLE / "_coil_constraints.py")
+    C = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(C)
+finally:
+    if previous is None:
+        sys.modules.pop("parameters", None)
+    else:
+        sys.modules["parameters"] = previous
 
 jax.config.update('jax_enable_x64', True)
 
@@ -86,7 +107,7 @@ def test_clearance_derivative_includes_moving_surface():
 
 def test_saved_coils_use_metres_and_match_essos_geometry():
     from essos.coils import Coils
-    obj=Coils.from_json(str(Path(__file__).with_name('coils_single_stage_scalar_fitted_1789769333906005000.json')))
+    obj=Coils.from_json(str(DATA / 'coils.fitted.json'))
     xyz,_,k=C.geometry(obj.curves.curves,obj.n_segments)
     np.testing.assert_allclose(xyz,obj.gamma,atol=1e-12)
     np.testing.assert_allclose(k,obj.curvature,rtol=1e-12)
@@ -111,8 +132,7 @@ def test_independent_verifier_and_continuous_clearance():
 
 def test_all_coil_rows_have_finite_scaled_jacobian():
     from essos.coils import Coils
-    obj=Coils.from_json(str(Path(__file__).with_name('coils_single_stage_scalar_fitted_1789769333906005000.json')))
-    from _coil_resolution import resize_coils
+    obj=Coils.from_json(str(DATA / 'coils.fitted.json'))
     obj=resize_coils(obj,16,256)
     x0=jnp.asarray(obj.dofs_curves).ravel()
     def from_x(x):
@@ -130,8 +150,7 @@ def test_all_coil_rows_have_finite_scaled_jacobian():
 
 def test_order16_padding_preserves_shape_currents_and_low_mode_scaling():
     from essos.coils import Coils
-    from _coil_resolution import resize_coils
-    seed=Coils.from_json(str(Path(__file__).with_name('coils_single_stage_scalar_fitted_1789769333906005000.json')))
+    seed=Coils.from_json(str(DATA / 'coils.fitted.json'))
     higher=resize_coils(seed,16,256)
     assert higher.order==16 and higher.n_segments==256
     assert higher.dofs_curves.size==297
@@ -145,8 +164,7 @@ def test_order16_padding_preserves_shape_currents_and_low_mode_scaling():
 def test_order16_field_quadrature_on_perturbed_seed():
     from essos.coils import Coils
     from essos.fields import BiotSavart
-    from _coil_resolution import resize_coils
-    seed=Coils.from_json(str(Path(__file__).with_name('coils_single_stage_scalar_fitted_1789769333906005000.json')))
+    seed=Coils.from_json(str(DATA / 'coils.fitted.json'))
     higher=resize_coils(seed,16,256)
     delta=np.random.default_rng(42).normal(size=higher.dofs_curves.shape)*1e-4
     higher=higher.with_dofs(jnp.r_[(higher.dofs_curves+delta).ravel(),higher.dofs_currents])
@@ -163,7 +181,7 @@ def test_free_qualification_requires_two_successive_refined_passes(tmp_path, coe
     """A coarse failure must refine, while persistent mismatches still block reuse."""
     import ast
     import json
-    source = Path(__file__).with_name("verify_free_boundary_single_stage.py").read_text()
+    source = (EXAMPLE / "verify_free_boundary_single_stage.py").read_text()
     function = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "verify_problem")
     reports, calls, reuse = {}, [], []
 

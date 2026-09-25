@@ -15,6 +15,8 @@ import signal
 import sys
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from single_stage_support import common
 GRADIENT_CHECK_FTOL = 1e-22
 GRADIENT_RTOL = 1e-3
 MAX_MODE, ESS_ALPHA, PARAMETER_STEP = 3, 1.2, 0.1
@@ -44,7 +46,7 @@ def check_constraints(problem, values, jacobian, *, steps=(3e-3, 1e-3)):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=HERE / "input.rotating_ellipse")
+    parser.add_argument("--input", type=Path, default=common.DATA / "input.rotating_ellipse")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--ftol", type=float, default=GRADIENT_CHECK_FTOL)
@@ -71,7 +73,8 @@ def main(argv=None):
     import numpy as np
     import vmex as vj
     from vmex import optimize as opt
-    import _scalar_constraints as limits
+    from single_stage_support.constraints import PhysicalConstraints
+    limits = PhysicalConstraints()
 
     if jax.default_backend() != args.device or not jax.config.x64_enabled:
         raise RuntimeError("requested device and float64 precision are required")
@@ -87,7 +90,7 @@ def main(argv=None):
             parameters=dict(max_mode=args.max_mode, ess_alpha=ESS_ALPHA,
                             parameter_step=PARAMETER_STEP, gradient_rtol=GRADIENT_RTOL),
             input_path=args.input, ftol=args.ftol, device=args.device,
-            sources=[__file__, HERE / "_scalar_constraints.py"])
+            sources=[__file__, Path(common.__file__).with_name("constraints.py")])
         inp = replace(vj.VmecInput.from_file(args.input), ftol_array=np.array([args.ftol]))
         problem = opt.VmecProblem.from_tuples(inp,
             [(opt.min_abs_iota, 0., 1.), (opt.major_radius, 0., 1.)],

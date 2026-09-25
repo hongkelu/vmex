@@ -1247,3 +1247,21 @@ curvature peaks and compare mean-squared curvature on two grids. The surface
 clearance check uses multiple continuous-coordinate searches, which do not
 certify a global minimum or finite-winding-pack manufacturability. The example
 README records the sampling, numerical guards and separate qualification steps.
+
+
+Single-stage example layout
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both scalar formulations use the same short builder/optimizer/endpoint entry
+structure. ``examples/single_stage_support/`` contains the shared file handling,
+free-boundary setup, fixed-boundary setup and diagnostics. Its ``data/`` directory
+holds one copy of the common input and coil files; ``coils.fitted.json`` is the
+unchanged former timestamp-named fitted coil file. Geometry tests are in
+``tests/test_single_stage_coil_constraints.py``. Historical validation records
+remain unchanged in ``benchmarks/single_stage_provenance/``.
+
+Production never repeats derivative qualification. Separate verifiers call the
+same builders, and free-boundary qualification fingerprints include the shared
+implementation. Reorganized source therefore requires a new matching report;
+old reports remain valid only for their original source snapshot. This layout
+change does not alter the objective weights, physical constraints or solvers.

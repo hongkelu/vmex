@@ -18,8 +18,10 @@ import time
 DEVICE = "cpu"  # change to "gpu" on the CUDA server, or pass --device gpu
 WALL_SECONDS = 600
 HERE = Path(__file__).resolve().parent
-INPUT = HERE / "input.rotating_ellipse"
-COILS = HERE / "coils.initial.scalar.json"
+sys.path.insert(0, str(HERE.parent))
+from single_stage_support import common
+INPUT = common.DATA / "input.rotating_ellipse"
+COILS = common.DATA / "coils.initial.scalar.json"
 
 
 def main():

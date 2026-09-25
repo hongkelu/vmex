@@ -141,7 +141,7 @@ def test_fixed_file_workflow_real_coil_fit(entries, tmp_path, monkeypatch, mode)
     monkeypatch.delenv("VMEX_EXAMPLES_CI", raising=False)
     output = tmp_path / "fixed"
     output.mkdir()
-    flags = ["--input", str(EXAMPLES / "input.rotating_ellipse"), "--device", "cpu",
+    flags = ["--input", str(EXAMPLES.parent / "single_stage_support/data/input.rotating_ellipse"), "--device", "cpu",
              "--output", str(output), "--coil-fit-maxiter", "2"]
     inp, _ = fixed.common.load_input(fixed.parse_args(flags))
     coil_file = tmp_path / "coils.json"
@@ -265,6 +265,7 @@ def test_fixed_qualification_rejects_wrong_and_nonfinite_rows(tmp_path):
 
 
 def test_coil_free_contract_tracks_bounds_and_uses_shared_input(monkeypatch, tmp_path):
+    pytest.importorskip("essos")
     import sys
     directory = EXAMPLES.parent / "coil-constraints-benchmarks"
     monkeypatch.syspath_prepend(str(directory))
@@ -292,3 +293,77 @@ def test_coil_free_contract_tracks_bounds_and_uses_shared_input(monkeypatch, tmp
     monkeypatch.setattr(entry.common, "load_input", load_input)
     with pytest.raises(RuntimeError, match="shared input reached"):
         entry.build_problem(args)
+
+
+def test_constraint_settings_do_not_leak_between_cases(monkeypatch):
+    monkeypatch.syspath_prepend(str(EXAMPLES.parent))
+    from single_stage_support.constraints import PhysicalConstraints
+
+    first = PhysicalConstraints(IOTA_FLOOR=.19, RADIUS_TARGET=1.)
+    values = np.array([.2, 1.])
+    before = np.asarray(first.inequalities(values))
+    second = PhysicalConstraints(IOTA_FLOOR=.3, RADIUS_TARGET=1.2)
+    assert float(second.inequalities(values)[0]) < 0
+    np.testing.assert_array_equal(first.inequalities(values), before)
+
+
+def test_shared_implementation_changes_invalidate_qualification(entries, monkeypatch, tmp_path):
+    pytest.importorskip("essos")
+    _, entry = entries
+    args = entry.parse_args(["--device", "cpu"])
+    shared = tmp_path / "free.py"
+    shared.write_bytes(Path(entry.free.__file__).read_bytes())
+    monkeypatch.setattr(entry.free, "__file__", str(shared))
+    original = entry.qualification_contract(args)
+    shared.write_text(shared.read_text() + "\nSHARED_IMPLEMENTATION_REVISION = 2\n")
+    assert entry.qualification_contract(args) != original
+
+
+def test_shared_free_builder_preserves_hard_constraint_objective(monkeypatch, tmp_path):
+    """Exercise the actual builder with analytic plasma quantities and real coils."""
+    pytest.importorskip("essos")
+    import jax
+    import jax.numpy as jnp
+    import sys
+    from vmex import optimize as opt
+
+    directory = EXAMPLES.parent / "coil-constraints-benchmarks"
+    monkeypatch.syspath_prepend(str(directory))
+    for name in ("parameters", "_coil_constraints"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = importlib.util.spec_from_file_location("hard_coil_entry",
+        directory / "free_boundary_single_stage_optimization_scalar.py")
+    entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(entry)
+    args = entry.parse_args(["--device", "cpu", "--output", str(tmp_path)])
+    inp, _ = entry.common.load_input(args)
+    seed = object()
+    monkeypatch.setattr(entry.common, "load_input", lambda *a, **k: (inp, seed))
+    monkeypatch.setattr(opt, "QuasisymmetryRatioResidual", lambda *a:
+        SimpleNamespace(residuals_state=lambda state, runtime: state[:2]))
+    monkeypatch.setattr(opt, "aspect_ratio", lambda state, runtime: state[2])
+    monkeypatch.setattr(opt, "min_abs_iota", lambda state, runtime: state[3])
+    # The objective still constructs the moving surface before its empty coil
+    # penalty; only the equilibrium-to-surface conversion is synthetic here.
+    monkeypatch.setattr(opt, "boundary_from_state", lambda *a: (inp.rbc, inp.zbs, None, None))
+    captured = {}
+    problem = SimpleNamespace(accepted_step=0, accepted=SimpleNamespace(root_residual_norm=1e-13),
+        solver_info={}, enable_root_polishing=lambda **kw: captured.update(polishing=kw))
+    def from_loss(inp, loss, **kwargs):
+        captured.update(loss=loss, **kwargs)
+        return problem
+    monkeypatch.setattr(opt.FreeBoundaryProblem, "from_loss", from_loss)
+    stage = entry.build_problem(args)
+    assert captured["restart_from"] is seed
+    assert len(captured["coil_quantities"]) == 1
+    state = jnp.array([2., .3, 5.2, .18])
+    value, derivative = jax.value_and_grad(lambda s: captured["loss"](s, None, stage.coils))(state)
+    np.testing.assert_allclose(value, .5*(4.+.09+.04+.001), rtol=1e-13)
+    np.testing.assert_allclose(derivative, [2., .3, .2, -.1], rtol=1e-12, atol=1e-13)
+    assert stage.coil_costs(stage.coils, None).size == 0
+    values = np.array([.1905, .991, .201])
+    np.testing.assert_allclose(stage.inequalities(values), [0., 0., 1.8, 0.], atol=1e-13)
+    h = 1e-6
+    fd = np.column_stack([(stage.inequalities(values+h*d)-stage.inequalities(values-h*d))/(2*h)
+                          for d in np.eye(3)])
+    np.testing.assert_allclose(fd, stage.constraint_transform, rtol=1e-9, atol=1e-9)

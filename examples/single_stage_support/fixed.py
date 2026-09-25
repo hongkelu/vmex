@@ -22,8 +22,9 @@ def build_problem(args, *, settings, coil_limits=None):
 
     import jax
     import jax.numpy as jnp
-    from _scalar_diagnostics import StepHistory
-    import _scalar_constraints as limits
+    from .diagnostics import StepHistory
+    from .constraints import PhysicalConstraints
+    limits = PhysicalConstraints.from_settings(settings)
 
     if jax.default_backend() != args.device or not jax.config.x64_enabled:
         raise RuntimeError("requested device and float64 precision are required")
@@ -49,8 +50,6 @@ def build_problem(args, *, settings, coil_limits=None):
     if ci_smoke:
         N_SEGMENTS, COIL_ORDER, NPHI, NTHETA, fit_maxiter = 24, 2, 8, 8, 2
         OPTIONS["maxiter"] = 1
-    for name in ("IOTA_FLOOR", "RADIUS_TARGET", "RADIUS_TOLERANCE", "IOTA_MARGIN", "RADIUS_MARGIN"):
-        setattr(limits, name, getattr(settings, name))
     DATA = args.input
     inp, seed = common.load_input(args)
 
@@ -84,9 +83,9 @@ def build_problem(args, *, settings, coil_limits=None):
             parameters=dict(vars(settings), N_SEGMENTS=N_SEGMENTS, COIL_ORDER=COIL_ORDER))
     else:
         from essos.coils import Coils
-        from _coil_resolution import resize_coils
+        from .common import resize_coils
         coils0 = resize_coils(Coils.from_json(str(args.coils or args.initial_coils or
-            settings.HERE / "coils.initial.scalar.json")), COIL_ORDER, N_SEGMENTS)
+            common.DATA / "coils.initial.scalar.json")), COIL_ORDER, N_SEGMENTS)
         if coils0.nfp != inp.nfp or not coils0.stellsym or coils0.dofs_curves.shape != (settings.N_COILS, 3, 2*COIL_ORDER+1):
             raise ValueError("coil count, order or symmetry differs from the case")
     curves0 = coils0.curves
@@ -348,12 +347,12 @@ def build_problem(args, *, settings, coil_limits=None):
     Path("control_source.py").write_text(Path(settings.__file__).read_text())
     Path("fixed_support.py").write_text(Path(__file__).read_text())
     Path("single_stage_common.py").write_text(Path(common.__file__).read_text())
-    Path("_scalar_diagnostics.py").write_text((settings.HERE/"_scalar_diagnostics.py").read_text())
-    Path("_scalar_constraints.py").write_text((settings.HERE/"_scalar_constraints.py").read_text())
+    for source in (Path(__file__).with_name("diagnostics.py"), Path(__file__).with_name("constraints.py")):
+        Path(source.name).write_bytes(source.read_bytes())
     record_step(joint_problem.x0)
 
     if coil_limits is not None:
-        for filename in ("parameters.py", "_coil_constraints.py", "_coil_resolution.py"):
+        for filename in ("parameters.py", "_coil_constraints.py"):
             Path(filename).write_text((settings.HERE/filename).read_text())
     constraints = []
     if args.constrained:
@@ -404,7 +403,8 @@ def verify_endpoint(stage, args, result):
     from vmex import optimize as opt
     from essos.fields import BiotSavart
     from essos.surfaces import surfacerzfourier_from_boundary
-    import _scalar_constraints as limits
+    from .constraints import PhysicalConstraints
+    limits = PhysicalConstraints.from_settings(settings)
     initial_value = stage.monitor.records[0].cost
 
     x_final = stage.x0 + stage.scales * result.x

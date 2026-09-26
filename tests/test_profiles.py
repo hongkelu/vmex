@@ -22,6 +22,56 @@ from vmex.core import profiles
 S = np.linspace(0.0, 1.0, 17)
 
 
+@pytest.mark.parametrize("degree", [0, 1, 2, 12, 20])
+def test_chebyshev_current_integral_and_radial_derivative(degree):
+    c = np.random.default_rng(degree).normal(size=degree + 1)
+    polynomial = np.polynomial.Chebyshev(c, domain=[0, 1])
+    integral = polynomial.integ()
+    s = jnp.asarray(np.linspace(0, 1, 51))
+    def fun(x):
+        return profiles.evaluate_profile("chebyshev_ip", c, None, None, x)
+    got = jax.jit(fun)(s)
+    np.testing.assert_allclose(got, integral(s) - integral(0), rtol=3e-13, atol=3e-15)
+    assert float(got[0]) == 0
+    derivative = jax.jit(jax.vmap(jax.grad(fun)))(s)
+    np.testing.assert_allclose(derivative, polynomial(s), rtol=2e-12, atol=2e-12)
+
+
+def test_chebyshev_current_normalized_tangents_and_adjoint_are_consistent():
+    # Highest modes expose the cancellation that the old power conversion hid.
+    c = jnp.asarray(np.random.default_rng(12).normal(size=21)).at[0].set(4.0)
+    s = jnp.asarray(np.linspace(0, 1, 51))
+    ints = np.array([np.polynomial.Chebyshev.basis(k, domain=[0, 1]).integ()(1)
+                     - np.polynomial.Chebyshev.basis(k, domain=[0, 1]).integ()(0)
+                     for k in range(len(c))])
+
+    @jax.jit
+    def current(coefficients):
+        total = jnp.dot(jnp.asarray(ints), coefficients)
+        enclosed = profiles.current("chebyshev_ip", coefficients, None, None, s)
+        edge = profiles.current("chebyshev_ip", coefficients, None, None, 1.0)
+        return total * enclosed / edge
+
+    basis = jnp.eye(len(c))
+    matrix = jax.jit(lambda q: jax.vmap(lambda v: jax.jvp(current, (q,), (v,))[1])(basis).T)(c)
+    for seed in range(5):
+        v = jnp.asarray(np.random.default_rng(seed).normal(size=len(c)))
+        w = jnp.asarray(np.random.default_rng(seed + 10).normal(size=len(s)))
+        jv = jax.jit(lambda q, v: jax.jvp(current, (q,), (v,))[1])(c, v)
+        pull = jax.jit(lambda q, w: jax.vjp(current, q)[1](w)[0])(c, w)
+        np.testing.assert_allclose(matrix @ v, jv, atol=2e-14, rtol=2e-13)
+        np.testing.assert_allclose(matrix.T @ w, pull, atol=2e-14, rtol=2e-13)
+        np.testing.assert_allclose(jnp.dot(jv, w), jnp.dot(v, pull), atol=2e-14, rtol=2e-13)
+    np.testing.assert_allclose(current(c)[-1], jnp.dot(jnp.asarray(ints), c), rtol=1e-14)
+
+
+def test_chebyshev_current_empty_and_bloat():
+    np.testing.assert_array_equal(profiles.current("chebyshev_ip", [], None, None, S), np.zeros_like(S))
+    # I'(s)=1, so the integrated shape equals the usual bloated/clamped coordinate.
+    np.testing.assert_allclose(profiles.current("chebyshev_ip", [1.0], None, None, S, bloat=2),
+                               np.minimum(2 * S, 1), atol=1e-15)
+
+
 # ---------------------------------------------------------------------------
 # parameterized pressure/iota kinds
 # ---------------------------------------------------------------------------
@@ -497,13 +547,12 @@ def test_two_power_gs_reduces_to_two_power_without_peaks():
 
 
 def test_every_vmec2000_profile_type_is_selectable():
-    """The three wrappers accept exactly what ``profile_functions.f`` does.
+    """The wrappers retain every VMEC kind alongside the native extension.
 
     Enumerated from its ``SELECT CASE`` labels: ``pmass`` has nine explicit
     cases plus ``power_series`` as ``CASE DEFAULT``, ``piota`` six plus the
     default, ``pcurr`` sixteen plus the default.  All of them are implemented,
-    so the counts below are the contract: if VMEC2000 gains a case, this test
-    is what notices.
+    so the counts below retain that contract plus VMEX's Chebyshev extension.
     """
     x = np.linspace(0.0, 1.0, 5)
     generic = _pad21([1.0, 2.0, 1.5])
@@ -542,7 +591,7 @@ def test_every_vmec2000_profile_type_is_selectable():
             kind, coefficients_for(kind), None, None, x))), kind
     assert len(profiles._PMASS_KINDS) == 10
     assert len(profiles._PIOTA_KINDS) == 7
-    assert len(profiles._PCURR_KINDS) == 17
+    assert len(profiles._PCURR_KINDS) == 18  # VMEC kinds plus native Chebyshev
     # A name VMEC2000 does not have must still be refused, not guessed at.
     for unknown in ("sum_cossq", "two_power_g", "quadratic"):
         with pytest.raises(NotImplementedError):

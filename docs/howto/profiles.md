@@ -46,6 +46,19 @@ Both accept the `cubic_spline` form with `AC_AUX_S/AC_AUX_F` and
 `AI_AUX_S/AI_AUX_F`. At `NCURR=1` the transform is an output — read `iotaf`
 from the wout.
 
+For current profiles with high-order coefficients, VMEX also supports
+`PCURR_TYPE='chebyshev_ip'`. Here `AC[k]` multiplies the shifted Chebyshev
+polynomial `T_k(2*s-1)` in the current derivative `I'(s)`. VMEX integrates
+the series in the Chebyshev basis and evaluates it by Clenshaw recurrence;
+the usual `CURTOR` normalization and `BLOAT` mapping still apply. The same
+evaluation is used in ordinary solves and implicit derivatives.
+
+This is a **VMEX extension**, not a VMEC2000 profile name. VMEX input and
+WOUT files retain the native name and coefficients. Before using such a deck
+with external VMEC2000 software, explicitly convert the profile to a supported
+representation and check its accuracy; high-order power conversion can lose
+precision through cancellation.
+
 ## Same equilibrium, both representations
 
 `examples/profiles_power_and_spline.py` solves one deck with polynomial and

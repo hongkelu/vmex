@@ -53,6 +53,7 @@ line_segment         linear interpolation through the knots
 power_series_ip      current: ``I(x) = sum_i c[i]/(i+1) x**(i+1)`` (VMEC
                      ``pcurr_type='power_series'``: c parameterizes I')
 power_series_i       current: ``I(x) = sum_i c[i] x**(i+1)``
+chebyshev_ip         VMEX extension: integral of ``sum_i c[i] T_i(2*x-1)``
 two_power_ip         current: ``I(x) = int_0^x two_power(c, t) dt``
 gauss_trunc_ip       current: ``I(x) = int_0^x c[0](exp(-(t/c[1])**2)-E) dt``
 pedestal_i           VMEC2000 ``pcurr`` pedestal parameterization of I(x)
@@ -491,6 +492,31 @@ def _pcurr_power_series_i(coefficients, x):
     return y
 
 
+def _pcurr_chebyshev_ip(coefficients, x):
+    """Integrate shifted Chebyshev I' coefficients without power conversion.
+
+    This VMEX extension is not a VMEC2000 profile kind. Coefficients remain
+    traceable through both ordinary setup and implicit current feedback.
+    """
+    c = jnp.asarray(_coeffs(coefficients), dtype=jnp.float64)
+    x = jnp.asarray(x, dtype=jnp.float64)
+    if len(c) == 0:
+        return jnp.zeros_like(x)
+    # Integrate in t=2*s-1; ds=dt/2. The static coefficient map stays
+    # in the Chebyshev basis. Only its multiplication by c is traced.
+    integration = np.polynomial.chebyshev.chebint(np.eye(len(c)), scl=0.5, axis=0)
+    a = jnp.asarray(integration, dtype=c.dtype) @ c
+
+    def clenshaw(t):
+        b1 = jnp.zeros_like(t)
+        b2 = jnp.zeros_like(t)
+        for k in range(len(a) - 1, 0, -1):
+            b1, b2 = a[k] + 2 * t * b1 - b2, b1
+        return a[0] + t * b1 - b2
+
+    return clenshaw(2 * x - 1) - clenshaw(jnp.asarray(-1, dtype=x.dtype))
+
+
 def _integrate_0_to_x(fun, coefficients, x):
     """``int_0^x fun(c, t) dt`` by VMEC2000's 10-point Gauss-Legendre rule.
 
@@ -793,6 +819,7 @@ _PARAMETERIZED = {
     "pedestal": _pedestal,
     "power_series_ip": _pcurr_power_series_ip,
     "power_series_i": _pcurr_power_series_i,
+    "chebyshev_ip": _pcurr_chebyshev_ip,
     "two_power_ip": _pcurr_two_power_ip,
     "gauss_trunc_ip": _pcurr_gauss_trunc_ip,
     "pedestal_i": _pcurr_pedestal_i,
@@ -919,6 +946,7 @@ def iota(piota_type: str, ai, ai_aux_s, ai_aux_f, s, *, bloat=1.0, lrfp=False):
 
 #: pcurr_type -> evaluate_profile kind (profile_functions.f pcurr cases).
 _PCURR_KINDS = {
+    "chebyshev_ip": "chebyshev_ip",
     "power_series": "power_series_ip",
     "power_series_i": "power_series_i",
     "sum_atan": "sum_atan",
@@ -949,6 +977,10 @@ def current(pcurr_type: str, ac, ac_aux_s, ac_aux_f, s, *, bloat=1.0):
     ``I`` directly.  VMEC2000 (``profil1d.f``) rescales the result so the
     edge value matches ``CURTOR`` when ``NCURR = 1``; that scaling is the
     caller's responsibility.
+
+    ``chebyshev_ip`` is a VMEX extension with AC storing coefficients of
+    ``I'(s)`` in the shifted basis ``T_k(2*s-1)``; external VMEC2000 readers
+    require an explicit conversion to a supported profile kind.
     """
     kind = _PCURR_KINDS.get(str(pcurr_type).strip().lower())
     if kind is None:

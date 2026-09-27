@@ -97,7 +97,7 @@ OUTPUT_NAME = "QA_turbulence_quasilinear_optimized"
 # VMEX_EXAMPLES_CI=1 is the short smoke pass the test suite runs:
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 if ci_smoke:
-    MAX_MODES, MAX_NFEV = [1], [3]
+    MAX_MODES, MAX_NFEV = [1], [6]
     N_LAGUERRE, N_HERMITE, NTHETA = 2, 3, 16
     FINAL_NS, FINAL_FTOL = 31, 1.0e-10
 

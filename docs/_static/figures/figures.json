@@ -39,8 +39,8 @@
     },
     {
       "path": "docs/_static/figures/mirror_fixed_boundary_3d.webp",
-      "sha256": "8ee4a29853495875bb65bae21306b26111cce6dbd17f483f473ee8b483673fef",
-      "bytes": 147018,
+      "sha256": "69f0d882c03863dcffa00e057d313332d4de40f577d72b8170ab9aedd477eedf",
+      "bytes": 47256,
       "generator": "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
       "command": "python examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
       "inputs": [],
@@ -57,8 +57,8 @@
     },
     {
       "path": "docs/_static/figures/mirror_free_boundary_beta_scan.webp",
-      "sha256": "725233ae2353863432dd214eee4d6ce62bef7d7201e0fd3269c30ddcbaeef90e",
-      "bytes": 163152,
+      "sha256": "38d655d9c4d878ab16e906f21c0b3da77ad6938f59466141e858d0809d73acac",
+      "bytes": 101338,
       "generator": "examples/mirror/mirror_free_boundary_beta_scan.py",
       "command": "python examples/mirror/mirror_free_boundary_beta_scan.py",
       "inputs": [],
@@ -212,8 +212,8 @@
     },
     {
       "path": "docs/_static/figures/readme_optimization.webp",
-      "sha256": "983b489832720171162462cf5ce314f4b0d8520cd972b8755d2e39b65d608056",
-      "bytes": 297724,
+      "sha256": "7e763e1b60e72d302b29571659d71a0a62397b99fec841643f7b54e6a37bbc26",
+      "bytes": 193504,
       "generator": "examples/plot_optimized_families.py",
       "command": "python examples/plot_optimized_families.py",
       "inputs": [],
@@ -248,8 +248,8 @@
     },
     {
       "path": "docs/_static/figures/readme_polish_plot.webp",
-      "sha256": "ae6b19e47a95752b5c949df095d5adb71fbc8e5d79ca6b7a1d4ca44682889c6d",
-      "bytes": 273940,
+      "sha256": "e9c4604f1f301134f71b7114a80db5837842afbd8b2e302b79d5b2be868eb46c",
+      "bytes": 108972,
       "generator": "examples/force_balance_polishing.py",
       "command": "python examples/force_balance_polishing.py",
       "inputs": [
@@ -288,8 +288,8 @@
     },
     {
       "path": "docs/_static/figures/readme_qi.webp",
-      "sha256": "493a17ffc3fe32dfa1a8eadf01b245f9605023f400a86d0fc4a0328d6ce55079",
-      "bytes": 538774,
+      "sha256": "37b4f448a9a41c23b55fd6a730fd96a75e34102ef0c5062752f5021144c2d457",
+      "bytes": 291042,
       "generator": "examples/plot_optimized_families.py",
       "command": "python examples/plot_optimized_families.py",
       "inputs": [
@@ -390,8 +390,8 @@
     },
     {
       "path": "docs/_static/figures/stellarator_mirror_hybrid.webp",
-      "sha256": "143928dbdaae7432bab69e78c544bde4292275ba38905bf6786b2feb6cbe7aa0",
-      "bytes": 159326,
+      "sha256": "78f29025f23ceeed8dd60ac6810c7f247ef62418b6e3bd0d8cbe3b73d779dce6",
+      "bytes": 93312,
       "generator": "examples/mirror/stellarator_mirror_hybrid.py",
       "command": "python examples/mirror/stellarator_mirror_hybrid.py",
       "inputs": [],

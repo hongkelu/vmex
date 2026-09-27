@@ -1,7 +1,13 @@
-"""Host-controlled dense adjoints of the canonical projected free-boundary root."""
+"""Dense and seed-LU matrix-free adjoints of the projected free-boundary root.
+
+The dense path factors the active-space Jacobian at each root. The
+matrix-free path reuses only an explicitly retained seed LU as a GMRES
+preconditioner; acceptance checks always use the full current operator.
+"""
 from __future__ import annotations
 
 import functools
+from functools import partial
 import warnings
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -12,8 +18,10 @@ import jax.scipy.linalg as jsl
 import numpy as np
 import scipy.linalg as sl
 from jax.flatten_util import ravel_pytree
+from solvax.krylov import gmres
 
 from . import implicit as im
+from .errors import AdjointSolveError
 
 
 class _Space(NamedTuple):
@@ -101,33 +109,31 @@ def _assemble_device(tangent, template, space, *, batch_size):
     return rows.T
 
 
-def _assemble_host(tangent, template, space, batch_size):
-    size = space.left.shape[0]
-    matrix = np.empty((size, size), dtype=np.asarray(ravel_pytree(template)[0]).dtype)
-    for start in range(0, size, batch_size):
-        count = min(batch_size, size-start)
-        matrix[:,start:start+count] = np.asarray(
-            _columns(tangent,template,space,jnp.arange(batch_size)+start))[:count].T
-    return matrix
-
-
-def _factor_solve(matrix, rhs, backend, *, return_factors=False):
+def _factor_solve(matrix, rhs, *, return_factors=False):
     """One factorization, all transpose RHS columns, without assuming symmetry."""
-    if backend == 'forward_dense':
+    factors = jsl.lu_factor(matrix)
+    # A CUDA factorization can return an invalid pivot buffer even when the
+    # LU entries are finite. Never feed sentinel indices to lu_solve: refactor
+    # the identical matrix on the host. All residual gates still apply.
+    pivots = np.asarray(factors[1])
+    size = matrix.shape[0]
+    if not (pivots.shape == (size,) and np.issubdtype(pivots.dtype, np.integer)
+            and np.all((pivots >= np.arange(size)) & (pivots < size))):
+        warnings.warn("GPU LU returned invalid pivot indices; refactoring the same matrix on CPU",
+                      RuntimeWarning, stacklevel=2)
+        del factors
         with warnings.catch_warnings():
             warnings.simplefilter('error', sl.LinAlgWarning)
-            factors = sl.lu_factor(matrix)
-            solution = sl.lu_solve(factors, np.asarray(rhs).T, trans=1).T
+            factors = sl.lu_factor(np.asarray(matrix))
+            solution = jnp.asarray(sl.lu_solve(factors, np.asarray(rhs).T, trans=1).T)
     else:
-        factors = jsl.lu_factor(matrix)
         solution = jsl.lu_solve(factors, rhs.T, trans=1).T
     return (solution, factors) if return_factors else solution
 
 
-def _refine_dense_solution(matrix, rhs, solution, factors, backend, tolerances):
+def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
     """Correct failed rows with the same LU; retain only residual improvements."""
-    xp = np if backend == 'forward_dense' else jnp
-    solve = sl.lu_solve if backend == 'forward_dense' else jsl.lu_solve
+    xp, solve = jnp, jsl.lu_solve
     rhs, solution = xp.asarray(rhs), xp.asarray(solution)
     defect = rhs - solution @ matrix
     norms = xp.linalg.norm(defect, axis=1)
@@ -175,8 +181,7 @@ class DenseRootLinearization:
     _tangent_backend = 'reused_dense_lu'
 
     def _solve_tangent(self, rhs):
-        solve = sl.lu_solve if self.cfg.adjoint_solver == "forward_dense" else jsl.lu_solve
-        solution = solve(self.factors, -_compress(rhs, self.space), trans=0)
+        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=0)
         return _expand(solution, self.z, self.space), 1
 
     def offload_factors(self):
@@ -256,7 +261,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     This interface is host-eager even for the JAX matrix backend: the runtime
     mask determines the active dimension. No Krylov fallback is substituted.
     """
-    if return_linearization and (cfg.adjoint_solver not in {'forward_dense', 'forward_dense_jax'} or cfg.adjoint_fail != 'error'):
+    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
         raise ValueError('retained dense linearization requires a dense backend with adjoint_fail=error')
     values = (z,params,field,frozen,rcon,zcon,rhs_batch,mask)
     if any(isinstance(x,jax.core.Tracer) for x in jax.tree.leaves(values)):
@@ -271,10 +276,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     space = jax.tree.map(jnp.asarray, space)
     batch_size = min(cfg.adjoint_dense_batch_size, space.left.size)
     tangent = _prepare_tangent(z,params,field,frozen,rcon,zcon,residual=residual)
-    if cfg.adjoint_solver == 'forward_dense':
-        matrix = _assemble_host(tangent,z,space,batch_size)
-    else:
-        matrix = _assemble_device(tangent,z,space,batch_size=batch_size)
+    matrix = _assemble_device(tangent,z,space,batch_size=batch_size)
     rhs = jax.vmap(lambda value:_compress(value,space))(rhs_batch)
     def reject(row, norm, tolerance):
         im._raise_adjoint_unconverged(cfg.implicit,iterations=1,
@@ -283,7 +285,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     if not bool(jnp.all(jnp.isfinite(matrix))):
         reject(0,np.inf,0.)
     try:
-        solution, factors = _factor_solve(matrix,rhs,cfg.adjoint_solver,return_factors=True)
+        solution, factors = _factor_solve(matrix,rhs,return_factors=True)
     except (np.linalg.LinAlgError, sl.LinAlgWarning):
         reject(0,np.inf,0.)
     # Check the actual dense equation after the solve, independently of the
@@ -293,7 +295,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     tolerances = (im._adjoint_acceptance(cfg.implicit,rhs_norms) if residual_rtol is None
                   else residual_rtol * rhs_norms)
     solution, norms, initial_norms, refinement_steps = _refine_dense_solution(
-        matrix, rhs, solution, factors, cfg.adjoint_solver, np.asarray(tolerances))
+        matrix, rhs, solution, factors, np.asarray(tolerances))
     for row in range(rhs.shape[0]):
         finite = bool(jnp.isfinite(norms[row]) & jnp.all(jnp.isfinite(solution[row])))
         accepted = finite and float(norms[row]) <= float(tolerances[row])
@@ -315,81 +317,286 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
             residual,z,params,field,frozen,rcon,zcon,space,factors,tangent,cfg)
     return adjoints
 
+def _signature(tree):
+    return jax.tree.structure(tree), [(x.shape, x.dtype) for x in jax.tree.leaves(tree)]
 
-BATCH_SIZES = (32, 64)
+
+def _rhs_key(value):
+    """Identify exact RHS equality while treating signed zeros as equal."""
+    canonical = np.array(value, copy=True)
+    canonical[canonical == 0] = 0.0
+    return canonical.tobytes()
 
 
-def tune_adjoint_batch(evaluate, *, deadline, event, clock=None):
-    """Return (batch, owned linearization, report) at one unchanged root.
+@dataclass(eq=False)
+class SeedLU:
+    """An immutable host copy of certified factors, independent of root lifetime."""
 
-    ``evaluate(batch)`` must return a certified native linearization. Compile
-    both shapes, then measure three pairs in alternating order. Choose 64 only
-    if it beats 32 by at least 5% in every pair. The first 32 gradient is the
-    numerical reference; no candidate may change any gradient row by 1e-8.
-    All objects except the returned winner are closed, including on failure.
-    No timings or numerical factors are shared across runs/devices.
-    """
-    import statistics
-    import time
-    import numpy as np
+    factors: object
+    space: object
+    signature: object
+    field_shape: tuple
+    cfg: object
+    rtol: float
+    restart: int
+    max_restarts: int
+    rhs_batch_size: int = 1
 
-    clock = time.monotonic if clock is None else clock
-    roots, records = {}, []
-    reference = None
-    started = clock()
-    baseline, candidate = BATCH_SIZES
-    try:
-        # Discard the first call for each static batch shape (includes JIT).
-        schedule = [(batch, None) for batch in BATCH_SIZES]
-        schedule += [(batch, pair) for pair, order in enumerate(
-            (BATCH_SIZES, BATCH_SIZES[::-1], BATCH_SIZES)) for batch in order]
-        for batch, pair in schedule:
-            if clock() >= deadline:
-                raise TimeoutError('walltime during adjoint batch tuning')
-            if batch in roots:
-                roots.pop(batch).close()
-            event('adjoint_batch_probe_start', batch=batch, pair=pair)
-            start = clock()
-            root = evaluate(batch)
-            roots[batch] = root
-            jac = np.asarray(root.field_jacobian)  # synchronize before timing
-            seconds = clock() - start
-            if clock() >= deadline:
-                raise TimeoutError('walltime during adjoint batch tuning')
-            if not np.isfinite(seconds) or seconds <= 0:
-                raise ValueError('invalid adjoint batch timing')
-            if not np.all(np.isfinite(jac)):
-                raise ValueError('nonfinite adjoint batch gradient')
-            if reference is None:
-                reference = jac.copy()
-            if jac.shape != reference.shape:
-                raise ValueError('adjoint batch gradient shape changed')
-            norm = np.linalg.norm(reference, axis=1)
-            difference = np.linalg.norm(jac - reference, axis=1)
-            if not np.all(np.isfinite(norm)) or not np.all(np.isfinite(difference)):
-                raise ValueError('nonfinite adjoint batch gradient norm')
-            # Zero reference rows require exact agreement; never hide them
-            # behind an absolute tolerance or a division-by-zero workaround.
-            relative = np.divide(difference, norm, out=np.zeros_like(norm), where=norm > 0)
-            if np.any((norm == 0) & (difference != 0)) or np.any(relative > 1e-8):
-                raise ValueError('adjoint batch gradient agreement failed')
-            record = dict(batch=batch, pair=pair, warmup=pair is None,
-                          seconds=seconds, maximum_gradient_row_relative_difference=float(max(relative)))
-            records.append(record)
-            event('adjoint_batch_probe', **record)
-        timings = {batch: [r['seconds'] for r in records
-                          if r['batch'] == batch and not r['warmup']] for batch in BATCH_SIZES}
-        ratios = [b / a for a, b in zip(timings[baseline], timings[candidate])]
-        selected = candidate if all(r < 0.95 for r in ratios) else baseline
-        report = dict(requested='auto', selected_batch_size=selected,
-                      candidates=list(BATCH_SIZES), records=records, paired_64_over_32=ratios,
-                      warm_median_seconds={str(b): statistics.median(t) for b, t in timings.items()},
-                      minimum_consistent_speedup_fraction=0.05,
-                      gradient_agreement_rtol=1e-8, elapsed_seconds=clock() - started,
-                      reason='consistent_gain' if selected == candidate else 'no_consistent_gain')
-        event('adjoint_batch_selected', **report)
-        winner = roots.pop(selected)
-        return selected, winner, report
-    finally:
-        for root in roots.values():
-            root.close()
+    @classmethod
+    def from_root(
+        cls,
+        root,
+        *,
+        rtol=1e-11,
+        restart=30,
+        max_restarts=10,
+        rhs_batch_size=1,
+    ):
+        """Snapshot a dense seed without retaining its numerical differentiation tape."""
+        if type(root) is not DenseRootLinearization or root.factors is None:
+            raise ValueError("a live dense linearization is required to create a seed LU")
+        if not np.isfinite(rtol) or not 0 < rtol < 1:
+            raise ValueError("Krylov rtol must be finite and in (0, 1)")
+        if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (restart, max_restarts)):
+            raise ValueError("restart and max_restarts must be positive integers")
+        if isinstance(rhs_batch_size, bool) or not isinstance(rhs_batch_size, int) or not 1 <= rhs_batch_size <= 4:
+            raise ValueError("rhs_batch_size must be an integer in [1, 4]")
+        factors = tuple(np.array(x, copy=True) for x in root.factors)
+        space = jax.tree.map(lambda x: np.array(x, copy=True), root.space)
+        if factors[0].dtype != np.float64:
+            raise TypeError("seed LU requires float64")
+        for value in (*factors, *space):
+            value.setflags(write=False)
+        return cls(
+            factors=factors,
+            space=space,
+            signature=_signature(root.z),
+            field_shape=root.field.shape,
+            cfg=root.cfg,
+            rtol=rtol,
+            restart=restart,
+            max_restarts=max_restarts,
+            rhs_batch_size=rhs_batch_size,
+        )
+
+    def validate(self, z, field, space, cfg):
+        """Reject closed seeds and changes to the solver, state layout or active basis."""
+        if self.factors is None:
+            raise ValueError("seed LU preconditioner is closed")
+        if cfg is not self.cfg or _signature(z) != self.signature or field.shape != self.field_shape:
+            raise ValueError("seed LU belongs to a different solver or state layout")
+        if any(not np.array_equal(a, b) for a, b in zip(space, self.space)):
+            raise ValueError("seed LU active space differs from the current root")
+
+    def close(self):
+        """Release the seed; already-created root linearizations remain independent."""
+        self.factors = self.space = self.signature = self.cfg = None
+
+
+@jax.jit
+def _forward_from_transpose(transpose, template, vector):
+    return jax.linear_transpose(lambda value: transpose(value)[0], template)(vector)[0]
+
+
+def prepare(z, params, field, frozen, rcon, zcon, *, residual):
+    """Keep tape arrays dynamic so changed roots do not create new JIT callables."""
+    from .freeboundary_implicit import _prepare_linearized_transpose
+
+    transpose = _prepare_linearized_transpose(z, params, field, frozen, rcon, zcon, residual=residual)
+    return jax.tree_util.Partial(_forward_from_transpose, transpose, z)
+
+
+@partial(jax.jit, static_argnames=("transpose", "rtol", "restart", "max_restarts", "return_info"))
+def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, max_restarts, return_info=False):
+    """Bounded right-preconditioned FGMRES; the caller certifies the full equation."""
+
+    def operator(vector):
+        value = _expand(vector, template, space)
+        result = jax.linear_transpose(action, template)(value)[0] if transpose else action(value)
+        return _compress(result, space)
+
+    answer = gmres(
+        operator,
+        rhs,
+        precond=lambda value: jsl.lu_solve(factors, value, trans=int(transpose)),
+        rtol=rtol,
+        atol=0.0,
+        restart=min(restart, rhs.size),
+        max_restarts=max_restarts,
+    )
+    if return_info:
+        return answer.x, answer.iterations, answer.residual_norm, answer.converged
+    return answer.x, answer.iterations
+
+
+@partial(jax.jit, static_argnames=("rtol", "restart", "max_restarts"))
+def _solve_many(action, template, space, factors, rhs, *, rtol, restart, max_restarts):
+    """Batch independent solves, retaining each row's stopping diagnostics."""
+    return jax.vmap(
+        lambda vector: solve(
+            action,
+            template,
+            space,
+            factors,
+            vector,
+            transpose=True,
+            rtol=rtol,
+            restart=restart,
+            max_restarts=max_restarts,
+            return_info=True,
+        )
+    )(rhs)
+
+
+def _solve_unique(action, template, space, factors, reduced, *, batch_size, **options):
+    """Group distinct nonzero rows without solving equal or opposite RHS twice."""
+    unique, seen = [], set()
+    for vector in reduced:
+        host = np.asarray(vector)
+        if not np.all(np.isfinite(host)):
+            raise ValueError("nonfinite adjoint right-hand side")
+        key, opposite = _rhs_key(host), _rhs_key(-host)
+        if np.any(host) and key not in seen and opposite not in seen:
+            unique.append((key, vector))
+            seen.add(key)
+    solved = {}
+    for start in range(0, len(unique), batch_size):
+        group = unique[start : start + batch_size]
+        result = _solve_many(action, template, space, factors, jnp.stack([v for _, v in group]), **options)
+        for index, (key, _) in enumerate(group):
+            solved[key] = tuple(value[index] for value in result)
+    return solved
+
+
+@dataclass(eq=False)
+class MatrixFreeRootLinearization(DenseRootLinearization):
+    """Retain a current-root tape and the seed factors for checked predictor solves."""
+
+    rtol: float = 1e-11
+    restart: int = 30
+    max_restarts: int = 10
+    _tangent_backend = "matrixfree_seed_lu"
+
+    def _solve_tangent(self, rhs):
+        solution, iterations = solve(
+            self.action,
+            self.z,
+            self.space,
+            self.factors,
+            -_compress(rhs, self.space),
+            transpose=False,
+            rtol=self.rtol,
+            restart=self.restart,
+            max_restarts=self.max_restarts,
+        )
+        return _expand(solution, self.z, self.space), int(iterations)
+
+
+def solve_matrixfree_adjoint(
+    residual,
+    z,
+    params,
+    field,
+    frozen,
+    rcon,
+    zcon,
+    rhs_batch,
+    mask,
+    cfg,
+    *,
+    preconditioner,
+    diagnostics=None,
+    return_linearization=False,
+):
+    """Solve arbitrary RHS batches; reuse only exact equal/opposite RHS solutions."""
+    if cfg.adjoint_solver != "forward_dense_jax" or cfg.adjoint_fail != "error":
+        raise ValueError("seed LU requires forward_dense_jax with adjoint_fail=error")
+    space = _active_space(cfg.implicit, mask, cfg.adjoint_dense_max_dofs)
+    preconditioner.validate(z, field, space, cfg)
+    space = jax.tree.map(jnp.asarray, space)
+    factors = jax.tree.map(jnp.asarray, preconditioner.factors)
+    action = prepare(z, params, field, frozen, rcon, zcon, residual=residual)
+    reduced = jax.vmap(lambda value: _compress(value, space))(rhs_batch)
+    options = dict(rtol=preconditioner.rtol, restart=preconditioner.restart, max_restarts=preconditioner.max_restarts)
+    solved = (
+        _solve_unique(action, z, space, factors, reduced, batch_size=preconditioner.rhs_batch_size, **options)
+        if preconditioner.rhs_batch_size > 1
+        else None
+    )
+    adjoints, cache = [], {}
+    for row in range(reduced.shape[0]):
+        vector = reduced[row]
+        host = np.asarray(vector)
+        if not np.all(np.isfinite(host)):
+            raise ValueError("nonfinite adjoint right-hand side")
+        key, opposite = _rhs_key(host), _rhs_key(-host)
+        reused = key in cache or opposite in cache
+        if not np.any(host):
+            solution, iterations = jnp.zeros_like(vector), 0
+            krylov_norm, converged = 0.0, True
+        elif reused:
+            solution, krylov_norm, converged = cache[key] if key in cache else cache[opposite]
+            if key not in cache:
+                solution = -solution
+            iterations = 0
+        else:
+            if solved is None:
+                solution, iterations, krylov_norm, converged = solve(
+                    action, z, space, factors, vector, transpose=True, return_info=True, **options
+                )
+            else:
+                solution, iterations, krylov_norm, converged = solved[key]
+            krylov_norm, converged = float(krylov_norm), bool(converged)
+        adjoint = _expand(solution, z, space)
+        rhs = jax.tree.map(lambda value: value[row], rhs_batch)
+        applied = jax.linear_transpose(action, z)(adjoint)[0]
+        defect = jax.tree.map(jnp.subtract, applied, rhs)
+        norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
+        rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
+        report = im._adjoint_diagnostic(cfg.implicit, row=row, residual_norm=norm,
+            rhs_norm=rhs_norm, iterations=iterations, backend="matrixfree_seed_lu",
+            residual_rtol=cfg.adjoint_residual_rtol, finite=bool(jnp.all(jnp.isfinite(solution))))
+        tolerance, full_passed = report["tolerance"], report["accepted"]
+        passed = full_passed
+        if diagnostics is not None:
+            report.update(accepted=passed, full_residual_accepted=full_passed,
+                krylov_converged=converged, krylov_residual_norm=krylov_norm,
+                krylov_tolerance=preconditioner.rtol * float(np.linalg.norm(host)),
+                rhs_batch_size=preconditioner.rhs_batch_size, reused_rhs=reused,
+                requested_rtol=preconditioner.rtol, restart=min(preconditioner.restart, vector.size),
+                max_cycles=preconditioner.max_restarts)
+            diagnostics.append(report)
+        if not passed:
+            reason = f"full residual {norm:.3e} exceeds acceptance {tolerance:.3e} or is nonfinite"
+            raise AdjointSolveError(
+                message=(
+                    f"implicit adjoint matrixfree_seed_lu row {row} solve did not converge: "
+                    f"{reason} after {int(iterations)} "
+                    f"Krylov iterations (restart={min(preconditioner.restart, vector.size)}, "
+                    f"max_cycles={preconditioner.max_restarts}, requested_rtol={preconditioner.rtol:g})"
+                ),
+                hint="Inspect the current operator and preconditioner; the failed adjoint was not returned.",
+                iterations=int(iterations),
+                residual_norm=norm,
+                tolerance=tolerance,
+            )
+        cache[key] = solution, krylov_norm, converged
+        adjoints.append(adjoint)
+    result = jax.tree.map(lambda *values: jnp.stack(values), *adjoints)
+    if return_linearization:
+        root = MatrixFreeRootLinearization(
+            residual,
+            z,
+            params,
+            field,
+            frozen,
+            rcon,
+            zcon,
+            space,
+            preconditioner.factors,
+            action,
+            cfg,
+            **options,
+        )
+        return result, root
+    return result

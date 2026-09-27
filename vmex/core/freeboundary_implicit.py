@@ -31,7 +31,6 @@ from jax.flatten_util import ravel_pytree
 from scipy.sparse import bsr_matrix
 from scipy.sparse.linalg import LinearOperator, gcrotmk
 from solvax import SpluFactorization, block_thomas_factor, block_thomas_solve
-from solvax import gcrot as _solvax_gcrot
 from solvax import gmres as _solvax_gmres
 
 from . import implicit as im
@@ -56,7 +55,7 @@ Array = Any
 #: ``edge_response`` iterates the coupled transpose on a dense model of
 #: NESTOR.
 _ADJOINT_SOLVERS = ("boundary_schur", "coupled_gcrot", "edge_response",
-                    "forward_dense", "forward_dense_jax")
+                    "forward_dense_jax")
 
 
 @dataclass(frozen=True, eq=False)
@@ -120,9 +119,9 @@ def make_free_boundary_config(
     accelerator host unless the process already pins JAX placement; pass an
     explicit device to override that measured lower-memory default.
     ``adjoint_solver="coupled_gcrot"`` is the default host Krylov path;
-    ``"forward_dense"`` and ``"forward_dense_jax"`` assemble the active
-    Jacobian with forward JVPs and solve its transpose using SciPy or JAX LU.
-    Both dense backends require float64 host-eager gradients.
+    ``"forward_dense_jax"`` assembles the active Jacobian with forward JVPs
+    and solves its transpose with JAX LU; it requires float64 host-eager
+    gradients.
     ``"boundary_schur"`` selects the advanced radial-elimination path, which
     stays well conditioned on marginally converged roots where the coupled
     Krylov solve stalls.  ``"edge_response"`` is the coupled Krylov solve
@@ -736,7 +735,7 @@ def _solve_bwd(cfg, saved, state_bar):
 
 def _solve_bwd_impl(cfg, saved, state_bar):
     params, field_parameters, state, mask, rcon0, zcon0 = saved
-    if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"} and any(
+    if cfg.adjoint_solver in {"forward_dense_jax"} and any(
         isinstance(value, jax.core.Tracer) for value in jax.tree.leaves((saved,state_bar))
     ):
         raise ValueError("dense free-boundary adjoints require host-eager inputs; "
@@ -746,7 +745,7 @@ def _solve_bwd_impl(cfg, saved, state_bar):
     residual = _projected_residual(cfg, mask)
     z_star = project(state)
 
-    if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"}:
+    if cfg.adjoint_solver in {"forward_dense_jax"}:
         from ._freeboundary_dense import solve_dense_adjoint
         batch = jax.tree.map(lambda x:x[None], project(state_bar))
         lam = jax.tree.map(lambda x:x[0], solve_dense_adjoint(
@@ -1698,39 +1697,6 @@ def _prepare_linearized_transpose(z, p, field, base, rcon, zcon, *, residual):
     return jax.linear_transpose(tangent, z)
 
 
-@functools.partial(jax.jit, static_argnames=("rtol", "m", "k", "max_restarts"))
-def _tangent_gcrot_core(operator, rhs, *, rtol, m, k, max_restarts):
-    """Device Krylov loop with an independently recomputed true residual."""
-    flat, unravel = ravel_pytree(rhs)
-
-    def action(value):
-        return _transpose_matvec(value, operator, rhs)
-
-    solution = _solvax_gcrot(
-        action, flat, rtol=rtol, atol=0.0,
-        m=min(m, flat.size), k=min(k, flat.size),
-        max_restarts=max_restarts)
-    norm = jnp.linalg.norm(action(solution.x) - flat)
-    return unravel(solution.x), norm, jnp.linalg.norm(flat), solution.iterations
-
-
-def _solve_gcrot_tangent(operator, rhs, cfg, *, residual_rtol=None, diagnostics=None):
-    """Certify the forward tangent with an independently evaluated residual."""
-    tangent, norm, rhs_norm, iterations = _tangent_gcrot_core(
-        operator, rhs, rtol=cfg.adjoint_tol, m=cfg.adjoint_gcrot_m,
-        k=cfg.adjoint_gcrot_k, max_restarts=cfg.adjoint_maxiter)
-    finite = all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(tangent))
-    report = im._adjoint_diagnostic(cfg, residual_norm=norm, rhs_norm=rhs_norm,
-        iterations=iterations, backend="gcrot_tangent", residual_rtol=residual_rtol,
-        finite=finite)
-    if diagnostics is not None:
-        diagnostics.append(report)
-    if not report["accepted"]:
-        im._raise_adjoint_unconverged(cfg, iterations=int(iterations),
-            residual_norm=float(norm), tolerance=report["tolerance"], method="GCROT tangent")
-    return tangent
-
-
 def _host_adjoint(
     residual, z_star, params, field_parameters, frozen, rcon0, zcon0, rhs, cfg,
     *, x0=None, fail="error", pullback=None, certify=False, row=None,
@@ -1894,16 +1860,16 @@ def free_boundary_state_pullback_multi_rhs(
     root residual, separately from each linear adjoint's existing acceptance
     policy. This numerical check is not a physical accuracy certificate.
 
-    This host-eager helper also supports ``forward_dense`` and
-    ``forward_dense_jax`` (one matrix assembly and factorization per batch).
+    This host-eager helper also supports ``forward_dense_jax`` (one matrix
+    assembly and factorization per batch).
     ``boundary_schur`` and ``edge_response`` delegate to the upstream host
     solvers; Schur currently factors each row independently. ``coupled_gcrot``
     shares state and parameter preparation, with sequential solves and residual
     checks for every row. It does not recycle between rows or change the
     scalar custom VJP. For traced scalar calls use the existing solver API.
     """
-    if return_linearization and cfg.adjoint_fail != 'error':
-        raise ValueError('retained linearization requires adjoint_fail=error')
+    if return_linearization and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
+        raise ValueError('retained linearization requires forward_dense_jax with adjoint_fail=error')
     if preconditioner is not None and (cfg.adjoint_solver != 'forward_dense_jax' or cfg.adjoint_fail != 'error'):
         raise ValueError('seed LU requires forward_dense_jax with adjoint_fail=error')
     if cfg.adjoint_solver not in _ADJOINT_SOLVERS:
@@ -1937,12 +1903,12 @@ def free_boundary_state_pullback_multi_rhs(
         if not np.isfinite(root_norm) or root_norm > root_residual_atol:
             raise ValueError(
                 f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
-        if cfg.adjoint_solver in {"forward_dense", "forward_dense_jax"}:
+        if cfg.adjoint_solver in {"forward_dense_jax"}:
             from ._freeboundary_dense import solve_dense_adjoint
             solve_adjoint = solve_dense_adjoint
             options = {}
             if preconditioner is not None:
-                from ._freeboundary_matrixfree import solve_matrixfree_adjoint
+                from ._freeboundary_dense import solve_matrixfree_adjoint
                 solve_adjoint = solve_matrixfree_adjoint
                 options['preconditioner'] = preconditioner
             result = solve_adjoint(
@@ -1987,8 +1953,6 @@ def free_boundary_state_pullback_multi_rhs(
                 residual, z_star, params, field_parameters, frozen, rcon0, zcon0,
                 rhs_batch, icfg, fail=cfg.adjoint_fail,
                 residual_rtol=getattr(cfg, "adjoint_residual_rtol", None), diagnostics=diagnostics)
-        if return_linearization:
-            return bars, _KrylovRootLinearization(params, field_parameters, cfg, state, dof_mask, rcon0, zcon0)
         return bars
 
 
@@ -2004,72 +1968,3 @@ __all__ = [
     "free_boundary_state_pullback_multi_rhs",
 ]
 
-
-def _prepare_tangent_operator(z, params, field, base, rcon, zcon, *, residual):
-    # Prepare eagerly: older JAX versions can retain tracers in the callable
-    # metadata when a nonlinear linearize closure escapes an outer jit.
-    # The residual and subsequent Krylov matvecs remain compiled; this stores
-    # one concrete numerical tape and does not repeat its primal per matvec.
-    _, action = jax.linearize(lambda x: residual(x, params, field, base, rcon, zcon), z)
-    return jax.tree_util.Partial(_tuple_action, action)
-
-
-def _tuple_action(action, value):
-    return (action(value),)
-
-
-def free_boundary_state_tangent(params, field_parameters, cfg, state, dof_mask,
-                                direction, *, rcon0, zcon0, diagnostics=None):
-    """Linear parameter-direction response at an unchanged certified root."""
-    values = (params, field_parameters, state, dof_mask, direction, rcon0, zcon0)
-    if any(isinstance(value, jax.core.Tracer) for value in jax.tree.leaves(values)):
-        raise ValueError("state tangent requires host-eager inputs")
-    with im._device_context(cfg.implicit):
-        params, field_parameters, state, dof_mask, direction, rcon0, zcon0 = im._device_pin(cfg.implicit, values)
-        # Configs are identity-keyed. A replaced tolerance config needs its own
-        # host setup before tracing, even when another config used this root.
-        im.runtime_from_params(params, cfg.implicit)
-        project = im._dof_projector(cfg.implicit, dof_mask)
-        residual = _projected_residual(cfg, dof_mask)
-        z = project(state)
-        action = _prepare_tangent_operator(z, params, field_parameters, state, rcon0, zcon0,
-                                          residual=residual)
-        rhs = jax.jvp(lambda p: residual(z, params, p, state, rcon0, zcon0),
-                      (field_parameters,), (direction,))[1]
-        return _solve_gcrot_tangent(action, jax.tree.map(jnp.negative, rhs),
-            cfg.implicit, residual_rtol=cfg.adjoint_residual_rtol,
-            diagnostics=diagnostics)
-
-
-@dataclass(eq=False)
-class _KrylovRootLinearization:
-    """One immutable root for the existing checked Krylov tangent interface.
-
-    Schur adjoints currently factor each row independently. This object does
-    not claim to retain Schur factors or to use Schur for its forward tangent.
-    """
-    params: Any
-    field: Any
-    cfg: Any
-    state: Any
-    mask: Any
-    rcon: Any
-    zcon: Any
-
-    def tangent(self, direction, *, diagnostics=None):
-        if self.cfg is None:
-            raise ValueError("root linearization is closed")
-        if any(isinstance(x, jax.core.Tracer) for x in jax.tree.leaves(direction)):
-            raise ValueError("root tangent requires host-eager inputs")
-        vector = np.asarray(direction)
-        if vector.shape != self.field.shape or np.iscomplexobj(vector) or not np.all(np.isfinite(vector)):
-            raise ValueError("tangent direction must be finite, real and match field parameters")
-        return free_boundary_state_tangent(self.params, self.field, self.cfg, self.state, self.mask,
-            jnp.asarray(vector), rcon0=self.rcon, zcon0=self.zcon, diagnostics=diagnostics)
-
-    def offload_factors(self):
-        pass  # This backend owns no dense factors.
-
-    def close(self):
-        for name in self.__dataclass_fields__:
-            setattr(self, name, None)

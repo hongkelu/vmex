@@ -2210,7 +2210,7 @@ def _raise_adjoint_unconverged(cfg: ImplicitConfig, *, iterations: int,
         message=(
             f"implicit adjoint {method} solve did not converge: residual "
             f"{residual_norm:.3e} > acceptance {tolerance:.3e} "
-            f"after "
+            f"(= {_ADJOINT_RESIDUAL_SLACK:g} x adjoint_tol x ||rhs||) after "
             f"{iterations} Krylov iterations "
             f"(max_restarts={cfg.adjoint_maxiter})"),
         hint=("increase adjoint_maxiter / adjoint_gcrot_m / adjoint_gcrot_k "

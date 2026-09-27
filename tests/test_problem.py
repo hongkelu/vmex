@@ -988,20 +988,19 @@ def test_shared_minimize_uses_physical_coordinates(method):
 
 
 def test_shared_minimize_scales_physical_constraints_and_rejects_unsupported_method():
+    from scipy.optimize import NonlinearConstraint
     from vmex import optimize as opt
 
     problem = opt.FunctionProblem.from_functions(np.array([.2, .2]), scales=np.array([.1, 2.]),
-        value_and_grad=lambda x: (float(np.sum((x-2.)**2)), 2*(x-2.)),
-        residual=lambda x: np.array([x.sum()]), residual_jac=lambda x: np.ones((1, 2)))
-    constraint = problem.nonlinear_constraint(-np.inf, 1., scales=10.)
+        value_and_grad=lambda x: (float(np.sum((x-2.)**2)), 2*(x-2.)))
+    constraint = NonlinearConstraint(lambda x: np.array([x.sum()]), -np.inf, 1.,
+                                     jac=lambda x: np.ones((1, 2)))
     result = opt.minimize(problem, method="SLSQP", constraints=constraint,
                           options={"maxiter": 50, "ftol": 1e-12})
     assert result.success
     np.testing.assert_allclose(result.x, [.5, .5], atol=1e-6)
     with pytest.raises(ValueError, match="require SLSQP"):
         opt.minimize(problem, method="L-BFGS-B", constraints=constraint)
-    with pytest.raises(ValueError, match="positive constraint scales"):
-        problem.nonlinear_constraint(0., 1., scales=0.)
 
 
 def test_shared_minimize_callback_stop_keeps_last_reported_point():

@@ -117,10 +117,7 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
-    boundary_from_state,
-    boundary_from_wout,
     major_radius,
-    on_axis_magnetic_field,
     edge_iota,
     elongation_profile,
     iota_edge,
@@ -133,32 +130,24 @@ from .statephysics import (
 )
 from .wout import WoutData, wout_from_state
 from .problem import Evaluation, FunctionProblem, VmecProblem, _run_with_progress
-from .monitoring import CoilDiagnostics, EquilibriumReporter, OptimizationMonitor, OptimizationRecord
+from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRecord
 
 __all__ = [
     "FreeBoundaryProblem",  # noqa: F822
-    "TargetBand",  # noqa: F822
     "CoilParameters",  # noqa: F822
-    "minimize_projected",  # noqa: F822
-    "ProjectedOptions",  # noqa: F822
     "TrialRejected",  # noqa: F822
-    "OptimizationQualification",  # noqa: F822
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
     "EquilibriumReporter",
     "OptimizationMonitor",
     "OptimizationRecord",
-    "CoilDiagnostics",
     "make_problem",
     "Equilibrium",
     "solve_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
-    "boundary_from_state",
-    "boundary_from_wout",
     "major_radius",
-    "on_axis_magnetic_field",
     "mean_iota",
     "min_abs_iota",
     "soft_min_abs_iota",
@@ -206,21 +195,15 @@ Array = Any
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export
-    if name == "OptimizationQualification":
-        from ._freeboundary_checkpoint import OptimizationQualification
-        return OptimizationQualification
-    if name in ("FreeBoundaryProblem", "TargetBand"):
-        from . import freeboundary_problem
-        return getattr(freeboundary_problem, name)
+    if name == "FreeBoundaryProblem":
+        from .freeboundary_problem import FreeBoundaryProblem
+        return FreeBoundaryProblem
     if name == "CoilParameters":
-        from .coil_parameters import CoilParameters
+        from .freeboundary_problem import CoilParameters
         return CoilParameters
     if name == "TrialRejected":
         from .errors import TrialRejected
         return TrialRejected
-    if name in ("minimize_projected", "ProjectedOptions"):
-        from . import projected_optimization
-        return getattr(projected_optimization, name)
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":

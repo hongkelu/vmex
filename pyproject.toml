@@ -93,9 +93,11 @@ freeb = [
 # Gyrokinetic turbulence-proxy objectives (``vmex.core.turbulence``) via GKX,
 # uwplasma's JAX-native Hermite-Laguerre flux-tube gyrokinetic solver
 # (https://github.com/uwplasma/GKX; PyPI name ``gkx`` — the package formerly
-# published as ``spectraxgk``; 1.8.0 adds the tprim/fprim drive fields).
+# published as ``spectraxgk``). 2.4.0 is the first release whose nonlinear
+# heat-flux window compiles once per shape and bounds its adjoint memory,
+# which the turbulence optimization examples rely on.
 turbulence = [
-  "gkx>=1.8.0",
+  "gkx>=2.4.0",
   # gkx opts into reverse-mode eigenvector derivatives through
   # lax_linalg.eig(enable_eigvec_derivs=...), which first exists in
   # jax 0.10.1.  Below that the proxies raise TypeError at call time,

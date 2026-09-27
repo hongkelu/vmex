@@ -1862,8 +1862,12 @@ def _host_solve_and_mask_impl(cfg: ImplicitConfig, params_np, *,
     # which memo-hits this solve — computes the identical refinement then.
     if not refine:
         return as_np(result.state), mask
+    # The forward solve picks its own device (AUTO), so rehome its state
+    # beside the parameters before refining: on cfg.device, or where the
+    # callback payload is committed when no device is carried.
+    home = cfg.device if cfg.device is not None else _params_committed_device(params)
     state = _refine_fixed_point(
-        cfg, params, result.state,
+        cfg, params, result.state if home is None else jax.device_put(result.state, home),
         _device_pin(cfg, jax.tree.map(jnp.asarray, mask)))
     return as_np(state), mask
 

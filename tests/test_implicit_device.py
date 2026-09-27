@@ -169,6 +169,21 @@ def test_second_device_placement_and_gradient_no_outer_context(tmp_path):
         np.testing.assert_allclose(gr1, gr0, rtol=1e-9)
         np.testing.assert_allclose(float(v1), float(v0), rtol=1e-12)
         assert np.isfinite(well), "derived diagnostic went non-finite"
+
+        # With no carried device (JAX_PLATFORMS set on a GPU host) the
+        # forward solve still places its own state, possibly on another
+        # device than the parameters; the refinement must rehome it.
+        import dataclasses
+        solve = im._host_solve
+
+        def solve_elsewhere(cfg, params):
+            result = solve(cfg, params)
+            return dataclasses.replace(result, state=jax.device_put(result.state, dev1))
+
+        im._host_solve = solve_elsewhere
+        moved = im.run(inp, im.params_from_input(inp, device=dev0), ftol=1e-11,
+                       max_iterations=600, device=None)
+        np.testing.assert_allclose(float(moved.wb), float(v0), rtol=1e-12)
         print("SECOND-DEVICE AUDIT OK")
     """))
     env = dict(os.environ)

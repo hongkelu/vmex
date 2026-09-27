@@ -7,6 +7,10 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
+- The implicit fixed-boundary solve rehomes the forward state beside the
+  parameters before refining it. On a GPU host with `JAX_PLATFORMS` set, the
+  forward solve ran on the GPU while the callback's parameters stayed on the
+  CPU, and every gradient failed with "Received incompatible devices".
 - `vmex.solve_phiedge` finds the PHIEDGE whose free-boundary LCFS meets a
   target outboard radius, volume or user metric (bracketed secant over
   warm-started solves); example `examples/free_boundary_phiedge.py`, guide

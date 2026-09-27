@@ -194,6 +194,24 @@ def test_evaluation_never_promotes_and_failed_trials_keep_the_anchor(scalar):
         p.accept_x(np.ones(5))
 
 
+def test_rejected_point_is_not_solved_again_until_the_anchor_moves(scalar):
+    p, stats, _, _ = scalar
+    x = np.full(5, .002)
+    stats["fail"] = True
+    with pytest.raises(TrialRejected):
+        p.fun(x)
+    solves = stats["solves"]
+    with pytest.raises(TrialRejected):
+        p.constraint_values(x)  # the optimizer's constraint query at the same probe
+    assert stats["solves"] == solves
+    stats["fail"] = False
+    other = np.full(5, .001)
+    p.value_and_grad(other)
+    p.accept_x(other)
+    p.fun(x)  # a new anchor gives the same point a fresh prediction and solve
+    assert stats["solves"] == solves + 2
+
+
 def test_returned_arrays_do_not_mutate_cache(scalar):
     p, *_ = scalar
     _, grad = p.value_and_grad(p.x0)
@@ -250,7 +268,7 @@ def test_dense_recovery_refreshes_only_when_candidate_accepted(scalar, refresh_h
     p.accept_x(np.full(5, .001))
     assert seed.closed and len(stats["seeds"]) == 2 and not stats["seeds"][-1].closed
     if refresh_horizon is not None:
-        assert p._lu_refresh.warmup == 2 and not p._lu_refresh.costs
+        assert p._lu_refresh.warmup == 0 and not p._lu_refresh.costs  # already compiled
 
 
 def test_failed_recovery_does_not_promote_or_retry_forever(scalar):
@@ -410,11 +428,25 @@ def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar
 
 @pytest.mark.parametrize("kwargs,error,match", [
     (dict(loss=lambda s, rt, coils: s), ValueError, "scalar"),
-    (dict(loss=lambda s, rt, c: jnp.sum(s), coil_quantities=(lambda s, rt, c: c,)), ValueError, "must be scalar"),
+    (dict(loss=lambda s, rt, c: jnp.sum(s), coil_quantities=(lambda s, rt, c: jnp.outer(c, c),)), ValueError,
+     "one-dimensional"),
 ])
 def test_scalar_rows_are_validated_before_optimization(scalar, kwargs, error, match):
     with pytest.raises(error, match=match):
         build(scalar, **kwargs)
+
+
+def test_vector_quantities_give_one_constraint_row_per_entry(scalar):
+    _, _, state, derivative = scalar
+    q = build(scalar, lambda s, rt, c: jnp.sum(s * s), quantities=(lambda s, rt: s[:3], lambda s, rt: s[4]))
+    try:
+        x = np.full(5, .001)
+        expected = np.asarray(state(x))
+        np.testing.assert_allclose(q.constraint_values(x), np.r_[expected[:3], expected[4]])
+        np.testing.assert_allclose(q.constraint_jac(x), derivative(x)[[0, 1, 2, 4]], rtol=1e-13)
+        assert q.nonlinear_constraint(np.zeros(4), np.full(4, np.inf)).jac(x).shape == (4, 5)
+    finally:
+        q.close()
 
 
 def test_from_loss_rejects_invalid_definitions():
@@ -511,7 +543,7 @@ def test_real_dense_and_matrixfree_pullbacks_through_the_public_api(monkeypatch)
                            rcon0=None, zcon0=None)
     cfg = SimpleNamespace(_owner=owner, _anchor=root, params=jnp.zeros(2), solver=solver,
                           root_residual_atol=2e-6, parameter_scales=chart.scales)
-    monkeypatch.setattr(fbi, "_projected_residual", lambda *_: residual)
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_, **__: residual)
     monkeypatch.setattr(im, "_dof_projector", lambda _, mask: lambda x: x*mask)
     monkeypatch.setattr(im, "runtime_from_params", lambda *_: None)
     p = FreeBoundaryProblem(inp, chart, cfg, loss=lambda s, rt, c: jnp.sum((s-1)**2)+jnp.sum(c),
@@ -585,7 +617,7 @@ def coupled(monkeypatch):
     cfg = SimpleNamespace(_owner=owner, _anchor=anchor, params=params, solver=solver,
         parameter_scales=chart.scales, continuation_step=.1, max_continuation_steps=64,
         root_residual_atol=1.)
-    monkeypatch.setattr(api.fbi, '_projected_residual', lambda *_: residual)
+    monkeypatch.setattr(api.fbi, '_projected_residual', lambda *_, **__: residual)
     monkeypatch.setattr(api.im, '_dof_projector', lambda _, m: lambda x: x*m)
     monkeypatch.setattr(api.im, 'runtime_from_params', lambda *_: None)
 
@@ -1027,7 +1059,7 @@ def linear_root(monkeypatch):
     cfg=NS(implicit=NS(device=None,lconm1=False,adjoint_tol=1e-11,adjoint_maxiter=10,adjoint_gcrot_m=2,adjoint_gcrot_k=1),
         adjoint_dense_batch_size=2,adjoint_dense_max_dofs=10,adjoint_solver='forward_dense_jax',
         adjoint_fail='error',adjoint_residual_rtol=2e-5)
-    monkeypatch.setattr(fbi,'_projected_residual',lambda *_:residual)
+    monkeypatch.setattr(fbi,'_projected_residual',lambda *_, **__:residual)
     monkeypatch.setattr(im,'_dof_projector',lambda _,mask:lambda x:x*mask)
     monkeypatch.setattr(im,'runtime_from_params',lambda *_:None)
     owner=object();state=jnp.zeros(2)
@@ -1117,7 +1149,7 @@ def test_new_root_refactors_and_preserves_root_gate(monkeypatch):
 def test_current_nonlinear_root_arbitrary_rows_and_seed_lifetime(monkeypatch, rhs_batch_size):
     accepted, cfg, matrix, coupling = linear_root(monkeypatch)
     residual = jax.jit(lambda z, p, f, *_: matrix @ z + 0.1 * z * z + coupling @ f - p)
-    monkeypatch.setattr(fbi, "_projected_residual", lambda *_: residual)
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_, **__: residual)
     seed_root = api._pullback(accepted, cfg, jnp.eye(2))
     seed_root.offload_factors()
     seed = seed_root.preconditioner(rhs_batch_size=rhs_batch_size)
@@ -1210,7 +1242,7 @@ def test_nonnormal_current_operator_rejects_short_solve_and_supports_two_recover
     identity, current = jnp.eye(n), jnp.asarray(matrix)
     coupling = jnp.asarray(np.random.default_rng(2).normal(size=(n, 2)))
     residual = jax.jit(lambda z, p, f, *_: (identity + f[0] * (current - identity)) @ z + coupling @ f - p)
-    monkeypatch.setattr(fbi, "_projected_residual", lambda *_: residual)
+    monkeypatch.setattr(fbi, "_projected_residual", lambda *_, **__: residual)
     cfg.params = jnp.zeros(n)
     cfg.solver.adjoint_dense_max_dofs = 128
     cfg.solver.adjoint_dense_batch_size = 16
@@ -1304,7 +1336,7 @@ def test_stable_tape_changes_numbers_without_new_executables():
         return matrix @ z + 0.01 * z * z + f
 
     space = api.dense._Space(jnp.arange(2), jnp.arange(2), jnp.zeros(2), jnp.ones(2))
-    factors = jsl.lu_factor(matrix)
+    factors = jsl.lu_factor(matrix.T)  # retained factors are of the Jacobian transpose
     counts = []
     for i in range(3):
         z = jnp.array([0.2, 0.4]) + i * 0.1
@@ -1326,7 +1358,7 @@ def test_redundant_paired_coordinates():
     q = np.array([[1.0, 0.0], [0.0, 1 / np.sqrt(2)], [0.0, -1 / np.sqrt(2)]])
     active = np.array([[2.0, 0.5], [-0.8, 3.0]])
     action = jax.tree_util.Partial(jnp.matmul, jnp.asarray(q @ active @ q.T))
-    factors = jsl.lu_factor(jnp.asarray(active + np.eye(2) * 0.1))
+    factors = jsl.lu_factor(jnp.asarray(active + np.eye(2) * 0.1).T)
     rhs = jnp.array([1.0, -2.0])
     for transpose in (False, True):
         solution, _ = api.dense.solve(
@@ -1444,6 +1476,7 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
     problem._preconditioner = None
     problem._root_polish_options = None
     problem._trial_lu = None
+    problem._newton_options = None
     problem.x0 = problem.scales = np.ones(1)
     problem.deadline = None
     problem.accepted = anchor

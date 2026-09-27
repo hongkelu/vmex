@@ -101,15 +101,86 @@ def _columns(tangent, template, space, indices):
 
 @functools.partial(jax.jit, static_argnames=('batch_size',))
 def _assemble_device(tangent, template, space, *, batch_size):
+    """Return the transpose of the active Jacobian, written in place row by row.
+
+    Row i is column i of the Jacobian. One n-by-n buffer is live; the last
+    batch is shifted back to end at n, recomputing a few rows, so no padded
+    copy or transpose is materialized.
+    """
     size = space.left.shape[0]
+    batch_size = min(batch_size, size)
     chunks = (size + batch_size - 1)//batch_size
-    def chunk(index):
-        return _columns(tangent, template, space, index*batch_size+jnp.arange(batch_size))
-    rows = jax.lax.map(chunk, jnp.arange(chunks)).reshape((-1, size))[:size]
-    return rows.T
+    dtype = ravel_pytree(template)[0].dtype
+
+    def body(index, transpose):
+        start = jnp.minimum(index*batch_size, size-batch_size)
+        rows = _columns(tangent, template, space, start+jnp.arange(batch_size))
+        return jax.lax.dynamic_update_slice(transpose, rows, (start, 0))
+
+    return jax.lax.fori_loop(0, chunks, body, jnp.zeros((size, size), dtype))
+
+
+RADIAL_BANDWIDTH = 2  # coupled raw rows reach two surfaces at the free boundary
+
+
+def _radial_probes(template, space, bandwidth=RADIAL_BANDWIDTH):
+    """Group active coordinates whose radial surfaces are more than 2*bandwidth apart.
+
+    The raw coupled Jacobian is banded in radius, so one JVP of the summed seed
+    recovers every column of the group. Returns (seeds, probe_of, surface).
+    """
+    leaves = jax.tree.leaves(template)
+    ns, mnmax = leaves[0].shape
+    surface = (np.asarray(space.left) % (ns * mnmax)) // mnmax
+    colors = 2 * bandwidth + 1
+    rank = np.zeros(surface.size, dtype=int)
+    for s in np.unique(surface):
+        members = np.flatnonzero(surface == s)
+        rank[members] = np.arange(members.size)
+    key = (surface % colors) * (rank.max() + 1) + rank
+    groups, probe_of = np.unique(key, return_inverse=True)
+    seeds = np.zeros((groups.size, surface.size))
+    seeds[probe_of, np.arange(surface.size)] = 1.0
+    return seeds, probe_of, surface
+
+
+@functools.partial(jax.jit, static_argnames=('batch_size', 'bandwidth'))
+def _assemble_colored(tangent, template, space, seeds, probe_of, surface, *, batch_size, bandwidth):
+    """Return the Jacobian transpose from radially colored JVP probes."""
+    def probe(seed):
+        return _compress(tangent(_expand(seed, template, space)), space)
+    rows = jax.lax.map(probe, seeds, batch_size=batch_size)
+    band = jnp.abs(surface[:, None] - surface[None, :]) <= bandwidth  # [column, row]
+    return jnp.where(band, rows[probe_of], 0.0)
+
+
+def _assembly_error(tangent, template, space, transpose, *, probes=2, seed=0):
+    """Relative mismatch of assembled J v against independent JVPs at random v."""
+    size = space.left.shape[0]
+    vectors = jax.random.normal(jax.random.PRNGKey(seed), (probes, size), dtype=transpose.dtype)
+    exact = jax.vmap(lambda v: _compress(tangent(_expand(v, template, space)), space))(vectors)
+    return float(jnp.max(jnp.linalg.norm(vectors @ transpose - exact, axis=1)
+                         / jnp.maximum(jnp.linalg.norm(exact, axis=1), 1e-300)))
+
+
+def _assemble(tangent, template, space, *, batch_size):
+    """Colored assembly for banded state-space Jacobians, verified; else column by column."""
+    from .solver import SpectralState
+    if isinstance(template, SpectralState):
+        seeds, probe_of, surface = _radial_probes(template, space)
+        transpose = _assemble_colored(tangent, template, space, jnp.asarray(seeds), jnp.asarray(probe_of),
+                                      jnp.asarray(surface), batch_size=batch_size, bandwidth=RADIAL_BANDWIDTH)
+        error = _assembly_error(tangent, template, space, transpose)
+        if np.isfinite(error) and error <= 1e-9:
+            return transpose
+        del transpose
+        warnings.warn(f"colored Jacobian assembly mismatch {error:.2e}; assembling every column",
+                      RuntimeWarning, stacklevel=2)
+    return _assemble_device(tangent, template, space, batch_size=batch_size)
 
 
 def _factor_solve(matrix, rhs, *, return_factors=False):
+    # matrix is the Jacobian transpose; its LU is retained for every later solve.
     """One factorization, all transpose RHS columns, without assuming symmetry."""
     factors = jsl.lu_factor(matrix)
     # A CUDA factorization can return an invalid pivot buffer even when the
@@ -125,9 +196,9 @@ def _factor_solve(matrix, rhs, *, return_factors=False):
         with warnings.catch_warnings():
             warnings.simplefilter('error', sl.LinAlgWarning)
             factors = sl.lu_factor(np.asarray(matrix))
-            solution = jnp.asarray(sl.lu_solve(factors, np.asarray(rhs).T, trans=1).T)
+            solution = jnp.asarray(sl.lu_solve(factors, np.asarray(rhs).T, trans=0).T)
     else:
-        solution = jsl.lu_solve(factors, rhs.T, trans=1).T
+        solution = jsl.lu_solve(factors, rhs.T, trans=0).T
     return (solution, factors) if return_factors else solution
 
 
@@ -135,7 +206,7 @@ def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
     """Correct failed rows with the same LU; retain only residual improvements."""
     xp, solve = jnp, jsl.lu_solve
     rhs, solution = xp.asarray(rhs), xp.asarray(solution)
-    defect = rhs - solution @ matrix
+    defect = rhs - solution @ matrix.T
     norms = xp.linalg.norm(defect, axis=1)
     initial = np.asarray(norms).copy()
     steps = np.zeros(rhs.shape[0], dtype=int)
@@ -143,9 +214,9 @@ def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
         failed = (norms > tolerances) & xp.isfinite(norms) & xp.all(xp.isfinite(solution), axis=1)
         if not bool(xp.any(failed)):
             break
-        correction = solve(factors, xp.where(failed[:, None], defect, 0.).T, trans=1).T
+        correction = solve(factors, xp.where(failed[:, None], defect, 0.).T, trans=0).T
         candidate = solution + correction
-        candidate_defect = rhs - candidate @ matrix
+        candidate_defect = rhs - candidate @ matrix.T
         candidate_norms = xp.linalg.norm(candidate_defect, axis=1)
         improved = failed & (candidate_norms < norms) & xp.all(xp.isfinite(candidate), axis=1)
         steps += np.asarray(failed, dtype=int)
@@ -181,7 +252,7 @@ class DenseRootLinearization:
     _tangent_backend = 'reused_dense_lu'
 
     def _solve_tangent(self, rhs):
-        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=0)
+        solution = jsl.lu_solve(self.factors, -_compress(rhs, self.space), trans=1)
         return _expand(solution, self.z, self.space), 1
 
     def offload_factors(self):
@@ -276,7 +347,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     space = jax.tree.map(jnp.asarray, space)
     batch_size = min(cfg.adjoint_dense_batch_size, space.left.size)
     tangent = _prepare_tangent(z,params,field,frozen,rcon,zcon,residual=residual)
-    matrix = _assemble_device(tangent,z,space,batch_size=batch_size)
+    matrix = _assemble(tangent,z,space,batch_size=batch_size)
     rhs = jax.vmap(lambda value:_compress(value,space))(rhs_batch)
     def reject(row, norm, tolerance):
         im._raise_adjoint_unconverged(cfg.implicit,iterations=1,
@@ -418,7 +489,8 @@ def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, ma
     answer = gmres(
         operator,
         rhs,
-        precond=lambda value: jsl.lu_solve(factors, value, trans=int(transpose)),
+        # Factors are of the Jacobian transpose: a transposed solve uses trans=0.
+        precond=lambda value: jsl.lu_solve(factors, value, trans=int(not transpose)),
         rtol=rtol,
         atol=0.0,
         restart=min(restart, rhs.size),

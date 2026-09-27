@@ -1905,6 +1905,10 @@ def free_boundary_state_pullback_multi_rhs(
                 f"multi-RHS root residual {root_norm:.3e} exceeds {root_residual_atol:.3e}")
         if cfg.adjoint_solver in {"forward_dense_jax"}:
             from ._freeboundary_dense import solve_dense_adjoint
+            # The raw coupled Jacobian is banded in radius, so the dense backend
+            # assembles it by colored probes. At the certified root its adjoint,
+            # parameter pullback and tangent equal the preconditioned ones.
+            residual = _projected_residual(cfg, dof_mask, formulation="raw")
             solve_adjoint = solve_dense_adjoint
             options = {}
             if preconditioner is not None:

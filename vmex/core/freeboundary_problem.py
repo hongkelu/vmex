@@ -268,7 +268,10 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
         raise ValueError("preconditioner configuration mismatch")
     frozen = accepted.state
     project = im._dof_projector(solver.implicit, accepted.dof_mask)
+    # Steps solve the raw coupled system, whose Jacobian the seed LU factors;
+    # convergence is judged by the preconditioned residual that certification uses.
     residual = fbi._projected_residual(solver, accepted.dof_mask)
+    raw = fbi._projected_residual(solver, accepted.dof_mask, formulation="raw")
     field_x = jnp.asarray(accepted.parameters)
     z = project(frozen)
     space = dense._active_space(solver.implicit, accepted.dof_mask, solver.adjoint_dense_max_dofs)
@@ -276,11 +279,11 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
     space = jax.tree.map(jnp.asarray, space)
     factors = jax.tree.map(jnp.asarray, seed.factors)
 
-    def evaluate(value):
-        return residual(value, cfg.params, field_x, frozen, accepted.rcon0, accepted.zcon0)
+    def evaluate(value, function=residual):
+        return function(value, cfg.params, field_x, frozen, accepted.rcon0, accepted.zcon0)
 
-    f = evaluate(z)
-    initial = magnitude = _tree_norm(f)
+    f = evaluate(z, raw)
+    initial = magnitude = _tree_norm(evaluate(z))
     log = []
     for iteration in range(max_steps):
         check_time()
@@ -288,13 +291,13 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
             break
         tick = time.perf_counter()
         action = dense.prepare(z, cfg.params, field_x, frozen, accepted.rcon0, accepted.zcon0,
-                               residual=residual)
+                               residual=raw)
         correction, its, krylov_norm, converged = dense.solve(
             action, z, space, factors, -dense._compress(f, space), transpose=False,
             rtol=1e-6, restart=seed.restart, max_restarts=seed.max_restarts, return_info=True)
         delta = dense._expand(correction, z, space)
         defect_norm = _tree_norm(jax.tree.map(jnp.add, action(delta), f))
-        relative_linear_error = defect_norm / magnitude
+        relative_linear_error = defect_norm / _tree_norm(f)
         if not np.isfinite(relative_linear_error) or relative_linear_error > 1e-5:
             raise _RootPolishError(f"Newton linear residual failed: {relative_linear_error}",
                 diagnostics=dict(iteration=iteration + 1, root_residual=magnitude,
@@ -306,9 +309,9 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
             check_time()
             alpha = 0.5**backtrack
             trial = jax.tree.map(lambda a, b: a + alpha * b, z, delta)
-            trial_f = evaluate(trial)
-            trial_norm = _tree_norm(trial_f)
+            trial_norm = _tree_norm(evaluate(trial))
             if np.isfinite(trial_norm) and trial_norm < magnitude:
+                trial_f = evaluate(trial, raw)
                 break
         else:
             raise _RootPolishError(f"Newton refinement did not reduce residual {magnitude}")
@@ -573,9 +576,9 @@ class FreeBoundaryProblem(FunctionProblem):
                   solver_options=None, quantities=(), coil_quantities=(), **kwargs):
         """Build a scalar ``loss(state, runtime, coils)`` for any host optimizer.
 
-        ``quantities`` are scalar ``function(state, runtime)`` observables for
+        ``quantities`` are scalar or 1-D ``function(state, runtime)`` observables for
         constraint_values/constraint_jac; the optimizer defines their bounds.
-        ``coil_quantities`` append scalar ``function(state, runtime, coils)``
+        ``coil_quantities`` append scalar or 1-D ``function(state, runtime, coils)``
         observables, including both explicit coil and equilibrium derivatives.
         Use ordinary optimizer constraints for quantities depending only on
         coils to avoid unnecessary equilibrium adjoint right-hand sides.
@@ -706,6 +709,8 @@ class FreeBoundaryProblem(FunctionProblem):
         self._adjoint_seconds = self._tangent_seconds = self._dense_seconds = 0.0
         self._polish_seconds = 0.0
         self._root_polish_options = None
+        self._newton_options = None
+        self._rejected = None
         self._refresh_parity_rtol = 1e-6
         self._recovered = False
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
@@ -718,18 +723,17 @@ class FreeBoundaryProblem(FunctionProblem):
         self._linearization = self._linearization_record = None
         self._compact_jac = None
         self._records = {self._key(self.accepted.parameters): self.accepted}
-        self.constraint_scales = np.ones(len(quantities) + len(coil_quantities))
-
         def scalar_rows(state, x):
             coils = parameterization.coils_from_x(x)
             value = jnp.asarray(loss(state, self.rt, coils))
             if value.shape != ():
                 raise ValueError("loss must return a scalar")
+            # A quantity may be a scalar or a vector of rows (e.g. iota per surface).
             values = [jnp.asarray(function(state, self.rt)) for function in quantities]
             values += [jnp.asarray(function(state, self.rt, coils)) for function in coil_quantities]
-            if any(v.shape != () for v in values):
-                raise ValueError("quantities must be scalar")
-            return jnp.r_[value, jnp.stack(values) if values else jnp.empty(0)]
+            if any(v.ndim > 1 for v in values):
+                raise ValueError("quantities must be scalars or one-dimensional arrays")
+            return jnp.concatenate([value[None], *(jnp.ravel(v) for v in values)])
 
         self._scalar_rows = jax.jit(scalar_rows)
         self._scalar_jac = jax.jit(jax.jacrev(scalar_rows, argnums=(0, 1)))
@@ -737,6 +741,7 @@ class FreeBoundaryProblem(FunctionProblem):
         initial = self.optimizer_rows(self.accepted)
         if not np.all(np.isfinite(initial)):
             raise ValueError("nonfinite objective or physical constraints")
+        self.constraint_scales = np.ones(initial.size - 1)
         super().__init__(
             self.accepted.parameters,
             names=parameterization.dof_names,
@@ -768,7 +773,15 @@ class FreeBoundaryProblem(FunctionProblem):
         x = self._validate_x(x)
         key = self._key(x)
         if key not in self._records:
-            self._records[key] = self._trial(x, 0)
+            # An optimizer may query values and constraints at the same rejected
+            # point; reuse the rejection instead of repeating the failed solve.
+            if self._rejected is not None and self._rejected[0] == key:
+                raise TrialRejected(self._rejected[1])
+            try:
+                self._records[key] = self._trial(x, 0)
+            except TrialRejected as exc:
+                self._rejected = (key, str(exc))
+                raise
             # Retain at most the anchor and most recently evaluated trial.
             self._records = {self._key(self.accepted.parameters): self.accepted, key: self._records[key]}
         return self._records[key]
@@ -882,6 +895,37 @@ class FreeBoundaryProblem(FunctionProblem):
             self._vg_cache = self._rj_cache = None
         self._root_polish_options = options
         return self.accepted
+
+    def enable_newton_correction(self, *, max_steps=8):
+        """Correct predicted trials by Newton on the coupled root before any ordinary solve.
+
+        Requires root polishing and matrix-free reuse. Newton starts from the
+        tangent prediction, uses the accepted seed LU, and must reach the
+        polishing tolerance; the result is certified freshly. Any failure falls
+        back to the ordinary equilibrium solve for that trial.
+        """
+        if self._root_polish_options is None or self._preconditioner is None:
+            raise ValueError("enable root polishing and matrix-free reuse before Newton correction")
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps < 1:
+            raise ValueError("max_steps must be a positive integer")
+        self._newton_options = dict(tolerance=self._root_polish_options["tolerance"], max_steps=max_steps)
+
+    def _newton_trial(self, x, predicted, trial):
+        """Return a certified Newton-corrected root, or None to use the ordinary solve."""
+        started = time.monotonic()
+        guess = _Root(_vector(x), replace(self.accepted.result, state=predicted, iterations=0),
+                      self.accepted.dof_mask, self.accepted.rcon0, self.accepted.zcon0, np.inf, self.cfg._owner)
+        try:
+            candidate, evidence = _refine(guess, self.cfg, self._preconditioner, check_time=self._check_time,
+                                          **self._newton_options)
+        except (_RootPolishError, AdjointSolveError, VmecError, ValueError) as exc:
+            traceback.clear_frames(exc.__traceback__)
+            self._emit("newton_correction", trial=trial, accepted=False, error=str(exc)[:300],
+                       seconds=time.monotonic() - started)
+            return None
+        self._emit("newton_correction", trial=trial, accepted=True, steps=len(evidence["steps"]),
+                   final_residual=evidence["final_residual"], seconds=time.monotonic() - started)
+        return candidate
 
     def _polish_record(self, record, *, options=None):
         options = self._root_polish_options if options is None else options
@@ -1026,22 +1070,33 @@ class FreeBoundaryProblem(FunctionProblem):
                 # its increment can change its last bit and break cache identity.
                 point = x if index == count else self.accepted.parameters + delta * (index / count)
                 predicted = jax.tree.map(lambda x, dx: x + dx / count, previous.state, tangent)
+                if self._newton_options is not None and predict and ftol is None:
+                    corrected = self._newton_trial(point, predicted, trial)
+                    if corrected is not None:
+                        self._emit("certification", candidate=corrected, trial=trial, index=index)
+                        return corrected
                 started = time.monotonic()
-                last_stage = _solve_free_boundary_stage(
-                    self.inp,
-                    external_field=self.parameterization(jnp.asarray(point)),
-                    resolution=self.solver.resolution,
-                    ftol=tolerance,
-                    max_iterations=self.solver.implicit.max_iterations,
-                    initial_state=predicted,
-                    constraint_continuation=(previous.rcon0, previous.zcon0),
-                    include_edge_in_convergence=True,
-                    edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
-                    error_on_no_convergence=False,
-                    jacobian_retries=0,
-                    allow_initial_axis_reguess=False,
-                    use_fft=False,
-                )
+                try:
+                    last_stage = _solve_free_boundary_stage(
+                        self.inp,
+                        external_field=self.parameterization(jnp.asarray(point)),
+                        resolution=self.solver.resolution,
+                        ftol=tolerance,
+                        max_iterations=self.solver.implicit.max_iterations,
+                        initial_state=predicted,
+                        constraint_continuation=(previous.rcon0, previous.zcon0),
+                        include_edge_in_convergence=True,
+                        edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
+                        error_on_no_convergence=False,
+                        jacobian_retries=0,
+                        allow_initial_axis_reguess=False,
+                        use_fft=False,
+                    )
+                except BaseException:
+                    # A failed solve is still a correction cost; record it before rejecting.
+                    self._emit("correction", stage=None, parameters=point, trial=trial, index=index,
+                               points=count, failed=True, seconds=time.monotonic() - started)
+                    raise
                 self._emit(
                     "correction",
                     stage=last_stage,
@@ -1053,6 +1108,7 @@ class FreeBoundaryProblem(FunctionProblem):
                 )
                 if not last_stage.result.converged:
                     raise TrialRejected("ordinary equilibrium did not converge")
+                started = time.monotonic()
                 previous = _certify(
                     self.cfg,
                     point,
@@ -1061,13 +1117,14 @@ class FreeBoundaryProblem(FunctionProblem):
                     zcon0=last_stage.zcon0,
                     result=last_stage.result,
                 )
+                certified = time.monotonic() - started
                 previous = self._polish_record(previous)
                 if ftol is not None and self._root_polish_options is not None:
                     forces = [float(getattr(previous.result, name))
                               for name in ('fsqr', 'fsqz', 'fsql', 'fedge')]
                     if not all(np.isfinite(value) and value <= tolerance for value in forces):
                         raise TrialRejected('polished trial exceeds requested force tolerance')
-                self._emit("certification", candidate=previous, trial=trial, index=index)
+                self._emit("certification", candidate=previous, trial=trial, index=index, seconds=certified)
             return previous
         except (VmecError, TrialRejected) as exc:
             self._close_trial_lu()
@@ -1160,13 +1217,15 @@ class FreeBoundaryProblem(FunctionProblem):
                 remaining = refresh.remaining
                 if reason in ("recovery", "root_recovery") and remaining is not None:
                     remaining = max(0, remaining - 1)
-                self._lu_refresh = _LURefresh(refresh.horizon, self._dense_seconds, remaining=remaining)
+                # Compilation happens once; after a refresh the next steps are already warm.
+                self._lu_refresh = _LURefresh(refresh.horizon, self._dense_seconds, warmup=0, remaining=remaining)
             self._emit("preconditioner_refresh", reason=reason, seconds=self._dense_seconds)
         self._close_trial_lu()
         # Keep the immutable numerical context: seeds and tapes must not
         # cross configuration identities. All proposals use self.accepted,
         # never the config's generic memoized continuation solver.
         self.accepted_step += 1
+        self._rejected = None  # a rejection holds only for the anchor it was predicted from
         self._records = {self._key(self.accepted.parameters): self.accepted}
         self._vg_cache = self._rj_cache = None
 

@@ -623,7 +623,7 @@ def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
                           adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
     def residual(z, p, field, *_):
         return 2*z-p-field
-    monkeypatch.setattr(fbi, '_projected_residual', lambda *_:residual)
+    monkeypatch.setattr(fbi, '_projected_residual', lambda *_, **__:residual)
     monkeypatch.setattr(im, '_dof_projector', lambda _,mask:lambda value:value*mask)
     monkeypatch.setattr(im, 'runtime_from_params', lambda *_:None)
     zero, mask, rhs = jnp.zeros(3), jnp.array([1.,0.,1.]), jnp.eye(3)
@@ -1950,8 +1950,41 @@ def test_dense_correction_budget_fails_closed(monkeypatch):
     assert records[0]['residual_norm'] > records[0]['tolerance']
 
 
+@pytest.mark.parametrize("banded", [True, False])
+def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(banded):
+    """Colored probes recover a radially banded Jacobian; a dense one is caught and rebuilt."""
+    from vmex.core import _freeboundary_dense as dense
+    from vmex.core.solver import SpectralState
+    ns, mnmax = 12, 3
+    rng = np.random.default_rng(3)
+    template = SpectralState(*(jnp.asarray(rng.normal(size=(ns, mnmax))) for _ in range(6)))
+    mask = SpectralState(*(jnp.ones((ns, mnmax)) for _ in range(6)))
+    space = jax.tree.map(jnp.asarray, dense._active_space(SimpleNamespace(lconm1=False), mask, 10**6))
+    flat, unravel = jax.flatten_util.ravel_pytree(template)
+    surface = (np.arange(flat.size) % (ns * mnmax)) // mnmax
+    reach = np.abs(surface[:, None] - surface[None, :]) <= (2 if banded else ns)
+    matrix = jnp.asarray(rng.normal(size=(flat.size, flat.size)) * reach)
+
+    def residual(z, *args):
+        return unravel(matrix @ jax.flatten_util.ravel_pytree(z)[0])
+
+    tangent = dense._prepare_tangent(template, None, None, None, None, None, residual=residual)
+    full = dense._assemble_device(tangent, template, space, batch_size=8)
+    if banded:
+        seeds, _, _ = dense._radial_probes(template, space)
+        assert seeds.shape[0] == 5 * 6 * mnmax  # 5 colors x (6 fields x mnmax) coordinates per surface
+        np.testing.assert_allclose(dense._assemble(tangent, template, space, batch_size=8), full, rtol=0, atol=1e-13)
+    else:
+        with pytest.warns(RuntimeWarning, match="colored Jacobian assembly mismatch"):
+            rebuilt = dense._assemble(tangent, template, space, batch_size=8)
+        np.testing.assert_allclose(rebuilt, full, rtol=0, atol=1e-13)
+
+
 def test_dense_invalid_gpu_pivots_refactor_on_host(monkeypatch):
-    """Sentinel pivot buffers never reach lu_solve; the same matrix is refactored."""
+    """Sentinel pivot buffers never reach lu_solve; the same matrix is refactored.
+
+    The matrix is the Jacobian transpose, so the solve is ``matrix @ x = rhs``.
+    """
     from vmex.core import _freeboundary_dense as dense
     matrix = jnp.array([[3., 1., -.2], [-.1, 4., .3], [.5, -.4, 2.]])
     rhs = jnp.array([[1., 2., -1.], [.1, -.2, .5]])
@@ -1960,7 +1993,7 @@ def test_dense_invalid_gpu_pivots_refactor_on_host(monkeypatch):
                         lambda a: (native(a)[0], jnp.full(a.shape[0], -2, dtype=jnp.int32)))
     with pytest.warns(RuntimeWarning, match='invalid pivot'):
         solution, factors = dense._factor_solve(matrix, rhs, return_factors=True)
-    np.testing.assert_allclose(solution, np.linalg.solve(np.asarray(matrix.T), np.asarray(rhs.T)).T,
+    np.testing.assert_allclose(solution, np.linalg.solve(np.asarray(matrix), np.asarray(rhs.T)).T,
                                rtol=1e-12, atol=1e-14)
     assert np.all(np.asarray(factors[1]) >= 0)
 

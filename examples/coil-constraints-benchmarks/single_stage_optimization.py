@@ -1,0 +1,214 @@
+#!/usr/bin/env python
+r"""Fixed-boundary single-stage counterpart of the coil-constraint benchmark.
+
+The algorithm of ``examples/optimization/single_stage_optimization.py``: the
+boundary and the coils form one variable vector, every trial solves the
+fixed-boundary equilibrium, and L-BFGS-B minimizes
+
+    J = (1/2) |r_QS|^2 + (1/2) CONSTRAINT_WEIGHT * sum max(-c, 0)^2,   c >= 0,
+
+where the one-sided rows ``c`` hold the targets of ``parameters.py`` (minimum
+|iota|, aspect band, major radius), the coil limits of ``_coil_constraints.py``
+(length, curvature, mean squared curvature, separation, plasma clearance),
+the normal-field limit, and the coils' toroidal flux. A penalty settles just
+inside its threshold, so it is handed the margins of ``parameters.py``.
+
+The flux row keeps the coils consistent with the prescribed PHIEDGE: B.n/|B|
+does not depend on the field strength, so without it the coils can drift to a
+field that encloses a different flux than the one the equilibrium assumes.
+The free-boundary arm holds the same PHIEDGE by construction.
+
+    python single_stage_optimization.py --steps 5 --output runs/fixed
+"""
+
+import argparse
+from dataclasses import replace
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import parameters as P  # noqa: E402
+
+MAX_MODE = 8                       # boundary modes varied; RBC(0,0) stays fixed
+ESS_ALPHA = 1.2
+BOUNDARY_STEP, COIL_STEP = 0.1, P.COIL_STEP
+PARAMETER_BOUND = 5.0
+NORMAL_FIELD_LIMIT, NORMAL_FIELD_CONSTRAINT = 0.01, 0.008  # area-weighted RMS B.n/|B|
+FLUX_TOLERANCE = 0.005             # relative toroidal-flux band around PHIEDGE
+CONSTRAINT_WEIGHT = 1.0e3
+NPHI, NTHETA = 37, 32
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--output", type=Path, required=True, help="new run directory")
+    parser.add_argument("--steps", type=int, default=100, help="L-BFGS-B iterations")
+    parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
+    parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    os.environ["JAX_ENABLE_X64"] = "1"
+    os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu" if args.device == "gpu" else "cpu")
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from essos.coils import Coils
+    from essos.fields import BiotSavart
+    from essos.surfaces import surfacerzfourier_from_boundary
+    from scipy.optimize import minimize
+    import vmex as vj
+    from vmex import optimize as opt
+    import _coil_constraints as coil_limits
+    from free_boundary_single_stage_optimization import resize_coils
+
+    started = time.monotonic()
+    mpol, ntor, ns = P.RESOLUTION
+    inp = vj.VmecInput.from_file(HERE / "input.rotating_ellipse")
+    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
+    inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
+    phiedge = abs(float(inp.phiedge))
+
+    qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), helicity_m=1, helicity_n=0)
+    plasma_problem = opt.VmecProblem.from_tuples(
+        inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA,
+        device=args.device)
+
+    resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS).to_json(str(out / "coils.initial.json"))
+    coils0 = Coils.from_json(str(out / "coils.initial.json"))
+    x_boundary0 = plasma_problem.x0
+    x_coils0 = np.asarray(coils0.curves.dofs).ravel()
+    x0 = np.concatenate([x_boundary0, x_coils0])
+    scales = np.concatenate([BOUNDARY_STEP * plasma_problem.scales, np.full(x_coils0.size, COIL_STEP)])
+    n_boundary = x_boundary0.size
+
+    def objects_from_x(x, nphi=NPHI, ntheta=NTHETA):
+        rbc, zbs = plasma_problem.boundary_from_x(x[:n_boundary])
+        surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=nphi, ntheta=ntheta)
+        coils = coils0.with_dofs(jnp.concatenate((x[n_boundary:], coils0.dofs_currents)))
+        return rbc, zbs, surface, coils
+
+    # Toroidal flux of the coil field through the boundary's phi = 0 cross-section:
+    # Gauss-Legendre in radius, uniform in angle, differentiable in boundary and coils.
+    rho, rho_weights = np.polynomial.legendre.leggauss(24)
+    rho, rho_weights = 0.5 * (rho + 1.0), 0.5 * rho_weights
+    theta = np.linspace(0.0, 2.0 * np.pi, 128, endpoint=False)
+
+    def toroidal_flux(rbc, zbs, coils):
+        m = np.arange(rbc.shape[1])
+        cos_m, sin_m = np.cos(np.outer(theta, m)), np.sin(np.outer(theta, m))
+        rbc0, zbs0 = rbc.sum(axis=0), zbs.sum(axis=0)
+        r_edge, z_edge = cos_m @ rbc0, sin_m @ zbs0
+        dr_edge, dz_edge = -sin_m @ (m * rbc0), cos_m @ (m * zbs0)
+        r = rbc0[0] + rho[:, None] * (r_edge - rbc0[0])
+        z = rho[:, None] * z_edge
+        area = rho[:, None] * ((r_edge - rbc0[0]) * dz_edge - z_edge * dr_edge)
+        points = jnp.stack([r, jnp.zeros_like(r), z], axis=-1).reshape(-1, 3)
+        b_phi = jax.vmap(BiotSavart(coils).B)(points)[:, 1].reshape(r.shape)
+        return jnp.sum(rho_weights[:, None] * b_phi * area) * (2.0 * np.pi / theta.size)
+
+    def normal_field_rms(coils, surface):
+        field = jax.vmap(BiotSavart(coils).B)(surface.gamma.reshape(-1, 3)).reshape(surface.gamma.shape)
+        normal = jnp.sum(field * surface.unitnormal, axis=2) / jnp.linalg.norm(field, axis=2)
+        weights = surface.area_element / jnp.sum(surface.area_element)
+        return jnp.sqrt(jnp.sum(weights * normal**2))
+
+    def hinge(rows):
+        return 0.5 * CONSTRAINT_WEIGHT * jnp.sum(jnp.maximum(-rows, 0.0)**2)
+
+    aspect_lower, aspect_upper = P.ASPECT_RANGE
+    aspect_scale = 0.5 * (aspect_upper - aspect_lower)
+    width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
+
+    def plasma_rows(state, ctx):
+        iota, aspect, radius = opt.min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
+        return jnp.stack([(iota - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
+                          (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
+                          (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
+                          (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE])
+
+    def plasma_objective(u):
+        x = jnp.asarray(x0) + jnp.asarray(scales) * u
+        return plasma_problem.jax_objective_from_state(
+            x[:n_boundary], lambda state, ctx: hinge(plasma_rows(state, ctx))[None], n_extra_terms=1)
+
+    def coil_rows(u):
+        rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x0) + jnp.asarray(scales) * u)
+        flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge - 1.0
+        clearance = coil_limits.surface_distance(coils, surface)
+        return jnp.concatenate([
+            coil_limits.coil_inequalities(coils),
+            jnp.atleast_1d((clearance - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
+                           / P.COIL_SURFACE_DISTANCE_LIMIT),
+            jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT),
+            jnp.stack([FLUX_TOLERANCE - flux, FLUX_TOLERANCE + flux]) / FLUX_TOLERANCE])
+
+    plasma_value_and_grad = jax.jit(jax.value_and_grad(plasma_objective, has_aux=True))
+    coil_value_and_grad = jax.jit(jax.value_and_grad(lambda u: hinge(coil_rows(u))))
+    coil_rows_jit = jax.jit(coil_rows)
+    cache = {}
+
+    def value_and_grad(u):
+        u = np.asarray(u, dtype=float)
+        if cache.get("key") != u.tobytes():
+            (plasma_value, (qs_rows, _)), plasma_gradient = plasma_value_and_grad(jnp.asarray(u))
+            coil_value, coil_gradient = coil_value_and_grad(jnp.asarray(u))
+            cache.update(key=u.tobytes(), value=float(plasma_value + coil_value),
+                         gradient=np.asarray(plasma_gradient + coil_gradient),
+                         qa=float(np.asarray(qs_rows) @ np.asarray(qs_rows)))
+        return cache["value"], cache["gradient"].copy()
+
+    last = dict(time=time.monotonic(), step=0)
+
+    def log_step(u):
+        u = np.asarray(u, dtype=float)
+        value, _ = value_and_grad(u)
+        x = x0 + scales * u
+        equilibrium = plasma_problem.equilibrium_from_x(x[:n_boundary])
+        state, ctx = equilibrium.solution, equilibrium.runtime
+        rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x))
+        rows = np.asarray(coil_rows_jit(jnp.asarray(u)))
+        n_coil = rows.size - 4
+        now = time.monotonic()
+        row = dict(step=last["step"], qa=cache["qa"], objective=value,
+                   min_abs_iota=float(opt.min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
+                   major_radius_m=float(opt.major_radius(state, ctx)),
+                   coil_surface_distance_m=float(coil_limits.surface_distance(coils, surface)),
+                   coil_minimum_scaled_slack=float(np.min(rows[:n_coil])),
+                   normal_field_rms=float(normal_field_rms(coils, surface)),
+                   flux_ratio=float(abs(toroidal_flux(rbc, zbs, coils)) / phiedge),
+                   step_seconds=now - last["time"], elapsed_seconds=now - started)
+        last.update(time=now, step=last["step"] + 1)
+        with open(out / "metrics.jsonl", "a") as stream:
+            stream.write(json.dumps(row) + "\n")
+        print(f"[step {row['step']}] QA={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
+              f"aspect={row['aspect']:.4f} R={row['major_radius_m']:.5f} flux={row['flux_ratio']:.5f} "
+              f"B.n={row['normal_field_rms']:.2e} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
+              f"{row['step_seconds']:.1f}s", flush=True)
+
+    u0 = np.zeros_like(x0)
+    log_step(u0)
+    result = minimize(value_and_grad, u0, jac=True, method="L-BFGS-B", callback=log_step,
+                      bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
+                      options={"maxiter": args.steps, "maxcor": 20, "maxls": 20, "ftol": 1e-12, "gtol": 1e-8})
+    x = x0 + scales * result.x
+    rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x))
+    coils.to_json(str(out / "coils.json"))
+    vj.write_wout(str(out / "wout.nc"), plasma_problem.equilibrium_from_x(x[:n_boundary]).wout)
+    summary = dict(iterations=int(result.nit), evaluations=int(result.nfev), success=bool(result.success),
+                   message=str(result.message), elapsed_seconds=time.monotonic() - started)
+    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(json.dumps(summary))
+
+
+if __name__ == "__main__":
+    main()

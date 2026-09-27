@@ -156,11 +156,14 @@ def main(argv=None):
             seconds[name] = seconds.get(name, 0.0) + float(data["seconds"])
 
     from jax import monitoring
-    monitoring.register_event_duration_secs_listener(
-        lambda event, duration, **_: record("compile", seconds=duration) if "compil" in event else None)
+    # Time actually spent tracing and compiling; the cache's "compile_time_saved" is not.
+    monitoring.register_event_duration_secs_listener(lambda event, duration, **_: record(
+        "compile", seconds=duration) if event.startswith("/jax/core/compile/") else None)
 
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(iota_rows, opt.major_radius), coil_quantities=(clearance, aspect),
+        # L-BFGS-B differentiates only the loss; SLSQP also needs the constraint rows.
+        inp, loss, quantities=(iota_rows, opt.major_radius) if OPTIMIZER == "SLSQP" else (),
+        coil_quantities=(clearance, aspect) if OPTIMIZER == "SLSQP" else (),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
@@ -179,7 +182,10 @@ def main(argv=None):
             record(_name, seconds=time.monotonic() - start)
             return value
         setattr(coil_rows, method, timed)
-    n_iota = problem.constraint_values(problem.accepted.parameters).size - 3
+    observe = jax.jit(lambda state, x: jnp.stack([
+        jnp.min(jnp.atleast_1d(iota_rows(state, problem.rt))), opt.major_radius(state, problem.rt),
+        clearance(state, problem.rt, chart.coils_from_x(x)), opt.aspect_ratio(state, problem.rt)]))
+    n_iota = problem.constraint_values(problem.accepted.parameters).size - 3 if OPTIMIZER == "SLSQP" else 0
 
     def constraints(floor):
         return [problem.nonlinear_constraint(
@@ -199,8 +205,7 @@ def main(argv=None):
 
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
-        values = problem.constraint_values(x)
-        iota, (radius, surface, aspect_value) = float(np.min(values[:-3])), values[-3:]
+        iota, radius, surface, aspect_value = map(float, observe(record.state, jnp.asarray(x)))
         now = time.monotonic()
         row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
@@ -223,7 +228,7 @@ def main(argv=None):
     log_step()
     floors = [P.IOTA_FLOOR]
     if IOTA_RAMP:
-        start_iota = float(np.min(problem.constraint_values(problem.accepted.parameters)[:-3]))
+        start_iota = float(observe(problem.accepted.state, jnp.asarray(problem.accepted.parameters))[0])
         floors = [*np.arange(start_iota + IOTA_RAMP, P.IOTA_FLOOR, IOTA_RAMP), P.IOTA_FLOOR]
     from scipy.optimize import Bounds
     try:

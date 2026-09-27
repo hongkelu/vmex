@@ -73,19 +73,15 @@ jax.config.update("jax_enable_x64", True)  # float64 mandatory (§7.7)
 
 
 def _harden_compilation_cache() -> None:
-    """Idempotent persistent compile-cache setup at ``core.solver`` import.
+    """Re-apply the persistent-cache policy at ``core.solver`` import.
 
     Launching Python from a cwd containing the repo checkout can resolve
-    ``vmex`` as a *namespace* package, so ``vmex/__init__.py`` — which
-    configures the persistent XLA compilation cache — never runs and every
-    ``solve()`` pays a full recompile.  This module always executes on any
-    core solve path, so the cache policy is re-applied here: warn on the
-    shadowed import, then configure the ``_compat`` cache defaults *only*
-    when neither the user (``JAX_COMPILATION_CACHE_DIR`` env / an explicit
-    ``jax.config.update``) nor ``vmex/__init__`` already set a cache
-    directory.
+    ``vmex`` as a *namespace* package, so ``vmex/__init__.py`` never runs.
+    This module executes on every core solve path, so it warns on the
+    shadowed import and applies ``_compat._apply_compilation_cache_policy``
+    (idempotent), which also splits per machine, or switches off, a cache
+    that JAX picked up from its environment or ``jax.config`` in between.
     """
-    import os
     import sys
     import warnings
 
@@ -103,23 +99,10 @@ def _harden_compilation_cache() -> None:
             stacklevel=3,
         )
     try:
-        current = jax.config.jax_compilation_cache_dir
-    except AttributeError:  # pragma: no cover - very old jax
-        return
-    if current:  # user env/jax.config or vmex/__init__ already set it
-        return
-    try:
-        from .._compat import _configure_compilation_cache, _default_compilation_cache_dir
+        from .._compat import _apply_compilation_cache_policy
     except Exception:  # pragma: no cover - core used standalone
         return
-    cache_dir = _default_compilation_cache_dir()
-    if cache_dir is None:  # policy says no cache (e.g. CPU-only, not forced)
-        return
-    try:
-        os.makedirs(cache_dir, exist_ok=True)
-    except OSError:  # pragma: no cover - unwritable cache location
-        return
-    _configure_compilation_cache(jax, cache_dir)
+    _apply_compilation_cache_policy(jax)
 
 
 _harden_compilation_cache()

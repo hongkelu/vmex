@@ -26,6 +26,11 @@ revision it was measured at, and the pages that cite it.
   implicit-function-theorem derivative of that PHIEDGE with respect to
   plasma and coil parameters, from one adjoint gradient.
 
+- Long CPU runs no longer abort with "Failed to materialize symbols": vmex
+  releases compiled executables before the process reaches
+  `vm.max_map_count`. The compilation cache is one directory per machine, and
+  `VMEX_COMPILATION_CACHE=disabled` overrides every cache variable.
+
 ## 0.11.2 - 2026-09-24
 
 A compilation-cache directory set through `JAX_COMPILATION_CACHE_DIR` or

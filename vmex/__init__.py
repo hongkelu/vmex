@@ -21,6 +21,10 @@ links to the module that documents it.
   (directives honored, ``wout_<case>.nc`` written)
 - :func:`~vmex.core.freeboundary.solve_free_boundary` — NESTOR free boundary
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
+- :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
+  LCFS meets a target outboard radius or volume
+- :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
+  its implicit-function-theorem gradient
 - :func:`~vmex.core.freeboundary_implicit.make_free_boundary_config` /
   :func:`~vmex.core.freeboundary_implicit.solve_free_boundary_implicit` /
   :func:`~vmex.core.freeboundary_implicit.solve_free_boundary_implicit_status`
@@ -63,16 +67,10 @@ links to the module that documents it.
 
 **Force-balance polishing**
 
-- :class:`~vmex.core.polish_driver.PolishConfig` /
-  :class:`~vmex.core.polish_driver.PolishContext` /
-  :class:`~vmex.core.polish_driver.PolishResult` /
-  :class:`~vmex.core.polish_driver.PolishReport` — strong-root correction
-  (``solve*(..., polish=...)``)
-- :class:`~vmex.core.polish_implicit.PolishLinearConfig` /
-  :func:`~vmex.core.polish_implicit.collocation_polish_tangent` /
-  :func:`~vmex.core.polish_implicit.collocation_polish_adjoint` /
-  :func:`~vmex.core.polish_implicit.implicit_collocation_polished_state`
-  — derivatives through a polished root
+- :class:`~vmex.core.polish.PolishConfig` /
+  :class:`~vmex.core.polish.PolishResult` /
+  :class:`~vmex.core.polish.PolishReport` — certified native force
+  balance of axisymmetric fixed-boundary decks (``solve*(..., polish=...)``)
 
 **Optimization**
 
@@ -135,9 +133,7 @@ links to the module that documents it.
   :class:`~vmex.core.errors.VmecConvergenceError`,
   :class:`~vmex.core.errors.VmecNumericalError`,
   :class:`~vmex.core.errors.MgridNotFoundError`,
-  :class:`~vmex.core.errors.StrongForceContinuationError`,
-  :class:`~vmex.core.errors.StrongForceCertificationError`,
-  :class:`~vmex.core.errors.StrongForceLinearSolveError`
+  :class:`~vmex.core.errors.StrongForceCertificationError`
 - ``vmex.doctor`` — installation diagnostics behind ``vmex --doctor`` (module)
 - ``vmex.core`` — the solver internals (module)
 
@@ -247,6 +243,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "solve_free_boundary_multigrid": (
         ".core.multigrid", "solve_free_boundary_multigrid"),
     "solve_free_boundary": (".core.freeboundary", "solve_free_boundary"),
+    "solve_phiedge": (".core.freeboundary", "solve_phiedge"),
+    "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),
     "solve_free_boundary_implicit": (
@@ -316,21 +314,13 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "OptimizationMonitor": (".core.monitoring", "OptimizationMonitor"),
     "OptimizationRecord": (".core.monitoring", "OptimizationRecord"),
     # high-order strong-force polishing
-    "PolishConfig": (".core.polish_driver", "PolishConfig"),
-    "PolishContext": (".core.polish_driver", "PolishContext"),
-    "PolishReport": (".core.polish_driver", "PolishReport"),
-    "PolishResult": (".core.polish_driver", "PolishResult"),
-    "PolishLinearConfig": (".core.polish_implicit", "PolishLinearConfig"),
+    "PolishConfig": (".core.polish", "PolishConfig"),
+    "PolishReport": (".core.polish", "PolishReport"),
+    "PolishResult": (".core.polish", "PolishResult"),
     "InputRequest": (".core.run_options", "InputRequest"),
     "RunOptions": (".core.run_options", "RunOptions"),
     "read_input_request": (".core.run_options", "read_input_request"),
     "solve_file": (".core.multigrid", "solve_file"),
-    "collocation_polish_adjoint": (
-        ".core.polish_implicit", "collocation_polish_adjoint"),
-    "collocation_polish_tangent": (
-        ".core.polish_implicit", "collocation_polish_tangent"),
-    "implicit_collocation_polished_state": (
-        ".core.polish_implicit", "implicit_collocation_polished_state"),
     # external fields
     "MgridData": (".core.mgrid", "MgridData"),
     "MgridField": (".core.mgrid", "MgridField"),
@@ -358,12 +348,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "VmecJacobianError": (".core.errors", "VmecJacobianError"),
     "VmecConvergenceError": (".core.errors", "VmecConvergenceError"),
     "VmecNumericalError": (".core.errors", "VmecNumericalError"),
-    "StrongForceContinuationError": (
-        ".core.errors", "StrongForceContinuationError"),
     "StrongForceCertificationError": (
         ".core.errors", "StrongForceCertificationError"),
-    "StrongForceLinearSolveError": (
-        ".core.errors", "StrongForceLinearSolveError"),
     "MgridNotFoundError": (".core.errors", "MgridNotFoundError"),
     # modules
     "core": (".core", None),

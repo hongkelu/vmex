@@ -149,6 +149,7 @@ EXECUTED_EXAMPLES = {
     "examples/free_boundary_beta_scan.py",
     "examples/free_boundary_essos_coils.py",
     "examples/free_boundary_mgrid.py",
+    "examples/free_boundary_phiedge.py",
     "examples/hot_restart_scan.py",
     "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
     "examples/mirror/mirror_free_boundary_beta_scan.py",
@@ -422,9 +423,8 @@ def test_force_balance_polishing_example_refuses_an_uncertified_export() -> None
     without checking ``converged`` would ship an uncertified equilibrium as
     if it were polished, so keep both guards explicit.
     """
-    deck = EXAMPLES / "data" / "input.shaped_tokamak_pressure_polished"
-    assert "POLISH_FORCE_BALANCE = .TRUE." in deck.read_text()
     source = (EXAMPLES / "force_balance_polishing.py").read_text()
+    assert "polish=True" in source
     assert "result.polished_state is None or result.polish_report is None" in source
     assert "if not report.converged:" in source
     for field in ("initial_normalized_l2", "final_normalized_l2",
@@ -432,7 +432,7 @@ def test_force_balance_polishing_example_refuses_an_uncertified_export() -> None
         assert field in source
 
 
-@pytest.mark.full  # nightly: ordinary solve + strong-force polish + 12 figures (~2 min)
+@pytest.mark.full  # nightly: ordinary solve + native strong-force polish (~3 min)
 def test_force_balance_polishing_example(tmp_path):
     out = _run_example(EXAMPLES / "force_balance_polishing.py", tmp_path, timeout=1200)
     assert "POLISH CERTIFIED" in out
@@ -447,16 +447,11 @@ def test_force_balance_polishing_example(tmp_path):
             f"the polish must lower the reported {label}: {out}")
     outdir = tmp_path / "output_force_balance_polishing"
     for name in ("wout_shaped_tokamak_before_polish.nc",
-                 "wout_shaped_tokamak_pressure_polished.nc"):
+                 "wout_shaped_tokamak_pressure.nc"):
         assert (outdir / name).exists()
-    # both stages plot, so the before/after comparison the docstring promises
-    # is actually produced
-    for stage, stem in (("before", "shaped_tokamak_before_polish"),
-                        ("after", "shaped_tokamak_pressure_polished")):
-        assert (outdir / stage / f"{stem}_summary.png").stat().st_size > 10_000
     # the fair comparison: both files on one mesh, certified the same way; the
     # near-axis error is where the polish gain lives
-    assert "both WOUT files on ns = 129, read back and certified the same way" in out
+    assert re.search(r"both WOUT files on ns = \d+, read back and certified the same way", out), out
     near_axis = re.search(r"rho < 0\.2\s+\[N m\^-3\]\s+([0-9.eE+-]+) => ([0-9.eE+-]+)", out)
     assert near_axis is not None, out
     initial, final = (float(g) for g in near_axis.groups())
@@ -595,7 +590,8 @@ def test_scalar_optimization_examples_expose_one_adjoint_lane(case, finite_beta)
     text = (EXAMPLES / "optimization" / f"{case}_optimization{suffix}.py").read_text()
     assert "_scalar_driver" not in text
     assert "objective_terms" in text
-    assert "POLISH_FORCE_BALANCE = False" in text
+    # polishing is axisymmetric-only; these non-axisymmetric scripts must not offer it
+    assert "POLISH_FORCE_BALANCE" not in text
     # one stem drives input., wout_ and the monitor files
     assert f'OUTPUT_NAME = "{case}_' in text
     assert 'to_indata(f"input.{OUTPUT_NAME}")' in text
@@ -834,6 +830,15 @@ def test_free_boundary_essos_coils(tmp_path):
     assert abs(actual - nominal) <= 0.15, (
         f"actual betatotal {actual}% not calibrated to nominal {nominal}%")
     assert fsq < 1e-7, f"free-boundary point should converge, fsq={fsq}"
+
+
+@pytest.mark.full  # nightly: PHIEDGE root solve on the ESSOS QA coils
+def test_free_boundary_phiedge(tmp_path):
+    pytest.importorskip("essos.coils")
+    pytest.importorskip("essos.fields")
+    out = _run_example(EXAMPLES / "free_boundary_phiedge.py", tmp_path, timeout=900)
+    error = float(re.search(r"relative error ([0-9.eE+-]+)", out).group(1))
+    assert error <= 2e-3, out  # cold re-solve at the returned PHIEDGE; RTOL = 1e-3 in CI mode
 
 
 @pytest.mark.full  # nightly: fixed + free-boundary solve either side of the seam (~100s)

@@ -68,8 +68,9 @@ LY = 12.0
 N_LAGUERRE, N_HERMITE = 4, 8
 NTHETA = 32                       # parallel grid points over one poloidal turn
 
-# Weight of the quasilinear heat-flux term:
-FLUX_WEIGHT = 1.0
+# Weight of the quasilinear heat-flux term, relative to its seed value (1 makes the
+# seed's term cost 0.5, against 15 for the seed's aspect-ratio error):
+FLUX_WEIGHT = 10.0
 
 # Step control, as in QA_optimization.py:
 PARAMETER_STEP = 0.02
@@ -125,15 +126,7 @@ def heat_flux(state, runtime):
     return SOFTMAX_TEMPERATURE * logsumexp(fluxes / SOFTMAX_TEMPERATURE)
 
 
-# Each term is (function, target, weight).
 qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
-objective_function_terms = [
-    (qs, 0.0, 1.0),
-    (opt.aspect_ratio, ASPECT_TARGET, 1.0),
-    (iota_floor, 0.0, 10.0),
-    (heat_flux, 0.0, FLUX_WEIGHT),
-]
-
 report = opt.EquilibriumReporter(
     ("QS total", qs.total, ".6e"), ("aspect", opt.aspect_ratio, ".4f"),
     ("mean iota", opt.mean_iota, ".4f"), ("QL heat flux", heat_flux, ".5f"))
@@ -143,6 +136,15 @@ monitor = opt.OptimizationMonitor()
 
 equilibrium = opt.solve_equilibrium(inp)
 seed_flux = report("seed", equilibrium)["QL heat flux"]
+
+# Each term is (function, target, weight); the turbulence term is normalized
+# by its seed value.
+objective_function_terms = [
+    (qs, 0.0, 1.0),
+    (opt.aspect_ratio, ASPECT_TARGET, 1.0),
+    (iota_floor, 0.0, 10.0),
+    (heat_flux, 0.0, FLUX_WEIGHT / max(abs(seed_flux), 1.0e-6) ** 2),
+]
 for max_mode, max_nfev in zip(MAX_MODES, MAX_NFEV):
     print(f"\n===== QA + quasilinear flux stage, max_mode = {max_mode} =====")
     mpol = max(max_mode + 2, MINIMUM_MPOL)

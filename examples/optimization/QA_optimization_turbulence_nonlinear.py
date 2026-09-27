@@ -79,8 +79,9 @@ MAX_SATURATION_STEPS = 20_000
 # Differentiated post-saturation window (below GKX's 1024-step divergence knee):
 WINDOW_STEPS = 512
 
-# The flux term is weighted relative to its seed value:
-FLUX_WEIGHT = 1.0
+# Weight of the heat-flux term, relative to its seed value (1 makes the
+# seed's term cost 0.5, against 15 for the seed's aspect-ratio error):
+FLUX_WEIGHT = 10.0
 
 # Step control, as in QA_optimization_scalar.py:
 PARAMETER_STEP = 0.02

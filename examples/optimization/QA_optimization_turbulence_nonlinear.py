@@ -66,7 +66,7 @@ SOFTMAX_TEMPERATURE = None        # None: mean over tubes
 
 # Nonlinear gyrokinetic model: ion drive in a/L, box, resolution, time step:
 A_OVER_LT, A_OVER_LN = 3.0, 1.0
-NX, NY, NZ = 16, 16, 16
+NX, NY, NZ = 8, 8, 16
 LX, LY = 62.8, 62.8
 N_LAGUERRE, N_HERMITE = 4, 8
 DT = 0.05

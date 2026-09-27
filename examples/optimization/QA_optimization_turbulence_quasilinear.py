@@ -19,8 +19,13 @@ The mixing-length rule is a model of saturation with an uncalibrated
 amplitude; ``QA_optimization_turbulence_nonlinear.py`` optimizes the heat flux
 of the saturated nonlinear state instead.
 
-Measured cost (office host, CPU, default settings): see the numbers printed
-per stage and the table in examples/README.md.
+Measured on a shared 36-core Xeon host (CPU only, 12 cores, JAX 0.10.2,
+GKX 2.4.0), default settings: 29 min end to end, 6.9 GB peak memory. Stage 1
+took 553 s for 5 iterations (111 s each, first compilation included), stage 2
+806 s for 7 (115 s each). The quasilinear heat flux at s = 0.5 went
+2.57 -> 0.94 while the aspect ratio came from 11.5 to 7.7 and the
+quasisymmetry error stayed at 0.04; the mean |iota| fell to 0.12, below the
+0.42 floor, which these weights do not enforce.
 """
 
 import os

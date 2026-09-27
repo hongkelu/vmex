@@ -618,17 +618,27 @@ def _split_kwargs(kwargs: dict) -> tuple[dict, dict]:
     return geometry, kwargs
 
 
-def _linear_params(params_linear, r_over_lt, r_over_ln, aspect):
+def _linear_params(params_linear, r_over_lt, r_over_ln, aspect,
+                   a_over_lt=None, a_over_ln=None):
     """GKX LinearParams: explicit object, or its collisionless
-    optimization defaults with optionally overridden drive gradients."""
+    optimization defaults with optionally overridden drive gradients
+    (``R/L`` through ``r_over_*``, or GKX's own ``a/L`` through ``a_over_*``)."""
+    drives = (r_over_lt, r_over_ln, a_over_lt, a_over_ln)
     if params_linear is not None:
-        if r_over_lt is not None or r_over_ln is not None:
-            raise ValueError("pass either params_linear or r_over_lt/r_over_ln, not both")
+        if any(d is not None for d in drives):
+            raise ValueError("pass either params_linear or drive gradients, not both")
         return params_linear
+    if (r_over_lt is not None and a_over_lt is not None) or (
+            r_over_ln is not None and a_over_ln is not None):
+        raise ValueError("pass each drive gradient as R/L or as a/L, not both")
     from gkx.objectives.core import _default_gradient_linear_params
     params = _default_gradient_linear_params()
     import dataclasses
     updates = {}
+    if a_over_lt is not None:
+        updates["tprim"] = a_over_lt
+    if a_over_ln is not None:
+        updates["fprim"] = a_over_ln
     # GKX's operator consumes a/L gradients -- its ``tprim``/``fprim``, the
     # TOML convention -- never R/L.  Its own defaults, ``tprim = 2.49`` and
     # ``fprim = 0.8``, are the Cyclone base case ``R/L_T = 6.9``,
@@ -660,6 +670,8 @@ def turbulence_objective_vector(
     terms=None,
     r_over_lt: float | None = None,
     r_over_ln: float | None = None,
+    a_over_lt: float | None = None,
+    a_over_ln: float | None = None,
     **geometry_kwargs,
 ) -> jnp.ndarray:
     """Ordered GKX linear/quasilinear observable vector (traceable).
@@ -678,7 +690,8 @@ def turbulence_objective_vector(
     ``R/a = 2.77``).  ``r_over_lt``/``r_over_ln`` override them in ``R/L``,
     divided by this equilibrium's aspect ratio on the way in, since GKX's
     operator consumes ``a/L``; pass ``params_linear`` to supply ``a/L``
-    directly.
+    directly, or ``a_over_lt``/``a_over_ln`` to set only the drive in
+    ``a/L`` on top of the defaults.
     """
     gkx = _gkx()
     geom = flux_tube_geometry(state, rt, **geometry_kwargs)
@@ -688,7 +701,7 @@ def turbulence_objective_vector(
         n_laguerre=int(n_laguerre), n_hermite=int(n_hermite),
         nx=int(nx), ny=int(ny), lx=float(lx), ly=float(ly),
         params_linear=_linear_params(params_linear, r_over_lt, r_over_ln,
-                                    aspect_ratio(state, rt)),
+                                    aspect_ratio(state, rt), a_over_lt, a_over_ln),
         terms=terms,
     )
 
@@ -718,7 +731,8 @@ def turbulent_growth_rate(state: SpectralState, rt: SolverRuntime, **kwargs) -> 
     params_linear = _linear_params(
         solver_kwargs.pop("params_linear", None),
         solver_kwargs.pop("r_over_lt", None), solver_kwargs.pop("r_over_ln", None),
-        aspect_ratio(state, rt))
+        aspect_ratio(state, rt),
+        solver_kwargs.pop("a_over_lt", None), solver_kwargs.pop("a_over_ln", None))
     geom = flux_tube_geometry(state, rt, **geometry_kwargs)
     matrix = gkx.solver_linear_operator_matrix_from_geometry(
         geom, params_linear=params_linear, **solver_kwargs)

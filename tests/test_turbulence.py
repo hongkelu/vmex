@@ -343,6 +343,11 @@ def test_drive_gradients_reach_gkx_as_a_over_l(shaped_eq):
     # params_linear is the escape hatch and must pass through untouched.
     explicit = turb._linear_params(params, None, None, aspect)
     assert explicit is params
+    # a/L is GKX's own unit and passes through unscaled.
+    direct = turb._linear_params(None, None, None, aspect, 3.0, 1.0)
+    assert (float(direct.tprim), float(direct.fprim)) == (3.0, 1.0)
+    with pytest.raises(ValueError, match="not both"):
+        turb._linear_params(None, 6.9, None, aspect, 3.0, None)
 
 
 def test_growth_rate_is_itg_critical_gradient_monotone(shaped_eq):

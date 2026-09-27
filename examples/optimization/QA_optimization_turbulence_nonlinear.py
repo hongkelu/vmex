@@ -23,7 +23,18 @@ coefficient through the whole window. This script instead sums the residual
 rows into one scalar, as ``QA_optimization_scalar.py`` does, so SciPy L-BFGS-B
 receives a value and a gradient from one reverse sweep through the
 checkpointed window and one reverse equilibrium adjoint. Needs
-``pip install 'vmex[turbulence]'``; a GPU is strongly recommended.
+``pip install 'vmex[turbulence]'``.
+
+Measured on a shared 36-core Xeon host (CPU only, 12 cores, load ~60 from
+other jobs, JAX 0.10.2, GKX 2.4.0), default settings: 70 min end to end,
+5.5 GB peak memory. The cold saturation of the seed took 35,696 steps
+(1,083 s); the warm restarts after each stage 2,480 and 6,296 steps (99 s,
+136 s). One value and gradient took 69 s in stage 1 (22 evaluations, 1,527 s)
+and 60 s in stage 2 (19, 1,139 s). The gated saturated heat flux at s = 0.5
+went 53.0 +- 2.6 (seed) -> 36.3 +- 1.8 (stage 1) -> 42.6 +- 2.1 (stage 2,
+which traded flux for quasisymmetry: QS error 2.29 -> 0.75), with the aspect
+ratio 11.5 -> 6.0. That is one tube, one seed and no held-out check: it shows
+the pipeline works, not a certified transport reduction.
 """
 
 import os
@@ -158,7 +169,7 @@ def window_flux(saturated_state, geometry, steps):
         terms=terms, method="rk3")
 
 
-saturation_traces = []           # (label, time, heat flux) of every saturation run
+saturation_traces = []           # (label, time, heat flux, gate decision) per run
 
 
 def saturate(equilibrium, seeds, label):
@@ -186,7 +197,8 @@ def saturate(equilibrium, seeds, label):
             raise RuntimeError(
                 f"tube {tube} did not saturate in {MAX_SATURATION_STEPS} steps: "
                 f"{decision['reasons']}")
-        saturation_traces.append((f"{label}, s={tube[0]}, alpha={tube[1]}", times, fluxes))
+        saturation_traces.append(
+            (f"{label}, s={tube[0]}, alpha={tube[1]}", times, fluxes, decision))
         states.append(state)
     return states
 
@@ -280,7 +292,10 @@ for max_mode, maxiter in zip(MAX_MODES, MAXITER):
 
 final_flux = report("final", equilibrium)["heat flux"]
 print(f"\nwindow heat flux {seed_flux:.5e} -> {final_flux:.5e} "
-      "(each after its own saturation)")
+      "(one differentiated window each, a noisy estimate)")
+# The number to quote is the gated saturated mean with its standard error.
+for label, _, _, decision in saturation_traces:
+    print(f"saturated Q [{label}] = {decision['mean']} +- {decision['sem']}")
 
 input_path = inp.to_indata(f"input.{OUTPUT_NAME}")
 wout_path = vj.write_wout(f"wout_{OUTPUT_NAME}.nc", equilibrium.wout)
@@ -288,7 +303,7 @@ print(f"Wrote {input_path}\nWrote {wout_path}")
 print(f"Wrote {monitor.save(f'{OUTPUT_NAME}_objectives.csv')}")
 print(f"Wrote {monitor.plot(f'{OUTPUT_NAME}_objectives.png')}")
 figure, axis = plt.subplots(figsize=(7, 4))
-for label, times, fluxes in saturation_traces:
+for label, times, fluxes, _ in saturation_traces:
     axis.plot(times, fluxes, label=label)
 axis.set(xlabel="time (a / v_thi, from each restart)", ylabel="ion heat flux Q",
          title="Saturation runs, one per tube and stage")

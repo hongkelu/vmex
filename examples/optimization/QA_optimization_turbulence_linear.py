@@ -18,8 +18,12 @@ equilibrium itself stays a vacuum field. A growth rate is a linear proxy for
 transport, not transport: see ``QA_optimization_turbulence_nonlinear.py`` for
 the post-saturation heat flux.
 
-Measured cost (office host, CPU, default settings): see the numbers printed
-per stage and the table in examples/README.md.
+Measured on a shared 36-core Xeon host (CPU only, 12 cores, load ~70 from
+other jobs, JAX 0.10.2, GKX 2.4.0), default settings: 28 min end to end, 6.5 GB
+peak memory. Stage 1 took 794 s for 7 iterations (113 s each, first
+compilation included), stage 2 586 s for 7 (84 s each). The growth rate at
+s = 0.5 went 0.196 -> 0.097 (v_thi / a) while the aspect ratio came from 11.5 to
+6.4; the quasisymmetry error rose 0.039 -> 0.20, the price of these weights.
 """
 
 import os

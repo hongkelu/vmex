@@ -15,7 +15,7 @@ paths are `examples/data/mgrid_ncsx_c09r00_small.nc` (3.0 MB), old
 largest 1.7 MB) and `benchmarks/polish_recovery_*_state.npz` (about
 0.3 MB each). The largest live items are `plan.md` (0.75 MB of history,
 318 kB / 3,863 lines now), `README.md` history (0.34 MB) and
-`readme_diagnostics_summary.webp` (1.5 MB of history).
+one diagnostics summary figure (1.5 MB of history).
 
 Tracked files and working-tree size: `vmex/` 76 files (63.7k lines),
 `tests/` 136 (49.0k lines), `docs/` 96 (3.5 MB), `examples/` 124

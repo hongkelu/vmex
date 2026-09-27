@@ -619,10 +619,18 @@ def _split_kwargs(kwargs: dict) -> tuple[dict, dict]:
 
 
 def _linear_params(params_linear, r_over_lt, r_over_ln, aspect,
-                   a_over_lt=None, a_over_ln=None):
+                   a_over_lt=None, a_over_ln=None, geometry=None):
     """GKX LinearParams: explicit object, or its collisionless
     optimization defaults with optionally overridden drive gradients
-    (``R/L`` through ``r_over_*``, or GKX's own ``a/L`` through ``a_over_*``)."""
+    (``R/L`` through ``r_over_*``, or GKX's own ``a/L`` through ``a_over_*``).
+
+    The defaults' Hermite closure scales with ``kpar_scale``, which must be
+    the tube's ``b . grad z`` (GKX's own default is 1.0 when it has no
+    geometry).  On a large-aspect-ratio tube (``gradpar`` 0.035 on the QA
+    seed) 1.0 overdamped the closure 30-fold and hid a resolved ITG mode
+    (``gamma`` 0.19-0.29 at ``a/L_T = 3``) behind a marginal one (``2e-4``),
+    so the defaults take ``kpar_scale`` from ``geometry`` when it is given.
+    """
     drives = (r_over_lt, r_over_ln, a_over_lt, a_over_ln)
     if params_linear is not None:
         if any(d is not None for d in drives):
@@ -635,6 +643,8 @@ def _linear_params(params_linear, r_over_lt, r_over_ln, aspect,
     params = _default_gradient_linear_params()
     import dataclasses
     updates = {}
+    if geometry is not None:
+        updates["kpar_scale"] = geometry.gradpar_value
     if a_over_lt is not None:
         updates["tprim"] = a_over_lt
     if a_over_ln is not None:
@@ -695,13 +705,14 @@ def turbulence_objective_vector(
     """
     gkx = _gkx()
     geom = flux_tube_geometry(state, rt, **geometry_kwargs)
+    params = _linear_params(params_linear, r_over_lt, r_over_ln,
+                            aspect_ratio(state, rt), a_over_lt, a_over_ln, geom)
     return gkx.solver_objective_vector_from_geometry(
         geom,
         selected_ky_index=int(selected_ky_index),
         n_laguerre=int(n_laguerre), n_hermite=int(n_hermite),
         nx=int(nx), ny=int(ny), lx=float(lx), ly=float(ly),
-        params_linear=_linear_params(params_linear, r_over_lt, r_over_ln,
-                                    aspect_ratio(state, rt), a_over_lt, a_over_ln),
+        params_linear=params,
         terms=terms,
     )
 
@@ -728,12 +739,13 @@ def turbulent_growth_rate(state: SpectralState, rt: SolverRuntime, **kwargs) -> 
     """
     geometry_kwargs, solver_kwargs = _split_kwargs(dict(kwargs))
     gkx = _gkx()
+    geom = flux_tube_geometry(state, rt, **geometry_kwargs)
     params_linear = _linear_params(
         solver_kwargs.pop("params_linear", None),
         solver_kwargs.pop("r_over_lt", None), solver_kwargs.pop("r_over_ln", None),
         aspect_ratio(state, rt),
-        solver_kwargs.pop("a_over_lt", None), solver_kwargs.pop("a_over_ln", None))
-    geom = flux_tube_geometry(state, rt, **geometry_kwargs)
+        solver_kwargs.pop("a_over_lt", None), solver_kwargs.pop("a_over_ln", None),
+        geom)
     matrix = gkx.solver_linear_operator_matrix_from_geometry(
         geom, params_linear=params_linear, **solver_kwargs)
     eigenvalues = jnp.linalg.eigvals(matrix)

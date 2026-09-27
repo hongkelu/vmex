@@ -13,6 +13,10 @@ revision it was measured at, and the pages that cite it.
   accepted iterates are promoted.
 - `adjoint_solver="forward_dense_jax"` with optional seed-LU matrix-free reuse
   and Newton root polishing; an invalid GPU LU pivot buffer is refactored on CPU.
+- The implicit fixed-boundary solve rehomes the forward state beside the
+  parameters before refining it. On a GPU host with `JAX_PLATFORMS` set, the
+  forward solve ran on the GPU while the callback's parameters stayed on the
+  CPU, and every gradient failed with "Received incompatible devices".
 - `vmex.solve_phiedge` finds the PHIEDGE whose free-boundary LCFS meets a
   target outboard radius, volume or user metric (bracketed secant over
   warm-started solves); example `examples/free_boundary_phiedge.py`, guide

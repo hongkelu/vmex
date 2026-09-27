@@ -6,6 +6,8 @@ those coils, predicted from the accepted root and certified before use, and
 SLSQP minimizes quasisymmetry subject to hard inequalities: minimum |iota|,
 major radius, aspect ratio, coil-to-plasma clearance, and per-coil length,
 curvature, mean squared curvature and coil separation (``parameters.py``).
+``OPTIMIZER = "L-BFGS-B"`` instead minimizes the fixed-boundary arm's objective,
+QA plus the same rows as hinge penalties, so both arms share one algorithm.
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
 
@@ -36,6 +38,9 @@ NEWTON_STEPS = None  # Newton-correct predicted trials on the seed LU before any
 IOTA_CONSTRAINT = "min"  # "min": one minimum-|iota| row; "surfaces": one row per radial surface
 IOTA_RAMP = None  # e.g. 0.05: raise the iota floor in stages of RAMP_STAGE_STEPS accepted steps
 RAMP_STAGE_STEPS = 5
+OPTIMIZER = "SLSQP"  # "L-BFGS-B": the hinge penalties of single_stage_optimization.py instead
+PENALTY_WEIGHT = 1.0e3  # its CONSTRAINT_WEIGHT
+STEP_CAP = None  # e.g. 0.2: SLSQP box around the stage start, in scaled coordinates, per RAMP_STAGE_STEPS
 
 
 def parse_args(argv=None):
@@ -107,12 +112,31 @@ def main(argv=None):
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
         return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=grid[0], ntheta=grid[1])
 
-    def loss(state, runtime, coils):
-        residuals = qs.residuals_state(state, runtime)
-        return 0.5 * jnp.vdot(residuals, residuals)
+    aspect_lower, aspect_upper = P.ASPECT_RANGE
+    aspect_scale = 0.5 * (aspect_upper - aspect_lower)
+    width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
 
     def clearance(state, runtime, coils):
         return coil_limits.surface_distance(coils, boundary(state, runtime, coil_limits.SURFACE_GRID))
+
+    def qa(state, runtime):
+        residuals = qs.residuals_state(state, runtime)
+        return jnp.vdot(residuals, residuals)
+
+    def loss(state, runtime, coils):
+        if OPTIMIZER == "SLSQP":
+            return 0.5 * qa(state, runtime)
+        # The fixed-boundary arm's rows; its normal-field and flux rows hold here by construction.
+        aspect_value, radius = opt.aspect_ratio(state, runtime), opt.major_radius(state, runtime)
+        rows = jnp.concatenate([
+            jnp.stack([(opt.min_abs_iota(state, runtime) - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
+                       (aspect_value - aspect_lower) / aspect_scale, (aspect_upper - aspect_value) / aspect_scale,
+                       (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
+                       (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE]),
+            coil_limits.coil_inequalities(coils),
+            jnp.atleast_1d((clearance(state, runtime, coils) - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
+                           / P.COIL_SURFACE_DISTANCE_LIMIT)])
+        return 0.5 * qa(state, runtime) + 0.5 * PENALTY_WEIGHT * jnp.sum(jnp.maximum(-rows, 0.0)**2)
 
     def aspect(state, runtime, coils):
         return opt.aspect_ratio(state, runtime)
@@ -147,9 +171,6 @@ def main(argv=None):
     if NEWTON_STEPS:
         problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 
-    aspect_lower, aspect_upper = P.ASPECT_RANGE
-    aspect_scale = 0.5 * (aspect_upper - aspect_lower)
-    width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
     coil_rows = coil_limits.constraint(chart.coils_from_x)
     for method in ("fun", "jac"):
         def timed(x, _call=getattr(coil_rows, method), _name=f"coil_constraint_{method}"):
@@ -174,13 +195,14 @@ def main(argv=None):
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())
+    qa_of = jax.jit(lambda state: qa(state, problem.rt))
 
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
         values = problem.constraint_values(x)
         iota, (radius, surface, aspect_value) = float(np.min(values[:-3])), values[-3:]
         now = time.monotonic()
-        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
+        row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    step_u_linf=float(np.max(np.abs((x - last["x"]) / problem.scales))),
@@ -203,16 +225,29 @@ def main(argv=None):
     if IOTA_RAMP:
         start_iota = float(np.min(problem.constraint_values(problem.accepted.parameters)[:-3]))
         floors = [*np.arange(start_iota + IOTA_RAMP, P.IOTA_FLOOR, IOTA_RAMP), P.IOTA_FLOOR]
+    from scipy.optimize import Bounds
     try:
-        for index, floor in enumerate(floors):
+        index = 0
+        while problem.accepted_step < args.steps:
+            floor = floors[min(index, len(floors) - 1)]
+            staged = index < len(floors) - 1 or bool(STEP_CAP)
             remaining = args.steps - problem.accepted_step
-            budget = remaining if index == len(floors) - 1 else min(RAMP_STAGE_STEPS, remaining)
-            if budget <= 0:
+            budget = min(RAMP_STAGE_STEPS, remaining) if staged else remaining
+            x, before = problem.accepted.parameters, problem.accepted_step
+            print(f"[stage {index}] {OPTIMIZER}, iota floor {floor:.4f}, up to {budget} accepted steps", flush=True)
+            if OPTIMIZER == "L-BFGS-B":
+                # A rejected line-search trial ends the call; restart from the accepted state.
+                result = opt.minimize(problem, x0=x, method="L-BFGS-B", callback=lambda x: log_step(),
+                                      options=dict(maxiter=budget, maxcor=20, maxls=20, ftol=1e-12, gtol=1e-8))
+            else:
+                box = None if not STEP_CAP else Bounds(x - STEP_CAP * problem.scales, x + STEP_CAP * problem.scales)
+                result = opt.minimize(problem, x0=x, method="SLSQP", bounds=box,
+                                      constraints=constraints(floor), callback=lambda x: log_step(),
+                                      options=dict(maxiter=budget, ftol=OPTIMIZER_FTOL))
+            index += 1
+            restart = staged or result.stop_reason == "equilibrium_trial_rejected"
+            if (problem.accepted_step == before and index >= len(floors)) or not restart:
                 break
-            print(f"[stage {index}] iota floor {floor:.4f}, up to {budget} accepted steps", flush=True)
-            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP",
-                                  constraints=constraints(floor), callback=lambda x: log_step(),
-                                  options=dict(maxiter=budget, ftol=OPTIMIZER_FTOL))
         stop = dict(success=bool(result.success), message=str(result.message),
                     stop_reason=getattr(result, "stop_reason", None))
     except TimeoutError:

@@ -398,9 +398,25 @@ def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
     stats["fail"] = True
     result = opt.minimize(p, method="L-BFGS-B", callback=lambda x: pytest.fail("failed trial promoted"),
                           options={"maxiter": 20})
-    assert not result.success and result.stop_reason == "equilibrium_trial_rejected"
+    assert not result.success
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
+
+
+def test_lbfgsb_shortens_a_rejected_step_instead_of_stopping(scalar):
+    p, *_ = scalar
+    p.enable_matrix_free()
+    initial, trial = p.fun(p.x0), p._trial
+
+    def near_only(x, *args, **kwargs):  # equilibria fail beyond a short distance
+        if np.max(np.abs(x - p.accepted.parameters)) > 0.003:
+            raise TrialRejected("too far")
+        return trial(x, *args, **kwargs)
+
+    p._trial = near_only
+    result = opt.minimize(p, method="L-BFGS-B", options={"maxiter": 5})
+    assert result.stop_reason == "accepted_step_budget_reached" and p.accepted_step == 5
+    assert p.fun(result.x) < initial
 
 
 def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar):

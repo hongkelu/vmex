@@ -80,8 +80,7 @@ def main(argv=None):
 
     qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), helicity_m=1, helicity_n=0)
     plasma_problem = opt.VmecProblem.from_tuples(
-        inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA,
-        device=args.device)
+        inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA)
 
     resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS).to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))

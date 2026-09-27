@@ -2398,6 +2398,20 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         value, gradient = problem.value_and_grad(start+scales*u)
         return value, np.asarray(gradient)*scales
 
+    def walled_value_and_grad(u):
+        # A rejected line-search trial sees the smooth wall of the fixed-boundary
+        # problems, base * (1 + d)**2 in the distance d from the accepted point,
+        # so L-BFGS-B shortens its step instead of stopping.
+        try:
+            return value_and_grad(u)
+        except TrialRejected:
+            delta = np.asarray(u) - (accepted - start)/scales
+            distance = float(np.linalg.norm(delta))
+            base = max(10.0*abs(float(accepted_value)), 1.0)
+            if distance == 0.0:
+                raise
+            return base*(1.0 + distance)**2, (2.0*base*(1.0 + distance)/distance)*delta
+
     def fun(u):
         nonlocal nfev
         nfev += 1
@@ -2414,7 +2428,7 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         return gradient
 
     try:
-        result = scipy_minimize(fun if method == "SLSQP" else value_and_grad,
+        result = scipy_minimize(fun if method == "SLSQP" else walled_value_and_grad,
             np.zeros_like(start), jac=jac if method == "SLSQP" else True, method=method,
             bounds=bounds, constraints=scaled_constraints,
             callback=None if method == "SLSQP" else accept, options=options, tol=tol)

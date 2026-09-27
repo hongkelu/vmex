@@ -398,7 +398,7 @@ def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
     stats["fail"] = True
     result = opt.minimize(p, method="L-BFGS-B", callback=lambda x: pytest.fail("failed trial promoted"),
                           options={"maxiter": 20})
-    assert not result.success
+    assert not result.success and result.stop_reason == "equilibrium_trial_rejected"
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
 

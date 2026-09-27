@@ -2358,7 +2358,7 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
     accepted = start.copy()
     value, gradient = problem.value_and_grad(accepted)
     accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
-    accepted_steps = 0
+    accepted_steps = walled = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
         return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
@@ -2369,10 +2369,11 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         pass
 
     def accept(u):
-        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
+        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps, walled
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
+        walled = 0
         current_value, current_gradient = problem.value_and_grad(x)
         if promote is not None:
             promote(x)
@@ -2402,9 +2403,11 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         # A rejected line-search trial sees the smooth wall of the fixed-boundary
         # problems, base * (1 + d)**2 in the distance d from the accepted point,
         # so L-BFGS-B shortens its step instead of stopping.
+        nonlocal walled
         try:
             return value_and_grad(u)
         except TrialRejected:
+            walled += 1
             delta = np.asarray(u) - (accepted - start)/scales
             distance = float(np.linalg.norm(delta))
             base = max(10.0*abs(float(accepted_value)), 1.0)
@@ -2442,6 +2445,8 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
             result.hess_inv = LinearOperator((start.size, start.size),
                 matvec=lambda v: scales*(inverse @ (scales*v)), dtype=float)
         result.stop_reason = None
+        if walled:  # it stopped against rejected trials, not at a stationary point
+            result.success, result.stop_reason = False, "equilibrium_trial_rejected"
     except (_Stop, TrialRejected) as error:
         reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
         result = OptimizeResult(success=False, status=99, message=str(error),

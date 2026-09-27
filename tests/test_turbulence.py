@@ -208,6 +208,36 @@ def test_surface_index_validation(shaped_eq):
         turb.gk_fieldline_geometry(shaped_eq.state, shaped_eq.runtime, ntheta=4)
 
 
+def test_physical_s_selects_a_radius_not_a_grid_index(shaped_eq):
+    """``s`` on a grid surface is that surface bitwise; off the grid it
+    converges at second order in ``hs`` to one physical radius."""
+    state, rt = shaped_eq.state, shaped_eq.runtime
+    on_grid = turb.gk_fieldline_geometry(state, rt, s=7 / 12, alpha=0.3, ntheta=16)
+    index = turb.gk_fieldline_geometry(state, rt, s_index=7, alpha=0.3, ntheta=16)
+    for name in turb.GK_GEOMETRY_FIELDS + ("q", "s_hat"):
+        np.testing.assert_array_equal(np.asarray(on_grid[name]), np.asarray(index[name]))
+
+    inp = VmecInput.from_file(DATA_DIR / "input.shaped_tokamak_pressure")
+    fine = opt.solve_equilibrium(dataclasses.replace(
+        inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+        niter_array=np.array([4000])))
+    kwargs = dict(s=0.53, alpha=0.3, ntheta=16)
+    coarse_geom = turb.gk_fieldline_geometry(state, rt, **kwargs)
+    fine_geom = turb.gk_fieldline_geometry(fine.state, fine.runtime, **kwargs)
+    assert float(coarse_geom["vmex"]["s"]) == pytest.approx(0.53, abs=1e-14)
+    assert float(fine_geom["vmex"]["s"]) == pytest.approx(0.53, abs=1e-14)
+    for name in ("bmag", "gds2", "gds21", "gbdrift", "cvdrift", "gbdrift0"):
+        reference = np.asarray(fine_geom[name])
+        error = np.max(np.abs(np.asarray(coarse_geom[name]) - reference))
+        # ns = 13 -> 25 against ns = 97 measured 3.6e-2 / 8.2e-3 (gbdrift, the
+        # worst); evaluating one surface's parabola off-centre instead gave 0.41.
+        assert error <= 0.05 * np.max(np.abs(reference)), name
+    with pytest.raises(ValueError, match="not both"):
+        turb.gk_fieldline_geometry(state, rt, s=0.5, s_index=6)
+    with pytest.raises(ValueError, match="interior surfaces"):
+        turb.gk_fieldline_geometry(state, rt, s=0.95)
+
+
 def test_wout_geometry_matches_live_state_without_reconstruction(shaped_eq, tmp_path):
     """The read-only WOUT route reproduces the live-state mapping."""
     import vmex

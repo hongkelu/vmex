@@ -209,20 +209,65 @@ def _make_gk_point_fn(m: Array, xn: Array, tabs: dict, iota: Array,
     return point
 
 
-def _resolve_surface(s_index, ns: int) -> int:
-    if s_index is None:
-        s_index = min(max(int(round(0.6 * (ns - 1))), 2), ns - 2)
-    return _validate_surface_index(s_index, ns)
+def _resolve_surface(s_index, s, ns: int) -> tuple[int, float]:
+    """Full-mesh surface ``j`` and weight ``w`` of the tube at ``s_j + w hs``.
+
+    ``s_index`` is a grid surface (``w = 0``).  A normalized toroidal flux
+    ``s`` is bracketed by surfaces ``j`` and ``j + 1``, both inside
+    ``[2, ns - 2]``, so the tube stays at one physical radius when ``ns``
+    changes.
+    """
+    if s is None:
+        if s_index is None:
+            s_index = min(max(int(round(0.6 * (ns - 1))), 2), ns - 2)
+        return _validate_surface_index(s_index, ns), 0.0
+    if s_index is not None:
+        raise ValueError("pass s or s_index, not both")
+    position = float(s) * (ns - 1)
+    j = int(np.floor(position))
+    w = position - j
+    if w < 1.0e-9 or w > 1.0 - 1.0e-9:     # on a grid surface
+        j, w = int(round(position)), 0.0
+    if not (2 <= j and j + (w > 0.0) <= ns - 2):
+        raise ValueError(
+            f"s = {float(s)} lies outside the interior surfaces "
+            f"[{2 / (ns - 1):.4g}, {(ns - 2) / (ns - 1):.4g}] of this ns = {ns} grid")
+    return j, w
 
 
-def _line_arrays(ctx: dict, j: int, alpha: float, zeta0: float, x: Array):
+def _surface(ctx: dict, j: int, w: float) -> dict:
+    """Radial tables and profiles at ``s_j + w hs``.
+
+    Each full-mesh surface quantity (the radial parabola tables and the
+    ``iota``, ``d iota/ds``, ``dp/ds`` and ``phi'`` of that surface) is
+    interpolated linearly between the two bracketing surfaces.  Evaluating
+    one surface's parabola off-centre instead amplifies VMEC's odd-even
+    radial noise through its second-difference term: on a shaped tokamak
+    it moved ``gbdrift`` by 20 % at a fixed ``s``.
+    """
+    hs, iotas, pres = ctx["hs"], ctx["iotas"], ctx["pres"]
+
+    def at(k: int) -> dict:
+        return {
+            "tabs": _surface_tables(ctx, k),
+            "iota": 0.5 * (iotas[k] + iotas[k + 1]),
+            "diota": (iotas[k + 1] - iotas[k]) / hs,
+            "dpres": (pres[k + 1] - pres[k]) / hs,   # internal units: mu0 dp/ds
+            "phipf": ctx["phipf"][k],
+            "s": ctx["s"][k],
+        }
+
+    surface = at(j)
+    if w == 0.0:
+        return surface
+    return jax.tree.map(lambda a, b: (1.0 - w) * a + w * b, surface, at(j + 1))
+
+
+def _line_arrays(ctx: dict, surface: dict, alpha: float, zeta0: float, x: Array):
     """Raw point-geometry tuple along the field line at PEST angles ``alpha + x``."""
-    hs = ctx["hs"]
-    iotas = ctx["iotas"]
-    iota = 0.5 * (iotas[j] + iotas[j + 1])
-    tabs = _surface_tables(ctx, j)
+    tabs, iota = surface["tabs"], surface["iota"]
     point = _make_gk_point_fn(ctx["m"], ctx["xn"], tabs, iota,
-                              (iotas[j + 1] - iotas[j]) / hs, ctx["phipf"][j])
+                              surface["diota"], surface["phipf"])
     theta_star = alpha + x
     phi = zeta0 + x / iota                 # field line: theta* = alpha + iota (phi - zeta0)
     lmns0, lmnc0 = _pest_lambda(tabs)
@@ -259,6 +304,7 @@ def _gk_fieldline_geometry_from_context(
     *,
     nfp: int,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -287,6 +333,11 @@ def _gk_fieldline_geometry_from_context(
     s_index:
         Full-mesh surface index in ``[2, ns - 2]``; default ~60 % of the
         radius (a typical core gradient region).
+    s:
+        Normalized toroidal flux of the tube, instead of ``s_index``: the
+        surface data are interpolated linearly between the two bracketing
+        full-mesh surfaces, so the tube keeps its physical radius when
+        ``ns`` changes (optimization ladders, final re-solves).
     alpha, zeta0:
         Field-line label ``alpha = theta* - iota (phi - zeta0)`` and the
         toroidal angle of the tube center.
@@ -307,16 +358,13 @@ def _gk_fieldline_geometry_from_context(
     """
     if int(ntheta) < 8:
         raise ValueError("ntheta must be >= 8")
-    j = _resolve_surface(s_index, ctx["ns"])
+    j, w = _resolve_surface(s_index, s, ctx["ns"])
     dtype = ctx["s"].dtype
 
-    hs = ctx["hs"]
-    s_j = ctx["s"][j]
+    surface = _surface(ctx, j, w)
+    s_j = surface["s"]
     sqrt_s = jnp.sqrt(s_j)
-    iotas, pres = ctx["iotas"], ctx["pres"]
-    iota = 0.5 * (iotas[j] + iotas[j + 1])
-    diota = (iotas[j + 1] - iotas[j]) / hs
-    dpres = (pres[j + 1] - pres[j]) / hs            # internal units: mu0 dp/ds
+    iota, diota, dpres = surface["iota"], surface["diota"], surface["dpres"]
     shat = -2.0 * s_j * diota / iota                # (r/q) dq/dr, r = L_ref sqrt(s)
     L_ref, B_ref, R_major = ctx["L_ref"], ctx["B_ref"], ctx["R_major"]
     psi_edge, sign_psi = ctx["psi_edge"], ctx["sign_psi"]
@@ -331,7 +379,7 @@ def _gk_fieldline_geometry_from_context(
         # Monotone map x(z) with b.grad z constant: z ~ cumulative int dx / gradpar(x).
         nfine = int(arc_oversample) * int(ntheta) + 1
         x_fine = jnp.linspace(-jnp.pi, jnp.pi, nfine, dtype=dtype)
-        modB_f, b_sup_phi_f, *_ = _line_arrays(ctx, j, alpha_c, zeta0_c, x_fine)
+        modB_f, b_sup_phi_f, *_ = _line_arrays(ctx, surface, alpha_c, zeta0_c, x_fine)
         w = 1.0 / gradpar_of(modB_f, b_sup_phi_f)
         dx = x_fine[1] - x_fine[0]
         cum = jnp.concatenate([jnp.zeros((1,), dtype=dtype),
@@ -344,7 +392,7 @@ def _gk_fieldline_geometry_from_context(
         gradpar_value = None
 
     (modB, b_sup_phi, gaa, gas, gss,
-     bxgb_dot_ga, bxgb_dot_gs, b_dot_gradb) = _line_arrays(ctx, j, alpha_c, zeta0_c, x_eval)
+     bxgb_dot_ga, bxgb_dot_gs, b_dot_gradb) = _line_arrays(ctx, surface, alpha_c, zeta0_c, x_eval)
 
     bmag = modB / B_ref
     gradpar_profile = gradpar_of(modB, b_sup_phi)
@@ -407,6 +455,7 @@ def gk_fieldline_geometry(
     rt: SolverRuntime,
     *,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -424,6 +473,7 @@ def gk_fieldline_geometry(
         _ballooning_context(state, rt),
         nfp=int(rt.resolution.nfp),
         s_index=s_index,
+        s=s,
         alpha=alpha,
         zeta0=zeta0,
         ntheta=ntheta,
@@ -500,6 +550,7 @@ def gk_fieldline_geometry_from_wout(
     wout: Any,
     *,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -524,6 +575,7 @@ def gk_fieldline_geometry_from_wout(
         _wout_ballooning_context(wout),
         nfp=int(wout.nfp),
         s_index=s_index,
+        s=s,
         alpha=alpha,
         zeta0=zeta0,
         ntheta=ntheta,
@@ -558,7 +610,7 @@ def flux_tube_geometry(
 # Objective wrappers (GKX proxies as (state, runtime) callables)
 # ---------------------------------------------------------------------------
 
-_GEOMETRY_KEYS = ("s_index", "alpha", "zeta0", "ntheta", "equal_arc", "arc_oversample")
+_GEOMETRY_KEYS = ("s_index", "s", "alpha", "zeta0", "ntheta", "equal_arc", "arc_oversample")
 
 
 def _split_kwargs(kwargs: dict) -> tuple[dict, dict]:
@@ -613,7 +665,7 @@ def turbulence_objective_vector(
     """Ordered GKX linear/quasilinear observable vector (traceable).
 
     Samples one flux tube (:func:`gk_fieldline_geometry` keyword arguments
-    ``s_index``/``alpha``/``zeta0``/``ntheta``/``equal_arc`` pass through),
+    ``s``/``s_index``/``alpha``/``zeta0``/``ntheta``/``equal_arc`` pass through),
     builds GKX's spectral linear gyrokinetic operator on it at the
     ``selected_ky_index`` binormal wavenumber (``ky = 2 pi k / ly`` in
     ``rho_ref`` units), selects the maximum-growth eigenbranch, and returns

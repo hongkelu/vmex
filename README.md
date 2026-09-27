@@ -27,7 +27,8 @@ and stability diagnostics, and has a separate lane for open mirrors.
 - **Design with gradients:** implicit scalar adjoints and residual Jacobians for SciPy, JAXopt or
   Optax, with quasisymmetry, quasi-isodynamic, Mercier, ballooning, bootstrap and maximum-`J` objectives.
 - **Inspect the physics:** Boozer transforms, the magnetic field and its first three spatial
-  derivatives, effective ripple, and the `--plot` diagnostic summary.
+  derivatives, effective ripple, the `--plot` diagnostic summary, `--scale` to reactor size and
+  `--trace` alpha-particle losses.
 - **Choose the hardware:** CPU or GPU equilibrium solves (optimization gradients default to CPU),
   reusable compilation and independent-case ensembles.
 - **Connect coils:** ESSOS coil fields, NESTOR free boundary from an MGRID table or coils, and the
@@ -119,8 +120,14 @@ With your own VMEC input file:
 vmex input.my_case --plot
 vmex --plot wout_my_case.nc
 vmex --booz wout_my_case.nc
+vmex --scale wout_my_case.nc
+vmex --trace wout_my_case.nc
 vmex input.nearby --restart wout_my_case.nc
 ```
+
+`--scale` writes `*_scaled` at ARIES-CS size (a = 1.7044 m, ⟨B⟩ = 5.8646 T); two factors `B R` scale
+by hand. `--trace` (needs `vmex[coils]`) scales the same way in memory, traces 1000 fusion alphas for
+10 ms and writes the loss fraction against time.
 
 `--plot` writes five PNGs beside the input or in `--outdir`: the summary below, flux-surface cross-sections,
 `|B|` in VMEC angles, Mercier stability and the 3-D LCFS. The summary adds Boozer `|B|`, a `J` map,
@@ -363,9 +370,17 @@ validation. See the [mirror guide](https://vmex.readthedocs.io/en/latest/howto/m
 A small VMEC `FSQR/FSQZ/FSQL` means the discrete solve converged; it does not bound the continuous
 force error `J × B − ∇p`. Optional polishing (`--polish`, or `polish=True`) re-solves that force on
 a native quintic-spline representation — constrained Gauss–Newton steps with force-driven knot
-insertion, then one exact-Hessian Newton step — and certifies it with an independent oracle. It
-covers fixed-boundary axisymmetric decks with prescribed pressure and iota; a non-axisymmetric
-polish is future work.
+insertion, then one exact-Hessian Newton step — and certifies it with an independent oracle. To
+request it from a deck, put this line at the top of the INDATA file (VMEC2000 reads it as a
+comment; VMEX runs the native polish after the solve):
+
+```fortran
+! VMEX: POLISH_FORCE_BALANCE = .TRUE.
+```
+
+It currently applies to axisymmetric fixed-boundary decks with prescribed pressure and iota
+(`NCURR = 0`, `GAMMA = 0`, `LASYM = F`); any other deck with the directive stops with an input
+error. Non-axisymmetric polishing is a research lane.
 
 ![Force error of a shaped finite-pressure tokamak before and after polishing](docs/_static/figures/readme_polish_before_after.webp)
 

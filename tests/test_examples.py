@@ -161,6 +161,9 @@ EXECUTED_EXAMPLES = {
     "examples/optimization/QA_optimization_finite_beta_scalar.py",
     "examples/optimization/QA_optimization_scalar.py",
     "examples/optimization/QA_optimization_scipy.py",
+    "examples/optimization/QA_optimization_turbulence_linear.py",
+    "examples/optimization/QA_optimization_turbulence_nonlinear.py",
+    "examples/optimization/QA_optimization_turbulence_quasilinear.py",
     "examples/optimization/QH_optimization.py",
     "examples/optimization/QH_optimization_bootstrap.py",
     "examples/optimization/QI_maxJ_continuation.py",
@@ -1020,6 +1023,18 @@ def test_qa_ballooning_optimization_example(tmp_path):
     assert (tmp_path / "input.QA_ballooning_optimized").exists()
     assert (tmp_path / "wout_QA_ballooning_optimized.nc").exists()
     assert (tmp_path / "QA_ballooning_optimized_stability.png").stat().st_size > 10_000
+
+
+@pytest.mark.full  # nightly: every residual evaluation runs a GKX solve
+@pytest.mark.parametrize("kind", ["linear", "quasilinear", "nonlinear"])
+def test_qa_turbulence_optimization_examples(tmp_path, kind):
+    """QA + one GKX turbulence tuple: linear, quasilinear and nonlinear."""
+    pytest.importorskip("gkx")
+    script = EXAMPLES / "optimization" / f"QA_optimization_turbulence_{kind}.py"
+    out = _run_example(script, tmp_path, timeout=2400)
+    _assert_cost_decreased(out, f"QA-turbulence-{kind}")
+    assert "stage wall time" in out
+    assert (tmp_path / f"wout_QA_turbulence_{kind}_optimized.nc").exists()
 
 
 def test_ballooning_example_scans_the_ballooning_parameter():

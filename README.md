@@ -75,7 +75,7 @@ or pick what you need:
 | `pip install "vmex[coils]"` | `essos>=0.17` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
 | `pip install "vmex[freeb]"` | `virtual-casing-jax>=0.0.8` | the virtual-casing exterior field of the plasma (`VmecExtender`) |
 | `pip install "vmex[neoclassical]"` | `neo-jax>=1.0.2` | effective ripple `ε_eff` from a WOUT or Boozer spectrum (`vmex.epsilon_effective_from_wout`) and the `--plot` ripple panel |
-| `pip install "vmex[turbulence]"` | `gkx>=1.8.0` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) |
+| `pip install "vmex[turbulence]"` | `gkx>=2.4.0` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) |
 | `pip install "vmex[optimizers]"` | `jaxopt`, `optax` | the JAXopt and Optax optimization drivers |
 | `pip install "vmex[all]"` | all of the above | every example and documented workflow |
 
@@ -88,7 +88,7 @@ The same packages can be installed by name; the floors are the ones in `pyprojec
 | `essos` | 0.17 | `vmex[coils]` | `pip install "essos>=0.17"` |
 | `virtual-casing-jax` | 0.0.8 | `vmex[freeb]` | `pip install "virtual-casing-jax>=0.0.8"` |
 | `neo-jax` | 1.0.2 | `vmex[neoclassical]` | `pip install "neo-jax>=1.0.2"` |
-| `gkx` | 1.8.0 | `vmex[turbulence]` | `pip install "gkx>=1.8.0"` |
+| `gkx` | 2.4.0 | `vmex[turbulence]` | `pip install "gkx>=2.4.0"` |
 | `jaxopt`, `optax` | none | `vmex[optimizers]` | `pip install jaxopt optax` |
 
 NESTOR free boundary from an MGRID table needs no extra. A feature whose package is missing raises

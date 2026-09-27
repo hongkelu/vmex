@@ -24,6 +24,7 @@ per stage and the table in examples/README.md.
 """
 
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -155,11 +156,14 @@ for max_mode, max_nfev in zip(MAX_MODES, MAX_NFEV):
         ess_alpha=ESS_ALPHA, restart_from=equilibrium)
     monitor.problem = problem
     step = PARAMETER_STEP * problem.scales
+    start = time.perf_counter()
     result = least_squares(
         problem.residual, problem.x0, jac=problem.residual_jac, x_scale=step,
         bounds=(problem.x0 - MAX_PARAMETER_CHANGE * step,
                 problem.x0 + MAX_PARAMETER_CHANGE * step),
         max_nfev=max_nfev, ftol=1e-6, xtol=1e-10, verbose=2, callback=monitor)
+    print(f"stage wall time {time.perf_counter() - start:.0f} s for {result.nfev} "
+          f"residual and {result.njev} Jacobian evaluations")
     inp = problem.input_from_x(result.x)
     equilibrium = problem.equilibrium_from_x(result.x)
     report(f"mode {max_mode}", equilibrium)

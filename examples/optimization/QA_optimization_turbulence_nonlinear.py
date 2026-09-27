@@ -249,12 +249,15 @@ for max_mode, maxiter in zip(MAX_MODES, MAXITER):
     def record(intermediate_result):
         monitor({"x": x0 + step * intermediate_result.x, "fun": intermediate_result.fun})
 
+    start = time.perf_counter()
     initial_value = float(value_and_gradient(np.zeros_like(x0))[0])
     result = minimize(
         value_and_gradient, np.zeros_like(x0), jac=True, method="L-BFGS-B",
         bounds=[(-MAX_PARAMETER_CHANGE, MAX_PARAMETER_CHANGE)] * x0.size,
         callback=record, options={"maxiter": maxiter, "maxls": 10})
     print(f"optimizer scalar cost: {initial_value:.12e} -> {float(result.fun):.12e}")
+    print(f"stage wall time {time.perf_counter() - start:.0f} s for "
+          f"{result.nfev + 1} value-and-gradient evaluations")
     x = x0 + step * result.x
     inp = problem.input_from_x(x)
     equilibrium = problem.equilibrium_from_x(x)

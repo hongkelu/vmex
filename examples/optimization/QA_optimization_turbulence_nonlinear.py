@@ -30,12 +30,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 from jax.scipy.special import logsumexp
 from scipy.optimize import minimize
 
 import gkx
-from gkx.diagnostics.saturation import saturation_stop_decision
+from gkx.diagnostics.saturation import SaturationStopConfig, saturation_stop_decision
 import vmex as vj
 from vmex import optimize as opt
 from vmex.core.turbulence import flux_tube_geometry
@@ -72,9 +73,11 @@ N_LAGUERRE, N_HERMITE = 4, 8
 DT = 0.05
 
 # Saturation: a heat-flux sample every SAMPLE_STEPS steps, at most
-# MAX_SATURATION_STEPS steps per tube and stage:
+# MAX_SATURATION_STEPS steps per tube and stage, and the relative standard
+# error of the saturated mean the gate requires:
 SAMPLE_STEPS = 8
-MAX_SATURATION_STEPS = 20_000
+MAX_SATURATION_STEPS = 60_000
+SATURATION_REL_SEM = 0.05
 
 # Differentiated post-saturation window (below GKX's 1024-step divergence knee):
 WINDOW_STEPS = 512
@@ -153,7 +156,10 @@ def window_flux(saturated_state, geometry, steps):
         terms=terms, method="rk3")
 
 
-def saturate(equilibrium, seeds):
+saturation_traces = []           # (label, time, heat flux) of every saturation run
+
+
+def saturate(equilibrium, seeds, label):
     """Run every tube to an accepted saturated state (outside the derivative)."""
     states = []
     for tube, seed in zip(TUBES, seeds):
@@ -165,7 +171,8 @@ def saturate(equilibrium, seeds):
                 method="rk3", terms=terms, return_fields=False)
             fluxes.append(float(window_flux(state, geometry, 1)))
             times = DT * SAMPLE_STEPS * np.arange(1, len(fluxes) + 1)
-            decision = saturation_stop_decision(times, fluxes)
+            decision = saturation_stop_decision(
+                times, fluxes, config=SaturationStopConfig(rel_sem=SATURATION_REL_SEM))
             if decision["saturated"]:
                 break
         steps = (chunk + 1) * SAMPLE_STEPS
@@ -177,6 +184,7 @@ def saturate(equilibrium, seeds):
             raise RuntimeError(
                 f"tube {tube} did not saturate in {MAX_SATURATION_STEPS} steps: "
                 f"{decision['reasons']}")
+        saturation_traces.append((f"{label}, s={tube[0]}, alpha={tube[1]}", times, fluxes))
         states.append(state)
     return states
 
@@ -207,7 +215,7 @@ monitor = opt.OptimizationMonitor()
 ### Run the optimization ######################################################
 
 equilibrium = opt.solve_equilibrium(inp)
-saturated_states = saturate(equilibrium, [noise_seed() for _ in TUBES])
+saturated_states = saturate(equilibrium, [noise_seed() for _ in TUBES], "seed")
 seed_flux = report("seed", equilibrium)["heat flux"]
 flux_scale = max(abs(seed_flux), 1.0e-6)
 
@@ -263,7 +271,7 @@ for max_mode, maxiter in zip(MAX_MODES, MAXITER):
     equilibrium = problem.equilibrium_from_x(x)
     report(f"mode {max_mode}, stage state", equilibrium)
     # Restart every tube from its last saturated state in the new geometry.
-    saturated_states = saturate(equilibrium, saturated_states)
+    saturated_states = saturate(equilibrium, saturated_states, f"mode {max_mode}")
     report(f"mode {max_mode}, re-saturated", equilibrium)
 
 ### Print, plot and save ######################################################
@@ -277,5 +285,13 @@ wout_path = vj.write_wout(f"wout_{OUTPUT_NAME}.nc", equilibrium.wout)
 print(f"Wrote {input_path}\nWrote {wout_path}")
 print(f"Wrote {monitor.save(f'{OUTPUT_NAME}_objectives.csv')}")
 print(f"Wrote {monitor.plot(f'{OUTPUT_NAME}_objectives.png')}")
+figure, axis = plt.subplots(figsize=(7, 4))
+for label, times, fluxes in saturation_traces:
+    axis.plot(times, fluxes, label=label)
+axis.set(xlabel="time (a / v_thi, from each restart)", ylabel="ion heat flux Q",
+         title="Saturation runs, one per tube and stage")
+axis.legend(fontsize=8)
+figure.savefig(f"{OUTPUT_NAME}_saturation.png", dpi=120, bbox_inches="tight")
+print(f"Wrote {OUTPUT_NAME}_saturation.png")
 for path in vj.plot_wout(wout_path, ".").values():
     print(f"Wrote {path}")

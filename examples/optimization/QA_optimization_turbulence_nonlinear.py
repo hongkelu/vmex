@@ -18,9 +18,11 @@ adjoint) through the flux-tube geometry. That is the derivative of a finite
 window from a fixed start, not of the long-time mean: accepted designs need an
 independent cold-start check before a transport reduction is claimed.
 
-The window derivative is reverse-mode only, so this script sums the residual
-rows into one scalar, as ``QA_optimization_scalar.py`` does, and SciPy L-BFGS-B
-receives a value and one reverse equilibrium adjoint per gradient. Needs
+A least-squares Jacobian would push one forward tangent per boundary
+coefficient through the whole window. This script instead sums the residual
+rows into one scalar, as ``QA_optimization_scalar.py`` does, so SciPy L-BFGS-B
+receives a value and a gradient from one reverse sweep through the
+checkpointed window and one reverse equilibrium adjoint. Needs
 ``pip install 'vmex[turbulence]'``; a GPU is strongly recommended.
 """
 

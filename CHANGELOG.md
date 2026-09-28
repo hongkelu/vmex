@@ -7,6 +7,12 @@ revision it was measured at, and the pages that cite it.
 
 ## 0.11.4 - 2026-09-27
 
+- `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
+  free-boundary root with `opt.minimize` (SLSQP, L-BFGS-B): trials start from a
+  tangent prediction, are strictly edge-converged and certified, and only
+  accepted iterates are promoted.
+- `adjoint_solver="forward_dense_jax"` with optional seed-LU matrix-free reuse
+  and Newton root polishing; an invalid GPU LU pivot buffer is refactored on CPU.
 - Single-stage optimizations no longer stop early: a refinement restart is
   kept only when it certifies (#477).
 - Coherent dependency floors: `solvax>=0.27.0` with `equinox>=0.13.3`,

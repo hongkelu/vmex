@@ -305,13 +305,19 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
                     linear_relative_tolerance=1e-5, krylov_iterations=int(its),
                     krylov_converged=bool(converged), krylov_norm=float(krylov_norm),
                     krylov_rtol=1e-6))
+        # Accept a step that lowers the raw residual it solves or the
+        # preconditioned one: a full Newton step can raise the preconditioned
+        # norm once before converging quadratically, and near the root the raw
+        # norm sits on its rounding floor.
+        raw_norm = _tree_norm(f)
         for backtrack in range(8):
             check_time()
             alpha = 0.5**backtrack
             trial = jax.tree.map(lambda a, b: a + alpha * b, z, delta)
-            trial_norm = _tree_norm(evaluate(trial))
-            if np.isfinite(trial_norm) and trial_norm < magnitude:
-                trial_f = evaluate(trial, raw)
+            trial_f = evaluate(trial, raw)
+            trial_raw, trial_norm = _tree_norm(trial_f), _tree_norm(evaluate(trial))
+            if np.isfinite(trial_raw) and np.isfinite(trial_norm) and (
+                    trial_raw < raw_norm or trial_norm < magnitude):
                 break
         else:
             raise _RootPolishError(f"Newton refinement did not reduce residual {magnitude}")

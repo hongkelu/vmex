@@ -40,6 +40,8 @@ IOTA_RAMP = None  # e.g. 0.05: raise the iota floor in stages of RAMP_STAGE_STEP
 RAMP_STAGE_STEPS = 5
 OPTIMIZER = "SLSQP"  # "L-BFGS-B": the hinge penalties of single_stage_optimization.py instead
 PENALTY_WEIGHT = 1.0e3  # its CONSTRAINT_WEIGHT
+SHARED_CURRENT = False  # True: all coil currents vary by one common factor, the vacuum equivalent of a free PHIEDGE
+CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
 STEP_CAP = None  # e.g. 0.2: SLSQP box around the stage start, in scaled coordinates, per RAMP_STAGE_STEPS
 
 
@@ -101,8 +103,10 @@ def main(argv=None):
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
     resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS).to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    scales = P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()
-    chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales)
+    current_dofs = tuple(range(len(coils0.dofs_currents_raw))) if SHARED_CURRENT else ()
+    scales = np.r_[np.full(len(current_dofs), CURRENT_STEP),
+                   P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
+    chart = opt.CoilParameters.from_coils(coils0, current_dofs=current_dofs, scales=scales)
     qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), 1, 0)
 
     def boundary(state, runtime, grid):
@@ -187,8 +191,13 @@ def main(argv=None):
         clearance(state, problem.rt, chart.coils_from_x(x)), opt.aspect_ratio(state, problem.rt)]))
     n_iota = problem.constraint_values(problem.accepted.parameters).size - 3 if OPTIMIZER == "SLSQP" else 0
 
+    from scipy.optimize import LinearConstraint
+    tie = np.zeros((max(len(current_dofs) - 1, 0), chart.size))
+    for row in range(tie.shape[0]):  # equal relative currents: one common factor
+        tie[row, row], tie[row, row + 1] = 1.0, -1.0
+
     def constraints(floor):
-        return [problem.nonlinear_constraint(
+        return [LinearConstraint(tie, 0.0, 0.0)] * bool(tie.size) + [problem.nonlinear_constraint(
             [floor + P.IOTA_MARGIN] * n_iota + [P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
                                                 aspect_lower],
             [np.inf] * n_iota + [P.RADIUS_TARGET + width, np.inf, aspect_upper],
@@ -210,6 +219,7 @@ def main(argv=None):
         row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
+                   current_factor=float(chart.base_currents_at(x)[0] / chart.currents[0]),
                    step_u_linf=float(np.max(np.abs((x - last["x"]) / problem.scales))),
                    root_residual=float(record.root_residual_norm), fedge=float(record.result.fedge),
                    step_seconds=now - last["time"], elapsed_seconds=now - started,

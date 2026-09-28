@@ -27,8 +27,7 @@ two layers:
 
    - :func:`turbulent_growth_rate` — kind ``"growth"``: dominant linear
      ITG/TEM-branch growth rate ``gamma`` on the sampled flux tube.
-     Traceable in both AD modes (``jac=None`` and ``jac="implicit"``;
-     its docstring has the eigvals-vs-custom_vjp detail).
+     Traceable in both AD modes (``jac=None`` and ``jac="implicit"``).
    - :func:`quasilinear_flux_proxy` — kind ``"quasilinear_flux"``: the
      mixing-length quasilinear heat-flux proxy
      ``gamma * W_Q / k_perp_eff^2``.
@@ -41,16 +40,15 @@ two layers:
      ``SOLVER_OBJECTIVE_NAMES`` vector
      (:data:`TURBULENCE_OBJECTIVE_NAMES`).
 
-   The quasilinear and nonlinear-window proxies weight the dominant
-   *eigenvector* (heat-flux weight, ``kperp_eff``), and JAX declines
-   derivatives of non-symmetric eigenvectors — those two are value-level
-   objectives: use ``jac=None`` (finite differences), exactly like the
-   wout-engine terms (``d_merc``, ``l_grad_b``).  Traceability is
-   validated in ``tests/test_turbulence.py``.
+   Every wrapper differentiates in forward and reverse mode through GKX's
+   implicit eigenpair rule (``gkx.objectives.eigen.dominant_eigenpair``):
+   one dense ``eig`` and one bordered LU per Jacobian, and one operator JVP
+   at the eigenvector per column, so they compose with ``jac="implicit"``.
+   Traceability is validated in ``tests/test_turbulence.py``.
 
 The heavy dependency is optional: only the objective wrappers import
-``gkx`` (>= 2.4.0; ``pip install 'vmex[turbulence]'`` or
-``pip install 'gkx>=2.4.0'``; its ``solvax`` pin is satisfied API-wise by
+``gkx`` (>= 2.4.2; ``pip install 'vmex[turbulence]'`` or
+``pip install 'gkx>=2.4.2'``; its ``solvax`` pin is satisfied API-wise by
 the in-house solvax's ``gmres``/``tridiagonal_solve``/``chunked_jacfwd``).
 The geometry adapter works without it.
 
@@ -154,8 +152,8 @@ def _gkx():
     except ImportError as err:  # pragma: no cover - exercised via message test
         raise ImportError(
             "the turbulence objectives need the optional dependency "
-            "gkx >= 2.4.0 (github.com/uwplasma/GKX): pip install 'vmex[turbulence]' "
-            "or pip install 'gkx>=2.4.0'.  The geometry adapter "
+            "gkx >= 2.4.2 (github.com/uwplasma/GKX): pip install 'vmex[turbulence]' "
+            "or pip install 'gkx>=2.4.2'.  The geometry adapter "
             "gk_fieldline_geometry works without it.") from err
 
 
@@ -724,18 +722,14 @@ def turbulent_growth_rate(state: SpectralState, rt: SolverRuntime, **kwargs) -> 
     eigenvalues of its spectral Hermite-Laguerre linear operator on the
     sampled flux tube, in ``v_th / L_ref`` units.  Positive = unstable.
 
-    The operator matrix is GKX's own
-    (``gkx.solver_linear_operator_matrix_from_geometry`` — the exact
-    matrix behind its ``solver_growth_rate_from_geometry``); the eigenvalue
-    reduction here uses ``jnp.linalg.eigvals`` so the objective carries
-    *both* JVP and VJP rules — GKX's ``dominant_real_eigenvalue``
-    is a reverse-only ``custom_vjp``, which vmex's forward-mode
-    implicit Jacobian cannot trace (values agree to roundoff; gated in
-    ``tests/test_turbulence.py``).  Keyword arguments as
-    :func:`turbulence_objective_vector` (minus the eigenvector-dependent
-    pieces).  Two-positional ``(state, runtime)`` — drive it toward zero /
-    negative in :func:`vmex.core.optimize.least_squares` with
-    ``jac=None`` or ``jac="implicit"``.
+    GKX's ``solver_growth_rate_from_geometry``: one dense ``eig`` of its
+    operator, differentiated implicitly in both modes -- a Jacobian costs one
+    bordered LU plus one operator JVP per column, never a materialized
+    ``dA``.  Keyword arguments as :func:`turbulence_objective_vector` (minus
+    the eigenvector-dependent pieces).  Two-positional ``(state, runtime)``
+    -- drive it toward zero / negative in
+    :func:`vmex.core.optimize.least_squares` with ``jac=None`` or
+    ``jac="implicit"``.
     """
     geometry_kwargs, solver_kwargs = _split_kwargs(dict(kwargs))
     gkx = _gkx()
@@ -746,20 +740,18 @@ def turbulent_growth_rate(state: SpectralState, rt: SolverRuntime, **kwargs) -> 
         aspect_ratio(state, rt),
         solver_kwargs.pop("a_over_lt", None), solver_kwargs.pop("a_over_ln", None),
         geom)
-    matrix = gkx.solver_linear_operator_matrix_from_geometry(
+    return gkx.solver_growth_rate_from_geometry(
         geom, params_linear=params_linear, **solver_kwargs)
-    eigenvalues = jnp.linalg.eigvals(matrix)
-    return jnp.real(eigenvalues[jnp.argmax(jnp.real(eigenvalues))])
 
 
 def quasilinear_flux_proxy(state: SpectralState, rt: SolverRuntime, **kwargs) -> jnp.ndarray:
-    """Mixing-length quasilinear heat-flux proxy (value-level; ``jac=None``).
+    """Mixing-length quasilinear heat-flux proxy (traceable).
 
     GKX objective kind ``"quasilinear_flux"``: ``gamma * W_Q /
     max(kperp_eff^2, 1e-12)`` with ``W_Q`` the dominant mode's normalized
     heat-flux weight — the mixing-length saturation rule of its quasilinear
-    transport lane.  Eigenvector-weighted, hence value-level (module
-    docstring): use ``jac=None``.  Keyword arguments as
+    transport lane.  Eigenvector-weighted; GKX's implicit eigenpair rule
+    differentiates it in both modes.  Keyword arguments as
     :func:`turbulence_objective_vector`.
     """
     gkx = _gkx()
@@ -775,7 +767,7 @@ def nonlinear_heat_flux_proxy(
     saturation_floor: float = 1.0e-10,
     **kwargs,
 ) -> jnp.ndarray:
-    """Smooth reduced nonlinear-window heat-flux surrogate (value-level; ``jac=None``).
+    """Smooth reduced nonlinear-window heat-flux surrogate (traceable).
 
     GKX objective kind ``"nonlinear_window_heat_flux"``: its
     saturation-rule closure ``csat * max(W_Q, 0) * 2 gamma_+ /
@@ -784,8 +776,8 @@ def nonlinear_heat_flux_proxy(
     (``gkx.objectives.vmec_transport._solver_table_to_nonlinear_window_proxy``,
     the exact objective its VMEX optimization scripts use for this kind).
     A smooth *surrogate* only — see the module docstring's audit caveat.
-    Eigenvector-weighted like :func:`quasilinear_flux_proxy` — use
-    ``jac=None``.  Keyword arguments as
+    Eigenvector-weighted and differentiable like
+    :func:`quasilinear_flux_proxy`.  Keyword arguments as
     :func:`turbulence_objective_vector`.
     """
     _gkx()

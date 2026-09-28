@@ -43,8 +43,8 @@ exposing a ``residuals_state(equilibrium_state, solver_context)`` method (the re
 optimizer picks it up automatically, so the *same* term list works in both
 gradient modes).  Terms that evaluate wout tables on host NumPy
 (:func:`~vmex.core.optimize.d_merc`,
-:func:`~vmex.core.optimize.l_grad_b`, the wout-lane QI residual, the
-eigenvector-weighted turbulence proxies) work with ``jac=None`` only —
+:func:`~vmex.core.optimize.l_grad_b`, the wout-lane QI residual) work
+with ``jac=None`` only —
 use :func:`~vmex.core.optimize.mercier_stability_residual` for Mercier and
 :func:`~vmex.core.optimize.l_grad_b_state` for ``L_grad_B`` with
 ``jac="implicit"``.
@@ -588,8 +588,8 @@ JAX-native Hermite–Laguerre flux-tube solver, formerly SPECTRAX-GK;
 - :func:`~vmex.core.turbulence.quasilinear_flux_proxy` and
   :func:`~vmex.core.turbulence.nonlinear_heat_flux_proxy` — the
   mixing-length and saturation-rule heat-flux surrogates.  These weight the
-  dominant *eigenvector*, whose derivatives JAX declines for non-symmetric
-  operators — value-level objectives, ``jac=None``.
+  dominant *eigenvector*; GKX's implicit eigenpair rule differentiates it in
+  both modes, so they take ``jac="implicit"`` like the growth rate.
 
 .. code-block:: python
 
@@ -653,7 +653,7 @@ Which objectives differentiate how
    * - :func:`~vmex.core.turbulence.turbulent_growth_rate`
      - yes
      - yes
-     - eigenvalue-only reduction carries JVP + VJP
+     - GKX implicit eigenpair rule: JVP + VJP
    * - :func:`~vmex.core.optimize.l_grad_b_state`
      - yes
      - yes
@@ -686,8 +686,8 @@ Which objectives differentiate how
    * - :func:`~vmex.core.turbulence.quasilinear_flux_proxy`,
        :func:`~vmex.core.turbulence.nonlinear_heat_flux_proxy`
      - yes
-     - no
-     - eigenvector weights have no nonsymmetric-eig derivative
+     - yes
+     - GKX implicit eigenpair rule (bordered tangent): JVP + VJP
 
 ``jac="implicit"`` requires a fixed-boundary problem. Its boundary parameter
 map supports both symmetric and ``LASYM = T`` equilibria. Traceable

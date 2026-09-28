@@ -17,7 +17,18 @@ restores fixed currents.
 
 Every accepted step appends one line to ``metrics.jsonl``. Coils and a WOUT
 are saved every ``--save-every`` steps and at the end; restart from them with
-``--coils <out>/coils.json --wout <out>/wout.nc``. This case is vacuum only.
+``--coils <out>/coils.json --wout <out>/wout.nc``.
+
+``--beta 0.005`` runs the same case at finite beta: a fixed pressure p ~ 1 - s,
+scaled once so the fixed-boundary seed has that volume-average beta, with zero
+net toroidal current and fixed PHIEDGE. The loss and constraints are unchanged.
+The free-boundary solve already makes
+the boundary a flux surface of the coil plus plasma field, so the virtual-casing
+B.n/|B| and pressure balance are saved diagnostics only, together with beta.
+Before the free-boundary seed solve the coils are refitted to the finite-beta
+fixed-boundary seed (no equilibrium solves): they must cancel the plasma's own
+normal field, (B_coils + B_plasma).n = 0 with B_plasma from virtual casing,
+under the coil limits of ``parameters.py`` as penalties.
 """
 
 import argparse
@@ -34,14 +45,16 @@ import parameters as P  # noqa: E402
 
 # Numerical controls of the equilibrium, adjoint and matrix-free solves.
 ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
+ROOT_POLISH_STEPS = 10             # damped Newton steps may be needed from a 1e-9 ordinary-solve residual
 OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 LU_REFRESH_HORIZON = 10
+# Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
+COIL_FIT_MAXITER, COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 200, 1.0e-3, 1.0e3
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
-SHARED_CURRENT = True  # all coil currents vary by one common factor (a free flux per ampere)
+SHARED_CURRENT = P.SHARED_CURRENT  # all coil currents vary by one common factor (a free flux per ampere)
 CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
-DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
 
 
 def parse_args(argv=None):
@@ -49,10 +62,13 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
-    parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
+    parser.add_argument("--coils", type=Path, default=P.COILS_FILE)
+    parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--wout", type=Path, help="restart the initial solve from this WOUT")
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
     parser.add_argument("--save-every", type=int, default=25)
+    parser.add_argument("--beta", type=float, default=0.0,
+                        help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
     return parser.parse_args(argv)
 
 
@@ -68,6 +84,134 @@ def resize_coils(coils, order, n_segments):
     curves = Curves(raw, n_segments=n_segments, nfp=coils.nfp, stellsym=coils.stellsym,
                     scaling_type=old.scaling_type, scaling_factor=old.scaling_factor, scale_fixed=old.scale_fixed)
     return Coils(curves, coils.dofs_currents_raw, currents_scale=coils.currents_scale)
+
+
+def finite_beta_input(inp, beta, device):
+    """Give ``inp`` a pressure p ~ 1 - s whose fixed-boundary seed has ``beta``.
+
+    ``P.BETA_DEFINITION`` "volume": ``beta`` is <beta>, reached by rescaling the
+    pressure at the deck's PHIEDGE. "axis": ``beta`` is WOUT ``betaxis``; the
+    pressure is ramped in with hot restarts. With ``P.B0`` set, PHIEDGE is
+    rescaled until the edge R B_phi (the coils' mu0 I / 2 pi) is B0 R0, so the
+    field strength follows the flux as in upstream #426. Returns the input and
+    the last fixed-boundary solve.
+    """
+    import numpy as np
+    from vmex import optimize as opt
+
+    axis, r0 = P.BETA_DEFINITION == "axis", float(inp.rbc[inp.ntor, 0])
+    b0 = 1.0 if P.B0 is None else P.B0
+    pressure = beta * b0**2 / (8e-7 * np.pi) if axis else beta / (4e-7 * np.pi)
+    am = np.zeros_like(np.asarray(inp.am, dtype=float))
+    am[:2] = 1.0, -1.0
+    inp = replace(inp, am=am)
+    fixed = None
+    ramp = (0.25, 0.5, 0.75, 1.0) if axis and beta > 0 else (1.0,)
+    corrections = 3 if axis or P.B0 is not None else 1
+    for index in range(len(ramp) + corrections):
+        if index < len(ramp):
+            inp = replace(inp, pres_scale=ramp[index] * pressure)
+        else:
+            measured = float(fixed.wout.betaxis if axis else fixed.wout.betatotal)
+            if beta > 0:
+                inp = replace(inp, pres_scale=inp.pres_scale * beta / measured)
+            if P.B0 is not None:
+                inp = replace(inp, phiedge=float(inp.phiedge) * b0 * r0 / abs(float(fixed.wout.rbtor)))
+        fixed = opt.solve_equilibrium(inp, initial_state=None if fixed is None else fixed.state, device=device,
+                                      raise_on_max_iterations=True, polish_force_balance=False)
+    w = fixed.wout
+    print(f"PRES_SCALE = {inp.pres_scale:.6e} Pa, PHIEDGE = {float(inp.phiedge):.6f} Wb: betaxis = "
+          f"{float(w.betaxis):.4%}, <beta> = {float(w.betatotal):.4%}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
+    return inp, fixed
+
+
+def scale_coil_currents(coils, rbtor):
+    """Coils with every current scaled so the linked mu0 I / 2 pi (R B_phi at R = 1 m, Z = 0) is ``rbtor``."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from essos.coils import Coils
+    from essos.fields import BiotSavart
+
+    phi = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
+    points = jnp.asarray(np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1))
+    field = np.asarray(jax.vmap(BiotSavart(coils).B)(points))
+    linked = abs(float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1])))
+    return Coils(coils.curves, coils.dofs_currents_raw * (rbtor / linked), currents_scale=coils.currents_scale)
+
+
+def boundary_diagnostics(wout, coils, nphi=61, ntheta=64):
+    """Interface diagnostics of a WOUT in its coils' field; virtual casing is planned on this grid.
+
+    Returns beta, the RMS/max of (B_coils + B_plasma).n/|B|, the RMS of the
+    coil-only B.n/|B|, and the RMS of the pressure-balance residual
+    (|B_out|^2 - |B_in|^2 - 2 mu0 p) / |B_in|^2.
+    """
+    import jax
+    import jax.numpy as jnp
+    from essos.fields import BiotSavart
+    import vmex as vj
+
+    biot_savart = BiotSavart(coils)
+
+    def field(points):
+        return jax.vmap(biot_savart.B)(points.reshape(-1, 3)).reshape(points.shape)
+
+    interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=nphi, ntheta=ntheta)
+    weights = interface.weights
+    total = interface.bnormal_residual(field) / jnp.linalg.norm(interface.total_B_out(field), axis=0)
+    coil_only = interface.external_Bn(field) / jnp.linalg.norm(interface.external_B(field), axis=0)
+    balance = interface.pressure_balance_residual(field) / interface.Bin_mag2
+    return dict(beta=float(wout.betatotal), normal_field_rms=float(jnp.sqrt(jnp.sum(weights * total**2))),
+                normal_field_max=float(jnp.max(jnp.abs(total))),
+                coil_normal_field_rms=float(jnp.sqrt(jnp.sum(weights * coil_only**2))),
+                pressure_balance_rms=float(jnp.sqrt(jnp.sum(weights * balance**2))))
+
+
+def fit_coils_to_plasma(coils, wout, inp, *, maxiter=COIL_FIT_MAXITER):
+    """Coils whose field with the plasma's own is tangent to a fixed-boundary finite-beta seed."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from essos.fields import BiotSavart
+    from essos.surfaces import surfacerzfourier_from_boundary
+    from scipy.optimize import minimize
+    import vmex as vj
+    import _coil_constraints as coil_limits
+
+    interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=37, ntheta=32)
+    surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), inp.nfp,
+                                             nphi=coil_limits.SURFACE_GRID[0], ntheta=coil_limits.SURFACE_GRID[1])
+    x0 = jnp.asarray(coils.curves.dofs).ravel()
+
+    def coils_from_u(u):
+        return coils.with_dofs(jnp.concatenate((x0 + P.COIL_STEP * u, coils.dofs_currents)))
+
+    def normal_field_rms(new):
+        biot_savart = BiotSavart(new)
+
+        def field(points):
+            return jax.vmap(biot_savart.B)(points.reshape(-1, 3)).reshape(points.shape)
+
+        normal = interface.bnormal_residual(field) / jnp.linalg.norm(interface.total_B_out(field), axis=0)
+        return jnp.sqrt(jnp.sum(interface.weights * normal**2))
+
+    def objective(u):
+        new = coils_from_u(u)
+        rows = jnp.concatenate([coil_limits.coil_inequalities(new), jnp.atleast_1d(
+            (coil_limits.surface_distance(new, surface) - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
+            / P.COIL_SURFACE_DISTANCE_LIMIT)])
+        return (0.5 * (normal_field_rms(new) / COIL_FIT_NORMAL_SCALE)**2
+                + 0.5 * COIL_FIT_WEIGHT * jnp.sum(jnp.minimum(rows, 0.0)**2))
+
+    value_and_grad = jax.jit(jax.value_and_grad(objective))
+    before = float(normal_field_rms(coils))
+    fit = minimize(lambda u: tuple(map(np.asarray, value_and_grad(jnp.asarray(u)))), np.zeros(x0.size), jac=True,
+                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=maxiter, maxcor=20))
+    fitted = coils_from_u(jnp.asarray(fit.x))
+    print(f"[coil fit] {fit.nit} L-BFGS-B iterations: (B_coils + B_plasma).n/|B| RMS "
+          f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
+    return fitted
 
 
 def main(argv=None):
@@ -89,18 +233,29 @@ def main(argv=None):
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
-    inp = vj.VmecInput.from_file(HERE / "input.rotating_ellipse")
+    inp = vj.VmecInput.from_file(P.INPUT_FILE)
     inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
     inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
+    if P.NITER is not None:
+        inp = replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
+    seed = None
+    if args.beta > 0 or P.B0 is not None:
+        inp, fixed = finite_beta_input(inp, args.beta, args.device)
+        seed = fixed.state
     if args.wout is not None:
         seed = vj.state_from_wout(vj.read_wout(args.wout), inp=inp, ns=ns)
-    else:
+    elif seed is None:
         seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
                                      polish_force_balance=False).state
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
 
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
-    resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS).to_json(str(out / "coils.initial.json"))
+    coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
+    if P.B0 is not None:
+        coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
+    if (args.beta > 0 or P.B0 is not None) and args.wout is None and not args.no_coil_fit:
+        coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
+    coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current_dofs = tuple(range(len(coils0.dofs_currents_raw))) if SHARED_CURRENT else ()
     scales = np.r_[np.full(len(current_dofs), CURRENT_STEP),
@@ -137,6 +292,10 @@ def main(argv=None):
     def record(name, **data):
         if name == "proposal":
             seconds["trials"] = seconds.get("trials", 0) + 1
+        if name == "newton_correction":  # keep why a trial fell back to the ordinary solve
+            with open(out / "events.jsonl", "a") as stream:
+                stream.write(json.dumps(dict(event=name, **{k: v for k, v in data.items()
+                                                            if isinstance(v, (bool, int, float, str))})) + "\n")
         if "seconds" in data:
             seconds[name] = seconds.get(name, 0.0) + float(data["seconds"])
 
@@ -152,9 +311,8 @@ def main(argv=None):
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
-    problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
-    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
-                               dense_derivatives=DENSE_DERIVATIVES)
+    problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
+    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps)
     if NEWTON_STEPS:
         problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 
@@ -179,7 +337,16 @@ def main(argv=None):
     def save(tag):
         x = problem.accepted.parameters
         problem.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
-        vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
+        wout = problem.equilibrium_from_x(x).wout
+        vj.write_wout(str(out / f"wout{tag}.nc"), wout)
+        if args.beta > 0:
+            # Diagnostics only: none of these enter the loss or the constraints.
+            row = dict(step=problem.accepted_step, **boundary_diagnostics(wout, problem.coils_from_x(x)))
+            with open(out / "diagnostics.jsonl", "a") as stream:
+                stream.write(json.dumps(row) + "\n")
+            print(f"[diagnostics] beta={row['beta']:.4%} B.n/|B| rms={row['normal_field_rms']:.3e} "
+                  f"max={row['normal_field_max']:.3e} coil-only rms={row['coil_normal_field_rms']:.3e} "
+                  f"pressure balance rms={row['pressure_balance_rms']:.3e}")
 
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())
     qa_of = jax.jit(lambda state: qa(state, problem.rt))
@@ -222,7 +389,8 @@ def main(argv=None):
     except TimeoutError:
         stop = dict(success=False, message="wall-time budget reached", stop_reason="walltime")
     save("")
-    summary = dict(accepted_steps=problem.accepted_step, **stop, solver=problem.solver_info,
+    summary = dict(accepted_steps=problem.accepted_step, **stop, beta_target=args.beta,
+                   pres_scale=float(inp.pres_scale), solver=problem.solver_info,
                    failed_trials=problem.metadata["holder"]["failed_trials"],
                    elapsed_seconds=time.monotonic() - started)
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str) + "\n")

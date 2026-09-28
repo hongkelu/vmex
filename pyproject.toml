@@ -103,14 +103,11 @@ freeb = [
 # published as ``spectraxgk``). 2.4.0 is the first release whose nonlinear
 # heat-flux window compiles once per shape and bounds its adjoint memory,
 # which the turbulence optimization examples rely on; 2.4.1 adds
-# solvax>=0.27.0 and booz_xform_jax>=0.4.1.
+# solvax>=0.27.0 and booz_xform_jax>=0.4.1; 2.4.2 differentiates its dense
+# eigen-objectives in forward mode (the implicit least-squares Jacobian).
 turbulence = [
-  "gkx>=2.4.1",
-  # gkx opts into reverse-mode eigenvector derivatives through
-  # lax_linalg.eig(enable_eigvec_derivs=...), which first exists in
-  # jax 0.10.1.  Below that the proxies raise TypeError at call time,
-  # so carry gkx's own floor here rather than resolving to a jax that
-  # imports but cannot run them.
+  "gkx>=2.4.2",
+  # gkx's own jax floor.
   "jax>=0.10.1",
   "jaxlib>=0.10.1",
 ]

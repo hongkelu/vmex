@@ -440,6 +440,31 @@ instead, so call the objective eagerly to keep it. ``device="auto"`` uses the CP
 for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
+:class:`vmex.core.freeboundary_problem.FreeBoundaryProblem` packages the same
+coil-only path for host optimizers that step from an accepted equilibrium::
+
+   chart = opt.CoilParameters.from_coils(coils0, current_dofs=())
+   problem = opt.FreeBoundaryProblem.from_loss(
+       inp, lambda state, rt, coils: qs.total_state(state, rt),
+       quantities=(opt.min_abs_iota, opt.aspect_ratio),
+       parameterization=chart, restart_from=seed)
+   problem.enable_root_polishing()   # optional Newton polish of each root
+   problem.enable_matrix_free()      # reuse the accepted dense LU as a preconditioner
+   result = opt.minimize(problem, method="SLSQP",
+       constraints=problem.nonlinear_constraint([0.41, 4.9], [np.inf, 5.1]))
+
+Every trial starts from a tangent prediction at the accepted root, is solved
+with strict edge convergence and freshly certified before its value is used.
+``opt.minimize`` promotes only the iterates SciPy accepts, and a rejected trial
+never changes the accepted root. ``quantities`` are ``function(state, rt)``
+constraint rows; ``coil_quantities`` also receive the coils, so their
+derivatives include both the explicit coil term and the equilibrium response.
+The problem uses the ``forward_dense_jax`` adjoint. After the first dense
+factorization, matrix-free solves use that LU as a GMRES preconditioner, with
+one dense retry on failure; ``refresh_horizon`` rebuilds the LU when warm solves
+slow down. ``equilibrium_from_x`` returns an :class:`~vmex.core.optimize.Equilibrium`
+whose WOUT uses the exact fixed-geometry vacuum of that point.
+
 Use :class:`vmex.core.monitoring.EquilibriumReporter` for the compact physics
 summary shared by the examples.  Each entry accepts either VMEX's
 ``function(equilibrium_state, solver_context)`` convention or a host

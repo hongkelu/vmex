@@ -284,6 +284,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Samples of the loss-fraction curve (default: 1000).",
     )
     p.add_argument(
+        "--trace-mode-cut", type=float, default=None,
+        help="Drop Boozer |B| modes below this fraction of B00 (default: 1e-4; "
+             "1e-3 misses losses in precise quasisymmetry).",
+    )
+    p.add_argument(
         "--collisional", action="store_true",
         help=(
             "With --trace: Monte Carlo collisions (pitch-angle scattering, slowing "
@@ -579,13 +584,13 @@ def _coils_mgrid_field(path: Path, *, nr: int = 96, nphi: int = 32,
     """
     import numpy as np
 
+    from .._compat import require_optional
+
     try:
+        require_optional("essos", "--coils")
         from essos.coils import Coils, Curves
     except ImportError as exc:
-        raise VmecInputError(
-            WERROR_MESSAGES[INPUT_ERROR_FLAG],
-            hint="--coils requires essos (pip install essos)",
-        ) from exc
+        raise VmecInputError("MISSING OR OUTDATED OPTIONAL DEPENDENCY", hint=str(exc)) from exc
 
     from .mgrid import MgridField
 
@@ -994,6 +999,7 @@ class _TraceProgress:
         self.start = time.perf_counter()
         self.first: tuple[float, int] | None = None
         self.tty = sys.stderr.isatty()
+        self.width = 0
 
     def __call__(self, done: int, total: int) -> None:
         now = time.perf_counter()
@@ -1005,7 +1011,9 @@ class _TraceProgress:
         else:
             left = "done"
         line = f" traced {100 * done / total:3.0f}% of tmax, {now - self.start:.0f} s elapsed, {left}"
-        sys.stderr.write(f"\r{line}   " if self.tty else f"{line}\n")
+        # pad over the previous, possibly longer, line
+        sys.stderr.write(f"\r{line:<{self.width}}" if self.tty else f"{line}\n")
+        self.width = max(self.width, len(line))
         if self.tty and done == total:
             sys.stderr.write("\n")
         sys.stderr.flush()
@@ -1014,9 +1022,10 @@ class _TraceProgress:
 def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> None:
     """Alpha-particle tracing driver for ``--trace`` (requires ESSOS)."""
     from .plotting import plot_tracing
-    from .tracing import trace_alphas
+    from .tracing import MODE_TOLERANCE, trace_alphas
 
     scale = None if args.trace_no_scale else args.scale_target
+    mode_cut = MODE_TOLERANCE if args.trace_mode_cut is None else float(args.trace_mode_cut)
     if not quiet:
         birth = ("volume" if args.trace_birth == "volume"
                  else f"s={float(args.trace_s):g}")
@@ -1024,7 +1033,12 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             f" Tracing {int(args.trace_particles)} alpha particles ({birth}, Boozer "
             f"guiding centre{', collisional' if args.collisional else ''}, "
             f"tmax={float(args.trace_tmax):.3g} s, "
-            f"{'unscaled' if scale is None else _scale_label(scale)})"
+            f"{'unscaled' if scale is None else _scale_label(scale)}, "
+            f"mode cut {mode_cut:g} of B00)"
+        )
+        emit(
+            "   Change with --trace-particles N, --trace-tmax T [s], --trace-s S, "
+            "--trace-birth surface|volume, --collisional, --trace-mode-cut C"
         )
     try:
         result = trace_alphas(
@@ -1041,13 +1055,14 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             ne0=float(args.trace_ne0),
             T0_keV=float(args.trace_te0),
             mboz=int(args.mbooz),
+            mode_tolerance=mode_cut,
             nboz=int(args.nbooz),
             progress=None if quiet else _TraceProgress(),
         )
     except ImportError as exc:
         raise VmecInputError(
-            WERROR_MESSAGES[INPUT_ERROR_FLAG],
-            hint="--trace requires essos>=0.19.2 and booz_xform_jax (pip install 'vmex[coils]')",
+            "MISSING OR OUTDATED OPTIONAL DEPENDENCY",
+            hint=str(exc),
         ) from exc
     except ValueError as exc:  # e.g. lasym equilibria
         raise VmecInputError(
@@ -1432,8 +1447,9 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
-    if (args.collisional or args.trace_birth != "surface") and not args.trace:
-        parser.error("--collisional and --trace-birth require --trace")
+    if (args.collisional or args.trace_birth != "surface"
+            or args.trace_mode_cut is not None) and not args.trace:
+        parser.error("--collisional, --trace-birth and --trace-mode-cut require --trace")
     if bool(args.trace):
         _split_host_devices()
     # Flushing sink: with stdout redirected to a file (cluster batch logs),

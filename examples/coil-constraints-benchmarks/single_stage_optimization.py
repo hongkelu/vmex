@@ -33,9 +33,7 @@ and a zero total B.n the exterior field matches the interior one, so pressure
 balance is checked at the end, with the total and coil-only B.n, on a 61 x 64
 grid where virtual casing is planned afresh.
 
-A rejected equilibrium trial counts the plasma rows as violated. From an
-infeasible start SLSQP overshoots, so L-BFGS-B first minimizes
-(1/2) sum min(c, 0)^2 until every row is satisfied.
+A rejected equilibrium trial counts the plasma rows as violated.
 """
 
 import argparse
@@ -58,8 +56,6 @@ NORMAL_FIELD_WEIGHT = 1.0e3
 FLUX_TOLERANCE = None              # e.g. 0.005: relative band on the coils' flux around PHIEDGE
 OPTIMIZER_FTOL = 1e-10
 FIELD_STRENGTH_TOLERANCE = 0.005   # finite beta: relative band on edge R B_phi around the coils' mu0 I / 2 pi
-FEASIBILITY_STEPS = 30             # L-BFGS-B steps on the constraint violation from an infeasible start
-FEASIBILITY_BOUND = 5.0            # box on the scaled variables during those steps
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32
 
@@ -283,16 +279,6 @@ def main(argv=None):
         jac = np.stack([np.asarray(plasma_row_grad(u, jnp.eye(n_plasma)[i])) for i in range(n_plasma)])
         return np.where(np.isfinite(jac), jac, 0.0)
 
-    def violation_and_grad(u):
-        """(1/2) sum min(c, 0)^2 over every row, one adjoint for the plasma part."""
-        u = np.asarray(u, dtype=float)
-        plasma, coil = plasma_values(u), np.asarray(coil_rows_jit(jnp.asarray(u)))
-        wp, wc = np.minimum(plasma, 0.0), np.minimum(coil, 0.0)
-        gradient = wc @ np.asarray(coil_rows_jac(jnp.asarray(u)))
-        if np.any(wp < 0):
-            gradient = gradient + np.nan_to_num(np.asarray(plasma_row_grad(jnp.asarray(u), jnp.asarray(wp))))
-        return 0.5 * float(wp @ wp + wc @ wc), gradient
-
     last = dict(time=time.monotonic(), step=0)
 
     def log_step(u):
@@ -340,12 +326,6 @@ def main(argv=None):
 
     u0 = np.zeros_like(x0)
     checkpoint(u0)
-    if violation_and_grad(u0)[0] > 0:
-        feasible = minimize(violation_and_grad, u0, jac=True, method="L-BFGS-B", callback=checkpoint,
-                            bounds=[(-FEASIBILITY_BOUND, FEASIBILITY_BOUND)] * x0.size,
-                            options={"maxiter": FEASIBILITY_STEPS, "maxcor": 20, "ftol": 1e-14, "gtol": 1e-10})
-        u0 = feasible.x
-        print(f"[feasibility] {feasible.nit} L-BFGS-B steps, violation {feasible.fun:.3e}", flush=True)
     constraints = [dict(type="ineq", fun=plasma_values, jac=plasma_jacobian),
                    dict(type="ineq", fun=lambda u: np.asarray(coil_rows_jit(jnp.asarray(u))),
                         jac=lambda u: np.asarray(coil_rows_jac(jnp.asarray(u))))]

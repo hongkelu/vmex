@@ -20,7 +20,9 @@ fixed currents and PHIEDGE. ``flux_ratio`` is logged either way.
     python single_stage_optimization.py --steps 5 --output runs/fixed
 
 ``--beta`` is the finite-beta counterpart of the free-boundary arm: the same
-fixed pressure p ~ 1 - s, zero net current and PHIEDGE. The plasma currents
+fixed pressure p ~ 1 - s and zero net current, and PHIEDGE becomes a design
+variable (``vary_phiedge``), so the field-strength band below holds B0 without
+fixing the plasma size, as the free arm's fixed currents do. The plasma currents
 then carry a field of their own, so the normal-field limit and objective term
 apply to the total (B_coils + B_plasma).n/|B|, with B_plasma from virtual
 casing on every trial's equilibrium and differentiated through it, and an exact
@@ -109,10 +111,15 @@ def main(argv=None):
     if args.beta > 0 or P.B0 is not None:
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
+    inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
 
     qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), helicity_m=1, helicity_n=0)
+    # In vacuum PHIEDGE only scales the plasma field, a null direction; at finite beta the
+    # field-strength band ties it to the boundary.
+    vary_phiedge = P.FREE_PHIEDGE and args.beta > 0
     plasma_problem = opt.VmecProblem.from_tuples(
-        inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA)
+        inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA,
+        vary_phiedge=vary_phiedge)
 
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
     if P.B0 is not None:
@@ -123,7 +130,10 @@ def main(argv=None):
     x_coils0 = np.asarray(coils0.curves.dofs).ravel()
     x0 = np.concatenate([x_boundary0, x_coils0])
     scales = np.concatenate([BOUNDARY_STEP * plasma_problem.scales, np.full(x_coils0.size, COIL_STEP)])
-    n_boundary = x_boundary0.size
+    n_boundary = x_boundary0.size  # plasma variables, with the PHIEDGE dof last when it varies
+
+    def phiedge_at(x):
+        return phiedge * (1.0 + x[n_boundary - 1]) if vary_phiedge else phiedge
 
     def objects_from_x(x, nphi=NPHI, ntheta=NTHETA):
         rbc, zbs = plasma_problem.boundary_from_x(x[:n_boundary])
@@ -217,7 +227,8 @@ def main(argv=None):
         return rows
 
     def coil_rows(u):
-        rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x0) + jnp.asarray(scales) * u)
+        x = jnp.asarray(x0) + jnp.asarray(scales) * u
+        rbc, zbs, surface, coils = objects_from_x(x)
         clearance = coil_limits.surface_distance(coils, surface)
         rows = [coil_limits.coil_inequalities(coils),
                 jnp.atleast_1d((clearance - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
@@ -226,7 +237,7 @@ def main(argv=None):
                 *([] if args.beta > 0 else [
                     jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT)])]
         if FLUX_TOLERANCE:
-            flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge - 1.0
+            flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge_at(x) - 1.0
             rows.append(jnp.stack([FLUX_TOLERANCE - flux, FLUX_TOLERANCE + flux]) / FLUX_TOLERANCE)
         return jnp.concatenate(rows)
 
@@ -300,7 +311,8 @@ def main(argv=None):
                    coil_minimum_scaled_slack=float(np.min(rows)),
                    normal_field_rms=float(normal_field_rms(coils, surface)),
                    plasma_minimum_scaled_slack=float(np.min(plasma_values(u))),
-                   flux_ratio=float(abs(toroidal_flux(rbc, zbs, coils)) / phiedge),
+                   flux_ratio=float(abs(toroidal_flux(rbc, zbs, coils)) / phiedge_at(x)),
+                   phiedge=float(phiedge_at(x)),
                    beta=float(opt.volume_average_beta(state, ctx)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started)
         if args.beta > 0:

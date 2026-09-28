@@ -230,11 +230,11 @@ def main(argv=None):
 
     def checkpoint(u):
         log_step(u)
-        if args.save_every and (last["step"] - 1) % args.save_every == 0 and last["step"] > 1:
+        if args.save_every and (last["step"] - 1) % args.save_every == 0:
             save(f".step{last['step'] - 1}", u)
 
     u0 = np.zeros_like(x0)
-    log_step(u0)
+    checkpoint(u0)
     if OPTIMIZER == "SLSQP":
         constraints = [dict(type="ineq", fun=lambda u: np.asarray(plasma_rows_jit(jnp.asarray(u))),
                             jac=lambda u: np.asarray(plasma_rows_jac(jnp.asarray(u)))),

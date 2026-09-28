@@ -232,7 +232,7 @@ def main(argv=None):
         print(f"[step {row['step']}] QA={row['qa']:.6e} iota={iota:.5f} R={radius:.5f} aspect={aspect_value:.4f} "
               f"clearance={surface:.4f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"{row['step_seconds']:.1f}s", flush=True)
-        if row["step"] and row["step"] % args.save_every == 0:
+        if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
     log_step()

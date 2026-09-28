@@ -131,6 +131,7 @@ UNTESTED_EXAMPLES = {
     "examples/coil-constraints-benchmarks/free_boundary_single_stage_optimization.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
     "examples/coil-constraints-benchmarks/single_stage_optimization.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
     "examples/coil-constraints-benchmarks/parameters.py": "shared case constants imported by the two benchmarks",
+    "examples/coil-constraints-benchmarks/postprocess.py": "post-processes a finished GPU benchmark run",
 }
 
 

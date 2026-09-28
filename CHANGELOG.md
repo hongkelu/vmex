@@ -18,6 +18,8 @@ revision it was measured at, and the pages that cite it.
   coil benchmark, with identical iterates.
 - `CoilParameters(phiedge=...)` makes PHIEDGE a free-boundary design
   coordinate, so fixed coil currents hold B0 while the plasma size varies.
+- `VmecProblem.from_tuples(..., vary_phiedge=True)` appends the same relative
+  PHIEDGE coordinate to fixed-boundary problems (implicit derivatives only).
 
 ## 0.11.6 - 2026-09-28
 

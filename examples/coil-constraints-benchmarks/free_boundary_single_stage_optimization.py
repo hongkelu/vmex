@@ -7,11 +7,11 @@ SLSQP minimizes quasisymmetry subject to hard inequalities: minimum |iota|,
 major radius, aspect ratio, coil-to-plasma clearance, and per-coil length,
 curvature, mean squared curvature and coil separation (``parameters.py``).
 
-The coil currents share one free factor. In vacuum only the flux per ampere
-sets the plasma size, so fixing both the currents and PHIEDGE pins it: at
-iota >= 0.41 that holds the aspect ratio at its 4.9 floor (QA ~0.02), while the
-shared factor lets SLSQP reach aspect 5.1 (QA ~0.004). SHARED_CURRENT = False
-restores fixed currents.
+PHIEDGE is a design variable and the coil currents are fixed at B0 = 1 T. In
+vacuum only the flux per ampere sets the plasma size, so fixing both the
+currents and PHIEDGE pins it: at iota >= 0.41 that holds the aspect ratio at its
+4.9 floor (QA ~0.02), while a free PHIEDGE lets SLSQP reach aspect 5.1 (QA
+~0.004). FREE_PHIEDGE = False restores the pinned case.
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
 
@@ -21,7 +21,8 @@ are saved every ``--save-every`` steps and at the end; restart from them with
 
 ``--beta 0.005`` runs the same case at finite beta: a fixed pressure p ~ 1 - s,
 scaled once so the fixed-boundary seed has that volume-average beta, with zero
-net toroidal current and fixed PHIEDGE. The loss and constraints are unchanged.
+net toroidal current. With fixed currents and pressure, a free PHIEDGE changes
+the size but hardly B0 or beta. The loss and constraints are unchanged.
 The free-boundary solve already makes
 the boundary a flux surface of the coil plus plasma field, so the virtual-casing
 B.n/|B| and pressure balance are saved diagnostics only, together with beta.
@@ -53,8 +54,7 @@ LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
 COIL_FIT_MAXITER, COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 200, 1.0e-3, 1.0e3
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
-SHARED_CURRENT = P.SHARED_CURRENT  # all coil currents vary by one common factor (a free flux per ampere)
-CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
+PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
 
 
 def parse_args(argv=None):
@@ -248,19 +248,20 @@ def main(argv=None):
         seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
                                      polish_force_balance=False).state
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
+    inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
 
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
     if P.B0 is not None:
         coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
-    if (args.beta > 0 or P.B0 is not None) and args.wout is None and not args.no_coil_fit:
+    if args.beta > 0 and args.wout is None and not args.no_coil_fit:  # at beta = 0 a uniform scale keeps B.n/|B|
         coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current_dofs = tuple(range(len(coils0.dofs_currents_raw))) if SHARED_CURRENT else ()
-    scales = np.r_[np.full(len(current_dofs), CURRENT_STEP),
+    scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE,
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = opt.CoilParameters.from_coils(coils0, current_dofs=current_dofs, scales=scales)
+    chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales,
+                                          phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None)
     qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), 1, 0)
 
     def boundary(state, runtime, grid):
@@ -324,11 +325,7 @@ def main(argv=None):
             record(_name, seconds=time.monotonic() - start)
             return value
         setattr(coil_rows, method, timed)
-    from scipy.optimize import LinearConstraint
-    tie = np.zeros((max(len(current_dofs) - 1, 0), chart.size))
-    for row in range(tie.shape[0]):  # equal relative currents: one common factor
-        tie[row, row], tie[row, row + 1] = 1.0, -1.0
-    constraints = [LinearConstraint(tie, 0.0, 0.0)] * bool(tie.size) + [problem.nonlinear_constraint(
+    constraints = [problem.nonlinear_constraint(
         [P.IOTA_FLOOR + P.IOTA_MARGIN, P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
          aspect_lower],
         [np.inf, P.RADIUS_TARGET + width, np.inf, aspect_upper],
@@ -339,26 +336,30 @@ def main(argv=None):
         problem.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
         wout = problem.equilibrium_from_x(x).wout
         vj.write_wout(str(out / f"wout{tag}.nc"), wout)
+        # Diagnostics only: none of these enter the loss or the constraints.
+        row = dict(step=problem.accepted_step, phiedge=float(wout.phi[-1]), b0=float(wout.b0),
+                   rbtor=abs(float(wout.rbtor)), betaxis=float(wout.betaxis))
         if args.beta > 0:
-            # Diagnostics only: none of these enter the loss or the constraints.
-            row = dict(step=problem.accepted_step, **boundary_diagnostics(wout, problem.coils_from_x(x)))
-            with open(out / "diagnostics.jsonl", "a") as stream:
-                stream.write(json.dumps(row) + "\n")
+            row.update(boundary_diagnostics(wout, problem.coils_from_x(x)))
+        with open(out / "diagnostics.jsonl", "a") as stream:
+            stream.write(json.dumps(row) + "\n")
+        print(f"[diagnostics] PHIEDGE={row['phiedge']:.5f} Wb B0={row['b0']:.4f} T R B_phi={row['rbtor']:.4f} T m "
+              f"betaxis={row['betaxis']:.4%}", flush=True)
+        if args.beta > 0:
             print(f"[diagnostics] beta={row['beta']:.4%} B.n/|B| rms={row['normal_field_rms']:.3e} "
                   f"max={row['normal_field_max']:.3e} coil-only rms={row['coil_normal_field_rms']:.3e} "
                   f"pressure balance rms={row['pressure_balance_rms']:.3e}")
 
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())
-    qa_of = jax.jit(lambda state: qa(state, problem.rt))
-
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
         iota, radius, surface, aspect_value = map(float, problem.constraint_values(x))
         now = time.monotonic()
-        row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
+        objective = problem.fun(x)
+        row = dict(step=problem.accepted_step, qa=2 * objective, objective=objective, min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
-                   current_factor=float(chart.base_currents_at(x)[0] / chart.currents[0]),
+                   phiedge_factor=float(chart.phiedge_at(x) / chart.phiedge) if P.FREE_PHIEDGE else 1.0,
                    step_u_linf=float(np.max(np.abs((x - last["x"]) / problem.scales))),
                    root_residual=float(record.root_residual_norm), fedge=float(record.result.fedge),
                    step_seconds=now - last["time"], elapsed_seconds=now - started,

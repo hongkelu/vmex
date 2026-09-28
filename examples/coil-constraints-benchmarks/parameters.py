@@ -1,7 +1,12 @@
 """Case shared by the free- and fixed-boundary coil-constraint benchmarks.
 
 Default: vacuum rotating ellipse, 1 m major radius, three independent order-16
-coils with fixed currents. MSC is mean SQUARED curvature, in inverse square metres.
+coils. MSC is mean SQUARED curvature, in inverse square metres.
+
+B0 = 1 T in both cases: the coil currents are scaled once so their linked
+mu0 I / 2 pi is B0 R0 (the edge R B_phi) and then held fixed, and the free arm
+varies PHIEDGE, so the plasma size stays free while the field strength and,
+at finite beta, beta hold.
 
 ``COIL_CASE=qa6`` selects the aspect-6 case: the Landreman & Paul (2021) QA
 boundary at R = 1 m, B0 = 1 T set through PHIEDGE (R B_phi = B0 R0 outside the
@@ -22,9 +27,9 @@ QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 INPUT_FILE = HERE / "input.rotating_ellipse"
 COILS_FILE = HERE / "coils.initial.json"
 BETA_DEFINITION = "volume"         # --beta is <beta>; "axis": WOUT betaxis
-B0 = None                          # T: if set, PHIEDGE is chosen for R B_phi = B0 R0
+B0 = 1.0                           # T: coil currents give R B_phi = B0 R0; the seed PHIEDGE matches it
 NITER, DELT = None, None            # override the deck's iteration budget / time step when set
-SHARED_CURRENT = True              # free arm: one common coil-current factor (a free flux per ampere)
+FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE and currents)
 
 # Physical targets. The free-boundary arm imposes them as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -44,9 +49,8 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 
 if CASE == "qa6":
     INPUT_FILE = HERE.parents[1] / "examples/data/input.LandremanPaul2021_QA_lowres"
-    BETA_DEFINITION, B0 = "axis", 1.0
+    BETA_DEFINITION = "axis"
     NITER, DELT = 30000, 0.7       # one NS stage at FTOL 1e-15 instead of the deck's multigrid ladder
-    SHARED_CURRENT = False         # B0 = 1 T: coil currents fixed with PHIEDGE
     IOTA_FLOOR = 0.42
     ASPECT_RANGE = (5.9, 6.1)
     COIL_ORDER = 6

@@ -93,6 +93,12 @@ class _Config:
     _owner: Any = field(default_factory=object, repr=False)
 
 
+def _params_at(cfg, point):
+    """cfg.params with the PHIEDGE the design point sets, when the chart varies it."""
+    phiedge = getattr(cfg.solver, "phiedge_from_parameters", None)
+    return cfg.params if phiedge is None else replace(cfg.params, phiedge=phiedge(jnp.asarray(point)))
+
+
 def _config_from_state(solver, params, anchor, *, state, rcon0, zcon0, parameter_scales,
                        continuation_step, max_continuation_steps, root_residual_atol):
     """Certify an unchanged state as the accepted anchor, without solving."""
@@ -126,7 +132,8 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
                for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(result.state), strict=True)):
             raise ValueError("result and supplied state differ")
     point = _vector(parameters, cfg.parameter_scales.shape)
-    rt = im.runtime_from_params(cfg.params, icfg)
+    params = _params_at(cfg, point)
+    rt = im.runtime_from_params(params, icfg)
     expected = (icfg.resolution.ns, rt.modes.mnmax)
     if not isinstance(state, SpectralState):
         raise TypeError("state must be SpectralState")
@@ -141,7 +148,7 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
     with im._device_context(icfg):
         state, rcon0, zcon0 = im._device_pin(icfg, jax.tree.map(jnp.asarray, (state, rcon0, zcon0)))
         rt = replace(rt, rcon0=rcon0, zcon0=zcon0, lfreeb=True, jmax=int(icfg.resolution.ns),
-                     presf_ns_scale=fbi._presf_ns_scale_traceable(cfg.params, icfg.inp, int(icfg.resolution.ns)))
+                     presf_ns_scale=fbi._presf_ns_scale_traceable(params, icfg.inp, int(icfg.resolution.ns)))
         external = solver.field_from_parameters(jnp.asarray(point))
         bsqvac = solver.vacuum_program.bsq(state, rt, external)
         if not np.all(np.isfinite(np.asarray(bsqvac))):
@@ -170,7 +177,7 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
         if not np.isfinite(vol) or vol <= 0:
             raise VmecError("fresh volume must be finite and positive")
         if result is None:
-            inp = im.input_with_params(icfg.inp, cfg.params)
+            inp = im.input_with_params(icfg.inp, params)
             w = wout_from_state(inp=inp, state=state, niter=iterations,
                                 **{n: values[n] for n in ("fsqr", "fsqz", "fsql")})
             wb, wp = float(diagnostics.wb), float(diagnostics.wp)
@@ -414,7 +421,12 @@ register_pytree_dataclass(DirectCoilField)
 
 
 class CoilParameters:
-    """Map a finite design vector to ESSOS coils without an equilibrium solve."""
+    """Map a finite design vector to ESSOS coils without an equilibrium solve.
+
+    With ``phiedge`` (the deck's PHIEDGE in Wb) the first coordinate is a
+    relative PHIEDGE change, PHIEDGE = phiedge * (1 + x[0]), so the plasma
+    size can vary while fixed coil currents hold the field strength.
+    """
 
     def __init__(
         self,
@@ -426,6 +438,8 @@ class CoilParameters:
         stellsym=True,
         n_segments=75,
         scales=None,
+        phiedge=None,
+        phiedge_scale=0.05,
     ):
         if np.iscomplexobj(coefficients) or np.iscomplexobj(currents):
             raise ValueError("coil coefficients and currents must be real")
@@ -456,16 +470,21 @@ class CoilParameters:
         self.mode = (coefficients.shape[2] - 1) // 2
         self.nfp, self.stellsym, self.n_segments = int(nfp), bool(stellsym), int(n_segments)
         self.curve_shape = (len(currents), 3, 2 * self.mode + 1)
+        if phiedge is not None and not (np.isfinite(phiedge) and phiedge != 0 and phiedge_scale > 0):
+            raise ValueError("phiedge must be finite and nonzero with a positive phiedge_scale")
+        self.phiedge = None if phiedge is None else float(phiedge)
+        self.nphiedge = int(phiedge is not None)
         self.ncurrent = len(self.current_dofs)
-        self.size = self.ncurrent + int(np.prod(self.curve_shape))
+        self.size = self.nphiedge + self.ncurrent + int(np.prod(self.curve_shape))
         self.x0 = np.zeros(self.size)
-        names = [f"current[{i}]/nominal" for i in self.current_dofs]
+        names = ["phiedge/nominal"] * self.nphiedge + [f"current[{i}]/nominal" for i in self.current_dofs]
         modes = ["constant"] + [f"{kind}({k})" for k in range(1, self.mode + 1) for kind in ("sin", "cos")]
         names += [f"coil[{i}].{axis}.{mode}" for i in range(len(currents)) for axis in "xyz" for mode in modes]
         self.dof_names = tuple(names)
         if scales is None:
             mode_scales = [0.002] + [0.002 / k**2 for k in range(1, self.mode + 1) for _ in range(2)]
             scales = np.r_[np.full(self.ncurrent, 0.06), np.tile(mode_scales, 3 * len(currents))]
+            scales = np.r_[np.full(self.nphiedge, phiedge_scale), scales]
         scales = np.asarray(scales, dtype=float)
         if scales.shape != (self.size,) or not np.all(np.isfinite(scales)) or np.any(scales <= 0):
             raise ValueError("one positive finite scale per coordinate required")
@@ -494,12 +513,18 @@ class CoilParameters:
             raise ValueError(f"expected floating parameter vector of shape ({self.size},)")
         return values
 
+    def phiedge_at(self, x):
+        """Return PHIEDGE [Wb] at ``x``; only for a chart built with ``phiedge``."""
+        if self.phiedge is None:
+            raise ValueError("this chart does not vary PHIEDGE")
+        return self.phiedge * (1.0 + self._parameters(x)[0])
+
     def base_currents_at(self, x):
         """Return physical base-coil currents in amperes."""
         x = self._parameters(x)
         currents = jnp.asarray(self.currents)
         for local, base in enumerate(self.current_dofs):
-            currents = currents.at[base].add(x[local] * self.currents[base])
+            currents = currents.at[base].add(x[self.nphiedge + local] * self.currents[base])
         return currents
 
     def curve_dofs_at(self, x):
@@ -508,7 +533,7 @@ class CoilParameters:
         return (
             jnp.asarray(self.coefficients)
             .at[:, :, : 2 * self.mode + 1]
-            .add(x[self.ncurrent :].reshape(self.curve_shape))
+            .add(x[self.nphiedge + self.ncurrent :].reshape(self.curve_shape))
         )
 
     def coils_from_x(self, x):
@@ -659,6 +684,10 @@ class FreeBoundaryProblem(FunctionProblem):
         opts.setdefault("adjoint_dense_batch_size", 32)
         if opts["adjoint_solver"] != "forward_dense_jax" or opts["adjoint_fail"] != "error":
             raise ValueError("optimization requires adjoint_solver='forward_dense_jax' and adjoint_fail='error'")
+        if getattr(parameterization, "phiedge", None) is not None:
+            if not np.isclose(parameterization.phiedge, float(inp.phiedge), rtol=1e-12, atol=0.0):
+                raise ValueError("the chart's nominal PHIEDGE must equal the input's")
+            opts["phiedge_from_parameters"] = parameterization.phiedge_at
         solver = fbi.make_free_boundary_config(
             inp, parameterization(jnp.asarray(point)), field_from_parameters=parameterization, **opts
         )
@@ -723,6 +752,12 @@ class FreeBoundaryProblem(FunctionProblem):
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
         self.solver, self.params = cfg.solver, cfg.params
         self.rt = im.runtime_from_params(self.params, self.solver.implicit)
+        if _params_at(cfg, parameterization.x0) is cfg.params:
+            def runtime(x):
+                return self.rt
+        else:  # the loss sees the design point's PHIEDGE; self.rt keeps the nominal one
+            def runtime(x):
+                return im.runtime_from_params(_params_at(cfg, x), self.solver.implicit)
         self.accepted = cfg._anchor
         self.accepted_step = 0
         self._emit = event or (lambda *args, **kwargs: None)
@@ -731,13 +766,13 @@ class FreeBoundaryProblem(FunctionProblem):
         self._compact_jac = None
         self._records = {self._key(self.accepted.parameters): self.accepted}
         def scalar_rows(state, x):
-            coils = parameterization.coils_from_x(x)
-            value = jnp.asarray(loss(state, self.rt, coils))
+            coils, rt = parameterization.coils_from_x(x), runtime(x)
+            value = jnp.asarray(loss(state, rt, coils))
             if value.shape != ():
                 raise ValueError("loss must return a scalar")
             # A quantity may be a scalar or a vector of rows (e.g. iota per surface).
-            values = [jnp.asarray(function(state, self.rt)) for function in quantities]
-            values += [jnp.asarray(function(state, self.rt, coils)) for function in coil_quantities]
+            values = [jnp.asarray(function(state, rt)) for function in quantities]
+            values += [jnp.asarray(function(state, rt, coils)) for function in coil_quantities]
             if any(v.ndim > 1 for v in values):
                 raise ValueError("quantities must be scalars or one-dimensional arrays")
             return jnp.concatenate([value[None], *(jnp.ravel(v) for v in values)])
@@ -1101,7 +1136,7 @@ class FreeBoundaryProblem(FunctionProblem):
                 started = time.monotonic()
                 try:
                     last_stage = _solve_free_boundary_stage(
-                        self.inp,
+                        self._inp_at(point),
                         external_field=self.parameterization(jnp.asarray(point)),
                         resolution=self.solver.resolution,
                         ftol=tolerance,
@@ -1290,10 +1325,18 @@ class FreeBoundaryProblem(FunctionProblem):
         """Reconstruct coils, without solving or changing the accepted equilibrium."""
         return self.parameterization.coils_from_x(self._validate_x(x))
 
+    def _inp_at(self, x):
+        """The input deck with the PHIEDGE of design point ``x``."""
+        if getattr(self.solver, "phiedge_from_parameters", None) is None:
+            return self.inp
+        return im.input_with_params(self.inp, _params_at(self.cfg, x))
+
     def equilibrium_from_x(self, x):
         """Return a certified equilibrium; WOUT uses its exact fixed-geometry vacuum."""
         record = self._record(x)
-        return _Equilibrium(self.inp, record.state, self.rt, record.result, _wout_factory=lambda: self._wout(record))
+        inp = self._inp_at(record.parameters)
+        rt = im.runtime_from_params(_params_at(self.cfg, record.parameters), self.solver.implicit)
+        return _Equilibrium(inp, record.state, rt, record.result, _wout_factory=lambda: self._wout(record))
 
     def close(self):
         """Release retained derivative factors without altering accepted results."""
@@ -1314,13 +1357,14 @@ class FreeBoundaryProblem(FunctionProblem):
         # ordinary results can carry cadence caches from a preceding geometry.
         from vmex.core.freeboundary import _vacuum_executables, _vacuum_output, FreeBoundaryState
 
+        params = _params_at(self.cfg, record.parameters)
         export_rt = replace(
-            self.rt,
+            im.runtime_from_params(params, self.solver.implicit),
             rcon0=record.rcon0,
             zcon0=record.zcon0,
             lfreeb=True,
             jmax=int(self.solver.resolution.ns),
-            presf_ns_scale=fbi._presf_ns_scale_traceable(self.params, self.inp, int(self.solver.resolution.ns)),
+            presf_ns_scale=fbi._presf_ns_scale_traceable(params, self.inp, int(self.solver.resolution.ns)),
         )
         axis_r = jnp.full((self.solver.resolution.nzeta,), float(np.asarray(self.inp.rbc)[self.inp.ntor, 0]))
         basis, program, _ = _vacuum_executables(
@@ -1345,7 +1389,7 @@ class FreeBoundaryProblem(FunctionProblem):
         ):
             raise ValueError("snapshot requires finite fixed-geometry vacuum output")
         return wout_from_state(
-            inp=self.inp,
+            inp=self._inp_at(record.parameters),
             state=record.state,
             niter=record.result.iterations,
             fsqr=record.result.fsqr,

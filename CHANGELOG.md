@@ -16,6 +16,8 @@ revision it was measured at, and the pages that cite it.
 - `enable_matrix_free(dense_derivatives=True)` solves every derivative densely
   and reseeds the LU at each accepted step: about 2x faster steps on the vacuum
   coil benchmark, with identical iterates.
+- `CoilParameters(phiedge=...)` makes PHIEDGE a free-boundary design
+  coordinate, so fixed coil currents hold B0 while the plasma size varies.
 
 ## 0.11.6 - 2026-09-28
 

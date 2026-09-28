@@ -1598,6 +1598,19 @@ def test_coil_chart_selects_currents_and_keeps_nominal_data_immutable():
     assert np.any(chart.coefficients) and np.any(chart.currents)
 
 
+def test_coil_chart_phiedge_coordinate_comes_first():
+    rng = np.random.default_rng(39)
+    coefficients, currents = rng.normal(size=(2, 3, 5)), np.array([3e5, -2e5])
+    chart = CoilParameters(coefficients, currents, current_dofs=(1,), nfp=3, phiedge=0.08, phiedge_scale=0.02)
+    x = rng.normal(size=chart.size) * 0.001
+    assert chart.size == 32 and chart.dof_names[0] == "phiedge/nominal" and chart.scales[0] == 0.02
+    np.testing.assert_allclose(chart.phiedge_at(x), 0.08 * (1 + x[0]))
+    np.testing.assert_allclose(chart.base_currents_at(x), [currents[0], currents[1] * (1 + x[1])])
+    np.testing.assert_allclose(chart.curve_dofs_at(x), coefficients + x[2:].reshape(2, 3, 5))
+    with pytest.raises(ValueError, match="does not vary PHIEDGE"):
+        CoilParameters(coefficients, currents, current_dofs=()).phiedge_at(np.zeros(30))
+
+
 def test_essos_coil_parameter_roundtrip():
     pytest.importorskip("essos.coils")
     rng = np.random.default_rng(483)

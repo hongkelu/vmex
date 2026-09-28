@@ -119,6 +119,18 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   frozen-geometry pressure proxies before re-solving at finite pressure, and
   `QA_optimization_global.py` explores basins with SciPy basin hopping before
   the exact least-squares finish.
+  `QA_optimization_turbulence_linear.py`,
+  `QA_optimization_turbulence_quasilinear.py` and
+  `QA_optimization_turbulence_nonlinear.py` (`pip install "vmex[turbulence]"`)
+  add one GKX gyrokinetic objective tuple to the QA list: the linear ITG growth
+  rate, the mixing-length quasilinear heat flux, and the heat flux of a
+  saturated nonlinear simulation over a differentiated post-saturation window.
+  Each evaluates flux tubes chosen by physical radius `TUBE_S` (normalized
+  toroidal flux, the same radius at every `ns`) and field-line label
+  `TUBE_ALPHAS`, reduced by a mean or a softmax. The linear and quasilinear
+  scripts use the least-squares Jacobian; the nonlinear one saturates each tube
+  behind GKX's saturation gate once per stage and takes the scalar L-BFGS-B
+  route. Each states its measured cost and result in its docstring.
   All read `VMEX_EXAMPLES_CI=1` for short CI smoke tests.
 - `optimization/stellarator_asymmetry/`: the same four families with
   `lasym = True`, seeding `RBS(1,1)`/`ZBC(1,1)` so the optimizer starts off the

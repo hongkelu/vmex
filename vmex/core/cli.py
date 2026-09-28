@@ -190,9 +190,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--scale",
         action="store_true",
         help=(
-            "Write a dimensionally scaled input or WOUT. Two positional factors "
-            "mean B_scale R_scale; omitting them targets |b0|=5.7 T and "
-            "Aminor_p=1.7 m (ARIES-CS)."
+            "Write a dimensionally scaled input or WOUT (*_scaled). Two "
+            "positional factors mean B_scale R_scale; omitting them targets "
+            "ARIES-CS size, <B>=5.8646 T and a=1.7044 m (see --scale-target)."
+        ),
+    )
+    p.add_argument(
+        "--scale-target", choices=("volavgB", "axis"), default="volavgB",
+        help=(
+            "ARIES-CS convention for --scale and --trace: 'volavgB' (default) "
+            "VMEC volavgB=5.8646 T, Aminor_p=1.7044 m (the ARIES-CS wout; "
+            "Landreman-Buller-Drevlak 2022, Paul 2022); 'axis' Boozer B00 on "
+            "the axis 5.7 T, a=1.7 m (Landreman & Paul 2022)."
         ),
     )
     p.add_argument(
@@ -230,35 +239,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace",
         action="store_true",
         help=(
-            "Trace fusion alpha particles through the equilibrium with ESSOS "
-            "(guiding centre): print the loss fraction and counts, and write "
-            "the orbit/loss/energy figures. Works on a wout_*.nc input or "
-            "after solving an input file (requires ESSOS)."
+            "Trace fusion alphas (guiding centre in Boozer coordinates, ESSOS), "
+            "scaled in memory to ARIES-CS size: print the loss fraction, write "
+            "*_trace.json/.npz, *_trace.png and *_trace_3d.png. Works on a "
+            "wout_*.nc input or after solving an input file. The defaults "
+            "(1000 alphas, 1e-2 s) take about 30 s on 10 CPU cores; cost "
+            "scales as particles x tmax / timestep."
         ),
     )
     p.add_argument(
-        "--trace-tmax", type=float, default=3e-4,
-        help="Tracing horizon in seconds (default: 3e-4).",
+        "--trace-tmax", type=float, default=1e-2,
+        help="Tracing horizon in seconds (default: 1e-2; cost is linear in it).",
     )
     p.add_argument(
-        "--trace-particles", type=int, default=200,
-        help="Number of alpha particles (default: 200).",
+        "--trace-particles", type=int, default=1000,
+        help="Number of alpha particles (default: 1000; cost is linear, sigma ~ 1/sqrt(N)).",
+    )
+    p.add_argument(
+        "--trace-no-scale", action="store_true",
+        help="Trace the equilibrium as given instead of at ARIES-CS size.",
     )
     p.add_argument(
         "--trace-s", type=float, default=0.25,
-        help="Launch surface s = psi/psi_b (default: 0.25).",
+        help="Launch surface s = psi/psi_b for surface births (default: 0.25).",
+    )
+    p.add_argument(
+        "--trace-birth", choices=("surface", "volume"), default="surface",
+        help="Birth on --trace-s (default) or through the volume at the D-T fusion rate.",
     )
     p.add_argument(
         "--trace-seed", type=int, default=42,
-        help="Sampling seed for angles and pitch (default: 42).",
+        help="Sampling seed for births and collisions (default: 42).",
     )
     p.add_argument(
-        "--trace-timestep", type=float, default=5e-7,
-        help="Integrator timestep in seconds (default: 5e-7).",
+        "--trace-timestep", type=float, default=None,
+        help=(
+            "RK4 step in seconds (default: the converged 1.25e-7 times "
+            "Aminor_p/1.7044 m; cost is inversely proportional)."
+        ),
     )
     p.add_argument(
-        "--trace-times", type=int, default=200,
-        help="Number of saved samples per orbit (default: 200).",
+        "--trace-times", type=int, default=1000,
+        help="Samples of the loss-fraction curve (default: 1000).",
+    )
+    p.add_argument(
+        "--collisional", action="store_true",
+        help=(
+            "With --trace: Monte Carlo collisions (pitch-angle scattering, slowing "
+            "down, energy diffusion) on electrons, D and T with n = n0 (1 - s^5), "
+            "T = T0 (1 - s)."
+        ),
+    )
+    p.add_argument(
+        "--trace-ne0", type=float, default=4e20,
+        help="On-axis electron density [m^-3] for --collisional and volume births (default: 4e20).",
+    )
+    p.add_argument(
+        "--trace-te0", type=float, default=12.0,
+        help="On-axis temperature [keV] for --collisional and volume births (default: 12).",
     )
     p.add_argument("--outdir", type=str, default=None, help="Directory for wout/boozmn/figure output (default: alongside the input).")
     p.add_argument("--quiet", action="store_true", help="Silence the VMEC-style stdout.")
@@ -940,11 +978,15 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
     from .plotting import plot_tracing
     from .tracing import trace_alphas
 
+    scale = None if args.trace_no_scale else args.scale_target
     if not quiet:
+        birth = ("volume" if args.trace_birth == "volume"
+                 else f"s={float(args.trace_s):g}")
         emit(
-            f" Tracing {int(args.trace_particles)} alpha particles from "
-            f"s={float(args.trace_s):g} (ESSOS GuidingCenter, "
-            f"tmax={float(args.trace_tmax):.3g} s)"
+            f" Tracing {int(args.trace_particles)} alpha particles ({birth}, Boozer "
+            f"guiding centre{', collisional' if args.collisional else ''}, "
+            f"tmax={float(args.trace_tmax):.3g} s, "
+            f"{'unscaled' if scale is None else 'ARIES-CS ' + scale})"
         )
     try:
         result = trace_alphas(
@@ -953,27 +995,50 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             nparticles=int(args.trace_particles),
             s=float(args.trace_s),
             seed=int(args.trace_seed),
-            timestep=float(args.trace_timestep),
+            timestep=args.trace_timestep,
             times_to_trace=int(args.trace_times),
+            scale=scale,
+            birth=args.trace_birth,
+            collisions=bool(args.collisional),
+            ne0=float(args.trace_ne0),
+            T0_keV=float(args.trace_te0),
+            mboz=int(args.mbooz),
+            nboz=int(args.nbooz),
         )
     except ImportError as exc:
         raise VmecInputError(
             WERROR_MESSAGES[INPUT_ERROR_FLAG],
-            hint="--trace requires essos (pip install essos)",
+            hint="--trace requires essos>=0.19 and booz_xform_jax (pip install 'vmex[coils]')",
         ) from exc
-    except ValueError as exc:  # e.g. lasym equilibria (released-ESSOS limit)
+    except ValueError as exc:  # e.g. lasym equilibria
         raise VmecInputError(
             WERROR_MESSAGES[INPUT_ERROR_FLAG], hint=str(exc)
         ) from exc
+    meta = result.metadata
     if not quiet:
-        emit(f" ESSOS tracing took {result.wall_time_s:.2f} s")
+        emit(
+            f" Scaling: B_scale={meta['b_scale']:.6g}, R_scale={meta['r_scale']:.6g} "
+            f"-> volavgB={meta['volavgB']:.5g} T, Aminor_p={meta['Aminor_p']:.5g} m; "
+            f"dt={meta['timestep']:.3g} s, {meta['boozer_modes']} Boozer modes, "
+            f"{meta['devices']} {meta['platform']} device(s)"
+        )
+        emit(
+            f" Tracing took {result.wall_time_s:.2f} s "
+            f"(compile {meta['compile_time_s']:.2f} s)"
+        )
         emit(
             f" Loss fraction: {100.0 * result.loss_fraction:.2f}% "
+            f"\u00b1 {100.0 * result.loss_fraction_sigma:.2f}% "
             f"({result.particles_lost} of {result.nparticles} particles lost)"
         )
-        emit(f" Axis terminations: {result.particles_unresolved}")
+        if args.collisional:
+            emit(f" Thermalized: {result.particles_thermalized}")
         emit(f" Solver failures: {result.particles_failed}")
-    for key, path in plot_tracing(wout_path, result, outdir).items():
+    label = wout_path.stem.removeprefix("wout_")
+    outdir.mkdir(parents=True, exist_ok=True)
+    written = dict(zip(("json", "npz"), result.save(outdir / label)))
+    written.update(plot_tracing(result, outdir, name=label))
+    for key, path in written.items():
         if not quiet:
             emit(f"   Saved {key}: {path}")
 
@@ -1094,7 +1159,7 @@ def _scale_file(args, input_path: Path, outdir: Path | None, *, emit) -> int:
         from .wout import read_wout, write_wout
 
         wout = read_wout(input_path)
-        b_scale, r_scale = factors or aries_cs_scales(wout)
+        b_scale, r_scale = factors or aries_cs_scales(wout, args.scale_target)
         write_wout(
             output,
             scale_wout(wout, b_scale=b_scale, r_scale=r_scale),
@@ -1124,6 +1189,7 @@ def _scale_file(args, input_path: Path, outdir: Path | None, *, emit) -> int:
         else:
             b_scale, r_scale, probe = aries_cs_input_scales(
                 inp,
+                args.scale_target,
                 mgrid_path=mgrid_path,
                 device=None if args.device == "none" else args.device,
             )
@@ -1152,7 +1218,8 @@ def _scale_file(args, input_path: Path, outdir: Path | None, *, emit) -> int:
         if probe is not None and not args.quiet:
             emit(
                 f" ARIES-CS probe: ns={probe.coarse_ns},{probe.fine_ns}; "
-                f"b0={probe.b0:.8g} T (change {probe.b0_relative_change:.2e}), "
+                f"{'volavgB' if probe.target == 'volavgB' else 'B00(axis)'}="
+                f"{probe.field:.8g} T (change {probe.field_relative_change:.2e}), "
                 f"Aminor_p={probe.aminor:.8g} m "
                 f"(change {probe.aminor_relative_change:.2e})"
             )
@@ -1162,6 +1229,28 @@ def _scale_file(args, input_path: Path, outdir: Path | None, *, emit) -> int:
             f" Applied B_scale={b_scale:.12g}, R_scale={r_scale:.12g}\n"
             f" Wrote scaled file: {output}"
         )
+    return 0
+
+
+def _solve_mirror_file(input_path: Path, outdir: Path | None, *, plot: bool, emit, quiet: bool) -> int:
+    import jax
+
+    from vmex.mirror.free_boundary import solve_mirror_file
+
+    jax.config.update("jax_enable_x64", True)
+    directory = outdir if outdir is not None else input_path.parent
+    solution = solve_mirror_file(input_path, outdir=directory)
+    mout_path = directory / f"mout_{case_from_input(input_path)}.nc"
+    if not quiet:
+        summary = solution.summary()
+        emit(
+            f" Mirror {'free' if solution.input.lfreeb else 'fixed'} boundary: converged={summary['converged']} "
+            f"after {summary['iterations']} iterations, variational force {summary['variational_max']:.2e}, "
+            f"B(axis, centre) = {summary['axis_field_center']:.6g} T, R_m,axis = {summary['R_m_axis']}\n"
+            f" Wrote {mout_path}"
+        )
+    if plot:
+        _plot_mout_file(mout_path, directory, emit=emit, quiet=quiet)
     return 0
 
 
@@ -1234,6 +1323,13 @@ def _dispatch(args, parser: argparse.ArgumentParser, *, emit) -> int:
             _run_trace(input_path, args, plot_outdir, emit=emit, quiet=quiet)
         return 0
 
+    from vmex.mirror.free_boundary import is_mirror_input
+
+    if is_mirror_input(input_path):
+        if bool(args.booz) or bool(args.trace):
+            parser.error("--booz and --trace require toroidal inputs, not &MIRROR decks")
+        return _solve_mirror_file(input_path, outdir, plot=plot_requested, emit=emit, quiet=quiet)
+
     from .desc import is_desc_file, write_desc_input
 
     if is_desc_file(input_path):
@@ -1241,6 +1337,34 @@ def _dispatch(args, parser: argparse.ArgumentParser, *, emit) -> int:
         if not quiet:
             emit(f" Wrote DESC-derived VMEC input: {input_path}")
     return _solve_input_file(args, input_path, outdir, emit=emit)
+
+
+def _split_host_devices() -> None:
+    """Give JAX one CPU device per performance core, so ESSOS shards ``--trace``.
+
+    Measured 4.6x on 10 cores (plan section T.1).  Runs before the backend
+    starts; a device count already set through ``XLA_FLAGS`` or
+    ``JAX_NUM_CPU_DEVICES`` wins.  GPU hosts keep tracing on the GPU, since
+    ESSOS shards over ``jax.devices()``, the default backend.
+    """
+    import jax
+
+    if ("host_platform_device_count" in os.environ.get("XLA_FLAGS", "")
+            or jax.config.jax_num_cpu_devices > 0):
+        return
+    cores = os.cpu_count() or 1
+    try:  # performance cores on Apple silicon; efficiency cores slow a vmap lockstep
+        import subprocess
+
+        cores = int(subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+            capture_output=True, text=True, check=True, timeout=5).stdout)
+    except Exception:
+        pass
+    try:
+        jax.config.update("jax_num_cpu_devices", max(1, cores))
+    except Exception:  # pragma: no cover - backend already initialised
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1258,6 +1382,10 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (args.collisional or args.trace_birth != "surface") and not args.trace:
+        parser.error("--collisional and --trace-birth require --trace")
+    if bool(args.trace):
+        _split_host_devices()
     # Flushing sink: with stdout redirected to a file (cluster batch logs),
     # the default block buffering can hide hours of iteration rows and
     # compile notices; every CLI line must reach the file immediately.

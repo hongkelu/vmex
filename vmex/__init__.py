@@ -100,8 +100,8 @@ links to the module that documents it.
   ESSOS as an ``essos.fields.Vmec`` (optional ESSOS dependency)
 - :func:`~vmex.core.tracing.trace_alphas` →
   :class:`~vmex.core.tracing.AlphaTracingResult` /
-  :func:`~vmex.core.plotting.plot_tracing` — optional ESSOS alpha-particle
-  tracing (exact loss fraction; also ``vmex --trace``)
+  :func:`~vmex.core.plotting.plot_tracing` — optional alpha-particle
+  tracing in Boozer coordinates (ESSOS; also ``vmex --trace``)
 - :func:`~vmex.core.plotting.plot_wout` / :func:`~vmex.core.plotting.plot_boozmn`
   / :func:`~vmex.core.plotting.plot_bootstrap_current`
   / :func:`~vmex.core.plotting.plot_optimization_movie`
@@ -175,7 +175,7 @@ def _check_supported_versions() -> None:
 
 _check_supported_versions()
 
-from ._compat import _default_compilation_cache_dir as _default_jax_cache_dir
+from ._compat import _apply_compilation_cache_policy
 
 
 def _source_tree_version() -> str | None:
@@ -226,11 +226,7 @@ def _configure_jax_logging(jax_module) -> None:
 
 _configure_jax_logging(_jax)
 
-_jax_cache_dir = _default_jax_cache_dir()
-if _jax_cache_dir is not None:
-    _os.makedirs(_jax_cache_dir, exist_ok=True)
-    _jax.config.update("jax_enable_compilation_cache", True)
-    _jax.config.update("jax_compilation_cache_dir", _jax_cache_dir)
+_apply_compilation_cache_policy(_jax)
 
 # Lazy public exports: name -> (module, attribute).  ``attribute=None``
 # exports the module itself.

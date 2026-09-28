@@ -27,7 +27,8 @@ and stability diagnostics, and has a separate lane for open mirrors.
 - **Design with gradients:** implicit scalar adjoints and residual Jacobians for SciPy, JAXopt or
   Optax, with quasisymmetry, quasi-isodynamic, Mercier, ballooning, bootstrap and maximum-`J` objectives.
 - **Inspect the physics:** Boozer transforms, the magnetic field and its first three spatial
-  derivatives, effective ripple, and the `--plot` diagnostic summary.
+  derivatives, effective ripple, the `--plot` diagnostic summary, `--scale` to reactor size and
+  `--trace` alpha-particle losses.
 - **Choose the hardware:** CPU or GPU equilibrium solves (optimization gradients default to CPU),
   reusable compilation and independent-case ensembles.
 - **Connect coils:** ESSOS coil fields, NESTOR free boundary from an MGRID table or coils, and the
@@ -71,10 +72,10 @@ or pick what you need:
 
 | Install | Adds | Enables |
 |---|---|---|
-| `pip install "vmex[coils]"` | `essos>=0.17` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
-| `pip install "vmex[freeb]"` | `virtual-casing-jax>=0.0.8` | the virtual-casing exterior field of the plasma (`VmecExtender`) |
+| `pip install "vmex[coils]"` | `essos>=0.19` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
+| `pip install "vmex[freeb]"` | `virtual-casing-jax>=0.0.9` | the virtual-casing exterior field of the plasma (`VmecExtender`) |
 | `pip install "vmex[neoclassical]"` | `neo-jax>=1.0.2` | effective ripple `ε_eff` from a WOUT or Boozer spectrum (`vmex.epsilon_effective_from_wout`) and the `--plot` ripple panel |
-| `pip install "vmex[turbulence]"` | `gkx>=1.8.0` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) |
+| `pip install "vmex[turbulence]"` | `gkx>=2.4.1` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) |
 | `pip install "vmex[optimizers]"` | `jaxopt`, `optax` | the JAXopt and Optax optimization drivers |
 | `pip install "vmex[all]"` | all of the above | every example and documented workflow |
 
@@ -82,13 +83,20 @@ The same packages can be installed by name; the floors are the ones in `pyprojec
 
 | Package | Minimum | Installed by | Command |
 |---|---|---|---|
-| `solvax` | 0.21.0 | `pip install vmex` | `pip install "solvax>=0.21.0"` |
-| `booz_xform_jax` | 0.4.0 | `pip install vmex` | `pip install "booz_xform_jax>=0.4.0"` |
-| `essos` | 0.17 | `vmex[coils]` | `pip install "essos>=0.17"` |
-| `virtual-casing-jax` | 0.0.8 | `vmex[freeb]` | `pip install "virtual-casing-jax>=0.0.8"` |
+| `solvax` | 0.27.0 | `pip install vmex` | `pip install "solvax>=0.27.0"` |
+| `booz_xform_jax` | 0.4.1 | `pip install vmex` | `pip install "booz_xform_jax>=0.4.1"` |
+| `essos` | 0.19 | `vmex[coils]` | `pip install "essos>=0.19"` |
+| `virtual-casing-jax` | 0.0.9 | `vmex[freeb]` | `pip install "virtual-casing-jax>=0.0.9"` |
 | `neo-jax` | 1.0.2 | `vmex[neoclassical]` | `pip install "neo-jax>=1.0.2"` |
-| `gkx` | 1.8.0 | `vmex[turbulence]` | `pip install "gkx>=1.8.0"` |
+| `gkx` | 2.4.1 | `vmex[turbulence]` | `pip install "gkx>=2.4.1"` |
 | `jaxopt`, `optax` | none | `vmex[optimizers]` | `pip install jaxopt optax` |
+
+Installing into an environment that already holds older packages is supported: every floor above
+(and the floors those packages declare, such as solvax's `equinox>=0.13.3`) upgrades an older copy
+instead of keeping it, and a nightly CI lane installs `vmex[all]` over a stale environment to keep it
+so. DESC (`desc-opt`, which requires `jax<0.10`) and other packages that cap JAX below 0.10 need
+their own environment: `vmex[turbulence]` and `vmex[all]` require `jax>=0.10.1`, so pip either
+upgrades JAX past their cap (and warns) or cannot resolve.
 
 NESTOR free boundary from an MGRID table needs no extra. A feature whose package is missing raises
 an `ImportError` that names the package to install; the core solver never imports them.
@@ -119,8 +127,18 @@ With your own VMEC input file:
 vmex input.my_case --plot
 vmex --plot wout_my_case.nc
 vmex --booz wout_my_case.nc
+vmex --scale wout_my_case.nc
+vmex --trace wout_my_case.nc
 vmex input.nearby --restart wout_my_case.nc
 ```
+
+`--scale` writes `*_scaled` at ARIES-CS size (a = 1.7044 m, ⟨B⟩ = 5.8646 T); two factors `B R` scale
+by hand. `--trace` (needs `vmex[coils]`) scales the same way in memory and traces 1000 fusion alphas for
+10 ms in Boozer coordinates (about 30 s on 10 cores). It writes the loss fraction and a figure set:
+loss against time, loss maps on the boundary, and pitch and loss-time distributions. Production runs set
+`--trace-particles N` and `--trace-tmax T`; cost grows as `N x T`. `--trace-birth volume` samples the D-T
+birth profile, and `--collisional` adds slowing down and pitch-angle scattering
+([guide](docs/howto/trace-alpha-particles.md)).
 
 `--plot` writes five PNGs beside the input or in `--outdir`: the summary below, flux-surface cross-sections,
 `|B|` in VMEC angles, Mercier stability and the 3-D LCFS. The summary adds Boozer `|B|`, a `J` map,
@@ -335,6 +353,20 @@ The live equilibrium exposes Cartesian `B()`, `gradB()`, `gradgradB()` and
 `gradgradgradB()`, with corresponding VJPs in the originating problem's degrees
 of freedom. Use `set_points_xyz(...)` or `set_points_flux(...)` to select
 interior evaluation points.
+
+This interior field is also the most accurate way to read an equilibrium. Against an exact
+finite-pressure solution, it gives the current 10 to 70 times more accurately than the WOUT file
+between s = 0.25 and 0.75, for equilibria from VMEX, VMEC2000 or VMEC++ alike (any WOUT can be
+loaded with `vmex.state_from_wout`). Within the first few surfaces of the axis the WOUT current
+is better. See the [interior-field explanation](https://vmex.readthedocs.io/en/latest/explanation/interior-field.html).
+
+![B and J errors: WOUT file versus VmecInteriorField, against an exact solution](docs/_static/figures/readme_interior_field.webp)
+
+Tabulated coil and mgrid fields (`MgridField.from_coils`, `from_cartesian_field`, `from_file`,
+`from_input`) take `order=1` (trilinear, the VMEC2000-parity default) or `order=3` (tricubic,
+C1). On the Landreman-Paul QA coils tricubic is about 10x more accurate in |B| just outside the
+LCFS and costs about 12% more solve time on a free-boundary deck; see the
+[free-boundary guide](https://vmex.readthedocs.io/en/latest/howto/free-boundary.html).
 
 For an exterior field, `vj.VmecExtender.from_file("wout_my_case.nc",
 external_field=coils.B)` combines the plasma's virtual-casing contribution with

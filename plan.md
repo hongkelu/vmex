@@ -48,6 +48,25 @@ main's after the merges.
      compilation cache restored by `actions/cache`: populate it once per key,
      then open it read-only in test workers, which avoids the eviction-lock
      hang that got `VMEX_COMPILATION_CACHE` disabled.
+   - **Done (#466, 2026-09-27).** Measured first: install was 0.5 min of
+     every job (16 job-min a run) and the rest is the test step, most of it
+     XLA compilation. Installs now use `uv` without an Actions cache (0.06
+     min a job; the pip caches were 1.1 GB per `pyproject.toml` hash and had
+     filled the 10 GB repository budget). Each test lane restores a
+     compilation cache keyed on lane, CPU model and flags, Python, jaxlib
+     and the `vmex/`+`tests/` hash, with the newest same-CPU cache as the
+     fallback; `tests/conftest.py` gives every pytest process a private
+     hard-linked copy opened with eviction off (no lock, no in-place
+     rewrite; subprocess tests still get vmex's default, off); only main
+     saves, keeping just the entries its run read or wrote
+     (`tools/ci_compile_cache.py`). Measured on the full matrix: before
+     231.8 job-min, cold 228.8, warm 175.8 (-24%). Only 11 of 27 lanes
+     hit on the warm run, because GitHub assigned six CPU models (EPYC 7763,
+     9V74, 9V45; Xeon 8573C, 6973P-C) and a lane only reuses programs built
+     on its own CPU; the lanes that hit went 71.1 -> 40.2 job-min (-43%;
+     a-core 7.9 -> 3.8, parity-d 11.5 -> 4.8). The hit rate grows as main
+     fills the (lane, CPU) pairs. Caches are 2-67 MB a lane (under 1 GB for
+     all 27). Coverage selectors and the changed-line gate are unchanged.
 1b. **Coherent dependency floors across the stack (maintainer, 2026-09-23).**
    A user should never have to upgrade packages by hand after
    `pip install "vmex[all]"`. Reported on 0.11.1: `pip install -e .` into an
@@ -73,6 +92,32 @@ main's after the merges.
      --plot`, so a missing floor fails CI instead of a user's first run; plus
      the existing minimum-versions job at the new floors. Keep the README
      install table's floors in sync (a test already checks them).
+   - **Status (2026-09-27): done** (this PR plus the sibling releases below,
+     all on PyPI: solvax 0.27.0, essos 0.18.1, booz_xform_jax 0.4.1,
+     virtual-casing-jax 0.0.9, gkx 2.4.1). Measured: equinox 0.11.11-0.13.0
+     fail `import` under jax >= 0.10 (warn at 0.9.2); 0.13.1-0.13.2 import but
+     fail at trace time under jax 0.11 (`jax.core.mapped_aval`, via diffrax
+     primitive batching); 0.13.3 is the first that works on jax 0.4.38-0.11.2.
+     ESSOS 0.17 also kept diffrax 0.6.2, which lacks `ClipStepSizeController`.
+     Sibling PRs: SOLVAX #129 (0.27.0), ESSOS #88 (0.18.1; the 0.18 tag was
+     cut before #88 merged and has no floors), booz_xform_jax #16 (0.4.1,
+     jax>=0.6.2, drops unused plotly), virtual_casing_jax #17 (0.0.9), GKX
+     #301 (2.4.1, solvax>=0.27.0). NEO_JAX #3 (jax floor) was closed: every
+     NEO_JAX test lane fails on the current environment independently of it
+     (vmec_jax no longer ships vmec_jax.driver; a 1e-14 legacy regression), so
+     vmex keeps neo-jax>=1.0.2.
+     vmex floors before -> after: solvax 0.21.0 -> 0.27.0, booz_xform_jax
+     0.4.0 -> 0.4.1, essos 0.17 -> 0.18.1, virtual-casing-jax 0.0.8 -> 0.0.9,
+     gkx 1.8.0 -> 2.4.1 (#471 had moved it to 2.4.0); jax/jaxlib/scipy/neo-jax
+     unchanged. #473 then raised essos to 0.19 (essos.boozer for --trace),
+     which also carries the equinox/diffrax floors, so the lanes pin 0.19.0. Guard: nightly
+     `minimum-integrations` is a floors/stale matrix; the stale lane seeds
+     jax 0.5.0, equinox 0.11.11, diffrax 0.6.2, solvax 0.20.0, booz_xform_jax
+     0.1.1, essos 0.16 and others, installs `.[all]` with pip, and runs
+     `vmex input.solovev --plot`. Verified by hand in fresh venvs on the laptop
+     (seed jax 0.10.2 + equinox 0.11.11 + solvax 0.26.0, the reported case)
+     and on office (the stale-lane seed set): pip check clean, equinox 0.13.8,
+     solve and all five figures written.
    - Related, same report: pip warned that other installed packages
      (desc-opt, interpax, quadax, orthax, jax-finufft) pin jax below 0.10;
      document in the installation page that DESC interoperability needs a
@@ -101,9 +146,24 @@ main's after the merges.
      geometry and resolution. Add `examples/mirror/mirror_fixed_boundary_axisymmetric.py`.
    - Solve mirror configurations from input files (`vmex <input>`,
      `vj.solve_file`).
+   - **Done (2026-09-27, branch `mirror/concise-api`):** `MirrorInput` +
+     `solve_mirror`/`solve_mirror_beta_scan`, `&MIRROR` decks (two in
+     `examples/data`), exact `CircularCoils`; compiled kernels reused across
+     solves (warm fixed-boundary solve 38 s -> 0.9 s); on-axis diagnostics
+     read the radial Gauss kernel (nodal axis row was ~1 % low). Pleiades
+     10 % beta: 1.6e-3 (ns 7) -> 7.5e-4 (ns 11). Laptop: examples 9-194 s.
+     Open: free-boundary cost (4-point scan 178 s at ns 7, 716 s at ns 11).
 5. **Later (not scheduled):** cut compilation cost on free- and
    fixed-boundary solves (cold compile is 25-60 % of example wall time; about
    120 s fixed cost on the free boundary, #439).
+   - Done (compile-cost PR): three cache-key duplicates removed with
+     bit-identical results -- callback default device, backward-pass
+     mesh/commitment, and `max_iterations` as static meta. Cold, first two
+     trials, laptop: fixed single stage 433 -> 396 compilations (30 -> 22 s,
+     wall 48 -> 36 s); free-boundary 0.5 % beta 687 -> 497 (50 -> 39 s,
+     wall 83 -> 67 s). CLI decks unchanged. Next: QA's `jacobian_rows_block`
+     is one large program (the biggest single compile); remaining free-boundary
+     duplicates are ~1 s each (`_iter_lane`, `_evaluate_lane`).
 
 **Open PRs:**
 
@@ -130,6 +190,19 @@ absolute wall times are upper bounds.
 the mirror work. Scoped 2026-09-23 against `origin/main` `b5f5267ef` and ESSOS
 `main` `c9b41222e` (= ESSOS 0.17). Research only; nothing below has been
 implemented yet.
+
+**Status 2026-09-27 (P2 done by a different route).** P1 merged as #472.
+P2b/c/d shipped as ESSOS#89 (`essos.boozer`, ESSOS 0.19.0): a Boozer
+`|B|` spline from `booz_xform_jax`, K = 0 guiding-centre equations in the
+axis-regular chart `sqrt(s)(cos theta, sin theta)` (no axis stops), and
+fixed-step RK4 under `vmap`. The optional Monte Carlo collision operator is
+checked against the Stix `tau_se` and against `nu_D`. vmex `--trace` uses it
+with a 1.25e-7 s step and a `1e-3` mode cut. The default 1000 alphas × 1e-2 s
+on ARIES-CS take 28 s on the laptop (G5 met). The step and mode convergence
+table is in `docs/howto/trace-alpha-particles.md` (G4). P3 (symplectic) is not
+needed. The #52–#56 ESSOS stack is moot for `--trace`. Open: G2 against
+SIMSOPT/SIMPLE on identical initial conditions, and G3 (0.2 s, s = 0.3) on a
+slow lane.
 
 ### T.0 What already exists (do not rebuild it)
 

@@ -943,6 +943,8 @@ def test_default_extcur_is_the_file_field_in_every_mgrid_mode(
         for got, want, loaded in zip(default, table, solver):
             np.testing.assert_allclose(got, factor * np.asarray(want), rtol=1e-14, atol=0.0)
             np.testing.assert_allclose(got, loaded, rtol=1e-14, atol=0.0)
+    cubic = MgridField.from_input(SimpleNamespace(extcur=None, mgrid_file="unused"), path, order=3)
+    assert cubic.order == 3 and not np.any(cubic.extcur)
 
 
 def test_sum_groups_reads_the_same_field_into_one_group(
@@ -1246,6 +1248,26 @@ def test_from_coils_defaults_bracket_the_coil_set() -> None:
     assert 0.0 < field.rmin < radius.min() and field.rmax > radius.max()
     assert field.zmin < height.min() and field.zmax > height.max()
     assert np.all(np.isfinite(np.asarray(field.br)))
+
+
+def test_from_coils_passes_the_interpolation_order() -> None:
+    """A coil set tabulated for tracing needs the C1 tricubic interpolant."""
+    coils = _essos_lp_qa_coils()
+    from essos.fields import BiotSavart
+
+    bounds = dict(rmin=0.6, rmax=1.4, zmin=-0.3, zmax=0.3, ir=32, jz=24, kp=24)
+    linear = MgridField.from_coils(coils, **bounds)
+    cubic = MgridField.from_coils(coils, **bounds, order=3)
+    assert (linear.order, cubic.order) == (1, 3)
+    np.testing.assert_array_equal(np.asarray(cubic.br), np.asarray(linear.br))
+    rng = np.random.default_rng(0)
+    r, phi, z = rng.uniform(0.8, 1.2, 64), rng.uniform(0, 2 * np.pi, 64), rng.uniform(-0.15, 0.15, 64)
+    xyz = np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=1)
+    exact = np.asarray(jax.vmap(BiotSavart(coils).B)(jnp.asarray(xyz)))
+    bz_exact = exact[:, 2]
+    errors = [np.median(np.abs(np.asarray(field.b_cyl(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))[2]) - bz_exact))
+              for field in (linear, cubic)]
+    assert errors[1] < 0.3 * errors[0]
 
 
 def test_from_coils_batches_the_essos_single_point_biot_savart() -> None:

@@ -6,8 +6,12 @@ those coils, predicted from the accepted root and certified before use, and
 SLSQP minimizes quasisymmetry subject to hard inequalities: minimum |iota|,
 major radius, aspect ratio, coil-to-plasma clearance, and per-coil length,
 curvature, mean squared curvature and coil separation (``parameters.py``).
-``OPTIMIZER = "L-BFGS-B"`` instead minimizes the fixed-boundary arm's objective,
-QA plus the same rows as hinge penalties, so both arms share one algorithm.
+
+The coil currents share one free factor. In vacuum only the flux per ampere
+sets the plasma size, so fixing both the currents and PHIEDGE pins it: at
+iota >= 0.41 that holds the aspect ratio at its 4.9 floor (QA ~0.02), while the
+shared factor lets SLSQP reach aspect 5.1 (QA ~0.004). SHARED_CURRENT = False
+restores fixed currents.
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
 
@@ -34,15 +38,9 @@ OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 LU_REFRESH_HORIZON = 10
-NEWTON_STEPS = None  # Newton-correct predicted trials on the seed LU before any ordinary solve
-IOTA_CONSTRAINT = "min"  # "min": one minimum-|iota| row; "surfaces": one row per radial surface
-IOTA_RAMP = None  # e.g. 0.05: raise the iota floor in stages of RAMP_STAGE_STEPS accepted steps
-RAMP_STAGE_STEPS = 5
-OPTIMIZER = "SLSQP"  # "L-BFGS-B": the hinge penalties of single_stage_optimization.py instead
-PENALTY_WEIGHT = 1.0e3  # its CONSTRAINT_WEIGHT
-SHARED_CURRENT = False  # True: all coil currents vary by one common factor, the vacuum equivalent of a free PHIEDGE
+NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
+SHARED_CURRENT = True  # all coil currents vary by one common factor (a free flux per ampere)
 CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
-STEP_CAP = None  # e.g. 0.2: SLSQP box around the stage start, in scaled coordinates, per RAMP_STAGE_STEPS
 
 
 def parse_args(argv=None):
@@ -53,7 +51,7 @@ def parse_args(argv=None):
     parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
     parser.add_argument("--wout", type=Path, help="restart the initial solve from this WOUT")
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
-    parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--save-every", type=int, default=25)
     return parser.parse_args(argv)
 
 
@@ -128,28 +126,10 @@ def main(argv=None):
         return jnp.vdot(residuals, residuals)
 
     def loss(state, runtime, coils):
-        if OPTIMIZER == "SLSQP":
-            return 0.5 * qa(state, runtime)
-        # The fixed-boundary arm's rows; its normal-field and flux rows hold here by construction.
-        aspect_value, radius = opt.aspect_ratio(state, runtime), opt.major_radius(state, runtime)
-        rows = jnp.concatenate([
-            jnp.stack([(opt.min_abs_iota(state, runtime) - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
-                       (aspect_value - aspect_lower) / aspect_scale, (aspect_upper - aspect_value) / aspect_scale,
-                       (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
-                       (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE]),
-            coil_limits.coil_inequalities(coils),
-            jnp.atleast_1d((clearance(state, runtime, coils) - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
-                           / P.COIL_SURFACE_DISTANCE_LIMIT)])
-        return 0.5 * qa(state, runtime) + 0.5 * PENALTY_WEIGHT * jnp.sum(jnp.maximum(-rows, 0.0)**2)
+        return 0.5 * qa(state, runtime)
 
     def aspect(state, runtime, coils):
         return opt.aspect_ratio(state, runtime)
-
-    def iota_rows(state, runtime):
-        if IOTA_CONSTRAINT == "surfaces":  # the same half-mesh surfaces as min_abs_iota
-            from vmex.core.statephysics import _iotas_half
-            return jnp.abs(_iotas_half(state, runtime)[1:])
-        return opt.min_abs_iota(state, runtime)
 
     seconds = {}
 
@@ -165,9 +145,7 @@ def main(argv=None):
         "compile", seconds=duration) if event.startswith("/jax/core/compile/") else None)
 
     problem = opt.FreeBoundaryProblem.from_loss(
-        # L-BFGS-B differentiates only the loss; SLSQP also needs the constraint rows.
-        inp, loss, quantities=(iota_rows, opt.major_radius) if OPTIMIZER == "SLSQP" else (),
-        coil_quantities=(clearance, aspect) if OPTIMIZER == "SLSQP" else (),
+        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius), coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
@@ -186,23 +164,15 @@ def main(argv=None):
             record(_name, seconds=time.monotonic() - start)
             return value
         setattr(coil_rows, method, timed)
-    observe = jax.jit(lambda state, x: jnp.stack([
-        jnp.min(jnp.atleast_1d(iota_rows(state, problem.rt))), opt.major_radius(state, problem.rt),
-        clearance(state, problem.rt, chart.coils_from_x(x)), opt.aspect_ratio(state, problem.rt)]))
-    n_iota = problem.constraint_values(problem.accepted.parameters).size - 3 if OPTIMIZER == "SLSQP" else 0
-
     from scipy.optimize import LinearConstraint
     tie = np.zeros((max(len(current_dofs) - 1, 0), chart.size))
     for row in range(tie.shape[0]):  # equal relative currents: one common factor
         tie[row, row], tie[row, row + 1] = 1.0, -1.0
-
-    def constraints(floor):
-        return [LinearConstraint(tie, 0.0, 0.0)] * bool(tie.size) + [problem.nonlinear_constraint(
-            [floor + P.IOTA_MARGIN] * n_iota + [P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
-                                                aspect_lower],
-            [np.inf] * n_iota + [P.RADIUS_TARGET + width, np.inf, aspect_upper],
-            scales=[P.IOTA_FLOOR] * n_iota + [P.RADIUS_TOLERANCE, P.COIL_SURFACE_DISTANCE_LIMIT, aspect_scale]),
-            coil_rows]
+    constraints = [LinearConstraint(tie, 0.0, 0.0)] * bool(tie.size) + [problem.nonlinear_constraint(
+        [P.IOTA_FLOOR + P.IOTA_MARGIN, P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
+         aspect_lower],
+        [np.inf, P.RADIUS_TARGET + width, np.inf, aspect_upper],
+        scales=[P.IOTA_FLOOR, P.RADIUS_TOLERANCE, P.COIL_SURFACE_DISTANCE_LIMIT, aspect_scale]), coil_rows]
 
     def save(tag):
         x = problem.accepted.parameters
@@ -214,7 +184,7 @@ def main(argv=None):
 
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
-        iota, radius, surface, aspect_value = map(float, observe(record.state, jnp.asarray(x)))
+        iota, radius, surface, aspect_value = map(float, problem.constraint_values(x))
         now = time.monotonic()
         row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
@@ -236,32 +206,14 @@ def main(argv=None):
             save(f".step{row['step']}")
 
     log_step()
-    floors = [P.IOTA_FLOOR]
-    if IOTA_RAMP:
-        start_iota = float(observe(problem.accepted.state, jnp.asarray(problem.accepted.parameters))[0])
-        floors = [*np.arange(start_iota + IOTA_RAMP, P.IOTA_FLOOR, IOTA_RAMP), P.IOTA_FLOOR]
-    from scipy.optimize import Bounds
     try:
-        index = 0
-        while problem.accepted_step < args.steps:
-            floor = floors[min(index, len(floors) - 1)]
-            staged = index < len(floors) - 1 or bool(STEP_CAP)
-            remaining = args.steps - problem.accepted_step
-            budget = min(RAMP_STAGE_STEPS, remaining) if staged else remaining
-            x, before = problem.accepted.parameters, problem.accepted_step
-            print(f"[stage {index}] {OPTIMIZER}, iota floor {floor:.4f}, up to {budget} accepted steps", flush=True)
-            if OPTIMIZER == "L-BFGS-B":
-                # A rejected line-search trial ends the call; restart from the accepted state.
-                result = opt.minimize(problem, x0=x, method="L-BFGS-B", callback=lambda x: log_step(),
-                                      options=dict(maxiter=budget, maxcor=20, maxls=20, ftol=1e-12, gtol=1e-8))
-            else:
-                box = None if not STEP_CAP else Bounds(x - STEP_CAP * problem.scales, x + STEP_CAP * problem.scales)
-                result = opt.minimize(problem, x0=x, method="SLSQP", bounds=box,
-                                      constraints=constraints(floor), callback=lambda x: log_step(),
-                                      options=dict(maxiter=budget, ftol=OPTIMIZER_FTOL))
-            index += 1
-            restart = staged or result.stop_reason == "equilibrium_trial_rejected"
-            if (problem.accepted_step == before and index >= len(floors)) or not restart:
+        while True:  # a rejected equilibrium trial ends an SLSQP call; restart it from the accepted root
+            before = problem.accepted_step
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                                  callback=lambda x: log_step(),
+                                  options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+            if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
+                    or problem.accepted_step >= args.steps):
                 break
         stop = dict(success=bool(result.success), message=str(result.message),
                     stop_reason=getattr(result, "stop_reason", None))

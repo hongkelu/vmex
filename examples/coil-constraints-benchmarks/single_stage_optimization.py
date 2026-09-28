@@ -1,22 +1,21 @@
 #!/usr/bin/env python
 r"""Fixed-boundary single-stage counterpart of the coil-constraint benchmark.
 
-The algorithm of ``examples/optimization/single_stage_optimization.py``: the
-boundary and the coils form one variable vector, every trial solves the
-fixed-boundary equilibrium, and L-BFGS-B minimizes
+The boundary and the coils form one variable vector, every trial solves the
+fixed-boundary equilibrium, and SLSQP minimizes
 
-    J = (1/2) |r_QS|^2 + (1/2) CONSTRAINT_WEIGHT * sum max(-c, 0)^2,   c >= 0,
+    J = (1/2) |r_QS|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
 
-where the one-sided rows ``c`` hold the targets of ``parameters.py`` (minimum
-|iota|, aspect band, major radius), the coil limits of ``_coil_constraints.py``
-(length, curvature, mean squared curvature, separation, plasma clearance),
-the normal-field limit, and the coils' toroidal flux. A penalty settles just
-inside its threshold, so it is handed the margins of ``parameters.py``.
+subject to the hard inequalities of ``parameters.py`` (minimum |iota|, aspect
+band, major radius), the coil limits of ``_coil_constraints.py`` (length,
+curvature, mean squared curvature, separation, plasma clearance) and the
+normal-field limit. The B.n term keeps the prescribed boundary close to what
+the coils produce, so the fixed-boundary QA stays meaningful for the coils.
 
-The flux row keeps the coils consistent with the prescribed PHIEDGE: B.n/|B|
-does not depend on the field strength, so without it the coils can drift to a
-field that encloses a different flux than the one the equilibrium assumes.
-The free-boundary arm holds the same PHIEDGE by construction.
+In vacuum PHIEDGE only scales the field, so the coils may enclose any flux:
+the counterpart of the free arm's shared current factor. FLUX_TOLERANCE adds
+a band on the coils' toroidal flux through the boundary, the counterpart of
+fixed currents and PHIEDGE. ``flux_ratio`` is logged either way.
 
     python single_stage_optimization.py --steps 5 --output runs/fixed
 """
@@ -36,23 +35,20 @@ import parameters as P  # noqa: E402
 MAX_MODE = 8                       # boundary modes varied; RBC(0,0) stays fixed
 ESS_ALPHA = 1.2
 BOUNDARY_STEP, COIL_STEP = 0.1, P.COIL_STEP
-PARAMETER_BOUND = 5.0
-NORMAL_FIELD_LIMIT, NORMAL_FIELD_CONSTRAINT = 0.01, 0.008  # area-weighted RMS B.n/|B|
-FLUX_TOLERANCE = 0.005             # relative toroidal-flux band around PHIEDGE
-CONSTRAINT_WEIGHT = 1.0e3
-OPTIMIZER = "L-BFGS-B"             # "SLSQP": the same rows as hard inequalities, J = (1/2) |r_QS|^2
-SLSQP_FTOL = 1e-10
-NORMAL_FIELD_WEIGHT = 0.0          # SLSQP: adds (1/2) w rms(B.n/|B|)^2 to J; the legacy benchmark used 1e3
+NORMAL_FIELD_CONSTRAINT = 0.008   # area-weighted RMS B.n/|B| limit
+NORMAL_FIELD_WEIGHT = 1.0e3
+FLUX_TOLERANCE = None              # e.g. 0.005: relative band on the coils' flux around PHIEDGE
+OPTIMIZER_FTOL = 1e-10
 NPHI, NTHETA = 37, 32
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--steps", type=int, default=100, help="L-BFGS-B iterations")
+    parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
-    parser.add_argument("--save-every", type=int, default=0, help="save coils and WOUT every N steps")
+    parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     return parser.parse_args(argv)
 
 
@@ -125,9 +121,6 @@ def main(argv=None):
         weights = surface.area_element / jnp.sum(surface.area_element)
         return jnp.sqrt(jnp.sum(weights * normal**2))
 
-    def hinge(rows):
-        return 0.5 * CONSTRAINT_WEIGHT * jnp.sum(jnp.maximum(-rows, 0.0)**2)
-
     aspect_lower, aspect_upper = P.ASPECT_RANGE
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
@@ -139,24 +132,18 @@ def main(argv=None):
                           (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
                           (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE])
 
-    def plasma_objective(u):
-        x = jnp.asarray(x0) + jnp.asarray(scales) * u
-        return plasma_problem.jax_objective_from_state(
-            x[:n_boundary], lambda state, ctx: hinge(plasma_rows(state, ctx))[None], n_extra_terms=1)
-
     def coil_rows(u):
         rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x0) + jnp.asarray(scales) * u)
-        flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge - 1.0
         clearance = coil_limits.surface_distance(coils, surface)
-        return jnp.concatenate([
-            coil_limits.coil_inequalities(coils),
-            jnp.atleast_1d((clearance - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
-                           / P.COIL_SURFACE_DISTANCE_LIMIT),
-            jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT),
-            jnp.stack([FLUX_TOLERANCE - flux, FLUX_TOLERANCE + flux]) / FLUX_TOLERANCE])
+        rows = [coil_limits.coil_inequalities(coils),
+                jnp.atleast_1d((clearance - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
+                               / P.COIL_SURFACE_DISTANCE_LIMIT),
+                jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT)]
+        if FLUX_TOLERANCE:
+            flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge - 1.0
+            rows.append(jnp.stack([FLUX_TOLERANCE - flux, FLUX_TOLERANCE + flux]) / FLUX_TOLERANCE)
+        return jnp.concatenate(rows)
 
-    plasma_value_and_grad = jax.jit(jax.value_and_grad(plasma_objective, has_aux=True))
-    coil_value_and_grad = jax.jit(jax.value_and_grad(lambda u: hinge(coil_rows(u))))
     coil_rows_jit = jax.jit(coil_rows)
     plasma_rows_jit = jax.jit(lambda u: plasma_problem.jax_extra_costs_from_state(
         (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=5)[1])
@@ -164,17 +151,6 @@ def main(argv=None):
         (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=5)[1]))
     coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
     cache = {}
-
-    def value_and_grad(u):
-        u = np.asarray(u, dtype=float)
-        if cache.get("key") != u.tobytes():
-            (plasma_value, (qs_rows, _)), plasma_gradient = plasma_value_and_grad(jnp.asarray(u))
-            coil_value, coil_gradient = coil_value_and_grad(jnp.asarray(u))
-            cache.update(key=u.tobytes(), value=float(plasma_value + coil_value),
-                         gradient=np.asarray(plasma_gradient + coil_gradient),
-                         qa=float(np.asarray(qs_rows) @ np.asarray(qs_rows)))
-        return cache["value"], cache["gradient"].copy()
-
     qa_value_and_grad = jax.jit(jax.value_and_grad(lambda u: plasma_problem.jax_objective_from_state(
         (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], lambda state, ctx: jnp.zeros(1),
         n_extra_terms=1)[0]))
@@ -185,33 +161,31 @@ def main(argv=None):
 
     normal_field_value_and_grad = jax.jit(jax.value_and_grad(normal_field_cost))
 
-    def qa_objective(u):  # SLSQP: the hard rows below replace the hinge penalties
+    def objective(u):
         u = np.asarray(u, dtype=float)
-        if cache.get("qa_key") != u.tobytes():
-            value, gradient = qa_value_and_grad(jnp.asarray(u))
-            if NORMAL_FIELD_WEIGHT:
-                extra, extra_gradient = normal_field_value_and_grad(jnp.asarray(u))
-                value, gradient = value + extra, gradient + extra_gradient
-            cache.update(qa_key=u.tobytes(), qa_value=float(value), qa_gradient=np.asarray(gradient))
-        return cache["qa_value"], cache["qa_gradient"].copy()
+        if cache.get("key") != u.tobytes():
+            half_qa, gradient = qa_value_and_grad(jnp.asarray(u))
+            extra, extra_gradient = normal_field_value_and_grad(jnp.asarray(u))
+            cache.update(key=u.tobytes(), qa=2 * float(half_qa), value=float(half_qa + extra),
+                         gradient=np.asarray(gradient + extra_gradient))
+        return cache["value"], cache["gradient"].copy()
 
     last = dict(time=time.monotonic(), step=0)
 
     def log_step(u):
         u = np.asarray(u, dtype=float)
-        value, _ = value_and_grad(u)
+        value, _ = objective(u)
         x = x0 + scales * u
         equilibrium = plasma_problem.equilibrium_from_x(x[:n_boundary])
         state, ctx = equilibrium.solution, equilibrium.runtime
         rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x))
-        rows = np.asarray(coil_rows_jit(jnp.asarray(u)))
-        n_coil = rows.size - 4
+        rows = np.asarray(coil_limits.coil_inequalities(coils))
         now = time.monotonic()
         row = dict(step=last["step"], qa=cache["qa"], objective=value,
                    min_abs_iota=float(opt.min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
                    major_radius_m=float(opt.major_radius(state, ctx)),
                    coil_surface_distance_m=float(coil_limits.surface_distance(coils, surface)),
-                   coil_minimum_scaled_slack=float(np.min(rows[:n_coil])),
+                   coil_minimum_scaled_slack=float(np.min(rows)),
                    normal_field_rms=float(normal_field_rms(coils, surface)),
                    flux_ratio=float(abs(toroidal_flux(rbc, zbs, coils)) / phiedge),
                    step_seconds=now - last["time"], elapsed_seconds=now - started)
@@ -235,17 +209,12 @@ def main(argv=None):
 
     u0 = np.zeros_like(x0)
     checkpoint(u0)
-    if OPTIMIZER == "SLSQP":
-        constraints = [dict(type="ineq", fun=lambda u: np.asarray(plasma_rows_jit(jnp.asarray(u))),
-                            jac=lambda u: np.asarray(plasma_rows_jac(jnp.asarray(u)))),
-                       dict(type="ineq", fun=lambda u: np.asarray(coil_rows_jit(jnp.asarray(u))),
-                            jac=lambda u: np.asarray(coil_rows_jac(jnp.asarray(u))))]
-        result = minimize(qa_objective, u0, jac=True, method="SLSQP", callback=checkpoint,
-                          constraints=constraints, options={"maxiter": args.steps, "ftol": SLSQP_FTOL})
-    else:
-        result = minimize(value_and_grad, u0, jac=True, method="L-BFGS-B", callback=checkpoint,
-                          bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size,
-                          options={"maxiter": args.steps, "maxcor": 20, "maxls": 20, "ftol": 1e-12, "gtol": 1e-8})
+    constraints = [dict(type="ineq", fun=lambda u: np.asarray(plasma_rows_jit(jnp.asarray(u))),
+                        jac=lambda u: np.asarray(plasma_rows_jac(jnp.asarray(u)))),
+                   dict(type="ineq", fun=lambda u: np.asarray(coil_rows_jit(jnp.asarray(u))),
+                        jac=lambda u: np.asarray(coil_rows_jac(jnp.asarray(u))))]
+    result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
+                      constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
     x = x0 + scales * result.x
     rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x))
     coils.to_json(str(out / "coils.json"))

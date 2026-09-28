@@ -41,6 +41,8 @@ def parse_args(argv=None):
     parser.add_argument("--no-dense", action="store_true", help="skip the dense free-boundary solve")
     parser.add_argument("--match-flux", action="store_true", help="rescale fixed-arm currents to enclose PHIEDGE")
     parser.add_argument("--seed-wout", type=Path, help="initial state of the dense solve (default: the run's wout.nc)")
+    parser.add_argument("--max-iterations", type=int, default=12000, help="iteration cap of the dense solve")
+    parser.add_argument("--flux-tolerance", type=float, help="flux band the fixed-arm run used, for the plot")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     return parser.parse_args(argv)
 
@@ -51,10 +53,11 @@ def read_history(run):
     return rows, keys
 
 
-def limits():
+def limits(flux_tolerance=None):
     """Constrained quantities and their bounds, as the two benchmarks impose them."""
     import single_stage_optimization as fixed
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
+    band = (None, None) if flux_tolerance is None else (1 - flux_tolerance, 1 + flux_tolerance)
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
         "aspect": ("aspect ratio", *P.ASPECT_RANGE),
@@ -62,12 +65,12 @@ def limits():
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
         "normal_field_rms": ("rms B.n/|B|", None, fixed.NORMAL_FIELD_CONSTRAINT),
-        "flux_ratio": ("coil flux / PHIEDGE", 1 - fixed.FLUX_TOLERANCE, 1 + fixed.FLUX_TOLERANCE),
+        "flux_ratio": ("coil flux / PHIEDGE", *band),
         "current_factor": ("coil current factor", None, None),
     }
 
 
-def plot_history(rows, keys, out):
+def plot_history(rows, keys, out, flux_tolerance=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -84,7 +87,7 @@ def plot_history(rows, keys, out):
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
     figure.tight_layout(), figure.savefig(out / "loss.png", dpi=200), plt.close(figure)
 
-    panels = [(k, *spec) for k, spec in limits().items() if k in keys]
+    panels = [(k, *spec) for k, spec in limits(flux_tolerance).items() if k in keys]
     columns = 3
     figure, axes = plt.subplots((len(panels) + columns - 1) // columns, columns,
                                 figsize=(4 * columns, 3 * ((len(panels) + columns - 1) // columns)), squeeze=False)
@@ -147,7 +150,7 @@ def dense_solve(frame, args, rows, out):
     inp = vmex.VmecInput.from_file(HERE / "input.rotating_ellipse")
     inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]),
-                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([12000]))
+                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     label, coil_path, wout_path = frame
     coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
     row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
@@ -161,7 +164,7 @@ def dense_solve(frame, args, rows, out):
     started = time.monotonic()
     stage = _solve_free_boundary_stage(
         inp, external_field=field, resolution=resolution, initial_state=state, ftol=P.EQUILIBRIUM_FTOL,
-        max_iterations=12000, include_edge_in_convergence=True, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
+        max_iterations=args.max_iterations, include_edge_in_convergence=True, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
         use_fft=False, error_on_no_convergence=False, jacobian_retries=0, allow_initial_axis_reguess=False)
     result = stage.result
     forces = {k: float(getattr(result, k)) for k in ("fsqr", "fsqz", "fsql", "fedge")}
@@ -194,7 +197,7 @@ def main(argv=None):
     rows, keys = read_history(run)
     if args.match_flux and "flux_ratio" not in keys:
         raise SystemExit("--match-flux needs a fixed-arm run that logs flux_ratio")
-    plot_history(rows, keys, out)
+    plot_history(rows, keys, out, args.flux_tolerance)
     frames = checkpoints(run)
     if frames:
         plot_evolution(frames, out)

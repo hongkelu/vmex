@@ -620,3 +620,9 @@ def _lgradb_state_tables(state: SpectralState, rt: SolverRuntime) -> dict:
         rmnc=rmnc, zmns=zmns, bsupumnc=bsupumnc, bsupvmnc=bsupvmnc,
         ns=ns, nfp=nfp,
     )
+
+
+def major_radius(state: SpectralState, rt: SolverRuntime) -> Array:
+    """WOUT Rmajor_p [m], using canonical boundary quadrature."""
+    return _aspect_scalars(state, rt)[1]
+

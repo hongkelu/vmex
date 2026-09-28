@@ -259,6 +259,7 @@ def trace_alphas(
     mboz: int = 32,
     nboz: int = 32,
     mode_tolerance: float = MODE_TOLERANCE,
+    progress: Any = None,
 ) -> AlphaTracingResult:
     """Trace fusion alphas through a wout file or in-memory equilibrium.
 
@@ -282,6 +283,9 @@ def trace_alphas(
         birth profile).
     mboz, nboz, mode_tolerance:
         Boozer resolution and the relative amplitude of dropped modes.
+    progress:
+        ``None``, or ``progress(done, total)``, called as the horizon advances
+        (ESSOS runs it in host-side chunks; the orbits are unchanged).
     """
     import jax
     from essos import constants
@@ -310,7 +314,7 @@ def trace_alphas(
         field, *births.T, speed=float(np.sqrt(2 * energy / mass)), mass=mass,
         charge=charge, tmax=float(tmax), timestep=float(timestep),
         n_save=min(int(times_to_trace), 101), seed=int(seed),
-        species=background_species(ne0, T0_keV) if collisions else None)
+        species=background_species(ne0, T0_keV) if collisions else None, progress=progress)
     wall = time.perf_counter() - start
     times = np.linspace(0.0, float(tmax), int(times_to_trace))
     lost = trace.loss_times >= 0

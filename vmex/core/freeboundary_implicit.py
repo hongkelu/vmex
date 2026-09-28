@@ -399,7 +399,7 @@ def _host_solve_and_mask(
         )
 
 
-def _cold_reference(solve, icfg, inp, field):
+def _cold_reference(solve, icfg, inp, field, *, single_rung=True):
     """Solve cold, falling back to a coarse rung when one rung cannot converge.
 
     A single fine rung started from the input guess can stall above ``ftol``
@@ -412,11 +412,14 @@ def _cold_reference(solve, icfg, inp, field):
 
     The ladder is not free -- it compiles and solves a second resolution -- so
     a deck whose single rung already converges never pays for it.
+    ``single_rung=False`` goes straight to the ladder (see
+    :data:`_FAR_RESTART_RATIO`).
     """
-    stage = solve(initial_state=None)
     ns = int(icfg.resolution.ns)
-    if bool(stage.result.converged) or ns < 8:
-        return stage
+    if single_rung or ns < 8:
+        stage = solve(initial_state=None)
+        if bool(stage.result.converged) or ns < 8:
+            return stage
     from .multigrid import solve_free_boundary_multigrid
 
     return solve(initial_state=solve_free_boundary_multigrid(
@@ -426,21 +429,30 @@ def _cold_reference(solve, icfg, inp, field):
         raise_on_max_iterations=False).state)
 
 
+#: A restart that exhausts its budget with FSQ above this multiple of ftol
+#: goes straight to the ladder of :func:`_cold_reference`: in every such trial
+#: of the single-stage free-boundary examples (restart FSQ 1.3e-4 to 1.3e2,
+#: ftol 1e-10) the single cold rung also failed, spending 1500 iterations
+#: (~3 s) before the ladder ran anyway.
+_FAR_RESTART_RATIO = 1.0e3
+
+
 def _continuation(stage) -> dict:
-    """Restart arguments that continue ``stage`` instead of repeating turn-on.
+    """Restart arguments: the reference's spectral state, nothing else.
 
     Every solve of a configuration restarts from the same reference, never
     from the previous trial, so the returned state is a function of the
-    parameters alone.  The constraint and residual continuation travel with
-    the state, as they do between multigrid rungs; the vacuum continuation is
-    a starting guess for this trial's field, which differs from the
-    reference's, so its caches are rebuilt rather than reused.
+    parameters alone.  Only the state travels: the spectral constraint
+    (rcon0, zcon0), the residual history and the vacuum are rebuilt for this
+    trial's own field and boundary.  Carrying the reference's constraint and
+    vacuum continuation instead stalls near fsq ~ 1e-4 once the coils have
+    moved from the reference (finite-beta single-stage example, trials 5-16:
+    every restart spent its whole budget and fell back to a cold solve),
+    where the state alone converges in a few hundred iterations.  The
+    constraint then belongs to the trial, which moves the certified answer
+    by ~0.2 % in the objective, well inside the ftol-level spread.
     """
-    return dict(
-        initial_state=stage.continuation_state, vacuum_continuation=stage.vacuum,
-        constraint_continuation=(stage.rcon0, stage.zcon0),
-        residual_continuation=(
-            stage.result.fsqr, stage.result.fsqz, stage.result.fsql))
+    return dict(initial_state=stage.continuation_state)
 
 
 def _host_solve_and_mask_impl(
@@ -480,7 +492,11 @@ def _host_solve_and_mask_impl(
             # reference is deliberately NOT replaced, so every call stays a
             # function of its own parameters and the one reference, making
             # repeated calls bit-identical.
-            stage = _cold_reference(solve, icfg, inp, field)
+            result = stage.result
+            fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
+            stage = _cold_reference(
+                solve, icfg, inp, field,
+                single_rung=not fsq > _FAR_RESTART_RATIO * icfg.ftol)
     _FREE_LAST_RESULT[cfg] = stage.result
     return _linearization_from_stage(
         cfg, params, stage, inp=inp, anchor=True,
@@ -563,11 +579,9 @@ def _restart_budget(icfg, reference) -> int:
     The restart exists to be cheaper than a cold solve, so it gets the
     iterations the configuration's own cold reference needed, never less
     than a tenth of ``max_iterations`` and never more than all of it.  On the
-    finite-beta single-stage deck (reference: 943 iterations) restarts that
-    converge do so in 329 or 1305 where the cold solve takes 823-1425, and
-    from halfway to the optimum every restart ran to the 4000 cap without
-    converging -- 19-21 s of each 25 s trial -- before the cold solve that
-    certified it.  A budget spent is deterministic: the restart is a fixed
+    finite-beta single-stage example (reference: 785 iterations) the
+    state-only restart (:func:`_continuation`) converges in 570-730 where a
+    cold solve takes 770-940.  A budget spent is deterministic: the restart is a fixed
     function of the parameters and the one reference, so the same parameters
     always take the same branch.
     """

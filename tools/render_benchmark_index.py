@@ -60,6 +60,8 @@ GENERATORS: tuple[tuple[str, str], ...] = (
     ("benchmarks/convergence_nfp4_ns51.json", "benchmarks/make_readme_figures.py"),
     ("benchmarks/preconditioner_2d_stiff_cases.json", "benchmarks/preconditioner_2d_stiff.py"),
     ("benchmarks/capabilities.json", "tools/render_capabilities.py"),
+    ("benchmarks/pleiades_two_coil_mirror.json", "docs/_static/figures/sources/make_mirror_pleiades_figure.py"),
+    ("benchmarks/trace_cross_code.json", "benchmarks/trace_cross_code.py"),
     ("benchmarks/device_cache_reload_m4.json", "benchmarks/device_cache_reload.py"),
     ("benchmarks/qa_optimization_startup_*.json", "benchmarks/qa_optimization_startup.py"),
     ("benchmarks/single_stage_profile_*.json", "benchmarks/single_stage_profile.py"),
@@ -86,7 +88,7 @@ DATE_KEYS = ("measurement_date", "date", "created_utc", "review_date_utc", "utc"
 
 #: Where a citation may come from.  ``benchmarks`` is included because a script
 #: that reads another script's record is a consumer of it.
-CITING_ROOTS = ("README.md", "CHANGELOG.md", "plan.md", "docs", "tests", "tools",
+CITING_ROOTS = ("README.md", "CHANGELOG.md", "docs", "tests", "tools",
                 "vmex", "examples", "benchmarks", ".github")
 CITING_SUFFIXES = (".md", ".rst", ".py", ".json", ".yml", ".yaml", ".toml", ".cfg", ".txt")
 

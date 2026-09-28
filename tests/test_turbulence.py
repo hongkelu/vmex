@@ -7,18 +7,16 @@ the gkx flux-tube contract with host validation ON; proxy physics on a
 finite-beta shaped tokamak (ITG-critical-gradient monotone growth rate,
 positive heat-flux proxies, saturation-rule relations reproduced exactly);
 and differentiability (reverse and forward AD vs central FD, finite state
-gradient, the two-positional objective-term contract; the eigenvector-
-weighted proxies are value-level because JAX declines non-symmetric
-eigenvector derivatives).
+gradient, the two-positional objective-term contract, and the
+eigenvector-weighted proxies in both modes).
 
-gkx is optional (``pip install 'gkx>=2.4.0'``; the legacy ``spectraxgk``
+gkx is optional (``pip install 'gkx>=2.4.2'``; the legacy ``spectraxgk``
 name is not supported) — dependent lanes skip cleanly without it.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import inspect
 from pathlib import Path
 
 import numpy as np
@@ -283,25 +281,17 @@ def _require_gkx():
 
 
 def _require_gkx_eigenvectors():
-    """Additionally require the jax floor gkx's *eigenvector* path declares.
+    """Additionally require GKX's implicit eigenpair rule (gkx >= 2.4.2).
 
-    gkx reaches reverse-mode eigenvector derivatives through
-    ``lax_linalg.eig(enable_eigvec_derivs=...)``, which first exists in jax
-    0.10.1 and which gkx declares accordingly.  gkx still imports against an
-    older jax, so importorskip alone lets those reach a call-time TypeError
-    that is an unsatisfied dependency contract, not a defect.
-
-    Only the eigenvector-weighted lanes need it.  ``turbulent_growth_rate``
-    reduces the operator with ``jnp.linalg.eigvals`` and works on any
-    supported jax, so gating it too left the whole ITG lane dark on every host
-    below the floor -- which is how the R/L-into-a/L units defect survived.
+    Older gkx differentiates the eigenvector-weighted proxies only through
+    ``lax_linalg.eig(enable_eigvec_derivs=...)`` and its growth rate only in
+    reverse mode.
     """
     _require_gkx()
-    from jax._src.lax import linalg as lax_linalg
+    from gkx.objectives import eigen
 
-    if "enable_eigvec_derivs" not in inspect.signature(lax_linalg.eig).parameters:
-        pytest.skip("gkx needs jax >= 0.10.1 for enable_eigvec_derivs "
-                    f"(installed: {jax.__version__}); install vmex[turbulence]")
+    if not hasattr(eigen, "dominant_eigenpair"):
+        pytest.skip("needs gkx >= 2.4.2 (implicit eigenpair JVP)")
 
 
 def test_contract_passes_gkx_validation(shaped_eq):
@@ -363,7 +353,7 @@ def test_growth_rate_is_itg_critical_gradient_monotone(shaped_eq):
 
 def test_objective_vector_and_scalar_proxies_consistent(shaped_eq):
     """Vector entries reproduce the documented saturation-rule proxies."""
-    _require_gkx_eigenvectors()
+    _require_gkx()
     state, rt = shaped_eq.state, shaped_eq.runtime
     vec = np.asarray(turb.turbulence_objective_vector(state, rt, **GK))
     named = dict(zip(turb.TURBULENCE_OBJECTIVE_NAMES, vec))
@@ -410,34 +400,23 @@ def test_growth_rate_gradient_matches_finite_differences(shaped_eq):
     assert float(fwd) == pytest.approx(float(fd), rel=1e-5)
 
 
-def test_eigenvector_weighted_proxies_are_value_level(shaped_eq):
-    """Documented guidance: quasilinear/nonlinear proxies use ``jac=None``
-    (their weights depend on the dominant eigenvector of the non-symmetric
-    GK operator, whose derivatives JAX declines unless
-    ``enable_eigvec_derivs``); reverse AD must either refuse with that
-    error or agree with the FD lane that ``jac=None`` actually uses."""
+def test_eigenvector_weighted_proxies_differentiate_in_both_modes(shaped_eq):
+    """The quasilinear and nonlinear-window proxies weight the dominant
+    eigenvector; GKX's bordered eigenpair tangent must give the FD slope in
+    reverse mode and in the forward mode ``jac="implicit"`` uses."""
     _require_gkx_eigenvectors()
     state, rt = shaped_eq.state, shaped_eq.runtime
 
-    def ql(scale):
-        setup = dataclasses.replace(rt.setup, mass=rt.setup.mass * scale)
-        return turb.quasilinear_flux_proxy(state, dataclasses.replace(rt, setup=setup),
-                                           **GK)
+    for proxy in (turb.quasilinear_flux_proxy, turb.nonlinear_heat_flux_proxy):
+        def value(scale, proxy=proxy):
+            setup = dataclasses.replace(rt.setup, mass=rt.setup.mass * scale)
+            return proxy(state, dataclasses.replace(rt, setup=setup), **GK)
 
-    eps = 1e-3
-    fd = float((ql(1.0 + eps) - ql(1.0 - eps)) / (2.0 * eps))
-    assert np.isfinite(fd)                      # the jac=None lane always works
-    try:
-        analytic = float(jax.grad(ql)(1.0))
-    except NotImplementedError as err:
-        # gkx 1.7.1: JAX's documented refusal of non-symmetric eigenvector
-        # derivatives (jax#2748) — the reason the proxies are value-level.
-        assert "enable_eigvec_derivs" in str(err)
-    else:
-        # A gkx that opts in must reproduce the FD gradient it replaces.
-        assert np.isfinite(analytic)
-        scale = max(abs(fd), 1.0e-12)
-        assert abs(analytic - fd) <= 1.0e-4 * scale + 1.0e-10
+        eps = 1e-3
+        fd = float((value(1.0 + eps) - value(1.0 - eps)) / (2.0 * eps))
+        tolerance = 1.0e-4 * max(abs(fd), 1.0e-12) + 1.0e-10
+        assert abs(float(jax.grad(value)(1.0)) - fd) <= tolerance
+        assert abs(float(jax.jacfwd(value)(1.0)) - fd) <= tolerance
 
 
 def test_grad_wrt_state_is_finite(shaped_eq):

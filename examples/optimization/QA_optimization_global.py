@@ -17,7 +17,7 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
-from scipy.optimize import basinhopping, least_squares
+from scipy.optimize import basinhopping, least_squares, minimize
 
 import vmex as vj
 from vmex import optimize as opt
@@ -33,11 +33,11 @@ SEED_PERTURBATION = 0.05
 SURFACES = np.linspace(0.1, 1.0, 10)
 
 # Highest boundary Fourier mode number that is varied:
-MAX_MODE = 3
+MAX_MODE = 2
 
 # Global phase: hops, and the L-BFGS-B iterations each hop may spend:
-N_BASINS = 10
-LOCAL_MAXITER = 15
+N_BASINS = 3
+LOCAL_MAXITER = 6
 
 # Basin-hopping acceptance temperature, perturbation size, and the random
 # seed that makes the walk reproducible:
@@ -46,7 +46,7 @@ BASIN_STEPSIZE = 0.25
 BASIN_SEED = 7
 
 # Local finish: residual evaluations the polishing least squares may spend:
-POLISH_NFEV = 30
+POLISH_NFEV = 12
 
 # Targets:
 ASPECT_TARGET = 5.0
@@ -66,8 +66,8 @@ VARY_MAJOR_RADIUS = False         # True optimizes RBC(0,0) instead of fixing it
 MINIMUM_MPOL = 5
 
 # Verification solve of the optimized boundary:
-FINAL_NS = 71
-FINAL_FTOL = 1e-14
+FINAL_NS = 51
+FINAL_FTOL = 1e-12
 FINAL_NITER = 20000
 
 # Every output file name contains this:
@@ -138,21 +138,39 @@ best = {"y": np.zeros_like(x0), "value": np.inf}
 
 
 def basin_report(y, value, accepted):
-    """Basin-hopping callback: record the hop and keep the best accepted point."""
+    """Basin-hopping callback: record the hop and keep the best point found.
+
+    The best basin is kept whether or not the Metropolis test moved the walk
+    there: its cost is an evaluated equilibrium either way.
+    """
     gradient = value_and_gradient(y)[1]
     monitor({"x": x_from_y(y), "fun": value, "jac": gradient})
-    if accepted and value < best["value"]:
+    if np.isfinite(value) and value < best["value"]:
         best.update(y=np.asarray(y).copy(), value=float(value))
     print(f"basin cost = {value:.6e}, accepted = {accepted}")
 
 
+def short_lbfgsb(fun, x, jac=None, bounds=None, callback=None, **options):
+    """L-BFGS-B hop whose spent iteration budget is a result, not a failure.
+
+    SciPy's Metropolis test rejects an unsuccessful local search once a
+    successful one was accepted, and a hop capped at LOCAL_MAXITER ends with
+    status 1, so without this every better basin would be discarded.
+    """
+    for unused in ("args", "hess", "hessp", "constraints"):
+        options.pop(unused, None)
+    result = minimize(fun, x, jac=jac, method="L-BFGS-B", bounds=bounds,
+                      callback=callback, options=options)
+    result.success = bool(result.success or result.status == 1)
+    return result
+
+
 ### Run the optimization ######################################################
 
-print("First print can take more than ten minutes")
 bounds = [(-PARAMETER_BOUND, PARAMETER_BOUND)] * x0.size
 basinhopping(value_and_gradient, np.zeros_like(x0), niter=N_BASINS,
     T=BASIN_TEMPERATURE, stepsize=BASIN_STEPSIZE,
-    minimizer_kwargs={"method": "L-BFGS-B", "jac": True,
+    minimizer_kwargs={"method": short_lbfgsb, "jac": True,
         "bounds": bounds, "options": {"maxiter": LOCAL_MAXITER, "ftol": 1e-10}},
     callback=basin_report, rng=np.random.default_rng(BASIN_SEED), disp=True)
 
@@ -178,6 +196,7 @@ final_equilibrium = opt.solve_equilibrium(final_input, initial_state=equilibrium
 report = opt.EquilibriumReporter(("QS", qs.total, ".4e"),
     ("aspect", opt.aspect_ratio, ".3f"), ("iota", opt.mean_iota, ".3f"))
 report("final", final_equilibrium)
+opt.report_targets(final_equilibrium, aspect=ASPECT_TARGET, iota_floor=IOTA_FLOOR)
 
 input_path = final_input.to_indata(f"input.{OUTPUT_NAME}")
 wout_path = vj.write_wout(f"wout_{OUTPUT_NAME}.nc", final_equilibrium.wout)

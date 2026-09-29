@@ -454,7 +454,7 @@ def test_beta_scan_propagates_restart_mass_scale(monkeypatch) -> None:
         )
 
 
-def test_two_coil_deck_matches_the_pleiades_reference() -> None:
+def test_two_coil_deck_matches_the_pleiades_reference(capsys) -> None:
     """Free-boundary deck vs the independent Pleiades Grad-Shafranov solve."""
 
     from dataclasses import replace
@@ -466,8 +466,28 @@ def test_two_coil_deck_matches_the_pleiades_reference() -> None:
     reference = np.loadtxt(data / "pleiades_two_coil_beta_reference.csv", delimiter=",", skiprows=5)
     pleiades = reference[(reference[:, 0] == 51) & (reference[:, 2] == 0.10), 7][0]
     inp = MirrorInput.from_file(data / "input.mirror_two_coil_free_boundary")
-    vacuum, finite = solve_mirror_beta_scan(replace(inp, ns=5, elements=5, nxi=9), [0.0, 0.10])
+    vacuum, finite = solve_mirror_beta_scan(replace(inp, ns=5, elements=5, nxi=9), [0.0, 0.10],
+                                           verbose=True)
+    assert "beta point 2/2: beta = 10.0%" in capsys.readouterr().out
     b_vac = 0.0836001422205
     # Measured at ns=5 (23 s): vacuum 4.4e-4, 10 % beta 2.7e-3 (7.5e-4 at ns=11).
     assert abs(vacuum.summary()["axis_field_center"] / b_vac - 1.0) < 1.0e-3
     assert abs(finite.summary()["axis_field_center"] / b_vac - pleiades) < 5.0e-3
+
+
+def test_small_problem_actions_come_from_one_dense_jacobian() -> None:
+    """Below the dense-action size, LSMR and the polish read one jacfwd."""
+
+    from types import SimpleNamespace
+
+    from vmex.mirror.free_boundary import _FreeEquilibriumProblem
+
+    def residual(x):
+        return jnp.array([x[0] ** 2 + x[1], jnp.sin(x[1]) * x[2], x[0] * x[2]])
+
+    problem = _FreeEquilibriumProblem(SimpleNamespace(size=3), residual, None, None, None, 1.0)
+    point, direction = np.array([0.3, -0.2, 1.1]), np.array([1.0, 2.0, -0.5])
+    exact = np.asarray(jax.jvp(residual, (jnp.asarray(point),), (jnp.asarray(direction),))[1])
+    np.testing.assert_allclose(problem.linear_operator(point).matvec(direction), exact, rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(problem.linear_action(point)(jnp.asarray(direction))),
+                               exact, rtol=1e-12)

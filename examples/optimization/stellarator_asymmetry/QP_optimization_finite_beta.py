@@ -32,8 +32,8 @@ SURFACES = np.array([0.5, 0.7, 0.9])
 
 # Mode ladder: highest boundary mode number varied in each stage, and the
 # residual evaluations each stage may spend:
-MAX_MODES = [3, 5]
-MAX_NFEV = [25, 45]
+MAX_MODES = [1, 2]
+MAX_NFEV = [6, 8]
 
 # Targets and limits.  This lane carries the beta residual but no Mercier or
 # resistive-interchange rows:
@@ -65,8 +65,8 @@ MINIMUM_MPOL = 5
 PRES_SCALE = 2.0e3
 
 # Verification solve of the optimized boundary:
-FINAL_NS = 101
-FINAL_FTOL = 1e-14
+FINAL_NS = 51
+FINAL_FTOL = 1e-12
 FINAL_NITER = 20000
 
 # Every output file name contains this; each stage also writes its own
@@ -183,6 +183,11 @@ final_equilibrium = opt.solve_equilibrium(
 print(f"asymmetric boundary norm = "
       f"{np.linalg.norm(final_input.rbs) + np.linalg.norm(final_input.zbc):.6e}")
 report("final", final_equilibrium)
+final_beta = float(final_equilibrium.wout.betatotal)
+opt.report_targets(final_equilibrium, aspect=ASPECT_TARGET, iota_floor=IOTA_FLOOR,
+                   mirror_limit=MIRROR_LIMIT,
+                   extra=[("beta", final_beta, 0.9 * TARGET_BETA, "min"),
+                          ("beta", final_beta, 1.1 * TARGET_BETA, "max")])
 
 input_path = final_input.to_indata(f"input.{OUTPUT_NAME}")
 wout_path = vj.write_wout(f"wout_{OUTPUT_NAME}.nc", final_equilibrium.wout)

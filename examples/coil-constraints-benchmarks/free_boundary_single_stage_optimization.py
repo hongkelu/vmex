@@ -59,6 +59,7 @@ LU_REFRESH_HORIZON = 10
 COIL_FIT_MAXITER, COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 200, 1.0e-3, 1.0e3
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
 PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
+DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
 
 
 def parse_args(argv=None):
@@ -75,7 +76,11 @@ def parse_args(argv=None):
                         help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
     parser.add_argument("--bootstrap", action="store_true",
                         help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+    parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
+                        "WOUT (no seed calibration or coil refit); pass the run's --beta/--bootstrap")
     args = parser.parse_args(argv)
+    if args.restart is not None:
+        args.coils, args.wout = args.restart / "coils.json", args.restart / "wout.nc"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     return args
@@ -133,6 +138,41 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
     return inp, fixed
 
 
+def redl_profiles(inp):
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    import numpy as np
+    from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
+
+    r0, b0 = float(inp.rbc[inp.ntor, 0]), 1.0 if P.B0 is None else P.B0
+    t0 = P.REACTOR_T0 * (b0 / P.REACTOR_B0) ** (2 / 3) * (r0 / P.REACTOR_R0) ** (1 / 3)
+    n0 = P.REACTOR_N0 * (b0 / P.REACTOR_B0) ** (4 / 3) * (P.REACTOR_R0 / r0) ** (1 / 3)
+    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
+    n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
+    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
+                               t0 * np.array([1.0, -1.0]))
+    return profiles, RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
+
+
+def restart_input(run):
+    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current (``--restart``)."""
+    import numpy as np
+    import vmex as vj
+
+    inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
+    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
+    for m, n, r, z in zip(np.asarray(w.xm, int), np.asarray(w.xn, int) // int(w.nfp),
+                          np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
+        if m < inp.mpol and abs(n) <= inp.ntor:
+            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
+    inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=float(w.phi[-1]), lfreeb=False)
+    if int(inp.ncurr) == 1:
+        spline = "spline" in str(inp.pcurr_type)
+        field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)
+        inp = replace(inp, curtor=float(w.ctor),
+                      **{field_name: np.asarray(values, dtype=float)[: np.size(getattr(inp, field_name))]})
+    return inp
+
+
 def bootstrap_input(inp, beta, device):
     """``finite_beta_input`` with reactor-like kinetic profiles and their self-consistent Redl current.
 
@@ -144,17 +184,11 @@ def bootstrap_input(inp, beta, device):
     """
     import numpy as np
     from vmex import optimize as opt
-    from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch,
-                                     self_consistent_bootstrap)
+    from vmex.core.bootstrap import self_consistent_bootstrap
 
-    r0, b0 = float(inp.rbc[inp.ntor, 0]), 1.0 if P.B0 is None else P.B0
-    t0 = P.REACTOR_T0 * (b0 / P.REACTOR_B0) ** (2 / 3) * (r0 / P.REACTOR_R0) ** (1 / 3)
-    n0 = P.REACTOR_N0 * (b0 / P.REACTOR_B0) ** (4 / 3) * (P.REACTOR_R0 / r0) ** (1 / 3)
     inp, _ = finite_beta_input(inp, beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
-    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
-    n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
-    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
-                               t0 * np.array([1.0, -1.0]))
+    profiles, redl = redl_profiles(inp)
+    n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
     inp = replace(inp, ncurr=1, pcurr_type="power_series", ac=ac, curtor=0.0)
@@ -164,7 +198,6 @@ def bootstrap_input(inp, beta, device):
     inp = opt.resample_current_profile(picard.input, P.CURRENT_KNOTS)
     fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
-    redl = RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
     w = fixed.wout
     print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
           f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
@@ -287,7 +320,10 @@ def main(argv=None):
     if P.NITER is not None:
         inp = replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
     seed = redl = None
-    if args.bootstrap:
+    if args.restart is not None:
+        inp = restart_input(args.restart)
+        redl = redl_profiles(inp)[1] if args.bootstrap else None
+    elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, args.device)
         seed = fixed.state
     elif args.beta > 0 or P.B0 is not None:
@@ -303,7 +339,7 @@ def main(argv=None):
 
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
-    if P.B0 is not None:
+    if P.B0 is not None and args.restart is None:  # a restart keeps the run's own currents
         coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
     if args.beta > 0 and args.wout is None and not args.no_coil_fit:  # at beta = 0 a uniform scale keeps B.n/|B|
         coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
@@ -368,7 +404,8 @@ def main(argv=None):
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
-    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps)
+    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
+                               dense_derivatives=DENSE_DERIVATIVES)
     if NEWTON_STEPS:
         problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 

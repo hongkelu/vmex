@@ -75,7 +75,11 @@ def parse_args(argv=None):
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     parser.add_argument("--bootstrap", action="store_true",
                         help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+    parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
+                        "WOUT boundary (no seed calibration); pass the run's --beta/--bootstrap")
     args = parser.parse_args(argv)
+    if args.restart is not None:
+        args.coils = args.restart / "coils.json"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     return args
@@ -104,7 +108,8 @@ def main(argv=None):
     from vmex.core.fields import surface_currents
     from vmex.core.statephysics import _field_chain
     from free_boundary_single_stage_optimization import (boundary_diagnostics, bootstrap_input, finite_beta_input,
-                                                         resize_coils, scale_coil_currents)
+                                                         redl_profiles, resize_coils, restart_input,
+                                                         scale_coil_currents)
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
@@ -114,7 +119,10 @@ def main(argv=None):
     if P.NITER is not None:
         inp = replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
     redl = None
-    if args.bootstrap:
+    if args.restart is not None:
+        inp = restart_input(args.restart)
+        redl = redl_profiles(inp)[1] if args.bootstrap else None
+    elif args.bootstrap:
         inp, _, redl = bootstrap_input(inp, args.beta, args.device)
     elif args.beta > 0 or P.B0 is not None:
         inp, _ = finite_beta_input(inp, args.beta, args.device)
@@ -130,7 +138,7 @@ def main(argv=None):
         vary_phiedge=vary_phiedge, current_dofs=P.CURRENT_KNOTS - 1 if redl is not None else None)
 
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
-    if P.B0 is not None:
+    if P.B0 is not None and args.restart is None:  # a restart keeps the run's own currents
         coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))

@@ -89,12 +89,11 @@ def resize_coils(coils, order, n_segments):
 def finite_beta_input(inp, beta, device):
     """Give ``inp`` a pressure p ~ 1 - s whose fixed-boundary seed has ``beta``.
 
-    ``P.BETA_DEFINITION`` "volume": ``beta`` is <beta>, reached by rescaling the
-    pressure at the deck's PHIEDGE. "axis": ``beta`` is WOUT ``betaxis``; the
-    pressure is ramped in with hot restarts. With ``P.B0`` set, PHIEDGE is
-    rescaled until the edge R B_phi (the coils' mu0 I / 2 pi) is B0 R0, so the
-    field strength follows the flux as in upstream #426. Returns the input and
-    the last fixed-boundary solve.
+    ``P.BETA_DEFINITION`` "volume": ``beta`` is <beta>; "axis": WOUT ``betaxis``.
+    The pressure is ramped in with hot restarts, then rescaled to ``beta``.
+    With ``P.B0`` set, PHIEDGE is rescaled until the edge R B_phi (the coils'
+    mu0 I / 2 pi) is B0 R0, so the field strength follows the flux as in
+    upstream #426. Returns the input and the last fixed-boundary solve.
     """
     import numpy as np
     from vmex import optimize as opt
@@ -106,17 +105,17 @@ def finite_beta_input(inp, beta, device):
     am[:2] = 1.0, -1.0
     inp = replace(inp, am=am)
     fixed = None
-    ramp = (0.25, 0.5, 0.75, 1.0) if axis and beta > 0 else (1.0,)
+    ramp = (0.25, 0.5, 0.75, 1.0) if beta > 0 else (1.0,)
     corrections = 3 if axis or P.B0 is not None else 1
     for index in range(len(ramp) + corrections):
         if index < len(ramp):
             inp = replace(inp, pres_scale=ramp[index] * pressure)
         else:
+            # beta ~ p / PHIEDGE^2 at fixed shape, so a flux rescale carries its pressure along
             measured = float(fixed.wout.betaxis if axis else fixed.wout.betatotal)
-            if beta > 0:
-                inp = replace(inp, pres_scale=inp.pres_scale * beta / measured)
-            if P.B0 is not None:
-                inp = replace(inp, phiedge=float(inp.phiedge) * b0 * r0 / abs(float(fixed.wout.rbtor)))
+            flux = 1.0 if P.B0 is None else b0 * r0 / abs(float(fixed.wout.rbtor))
+            inp = replace(inp, phiedge=float(inp.phiedge) * flux,
+                          pres_scale=inp.pres_scale * flux**2 * (beta / measured if beta > 0 else 1.0))
         fixed = opt.solve_equilibrium(inp, initial_state=None if fixed is None else fixed.state, device=device,
                                       raise_on_max_iterations=True, polish_force_balance=False)
     w = fixed.wout

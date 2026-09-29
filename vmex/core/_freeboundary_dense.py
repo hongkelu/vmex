@@ -123,34 +123,41 @@ def _assemble_device(tangent, template, space, *, batch_size):
 RADIAL_BANDWIDTH = 2  # coupled raw rows reach two surfaces at the free boundary
 
 
-def _radial_probes(template, space, bandwidth=RADIAL_BANDWIDTH):
+def _radial_probes(template, space, bandwidth=RADIAL_BANDWIDTH, edge_axis=False):
     """Group active coordinates whose radial surfaces are more than 2*bandwidth apart.
 
     The raw coupled Jacobian is banded in radius, so one JVP of the summed seed
-    recovers every column of the group. Returns (seeds, probe_of, surface).
+    recovers every column of the group. With a prescribed plasma current the axis
+    unknowns also reach the edge equations; ``edge_axis`` gives the axis surface a
+    color of its own, so those rows see no other column. Returns (seeds, probe_of, surface).
     """
     leaves = jax.tree.leaves(template)
     ns, mnmax = leaves[0].shape
     surface = (np.asarray(space.left) % (ns * mnmax)) // mnmax
     colors = 2 * bandwidth + 1
+    color = np.where(edge_axis & (surface == 0), colors, surface % colors)
     rank = np.zeros(surface.size, dtype=int)
     for s in np.unique(surface):
         members = np.flatnonzero(surface == s)
         rank[members] = np.arange(members.size)
-    key = (surface % colors) * (rank.max() + 1) + rank
+    key = color * (rank.max() + 1) + rank
     groups, probe_of = np.unique(key, return_inverse=True)
     seeds = np.zeros((groups.size, surface.size))
     seeds[probe_of, np.arange(surface.size)] = 1.0
     return seeds, probe_of, surface
 
 
-@functools.partial(jax.jit, static_argnames=('batch_size', 'bandwidth'))
-def _assemble_colored(tangent, template, space, seeds, probe_of, surface, *, batch_size, bandwidth):
+@functools.partial(jax.jit, static_argnames=('batch_size', 'bandwidth', 'edge_axis'))
+def _assemble_colored(tangent, template, space, seeds, probe_of, surface, *, batch_size, bandwidth,
+                      edge_axis=False):
     """Return the Jacobian transpose from radially colored JVP probes."""
     def probe(seed):
         return _compress(tangent(_expand(seed, template, space)), space)
     rows = jax.lax.map(probe, seeds, batch_size=batch_size)
     band = jnp.abs(surface[:, None] - surface[None, :]) <= bandwidth  # [column, row]
+    if edge_axis:  # axis unknowns (columns) also reach the edge equations (rows)
+        edge = jax.tree.leaves(template)[0].shape[0] - 1
+        band = band | ((surface[:, None] == 0) & (surface[None, :] == edge))
     return jnp.where(band, rows[probe_of], 0.0)
 
 
@@ -163,17 +170,26 @@ def _assembly_error(tangent, template, space, transpose, *, probes=2, seed=0):
                          / jnp.maximum(jnp.linalg.norm(exact, axis=1), 1e-300)))
 
 
+# (ns, mnmax, active size) -> whether the edge-axis coloring was needed there last time
+_EDGE_AXIS_LAYOUT: dict[tuple, bool] = {}
+
+
 def _assemble(tangent, template, space, *, batch_size):
     """Colored assembly for banded state-space Jacobians, verified; else column by column."""
     from .solver import SpectralState
     if isinstance(template, SpectralState):
-        seeds, probe_of, surface = _radial_probes(template, space)
-        transpose = _assemble_colored(tangent, template, space, jnp.asarray(seeds), jnp.asarray(probe_of),
-                                      jnp.asarray(surface), batch_size=batch_size, bandwidth=RADIAL_BANDWIDTH)
-        error = _assembly_error(tangent, template, space, transpose)
-        if np.isfinite(error) and error <= 1e-9:
-            return transpose
-        del transpose
+        key = (*jax.tree.leaves(template)[0].shape, space.left.shape[0])
+        error = None
+        for edge_axis in (True,) if _EDGE_AXIS_LAYOUT.get(key) else (False, True):
+            seeds, probe_of, surface = _radial_probes(template, space, edge_axis=edge_axis)
+            transpose = _assemble_colored(tangent, template, space, jnp.asarray(seeds), jnp.asarray(probe_of),
+                                          jnp.asarray(surface), batch_size=batch_size,
+                                          bandwidth=RADIAL_BANDWIDTH, edge_axis=edge_axis)
+            error = _assembly_error(tangent, template, space, transpose)
+            if np.isfinite(error) and error <= 1e-9:
+                _EDGE_AXIS_LAYOUT[key] = edge_axis
+                return transpose
+            del transpose
         warnings.warn(f"colored Jacobian assembly mismatch {error:.2e}; assembling every column",
                       RuntimeWarning, stacklevel=2)
     return _assemble_device(tangent, template, space, batch_size=batch_size)

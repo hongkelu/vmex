@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import gc
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1950,10 +1951,12 @@ def test_dense_correction_budget_fails_closed(monkeypatch):
     assert records[0]['residual_norm'] > records[0]['tolerance']
 
 
-@pytest.mark.parametrize("banded", [True, False])
-def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(banded):
-    """Colored probes recover a radially banded Jacobian; a dense one is caught and rebuilt."""
+@pytest.mark.parametrize("banded", [True, "edge_axis", False])
+def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(banded, monkeypatch):
+    """Colored probes recover a radially banded Jacobian, also with an edge-axis block
+    (a prescribed plasma current); a dense one is caught and rebuilt."""
     from vmex.core import _freeboundary_dense as dense
+    monkeypatch.setattr(dense, "_EDGE_AXIS_LAYOUT", {})
     from vmex.core.solver import SpectralState
     ns, mnmax = 12, 3
     rng = np.random.default_rng(3)
@@ -1963,6 +1966,8 @@ def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(ban
     flat, unravel = jax.flatten_util.ravel_pytree(template)
     surface = (np.arange(flat.size) % (ns * mnmax)) // mnmax
     reach = np.abs(surface[:, None] - surface[None, :]) <= (2 if banded else ns)
+    if banded == "edge_axis":
+        reach |= (surface[:, None] == ns - 1) & (surface[None, :] == 0)  # edge equations see the axis unknowns
     matrix = jnp.asarray(rng.normal(size=(flat.size, flat.size)) * reach)
 
     def residual(z, *args):
@@ -1971,9 +1976,13 @@ def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(ban
     tangent = dense._prepare_tangent(template, None, None, None, None, None, residual=residual)
     full = dense._assemble_device(tangent, template, space, batch_size=8)
     if banded:
-        seeds, _, _ = dense._radial_probes(template, space)
-        assert seeds.shape[0] == 5 * 6 * mnmax  # 5 colors x (6 fields x mnmax) coordinates per surface
-        np.testing.assert_allclose(dense._assemble(tangent, template, space, batch_size=8), full, rtol=0, atol=1e-13)
+        seeds, _, _ = dense._radial_probes(template, space, edge_axis=banded == "edge_axis")
+        assert seeds.shape[0] == (5 + (banded == "edge_axis")) * 6 * mnmax  # colors x coordinates per surface
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            np.testing.assert_allclose(dense._assemble(tangent, template, space, batch_size=8), full,
+                                       rtol=0, atol=1e-13)
+        assert dense._EDGE_AXIS_LAYOUT == {(ns, mnmax, flat.size): banded == "edge_axis"}
     else:
         with pytest.warns(RuntimeWarning, match="colored Jacobian assembly mismatch"):
             rebuilt = dense._assemble(tangent, template, space, batch_size=8)

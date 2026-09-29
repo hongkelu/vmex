@@ -808,9 +808,10 @@ class FreeBoundaryProblem(FunctionProblem):
             return self._compact_jac
         diagnostics = []
         trial_lu = self._trial_lu
-        preconditioner = (None if self._dense_derivatives else
-                          trial_lu.seed if trial_lu is not None and trial_lu.record is record
-                          else self._preconditioner)
+        # A recovered trial's own LU preconditions its adjoint; otherwise the
+        # dense mode factors afresh rather than reuse an older root's LU.
+        preconditioner = (trial_lu.seed if trial_lu is not None and trial_lu.record is record
+                          else None if self._dense_derivatives else self._preconditioner)
         self._emit("adjoint_start")
         started = time.monotonic()
         dense_started = started if preconditioner is None else None

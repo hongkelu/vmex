@@ -15,7 +15,9 @@ curvature <= 5 /m, mean squared curvature <= 5 /m^2, coil-coil distance
   the objective.
 - `postprocess.py` reads a finished run of either script and writes the loss
   and constraint histories, a GIF of the coils and LCFS, and a dense (NS201)
-  free-boundary solve of the final coils with the `vmex.plot_wout` figures.
+  free-boundary solve of the final coils with the `vmex.plot_wout` figures;
+  `--trace` adds the `vmex --trace` alpha losses of that equilibrium at
+  ARIES-CS size.
 
 In vacuum only the flux per ampere sets the plasma size. Holding both the coil
 currents and PHIEDGE fixed pins it, and at this iota the aspect ratio then sits

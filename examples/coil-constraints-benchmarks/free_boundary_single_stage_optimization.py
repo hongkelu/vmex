@@ -41,6 +41,7 @@ LU_REFRESH_HORIZON = 10
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
 SHARED_CURRENT = True  # all coil currents vary by one common factor (a free flux per ampere)
 CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
+DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
 
 
 def parse_args(argv=None):
@@ -152,7 +153,8 @@ def main(argv=None):
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
-    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps)
+    problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
+                               dense_derivatives=DENSE_DERIVATIVES)
     if NEWTON_STEPS:
         problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 

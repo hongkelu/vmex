@@ -712,6 +712,7 @@ class FreeBoundaryProblem(FunctionProblem):
         self._newton_options = None
         self._rejected = None
         self._refresh_parity_rtol = 1e-6
+        self._dense_derivatives = False
         self._recovered = False
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
         self.solver, self.params = cfg.solver, cfg.params
@@ -807,7 +808,8 @@ class FreeBoundaryProblem(FunctionProblem):
             return self._compact_jac
         diagnostics = []
         trial_lu = self._trial_lu
-        preconditioner = (trial_lu.seed if trial_lu is not None and trial_lu.record is record
+        preconditioner = (None if self._dense_derivatives else
+                          trial_lu.seed if trial_lu is not None and trial_lu.record is record
                           else self._preconditioner)
         self._emit("adjoint_start")
         started = time.monotonic()
@@ -858,7 +860,7 @@ class FreeBoundaryProblem(FunctionProblem):
         method = self.solver.adjoint_solver
         reuse = self._preconditioner is not None
         return dict(adjoint_solver=method,
-            active_adjoint="matrixfree_seed_lu" if reuse else method,
+            active_adjoint="matrixfree_seed_lu" if reuse and not self._dense_derivatives else method,
             preconditioner="seed_lu" if reuse else None,
             recovery="forward_dense_jax" if reuse else None,
             predictor="matrixfree_seed_lu" if reuse else "reused_dense_lu",
@@ -981,7 +983,7 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def enable_matrix_free(self, *, rtol=1e-11, restart=100, max_restarts=3,
                            rhs_batch_size=3, parity_rtol=1e-6, refresh_horizon=None,
-                           refresh_max_steps=None):
+                           refresh_max_steps=None, dense_derivatives=False):
         """Initialize matrix-free reuse from a checked dense LU at the accepted root.
 
         Full residuals still obey solver_options['adjoint_residual_rtol'].
@@ -995,6 +997,9 @@ class FreeBoundaryProblem(FunctionProblem):
         retains refresh-on-failure only. Refresh never relaxes residual gates.
         refresh_max_steps optionally bounds the remaining accepted-step budget,
         avoiding rebuilds that cannot pay back before the optimizer stops.
+        dense_derivatives computes every derivative with the dense solve and makes
+        each accepted step's LU the new seed: no matrix-free adjoint on older
+        factors, and trial Newton corrections start from the latest root's LU.
         Rebuild derivatives must agree with the current rows within parity_rtol.
         """
         if self._preconditioner is not None:
@@ -1011,6 +1016,7 @@ class FreeBoundaryProblem(FunctionProblem):
         if not np.isfinite(parity_rtol) or parity_rtol <= 0:
             raise ValueError('positive finite parity tolerance required')
         self._refresh_parity_rtol = parity_rtol
+        self._dense_derivatives = bool(dense_derivatives)
         options = dict(rtol=rtol, restart=restart, max_restarts=max_restarts, rhs_batch_size=rhs_batch_size)
         self._derivatives(self.accepted)
         self._preconditioner = self._linearization.preconditioner(**options)
@@ -1160,6 +1166,8 @@ class FreeBoundaryProblem(FunctionProblem):
         trial_lu = self._trial_lu
         recovered_root = trial_lu is not None and trial_lu.record is candidate
         reason = "recovery" if self._recovered else "root_recovery" if recovered_root else None
+        if reason is None and self._dense_derivatives:
+            reason = "dense"  # the accepted derivative was a dense solve: its LU is the new seed
         refresh = (None if self._lu_refresh is None else
                    replace(self._lu_refresh, costs=list(self._lu_refresh.costs)))
         if refresh is not None and reason is None and refresh.observe(
@@ -1219,7 +1227,9 @@ class FreeBoundaryProblem(FunctionProblem):
                     remaining = max(0, remaining - 1)
                 # Compilation happens once; after a refresh the next steps are already warm.
                 self._lu_refresh = _LURefresh(refresh.horizon, self._dense_seconds, warmup=0, remaining=remaining)
-            self._emit("preconditioner_refresh", reason=reason, seconds=self._dense_seconds)
+            # A dense derivative was already timed as the adjoint; only a separate rebuild costs more.
+            self._emit("preconditioner_refresh", reason=reason,
+                       seconds=0.0 if reason == "dense" else self._dense_seconds)
         self._close_trial_lu()
         # Keep the immutable numerical context: seeds and tapes must not
         # cross configuration identities. All proposals use self.accepted,

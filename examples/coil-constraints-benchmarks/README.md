@@ -31,7 +31,19 @@ B.n and pressure balance as diagnostics. The fixed arm limits the total B.n and
 holds the edge R B_phi at the coils' mu0 I / 2 pi. `COIL_CASE=qa6` selects the
 aspect-6 Landreman & Paul (2021) QA case at B0 = 1 T (set through PHIEDGE) with
 `--beta` read as on-axis beta, fixed coil currents, iota >= 0.42 and the coil
-limits of Jorge et al. (2023) with three order-6 coils and 6.5 m per coil:
+limits of Jorge et al. (2023) with three order-6 coils and 6.5 m per coil.
+
+`--bootstrap` (with `--beta`) adds a self-consistent Redl bootstrap current to
+both arms. The kinetic profiles are ne ~ 1 - s^5 and Te = Ti ~ 1 - s, with the
+beta and collisionality of a Helios-like reactor (R = 8 m, B = 6 T) carried to
+R0 = 1 m and B0 = 1 T. A Picard loop makes the seed current Redl's. The current
+spline values and CURTOR are then design variables, and the Redl mismatch is a
+hard constraint (sum of squared relative residuals <= `REDL_TOLERANCE`):
+
+    python free_boundary_single_stage_optimization.py --bootstrap --beta 0.01 --steps 5 --output runs/free-redl
+    python single_stage_optimization.py --bootstrap --beta 0.01 --steps 5 --output runs/fixed-redl
+
+The `qa6` commands:
 
     COIL_CASE=qa6 python free_boundary_single_stage_optimization.py --beta 0.01 --steps 5 --output runs/free
     COIL_CASE=qa6 python single_stage_optimization.py --beta 0.01 --coils runs/free/coils.initial.json --steps 5 --output runs/fixed

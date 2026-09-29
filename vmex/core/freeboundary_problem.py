@@ -94,9 +94,9 @@ class _Config:
 
 
 def _params_at(cfg, point):
-    """cfg.params with the PHIEDGE the design point sets, when the chart varies it."""
-    phiedge = getattr(cfg.solver, "phiedge_from_parameters", None)
-    return cfg.params if phiedge is None else replace(cfg.params, phiedge=phiedge(jnp.asarray(point)))
+    """cfg.params with the plasma parameters the design point sets, when the chart varies them."""
+    plasma = getattr(cfg.solver, "plasma_from_parameters", None)
+    return cfg.params if plasma is None else plasma(cfg.params, jnp.asarray(point))
 
 
 def _config_from_state(solver, params, anchor, *, state, rcon0, zcon0, parameter_scales,
@@ -426,6 +426,12 @@ class CoilParameters:
     With ``phiedge`` (the deck's PHIEDGE in Wb) the first coordinate is a
     relative PHIEDGE change, PHIEDGE = phiedge * (1 + x[0]), so the plasma
     size can vary while fixed coil currents hold the field strength.
+
+    With ``plasma_current`` (the deck's leading ``k`` AC coefficients, or
+    AC_AUX_F current-spline values when ``plasma_current_spline``, followed by
+    CURTOR in A; ``ncurr = 1``) the next ``k + 1`` coordinates move the
+    prescribed current profile: value = nominal + x * unit, with unit the
+    largest nominal shape value and the nominal |CURTOR| respectively.
     """
 
     def __init__(
@@ -440,6 +446,9 @@ class CoilParameters:
         scales=None,
         phiedge=None,
         phiedge_scale=0.05,
+        plasma_current=None,
+        plasma_current_spline=False,
+        plasma_current_scale=0.05,
     ):
         if np.iscomplexobj(coefficients) or np.iscomplexobj(currents):
             raise ValueError("coil coefficients and currents must be real")
@@ -474,17 +483,32 @@ class CoilParameters:
             raise ValueError("phiedge must be finite and nonzero with a positive phiedge_scale")
         self.phiedge = None if phiedge is None else float(phiedge)
         self.nphiedge = int(phiedge is not None)
+        self.plasma_current = None if plasma_current is None else np.asarray(plasma_current, dtype=float)
+        if self.plasma_current is not None:
+            nominal = self.plasma_current
+            if nominal.ndim != 1 or nominal.size < 2 or not plasma_current_scale > 0:
+                raise ValueError("plasma_current is [k >= 1 shape values..., CURTOR], with a positive scale")
+            units = np.r_[np.full(nominal.size - 1, np.max(np.abs(nominal[:-1]))), abs(nominal[-1])]
+            if not np.all(np.isfinite(units)) or np.any(units == 0):
+                raise ValueError("plasma_current needs finite values, a nonzero shape value and a nonzero CURTOR")
+            self.plasma_current_units = units
+        self.plasma_current_spline = bool(plasma_current_spline)
+        self.nplasma = 0 if self.plasma_current is None else self.plasma_current.size
         self.ncurrent = len(self.current_dofs)
-        self.size = self.nphiedge + self.ncurrent + int(np.prod(self.curve_shape))
+        self._coil0 = self.nphiedge + self.nplasma
+        self.size = self._coil0 + self.ncurrent + int(np.prod(self.curve_shape))
         self.x0 = np.zeros(self.size)
-        names = ["phiedge/nominal"] * self.nphiedge + [f"current[{i}]/nominal" for i in self.current_dofs]
+        names = ["phiedge/nominal"] * self.nphiedge
+        names += [f"plasma_current[{j}]/unit" for j in range(self.nplasma - 1)]
+        names += ["curtor/nominal"] * bool(self.nplasma)
+        names += [f"current[{i}]/nominal" for i in self.current_dofs]
         modes = ["constant"] + [f"{kind}({k})" for k in range(1, self.mode + 1) for kind in ("sin", "cos")]
         names += [f"coil[{i}].{axis}.{mode}" for i in range(len(currents)) for axis in "xyz" for mode in modes]
         self.dof_names = tuple(names)
         if scales is None:
             mode_scales = [0.002] + [0.002 / k**2 for k in range(1, self.mode + 1) for _ in range(2)]
             scales = np.r_[np.full(self.ncurrent, 0.06), np.tile(mode_scales, 3 * len(currents))]
-            scales = np.r_[np.full(self.nphiedge, phiedge_scale), scales]
+            scales = np.r_[np.full(self.nphiedge, phiedge_scale), np.full(self.nplasma, plasma_current_scale), scales]
         scales = np.asarray(scales, dtype=float)
         if scales.shape != (self.size,) or not np.all(np.isfinite(scales)) or np.any(scales <= 0):
             raise ValueError("one positive finite scale per coordinate required")
@@ -519,12 +543,24 @@ class CoilParameters:
             raise ValueError("this chart does not vary PHIEDGE")
         return self.phiedge * (1.0 + self._parameters(x)[0])
 
+    def plasma_params_at(self, params, x):
+        """``params`` with the PHIEDGE and current profile of ``x`` (the ones this chart varies)."""
+        x = self._parameters(x)
+        if self.phiedge is not None:
+            params = replace(params, phiedge=self.phiedge_at(x))
+        if self.plasma_current is not None:
+            values = jnp.asarray(self.plasma_current) + x[self.nphiedge : self._coil0] * self.plasma_current_units
+            field_name = "ac_aux_f" if self.plasma_current_spline else "ac"
+            profile = getattr(params, field_name).at[: self.nplasma - 1].set(values[:-1])
+            params = replace(params, curtor=values[-1], **{field_name: profile})
+        return params
+
     def base_currents_at(self, x):
         """Return physical base-coil currents in amperes."""
         x = self._parameters(x)
         currents = jnp.asarray(self.currents)
         for local, base in enumerate(self.current_dofs):
-            currents = currents.at[base].add(x[self.nphiedge + local] * self.currents[base])
+            currents = currents.at[base].add(x[self._coil0 + local] * self.currents[base])
         return currents
 
     def curve_dofs_at(self, x):
@@ -533,7 +569,7 @@ class CoilParameters:
         return (
             jnp.asarray(self.coefficients)
             .at[:, :, : 2 * self.mode + 1]
-            .add(x[self.nphiedge + self.ncurrent :].reshape(self.curve_shape))
+            .add(x[self._coil0 + self.ncurrent :].reshape(self.curve_shape))
         )
 
     def coils_from_x(self, x):
@@ -687,7 +723,14 @@ class FreeBoundaryProblem(FunctionProblem):
         if getattr(parameterization, "phiedge", None) is not None:
             if not np.isclose(parameterization.phiedge, float(inp.phiedge), rtol=1e-12, atol=0.0):
                 raise ValueError("the chart's nominal PHIEDGE must equal the input's")
-            opts["phiedge_from_parameters"] = parameterization.phiedge_at
+            opts["plasma_from_parameters"] = parameterization.plasma_params_at
+        nominal = getattr(parameterization, "plasma_current", None)
+        if nominal is not None:
+            source = inp.ac_aux_f if parameterization.plasma_current_spline else inp.ac
+            deck = np.r_[np.asarray(source, dtype=float)[: nominal.size - 1], float(inp.curtor)]
+            if int(inp.ncurr) != 1 or deck.size != nominal.size or not np.allclose(deck, nominal, rtol=1e-12, atol=0.0):
+                raise ValueError("the chart's nominal plasma current must equal the input's (ncurr = 1)")
+            opts["plasma_from_parameters"] = parameterization.plasma_params_at
         solver = fbi.make_free_boundary_config(
             inp, parameterization(jnp.asarray(point)), field_from_parameters=parameterization, **opts
         )
@@ -1326,8 +1369,8 @@ class FreeBoundaryProblem(FunctionProblem):
         return self.parameterization.coils_from_x(self._validate_x(x))
 
     def _inp_at(self, x):
-        """The input deck with the PHIEDGE of design point ``x``."""
-        if getattr(self.solver, "phiedge_from_parameters", None) is None:
+        """The input deck with the plasma parameters of design point ``x``."""
+        if getattr(self.solver, "plasma_from_parameters", None) is None:
             return self.inp
         return im.input_with_params(self.inp, _params_at(self.cfg, x))
 

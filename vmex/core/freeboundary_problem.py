@@ -712,7 +712,7 @@ class FreeBoundaryProblem(FunctionProblem):
         self._newton_options = None
         self._rejected = None
         self._refresh_parity_rtol = 1e-6
-        self._dense_derivatives = False
+        self._dense_derivatives = self._matrixfree_fallback = False
         self._recovered = False
         self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
         self.solver, self.params = cfg.solver, cfg.params
@@ -815,7 +815,7 @@ class FreeBoundaryProblem(FunctionProblem):
         self._emit("adjoint_start")
         started = time.monotonic()
         dense_started = started if preconditioner is None else None
-        self._recovered = False
+        self._recovered = self._matrixfree_fallback = False
         try:
             rhs, direct = self._scalar_jac(record.state, jnp.asarray(record.parameters))
             options = {} if preconditioner is None else {"preconditioner": preconditioner}
@@ -823,17 +823,27 @@ class FreeBoundaryProblem(FunctionProblem):
                 linearization = _pullback(
                     record, self.cfg, rhs, diagnostics=diagnostics, **options)
             except AdjointSolveError as error:
-                if preconditioner is None:
+                # A dense derivative that misses its gate retries matrix-free on
+                # the accepted seed LU, under the same residual gate.
+                fallback = self._preconditioner if preconditioner is None and self._dense_derivatives else None
+                if preconditioner is None and fallback is None:
                     raise
-                # One checked dense retry at this certified root. A rejected
-                # candidate cannot replace the accepted preconditioner.
                 import traceback
                 traceback.clear_frames(error.__traceback__)
-                self._emit("dense_recovery", candidate=record, error=str(error))
-                dense_started = time.monotonic()
-                linearization = _pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics)
-                self._recovered = True
+                if fallback is not None:
+                    self._emit("matrixfree_recovery", candidate=record, error=str(error))
+                    dense_started = None
+                    linearization = _pullback(
+                        record, self.cfg, rhs, diagnostics=diagnostics, preconditioner=fallback)
+                    self._matrixfree_fallback = True
+                else:
+                    # One checked dense retry at this certified root. A rejected
+                    # candidate cannot replace the accepted preconditioner.
+                    self._emit("dense_recovery", candidate=record, error=str(error))
+                    dense_started = time.monotonic()
+                    linearization = _pullback(
+                        record, self.cfg, rhs, diagnostics=diagnostics)
+                    self._recovered = True
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
             if not np.all(np.isfinite(jac)):
                 linearization.close()
@@ -1167,7 +1177,7 @@ class FreeBoundaryProblem(FunctionProblem):
         trial_lu = self._trial_lu
         recovered_root = trial_lu is not None and trial_lu.record is candidate
         reason = "recovery" if self._recovered else "root_recovery" if recovered_root else None
-        if reason is None and self._dense_derivatives:
+        if reason is None and self._dense_derivatives and not self._matrixfree_fallback:
             reason = "dense"  # the accepted derivative was a dense solve: its LU is the new seed
         refresh = (None if self._lu_refresh is None else
                    replace(self._lu_refresh, costs=list(self._lu_refresh.costs)))

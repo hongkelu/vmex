@@ -19,6 +19,9 @@ a band on the coils' toroidal flux through the boundary, the counterpart of
 fixed currents and PHIEDGE. ``flux_ratio`` is logged either way.
 
     python single_stage_optimization.py --steps 5 --output runs/fixed
+
+Continue a run with ``--coils <out>/coils.json --wout <out>/wout.nc``: the
+boundary restarts from the WOUT and SLSQP from an identity Hessian.
 """
 
 import argparse
@@ -50,8 +53,22 @@ def parse_args(argv=None):
     parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--coils", type=Path, default=P.COILS_FILE)
+    parser.add_argument("--wout", type=Path, help="restart the boundary from this WOUT's last surface")
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     return parser.parse_args(argv)
+
+
+def boundary_from_wout(inp, wout):
+    """``inp`` with the boundary of ``wout``'s last surface, truncated to its resolution."""
+    from dataclasses import replace
+    import numpy as np
+
+    rbc, zbs = np.zeros_like(inp.rbc), np.zeros_like(inp.zbs)
+    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // wout.nfp,
+                          wout.rmnc[-1], wout.zmns[-1]):
+        if m < rbc.shape[1] and abs(n) <= inp.ntor:
+            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
+    return replace(inp, rbc=rbc, zbs=zbs)
 
 
 def main(argv=None):
@@ -75,6 +92,8 @@ def main(argv=None):
 
     started = time.monotonic()
     inp = seed_input(vj)
+    if args.wout is not None:
+        inp = boundary_from_wout(inp, vj.read_wout(args.wout))
     phiedge = abs(float(inp.phiedge))
 
     qs = target_residual()

@@ -305,6 +305,18 @@ def test_lu_refresh_ignores_compilation_spikes_and_final_step_rebuilds():
     assert not policy.observe(20.)  # Two remaining steps cannot repay 100 s.
 
 
+def test_dense_derivatives_seed_every_accepted_step(scalar):
+    p, stats, *_ = scalar
+    p.enable_matrix_free(dense_derivatives=True)
+    assert p.solver_info["active_adjoint"] == p.solver.adjoint_solver
+    for step in (1, 2):
+        x = np.full(5, step * .001)
+        p.value_and_grad(x)
+        p.accept_x(x)
+        assert len(stats["seeds"]) == step + 1 and not stats["seeds"][-1].closed
+        assert all(seed.closed for seed in stats["seeds"][:-1])
+
+
 @pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity"])
 def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypatch, failed_refresh):
     p, stats, *_ = scalar

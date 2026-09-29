@@ -13,6 +13,9 @@ revision it was measured at, and the pages that cite it.
   accepted iterates are promoted.
 - `adjoint_solver="forward_dense_jax"` with optional seed-LU matrix-free reuse
   and Newton root polishing; an invalid GPU LU pivot buffer is refactored on CPU.
+- `enable_matrix_free(dense_derivatives=True)` solves every derivative densely
+  and reseeds the LU at each accepted step: about 2x faster steps on the vacuum
+  coil benchmark, with identical iterates.
 
 ## 0.11.6 - 2026-09-28
 

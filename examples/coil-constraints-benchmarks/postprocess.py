@@ -17,6 +17,10 @@ coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
   like QA of both arms. A fixed-arm run need not enclose PHIEDGE; with
   ``--match-flux`` its currents are rescaled by the logged coil-flux ratio,
   which in vacuum changes the field strength only.
+- with ``--trace``, ``trace/``: ``vmex --trace`` alpha losses of that dense
+  equilibrium, scaled in memory to ARIES-CS size (3.52 MeV alphas; 10 ms
+  prompt losses by default, ``--trace-args "--collisional --trace-tmax 0.2"``
+  for slowing-down losses).
 """
 
 import argparse
@@ -24,6 +28,8 @@ import csv
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -44,6 +50,8 @@ def parse_args(argv=None):
     parser.add_argument("--max-iterations", type=int, default=12000, help="iteration cap of the dense solve")
     parser.add_argument("--flux-tolerance", type=float, help="flux band the fixed-arm run used, for the plot")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
+    parser.add_argument("--trace", action="store_true", help="vmex --trace alpha losses of the dense equilibrium")
+    parser.add_argument("--trace-args", default="", help='extra vmex --trace flags, e.g. "--collisional"')
     return parser.parse_args(argv)
 
 
@@ -189,6 +197,12 @@ def dense_solve(frame, args, rows, out):
     return report
 
 
+def trace(wout, out, extra):
+    """``vmex <wout> --trace`` in a fresh process, so it can give JAX one CPU device per core."""
+    command = [sys.executable, "-m", "vmex", str(wout), "--trace", "--outdir", str(out / "trace"), *shlex.split(extra)]
+    subprocess.run(command, check=True, env=dict(os.environ, JAX_PLATFORMS="cpu"))
+
+
 def main(argv=None):
     args = parse_args(argv)
     os.environ["JAX_ENABLE_X64"] = "1"
@@ -204,7 +218,10 @@ def main(argv=None):
     if frames:
         plot_evolution(frames, out)
     if not args.no_dense and frames:  # the final state, or the latest checkpoint of a running job
-        print(json.dumps(dense_solve(frames[-1], args, rows, out)), flush=True)
+        report = dense_solve(frames[-1], args, rows, out)
+        print(json.dumps(report), flush=True)
+        if args.trace and report["converged"]:
+            trace(out / "wout_dense.nc", out, args.trace_args)
     print(f"wrote {out}", flush=True)
 
 

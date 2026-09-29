@@ -15,7 +15,9 @@ curvature <= 5 /m, mean squared curvature <= 5 /m^2, coil-coil distance
   the objective.
 - `postprocess.py` reads a finished run of either script and writes the loss
   and constraint histories, a GIF of the coils and LCFS, and a dense (NS201)
-  free-boundary solve of the final coils with the `vmex.plot_wout` figures.
+  free-boundary solve of the final coils with the `vmex.plot_wout` figures;
+  `--trace` adds the `vmex --trace` alpha losses of that equilibrium at
+  ARIES-CS size.
 
 The coil currents set the field strength (the edge R B_phi = mu0 I / 2 pi, B0 R0
 with B0 = 1 T), and PHIEDGE the plasma size. Holding both fixed pins the size,

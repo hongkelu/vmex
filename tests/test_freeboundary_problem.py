@@ -1623,12 +1623,12 @@ def test_coil_chart_plasma_current_coordinates_follow_phiedge():
     np.testing.assert_array_equal(chart.scales[1:4], 0.1)
     @dataclass
     class Params:
-        phiedge: float = 0.0
-        curtor: float = 0.0
-        ac: object = jnp.zeros(3)
-        ac_aux_f: object = jnp.full(3, 7.0)
+        phiedge: float
+        curtor: float
+        ac: object
+        ac_aux_f: object
 
-    params = Params()
+    params = Params(0.0, 0.0, jnp.zeros(3), jnp.full(3, 7.0))
     moved = chart.plasma_params_at(params, x)
     np.testing.assert_allclose(moved.phiedge, 0.08 * (1 + x[0]))
     np.testing.assert_allclose(moved.ac_aux_f, [2 + 4 * x[1], -4 + 4 * x[2], 7.0])

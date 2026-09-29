@@ -45,6 +45,7 @@ ESSOS_COIL_EXAMPLES = (
     EXAMPLES / "optimization" / "single_stage_optimization_finite_beta.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_finite_beta.py",
+    EXAMPLES / "optimization" / "QA_optimization_alpha_losses.py",
 )
 
 
@@ -160,6 +161,7 @@ EXECUTED_EXAMPLES = {
     "examples/mirror/mirror_free_boundary_beta_scan.py",
     "examples/mirror/qi_mirror_hybrid_fourier_vs_bspline.py",
     "examples/optimization/QA_optimization.py",
+    "examples/optimization/QA_optimization_alpha_losses.py",
     "examples/optimization/QA_optimization_ballooning.py",
     "examples/optimization/QA_optimization_bootstrap.py",
     "examples/optimization/QA_optimization_finite_beta.py",
@@ -569,7 +571,7 @@ def test_global_optimization_example_exposes_optimizer_contract():
     """The global example keeps SciPy, exact gradients, and local polish visible."""
     text = (EXAMPLES / "optimization" / "QA_optimization_global.py").read_text()
     assert "basinhopping(value_and_gradient" in text
-    assert '"method": "L-BFGS-B"' in text
+    assert 'method="L-BFGS-B"' in text and '"method": short_lbfgsb' in text
     assert "least_squares(problem.residual" in text
     assert "ess_alpha=ESS_ALPHA" in text
 
@@ -829,6 +831,20 @@ def test_mirror_free_boundary_beta_scan_example(tmp_path):
     for beta in ("000p0", "010p0", "050p0"):
         for suffix in ("3d", "cross_sections", "modB", "summary"):
             assert (outdir / f"mirror_beta_{beta}pct_{suffix}.png").stat().st_size > 10_000
+
+
+@pytest.mark.full  # nightly: QA least squares, then ESSOS alpha tracing (smoke pass)
+def test_qa_alpha_losses_optimization(tmp_path):
+    pytest.importorskip("essos")
+    out = _run_example(EXAMPLES / "optimization" / "QA_optimization_alpha_losses.py",
+                       tmp_path, timeout=1200)
+    losses = dict(re.findall(r"^\s*(seed|QA stage|alpha stage): \d+ alphas for [0-9.]+ ms lose "
+                             r"([0-9.]+) %", out, re.M))
+    assert set(losses) == {"seed", "QA stage", "alpha stage"}, out
+    assert all(0.0 <= float(value) <= 100.0 for value in losses.values())
+    for name in ("wout_QA_alpha_losses_optimized.nc", "QA_alpha_losses_optimized_losses.png",
+                 "QA_alpha_losses_optimized_trace.png"):
+        assert (tmp_path / name).exists(), name
 
 
 @pytest.mark.full  # nightly: free-bdy NESTOR solve with direct-coil Biot-Savart (~90s)

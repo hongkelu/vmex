@@ -317,6 +317,21 @@ def test_dense_derivatives_seed_every_accepted_step(scalar):
         assert all(seed.closed for seed in stats["seeds"][:-1])
 
 
+def test_dense_derivative_that_misses_its_gate_retries_matrix_free(scalar):
+    p, stats, *_ = scalar
+    p.enable_matrix_free(dense_derivatives=True)
+    seed = stats["seeds"][0]
+    stats["dense_fail"] = True
+    x = np.full(5, .001)
+    p.value_and_grad(x)  # the dense solve fails; the accepted seed LU recovers it matrix-free
+    p.accept_x(x)
+    assert len(stats["seeds"]) == 1 and not seed.closed  # no dense factors to reseed from
+    stats["dense_fail"] = False
+    p.value_and_grad(np.full(5, .002))
+    p.accept_x(np.full(5, .002))
+    assert len(stats["seeds"]) == 2 and seed.closed
+
+
 @pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity"])
 def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypatch, failed_refresh):
     p, stats, *_ = scalar

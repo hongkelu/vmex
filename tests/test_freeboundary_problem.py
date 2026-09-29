@@ -1611,6 +1611,34 @@ def test_coil_chart_phiedge_coordinate_comes_first():
         CoilParameters(coefficients, currents, current_dofs=()).phiedge_at(np.zeros(30))
 
 
+def test_coil_chart_plasma_current_coordinates_follow_phiedge():
+    rng = np.random.default_rng(40)
+    coefficients, currents = rng.normal(size=(2, 3, 5)), np.array([3e5, -2e5])
+    nominal = np.array([2.0, -4.0, 1.5e4])  # two AC_AUX_F values, then CURTOR [A]
+    chart = CoilParameters(coefficients, currents, current_dofs=(1,), phiedge=0.08, plasma_current=nominal,
+                           plasma_current_spline=True, plasma_current_scale=0.1)
+    x = rng.normal(size=chart.size) * 0.01
+    assert chart.size == 35 and chart.dof_names[1:4] == ("plasma_current[0]/unit", "plasma_current[1]/unit",
+                                                         "curtor/nominal")
+    np.testing.assert_array_equal(chart.scales[1:4], 0.1)
+    @dataclass
+    class Params:
+        phiedge: float = 0.0
+        curtor: float = 0.0
+        ac: object = jnp.zeros(3)
+        ac_aux_f: object = jnp.full(3, 7.0)
+
+    params = Params()
+    moved = chart.plasma_params_at(params, x)
+    np.testing.assert_allclose(moved.phiedge, 0.08 * (1 + x[0]))
+    np.testing.assert_allclose(moved.ac_aux_f, [2 + 4 * x[1], -4 + 4 * x[2], 7.0])
+    np.testing.assert_allclose(moved.curtor, 1.5e4 * (1 + x[3]))
+    np.testing.assert_allclose(chart.base_currents_at(x), [currents[0], currents[1] * (1 + x[4])])
+    np.testing.assert_allclose(chart.curve_dofs_at(x), coefficients + x[5:].reshape(2, 3, 5))
+    with pytest.raises(ValueError, match="nonzero CURTOR"):
+        CoilParameters(coefficients, currents, current_dofs=(), plasma_current=[1.0, 0.0])
+
+
 def test_essos_coil_parameter_roundtrip():
     pytest.importorskip("essos.coils")
     rng = np.random.default_rng(483)

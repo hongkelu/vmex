@@ -33,6 +33,10 @@ and a zero total B.n the exterior field matches the interior one, so pressure
 balance is checked at the end, with the total and coil-only B.n, on a 61 x 64
 grid where virtual casing is planned afresh.
 
+``--bootstrap`` (with ``--beta``) adds the free arm's self-consistent Redl
+bootstrap current: the current-spline values and CURTOR become plasma variables,
+and a plasma row holds the Redl mismatch under ``P.REDL_TOLERANCE``.
+
 A rejected equilibrium trial counts the plasma rows as violated.
 """
 
@@ -69,7 +73,12 @@ def parse_args(argv=None):
     parser.add_argument("--beta", type=float, default=0.0,
                         help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
-    return parser.parse_args(argv)
+    parser.add_argument("--bootstrap", action="store_true",
+                        help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+    args = parser.parse_args(argv)
+    if args.bootstrap and not args.beta > 0:
+        parser.error("--bootstrap needs --beta > 0")
+    return args
 
 
 def main(argv=None):
@@ -94,8 +103,8 @@ def main(argv=None):
     from vmex.core import virtual_casing as vc
     from vmex.core.fields import surface_currents
     from vmex.core.statephysics import _field_chain
-    from free_boundary_single_stage_optimization import (boundary_diagnostics, finite_beta_input, resize_coils,
-                                                         scale_coil_currents)
+    from free_boundary_single_stage_optimization import (boundary_diagnostics, bootstrap_input, finite_beta_input,
+                                                         resize_coils, scale_coil_currents)
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
@@ -104,7 +113,10 @@ def main(argv=None):
     inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
     if P.NITER is not None:
         inp = replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
-    if args.beta > 0 or P.B0 is not None:
+    redl = None
+    if args.bootstrap:
+        inp, _, redl = bootstrap_input(inp, args.beta, args.device)
+    elif args.beta > 0 or P.B0 is not None:
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
@@ -115,7 +127,7 @@ def main(argv=None):
     vary_phiedge = P.FREE_PHIEDGE and args.beta > 0
     plasma_problem = opt.VmecProblem.from_tuples(
         inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA,
-        vary_phiedge=vary_phiedge)
+        vary_phiedge=vary_phiedge, current_dofs=P.CURRENT_KNOTS - 1 if redl is not None else None)
 
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
     if P.B0 is not None:
@@ -127,6 +139,10 @@ def main(argv=None):
     x0 = np.concatenate([x_boundary0, x_coils0])
     scales = np.concatenate([BOUNDARY_STEP * plasma_problem.scales, np.full(x_coils0.size, COIL_STEP)])
     n_boundary = x_boundary0.size  # plasma variables, with the PHIEDGE dof last when it varies
+    if redl is not None:  # the current spline values (in units of the largest) and CURTOR/1e6, before PHIEDGE
+        block = slice(n_boundary - int(vary_phiedge) - P.CURRENT_KNOTS, n_boundary - int(vary_phiedge))
+        assert plasma_problem.names[block.stop - 1].startswith("CURTOR")
+        scales[block] = P.CURRENT_STEP * np.r_[np.ones(P.CURRENT_KNOTS - 1), abs(float(inp.curtor)) / 1e6]
 
     def phiedge_at(x):
         return phiedge * (1.0 + x[n_boundary - 1]) if vary_phiedge else phiedge
@@ -211,9 +227,11 @@ def main(argv=None):
             rows += [1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT,
                      (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
                      (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE]
+        if redl is not None:
+            rows.append(1.0 - redl.total_state(state, ctx) / P.REDL_TOLERANCE)
         return jnp.stack(rows)
 
-    n_plasma = 8 if args.beta > 0 else 5
+    n_plasma = (8 if args.beta > 0 else 5) + int(redl is not None)
 
     def plasma_constraint(u):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
@@ -304,6 +322,8 @@ def main(argv=None):
         if args.beta > 0:
             row.update(total_normal_field_rms=float(total_normal_field_rms(coils, state, ctx)),
                        rbtor_ratio=float(rbtor_ratio(state, ctx)))
+        if redl is not None:
+            row.update(redl_mismatch=float(redl.total_state(state, ctx)), curtor=float(equilibrium.inp.curtor))
         last.update(time=now, step=last["step"] + 1)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
@@ -312,6 +332,7 @@ def main(argv=None):
               f"B.n={row.get('total_normal_field_rms', row['normal_field_rms']):.2e} beta={row['beta']:.4%} "
               f"RBphi={row.get('rbtor_ratio', float('nan')):.5f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"plasma_slack={row['plasma_minimum_scaled_slack']:.4f} "
+              + (f"redl={row['redl_mismatch']:.2e} CURTOR={row['curtor']:.0f}A " if redl is not None else "") +
               f"{row['step_seconds']:.1f}s", flush=True)
 
     def save(tag, u):

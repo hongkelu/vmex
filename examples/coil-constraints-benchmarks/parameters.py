@@ -31,6 +31,16 @@ B0 = 1.0                           # T: coil currents give R B_phi = B0 R0; the 
 NITER, DELT = None, None            # override the deck's iteration budget / time step when set
 FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE and currents)
 
+# --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
+# beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
+# self-consistent Redl bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and
+# CURTOR are design variables, and the Redl mismatch sum_j R_j^2 is held under REDL_TOLERANCE.
+REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
+REDL_SURFACES = tuple(0.1 + 0.8 * i / 7 for i in range(8))
+REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+PICARD_ITERATIONS, PICARD_TOLERANCE = 10, 1e-3
+CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
+
 # Physical targets. The free-boundary arm imposes them as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 ASPECT_RANGE = (4.9, 5.1)

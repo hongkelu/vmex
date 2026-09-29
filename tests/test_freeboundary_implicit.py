@@ -419,7 +419,7 @@ def test_schur_lanes_are_reusable_and_leak_nothing_per_gradient():
     assert {row["row"] for row in reports if row["accepted"]} == {0, 1}
 
 
-def test_phiedge_from_parameters_sets_phiedge_inside_the_residual():
+def test_plasma_from_parameters_sets_plasma_parameters_inside_the_residual():
     """A design-dependent PHIEDGE enters the residual lane and its derivatives."""
     inp = dataclasses.replace(
         lasym_free_input(DATA).change_resolution(mpol=3, ntor=0, ntheta=10, nzeta=4),
@@ -427,16 +427,17 @@ def test_phiedge_from_parameters_sets_phiedge_inside_the_residual():
     field, params = lasym_free_field(), im.params_from_input(inp)
     current0 = jnp.asarray(field.extcur)
 
-    def configure(phiedge_from_parameters=None):
+    def configure(plasma_from_parameters=None):
         return make_free_boundary_config(
             inp, field, ns=5, ftol=1.0e-6, max_iterations=400,
             field_from_parameters=lambda current: dataclasses.replace(field, extcur=current),
-            phiedge_from_parameters=phiedge_from_parameters, device="cpu")
+            plasma_from_parameters=plasma_from_parameters, device="cpu")
 
     cfg = configure()
     _, saved = fbi._solve_status_fwd(params, current0, cfg)
     _, _, state, mask, rcon, zcon = saved[:6]
-    scaled = configure(lambda current: params.phiedge * jnp.sum(current) / jnp.sum(current0))
+    scaled = configure(lambda p, current: dataclasses.replace(
+        p, phiedge=p.phiedge * jnp.sum(current) / jnp.sum(current0)))
     residual = fbi._projected_residual(scaled, mask)
 
     def flat(value, current, p=params):

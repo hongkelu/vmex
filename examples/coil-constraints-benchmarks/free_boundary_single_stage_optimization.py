@@ -30,6 +30,10 @@ Before the free-boundary seed solve the coils are refitted to the finite-beta
 fixed-boundary seed (no equilibrium solves): they must cancel the plasma's own
 normal field, (B_coils + B_plasma).n = 0 with B_plasma from virtual casing,
 under the coil limits of ``parameters.py`` as penalties.
+
+``--bootstrap`` (with ``--beta``) replaces the zero current with a self-consistent
+Redl bootstrap current (``bootstrap_input``): the current-spline values and CURTOR
+join PHIEDGE as design variables, and the Redl mismatch is a hard constraint.
 """
 
 import argparse
@@ -69,7 +73,12 @@ def parse_args(argv=None):
     parser.add_argument("--save-every", type=int, default=25)
     parser.add_argument("--beta", type=float, default=0.0,
                         help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
-    return parser.parse_args(argv)
+    parser.add_argument("--bootstrap", action="store_true",
+                        help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+    args = parser.parse_args(argv)
+    if args.bootstrap and not args.beta > 0:
+        parser.error("--bootstrap needs --beta > 0")
+    return args
 
 
 def resize_coils(coils, order, n_segments):
@@ -86,8 +95,8 @@ def resize_coils(coils, order, n_segments):
     return Coils(curves, coils.dofs_currents_raw, currents_scale=coils.currents_scale)
 
 
-def finite_beta_input(inp, beta, device):
-    """Give ``inp`` a pressure p ~ 1 - s whose fixed-boundary seed has ``beta``.
+def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
+    """Give ``inp`` a pressure p ~ ``am`` (power series in s, default 1 - s) whose fixed-boundary seed has ``beta``.
 
     ``P.BETA_DEFINITION`` "volume": ``beta`` is <beta>; "axis": WOUT ``betaxis``.
     The pressure is ramped in with hot restarts, then rescaled to ``beta``.
@@ -101,9 +110,9 @@ def finite_beta_input(inp, beta, device):
     axis, r0 = P.BETA_DEFINITION == "axis", float(inp.rbc[inp.ntor, 0])
     b0 = 1.0 if P.B0 is None else P.B0
     pressure = beta * b0**2 / (8e-7 * np.pi) if axis else beta / (4e-7 * np.pi)
-    am = np.zeros_like(np.asarray(inp.am, dtype=float))
-    am[:2] = 1.0, -1.0
-    inp = replace(inp, am=am)
+    shape = np.zeros_like(np.asarray(inp.am, dtype=float))
+    shape[: len(am)] = am
+    inp = replace(inp, am=shape)
     fixed = None
     ramp = (0.25, 0.5, 0.75, 1.0) if beta > 0 else (1.0,)
     corrections = 3 if axis or P.B0 is not None else 1
@@ -122,6 +131,46 @@ def finite_beta_input(inp, beta, device):
     print(f"PRES_SCALE = {inp.pres_scale:.6e} Pa, PHIEDGE = {float(inp.phiedge):.6f} Wb: betaxis = "
           f"{float(w.betaxis):.4%}, <beta> = {float(w.betatotal):.4%}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed
+
+
+def bootstrap_input(inp, beta, device):
+    """``finite_beta_input`` with reactor-like kinetic profiles and their self-consistent Redl current.
+
+    ne = n0 (1 - s^5) and Te = Ti = T0 (1 - s), so p = 2 e ne Te ~ (1 - s)(1 - s^5). n0 and T0
+    start at the Helios-like reactor's collisionality nu* ~ n R / T^2 and beta ~ n T / B^2 moved
+    to this R0 and B0, and follow the beta calibration as n ~ p^(2/3), T ~ p^(1/3), which keeps
+    nu*. A Picard loop then makes the current Redl's, and it is resampled onto
+    ``P.CURRENT_KNOTS`` spline knots. Returns the input, the equilibrium and the Redl mismatch.
+    """
+    import numpy as np
+    from vmex import optimize as opt
+    from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch,
+                                     self_consistent_bootstrap)
+
+    r0, b0 = float(inp.rbc[inp.ntor, 0]), 1.0 if P.B0 is None else P.B0
+    t0 = P.REACTOR_T0 * (b0 / P.REACTOR_B0) ** (2 / 3) * (r0 / P.REACTOR_R0) ** (1 / 3)
+    n0 = P.REACTOR_N0 * (b0 / P.REACTOR_B0) ** (4 / 3) * (P.REACTOR_R0 / r0) ** (1 / 3)
+    inp, _ = finite_beta_input(inp, beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
+    n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
+    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
+                               t0 * np.array([1.0, -1.0]))
+    ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
+    ac[0] = 1.0
+    inp = replace(inp, ncurr=1, pcurr_type="power_series", ac=ac, curtor=0.0)
+    picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
+                                       degree=P.CURRENT_KNOTS - 1, s_eval=np.asarray(P.REDL_SURFACES),
+                                       solve_kwargs=dict(device=device))
+    inp = opt.resample_current_profile(picard.input, P.CURRENT_KNOTS)
+    fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
+                                  raise_on_max_iterations=True, polish_force_balance=False)
+    redl = RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
+    w = fixed.wout
+    print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
+          f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
+          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = {float(np.min(np.abs(w.iotaf))):.4f}"
+          f"..{float(np.max(np.abs(w.iotaf))):.4f}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
+    return inp, fixed, redl
 
 
 def scale_coil_currents(coils, rbtor):
@@ -237,8 +286,11 @@ def main(argv=None):
     inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
     if P.NITER is not None:
         inp = replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
-    seed = None
-    if args.beta > 0 or P.B0 is not None:
+    seed = redl = None
+    if args.bootstrap:
+        inp, fixed, redl = bootstrap_input(inp, args.beta, args.device)
+        seed = fixed.state
+    elif args.beta > 0 or P.B0 is not None:
         inp, fixed = finite_beta_input(inp, args.beta, args.device)
         seed = fixed.state
     if args.wout is not None:
@@ -257,10 +309,13 @@ def main(argv=None):
         coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE,
+    # --bootstrap: the spline values but the last, then CURTOR, follow PHIEDGE as design variables.
+    current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
+    scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales,
-                                          phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None)
+                                          phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
+                                          plasma_current=current, plasma_current_spline=True)
     qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), 1, 0)
 
     def boundary(state, runtime, grid):
@@ -305,7 +360,8 @@ def main(argv=None):
         "compile", seconds=duration) if event.startswith("/jax/core/compile/") else None)
 
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius), coil_quantities=(clearance, aspect),
+        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *([redl.total_state] if redl is not None else [])),
+        coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
@@ -324,11 +380,13 @@ def main(argv=None):
             record(_name, seconds=time.monotonic() - start)
             return value
         setattr(coil_rows, method, timed)
+    nredl = int(redl is not None)  # the Redl mismatch row sits between the plasma and coil quantities
     constraints = [problem.nonlinear_constraint(
-        [P.IOTA_FLOOR + P.IOTA_MARGIN, P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
-         aspect_lower],
-        [np.inf, P.RADIUS_TARGET + width, np.inf, aspect_upper],
-        scales=[P.IOTA_FLOOR, P.RADIUS_TOLERANCE, P.COIL_SURFACE_DISTANCE_LIMIT, aspect_scale]), coil_rows]
+        [P.IOTA_FLOOR + P.IOTA_MARGIN, P.RADIUS_TARGET - width, *[-np.inf] * nredl,
+         P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN, aspect_lower],
+        [np.inf, P.RADIUS_TARGET + width, *[P.REDL_TOLERANCE] * nredl, np.inf, aspect_upper],
+        scales=[P.IOTA_FLOOR, P.RADIUS_TOLERANCE, *[P.REDL_TOLERANCE] * nredl, P.COIL_SURFACE_DISTANCE_LIMIT,
+                aspect_scale]), coil_rows]
 
     def save(tag):
         x = problem.accepted.parameters
@@ -352,13 +410,15 @@ def main(argv=None):
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
-        iota, radius, surface, aspect_value = map(float, problem.constraint_values(x))
+        iota, radius, *mismatch, surface, aspect_value = map(float, problem.constraint_values(x))
         now = time.monotonic()
         objective = problem.fun(x)
         row = dict(step=problem.accepted_step, qa=2 * objective, objective=objective, min_abs_iota=iota, major_radius_m=radius,
                    aspect=aspect_value, coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(x) / chart.phiedge) if P.FREE_PHIEDGE else 1.0,
+                   **(dict(redl_mismatch=mismatch[0], curtor=float(chart.plasma_params_at(
+                       problem.cfg.params, x).curtor)) if mismatch else {}),
                    step_u_linf=float(np.max(np.abs((x - last["x"]) / problem.scales))),
                    root_residual=float(record.root_residual_norm), fedge=float(record.result.fedge),
                    step_seconds=now - last["time"], elapsed_seconds=now - started,
@@ -370,6 +430,7 @@ def main(argv=None):
             stream.write(json.dumps({k: (float(v) if isinstance(v, np.floating) else v) for k, v in row.items()}) + "\n")
         print(f"[step {row['step']}] QA={row['qa']:.6e} iota={iota:.5f} R={radius:.5f} aspect={aspect_value:.4f} "
               f"clearance={surface:.4f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
+              + (f"redl={mismatch[0]:.2e} CURTOR={row['curtor']:.0f}A " if mismatch else "") +
               f"{row['step_seconds']:.1f}s", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")

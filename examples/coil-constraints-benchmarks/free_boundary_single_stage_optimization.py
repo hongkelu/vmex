@@ -210,7 +210,8 @@ def bootstrap_input(inp, beta, device):
     nu*. A Picard loop then makes the current Redl's, and it is resampled onto
     ``P.CURRENT_KNOTS`` spline knots. Above ``P.BOOTSTRAP_BETA_STEP`` beta is ramped in
     steps of at most that size, each step's pressure ramp carrying the previous step's
-    bootstrap current, so its transform holds the equilibrium together as beta rises.
+    bootstrap current, so its transform holds the equilibrium together as beta rises;
+    with ``P.BOOTSTRAP_BETA_START`` the ramp first doubles beta from that value.
     Returns the input, the equilibrium and the Redl mismatch.
     """
     import math
@@ -222,9 +223,15 @@ def bootstrap_input(inp, beta, device):
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
     inp = replace(inp, ncurr=1, pcurr_type="power_series", ac=ac, curtor=0.0)
-    stages = max(1, math.ceil(round(beta / P.BOOTSTRAP_BETA_STEP, 9)))
-    for stage in range(1, stages + 1):
-        inp, _ = finite_beta_input(inp, beta * stage / stages, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+    steps = max(1, math.ceil(round(beta / P.BOOTSTRAP_BETA_STEP, 9)))
+    betas = [beta * k / steps for k in range(1, steps + 1)]
+    start = P.BOOTSTRAP_BETA_START
+    while start is not None and start < betas[-steps]:  # double up to the first linear stage
+        betas.insert(len(betas) - steps, start)
+        start *= 2
+    stages = len(betas)
+    for stage, stage_beta in enumerate(betas, 1):
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
         profiles, redl = redl_profiles(inp)
         picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
                                            relax=P.PICARD_RELAX,
@@ -232,7 +239,7 @@ def bootstrap_input(inp, beta, device):
                                            solve_kwargs=dict(device=device))
         inp = picard.input
         if stages > 1:
-            print(f"bootstrap ramp {stage}/{stages}: beta {beta * stage / stages:.4f}, CURTOR = "
+            print(f"bootstrap ramp {stage}/{stages}: beta {stage_beta:.4f}, CURTOR = "
                   f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
                   flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])

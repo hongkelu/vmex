@@ -83,7 +83,8 @@ beta in steps for the larger values. The current spline values and CURTOR are
 then design variables, and the mismatch against the case's bootstrap model is
 a hard constraint (sum of squared normalized residuals <= `REDL_TOLERANCE`).
 For `qi6-beta*` that model is DKX, the uwplasma drift-kinetic solver, since
-Redl assumes quasisymmetry. It needs the optional `dkx` package. The logged
+Redl assumes quasisymmetry. It needs the optional `dkx` package
+(`pip install "vmex[kinetic]"`). The logged
 key stays `redl_mismatch` for both models.
 
     python free_boundary_single_stage_optimization.py --bootstrap --beta 0.01 --steps 5 --output runs/free-redl
@@ -92,7 +93,7 @@ key stays `redl_mismatch` for both models.
 ## Running
 
 The scripts need ESSOS (`pip install "vmex[coils]"`), virtual casing for
-`--beta` (`vmex[freeb]`), the `dkx` package for `qi6-beta*` with
+`--beta` (`vmex[freeb]`), DKX (`vmex[kinetic]`) for `qi6-beta*` with
 `--bootstrap`, and a GPU for the default resolution:
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free

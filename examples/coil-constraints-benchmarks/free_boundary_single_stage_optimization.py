@@ -158,6 +158,14 @@ def redl_profiles(inp):
     return profiles, RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
 
 
+def max_abs_iota(state, runtime):
+    """Largest |iota| over the half-mesh surfaces (axis excluded), the counterpart of ``opt.min_abs_iota``."""
+    import jax.numpy as jnp
+    from vmex.core.statephysics import _iotas_half
+
+    return jnp.max(jnp.abs(_iotas_half(state, runtime)[1:]))
+
+
 def bootstrap_mismatch(inp, redl):
     """(state, runtime) -> the bootstrap self-consistency mismatch held under ``P.REDL_TOLERANCE``.
 
@@ -462,8 +470,9 @@ def main(argv=None):
         "compile", seconds=duration) if event.startswith("/jax/core/compile/") else None)
 
     mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
+    ceiling = (max_abs_iota,) if P.IOTA_CEILING else ()
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror,
+        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror, *ceiling,
                                *([bootstrap_mismatch(inp, redl)] if redl is not None else [])),
         coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
@@ -490,6 +499,7 @@ def main(argv=None):
     lower, upper, row_scales = zip(
         (P.IOTA_FLOOR + P.IOTA_MARGIN, np.inf, P.IOTA_FLOOR),
         (P.RADIUS_TARGET - width, P.RADIUS_TARGET + width, P.RADIUS_TOLERANCE), *mirror_bounds,
+        *[(-np.inf, P.IOTA_CEILING - P.IOTA_MARGIN, P.IOTA_FLOOR)] * len(ceiling),
         *[(-np.inf, P.REDL_TOLERANCE, P.REDL_TOLERANCE)] * nredl,
         (P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN, np.inf, P.COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, aspect_scale))
@@ -519,11 +529,12 @@ def main(argv=None):
         x, record = problem.accepted.parameters, problem.accepted
         values = list(map(float, problem.constraint_values(x)))
         iota, radius, surface, aspect_value = values[0], values[1], values[-2], values[-1]
-        mismatch = values[2 + len(mirror):-2]
+        mismatch = values[2 + len(mirror) + len(ceiling):-2]
         now = time.monotonic()
         objective = problem.fun(x)
         row = dict(step=problem.accepted_step, qa=2 * objective, objective=objective, min_abs_iota=iota, major_radius_m=radius,
-                   aspect=aspect_value, **({'mirror_ratio': values[2]} if mirror else {}), coil_surface_distance_m=surface,
+                   aspect=aspect_value, **({'mirror_ratio': values[2]} if mirror else {}),
+                   **({'max_abs_iota': values[2 + len(mirror)]} if ceiling else {}), coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(x) / chart.phiedge) if P.FREE_PHIEDGE else 1.0,
                    **(dict(redl_mismatch=mismatch[0], curtor=float(chart.plasma_params_at(

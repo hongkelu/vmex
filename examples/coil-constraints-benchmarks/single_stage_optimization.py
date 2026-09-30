@@ -129,7 +129,7 @@ def main(argv=None):
     from free_boundary_single_stage_optimization import (boundary_diagnostics, bootstrap_input, finite_beta_input,
                                                          redl_profiles, resize_coils, restart_input,
                                                          scale_coil_currents, seed_input, target_residual,
-                                                         bootstrap_mismatch)
+                                                         bootstrap_mismatch, max_abs_iota)
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
@@ -251,6 +251,8 @@ def main(argv=None):
                 (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE]
         if P.MIRROR_LIMIT:
             rows.append((P.MIRROR_LIMIT - P.MIRROR_MARGIN - opt.mirror_ratio(state, ctx)) / P.MIRROR_LIMIT)
+        if P.IOTA_CEILING:
+            rows.append((P.IOTA_CEILING - P.IOTA_MARGIN - max_abs_iota(state, ctx)) / P.IOTA_FLOOR)
         if args.beta > 0:
             strength = rbtor_ratio(state, ctx) - 1.0
             rows += [1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT,
@@ -260,7 +262,7 @@ def main(argv=None):
             rows.append(1.0 - mismatch(state, ctx) / P.REDL_TOLERANCE)
         return jnp.stack(rows)
 
-    n_plasma = 5 + bool(P.MIRROR_LIMIT) + 3 * (args.beta > 0) + int(redl is not None)
+    n_plasma = 5 + bool(P.MIRROR_LIMIT) + bool(P.IOTA_CEILING) + 3 * (args.beta > 0) + int(redl is not None)
 
     def plasma_constraint(u):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u

@@ -730,6 +730,11 @@ def test_j_invariant_map_uses_one_physical_pitch_on_every_surface():
     assert np.all(np.isnan(result["j_map"][1]))
     with pytest.raises(ValueError, match="not trapped"):
         plotting._j_invariant_map(booz, pitch=0.5, nalpha=4)
+    for options, message in (({"pitch_fraction": 0.0}, "pitch_fraction"),
+                             ({"nalpha": 3}, "nalpha"),
+                             ({"points_per_period": 7}, "points_per_period")):
+        with pytest.raises(ValueError, match=message):
+            plotting._j_invariant_map(booz, **options)
 
 
 def test_j_invariant_map_converges_for_sinusoidal_well():
@@ -800,6 +805,26 @@ def test_j_invariant_map_reports_incomplete_pitch_coverage():
     assert 0.0 < result["resolved_fraction"] < 1.0
     assert np.any(np.isnan(result["j_map"]))
     assert np.any(np.isfinite(result["j_map"]))
+
+
+def test_j_panel_labels_unresolved_and_partially_trapped_maps():
+    """Blank or partially trapped maps retain pitch and coverage context."""
+    import matplotlib.pyplot as plt
+
+    info = {"v_parallel_fraction": 0.25, "pitch_reference_s": 0.5,
+            "alpha": np.linspace(0, 2 * np.pi, 4, endpoint=False),
+            "s_b": np.array([0.25, 0.75]), "resolved_fraction": 0.875,
+            "j_map": np.array([[1.0, np.nan, 1.2, 1.1],
+                               [2.0, 2.1, 2.2, 2.3]])}
+    fig, axes = plt.subplots(1, 2)
+    try:
+        plotting._j_map_panel(axes[0], fig, info, 1.0)
+        assert any("88% resolved" in text.get_text() for text in axes[0].texts)
+        plotting._j_map_panel(axes[1], fig, {**info, "j_map": np.full((2, 4), np.nan)}, 1.0)
+        assert "no trapped-particle wells" in axes[1].texts[0].get_text()
+        assert "|v_\\parallel|/v=" in axes[1].get_title()
+    finally:
+        plt.close(fig)
 
 
 def test_volume_second_derivative_of_linear_vprime():

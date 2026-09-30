@@ -1405,7 +1405,7 @@ def _j_map_panel(ax, fig, j_info: dict[str, Any], r_major: float) -> None:
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(r"$s\cos\alpha$"); ax.set_ylabel(r"$s\sin\alpha$")
     ax.set_title(pitch_title)
-    if j_info["resolved_fraction"] < 0.95:
+    if j_info["resolved_fraction"] < 1.0:
         ax.text(0.02, 0.02, f"{j_info['resolved_fraction']:.0%} resolved",
                 transform=ax.transAxes, fontsize=11, color="0.2",
                 bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"})

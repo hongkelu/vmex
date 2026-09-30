@@ -44,6 +44,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
+from _common import NORMAL_FIELD_CONSTRAINT, resize_coils, seed_input, target_residual  # noqa: E402
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
@@ -73,7 +74,6 @@ def read_history(run):
 
 def limits():
     """Constrained quantities and their bounds, as the two benchmarks impose them."""
-    import single_stage_optimization as fixed
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
@@ -82,7 +82,7 @@ def limits():
         "major_radius_m": ("major radius [m]", P.RADIUS_TARGET - width, P.RADIUS_TARGET + width),
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
-        "normal_field_rms": ("rms B.n/|B|", None, fixed.NORMAL_FIELD_CONSTRAINT),
+        "normal_field_rms": ("rms B.n/|B|", None, NORMAL_FIELD_CONSTRAINT),
         "flux_ratio": ("coil flux / PHIEDGE", None, None),
         "phiedge_factor": ("PHIEDGE / seed PHIEDGE", None, None),
     }
@@ -251,7 +251,6 @@ def dense_solve(frame, args, rows, out):
     from vmex.core.wout import wout_from_state
     from essos.coils import Coils
     from essos.fields import BiotSavart
-    from free_boundary_single_stage_optimization import resize_coils, seed_input, target_residual
 
     label, coil_path, wout_path = frame
     mpol, ntor, _ = P.RESOLUTION
@@ -260,7 +259,7 @@ def dense_solve(frame, args, rows, out):
         inp = vmex.VmecInput.from_file(run / "input.run").change_resolution(
             mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
     else:  # older runs: the case's seed deck
-        inp = seed_input(vmex)
+        inp = seed_input()
     phiedge = float(vmex.read_wout(wout_path).phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]), phiedge=phiedge,
                   ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))

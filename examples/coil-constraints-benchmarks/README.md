@@ -1,8 +1,9 @@
 # Coil-constraint single-stage benchmarks
 
 A vacuum rotating ellipse (1 m major radius) with three independent order-16
-coils, optimized for QA, or for QH or QI with `COIL_CASE` (below). The case and its limits are in `parameters.py`: minimum |iota| >= 0.41,
-aspect ratio in [4.9, 5.1], major radius 1 +/- 0.01 m, coil length <= 5 m,
+coils, optimized for QA, or for QH or QI with `COIL_CASE` (below). The case
+and its limits are in `parameters.py`: minimum |iota| >= 0.41, aspect ratio in
+[4.9, 5.1], major radius 1 +/- 0.01 m, coil length <= 5 m,
 curvature <= 5 /m, mean squared curvature <= 5 /m^2, coil-coil distance
 >= 0.15 m and coil-plasma distance >= 0.20 m.
 
@@ -17,7 +18,8 @@ curvature <= 5 /m, mean squared curvature <= 5 /m^2, coil-coil distance
   and constraint histories, a GIF of the coils and LCFS, and a dense (NS201)
   free-boundary solve of the final coils with the `vmex.plot_wout` figures;
   `--trace` adds the `vmex --trace` alpha losses of that equilibrium at
-  ARIES-CS size.
+  ARIES-CS size, and `--poincare 2000` a Poincare section of the final coils'
+  field, seeded on the run's own flux surfaces and drawn over them.
 
 In vacuum only the flux per ampere sets the plasma size. Holding both the coil
 currents and PHIEDGE fixed pins it, and at this iota the aspect ratio then sits

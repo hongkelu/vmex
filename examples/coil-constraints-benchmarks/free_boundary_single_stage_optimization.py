@@ -230,7 +230,7 @@ def main(argv=None):
     ceiling = (max_abs_iota,) if P.IOTA_CEILING else ()
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror, *ceiling,
-                               *([bootstrap_mismatch(inp, redl)] if redl is not None else [])),
+                               *([bootstrap_mismatch(inp, redl, args.device)] if redl is not None else [])),
         coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,

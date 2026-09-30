@@ -129,7 +129,7 @@ def main(argv=None):
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
-    mismatch = None if redl is None else bootstrap_mismatch(inp, redl)
+    mismatch = None if redl is None else bootstrap_mismatch(inp, redl, args.device)
 
     qs = target_residual()
     # In vacuum PHIEDGE only scales the plasma field, a null direction; at finite beta the

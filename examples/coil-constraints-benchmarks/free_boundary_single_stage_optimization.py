@@ -180,22 +180,34 @@ def bootstrap_input(inp, beta, device):
     start at the Helios-like reactor's collisionality nu* ~ n R / T^2 and beta ~ n T / B^2 moved
     to this R0 and B0, and follow the beta calibration as n ~ p^(2/3), T ~ p^(1/3), which keeps
     nu*. A Picard loop then makes the current Redl's, and it is resampled onto
-    ``P.CURRENT_KNOTS`` spline knots. Returns the input, the equilibrium and the Redl mismatch.
+    ``P.CURRENT_KNOTS`` spline knots. Above ``P.BOOTSTRAP_BETA_STEP`` beta is ramped in
+    steps of at most that size, each step's pressure ramp carrying the previous step's
+    bootstrap current, so its transform holds the equilibrium together as beta rises.
+    Returns the input, the equilibrium and the Redl mismatch.
     """
+    import math
+
     import numpy as np
     from vmex import optimize as opt
     from vmex.core.bootstrap import self_consistent_bootstrap
 
-    inp, _ = finite_beta_input(inp, beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
-    profiles, redl = redl_profiles(inp)
-    n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
     inp = replace(inp, ncurr=1, pcurr_type="power_series", ac=ac, curtor=0.0)
-    picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
-                                       degree=P.CURRENT_KNOTS - 1, s_eval=np.asarray(P.REDL_SURFACES),
-                                       solve_kwargs=dict(device=device))
-    inp = opt.resample_current_profile(picard.input, P.CURRENT_KNOTS)
+    stages = max(1, math.ceil(round(beta / P.BOOTSTRAP_BETA_STEP, 9)))
+    for stage in range(1, stages + 1):
+        inp, _ = finite_beta_input(inp, beta * stage / stages, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        profiles, redl = redl_profiles(inp)
+        picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
+                                           degree=P.CURRENT_KNOTS - 1, s_eval=np.asarray(P.REDL_SURFACES),
+                                           solve_kwargs=dict(device=device))
+        inp = picard.input
+        if stages > 1:
+            print(f"bootstrap ramp {stage}/{stages}: beta {beta * stage / stages:.4f}, CURTOR = "
+                  f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
+                  flush=True)
+    n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
+    inp = opt.resample_current_profile(inp, P.CURRENT_KNOTS)
     fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
     w = fixed.wout

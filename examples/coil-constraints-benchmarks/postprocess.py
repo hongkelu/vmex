@@ -69,6 +69,7 @@ def limits(flux_tolerance=None):
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
         "aspect": ("aspect ratio", *P.ASPECT_RANGE),
+        "mirror_ratio": ("mirror ratio", None, P.MIRROR_LIMIT),
         "major_radius_m": ("major radius [m]", P.RADIUS_TARGET - width, P.RADIUS_TARGET + width),
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
@@ -89,7 +90,7 @@ def plot_history(rows, keys, out, flux_tolerance=None):
         writer.writerows(rows)
     step = [r["step"] for r in rows]
     figure, axis = plt.subplots(figsize=(7, 4))
-    for key, label in (("qa", "QA"), ("objective", "objective")):
+    for key, label in (("qa", P.TARGET_NAME), ("objective", "objective")):
         if key in keys:
             axis.semilogy(step, [max(r[key], 1e-16) for r in rows], label=label)
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
@@ -152,12 +153,9 @@ def dense_solve(frame, args, rows, out):
     from vmex.core.wout import wout_from_state
     from essos.coils import Coils
     from essos.fields import BiotSavart
-    from free_boundary_single_stage_optimization import resize_coils
+    from free_boundary_single_stage_optimization import resize_coils, seed_input, target_residual
 
-    mpol, ntor, _ = P.RESOLUTION
-    inp = vmex.VmecInput.from_file(HERE / "input.rotating_ellipse")
-    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
-    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]),
+    inp = replace(seed_input(vmex), lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]),
                   ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     label, coil_path, wout_path = frame
     coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
@@ -185,8 +183,8 @@ def dense_solve(frame, args, rows, out):
                                vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
         path = vmex.write_wout(str(out / "wout_dense.nc"), wout)
         rt = prepare_runtime(inp, resolution)
-        qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), 1, 0)
-        report.update(qa=float(qs.total(wout)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
+        residuals = target_residual().residuals_state(result.state, rt)
+        report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
                       aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(major_radius(result.state, rt)))
         report["figures"] = [str(p) for p in vmex.plot_wout(path, out, name="dense").values()]
     else:

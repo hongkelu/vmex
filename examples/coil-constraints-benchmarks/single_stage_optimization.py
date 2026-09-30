@@ -6,8 +6,9 @@ fixed-boundary equilibrium, and SLSQP minimizes
 
     J = (1/2) |r_QS|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
 
-subject to the hard inequalities of ``parameters.py`` (minimum |iota|, aspect
-band, major radius), the coil limits of ``_coil_constraints.py`` (length,
+(r_QS the constructed QI residual for ``COIL_CASE=qi``) subject to the hard
+inequalities of ``parameters.py`` (minimum |iota|, aspect band, major radius,
+the QI case's mirror ratio), the coil limits of ``_coil_constraints.py`` (length,
 curvature, mean squared curvature, separation, plasma clearance) and the
 normal-field limit. The B.n term keeps the prescribed boundary close to what
 the coils produce, so the fixed-boundary QA stays meaningful for the coils.
@@ -21,7 +22,6 @@ fixed currents and PHIEDGE. ``flux_ratio`` is logged either way.
 """
 
 import argparse
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -34,7 +34,9 @@ import parameters as P  # noqa: E402
 
 MAX_MODE = 8                       # boundary modes varied; RBC(0,0) stays fixed
 ESS_ALPHA = 1.2
-BOUNDARY_STEP, COIL_STEP = 0.1, P.COIL_STEP
+# SLSQP's first step has an identity Hessian: the QH and QI residuals start near 1,
+# 50 times the QA seed's, so their boundary coordinates are scaled down.
+BOUNDARY_STEP, COIL_STEP = (0.1 if P.SEED is None else 0.02), P.COIL_STEP
 NORMAL_FIELD_CONSTRAINT = 0.008   # area-weighted RMS B.n/|B| limit
 NORMAL_FIELD_WEIGHT = 1.0e3
 FLUX_TOLERANCE = None              # e.g. 0.005: relative band on the coils' flux around PHIEDGE
@@ -47,7 +49,7 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
-    parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
+    parser.add_argument("--coils", type=Path, default=P.COILS_FILE)
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     return parser.parse_args(argv)
 
@@ -69,16 +71,13 @@ def main(argv=None):
     import vmex as vj
     from vmex import optimize as opt
     import _coil_constraints as coil_limits
-    from free_boundary_single_stage_optimization import resize_coils
+    from free_boundary_single_stage_optimization import resize_coils, seed_input, target_residual
 
     started = time.monotonic()
-    mpol, ntor, ns = P.RESOLUTION
-    inp = vj.VmecInput.from_file(HERE / "input.rotating_ellipse")
-    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
-    inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
+    inp = seed_input(vj)
     phiedge = abs(float(inp.phiedge))
 
-    qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), helicity_m=1, helicity_n=0)
+    qs = target_residual()
     plasma_problem = opt.VmecProblem.from_tuples(
         inp, [(qs.residuals_state, 0.0, 1.0)], max_mode=MAX_MODE, use_ess=True, ess_alpha=ESS_ALPHA)
 
@@ -125,12 +124,17 @@ def main(argv=None):
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
 
+    n_plasma_rows = 5 + bool(P.MIRROR_LIMIT)
+
     def plasma_rows(state, ctx):
         iota, aspect, radius = opt.min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
-        return jnp.stack([(iota - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
-                          (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
-                          (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
-                          (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE])
+        rows = [(iota - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
+                (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
+                (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
+                (P.RADIUS_TARGET + width - radius) / P.RADIUS_TOLERANCE]
+        if P.MIRROR_LIMIT:
+            rows.append((P.MIRROR_LIMIT - P.MIRROR_MARGIN - opt.mirror_ratio(state, ctx)) / P.MIRROR_LIMIT)
+        return jnp.stack(rows)
 
     def coil_rows(u):
         rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x0) + jnp.asarray(scales) * u)
@@ -146,9 +150,9 @@ def main(argv=None):
 
     coil_rows_jit = jax.jit(coil_rows)
     plasma_rows_jit = jax.jit(lambda u: plasma_problem.jax_extra_costs_from_state(
-        (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=5)[1])
+        (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=n_plasma_rows)[1])
     plasma_rows_jac = jax.jit(jax.jacrev(lambda u: plasma_problem.jax_extra_costs_from_state(
-        (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=5)[1]))
+        (jnp.asarray(x0) + jnp.asarray(scales) * u)[:n_boundary], plasma_rows, n_extra_terms=n_plasma_rows)[1]))
     coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
     cache = {}
     qa_value_and_grad = jax.jit(jax.value_and_grad(lambda u: plasma_problem.jax_objective_from_state(
@@ -184,6 +188,7 @@ def main(argv=None):
         row = dict(step=last["step"], qa=cache["qa"], objective=value,
                    min_abs_iota=float(opt.min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
                    major_radius_m=float(opt.major_radius(state, ctx)),
+                   **({"mirror_ratio": float(opt.mirror_ratio(state, ctx))} if P.MIRROR_LIMIT else {}),
                    coil_surface_distance_m=float(coil_limits.surface_distance(coils, surface)),
                    coil_minimum_scaled_slack=float(np.min(rows)),
                    normal_field_rms=float(normal_field_rms(coils, surface)),
@@ -192,7 +197,7 @@ def main(argv=None):
         last.update(time=now, step=last["step"] + 1)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
-        print(f"[step {row['step']}] QA={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
+        print(f"[step {row['step']}] {P.TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
               f"aspect={row['aspect']:.4f} R={row['major_radius_m']:.5f} flux={row['flux_ratio']:.5f} "
               f"B.n={row['normal_field_rms']:.2e} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"{row['step_seconds']:.1f}s", flush=True)

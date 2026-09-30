@@ -245,10 +245,9 @@ def dense_solve(frame, args, rows, out):
     import numpy as np
     import vmex
     from vmex import optimize as opt
+    # Private: the one free-boundary stage solve that accepts an ESSOS field and a seed state at a new NS.
     from vmex.core.freeboundary import _solve_free_boundary_stage, free_boundary_resolution
     from vmex.core.solver import prepare_runtime
-    from vmex.core.statephysics import major_radius
-    from vmex.core.wout import wout_from_state
     from essos.coils import Coils
     from essos.fields import BiotSavart
 
@@ -284,13 +283,13 @@ def dense_solve(frame, args, rows, out):
     report = dict(frame=label, coils=str(coil_path), ns=args.ns, seed=str(seed), current_scale=scale, currents_A=np.asarray(coils.currents).tolist(),
                   converged=converged, iterations=int(result.iterations), seconds=time.monotonic() - started, **forces)
     if converged:
-        wout = wout_from_state(inp=inp, state=result.state, niter=int(result.iterations), converged=True,
+        wout = vmex.wout_from_state(inp=inp, state=result.state, niter=int(result.iterations), converged=True,
                                vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
         path = vmex.write_wout(str(out / "wout_dense.nc"), wout)
         rt = prepare_runtime(inp, resolution)
         residuals = target_residual().residuals_state(result.state, rt)
         report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
-                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(major_radius(result.state, rt)))
+                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)))
         report["figures"] = [str(p) for p in vmex.plot_wout(path, out, name="dense").values()]
     else:
         print("dense solve did not converge; seed it closer with --seed-wout", flush=True)

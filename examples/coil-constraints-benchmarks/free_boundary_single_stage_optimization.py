@@ -186,7 +186,7 @@ def main(argv=None):
     qs = target_residual()
 
     def boundary(state, runtime, grid):
-        rmnc, _, _, zmns = im._edge_physical(state, runtime)
+        rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
         rows, cols = np.asarray(runtime.modes.n) + ntor, np.asarray(runtime.modes.m)
         rbc = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(rmnc)
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)

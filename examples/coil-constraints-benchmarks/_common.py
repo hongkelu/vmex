@@ -165,7 +165,7 @@ def bootstrap_input(inp, beta, device):
 def max_abs_iota(state, runtime):
     """Largest |iota| over the half-mesh surfaces (axis excluded), the counterpart of ``opt.min_abs_iota``."""
     import jax.numpy as jnp
-    from vmex.core.statephysics import _iotas_half
+    from vmex.core.statephysics import _iotas_half  # private: opt.min_abs_iota has no max counterpart
 
     return jnp.max(jnp.abs(_iotas_half(state, runtime)[1:]))
 

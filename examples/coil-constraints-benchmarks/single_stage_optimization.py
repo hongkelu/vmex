@@ -113,7 +113,7 @@ def main(argv=None):
     import _coil_constraints as coil_limits
     from vmex.core import virtual_casing as vc
     from vmex.core.fields import surface_currents
-    from vmex.core.statephysics import _field_chain
+    from vmex.core.statephysics import _field_chain  # private: the covariant fields behind the edge R B_phi
 
     started = time.monotonic()
     inp = seed_input()

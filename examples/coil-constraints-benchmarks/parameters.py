@@ -25,9 +25,9 @@ per-coil length for this nfp-2 device.
 ``COIL_CASE=qa4-beta`` and ``qi6-beta`` are the finite-beta, self-consistent bootstrap
 cases: a compact nfp-2 QA (aspect 3.5-4.5, Redl) and an nfp-4 QI at aspect 6, whose
 bootstrap current comes from the DKX drift-kinetic solver (Redl assumes quasisymmetry).
-Their coil length limit follows the plasma: LENGTH_FACTOR times the circumference
-2 pi (a + d) of a circle d = COIL_SURFACE_DISTANCE_LIMIT outside the widest allowed
-plasma, a = R / aspect_min.
+Their coil length, curvature and MSC limits follow the plasma: multiples of the
+circumference 2 pi (a + d), curvature 1 / (a + d) and its square for a circle
+d = COIL_SURFACE_DISTANCE_LIMIT outside the widest allowed plasma, a = R / aspect_min.
 """
 import math
 import os
@@ -74,7 +74,9 @@ RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 N_COILS, COIL_ORDER, N_SEGMENTS = 3, 16, 256
 COIL_STEP = 0.05                   # coordinate scale of the coil Fourier modes
 LENGTH_LIMIT = 5.0                 # m, each independent coil
-LENGTH_FACTOR = None               # set: LENGTH_LIMIT = LENGTH_FACTOR 2 pi (R / aspect_min + COIL_SURFACE_DISTANCE_LIMIT)
+# Set: the limits follow the widest plasma allowed, a = R / aspect_min, and the clearance d:
+# LENGTH_LIMIT = c_L 2 pi (a + d), CURVATURE_LIMIT = c_k / (a + d), MSC_LIMIT = c_m / (a + d)^2.
+COIL_LIMIT_FACTORS = None          # (c_L, c_k, c_m)
 CURVATURE_LIMIT = 5.0              # 1/m, everywhere along each coil
 MSC_LIMIT = 5.0                    # 1/m^2, each coil
 COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
@@ -113,18 +115,19 @@ elif CASE in ("qa3", "qh", "qi"):
 elif CASE in ("qa4-beta", "qi6-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA, DKX for the QI), 4 order-12 coils per half period.
     COILS_FILE = HERE / f"coils.{CASE}.json"
-    N_COILS, COIL_ORDER, LENGTH_FACTOR = 4, 12, 1.8
+    # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
+    N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
     if CASE == "qa4-beta":
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.42, (3.5, 4.5)
-        CURVATURE_LIMIT, MSC_LIMIT = 5.0, 5.0               # Wechsung et al. (2022), QUASR
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.5), None, "QI", (5.9, 6.1), 0.21
         IOTA_FLOOR, BOOTSTRAP_MODEL = 0.51, "dkx"
-        CURVATURE_LIMIT, MSC_LIMIT = 12.0, 20.0             # between the nfp-4 QH designs and Stellaris
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
-if LENGTH_FACTOR is not None:
-    LENGTH_LIMIT = LENGTH_FACTOR * 2 * math.pi * (RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT)
+if COIL_LIMIT_FACTORS is not None:
+    _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
+    LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
+    CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2

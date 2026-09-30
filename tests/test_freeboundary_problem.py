@@ -333,7 +333,7 @@ def test_dense_derivative_that_misses_its_gate_retries_matrix_free(scalar, monke
     assert len(stats["seeds"]) == 2 and seed.closed
 
 
-@pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity"])
+@pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity", "nonfinite"])
 def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypatch, failed_refresh):
     p, stats, *_ = scalar
     clock = [0.]
@@ -357,6 +357,8 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
             value.preconditioner = fail_seed
         if failed_refresh == 'parity' and preconditioner is None and stats['seeds']:
             value.field_jacobian = value.field_jacobian + .1
+        if failed_refresh == 'nonfinite' and preconditioner is None and stats['seeds']:
+            value.field_jacobian = value.field_jacobian * np.nan
         return value
 
     monkeypatch.setattr(api.time, "monotonic", lambda: clock[0])
@@ -385,12 +387,13 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
     policy_before = p._lu_refresh
     stats["dense_fail"] = failed_refresh == "solve"
     if failed_refresh is not None:
-        with pytest.raises(api.AdjointSolveError, match="failed|changed derivative"):
+        error = FloatingPointError if failed_refresh == "nonfinite" else api.AdjointSolveError
+        with pytest.raises(error, match="failed|changed derivative|nonfinite"):
             p.accept_x(x)
         assert p.accepted is anchor and not seed.closed
         assert p._lu_refresh is policy_before
         assert not candidate_linearization.closed and len(stats["seeds"]) == 1
-        if failed_refresh in ('seed', 'parity'):
+        if failed_refresh in ('seed', 'parity', 'nonfinite'):
             assert stats["factors"][-1].closed
         np.testing.assert_array_equal(p.grad(x), expected)
     else:
@@ -477,10 +480,28 @@ def test_vector_quantities_give_one_constraint_row_per_entry(scalar):
         q.close()
 
 
+def test_newton_corrected_trial_skips_the_ordinary_solve(scalar):
+    p, stats, *_ = scalar
+    x = np.full(5, .001)
+    root = p.evaluate_trial(x)[0]  # an ordinary solve gives a certified root to return
+    solves, calls, events = stats["solves"], [], []
+    p._newton_options = dict(tolerance=1e-12, max_steps=1)
+    p._newton_trial = lambda point, predicted, trial: calls.append(point) or root
+    p._emit = lambda name, **data: events.append((name, data))
+    candidate, rows = p.evaluate_trial(x)
+    assert candidate is root and stats["solves"] == solves and len(calls) == 1
+    np.testing.assert_array_equal(calls[0], x)
+    assert ("certification", 1) in [(name, data.get("index")) for name, data in events]
+    np.testing.assert_array_equal(rows, p.optimizer_rows(root))
+
+
 def test_from_loss_rejects_invalid_definitions():
     inp = SimpleNamespace(lfreeb=True)
     with pytest.raises(TypeError, match="callable"):
         FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coil_quantities=(1,))
+    jax.config.update("jax_enable_x64", True)
+    with pytest.raises(ValueError, match="select coil_current_dofs explicitly"):
+        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coils=object())
 
 
 def test_complex_parameters_are_rejected_without_silent_conversion(scalar):

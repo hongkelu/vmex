@@ -25,17 +25,14 @@ The coil currents set the field strength (the edge R B_phi = mu0 I / 2 pi, B0 R0
 with B0 = 1 T), and PHIEDGE the plasma size. Holding both fixed pins the size,
 and at this iota the aspect ratio then sits at its 4.9 floor (QA ~0.02); a free
 PHIEDGE reaches aspect 5.1 (QA ~0.004), and at finite beta keeps B0 and beta
-near their targets. `FREE_PHIEDGE = False` and `FLUX_TOLERANCE` restore the
-pinned case in the free and fixed scripts.
+near their targets. `FREE_PHIEDGE = False` restores the pinned case in the
+free script.
 
 `--beta` runs either arm at finite beta with a fixed p ~ 1 - s pressure and zero
 net current. The free arm keeps the vacuum loss and constraints; it refits the
 seed coils to (B_coils + B_plasma).n = 0 with virtual casing and reports beta,
 B.n and pressure balance as diagnostics. The fixed arm limits the total B.n and
-holds the edge R B_phi at the coils' mu0 I / 2 pi. `COIL_CASE=qa6` selects the
-aspect-6 Landreman & Paul (2021) QA case at B0 = 1 T (set through PHIEDGE) with
-`--beta` read as on-axis beta, fixed coil currents, iota >= 0.42 and the coil
-limits of Jorge et al. (2023) with three order-6 coils and 6.5 m per coil.
+holds the edge R B_phi at the coils' mu0 I / 2 pi.
 
 `--bootstrap` (with `--beta`) adds a self-consistent Redl bootstrap current to
 both arms. The kinetic profiles are ne ~ 1 - s^5 and Te = Ti ~ 1 - s, with the
@@ -46,11 +43,6 @@ hard constraint (sum of squared relative residuals <= `REDL_TOLERANCE`):
 
     python free_boundary_single_stage_optimization.py --bootstrap --beta 0.01 --steps 5 --output runs/free-redl
     python single_stage_optimization.py --bootstrap --beta 0.01 --steps 5 --output runs/fixed-redl
-
-The `qa6` commands:
-
-    COIL_CASE=qa6 python free_boundary_single_stage_optimization.py --beta 0.01 --steps 5 --output runs/free
-    COIL_CASE=qa6 python single_stage_optimization.py --beta 0.01 --coils runs/free/coils.initial.json --steps 5 --output runs/fixed
 
 `COIL_CASE=qa3`, `qh` and `qi` run the same comparison from rotating
 ellipses at R = 1 m and B0 ~ 1 T built by `seed_input`: QA at nfp 3 and

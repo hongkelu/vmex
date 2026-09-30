@@ -57,7 +57,6 @@ def parse_args(argv=None):
     parser.add_argument("--match-flux", action="store_true", help="rescale fixed-arm currents to enclose PHIEDGE")
     parser.add_argument("--seed-wout", type=Path, help="initial state of the dense solve (default: the run's wout.nc)")
     parser.add_argument("--max-iterations", type=int, default=12000, help="iteration cap of the dense solve")
-    parser.add_argument("--flux-tolerance", type=float, help="flux band the fixed-arm run used, for the plot")
     parser.add_argument("--poincare", type=int, default=0, metavar="N",
                         help="trace the final coils' field lines for N toroidal transits (0: skip)")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
@@ -72,11 +71,10 @@ def read_history(run):
     return rows, keys
 
 
-def limits(flux_tolerance=None):
+def limits():
     """Constrained quantities and their bounds, as the two benchmarks impose them."""
     import single_stage_optimization as fixed
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
-    band = (None, None) if flux_tolerance is None else (1 - flux_tolerance, 1 + flux_tolerance)
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
         "aspect": ("aspect ratio", *P.ASPECT_RANGE),
@@ -85,12 +83,12 @@ def limits(flux_tolerance=None):
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
         "normal_field_rms": ("rms B.n/|B|", None, fixed.NORMAL_FIELD_CONSTRAINT),
-        "flux_ratio": ("coil flux / PHIEDGE", *band),
+        "flux_ratio": ("coil flux / PHIEDGE", None, None),
         "phiedge_factor": ("PHIEDGE / seed PHIEDGE", None, None),
     }
 
 
-def plot_history(rows, keys, out, flux_tolerance=None):
+def plot_history(rows, keys, out):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -107,7 +105,7 @@ def plot_history(rows, keys, out, flux_tolerance=None):
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
     figure.tight_layout(), figure.savefig(out / "loss.png", dpi=200), plt.close(figure)
 
-    panels = [(k, *spec) for k, spec in limits(flux_tolerance).items() if k in keys]
+    panels = [(k, *spec) for k, spec in limits().items() if k in keys]
     columns = 3
     figure, axes = plt.subplots((len(panels) + columns - 1) // columns, columns,
                                 figsize=(4 * columns, 3 * ((len(panels) + columns - 1) // columns)), squeeze=False)
@@ -317,7 +315,7 @@ def main(argv=None):
     rows, keys = read_history(run)
     if args.match_flux and "flux_ratio" not in keys:
         raise SystemExit("--match-flux needs a fixed-arm run that logs flux_ratio")
-    plot_history(rows, keys, out, args.flux_tolerance)
+    plot_history(rows, keys, out)
     frames = checkpoints(run)
     if frames:
         plot_evolution(frames, out, final_step=rows[-1]["step"])

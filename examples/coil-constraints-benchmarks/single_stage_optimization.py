@@ -13,10 +13,9 @@ curvature, mean squared curvature, separation, plasma clearance) and the
 normal-field limit. The B.n term keeps the prescribed boundary close to what
 the coils produce, so the fixed-boundary QA stays meaningful for the coils.
 
-In vacuum PHIEDGE only scales the field, so the coils may enclose any flux:
-the counterpart of the free arm's shared current factor. FLUX_TOLERANCE adds
-a band on the coils' toroidal flux through the boundary, the counterpart of
-fixed currents and PHIEDGE. ``flux_ratio`` is logged either way.
+In vacuum PHIEDGE only scales the field, so the coils may enclose any flux;
+the coils' toroidal flux through the boundary over PHIEDGE is logged as
+``flux_ratio`` (``postprocess.py --match-flux`` rescales the currents by it).
 
     python single_stage_optimization.py --steps 5 --output runs/fixed
 
@@ -62,7 +61,6 @@ ESS_ALPHA = 1.2
 BOUNDARY_STEP, COIL_STEP = (0.1 if P.SEED is None else 0.02), P.COIL_STEP
 NORMAL_FIELD_CONSTRAINT = 0.008   # area-weighted RMS B.n/|B| limit
 NORMAL_FIELD_WEIGHT = 1.0e3
-FLUX_TOLERANCE = None              # e.g. 0.005: relative band on the coils' flux around PHIEDGE
 OPTIMIZER_FTOL = 1e-10
 FIELD_STRENGTH_TOLERANCE = 0.005   # finite beta: relative band on edge R B_phi around the coils' mu0 I / 2 pi
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
@@ -76,7 +74,7 @@ def parse_args(argv=None):
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--coils", type=Path, default=P.COILS_FILE)
     parser.add_argument("--beta", type=float, default=0.0,
-                        help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
+                        help="seed beta: on-axis (WOUT betaxis) for COIL_CASE=ellipse5-beta7, else volume-average")
     parser.add_argument("--wout", type=Path, help="restart the boundary from this WOUT's last surface")
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     parser.add_argument("--bootstrap", action="store_true",
@@ -132,7 +130,6 @@ def main(argv=None):
                                                          bootstrap_mismatch, max_abs_iota)
 
     started = time.monotonic()
-    mpol, ntor, ns = P.RESOLUTION
     inp = seed_input(vj)
     if args.wout is not None:
         inp = boundary_from_wout(inp, vj.read_wout(args.wout))
@@ -142,7 +139,7 @@ def main(argv=None):
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.bootstrap:
         inp, _, redl = bootstrap_input(inp, args.beta, args.device)
-    elif args.beta > 0 or P.B0 is not None:
+    else:  # also in vacuum: it sets PHIEDGE for B0
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
@@ -157,7 +154,7 @@ def main(argv=None):
         vary_phiedge=vary_phiedge, current_dofs=P.CURRENT_KNOTS - 1 if redl is not None else None)
 
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
-    if P.B0 is not None and args.restart is None:  # a restart keeps the run's own currents
+    if args.restart is None:  # a restart keeps the run's own currents
         coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
@@ -273,7 +270,7 @@ def main(argv=None):
 
     def coil_rows(u):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
-        rbc, zbs, surface, coils = objects_from_x(x)
+        _, _, surface, coils = objects_from_x(x)
         clearance = coil_limits.surface_distance(coils, surface)
         rows = [coil_limits.coil_inequalities(coils),
                 jnp.atleast_1d((clearance - P.COIL_SURFACE_DISTANCE_LIMIT - P.DISTANCE_MARGIN)
@@ -281,9 +278,6 @@ def main(argv=None):
                 # At finite beta the normal-field limit is on the total field: plasma_rows.
                 *([] if args.beta > 0 else [
                     jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT)])]
-        if FLUX_TOLERANCE:
-            flux = jnp.abs(toroidal_flux(rbc, zbs, coils)) / phiedge_at(x) - 1.0
-            rows.append(jnp.stack([FLUX_TOLERANCE - flux, FLUX_TOLERANCE + flux]) / FLUX_TOLERANCE)
         return jnp.concatenate(rows)
 
     coil_rows_jit = jax.jit(coil_rows)
@@ -385,7 +379,7 @@ def main(argv=None):
     result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
                       constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
     x = x0 + scales * result.x
-    rbc, zbs, surface, coils = objects_from_x(jnp.asarray(x))
+    coils = objects_from_x(jnp.asarray(x))[3]
     coils.to_json(str(out / "coils.json"))
     wout = plasma_problem.equilibrium_from_x(x[:n_boundary]).wout
     vj.write_wout(str(out / "wout.nc"), wout)

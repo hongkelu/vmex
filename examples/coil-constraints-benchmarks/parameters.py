@@ -28,6 +28,8 @@ bootstrap current comes from the DKX drift-kinetic solver (Redl assumes quasisym
 Their coil length, curvature and MSC limits follow the plasma: multiples of the
 circumference 2 pi (a + d), curvature 1 / (a + d) and its square for a circle
 d = COIL_SURFACE_DISTANCE_LIMIT outside the widest allowed plasma, a = R / aspect_min.
+A ``-tok`` suffix (``qa4-beta-tok``, ``qi6-beta-tok``) seeds the same case from a
+circular tokamak with a 0.05 m helical ripple instead of the rotating ellipse.
 """
 import math
 import os
@@ -112,13 +114,13 @@ elif CASE in ("qa3", "qh", "qi"):
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
         IOTA_FLOOR = 0.51          # above the iota = 1/2 resonance
-elif CASE in ("qa4-beta", "qi6-beta"):
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA, DKX for the QI), 4 order-12 coils per half period.
     COILS_FILE = HERE / f"coils.{CASE}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
-    if CASE == "qa4-beta":
+    if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.42, (3.5, 4.5)
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
     else:
@@ -127,6 +129,8 @@ elif CASE in ("qa4-beta", "qi6-beta"):
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
+if CASE.endswith("-tok"):  # a circular tokamak with a 0.05 m helical ripple (vmex examples/data/input.minimal_seed_nfp*)
+    SEED = (SEED[0], SEED[1], 0.05 * SEED[1] / RADIUS_TARGET)
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius

@@ -772,7 +772,9 @@ def test_j_invariant_map_keeps_distinct_well_actions():
         "G_b": np.ones(1), "I_b": np.zeros(1), "s_b": np.array([0.5]),
     }
     bstar = 1.05
-    field = lambda z: 1.0 + 0.08 * np.sin(z) + 0.3 * np.cos(2.0 * z)
+    def field(z):
+        return 1.0 + 0.08 * np.sin(z) + 0.3 * np.cos(2.0 * z)
+
     grid = np.linspace(0.0, 2.0 * np.pi, 1001)
     roots = [brentq(lambda z: field(z) - bstar, a, b)
              for a, b in zip(grid[:-1], grid[1:])

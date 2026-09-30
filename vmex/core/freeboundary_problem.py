@@ -485,8 +485,8 @@ class CoilParameters:
         ESSOS symmetry and quadrature of the coils.
     scales:
         Positive coordinate scales used to condition the optimizer; by
-        default 0.06 per relative current and ``0.002 / k**2`` metres per
-        Fourier coefficient of order ``k``.
+        default 0.06 per relative current, 0.002 m per constant Fourier
+        coefficient and ``0.002 / k**2`` m per coefficient of order ``k``.
     """
 
     def __init__(
@@ -1014,8 +1014,9 @@ class FreeBoundaryProblem(FunctionProblem):
 
         Returns
         -------
-        The (possibly polished) accepted root. On failure the original root
-        and derivative caches are kept.
+        root
+            The (possibly polished) accepted root. On failure the original
+            root and derivative caches are kept.
         """
         if self._preconditioner is not None or self.accepted_step != 0:
             raise ValueError('enable root polishing before matrix-free setup and optimization')

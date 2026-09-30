@@ -245,17 +245,22 @@ def resize_coils(coils, order, n_segments):
 
 
 def scale_coil_currents(coils, rbtor):
-    """Coils with every current scaled so the linked mu0 I / 2 pi (R B_phi at R = 1 m, Z = 0) is ``rbtor``."""
+    """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``.
+
+    mu0 I / 2 pi is the mean of R B_phi on the loop R = R0, Z = 0, with R0 the
+    case's ``P.RADIUS_TARGET`` (the seed's RBC(0,0)). The loop used to sit at a
+    hard-coded R = 1 m, which is R0 for every case in ``parameters.py``.
+    """
     import jax
     import jax.numpy as jnp
     import numpy as np
     from essos.coils import Coils
     from essos.fields import BiotSavart
 
-    phi = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
-    points = jnp.asarray(np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1))
+    r0, phi = P.RADIUS_TARGET, np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
+    points = jnp.asarray(r0 * np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1))
     field = np.asarray(jax.vmap(BiotSavart(coils).B)(points))
-    linked = abs(float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1])))
+    linked = abs(r0 * float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1])))
     return Coils(coils.curves, coils.dofs_currents_raw * (rbtor / linked), currents_scale=coils.currents_scale)
 
 

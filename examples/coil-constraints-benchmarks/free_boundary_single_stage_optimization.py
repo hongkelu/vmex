@@ -1,44 +1,50 @@
 #!/usr/bin/env python
 """Free-boundary single-stage coil optimization with hard coil constraints.
 
-Only the coils vary. Each trial solves the vacuum free-boundary equilibrium of
-those coils, predicted from the accepted root and certified before use, and
-SLSQP minimizes quasisymmetry (or, for ``COIL_CASE=qi``, the constructed QI
-residual) subject to hard inequalities: minimum |iota|, major radius, aspect
-ratio, the QI case's mirror ratio, coil-to-plasma clearance, and per-coil
-length, curvature, mean squared curvature and coil separation
-(``parameters.py``).
+The design variables are the coil shapes, PHIEDGE (``P.FREE_PHIEDGE``) and,
+with ``--bootstrap``, the plasma current spline values and CURTOR; the coil
+currents are fixed. Every trial solves the free-boundary equilibrium of those
+coils at the case's pressure and current, predicted from the accepted root and
+certified before use (``vmex.optimize.FreeBoundaryProblem``), so the boundary
+is a flux surface of the coil plus plasma field and no B.n term is needed.
+SLSQP minimizes
 
-PHIEDGE is a design variable and the coil currents are fixed at B0 = 1 T. In
-vacuum only the flux per ampere sets the plasma size, so fixing both the
-currents and PHIEDGE pins it: at iota >= 0.41 that holds the aspect ratio at its
-4.9 floor (QA ~0.02), while a free PHIEDGE lets SLSQP reach aspect 5.1 (QA
-~0.004). FREE_PHIEDGE = False restores the pinned case.
+    J = (1/2) |r|^2
+
+with r the quasisymmetry residual of ``P.HELICITY`` (or the constructed QI
+residual when it is None), subject to hard inequalities, in this row order:
+
+- min |iota| >= ``IOTA_FLOOR``; major radius within ``RADIUS_TOLERANCE`` of R0;
+- the edge mirror ratio <= ``MIRROR_LIMIT`` and max |iota| <= ``IOTA_CEILING``,
+  for the cases that set them;
+- with ``--bootstrap``, the bootstrap mismatch <= ``REDL_TOLERANCE``;
+- coil-to-plasma clearance, aspect ratio in ``ASPECT_RANGE``;
+- and the pure-coil rows of ``_coil_constraints.py``: per-coil length,
+  curvature and mean squared curvature, coil-coil distance.
+
+The limits are in ``parameters.py``. The coil currents are scaled once so the
+edge R B_phi is B0 R0 (B0 = 1 T); PHIEDGE then sets the plasma size. Fixing
+both pins the size: for ``ellipse5`` in vacuum that holds the aspect ratio at
+its 4.9 floor (QA ~0.02), while a free PHIEDGE reaches 5.1 (QA ~0.004).
+
+``--beta`` sets a fixed pressure p ~ 1 - s calibrated on the fixed-boundary seed
+(<beta>, or on-axis beta for ``ellipse5-beta7``, ``P.BETA_DEFINITION``) with zero
+net current, and refits the seed coils to (B_coils + B_plasma).n = 0 on that
+seed (virtual-casing B_plasma, coil limits as penalties, no equilibrium
+solves). The virtual-casing B.n/|B| and pressure balance of the saved states
+are diagnostics only. ``--bootstrap`` (with ``--beta``) uses reactor-like
+kinetic profiles and a self-consistent bootstrap current, Redl's or, for
+``P.BOOTSTRAP_MODEL = "dkx"`` (``qi6-beta*``, needs the ``dkx`` package), DKX's.
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
-    COIL_CASE=qh python free_boundary_single_stage_optimization.py --steps 5 --output runs/free-qh
+    COIL_CASE=qa4-beta python free_boundary_single_stage_optimization.py --beta 0.01 --bootstrap --output runs/free-qa4
 
-Every accepted step appends one line to ``metrics.jsonl``. Coils and a WOUT
-are saved every ``--save-every`` steps and at the end; restart from them with
-``--coils <out>/coils.json --wout <out>/wout.nc``.
-
-``--beta 0.005`` runs the same case at finite beta: a fixed pressure p ~ 1 - s,
-scaled once so the fixed-boundary seed has that volume-average beta, with zero
-net toroidal current. With fixed currents and pressure, a free PHIEDGE changes
-the size but hardly B0 or beta. The loss and constraints are unchanged.
-The free-boundary solve already makes
-the boundary a flux surface of the coil plus plasma field, so the virtual-casing
-B.n/|B| and pressure balance are saved diagnostics only, together with beta.
-Before the free-boundary seed solve the coils are refitted to the finite-beta
-fixed-boundary seed (no equilibrium solves): they must cancel the plasma's own
-normal field, (B_coils + B_plasma).n = 0 with B_plasma from virtual casing,
-under the coil limits of ``parameters.py`` as penalties.
-
-``--bootstrap`` (with ``--beta``) replaces the zero current with a self-consistent
-Redl bootstrap current (``bootstrap_input``): the current-spline values and CURTOR
-join PHIEDGE as design variables, and the Redl mismatch is a hard constraint.
-With ``P.BOOTSTRAP_MODEL = "dkx"`` (the QI case) that row holds the DKX drift-kinetic
-current instead; the seed's Picard loop still starts from Redl's.
+Outputs in ``--output``: ``input.run`` (the deck as run), ``coils.initial.json``,
+one ``metrics.jsonl`` line per accepted step (``qa``, ``min_abs_iota``,
+``redl_mismatch``, ...), ``events.jsonl``, ``diagnostics.jsonl``,
+``coils.stepN.json`` / ``wout.stepN.nc`` every ``--save-every`` steps, and the
+final ``coils.json``, ``wout.nc`` and ``summary.json``. ``--restart <run>``
+continues a finished run from its deck, coils and WOUT.
 """
 
 import argparse
@@ -83,7 +89,7 @@ def parse_args(argv=None):
     parser.add_argument("--beta", type=float, default=0.0,
                         help="seed beta: on-axis (WOUT betaxis) for COIL_CASE=ellipse5-beta7, else volume-average")
     parser.add_argument("--bootstrap", action="store_true",
-                        help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+                        help="reactor-like kinetic profiles and a self-consistent bootstrap current (P.BOOTSTRAP_MODEL)")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
                         "WOUT (no seed calibration or coil refit); pass the run's --beta/--bootstrap")
     args = parser.parse_args(argv)

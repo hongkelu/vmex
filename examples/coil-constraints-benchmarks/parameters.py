@@ -1,30 +1,41 @@
-"""Case shared by the free- and fixed-boundary coil-constraint benchmarks.
+"""Cases of the coil-constraint benchmarks, selected by ``COIL_CASE`` (default ``ellipse5``).
 
-Default: vacuum QA from a rotating ellipse, 1 m major radius, three independent
-order-16 coils. MSC is mean SQUARED curvature, in inverse square metres.
+The module-level values are the ``ellipse5`` case; the blocks at the end override
+them per case. Every case has R0 = ``RADIUS_TARGET`` = 1 m and B0 = 1 T: the
+coil currents are scaled once so their linked mu0 I / 2 pi is B0 R0 (the edge
+R B_phi) and then held fixed, while the free arm varies PHIEDGE, so the plasma
+size stays free and the field strength (and beta) holds. MSC is the mean
+squared curvature, in 1/m^2.
 
-``COIL_CASE=qa3``, ``qh`` and ``qi`` start from rotating ellipses at R = 1 m
-and B0 ~ 1 T: nfp 3 at aspect 6 for QA, nfp 4 at aspect 6 for QH, helicity
-(1, -1), and nfp 4 at aspect 8 for the constructed QI residual with a
-mirror-ratio limit. Their iota floors keep the profile off the low-order
-rationals a vacuum field breaks into islands at: QH above iota = 1 (its seed,
-b = 0.9 a_eff, starts at 1.016), QI above 1/2. Each has its own stage-two
-coils, three order-8 coils per half period.
+=============== ================================ ======== ======== ============= ======================
+case            configuration and seed           --beta   model    iota          coils
+=============== ================================ ======== ======== ============= ======================
+ellipse5        QA, nfp 2, aspect 4.9-5.1, from  volume   Redl     >= 0.41       3 x order 16: 5 m,
+                ``input.rotating_ellipse``                                       5 /m, 5 /m^2, 0.15 m
+                                                                                 apart, 0.20 m clear
+ellipse5-beta7  as ellipse5                      on axis  Redl     >= 0.16       as ellipse5
+qa3             QA, nfp 3, aspect 5.9-6.1        volume   Redl     >= 0.41       3 x order 8: 3.5 m,
+qh              QH (1, -1), nfp 4, 5.9-6.1       volume   Redl     >= 1.1        8 /m, 10 /m^2, 0.08 m
+qi              QI, nfp 4, 7.9-8.1, mirror 0.21  volume   Redl     >= 0.51       apart, 0.15 m clear
+qa4-beta        QA, nfp 2, aspect 3.5-4.5        volume   Redl     >= 0.27       4 x order 12, limits
+qi6-beta        QI, nfp 4, 5.9-6.1, mirror 0.21  volume   DKX      0.86 - 0.98   from the plasma size
+=============== ================================ ======== ======== ============= ======================
 
-B0 = 1 T in both cases: the coil currents are scaled once so their linked
-mu0 I / 2 pi is B0 R0 (the edge R B_phi) and then held fixed, and the free arm
-varies PHIEDGE, so the plasma size stays free while the field strength and,
-at finite beta, beta hold.
-
-``COIL_CASE=ellipse5-beta7`` keeps the ellipse with an iota floor of 0.16 and ``--beta`` on axis.
-``COIL_CASE=qa4-beta`` and ``qi6-beta`` are the finite-beta, self-consistent bootstrap
-cases: a compact nfp-2 QA (aspect 3.5-4.5, Redl) and an nfp-4 QI at aspect 6, whose
-bootstrap current comes from the DKX drift-kinetic solver (Redl assumes quasisymmetry).
-Their coil length, curvature and MSC limits follow the plasma: multiples of the
-circumference 2 pi (a + d), curvature 1 / (a + d) and its square for a circle
-d = COIL_SURFACE_DISTANCE_LIMIT outside the widest allowed plasma, a = R / aspect_min.
-A ``-tok`` suffix (``qa4-beta-tok``, ``qi6-beta-tok``) seeds the same case from a
-circular tokamak with a 0.05 m helical ripple instead of the rotating ellipse.
+"--beta" is how the scripts read ``--beta`` (``BETA_DEFINITION``: <beta>, or
+WOUT ``betaxis``); "model" the bootstrap current of ``--bootstrap``
+(``BOOTSTRAP_MODEL``; DKX needs the optional ``dkx`` package). The iota floors
+and ceiling keep the profile off the low-order rationals where a vacuum field
+breaks into islands the nested-surface equilibrium cannot see: QH between
+iota = 1 and 8/7, QI above 1/2, qi6-beta in the Stellaris band below the 4/4
+islands. ``qa3``, ``qh``, ``qi``, ``qa4-beta`` and ``qi6-beta`` seed from a
+rotating ellipse (``SEED`` = (nfp, aspect, b / a_eff)) and use their own
+stage-two coils, ``coils.<case>.json`` (``fit_coils.py``). A ``-tok`` suffix
+(``qa4-beta-tok``, ``qi6-beta-tok``) seeds the same case from a circular
+tokamak with a 0.05 m helical ripple instead. For ``qa4-beta*`` and
+``qi6-beta*`` the coil length, curvature and MSC limits are
+``COIL_LIMIT_FACTORS`` times the circumference 2 pi (a + d), the curvature
+1 / (a + d) and its square of a circle d = ``COIL_SURFACE_DISTANCE_LIMIT``
+outside the widest allowed plasma, a = R0 / aspect_min.
 """
 import math
 import os
@@ -44,8 +55,9 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
-# self-consistent Redl bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and
-# CURTOR are design variables, and the Redl mismatch sum_j R_j^2 is held under REDL_TOLERANCE.
+# self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
+# are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
+# or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
 REDL_SURFACES = tuple(0.1 + 0.8 * i / 7 for i in range(8))
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3

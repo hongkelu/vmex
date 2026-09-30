@@ -1321,7 +1321,7 @@ class FreeBoundaryProblem(FunctionProblem):
 
         Raises
         ------
-        TrialRejected
+        vmex.core.errors.TrialRejected
             If the trial cannot be solved or certified.
         """
         delta = self._validate_x(delta)

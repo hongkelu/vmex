@@ -1,46 +1,49 @@
 #!/usr/bin/env python
 r"""Fixed-boundary single-stage counterpart of the coil-constraint benchmark.
 
-The boundary and the coils form one variable vector, every trial solves the
-fixed-boundary equilibrium, and SLSQP minimizes
+The design variables are the boundary modes up to ``MAX_MODE`` (RBC(0,0)
+fixed), the coil shapes and, at ``--beta`` > 0, PHIEDGE; with ``--bootstrap``
+also the current spline values and CURTOR. The coil currents are fixed. Every
+trial solves the fixed-boundary equilibrium, and SLSQP minimizes
 
-    J = (1/2) |r_QS|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
+    J = (1/2) |r|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
 
-(r_QS the constructed QI residual for ``COIL_CASE=qi``) subject to the hard
-inequalities of ``parameters.py`` (minimum |iota|, aspect band, major radius,
-the QI case's mirror ratio), the coil limits of ``_coil_constraints.py`` (length,
-curvature, mean squared curvature, separation, plasma clearance) and the
-normal-field limit. The B.n term keeps the prescribed boundary close to what
-the coils produce, so the fixed-boundary QA stays meaningful for the coils.
+with r the quasisymmetry or constructed QI residual of the case. The B.n term
+keeps the prescribed boundary close to a flux surface of the coils. The hard
+inequalities (limits in ``parameters.py``) are, in this row order:
 
-In vacuum PHIEDGE only scales the field, so the coils may enclose any flux;
-the coils' toroidal flux through the boundary over PHIEDGE is logged as
-``flux_ratio`` (``postprocess.py --match-flux`` rescales the currents by it).
+- plasma rows: min |iota| >= ``IOTA_FLOOR``, the aspect band, the major-radius
+  band, the mirror ratio and max |iota| <= ``IOTA_CEILING`` where the case
+  sets them; at beta > 0 the total-field B.n limit and the field-strength band;
+  with ``--bootstrap`` the bootstrap mismatch <= ``REDL_TOLERANCE``;
+- coil rows: the ``_coil_constraints.py`` limits, the coil-to-plasma
+  clearance and, in vacuum, rms B.n/|B| <= ``NORMAL_FIELD_CONSTRAINT``.
+
+A rejected equilibrium trial counts the plasma rows as violated. In vacuum
+PHIEDGE only scales the field, so the coils may enclose any flux; their
+toroidal flux through the boundary over PHIEDGE is logged as ``flux_ratio``
+(``postprocess.py --match-flux`` rescales the currents by it).
+
+``--beta`` uses the free arm's fixed pressure p ~ 1 - s (<beta>, or on-axis
+beta for ``ellipse5-beta7``) with zero net current. The plasma then carries a
+field of its own, so the B.n limit and objective term apply to the total
+(B_coils + B_plasma).n/|B|, with B_plasma from virtual casing on every trial,
+differentiated through the equilibrium. Outside the plasma R B_phi is set by
+the coils alone (Ampere's law), so a band of ``FIELD_STRENGTH_TOLERANCE``
+holds the edge R B_phi at the coils' linked mu0 I / 2 pi, which fixes B0
+while the free PHIEDGE leaves the plasma size free. Pressure balance and the
+total and coil-only B.n are checked at the end on a 61 x 64 grid.
+``--bootstrap`` (with ``--beta``) adds the free arm's self-consistent bootstrap
+current (Redl, or DKX for ``qi6-beta*``).
 
     python single_stage_optimization.py --steps 5 --output runs/fixed
 
-``--beta`` is the finite-beta counterpart of the free-boundary arm: the same
-fixed pressure p ~ 1 - s and zero net current, and PHIEDGE becomes a design
-variable (``vary_phiedge``), so the field-strength band below holds B0 without
-fixing the plasma size, as the free arm's fixed currents do. The plasma currents
-then carry a field of their own, so the normal-field limit and objective term
-apply to the total (B_coils + B_plasma).n/|B|, with B_plasma from virtual
-casing on every trial's equilibrium and differentiated through it, and an exact
-field-strength band replaces the coil-only flux: outside the plasma R B_phi is
-set by the coils alone (Ampere's law), so the equilibrium's edge R B_phi =
-bvco(s=1) must equal the coils' linked mu0 I / 2 pi at any beta. With p(1) = 0
-and a zero total B.n the exterior field matches the interior one, so pressure
-balance is checked at the end, with the total and coil-only B.n, on a 61 x 64
-grid where virtual casing is planned afresh.
-
-``--bootstrap`` (with ``--beta``) adds the free arm's self-consistent Redl
-bootstrap current: the current-spline values and CURTOR become plasma variables,
-and a plasma row holds the Redl mismatch under ``P.REDL_TOLERANCE``.
-
-A rejected equilibrium trial counts the plasma rows as violated.
-
-Continue a run with ``--coils <out>/coils.json --wout <out>/wout.nc``: the
-boundary restarts from the WOUT and SLSQP from an identity Hessian.
+Outputs in ``--output``: ``input.run``, ``coils.initial.json``, one
+``metrics.jsonl`` line per SLSQP iteration, ``coils.stepN.json`` /
+``wout.stepN.nc`` every ``--save-every`` iterations, and the final
+``coils.json``, ``wout.nc`` and ``summary.json`` (with the endpoint
+diagnostics). Continue a run with ``--restart <run>``, or with ``--coils`` and
+``--wout`` (the boundary restarts from the WOUT, SLSQP from an identity Hessian).
 """
 
 import argparse
@@ -80,7 +83,7 @@ def parse_args(argv=None):
     parser.add_argument("--wout", type=Path, help="restart the boundary from this WOUT's last surface")
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
     parser.add_argument("--bootstrap", action="store_true",
-                        help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
+                        help="reactor-like kinetic profiles and a self-consistent bootstrap current (P.BOOTSTRAP_MODEL)")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
                         "WOUT boundary (no seed calibration); pass the run's --beta/--bootstrap")
     args = parser.parse_args(argv)

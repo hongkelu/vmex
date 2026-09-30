@@ -3,13 +3,18 @@
 
     python postprocess.py runs/free                   # free-boundary arm
     python postprocess.py runs/fixed --match-flux     # fixed-boundary arm
+    COIL_CASE=qi6-beta python postprocess.py runs/free-qi6 --no-dense
 
-Reads what both optimization scripts write: ``metrics.jsonl``, the initial
+Run it with the run's ``COIL_CASE``: the limits and targets come from
+``parameters.py``. Reads what both optimization scripts write: ``metrics.jsonl``, the initial
 coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
 ``coils.json`` / ``wout.nc``. Writes into ``<run>/postprocess``:
 
-- ``history.csv``, ``loss.png`` (QA and objective) and ``constraints.png``
-  (every constrained quantity against its limits, from ``parameters.py``);
+- ``history.csv``, ``loss.png`` (QA and objective) and ``constraints.png``:
+  every logged constrained quantity against its limits (iota floor and
+  ceiling, aspect, major radius, mirror ratio, bootstrap mismatch, clearance,
+  B.n/|B|, edge R B_phi, ...; ``limits``). At beta > 0 the fixed arm's
+  normal-field limit is drawn on the total B.n it constrains;
 - ``evolution.gif``: coils and LCFS at every checkpoint, coloured by |B| of
   the coil field, and ``initial_final.png``;
 - with ``--poincare N``, ``poincare.png`` / ``poincare.json``: field lines of
@@ -19,8 +24,11 @@ coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
   distance from its surface; islands and stochastic layers show up here even
   though the nested-surface equilibrium cannot represent them;
 - ``wout_dense.nc``, ``dense.json`` and the ``vmex.plot_wout`` figures: the
-  final (or latest checkpoint) coils solved free-boundary at ``--ns`` (default NS201), the like-for-
-  like QA of both arms. A fixed-arm run need not enclose PHIEDGE; with
+  final (or latest checkpoint) coils solved free-boundary at ``--ns`` (default
+  201), the like-for-like comparison of both arms: QA, min and max |iota|,
+  aspect, major radius, the mirror ratio where the case limits it and, for
+  ``--bootstrap`` runs (solved at the run's final current), the Redl mismatch
+  and for DKX cases the DKX one. A fixed-arm run need not enclose PHIEDGE; with
   ``--match-flux`` its currents are rescaled by the logged coil-flux ratio,
   which in vacuum changes the field strength only.
 - with ``--trace``, ``trace/``: ``vmex --trace`` alpha losses of that dense

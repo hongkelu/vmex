@@ -8,6 +8,7 @@ mu0 I / 2 pi is B0 R0 (the edge R B_phi) and then held fixed, and the free arm
 varies PHIEDGE, so the plasma size stays free while the field strength and,
 at finite beta, beta hold.
 
+``COIL_CASE=ellipse5-beta7`` keeps the ellipse with an iota floor of 0.16 and ``--beta`` on axis.
 ``COIL_CASE=qa6`` selects the aspect-6 case: the Landreman & Paul (2021) QA
 boundary at R = 1 m, B0 = 1 T set through PHIEDGE (R B_phi = B0 R0 outside the
 plasma), ``--beta`` read as on-axis beta (WOUT ``betaxis``), and the coil limits
@@ -67,5 +68,9 @@ if CASE == "qa6":
     LENGTH_LIMIT = 6.5              # m: nfp 2, 3 coils/half-period (Jorge 2023: 5.5 m at nfp 3, 2 coils)
     COIL_DISTANCE_LIMIT = 0.10
     COIL_SURFACE_DISTANCE_LIMIT = 0.15
+elif CASE == "ellipse5-beta7":
+    # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
+    BETA_DEFINITION = "axis"
+    IOTA_FLOOR = 0.16
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")

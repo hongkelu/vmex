@@ -86,7 +86,7 @@ def limits(flux_tolerance=None):
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
         "normal_field_rms": ("rms B.n/|B|", None, fixed.NORMAL_FIELD_CONSTRAINT),
         "flux_ratio": ("coil flux / PHIEDGE", *band),
-        "current_factor": ("coil current factor", None, None),
+        "phiedge_factor": ("PHIEDGE / seed PHIEDGE", None, None),
     }
 
 
@@ -255,9 +255,17 @@ def dense_solve(frame, args, rows, out):
     from essos.fields import BiotSavart
     from free_boundary_single_stage_optimization import resize_coils, seed_input, target_residual
 
-    inp = replace(seed_input(vmex), lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]),
-                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     label, coil_path, wout_path = frame
+    mpol, ntor, _ = P.RESOLUTION
+    run = Path(coil_path).parent
+    if (run / "input.run").exists():
+        inp = vmex.VmecInput.from_file(run / "input.run").change_resolution(
+            mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
+    else:  # older runs: the case's seed deck
+        inp = seed_input(vmex)
+    phiedge = float(vmex.read_wout(wout_path).phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
+    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]), phiedge=phiedge,
+                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
     row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
     scale = 1.0 / row["flux_ratio"] if args.match_flux else 1.0

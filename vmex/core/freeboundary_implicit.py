@@ -79,6 +79,9 @@ class FreeBoundaryImplicitConfig:
     vacuum_program: Any = None
     adjoint_dense_batch_size: int = 4
     adjoint_dense_max_dofs: int = 4096
+    #: Optional ``(params, x) -> params``: the design vector then also sets
+    #: plasma parameters (PHIEDGE, the prescribed current profile).
+    plasma_from_parameters: Callable[[Any, Any], Any] | None = None
 
     @property
     def resolution(self):
@@ -106,6 +109,7 @@ def make_free_boundary_config(
     adjoint_dense_batch_size: int = 4,
     adjoint_dense_max_dofs: int = 4096,
     field_from_parameters: Callable[[Any], Any] | None = None,
+    plasma_from_parameters: Callable[[Any, Any], Any] | None = None,
     device: Any = AUTO,
     max_fsq_ratio: float = 1.0,
     refine_tol: float = 1.0e-10,
@@ -115,6 +119,8 @@ def make_free_boundary_config(
     By default the second solve argument is an external-field pytree. For a
     smaller AD graph, pass ``field_from_parameters`` and then supply only the
     actual current/coil parameters to :func:`solve_free_boundary_implicit`.
+    ``plasma_from_parameters(params, x)`` returns the plasma parameters (for
+    example PHIEDGE or the current profile) that the design point ``x`` sets.
     ``external_field`` here is the concrete reference used to fix resolution.
     ``device="auto"`` uses the CPU for the coupled implicit response on an
     accelerator host unless the process already pins JAX placement; pass an
@@ -211,6 +217,7 @@ def make_free_boundary_config(
         schur_probe_chunk_size=int(schur_probe_chunk_size),
         adjoint_dense_batch_size=int(adjoint_dense_batch_size),
         adjoint_dense_max_dofs=int(adjoint_dense_max_dofs),
+        plasma_from_parameters=plasma_from_parameters,
     )
     return dataclasses.replace(config, vacuum_program=_vacuum_program(config))
 
@@ -356,6 +363,8 @@ def _projected_residual_lane(z, params, field_parameters, frozen, rcon0,
                              cfg: FreeBoundaryImplicitConfig,
                              formulation: str):
     icfg = cfg.implicit
+    if cfg.plasma_from_parameters is not None:
+        params = cfg.plasma_from_parameters(params, field_parameters)
     project = im._dof_projector(icfg, dof_mask)
     # Unlike fixed boundary, every active edge coefficient comes from z;
     # the input boundary is only the forward solver's initial guess.

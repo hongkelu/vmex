@@ -128,7 +128,8 @@ def main(argv=None):
     from vmex.core.statephysics import _field_chain
     from free_boundary_single_stage_optimization import (boundary_diagnostics, bootstrap_input, finite_beta_input,
                                                          redl_profiles, resize_coils, restart_input,
-                                                         scale_coil_currents, seed_input, target_residual)
+                                                         scale_coil_currents, seed_input, target_residual,
+                                                         bootstrap_mismatch)
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
@@ -145,6 +146,7 @@ def main(argv=None):
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
+    mismatch = None if redl is None else bootstrap_mismatch(inp, redl)
 
     qs = target_residual()
     # In vacuum PHIEDGE only scales the plasma field, a null direction; at finite beta the
@@ -255,7 +257,7 @@ def main(argv=None):
                      (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
                      (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE]
         if redl is not None:
-            rows.append(1.0 - redl.total_state(state, ctx) / P.REDL_TOLERANCE)
+            rows.append(1.0 - mismatch(state, ctx) / P.REDL_TOLERANCE)
         return jnp.stack(rows)
 
     n_plasma = 5 + bool(P.MIRROR_LIMIT) + 3 * (args.beta > 0) + int(redl is not None)
@@ -351,7 +353,7 @@ def main(argv=None):
             row.update(total_normal_field_rms=float(total_normal_field_rms(coils, state, ctx)),
                        rbtor_ratio=float(rbtor_ratio(state, ctx)))
         if redl is not None:
-            row.update(redl_mismatch=float(redl.total_state(state, ctx)), curtor=float(equilibrium.inp.curtor))
+            row.update(redl_mismatch=float(mismatch(state, ctx)), curtor=float(equilibrium.inp.curtor))
         last.update(time=now, step=last["step"] + 1)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
@@ -360,7 +362,7 @@ def main(argv=None):
               f"B.n={row.get('total_normal_field_rms', row['normal_field_rms']):.2e} beta={row['beta']:.4%} "
               f"RBphi={row.get('rbtor_ratio', float('nan')):.5f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"plasma_slack={row['plasma_minimum_scaled_slack']:.4f} "
-              + (f"redl={row['redl_mismatch']:.2e} CURTOR={row['curtor']:.0f}A " if redl is not None else "") +
+              + (f"{P.BOOTSTRAP_MODEL}={row['redl_mismatch']:.2e} CURTOR={row['curtor']:.0f}A " if redl is not None else "") +
               f"{row['step_seconds']:.1f}s", flush=True)
 
     def save(tag, u):

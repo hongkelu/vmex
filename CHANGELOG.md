@@ -8,14 +8,25 @@ revision it was measured at, and the pages that cite it.
 ## Unreleased
 
 - `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
-  free-boundary root with `opt.minimize` (SLSQP, L-BFGS-B): trials start from a
-  tangent prediction, are strictly edge-converged and certified, and only
-  accepted iterates are promoted.
-- `adjoint_solver="forward_dense_jax"` with optional seed-LU matrix-free reuse
-  and Newton root polishing; an invalid GPU LU pivot buffer is refactored on CPU.
-- `enable_matrix_free(dense_derivatives=True)` solves every derivative densely
-  and reseeds the LU at each accepted step: about 2x faster steps on the vacuum
-  coil benchmark, with identical iterates.
+  free-boundary root. Trials start from a tangent prediction, are solved with
+  strict edge convergence and certified, and only accepted iterates are
+  promoted; a failed trial raises the new `TrialRejected`. `from_loss` takes
+  `event=` progress callbacks and a wall-time `deadline=`.
+- `opt.minimize(problem, method="SLSQP", ...)` runs SciPy SLSQP on a
+  `FunctionProblem` in its own units and reports `stop_reason` and
+  `accepted_steps`.
+- The new `adjoint_solver="forward_dense_jax"` factors the active Jacobian for
+  the multi-RHS pullback. `FreeBoundaryProblem` can reuse that LU as a
+  matrix-free preconditioner (`enable_matrix_free`, with
+  `dense_derivatives=True` to reseed it at every accepted step), polish roots
+  (`enable_root_polishing`) and Newton-correct predicted trials
+  (`enable_newton_correction`). An invalid GPU LU pivot buffer is refactored on
+  CPU.
+- `solve_free_boundary(include_edge_in_convergence=True,
+  edge_force_tolerance=...)` also requires the spectral edge force, reported as
+  `SolveResult.fedge`, to converge.
+- `opt.major_radius` returns the wout `Rmajor_p`, and
+  `plot_optimization_movie(frame_labels=)` titles each frame.
 
 ## 0.11.6 - 2026-09-28
 

@@ -199,6 +199,7 @@ def bootstrap_input(inp, beta, device):
         inp, _ = finite_beta_input(inp, beta * stage / stages, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
         profiles, redl = redl_profiles(inp)
         picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
+                                           relax=P.PICARD_RELAX,
                                            degree=P.CURRENT_KNOTS - 1, s_eval=np.asarray(P.REDL_SURFACES),
                                            solve_kwargs=dict(device=device))
         inp = picard.input

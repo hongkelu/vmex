@@ -78,7 +78,7 @@ from solvax import (
 )
 
 from .device import AUTO
-from .errors import AdjointSolveError, VmecConvergenceError
+from .errors import AdjointSolveError, TrialRejected, VmecConvergenceError
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .solver import (
@@ -136,7 +136,7 @@ __all__ = [
     "report_targets",
     "FreeBoundaryProblem",  # noqa: F822
     "CoilParameters",  # noqa: F822
-    "TrialRejected",  # noqa: F822
+    "TrialRejected",
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
@@ -202,9 +202,6 @@ def __getattr__(name: str):  # PEP 562 lazy re-export
     if name == "CoilParameters":
         from .freeboundary_problem import CoilParameters
         return CoilParameters
-    if name == "TrialRejected":
-        from .errors import TrialRejected
-        return TrialRejected
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":
@@ -2331,17 +2328,61 @@ def least_squares(
     return result
 
 
-def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
+#: Distance outside its bounds at which a constraint row is reported for a
+#: rejected SLSQP line-search probe, so the probe is refused without a
+#: fabricated Jacobian.
+_REJECTED_CONSTRAINT_OFFSET = 1e6
+
+
+def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                       constraints=(), callback=None, options=None, tol=None):
-    """Condition SciPy coordinates and own accepted-state promotion."""
+    """Run SciPy SLSQP on a :class:`FunctionProblem` in scaled coordinates.
+
+    SciPy iterates on ``u = (x - x0) / problem.scales``; bounds, constraints,
+    callbacks and the returned ``x``/``jac`` stay in the problem's units. A
+    problem exposing ``accept_x`` (a
+    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`) must start
+    at its accepted point, and each SLSQP major iterate is promoted with
+    ``accept_x`` when its Jacobian is requested.
+
+    Parameters
+    ----------
+    problem:
+        The problem; ``problem.bounds`` is used when ``bounds`` is ``None``.
+    x0:
+        Start point (default ``problem.x0``).
+    method:
+        Must be ``"SLSQP"``.
+    bounds, constraints, tol:
+        As for :func:`scipy.optimize.minimize`; constraints are
+        :class:`~scipy.optimize.LinearConstraint` or
+        :class:`~scipy.optimize.NonlinearConstraint` with an analytic
+        Jacobian. A constraint value that raises :class:`TrialRejected`
+        reports a point far outside its bounds.
+    callback:
+        Called after each accepted step with ``x``, or with an
+        :class:`~scipy.optimize.OptimizeResult` if its only parameter is
+        named ``intermediate_result``; ``StopIteration`` stops the run.
+    options:
+        SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
+        accepted steps for a stateful problem.
+
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        With ``x``, ``fun`` and ``jac`` at the last accepted point for a
+        stateful problem (or on success), plus ``accepted_steps`` and
+        ``stop_reason``: ``None`` when SciPy stopped on its own,
+        ``"accepted_step_budget_reached"``, ``"callback_stopped"`` or
+        ``"equilibrium_trial_rejected"``. The last three set
+        ``success=False`` and ``status=99``.
+    """
     from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint, OptimizeResult
     from scipy.optimize import minimize as scipy_minimize
     from scipy.sparse import issparse
-    from scipy.sparse.linalg import LinearOperator
-    from .errors import TrialRejected
 
-    if method not in ("BFGS", "L-BFGS-B", "SLSQP"):
-        raise ValueError("problem minimization supports BFGS, L-BFGS-B and SLSQP")
+    if method != "SLSQP":
+        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
     start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
     scales = np.asarray(problem.scales, dtype=float)
     if (start.shape != scales.shape or start.ndim != 1 or not np.all(np.isfinite(start))
@@ -2354,7 +2395,9 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
     budget = int(options.get("maxiter", 100))
     if budget < 0:
         raise ValueError("maxiter must be nonnegative")
-    if promote is not None and method == "SLSQP":
+    if promote is not None:
+        # The step budget is enforced by accept(); one spare SLSQP iteration
+        # lets the last accepted step request its Jacobian.
         options["maxiter"] = budget + 1
     if bounds is None:
         bounds = problem.bounds
@@ -2367,15 +2410,10 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
             bounds = Bounds(*np.asarray(pairs).T)
         bounds = Bounds((np.asarray(bounds.lb)-start)/scales, (np.asarray(bounds.ub)-start)/scales,
                         keep_feasible=bounds.keep_feasible)
-        if method == "BFGS":
-            raise ValueError("BFGS does not support bounds; use L-BFGS-B or SLSQP")
     if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
         constraints = (constraints,)
-    constraints = tuple(constraints)
-    if constraints and method != "SLSQP":
-        raise ValueError("nonlinear/linear constraints require SLSQP")
     scaled_constraints = []
-    for constraint in constraints:
+    for constraint in tuple(constraints):
         if isinstance(constraint, (LinearConstraint, NonlinearConstraint)) and (
                 np.all(np.isneginf(constraint.lb)) and np.all(np.isposinf(constraint.ub))):
             continue
@@ -2392,7 +2430,8 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
                 except TrialRejected:
                     # Values can reject a line-search probe; never fabricate its Jacobian.
                     lo, hi = np.broadcast_arrays(c.lb, c.ub)
-                    return np.where(np.isfinite(lo), lo-1e6, np.where(np.isfinite(hi), hi+1e6, 0.))
+                    offset = _REJECTED_CONSTRAINT_OFFSET
+                    return np.where(np.isfinite(lo), lo-offset, np.where(np.isfinite(hi), hi+offset, 0.))
             scaled_constraints.append(NonlinearConstraint(
                 values, constraint.lb, constraint.ub,
                 jac=lambda u, c=constraint: np.asarray(c.jac(start+scales*u))*scales))
@@ -2402,7 +2441,7 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
     accepted = start.copy()
     value, gradient = problem.value_and_grad(accepted)
     accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
-    accepted_steps = walled = 0
+    accepted_steps = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
         return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
@@ -2413,11 +2452,10 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         pass
 
     def accept(u):
-        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps, walled
+        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
-        walled = 0
         current_value, current_gradient = problem.value_and_grad(x)
         if promote is not None:
             promote(x)
@@ -2436,29 +2474,6 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
         if promote is not None and accepted_steps >= budget:
             raise _Stop("accepted_step_budget_reached")
 
-    def value_and_grad(u):
-        nonlocal nfev, njev
-        nfev += 1
-        njev += 1
-        value, gradient = problem.value_and_grad(start+scales*u)
-        return value, np.asarray(gradient)*scales
-
-    def walled_value_and_grad(u):
-        # A rejected line-search trial sees the smooth wall of the fixed-boundary
-        # problems, base * (1 + d)**2 in the distance d from the accepted point,
-        # so L-BFGS-B shortens its step instead of stopping.
-        nonlocal walled
-        try:
-            return value_and_grad(u)
-        except TrialRejected:
-            walled += 1
-            delta = np.asarray(u) - (accepted - start)/scales
-            distance = float(np.linalg.norm(delta))
-            base = max(10.0*abs(float(accepted_value)), 1.0)
-            if distance == 0.0:
-                raise
-            return base*(1.0 + distance)**2, (2.0*base*(1.0 + distance)/distance)*delta
-
     def fun(u):
         nonlocal nfev
         nfev += 1
@@ -2468,29 +2483,25 @@ def _minimize_problem(problem, *, x0=None, method="L-BFGS-B", bounds=None,
             return np.inf
 
     def jac(u):
-        _, gradient = value_and_grad(u)
+        nonlocal nfev, njev
+        nfev += 1
+        njev += 1
+        _, gradient = problem.value_and_grad(start+scales*u)
+        gradient = np.asarray(gradient)*scales
         # SLSQP's major-iteration callback can precede backtracking. The next
         # Jacobian request identifies its accepted line-search point instead.
         accept(u)
         return gradient
 
     try:
-        result = scipy_minimize(fun if method == "SLSQP" else walled_value_and_grad,
-            np.zeros_like(start), jac=jac if method == "SLSQP" else True, method=method,
-            bounds=bounds, constraints=scaled_constraints,
-            callback=None if method == "SLSQP" else accept, options=options, tol=tol)
+        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP",
+            bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
         if result.success:
             accept(result.x)
         result.x = start + np.asarray(result.x)*scales
         if getattr(result, "jac", None) is not None:
             result.jac = np.asarray(result.jac)/scales
-        if getattr(result, "hess_inv", None) is not None:
-            inverse = result.hess_inv
-            result.hess_inv = LinearOperator((start.size, start.size),
-                matvec=lambda v: scales*(inverse @ (scales*v)), dtype=float)
         result.stop_reason = None
-        if walled:  # it stopped against rejected trials, not at a stationary point
-            result.success, result.stop_reason = False, "equilibrium_trial_rejected"
     except (_Stop, TrialRejected) as error:
         reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
         result = OptimizeResult(success=False, status=99, message=str(error),
@@ -2524,15 +2535,23 @@ def minimize(
 ):
     """Minimize a FunctionProblem, or a scalarized VMEC residual definition.
 
-    ``minimize(problem, method=..., bounds=..., constraints=..., callback=...,
-    options=...)`` uses the problem's public value/gradient interface. All
-    coordinates, bounds, constraints, callbacks and returned derivatives use
-    the problem's original units; ``problem.scales`` conditions SciPy internally.
-    A problem exposing ``accept_x`` promotes only certified accepted iterates.
-    BFGS, L-BFGS-B and SLSQP are supported by this interface. Callbacks receive
-    an x vector, or an OptimizeResult when named ``intermediate_result``.
+    ``minimize(problem, method="SLSQP", x0=..., bounds=..., constraints=...,
+    callback=..., options=..., tol=...)`` runs SciPy SLSQP on a
+    :class:`~vmex.core.problem.FunctionProblem` through its public
+    value/gradient interface (see :func:`_minimize_problem`). All coordinates,
+    bounds, constraints, callbacks and returned derivatives use the problem's
+    units; ``problem.scales`` conditions SciPy internally. A problem exposing
+    ``accept_x``, such as
+    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`, promotes
+    only accepted iterates and ``options["maxiter"]`` counts accepted steps.
+    Besides SciPy's fields the result carries ``accepted_steps`` and
+    ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,
+    ``"callback_stopped"`` or ``"equilibrium_trial_rejected"``; the last
+    three with ``success=False`` and ``status=99``). The equilibrium and
+    adjoint keywords below belong to the problem and must stay at their
+    defaults.
 
-    The existing ``minimize(objective_terms, inp, ...)`` interface is unchanged.
+    The ``minimize(objective_terms, inp, ...)`` interface:
 
     The objective is exactly ``0.5 * sum(rows**2)``, with ``rows`` defined by
     :func:`least_squares`.  Unlike Gauss--Newton least squares, a reverse

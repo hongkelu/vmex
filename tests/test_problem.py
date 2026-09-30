@@ -969,8 +969,8 @@ def test_vmec_subproblem_needs_a_recorded_deck_for_a_max_mode_stage():
         problem.subproblem(max_mode=1)
 
 
-@pytest.mark.parametrize("method", ["BFGS", "L-BFGS-B", "SLSQP"])
-def test_shared_minimize_uses_physical_coordinates(method):
+@pytest.mark.parametrize("bounded", [False, True])
+def test_shared_minimize_uses_physical_coordinates(bounded):
     from vmex import optimize as opt
     from scipy.optimize import Bounds
 
@@ -978,9 +978,9 @@ def test_shared_minimize_uses_physical_coordinates(method):
     problem = opt.FunctionProblem.from_functions(np.array([1., 1.]), scales=np.array([.2, 4.]),
         value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
     points = []
-    bounds = None if method == "BFGS" else Bounds([-5., -5.], [5., 5.])
-    result = opt.minimize(problem, method=method, bounds=bounds, callback=lambda x: points.append(x.copy()),
-                          options={"maxiter": 100, **({"ftol": 1e-12} if method == "SLSQP" else {})})
+    bounds = Bounds([-5., -5.], [5., 5.]) if bounded else None
+    result = opt.minimize(problem, method="SLSQP", bounds=bounds, callback=lambda x: points.append(x.copy()),
+                          options={"maxiter": 100, "ftol": 1e-12})
     assert result.success and points
     np.testing.assert_allclose(result.x, target, atol=1e-5)
     np.testing.assert_allclose(result.jac, 2*(result.x-target), atol=1e-10)
@@ -999,8 +999,11 @@ def test_shared_minimize_scales_physical_constraints_and_rejects_unsupported_met
                           options={"maxiter": 50, "ftol": 1e-12})
     assert result.success
     np.testing.assert_allclose(result.x, [.5, .5], atol=1e-6)
-    with pytest.raises(ValueError, match="require SLSQP"):
-        opt.minimize(problem, method="L-BFGS-B", constraints=constraint)
+    for method in ("L-BFGS-B", "BFGS"):
+        with pytest.raises(ValueError, match="only method='SLSQP'"):
+            opt.minimize(problem, method=method, constraints=constraint)
+    with pytest.raises(ValueError, match="only method='SLSQP'"):
+        opt.minimize(problem)  # the scalarized-VMEC default is not supported here
 
 
 def test_shared_minimize_callback_stop_keeps_last_reported_point():
@@ -1012,7 +1015,7 @@ def test_shared_minimize_callback_stop_keeps_last_reported_point():
     def callback(intermediate_result):
         seen.append(intermediate_result.x.copy())
         raise StopIteration
-    result = opt.minimize(p, callback=callback)
+    result = opt.minimize(p, method="SLSQP", callback=callback)
     assert not result.success and result.stop_reason == "callback_stopped"
     np.testing.assert_array_equal(result.x, seen[0])
     np.testing.assert_allclose(result.fun, result.x@result.x)

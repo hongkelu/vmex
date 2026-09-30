@@ -37,6 +37,8 @@ under the coil limits of ``parameters.py`` as penalties.
 ``--bootstrap`` (with ``--beta``) replaces the zero current with a self-consistent
 Redl bootstrap current (``bootstrap_input``): the current-spline values and CURTOR
 join PHIEDGE as design variables, and the Redl mismatch is a hard constraint.
+With ``P.BOOTSTRAP_MODEL = "dkx"`` (the QI case) that row holds the DKX drift-kinetic
+current instead; the seed's Picard loop still starts from Redl's.
 """
 
 import argparse
@@ -154,6 +156,21 @@ def redl_profiles(inp):
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
     return profiles, RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
+
+
+def bootstrap_mismatch(inp, redl):
+    """(state, runtime) -> the bootstrap self-consistency mismatch held under ``P.REDL_TOLERANCE``.
+
+    Redl's, or with ``P.BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
+    drift-kinetic one on ``P.DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry).
+    """
+    if P.BOOTSTRAP_MODEL == "redl":
+        return redl.total_state
+    from dkx.bootstrap import KineticBootstrapMismatch
+
+    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=P.DKX_SURFACES,
+                                    collision_operator=P.DKX_COLLISION_OPERATOR,
+                                    mboz=P.QI_OPTIONS["mboz"], nboz=P.QI_OPTIONS["nboz"]).total
 
 
 def restart_input(run):
@@ -447,7 +464,7 @@ def main(argv=None):
     mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror,
-                               *([redl.total_state] if redl is not None else [])),
+                               *([bootstrap_mismatch(inp, redl)] if redl is not None else [])),
         coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
@@ -522,7 +539,7 @@ def main(argv=None):
             stream.write(json.dumps({k: (float(v) if isinstance(v, np.floating) else v) for k, v in row.items()}) + "\n")
         print(f"[step {row['step']}] {P.TARGET_NAME}={row['qa']:.6e} iota={iota:.5f} R={radius:.5f} aspect={aspect_value:.4f} "
               f"clearance={surface:.4f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
-              + (f"redl={mismatch[0]:.2e} CURTOR={row['curtor']:.0f}A " if mismatch else "") +
+              + (f"{P.BOOTSTRAP_MODEL}={mismatch[0]:.2e} CURTOR={row['curtor']:.0f}A " if mismatch else "") +
               f"{row['step_seconds']:.1f}s", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")

@@ -1199,7 +1199,7 @@ class FreeBoundaryProblem(FunctionProblem):
         (``predict=False``: from the accepted state itself), is Newton
         corrected when enabled, and otherwise solved once with strict edge
         convergence, certified and polished. Any failure is a
-        :class:`TrialRejected`.
+        :class:`~vmex.core.errors.TrialRejected`.
         """
         self._check_time()
         # A new proposal abandons the previous candidate's recovery factors.

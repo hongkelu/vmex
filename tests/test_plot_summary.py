@@ -801,7 +801,8 @@ def test_j_invariant_map_reports_incomplete_pitch_coverage():
         "nfp": 1, "iota_b": np.array([0.0]),
         "G_b": np.ones(1), "I_b": np.zeros(1), "s_b": np.array([0.5]),
     }
-    result = plotting._j_invariant_map(booz, nalpha=32)
+    result = plotting._j_invariant_map(booz)
+    assert result["alpha"].size == 192
     assert 0.0 < result["resolved_fraction"] < 1.0
     assert np.any(np.isnan(result["j_map"]))
     assert np.any(np.isfinite(result["j_map"]))

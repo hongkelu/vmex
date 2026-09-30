@@ -67,7 +67,9 @@ throughout the disk, so $|v_\parallel|/v$ varies elsewhere. Blank regions
 have no complete trapped well at that
 pitch. Where several wells exist, the panel displays the largest complete-well
 $J$, so concentric contours alone do not certify every trapped orbit; branch
-changes and radial slopes need care. `|B|` in Boozer
+changes and radial slopes need care. The panel samples 192 field-line angles;
+abrupt well-branch changes can remain visible after numerical refinement.
+`|B|` in Boozer
 coordinates appears at mid radius and on
 the LCFS as unfilled jet contours with a field line of slope iota. The Boozer
 transform runs in-process, so `--plot` needs no separate `--booz` pass;

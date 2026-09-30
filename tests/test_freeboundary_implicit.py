@@ -1759,7 +1759,7 @@ def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(compiled, m
 
 
 @pytest.mark.parametrize("lasym", [False,True])
-def test_dense_active_basis_matches_main_projector_and_pair_signs(monkeypatch,lasym):
+def test_dense_active_basis_matches_dof_projector_and_pair_signs(monkeypatch,lasym):
     from vmex.core.solver import SpectralState
     cfg=SimpleNamespace(lconm1=True,resolution=SimpleNamespace(ntor=1,lasym=lasym))
     monkeypatch.setattr(im,'_m1_pair_columns',lambda _:(np.array([1]),np.array([2])))

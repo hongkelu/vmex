@@ -170,7 +170,7 @@ def max_abs_iota(state, runtime):
     return jnp.max(jnp.abs(_iotas_half(state, runtime)[1:]))
 
 
-def bootstrap_mismatch(inp, redl):
+def bootstrap_mismatch(inp, redl, device):
     """(state, runtime) -> the bootstrap self-consistency mismatch held under ``P.REDL_TOLERANCE``.
 
     Redl's, or with ``P.BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
@@ -191,6 +191,15 @@ def bootstrap_mismatch(inp, redl):
         grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
         return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
 
+    # DKX builds its per-surface operators and Boozer plan on the host at the first
+    # call and caches them; make that call on a concrete equilibrium, so the
+    # optimizer's traced calls only find the cache.
+    from vmex import optimize as opt
+
+    seed = opt.solve_equilibrium(replace(inp, lfreeb=False), device=device, raise_on_max_iterations=True,
+                                 polish_force_balance=False)
+    print(f"DKX bootstrap mismatch of the fixed-boundary seed: {float(mismatch(seed.state, seed.solver_context)):.3e}",
+          flush=True)
     return mismatch
 
 

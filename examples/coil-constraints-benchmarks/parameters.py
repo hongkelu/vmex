@@ -121,7 +121,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
     if CASE.startswith("qa4-beta"):
-        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.42, (3.5, 4.5)
+        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.5), None, "QI", (5.9, 6.1), 0.21

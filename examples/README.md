@@ -119,6 +119,26 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   frozen-geometry pressure proxies before re-solving at finite pressure, and
   `QA_optimization_global.py` explores basins with SciPy basin hopping before
   the exact least-squares finish.
+  `QA_optimization_alpha_losses.py` (`pip install "vmex[coils]"`) adds fusion
+  alphas: a QA least-squares stage, then a derivative-free (COBYQA) stage on
+  the loss-time-weighted alpha loss traced by ESSOS in Boozer coordinates (the
+  `vmex --trace` tracer). An independent 1000-alpha, 5 ms check on the laptop
+  (about 3.5 min in total) reads 30.3 % lost for the rotating-ellipse seed and
+  5.5 % after the QA stage; the alpha stage lowers its own 1 ms ensemble from
+  2.5 % to 1.6 %, but on the independent check it reads 5.7 %, within the
+  0.7 % noise of the QA stage.
+  `QA_optimization_turbulence_linear.py`,
+  `QA_optimization_turbulence_quasilinear.py` and
+  `QA_optimization_turbulence_nonlinear.py` (`pip install "vmex[turbulence]"`)
+  add one GKX gyrokinetic objective tuple to the QA list: the linear ITG growth
+  rate, the mixing-length quasilinear heat flux, and the heat flux of a
+  saturated nonlinear simulation over a differentiated post-saturation window.
+  Each evaluates flux tubes chosen by physical radius `TUBE_S` (normalized
+  toroidal flux, the same radius at every `ns`) and field-line label
+  `TUBE_ALPHAS`, reduced by a mean or a softmax. The linear and quasilinear
+  scripts use the least-squares Jacobian; the nonlinear one saturates each tube
+  behind GKX's saturation gate once per stage and takes the scalar L-BFGS-B
+  route. Each states its measured cost and result in its docstring.
   All read `VMEX_EXAMPLES_CI=1` for short CI smoke tests.
 - `optimization/stellarator_asymmetry/`: the same four families with
   `lasym = True`, seeding `RBS(1,1)`/`ZBC(1,1)` so the optimizer starts off the

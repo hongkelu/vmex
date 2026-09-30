@@ -94,7 +94,10 @@ not reach `refine_tol`, VMEX discards it and replays the original refinement.
 A single refinement pass can stall above `refine_tol` when its first Newton
 step is accurate but too long: the residual rises, and the pass keeps the best
 iterate it saw. VMEX then restarts from that iterate, refactorizing there, for
-at most two more passes and only while each pass still lowers the residual. On
+at most two more passes and only while each pass still lowers the residual.
+The restarted state is kept only when it reaches `refine_tol`; an uncertified
+restart from a far line-search trial otherwise becomes the next trial's warm
+start and stalled the single-stage example after one L-BFGS-B iteration. On
 an exact integer-family deck (NS=65, TCON0=0) one pass stopped at 1.2e-07;
 with the restart the same call reaches 6.2e-14. The returned state is never
 worse than the host state. The measured case and its per-step trace are in the
@@ -191,7 +194,7 @@ differences of warm-started re-solves do not measure the adjoint. Against
 anchored roots the free-boundary adjoint agreed to 1e-9–6e-7 on the 0.5 %
 beta single-stage objective. The values the optimizer receives are those
 unanchored states, so the gradient and the value can refer to slightly
-different points (see the [research plan](https://github.com/uwplasma/vmex/blob/main/plan.md), lane A).
+different points (see the [research plan](https://github.com/uwplasma/vmex/blob/35a5158f47bfb9d17bd4092ff518facda54cb0af/plan.md), lane A).
 
 Mirror ratio, iota and Boozer/QI diagnostics can amplify root, sampling or
 branch-selection differences. On `li383_low_res`,
@@ -202,7 +205,7 @@ adjoint is wrong. Compare raw/projected residuals, frozen state components and
 independently refined diagnostics. If no agreement window is resolved, report
 that observable's derivative as unqualified; frozen-path agreement alone does
 not close the gap. See the [validation record](validation.md) and current
-[research plan](https://github.com/uwplasma/vmex/blob/main/plan.md) for the measured scope.
+[research plan](https://github.com/uwplasma/vmex/blob/35a5158f47bfb9d17bd4092ff518facda54cb0af/plan.md) for the measured scope.
 
 ## Forward mode for least-squares Jacobians
 

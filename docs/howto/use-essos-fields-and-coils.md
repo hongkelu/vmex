@@ -57,6 +57,7 @@ from essos.coils import Coils
 
 coils = Coils.from_json("coils.json")
 coil_field = vj.MgridField.from_coils(coils)          # or pass a BiotSavart
+# order=3 gives a tricubic (C1) interpolant, e.g. for guiding-center tracing
 res = vj.solve_free_boundary(inp, external_field=coil_field)
 ```
 
@@ -83,6 +84,91 @@ stays inside JAX, or the virtual-casing residual
 field grid — is a coil-design inverse problem and belongs in ESSOS, not
 here.
 
+## Fields inside and outside the plasma
+
+The live equilibrium exposes Cartesian `B()`, `gradB()`, `gradgradB()` and
+`gradgradgradB()`, with corresponding VJPs in the originating problem's degrees
+of freedom. Use `set_points_xyz(...)` or `set_points_flux(...)` to select
+interior evaluation points.
+
+This interior field is also the most accurate way to read an equilibrium. Against an exact
+finite-pressure solution, it gives the current 10 to 70 times more accurately than the WOUT file
+between s = 0.25 and 0.75, for equilibria from VMEX, VMEC2000 or VMEC++ alike (any WOUT can be
+loaded with `vmex.state_from_wout`). Within the first few surfaces of the axis the WOUT current
+is better. See {doc}`/explanation/interior-field`.
+
+Tabulated coil and mgrid fields (`MgridField.from_coils`, `from_cartesian_field`, `from_file`,
+`from_input`) take `order=1` (trilinear, the VMEC2000-parity default) or `order=3` (tricubic,
+C1). On the Landreman-Paul QA coils tricubic is about 10x more accurate in |B| just outside the
+LCFS and costs about 12% more solve time on a free-boundary deck; see {doc}`free-boundary`.
+
+For an exterior field, `vj.VmecExtender.from_file("wout_my_case.nc",
+external_field=coils.B)` combines the plasma's virtual-casing contribution with
+the supplied coil field. The plasma part is a quadrature over a source grid on
+the plasma surface, sampled by default from the boundary's aspect ratio, field
+periods and requested digits. Its error grows rapidly near that surface, so at
+the points where its error estimate misses the requested digits an eager call
+switches to a target-graded quadrature, accurate to about 1e-12 of the field
+down to 0.01 minor radii at a few milliseconds per point;
+`with_graded_quadrature()` uses it everywhere, including under `jit`. Targets
+must also stay away from coil filaments, and an MGRID field has a finite
+tabulated domain. The exterior field-line example
+(`examples/vmex_fieldline_tracing_finite_beta.py`) traces through the graded
+field; a finite trace does not by itself establish magnetic topology. See
+{doc}`/explanation/nestor-vacuum` for the derivation.
+
+![Poincare sections of the extended field around finite-beta free-boundary QA equilibria, one with an iota = 1/2 island chain](../_static/figures/readme_extender_islands.webp)
+
+The README figure is built by VMEX alone from inputs in `examples/data`.
+`python docs/_static/figures/sources/make_extender_islands_figure.py --record`
+solves `input.LandremanPaul2021_QA_lowres` as a free boundary held by
+`ESSOS_biot_savart_LandremanPaulQA.json` at fixed coil currents, with
+`p = PRES_SCALE (1 - s)` as in `examples/free_boundary_essos_coils.py`, at
+volume-averaged beta 0, 1.02% and 2.18%, and at 1.02% with a 4 kA net toroidal
+current (`CURTOR`, current density proportional to `1 - s`). The current lifts
+iota from 0.410 to 0.514 at the edge (0.617 on axis), so the iota = 1/2 surface
+of the exterior field falls just outside the LCFS. Outside the plasma the field is the
+coil Biot-Savart field plus the `VmecExtender` virtual-casing field of the
+plasma currents. The plasma part is tabulated once on a 1 cm cylindrical grid
+(half a field period, completed by stellarator symmetry) and read through a
+tricubic `MgridField`. Table nodes inside the plasma, within 3 mm of it, or
+where the quadrature error estimate exceeds 1e-5 carry a neighbour-averaged
+continuation of the exterior field.
+Field lines launched on the phi = 0 outboard midplane 4 mm to 4.5 cm outside
+the LCFS are traced for 1500 m, about 220 toroidal transits.
+`benchmarks/extender_islands_sections.npz` holds the sections and the VMEX
+flux surfaces; the script without `--record` draws both figures from it.
+
+![Poincare section of the coil field around the vacuum free-boundary QA](../_static/figures/extender_vacuum_islands.webp)
+
+| Case | beta | closed surfaces outside the LCFS | first open seed |
+|---|---|---|---|
+| vacuum | 0 | to 2.7 cm | 2.9 cm |
+| finite beta | 1.02% | to 3.1 cm | 3.3 cm |
+| finite beta | 2.18% | to 1.5 cm | 1.6 cm |
+| finite beta, 4 kA | 1.02% | island chain to 1.1 cm, surfaces to 2.9 cm | 3.1 cm |
+
+With the current, the lines launched 4 to 11 mm outside the LCFS stay on the
+iota = 1/2 chain: each alternates between the lobes on the outboard and inboard
+midplane (poloidal positions 0 and 1/2 in the unrolled panel), and on the
+inboard side spans 0.03 to 0.93 cm off the LCFS. With two field periods,
+iota = 1/2 is resonant with the (m, n) = (4, 2) harmonic, a chain of four
+islands; a line visits every other one, and the two not on the midplane launch
+line are not seeded. Closed surfaces enclose the chain from 1.3 cm; the
+separatrix lies between the seeds at 1.1 and 1.3 cm.
+
+"Closed" means the line crossed phi = 0 on every transit of the 1500 m trace
+without leaving the 10 cm neighbourhood of the LCFS; a finite trace does not by
+itself prove a flux surface. Near the LCFS the tabulated field inherits the
+continuation's error, so the first centimetre of each layer is qualitative:
+that includes the width of the island chain, although the chain itself follows
+from the edge iota of the VMEX solution crossing 1/2.
+The zero-beta extended field equals the coil field and is traced directly.
+
+Joint boundary/coil optimization and the boundary-Schur adjoint remain advanced
+workflows with substantial solve costs; they require independent derivative and
+final-constraint checks.
+
 ## Walk both seams
 
 `examples/vmex_essos_workflow.py` runs the round trip end to end: solve a
@@ -97,62 +183,9 @@ exterior field with coils and virtual casing.
 
 ## Trace alpha particles
 
-`vmex --trace` follows an ensemble of fusion-born alpha particles
-(guiding-centre model, ESSOS tracer) through a converged equilibrium and
-reports the exact loss fraction; the same trace is one call away in Python
-via {func}`~vmex.core.tracing.trace_alphas`. It is built on the first seam
-above.
-
-### From the CLI
-
-```console
-vmex --trace wout_case.nc                  # trace, print, four figures
-vmex input.case --trace                    # solve first, then trace
-vmex --trace wout_case.nc --outdir figs/ \
-     --trace-particles 400 --trace-tmax 1e-3 --trace-s 0.3
-```
-
-The console output gives the loss fraction, the lost / axis-termination /
-solver-failure counts, and the tracing wall time. Four figures are written
-next to the input (or into `--outdir`): `*_trace_trajectories.png` (sampled
-orbits in 3-D over a translucent LCFS), `*_trace_vparallel.png`
-(normalized parallel velocity), `*_trace_loss_fraction.png` (cumulative
-loss fraction against time), and `*_trace_energy_error.png` (relative
-energy error of the integrator).
-
-Particles start on one flux surface `s` (uniform in poloidal angle, one
-field period in toroidal angle, uniform pitch), at the fusion-alpha birth
-energy of 3.52 MeV. An orbit counts as lost when it reaches `s >= 0.99`.
-Loss fractions are physically meaningful at reactor scale — run
-`vmex --scale wout_case.nc` first to put the equilibrium at ARIES-CS field
-and size.
-
-### From Python
-
-```python
-import vmex as vj
-
-result = vj.trace_alphas("wout_case.nc", nparticles=400, tmax=1e-3)
-print(result.loss_fraction, result.particles_lost)
-vj.plot_tracing("wout_case.nc", result, outdir="figs")
-```
-
-`trace_alphas` accepts a path or an in-memory
-{class}`~vmex.core.wout.WoutData` (written through a temporary wout file —
-the route released ESSOS reads) and returns an
-{class}`~vmex.core.tracing.AlphaTracingResult` with the loss-fraction time
-series, per-particle loss times, trajectories in flux and Cartesian
-coordinates, energies, and the counts.
+`vmex --trace` and {func}`~vmex.core.tracing.trace_alphas` trace fusion alphas
+in Boozer coordinates with `essos.boozer`; see {doc}`trace-alpha-particles`.
 
 For anything else ESSOS does with an equilibrium (field lines, surfaces,
 `|B|` queries), use the bare `essos.fields.Vmec` from
 {func}`~vmex.core.tracing.essos_vmec_field` above.
-
-### Scope
-
-This is the exact loss-fraction *diagnostic*. The differentiable alpha-loss
-*objective* (a smooth surrogate a boundary optimization can descend) is a
-separate feature that waits on the ESSOS array-based field constructor
-(uwplasma/ESSOS#61) and vmex's traceable field tables. The exact loss
-fraction is piecewise constant in the boundary — use it to certify, not to
-optimize.

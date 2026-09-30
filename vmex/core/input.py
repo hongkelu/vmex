@@ -935,6 +935,138 @@ class VmecInput:
         return cls.from_indata_text(text)
 
     @classmethod
+    def from_wout(cls, source) -> "VmecInput":
+        """Make a runnable deck for the equilibrium stored in a WOUT.
+
+        WOUT omits ``NCURR``, ``PRES_SCALE``, ``BLOAT`` and multigrid controls.
+        The echoed profiles are checked against the solved profiles to infer
+        the active constraint and pressure amplitude. Use ``restart_from``
+        to seed a re-solve with the complete internal geometry.
+        """
+        from .wout import WoutData, read_wout
+        from . import profiles
+
+        w = source if isinstance(source, WoutData) else read_wout(source)
+        ns, nfp, mpol, ntor = int(w.ns), int(w.nfp), int(w.mpol), int(w.ntor)
+        if ns < 3 or nfp < 1 or mpol < 1 or ntor < 0:
+            raise ValueError("WOUT has invalid resolution or field period count")
+        if float(w.gamma) != 0.0:
+            raise ValueError("WOUT cannot reconstruct a GAMMA != 0 input profile")
+        if bool(w.lfreeb) and str(w.mgrid_file).strip().upper() in ("", "NONE"):
+            raise ValueError("free-boundary WOUT has no MGRID_FILE to reconstruct")
+        if not 0 <= int(w.nextcur) <= len(w.extcur):
+            raise ValueError("WOUT has invalid external current count")
+        mgrid_file = str(w.mgrid_file)
+        if not isinstance(source, WoutData) and bool(w.lfreeb):
+            beside_wout = Path(source).resolve().parent / mgrid_file
+            if beside_wout.is_file():
+                mgrid_file = str(beside_wout.resolve())
+
+        modes_m = np.asarray(w.xm, dtype=float)
+        modes_n = np.asarray(w.xn, dtype=float) / nfp
+        if (len(modes_m) != len(modes_n)
+                or np.any(modes_m != np.rint(modes_m))
+                or np.any(modes_n != np.rint(modes_n))
+                or np.any((modes_m < 0) | (modes_m >= mpol))
+                or np.any(np.abs(modes_n) > ntor)
+                or len(set(zip(modes_m, modes_n))) != len(modes_m)):
+            raise ValueError("WOUT has invalid Fourier mode table")
+        boundary = {name: np.zeros((2 * ntor + 1, mpol))
+                    for name in ("rbc", "zbs", "rbs", "zbc")}
+        for col, (mf, nf) in enumerate(zip(modes_m, modes_n)):
+            m, n = int(mf), int(nf)
+            for name, table in (("rbc", w.rmnc), ("zbs", w.zmns),
+                                ("rbs", w.rmns), ("zbc", w.zmnc)):
+                if table is not None:
+                    boundary[name][n + ntor, m] = np.asarray(table)[-1, col]
+
+        s_half = (np.arange(1, ns) - 0.5) / (ns - 1)
+
+        def solved_knots(half, full):
+            from scipy.interpolate import CubicSpline
+
+            x = np.r_[0.0, s_half, 1.0]
+            y = np.r_[full[0], half, full[-1]]
+            chosen = np.unique(np.rint(np.linspace(0, ns, min(ns + 1, 11)))
+                               .astype(int)).tolist()
+            for _ in range(min(ns + 1, 101) - len(chosen)):
+                error = np.abs(y - CubicSpline(x[chosen], y[chosen],
+                                               bc_type="natural")(x))
+                error[chosen] = 0.0
+                index = int(np.argmax(error))
+                if error[index] <= 1e-12 * max(1.0, np.max(np.abs(y))):
+                    break
+                chosen.append(index)
+                chosen.sort()
+            return x[chosen], y[chosen]
+
+        # The pressure presets are an input echo.  Recover their missing
+        # amplitude only if they reproduce the output half-mesh pressure.
+        observed = np.asarray(w.pres, dtype=float)[1:]
+        try:
+            raw = np.asarray(profiles.pressure(
+                w.pmass_type or "power_series", w.am, w.am_aux_s, w.am_aux_f,
+                s_half), dtype=float)
+        except NotImplementedError:
+            pressure_kind_supported = False
+            raw = np.zeros_like(observed)
+        else:
+            pressure_kind_supported = True
+        denom = float(np.dot(raw, raw))
+        scale = float(np.dot(raw, observed) / denom) if denom > 0 else 1.0
+        pressure = dict(pmass_type=w.pmass_type or "power_series", am=w.am,
+                        am_aux_s=w.am_aux_s, am_aux_f=w.am_aux_f,
+                        pres_scale=scale)
+        if (not pressure_kind_supported or not np.isfinite(scale) or scale < 0
+                or np.max(np.abs(scale * raw - observed)) >
+                1e-5 * max(1.0, np.max(np.abs(observed)))):
+            knots, values = solved_knots(observed, np.asarray(w.presf, dtype=float))
+            pressure = dict(pmass_type="cubic_spline",
+                            am_aux_s=knots, am_aux_f=values,
+                            pres_scale=1.0)
+
+        try:
+            echoed_iota = np.asarray(profiles.iota(
+                w.piota_type or "power_series", w.ai, w.ai_aux_s, w.ai_aux_f,
+                s_half), dtype=float)
+        except NotImplementedError:
+            echoed_iota = np.full(ns - 1, np.nan)
+        output_iota = np.asarray(w.iotas, dtype=float)[1:]
+        current_constrained = (bool(w.lrfp) or not w.piota_type
+                               or not np.all(np.isfinite(echoed_iota))
+                               or np.max(np.abs(echoed_iota - output_iota)) >
+                               1e-5 * max(1.0, np.max(np.abs(output_iota))))
+        iota = dict(piota_type=w.piota_type or "power_series", ai=w.ai,
+                    ai_aux_s=w.ai_aux_s, ai_aux_f=w.ai_aux_f)
+        if current_constrained and (bool(w.lrfp) or not w.piota_type
+                                    or w.pcurr_type not in profiles._PCURR_KINDS
+                                    or not np.any(np.asarray(w.ac))
+                                    and abs(float(w.ctor)) > 1e-6):
+            # An external WOUT may have no usable current-profile echo.
+            # Preserve its solved iota as the reproducible constraint.
+            knots, values = solved_knots(output_iota, np.asarray(w.iotaf, dtype=float))
+            iota = dict(piota_type="cubic_spline", ai_aux_s=knots,
+                        ai_aux_f=values)
+            current_constrained = False
+
+        return cls(
+            lasym=bool(w.lasym), nfp=nfp, mpol=mpol, ntor=ntor,
+            ns_array=[ns], ftol_array=[float(w.ftolv) if w.ftolv > 0 else 1e-10],
+            niter_array=[max(1000, int(w.niter))],
+            phiedge=float(np.asarray(w.phi)[-1]), gamma=0.0,
+            ncurr=int(current_constrained), curtor=float(w.ctor),
+            pcurr_type=(w.pcurr_type if w.pcurr_type in profiles._PCURR_KINDS
+                        else "power_series"), ac=w.ac,
+            ac_aux_s=w.ac_aux_s, ac_aux_f=w.ac_aux_f,
+            lfreeb=bool(w.lfreeb), mgrid_file=mgrid_file,
+            lmove_axis=bool(w.lmove_axis),
+            extcur=np.asarray(w.extcur)[:int(w.nextcur)],
+            raxis_c=w.raxis_cc, zaxis_s=w.zaxis_cs,
+            raxis_s=w.raxis_cs, zaxis_c=w.zaxis_cc,
+            **boundary, **pressure, **iota,
+        )
+
+    @classmethod
     def from_indata_text(cls, text: str) -> "VmecInput":
         """Build from ``&INDATA`` namelist text (VMEC2000 read_indata_namelist)."""
         scalars, indexed = _read_indata_text(text)
@@ -1112,7 +1244,7 @@ class VmecInput:
 
     @classmethod
     def from_json_text(cls, text: str) -> "VmecInput":
-        """Build from structured JSON text (plan Appendix C / vmecpp.VmecInput).
+        """Build from structured JSON text (vmecpp.VmecInput layout).
 
         Same key names as the dataclass fields; ``adiabatic_index`` is
         accepted as an alias for ``gamma``; ``rbc/zbs/rbs/zbc`` are sparse

@@ -73,19 +73,15 @@ jax.config.update("jax_enable_x64", True)  # float64 mandatory (§7.7)
 
 
 def _harden_compilation_cache() -> None:
-    """Idempotent persistent compile-cache setup at ``core.solver`` import.
+    """Re-apply the persistent-cache policy at ``core.solver`` import.
 
     Launching Python from a cwd containing the repo checkout can resolve
-    ``vmex`` as a *namespace* package, so ``vmex/__init__.py`` — which
-    configures the persistent XLA compilation cache — never runs and every
-    ``solve()`` pays a full recompile.  This module always executes on any
-    core solve path, so the cache policy is re-applied here: warn on the
-    shadowed import, then configure the ``_compat`` cache defaults *only*
-    when neither the user (``JAX_COMPILATION_CACHE_DIR`` env / an explicit
-    ``jax.config.update``) nor ``vmex/__init__`` already set a cache
-    directory.
+    ``vmex`` as a *namespace* package, so ``vmex/__init__.py`` never runs.
+    This module executes on every core solve path, so it warns on the
+    shadowed import and applies ``_compat._apply_compilation_cache_policy``
+    (idempotent), which also splits per machine, or switches off, a cache
+    that JAX picked up from its environment or ``jax.config`` in between.
     """
-    import os
     import sys
     import warnings
 
@@ -103,23 +99,10 @@ def _harden_compilation_cache() -> None:
             stacklevel=3,
         )
     try:
-        current = jax.config.jax_compilation_cache_dir
-    except AttributeError:  # pragma: no cover - very old jax
-        return
-    if current:  # user env/jax.config or vmex/__init__ already set it
-        return
-    try:
-        from .._compat import _configure_compilation_cache, _default_compilation_cache_dir
+        from .._compat import _apply_compilation_cache_policy
     except Exception:  # pragma: no cover - core used standalone
         return
-    cache_dir = _default_compilation_cache_dir()
-    if cache_dir is None:  # policy says no cache (e.g. CPU-only, not forced)
-        return
-    try:
-        os.makedirs(cache_dir, exist_ok=True)
-    except OSError:  # pragma: no cover - unwritable cache location
-        return
-    _configure_compilation_cache(jax, cache_dir)
+    _apply_compilation_cache_policy(jax)
 
 
 _harden_compilation_cache()
@@ -399,8 +382,9 @@ class SolverRuntime:
       ladder/scan runs differing only in tolerance share one executable);
     - **meta fields** (static, hashable): the :class:`Resolution` plus the
       scalar configuration (``gamma`` is consumed concretely by
-      ``fields.magnetic_fields``; ``max_iterations`` sizes the trajectory
-      buffer; the rest are loop-control constants).
+      ``fields.magnetic_fields``; ``trajectory_rows`` sizes the trajectory
+      buffer; the rest are loop-control constants).  ``max_iterations`` is
+      data, so a restart budget below the deck's ``NITER`` reuses the lanes.
 
     The host loop-driver scalars — initial ``DELT`` and the ``NSTEP`` print
     cadence — deliberately do NOT live here: they are never read inside a
@@ -446,6 +430,8 @@ class SolverRuntime:
     # fsqr+fsqz+fsql < threshold).  Static meta: the branch is only traced when
     # present, so a NONE run never compiles the GMRES/HVP graph.
     prec2d: Any = None
+    #: trajectory buffer rows (static); 0 means ``max_iterations``.
+    trajectory_rows: int = 0
 
     # -- trace-time-static tables, derived from the meta resolution ---------
     @property
@@ -487,10 +473,15 @@ class SolverRuntime:
 
 
 _register(SolverRuntime, meta=(
-    "resolution", "gamma", "tcon0", "max_iterations",
+    "resolution", "gamma", "tcon0",
     "jmax", "lforbal", "lmove_axis",
-    "lfreeb", "prec2d",
+    "lfreeb", "prec2d", "trajectory_rows",
 ))
+
+
+def _trajectory_rows(rt: SolverRuntime) -> int:
+    """Rows of the per-iteration trajectory buffer (a static shape)."""
+    return int(rt.trajectory_rows or rt.max_iterations)
 
 
 def _force_gather_tables(modes: ModeTable) -> tuple[np.ndarray, ...]:
@@ -765,6 +756,7 @@ def prepare_runtime(
             dtype=setup.s_full.dtype,
         ),
         max_iterations=effective_iterations,
+        trajectory_rows=max(effective_iterations, int(defaults["niter"])),
         jmax=int(resolution.ns) - 1,
         lforbal=bool(defaults["lforbal"] if lforbal is None else lforbal),
         lmove_axis=bool(defaults["lmove_axis"]),
@@ -2024,7 +2016,7 @@ def _initial_carry(
         iteration=int_(1), iter1=int_(1),
         ijacob=int_(ijacob),
         done=_host_zeros((), bool), ier=int_(NORM_TERM_FLAG),
-        trajectory=_host_zeros((rt.max_iterations, _TRAJ_COLS), dtype),
+        trajectory=_host_zeros((_trajectory_rows(rt), _TRAJ_COLS), dtype),
     )
 
 
@@ -2372,14 +2364,14 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
     carry = _distinct_buffers(carry)
     if verbose and emit_banner:
         # initialize_radial.f prints the total Fourier mode count (mnmax), not mpol.
-        emit(stage_banner(rt.resolution.ns, rt.resolution.mnmax, float(rt.ftol), rt.max_iterations), end="")
+        emit(stage_banner(rt.resolution.ns, rt.resolution.mnmax, float(rt.ftol), int(rt.max_iterations)), end="")
         if emit_legend:
             emit(FORCE_ITERATIONS_BANNER, end="")
         emit(screen_header(lasym=rt.resolution.lasym, lfreeb=False), end="")
 
     printed: set[int] = set()
     emit_start = 1
-    max_passes = rt.max_iterations + 200
+    max_passes = int(rt.max_iterations) + 200
     lane = _block_lane_fft if use_fft else _block_lane
     # Prefetched-executable consumption + compile attribution.  The
     # structural key selects a background-compiled standalone executable

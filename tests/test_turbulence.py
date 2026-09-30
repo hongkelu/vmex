@@ -7,18 +7,16 @@ the gkx flux-tube contract with host validation ON; proxy physics on a
 finite-beta shaped tokamak (ITG-critical-gradient monotone growth rate,
 positive heat-flux proxies, saturation-rule relations reproduced exactly);
 and differentiability (reverse and forward AD vs central FD, finite state
-gradient, the two-positional objective-term contract; the eigenvector-
-weighted proxies are value-level because JAX declines non-symmetric
-eigenvector derivatives).
+gradient, the two-positional objective-term contract, and the
+eigenvector-weighted proxies in both modes).
 
-gkx is optional (``pip install 'gkx>=1.8.0'``; the legacy ``spectraxgk``
+gkx is optional (``pip install 'gkx>=2.4.2'``; the legacy ``spectraxgk``
 name is not supported) — dependent lanes skip cleanly without it.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import inspect
 from pathlib import Path
 
 import numpy as np
@@ -208,6 +206,36 @@ def test_surface_index_validation(shaped_eq):
         turb.gk_fieldline_geometry(shaped_eq.state, shaped_eq.runtime, ntheta=4)
 
 
+def test_physical_s_selects_a_radius_not_a_grid_index(shaped_eq):
+    """``s`` on a grid surface is that surface bitwise; off the grid it
+    converges at second order in ``hs`` to one physical radius."""
+    state, rt = shaped_eq.state, shaped_eq.runtime
+    on_grid = turb.gk_fieldline_geometry(state, rt, s=7 / 12, alpha=0.3, ntheta=16)
+    index = turb.gk_fieldline_geometry(state, rt, s_index=7, alpha=0.3, ntheta=16)
+    for name in turb.GK_GEOMETRY_FIELDS + ("q", "s_hat"):
+        np.testing.assert_array_equal(np.asarray(on_grid[name]), np.asarray(index[name]))
+
+    inp = VmecInput.from_file(DATA_DIR / "input.shaped_tokamak_pressure")
+    fine = opt.solve_equilibrium(dataclasses.replace(
+        inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+        niter_array=np.array([4000])))
+    kwargs = dict(s=0.53, alpha=0.3, ntheta=16)
+    coarse_geom = turb.gk_fieldline_geometry(state, rt, **kwargs)
+    fine_geom = turb.gk_fieldline_geometry(fine.state, fine.runtime, **kwargs)
+    assert float(coarse_geom["vmex"]["s"]) == pytest.approx(0.53, abs=1e-14)
+    assert float(fine_geom["vmex"]["s"]) == pytest.approx(0.53, abs=1e-14)
+    for name in ("bmag", "gds2", "gds21", "gbdrift", "cvdrift", "gbdrift0"):
+        reference = np.asarray(fine_geom[name])
+        error = np.max(np.abs(np.asarray(coarse_geom[name]) - reference))
+        # ns = 13 -> 25 against ns = 97 measured 3.6e-2 / 8.2e-3 (gbdrift, the
+        # worst); evaluating one surface's parabola off-centre instead gave 0.41.
+        assert error <= 0.05 * np.max(np.abs(reference)), name
+    with pytest.raises(ValueError, match="not both"):
+        turb.gk_fieldline_geometry(state, rt, s=0.5, s_index=6)
+    with pytest.raises(ValueError, match="interior surfaces"):
+        turb.gk_fieldline_geometry(state, rt, s=0.95)
+
+
 def test_wout_geometry_matches_live_state_without_reconstruction(shaped_eq, tmp_path):
     """The read-only WOUT route reproduces the live-state mapping."""
     import vmex
@@ -253,25 +281,17 @@ def _require_gkx():
 
 
 def _require_gkx_eigenvectors():
-    """Additionally require the jax floor gkx's *eigenvector* path declares.
+    """Additionally require GKX's implicit eigenpair rule (gkx >= 2.4.2).
 
-    gkx reaches reverse-mode eigenvector derivatives through
-    ``lax_linalg.eig(enable_eigvec_derivs=...)``, which first exists in jax
-    0.10.1 and which gkx declares accordingly.  gkx still imports against an
-    older jax, so importorskip alone lets those reach a call-time TypeError
-    that is an unsatisfied dependency contract, not a defect.
-
-    Only the eigenvector-weighted lanes need it.  ``turbulent_growth_rate``
-    reduces the operator with ``jnp.linalg.eigvals`` and works on any
-    supported jax, so gating it too left the whole ITG lane dark on every host
-    below the floor -- which is how the R/L-into-a/L units defect survived.
+    Older gkx differentiates the eigenvector-weighted proxies only through
+    ``lax_linalg.eig(enable_eigvec_derivs=...)`` and its growth rate only in
+    reverse mode.
     """
     _require_gkx()
-    from jax._src.lax import linalg as lax_linalg
+    from gkx.objectives import eigen
 
-    if "enable_eigvec_derivs" not in inspect.signature(lax_linalg.eig).parameters:
-        pytest.skip("gkx needs jax >= 0.10.1 for enable_eigvec_derivs "
-                    f"(installed: {jax.__version__}); install vmex[turbulence]")
+    if not hasattr(eigen, "dominant_eigenpair"):
+        pytest.skip("needs gkx >= 2.4.2 (implicit eigenpair JVP)")
 
 
 def test_contract_passes_gkx_validation(shaped_eq):
@@ -313,6 +333,11 @@ def test_drive_gradients_reach_gkx_as_a_over_l(shaped_eq):
     # params_linear is the escape hatch and must pass through untouched.
     explicit = turb._linear_params(params, None, None, aspect)
     assert explicit is params
+    # a/L is GKX's own unit and passes through unscaled.
+    direct = turb._linear_params(None, None, None, aspect, 3.0, 1.0)
+    assert (float(direct.tprim), float(direct.fprim)) == (3.0, 1.0)
+    with pytest.raises(ValueError, match="not both"):
+        turb._linear_params(None, 6.9, None, aspect, 3.0, None)
 
 
 def test_growth_rate_is_itg_critical_gradient_monotone(shaped_eq):
@@ -328,7 +353,7 @@ def test_growth_rate_is_itg_critical_gradient_monotone(shaped_eq):
 
 def test_objective_vector_and_scalar_proxies_consistent(shaped_eq):
     """Vector entries reproduce the documented saturation-rule proxies."""
-    _require_gkx_eigenvectors()
+    _require_gkx()
     state, rt = shaped_eq.state, shaped_eq.runtime
     vec = np.asarray(turb.turbulence_objective_vector(state, rt, **GK))
     named = dict(zip(turb.TURBULENCE_OBJECTIVE_NAMES, vec))
@@ -375,34 +400,23 @@ def test_growth_rate_gradient_matches_finite_differences(shaped_eq):
     assert float(fwd) == pytest.approx(float(fd), rel=1e-5)
 
 
-def test_eigenvector_weighted_proxies_are_value_level(shaped_eq):
-    """Documented guidance: quasilinear/nonlinear proxies use ``jac=None``
-    (their weights depend on the dominant eigenvector of the non-symmetric
-    GK operator, whose derivatives JAX declines unless
-    ``enable_eigvec_derivs``); reverse AD must either refuse with that
-    error or agree with the FD lane that ``jac=None`` actually uses."""
+def test_eigenvector_weighted_proxies_differentiate_in_both_modes(shaped_eq):
+    """The quasilinear and nonlinear-window proxies weight the dominant
+    eigenvector; GKX's bordered eigenpair tangent must give the FD slope in
+    reverse mode and in the forward mode ``jac="implicit"`` uses."""
     _require_gkx_eigenvectors()
     state, rt = shaped_eq.state, shaped_eq.runtime
 
-    def ql(scale):
-        setup = dataclasses.replace(rt.setup, mass=rt.setup.mass * scale)
-        return turb.quasilinear_flux_proxy(state, dataclasses.replace(rt, setup=setup),
-                                           **GK)
+    for proxy in (turb.quasilinear_flux_proxy, turb.nonlinear_heat_flux_proxy):
+        def value(scale, proxy=proxy):
+            setup = dataclasses.replace(rt.setup, mass=rt.setup.mass * scale)
+            return proxy(state, dataclasses.replace(rt, setup=setup), **GK)
 
-    eps = 1e-3
-    fd = float((ql(1.0 + eps) - ql(1.0 - eps)) / (2.0 * eps))
-    assert np.isfinite(fd)                      # the jac=None lane always works
-    try:
-        analytic = float(jax.grad(ql)(1.0))
-    except NotImplementedError as err:
-        # gkx 1.7.1: JAX's documented refusal of non-symmetric eigenvector
-        # derivatives (jax#2748) — the reason the proxies are value-level.
-        assert "enable_eigvec_derivs" in str(err)
-    else:
-        # A gkx that opts in must reproduce the FD gradient it replaces.
-        assert np.isfinite(analytic)
-        scale = max(abs(fd), 1.0e-12)
-        assert abs(analytic - fd) <= 1.0e-4 * scale + 1.0e-10
+        eps = 1e-3
+        fd = float((value(1.0 + eps) - value(1.0 - eps)) / (2.0 * eps))
+        tolerance = 1.0e-4 * max(abs(fd), 1.0e-12) + 1.0e-10
+        assert abs(float(jax.grad(value)(1.0)) - fd) <= tolerance
+        assert abs(float(jax.jacfwd(value)(1.0)) - fd) <= tolerance
 
 
 def test_grad_wrt_state_is_finite(shaped_eq):

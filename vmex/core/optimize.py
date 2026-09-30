@@ -28,7 +28,7 @@ units of ``nfp`` (the internal target mode number is ``nn = helicity_n * nfp``):
 
 - QA: ``(helicity_m, helicity_n) = (1, 0)``
 - QH: ``(1, -1)`` (i.e. ``chi = theta + nfp*phi``; legacy/simsopt sign — the
-  plan's "``n = -nfp``" written in physical toroidal mode numbers)
+  usual "``n = -nfp``" written in physical toroidal mode numbers)
 - QP: ``(0, 1)``
 
 Gradient modes
@@ -78,7 +78,7 @@ from solvax import (
 )
 
 from .device import AUTO
-from .errors import AdjointSolveError
+from .errors import AdjointSolveError, VmecConvergenceError
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .solver import (
@@ -132,6 +132,7 @@ from .problem import Evaluation, FunctionProblem, VmecProblem, _run_with_progres
 from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRecord
 
 __all__ = [
+    "report_targets",
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
@@ -780,13 +781,56 @@ class QuasisymmetryRatioResidual:
 # ``edge_iota`` (implicit.py exposes the mirror alias).
 
 
+def report_targets(
+    eq: Equilibrium,
+    *,
+    aspect: float | None = None,
+    aspect_rtol: float = 0.05,
+    iota_floor: float | None = None,
+    well_floor: float | None = None,
+    mirror_limit: float | None = None,
+    elongation_limit: float | None = None,
+    extra: Sequence[tuple[str, float, float, str]] = (),
+) -> bool:
+    """Print one line saying whether an optimized equilibrium met its targets.
+
+    Keyword targets are checked on ``eq``: ``aspect`` within ``aspect_rtol``,
+    ``iota_floor`` on the profile minimum of ``|iota|``, ``well_floor`` on the
+    magnetic well, and the mirror-ratio and elongation limits as ceilings.  ``extra``
+    rows are ``(name, value, bound, "min" | "max")``.  Returns whether all
+    were met.
+    """
+    state, rt = eq.solution, eq.solver_context
+
+    def value(function):
+        return float(np.asarray(function(state, rt)))
+
+    rows = list(extra)
+    if aspect is not None:
+        a = value(aspect_ratio)
+        rows += [("aspect", a, aspect * (1 - aspect_rtol), "min"),
+                 ("aspect", a, aspect * (1 + aspect_rtol), "max")]
+    for name, function, bound, kind in (
+            ("min |iota|", min_abs_iota, iota_floor, "min"),
+            ("magnetic well", magnetic_well, well_floor, "min"),
+            ("mirror ratio", mirror_ratio, mirror_limit, "max"),
+            ("elongation", max_elongation, elongation_limit, "max")):
+        if bound is not None:
+            rows.append((name, value(function), bound, kind))
+    unmet = [f"{name} {v:.4g} {'below' if kind == 'min' else 'above'} {bound:.4g}"
+             for name, v, bound, kind in rows
+             if not (v >= bound if kind == "min" else v <= bound)]
+    print("Targets met." if not unmet else "Targets NOT met: " + "; ".join(unmet) + ".")
+    return not unmet
+
+
 def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1) -> Array:
     """Mirror ratio ``(Bmax - Bmin) / (Bmax + Bmin)`` on one half-mesh surface.
 
     Note the convention: this is the ``|B|`` *modulation depth* on a surface, the
     standard QI optimization knob, not ``R_m = Bmax / Bmin``.  The two are
     related by ``R_m = (1 + m) / (1 - m)``.  The open-mirror lane reports
-    ``R_m`` proper — ``R_m,axis`` per leg and ``R_m,LCFS`` separately — through
+    ``R_m`` proper — ``R_m,axis`` per well and ``R_m,LCFS`` separately — through
     :mod:`vmex.mirror.metrics`.
 
     ``|B|`` is evaluated on the solver's internal angular grid from the
@@ -2486,6 +2530,24 @@ def _problem_jit(cache_key: tuple, slot: str, build: Callable):
     return entry[slot]
 
 
+def _require_certified_seed(memo, ftol: float, ratio: float) -> None:
+    """Refuse a seed whose solve would be scored as the failed-trial penalty."""
+    if memo is None:
+        return
+    result = memo[1]
+    fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
+    if bool(result.converged) or (np.isfinite(fsq) and fsq <= ratio * ftol):
+        return
+    raise VmecConvergenceError(
+        f"the seed equilibrium did not converge (fsq={fsq:.3e}, "
+        f"ftol={ftol:.1e}, accepted up to {ratio:g} x ftol); every "
+        "optimizer stage started here would sit at the failed-solve penalty",
+        hint="re-seed from a converged boundary, or raise "
+             "forward_max_iterations / lower the resolution",
+        fsq=(float(result.fsqr), float(result.fsqz), float(result.fsql)),
+        ftol=float(ftol))
+
+
 def _least_squares_implicit(
     objective_terms: Sequence[tuple[Callable, float, Any]],
     inp: VmecInput,
@@ -2714,6 +2776,7 @@ def _least_squares_implicit(
     # memo-hits this exact solve and refines then — under the compile
     # heartbeat instead of the silent factory (user-visible startup gap).
     state0_np, mask_np = imp._host_solve_and_mask(cfg, params0_np, refine=False)
+    _require_certified_seed(imp._LAST_SOLVE.get(cfg), cfg.ftol, cfg.max_fsq_ratio)
     state0 = jax.tree.map(_place, state0_np)
     params_at_x0 = params_of(_place(x0))
     runtime0 = imp.runtime_from_params(params_at_x0, cfg)
@@ -3232,6 +3295,17 @@ def _least_squares_implicit(
             residual = np.where(np.isfinite(residual), residual, 1.0e6)
         if imp._LAST_STATUS_ERROR.get(cfg) is not None:
             holder["failed_trials"] += 1
+        if not holder.get("seed_certified") and np.array_equal(
+                np.asarray(x, dtype=float), x0):
+            holder["seed_certified"] = certified_trial(x)
+            if not holder["seed_certified"]:
+                raise VmecConvergenceError(
+                    "the optimizer's starting point has no certified "
+                    "equilibrium; it would be scored as the failed-solve "
+                    "penalty (cost ~5e11, zero gradient) and the stage would "
+                    "stop there",
+                    hint="re-seed the stage from a converged boundary, or "
+                         "raise forward_max_iterations / lower the resolution")
         holder["nres"] = residual.size
         return residual
 
@@ -3751,7 +3825,7 @@ def _least_squares_implicit(
     result.derivative_fallbacks = holder["derivative_fallbacks"]
     try:
         # Hot-seed the diagnostic re-solve from the stage's last converged
-        # trial state (plan R25.1): the optimizer's final x was just solved
+        # trial state: the optimizer's final x was just solved
         # by the implicit path, so this converges in ~1 sweep instead of
         # repeating a full cold solve per continuation stage.
         seed = imp._HOT_CACHE.get(cfg)

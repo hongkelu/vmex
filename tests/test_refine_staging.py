@@ -274,7 +274,10 @@ def test_block_finish_reaches_the_krylov_anchor_with_one_factorization(monkeypat
         jax.config.update("jax_disable_jit", previous)
 
     assert certificate(krylov) <= cfg.refine_tol
-    assert certificate(block) <= max(certificate(krylov), 1.0e-3 * cfg.refine_tol)
+    # Both arms land on the double-precision roundoff floor (a few 1e-16 on this
+    # deck); below refine_tol their order is summation-order noise, so the
+    # block arm is held to the same certificate, not to the Krylov bits.
+    assert certificate(block) <= cfg.refine_tol
     assert krylov_work["refinement_factorizations"] == 0
     assert block_work["refinement_factorizations"] == 1
     assert block_work["refinement_krylov_iterations"] < krylov_work["refinement_krylov_iterations"]
@@ -332,9 +335,9 @@ def test_block_finish_without_progress_replays_the_krylov_anchor(monkeypatch) ->
 def test_refinement_restarts_from_its_best_iterate(monkeypatch) -> None:
     """A pass that lowers |F| but misses refine_tol is restarted from its best iterate.
 
-    With one step per phase a single pass cannot certify the small deck.  The
-    restarted refinement must end strictly lower, never above the host state,
-    and without restarts the result must be the one-pass result bit for bit.
+    With one step per phase a single pass cannot certify the small deck.  A
+    restart is kept only when it certifies; otherwise the result is the
+    one-pass result bit for bit, and without restarts it always is.
     """
     inp, _, p0 = _small_solovev_setup()
     # A tolerance below one step's reach, so the single pass must miss it.
@@ -364,4 +367,123 @@ def test_refinement_restarts_from_its_best_iterate(monkeypatch) -> None:
     host, single, multi = residual(state), residual(one_pass), residual(restarted)
     assert single < host
     assert single > float(cfg.refine_tol), "fixture no longer exercises a missed pass"
-    assert multi < single
+    if multi <= float(cfg.refine_tol):
+        assert multi < single
+    else:
+        for a, b in zip(jax.tree.leaves(one_pass), jax.tree.leaves(restarted)):
+            np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+
+def test_uncertified_restart_is_discarded(monkeypatch) -> None:
+    """Restarts that lower |F| without certifying leave the one-pass state.
+
+    A far line-search trial (the single-stage example's first step) refined
+    from |F| ~ 2e7 to 3e4 through restarts; that uncertified state became
+    the next trials' warm start and stalled L-BFGS-B after one iteration.
+    """
+    class Config:
+        refine_tol = 0.1
+
+    monkeypatch.setattr(im, "_dof_projector", lambda *_: lambda value: value)
+    monkeypatch.setattr(im, "residual_fn", lambda *_: lambda z, _params: z)
+    monkeypatch.setattr(im, "_REFINE_MAX_STEPS", 1)
+    monkeypatch.setattr(im, "_REFINE_BLOCK_MAX_STEPS", 0)
+    monkeypatch.setattr(im, "_REFINE_RESTARTS", 2)
+
+    def step(_config, _params, _frozen, _dof_mask, z, fz):
+        z_new = z - shrink
+        return z_new, z_new, jnp.linalg.norm(z_new), jnp.asarray(0.0)
+
+    monkeypatch.setattr(im, "_refine_step", step)
+    state, params = jnp.asarray([10.0]), jnp.asarray([0.0])
+    shrink = 1.0  # 10 -> 9 -> 8 -> 7: every restart gains, none certifies
+    np.testing.assert_array_equal(
+        im._refined_state(Config(), params, state, state), [9.0])
+    shrink = 4.0  # 10 -> 6 -> 2 -> -2: still uncertified
+    np.testing.assert_array_equal(
+        im._refined_state(Config(), params, state, state), [6.0])
+    shrink = 5.0  # 10 -> 5 -> 0: the first restart certifies and is kept
+    np.testing.assert_array_equal(
+        im._refined_state(Config(), params, state, state), [0.0])
+
+
+def test_block_stall_far_from_root_skips_krylov_and_rejects_the_trial(monkeypatch) -> None:
+    """A block phase ending far above refine_tol returns the state and status 3."""
+    inp, _, p0 = _small_solovev_setup()
+    # Unreachable, so no cached or earlier-converged state certifies either.
+    cfg = im.make_config(inp, ftol=1.0e-10, max_iterations=1000, refine_tol=1.0e-30)
+    state, mask = _host_state(cfg, p0)
+
+    def without_progress(config, params, frozen, dof_mask, z, factors):
+        fz = im.residual_fn(config, frozen, dof_mask)(z, params)
+        return z, fz, im._tree_norm(fz), 1.0
+
+    monkeypatch.setattr(im, "_refine_block_step", without_progress)
+    monkeypatch.setattr(im, "_REFINE_FAR_STALL", 0.0)  # any stall is now "far"
+
+    def no_krylov(*args, **kwargs):
+        raise AssertionError("Krylov fallback ran after a far block stall")
+
+    monkeypatch.setattr(im, "_refine_step", no_krylov)
+    refined = im._refined_state(cfg, p0, state, mask)
+    for a, b in zip(jax.tree.leaves(refined), jax.tree.leaves(state)):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    status = im._host_solve_and_mask_status(
+        cfg, jax.tree.map(np.asarray, p0))[2]
+    assert int(status) == 3 and im._LAST_REFINED[cfg][2]
+
+
+def test_adjoint_reusing_anchor_factors_matches_the_fresh_block_adjoint() -> None:
+    """The anchor's factorization preconditions the adjoint to the same multiplier."""
+    inp, _, p0 = _small_solovev_setup()
+    cfg = im.make_config(inp, ftol=1.0e-10, max_iterations=1000, refine_tol=1.0e-15)
+    host, mask = _host_state(cfg, p0)
+    previous = bool(jax.config.jax_disable_jit)
+    jax.config.update("jax_disable_jit", False)
+    try:
+        root = im._refined_state(cfg, p0, host, mask)
+        P = im._dof_projector(cfg, mask)
+        factors = im._refine_block_factors(cfg, p0, host, mask, P(host))
+        b = P(jax.tree.map(
+            lambda a: jnp.asarray(np.random.default_rng(0).standard_normal(a.shape)), root))
+        fresh, fresh_stats = im._adjoint_block_core(p0, P(root), root, mask, b, cfg)
+        reused, stats = im._adjoint_block_reuse_core(
+            p0, P(root), root, mask, b, factors, cfg)
+    finally:
+        jax.config.update("jax_disable_jit", previous)
+    assert bool(stats.converged) and bool(fresh_stats.converged)
+    difference = im._tree_norm(jax.tree.map(jnp.subtract, reused, fresh))
+    assert float(difference) <= 1.0e-10 * float(im._tree_norm(fresh))
+    assert jax.tree.structure(factors) == jax.tree.structure(im._factor_struct(cfg))
+    for leaf, struct in zip(jax.tree.leaves(factors), jax.tree.leaves(im._factor_struct(cfg))):
+        assert leaf.shape == struct.shape and leaf.dtype == struct.dtype
+
+
+def test_anchor_factor_callback_and_eager_miss_fall_back_to_the_fresh_adjoint() -> None:
+    """Rejected or unmemoized trials get zeros or root factors; a miss refactors."""
+    _, cfg, p0 = _small_solovev_setup()
+    params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), p0)
+    previous = bool(jax.config.jax_disable_jit)
+    jax.config.update("jax_disable_jit", False)
+    try:
+        root, mask = im._host_solve_and_mask(cfg, params_np)
+        for leaf in jax.tree.leaves(im._host_anchor_factors(cfg, params_np, 2)):
+            assert not np.any(leaf)                       # rejected: zeros
+        im._LAST_ANCHOR_FACTORS.pop(cfg, None)
+        at_root = im._host_anchor_factors(cfg, params_np, 0)  # rebuilt at the root
+        assert np.any(jax.tree.leaves(at_root)[0])
+        refined = im._LAST_REFINED.pop(cfg)
+        im._LAST_ANCHOR_FACTORS.pop(cfg, None)
+        assert not np.any(jax.tree.leaves(im._host_anchor_factors(cfg, params_np, 0))[0])
+        im._LAST_REFINED[cfg] = refined
+
+        root, mask = (jax.tree.map(jnp.asarray, tree) for tree in (root, mask))
+        gbar = jax.tree.map(jnp.ones_like, root)
+        zeros = jax.tree.map(jnp.zeros_like, at_root)     # certificate miss
+        (fresh,) = im._solve_implicit_bwd_impl(cfg, (p0, root, mask), gbar)
+        (missed,) = im._solve_implicit_bwd_impl(
+            cfg, (p0, root, mask), gbar, factors=zeros)
+    finally:
+        jax.config.update("jax_disable_jit", previous)
+    for a, b in zip(jax.tree.leaves(missed), jax.tree.leaves(fresh)):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-12, atol=0.0)

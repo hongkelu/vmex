@@ -10,6 +10,7 @@ resolve through ``conftest.resolve_golden_dir``.
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,7 +105,7 @@ def test_equilibrium_clear_solution_aliases(solovev_eq):
 def test_qs_helicity_sign_convention_qh():
     """nfp4_QH minimizes the (1, -1) helicity residual — pins the sign.
 
-    ``helicity_n`` multiplies ``nfp`` internally, so the plan's "QH:
+    ``helicity_n`` multiplies ``nfp`` internally, so the usual "QH:
     (m, n) = (1, -nfp)" in physical mode numbers is ``helicity_n = -1`` here.
     """
     w = _golden_wout("nfp4_QH_warm_start")
@@ -379,7 +380,7 @@ def test_qi_regression_pin_and_jit():
     solovev pin sat on an argmin tie: an axisymmetric |B| has equal minima
     along each field line, so rounding picked the well and the total flipped
     between 0.13626 and 0.13500. The guard below keeps the pinned wells
-    unique; smooth wells (plan D1) remove the argmin altogether."""
+    unique; smooth wells remove the argmin altogether."""
     pytest.importorskip("booz_xform_jax")
     w = _golden_wout("li383_low_res")
     booz = opt.boozer_modes_from_wout(w, surfaces=[0.5, 1.0], mboz=8, nboz=8)
@@ -1574,7 +1575,12 @@ def test_subproblem_ladder_compiles_once():
             self.count = 0
 
         def emit(self, record):
-            self.count += record.getMessage().startswith("Compiling ")
+            # Single-primitive eager ops (jit(multiply), jit(squeeze), ...)
+            # compile once per process on first use; whether an earlier test
+            # on the same xdist worker already paid them is order-dependent.
+            name = re.match(r"Compiling jit\((\w+)\)", record.getMessage())
+            self.count += bool(name) and not (
+                hasattr(jax.numpy, name[1]) or hasattr(jax.lax, name[1]))
 
     inp = _ladder_input()
     terms = [(opt.aspect_ratio, 4.0, 1.0)]
@@ -1671,3 +1677,59 @@ def test_host_state_runtime_is_the_unanchored_forward_solve(monkeypatch):
         np.testing.assert_allclose(
             np.asarray(getattr(state, field)), np.asarray(getattr(reference, field)),
             rtol=0.0, atol=1.0e-9)
+
+
+def test_uncertified_seed_is_refused_not_scored_as_the_penalty():
+    from types import SimpleNamespace
+
+    from vmex.core.errors import VmecConvergenceError
+
+    def memo(converged, fsq):
+        return (None, SimpleNamespace(converged=converged, fsqr=fsq, fsqz=0.0, fsql=0.0))
+
+    opt._require_certified_seed(None, 1e-12, 100.0)
+    opt._require_certified_seed(memo(True, 1.0), 1e-12, 100.0)
+    opt._require_certified_seed(memo(False, 5e-11), 1e-12, 100.0)
+    with pytest.raises(VmecConvergenceError, match="seed equilibrium did not converge"):
+        opt._require_certified_seed(memo(False, 1e-6), 1e-12, 100.0)
+
+
+def test_budget_exhausted_warm_seed_falls_through_to_cold(monkeypatch):
+    """A warm seed that only runs out of iterations must not end the ladder."""
+    from types import SimpleNamespace
+
+    from vmex.core import implicit as im
+
+    calls = []
+
+    def fake_solve(_inp, _resolution, *, initial_state, **_kwargs):
+        calls.append(initial_state)
+        warm = initial_state is not None
+        return SimpleNamespace(converged=not warm, fsqr=1e-6 if warm else 1e-13,
+                               fsqz=0.0, fsql=0.0, iterations=10, state=None)
+
+    monkeypatch.setattr(im, "solve", fake_solve)
+    monkeypatch.setattr(im, "input_with_params", lambda inp, params: inp)
+    class Config(SimpleNamespace):  # weak-referenceable, like ImplicitConfig
+        __hash__ = object.__hash__
+
+    cfg = Config(inp=None, hot_restart=True, multigrid=False, resolution=None,
+                 ftol=1e-12, max_iterations=10, mode=None, lconm1=True)
+    im._HOT_CACHE[cfg] = "warm"
+    result = im._host_solve(cfg, {"leaf": np.zeros(1)})
+    assert calls == ["warm", None] and result.converged
+def test_report_targets_prints_one_verdict_line(capsys, monkeypatch):
+    from types import SimpleNamespace
+
+    eq = SimpleNamespace(solution=None, solver_context=None)
+    assert opt.report_targets(eq, extra=[("QS", 1e-3, 1e-2, "max")])
+    assert not opt.report_targets(eq, extra=[("beta", 0.02, 0.025, "min")])
+    for name, value in (("aspect_ratio", 6.5), ("min_abs_iota", 0.4),
+                        ("magnetic_well", 0.02), ("mirror_ratio", 0.2),
+                        ("max_elongation", 5.0)):
+        monkeypatch.setattr(opt, name, lambda state, rt, value=value: value)
+    assert not opt.report_targets(eq, aspect=6.0, iota_floor=0.42, well_floor=0.01,
+                                  mirror_limit=0.21, elongation_limit=8.0)
+    out = capsys.readouterr().out.splitlines()
+    assert out == ["Targets met.", "Targets NOT met: beta 0.02 below 0.025.",
+                   "Targets NOT met: aspect 6.5 above 6.3; min |iota| 0.4 below 0.42."]

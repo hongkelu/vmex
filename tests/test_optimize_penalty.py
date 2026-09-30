@@ -1,5 +1,5 @@
-"""Zero-crash penalty-path tests for ``optimize.least_squares`` (plan Item
-I.2): a mid-campaign trial whose equilibrium solve fails must be penalized
+"""Zero-crash penalty-path tests for ``optimize.least_squares``:
+a mid-campaign trial whose equilibrium solve fails must be penalized
 (large finite residual, trust region backs off), never crash.  All four
 failure lanes are exercised deterministically by making the host solve fail
 on chosen calls: the jac=None ``fun`` body, the exception-free implicit
@@ -28,6 +28,22 @@ pytestmark = pytest.mark.usefixtures("_module_jit_enabled")  # full solves: jitt
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 OBJECTIVE = [(opt.aspect_ratio, 4.0, 1.0)]
+
+# Canonical configs outlive a test, so the per-config memos a previous test
+# left behind (a solve at x0, a refined state, a hot seed) would turn this
+# module's first host solves into memo hits and shift the call counts the
+# failure injection keys on. Each test starts from empty memos.
+_PER_CONFIG_MEMOS = ("_HOT_CACHE", "_LAST_SOLVE", "_PERTURB_SEED", "_LAST_STATUS_ERROR",
+                     "_LAST_REFINED", "_LAST_ANCHOR_FACTORS", "_LAST_REFINEMENT_CORRECTION")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_solve_memos():
+    for name in _PER_CONFIG_MEMOS:
+        getattr(im, name).clear()
+    yield
+    for name in _PER_CONFIG_MEMOS:
+        getattr(im, name).clear()
 
 
 def _boom() -> VmecJacobianError:

@@ -2,7 +2,7 @@
 
 Wires the gyrokinetic turbulence proxies of `GKX
 <https://github.com/uwplasma/GKX>`_ (uwplasma; JAX-native Hermite-Laguerre
-flux-tube solver; PyPI ``gkx`` >= 1.8.0, formerly published as
+flux-tube solver; PyPI ``gkx`` >= 2.4.0, formerly published as
 ``spectraxgk``) to converged ``(SpectralState, SolverRuntime)`` pairs, in
 two layers:
 
@@ -27,8 +27,7 @@ two layers:
 
    - :func:`turbulent_growth_rate` — kind ``"growth"``: dominant linear
      ITG/TEM-branch growth rate ``gamma`` on the sampled flux tube.
-     Traceable in both AD modes (``jac=None`` and ``jac="implicit"``;
-     its docstring has the eigvals-vs-custom_vjp detail).
+     Traceable in both AD modes (``jac=None`` and ``jac="implicit"``).
    - :func:`quasilinear_flux_proxy` — kind ``"quasilinear_flux"``: the
      mixing-length quasilinear heat-flux proxy
      ``gamma * W_Q / k_perp_eff^2``.
@@ -41,16 +40,15 @@ two layers:
      ``SOLVER_OBJECTIVE_NAMES`` vector
      (:data:`TURBULENCE_OBJECTIVE_NAMES`).
 
-   The quasilinear and nonlinear-window proxies weight the dominant
-   *eigenvector* (heat-flux weight, ``kperp_eff``), and JAX declines
-   derivatives of non-symmetric eigenvectors — those two are value-level
-   objectives: use ``jac=None`` (finite differences), exactly like the
-   wout-engine terms (``d_merc``, ``l_grad_b``).  Traceability is
-   validated in ``tests/test_turbulence.py``.
+   Every wrapper differentiates in forward and reverse mode through GKX's
+   implicit eigenpair rule (``gkx.objectives.eigen.dominant_eigenpair``):
+   one dense ``eig`` and one bordered LU per Jacobian, and one operator JVP
+   at the eigenvector per column, so they compose with ``jac="implicit"``.
+   Traceability is validated in ``tests/test_turbulence.py``.
 
 The heavy dependency is optional: only the objective wrappers import
-``gkx`` (>= 1.8.0; ``pip install 'vmex[turbulence]'`` or
-``pip install 'gkx>=1.8.0'``; its ``solvax`` pin is satisfied API-wise by
+``gkx`` (>= 2.4.2; ``pip install 'vmex[turbulence]'`` or
+``pip install 'gkx>=2.4.2'``; its ``solvax`` pin is satisfied API-wise by
 the in-house solvax's ``gmres``/``tridiagonal_solve``/``chunked_jacfwd``).
 The geometry adapter works without it.
 
@@ -143,10 +141,13 @@ TURBULENCE_OBJECTIVE_NAMES = (
 def _gkx():
     """Import the optional GKX dependency with a helpful error.
 
-    Only ``gkx`` (>= 1.8.0; formerly published as ``spectraxgk``) works:
+    Only ``gkx`` (>= 2.4.0; formerly published as ``spectraxgk``) works:
     the objective wrappers import ``gkx.objectives`` submodules directly,
     so a pre-rename ``spectraxgk`` install can never satisfy them.
     """
+    from .._compat import require_optional
+
+    require_optional("gkx", "the turbulence objectives")
     try:
         import gkx
 
@@ -154,8 +155,8 @@ def _gkx():
     except ImportError as err:  # pragma: no cover - exercised via message test
         raise ImportError(
             "the turbulence objectives need the optional dependency "
-            "gkx >= 1.8.0 (github.com/uwplasma/GKX): pip install 'vmex[turbulence]' "
-            "or pip install 'gkx>=1.8.0'.  The geometry adapter "
+            "gkx >= 2.4.2 (github.com/uwplasma/GKX): pip install 'vmex[turbulence]' "
+            "or pip install 'gkx>=2.4.2'.  The geometry adapter "
             "gk_fieldline_geometry works without it.") from err
 
 
@@ -209,20 +210,65 @@ def _make_gk_point_fn(m: Array, xn: Array, tabs: dict, iota: Array,
     return point
 
 
-def _resolve_surface(s_index, ns: int) -> int:
-    if s_index is None:
-        s_index = min(max(int(round(0.6 * (ns - 1))), 2), ns - 2)
-    return _validate_surface_index(s_index, ns)
+def _resolve_surface(s_index, s, ns: int) -> tuple[int, float]:
+    """Full-mesh surface ``j`` and weight ``w`` of the tube at ``s_j + w hs``.
+
+    ``s_index`` is a grid surface (``w = 0``).  A normalized toroidal flux
+    ``s`` is bracketed by surfaces ``j`` and ``j + 1``, both inside
+    ``[2, ns - 2]``, so the tube stays at one physical radius when ``ns``
+    changes.
+    """
+    if s is None:
+        if s_index is None:
+            s_index = min(max(int(round(0.6 * (ns - 1))), 2), ns - 2)
+        return _validate_surface_index(s_index, ns), 0.0
+    if s_index is not None:
+        raise ValueError("pass s or s_index, not both")
+    position = float(s) * (ns - 1)
+    j = int(np.floor(position))
+    w = position - j
+    if w < 1.0e-9 or w > 1.0 - 1.0e-9:     # on a grid surface
+        j, w = int(round(position)), 0.0
+    if not (2 <= j and j + (w > 0.0) <= ns - 2):
+        raise ValueError(
+            f"s = {float(s)} lies outside the interior surfaces "
+            f"[{2 / (ns - 1):.4g}, {(ns - 2) / (ns - 1):.4g}] of this ns = {ns} grid")
+    return j, w
 
 
-def _line_arrays(ctx: dict, j: int, alpha: float, zeta0: float, x: Array):
+def _surface(ctx: dict, j: int, w: float) -> dict:
+    """Radial tables and profiles at ``s_j + w hs``.
+
+    Each full-mesh surface quantity (the radial parabola tables and the
+    ``iota``, ``d iota/ds``, ``dp/ds`` and ``phi'`` of that surface) is
+    interpolated linearly between the two bracketing surfaces.  Evaluating
+    one surface's parabola off-centre instead amplifies VMEC's odd-even
+    radial noise through its second-difference term: on a shaped tokamak
+    it moved ``gbdrift`` by 20 % at a fixed ``s``.
+    """
+    hs, iotas, pres = ctx["hs"], ctx["iotas"], ctx["pres"]
+
+    def at(k: int) -> dict:
+        return {
+            "tabs": _surface_tables(ctx, k),
+            "iota": 0.5 * (iotas[k] + iotas[k + 1]),
+            "diota": (iotas[k + 1] - iotas[k]) / hs,
+            "dpres": (pres[k + 1] - pres[k]) / hs,   # internal units: mu0 dp/ds
+            "phipf": ctx["phipf"][k],
+            "s": ctx["s"][k],
+        }
+
+    surface = at(j)
+    if w == 0.0:
+        return surface
+    return jax.tree.map(lambda a, b: (1.0 - w) * a + w * b, surface, at(j + 1))
+
+
+def _line_arrays(ctx: dict, surface: dict, alpha: float, zeta0: float, x: Array):
     """Raw point-geometry tuple along the field line at PEST angles ``alpha + x``."""
-    hs = ctx["hs"]
-    iotas = ctx["iotas"]
-    iota = 0.5 * (iotas[j] + iotas[j + 1])
-    tabs = _surface_tables(ctx, j)
+    tabs, iota = surface["tabs"], surface["iota"]
     point = _make_gk_point_fn(ctx["m"], ctx["xn"], tabs, iota,
-                              (iotas[j + 1] - iotas[j]) / hs, ctx["phipf"][j])
+                              surface["diota"], surface["phipf"])
     theta_star = alpha + x
     phi = zeta0 + x / iota                 # field line: theta* = alpha + iota (phi - zeta0)
     lmns0, lmnc0 = _pest_lambda(tabs)
@@ -259,6 +305,7 @@ def _gk_fieldline_geometry_from_context(
     *,
     nfp: int,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -287,6 +334,11 @@ def _gk_fieldline_geometry_from_context(
     s_index:
         Full-mesh surface index in ``[2, ns - 2]``; default ~60 % of the
         radius (a typical core gradient region).
+    s:
+        Normalized toroidal flux of the tube, instead of ``s_index``: the
+        surface data are interpolated linearly between the two bracketing
+        full-mesh surfaces, so the tube keeps its physical radius when
+        ``ns`` changes (optimization ladders, final re-solves).
     alpha, zeta0:
         Field-line label ``alpha = theta* - iota (phi - zeta0)`` and the
         toroidal angle of the tube center.
@@ -307,16 +359,13 @@ def _gk_fieldline_geometry_from_context(
     """
     if int(ntheta) < 8:
         raise ValueError("ntheta must be >= 8")
-    j = _resolve_surface(s_index, ctx["ns"])
+    j, w = _resolve_surface(s_index, s, ctx["ns"])
     dtype = ctx["s"].dtype
 
-    hs = ctx["hs"]
-    s_j = ctx["s"][j]
+    surface = _surface(ctx, j, w)
+    s_j = surface["s"]
     sqrt_s = jnp.sqrt(s_j)
-    iotas, pres = ctx["iotas"], ctx["pres"]
-    iota = 0.5 * (iotas[j] + iotas[j + 1])
-    diota = (iotas[j + 1] - iotas[j]) / hs
-    dpres = (pres[j + 1] - pres[j]) / hs            # internal units: mu0 dp/ds
+    iota, diota, dpres = surface["iota"], surface["diota"], surface["dpres"]
     shat = -2.0 * s_j * diota / iota                # (r/q) dq/dr, r = L_ref sqrt(s)
     L_ref, B_ref, R_major = ctx["L_ref"], ctx["B_ref"], ctx["R_major"]
     psi_edge, sign_psi = ctx["psi_edge"], ctx["sign_psi"]
@@ -331,7 +380,7 @@ def _gk_fieldline_geometry_from_context(
         # Monotone map x(z) with b.grad z constant: z ~ cumulative int dx / gradpar(x).
         nfine = int(arc_oversample) * int(ntheta) + 1
         x_fine = jnp.linspace(-jnp.pi, jnp.pi, nfine, dtype=dtype)
-        modB_f, b_sup_phi_f, *_ = _line_arrays(ctx, j, alpha_c, zeta0_c, x_fine)
+        modB_f, b_sup_phi_f, *_ = _line_arrays(ctx, surface, alpha_c, zeta0_c, x_fine)
         w = 1.0 / gradpar_of(modB_f, b_sup_phi_f)
         dx = x_fine[1] - x_fine[0]
         cum = jnp.concatenate([jnp.zeros((1,), dtype=dtype),
@@ -344,7 +393,7 @@ def _gk_fieldline_geometry_from_context(
         gradpar_value = None
 
     (modB, b_sup_phi, gaa, gas, gss,
-     bxgb_dot_ga, bxgb_dot_gs, b_dot_gradb) = _line_arrays(ctx, j, alpha_c, zeta0_c, x_eval)
+     bxgb_dot_ga, bxgb_dot_gs, b_dot_gradb) = _line_arrays(ctx, surface, alpha_c, zeta0_c, x_eval)
 
     bmag = modB / B_ref
     gradpar_profile = gradpar_of(modB, b_sup_phi)
@@ -407,6 +456,7 @@ def gk_fieldline_geometry(
     rt: SolverRuntime,
     *,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -424,6 +474,7 @@ def gk_fieldline_geometry(
         _ballooning_context(state, rt),
         nfp=int(rt.resolution.nfp),
         s_index=s_index,
+        s=s,
         alpha=alpha,
         zeta0=zeta0,
         ntheta=ntheta,
@@ -500,6 +551,7 @@ def gk_fieldline_geometry_from_wout(
     wout: Any,
     *,
     s_index: int | None = None,
+    s: float | None = None,
     alpha: float = 0.0,
     zeta0: float = 0.0,
     ntheta: int = 32,
@@ -524,6 +576,7 @@ def gk_fieldline_geometry_from_wout(
         _wout_ballooning_context(wout),
         nfp=int(wout.nfp),
         s_index=s_index,
+        s=s,
         alpha=alpha,
         zeta0=zeta0,
         ntheta=ntheta,
@@ -558,7 +611,7 @@ def flux_tube_geometry(
 # Objective wrappers (GKX proxies as (state, runtime) callables)
 # ---------------------------------------------------------------------------
 
-_GEOMETRY_KEYS = ("s_index", "alpha", "zeta0", "ntheta", "equal_arc", "arc_oversample")
+_GEOMETRY_KEYS = ("s_index", "s", "alpha", "zeta0", "ntheta", "equal_arc", "arc_oversample")
 
 
 def _split_kwargs(kwargs: dict) -> tuple[dict, dict]:
@@ -566,17 +619,37 @@ def _split_kwargs(kwargs: dict) -> tuple[dict, dict]:
     return geometry, kwargs
 
 
-def _linear_params(params_linear, r_over_lt, r_over_ln, aspect):
+def _linear_params(params_linear, r_over_lt, r_over_ln, aspect,
+                   a_over_lt=None, a_over_ln=None, geometry=None):
     """GKX LinearParams: explicit object, or its collisionless
-    optimization defaults with optionally overridden drive gradients."""
+    optimization defaults with optionally overridden drive gradients
+    (``R/L`` through ``r_over_*``, or GKX's own ``a/L`` through ``a_over_*``).
+
+    The defaults' Hermite closure scales with ``kpar_scale``, which must be
+    the tube's ``b . grad z`` (GKX's own default is 1.0 when it has no
+    geometry).  On a large-aspect-ratio tube (``gradpar`` 0.035 on the QA
+    seed) 1.0 overdamped the closure 30-fold and hid a resolved ITG mode
+    (``gamma`` 0.19-0.29 at ``a/L_T = 3``) behind a marginal one (``2e-4``),
+    so the defaults take ``kpar_scale`` from ``geometry`` when it is given.
+    """
+    drives = (r_over_lt, r_over_ln, a_over_lt, a_over_ln)
     if params_linear is not None:
-        if r_over_lt is not None or r_over_ln is not None:
-            raise ValueError("pass either params_linear or r_over_lt/r_over_ln, not both")
+        if any(d is not None for d in drives):
+            raise ValueError("pass either params_linear or drive gradients, not both")
         return params_linear
+    if (r_over_lt is not None and a_over_lt is not None) or (
+            r_over_ln is not None and a_over_ln is not None):
+        raise ValueError("pass each drive gradient as R/L or as a/L, not both")
     from gkx.objectives.core import _default_gradient_linear_params
     params = _default_gradient_linear_params()
     import dataclasses
     updates = {}
+    if geometry is not None:
+        updates["kpar_scale"] = geometry.gradpar_value
+    if a_over_lt is not None:
+        updates["tprim"] = a_over_lt
+    if a_over_ln is not None:
+        updates["fprim"] = a_over_ln
     # GKX's operator consumes a/L gradients -- its ``tprim``/``fprim``, the
     # TOML convention -- never R/L.  Its own defaults, ``tprim = 2.49`` and
     # ``fprim = 0.8``, are the Cyclone base case ``R/L_T = 6.9``,
@@ -608,12 +681,14 @@ def turbulence_objective_vector(
     terms=None,
     r_over_lt: float | None = None,
     r_over_ln: float | None = None,
+    a_over_lt: float | None = None,
+    a_over_ln: float | None = None,
     **geometry_kwargs,
 ) -> jnp.ndarray:
     """Ordered GKX linear/quasilinear observable vector (traceable).
 
     Samples one flux tube (:func:`gk_fieldline_geometry` keyword arguments
-    ``s_index``/``alpha``/``zeta0``/``ntheta``/``equal_arc`` pass through),
+    ``s``/``s_index``/``alpha``/``zeta0``/``ntheta``/``equal_arc`` pass through),
     builds GKX's spectral linear gyrokinetic operator on it at the
     ``selected_ky_index`` binormal wavenumber (``ky = 2 pi k / ly`` in
     ``rho_ref`` units), selects the maximum-growth eigenbranch, and returns
@@ -626,17 +701,19 @@ def turbulence_objective_vector(
     ``R/a = 2.77``).  ``r_over_lt``/``r_over_ln`` override them in ``R/L``,
     divided by this equilibrium's aspect ratio on the way in, since GKX's
     operator consumes ``a/L``; pass ``params_linear`` to supply ``a/L``
-    directly.
+    directly, or ``a_over_lt``/``a_over_ln`` to set only the drive in
+    ``a/L`` on top of the defaults.
     """
     gkx = _gkx()
     geom = flux_tube_geometry(state, rt, **geometry_kwargs)
+    params = _linear_params(params_linear, r_over_lt, r_over_ln,
+                            aspect_ratio(state, rt), a_over_lt, a_over_ln, geom)
     return gkx.solver_objective_vector_from_geometry(
         geom,
         selected_ky_index=int(selected_ky_index),
         n_laguerre=int(n_laguerre), n_hermite=int(n_hermite),
         nx=int(nx), ny=int(ny), lx=float(lx), ly=float(ly),
-        params_linear=_linear_params(params_linear, r_over_lt, r_over_ln,
-                                    aspect_ratio(state, rt)),
+        params_linear=params,
         terms=terms,
     )
 
@@ -648,40 +725,36 @@ def turbulent_growth_rate(state: SpectralState, rt: SolverRuntime, **kwargs) -> 
     eigenvalues of its spectral Hermite-Laguerre linear operator on the
     sampled flux tube, in ``v_th / L_ref`` units.  Positive = unstable.
 
-    The operator matrix is GKX's own
-    (``gkx.solver_linear_operator_matrix_from_geometry`` — the exact
-    matrix behind its ``solver_growth_rate_from_geometry``); the eigenvalue
-    reduction here uses ``jnp.linalg.eigvals`` so the objective carries
-    *both* JVP and VJP rules — GKX's ``dominant_real_eigenvalue``
-    is a reverse-only ``custom_vjp``, which vmex's forward-mode
-    implicit Jacobian cannot trace (values agree to roundoff; gated in
-    ``tests/test_turbulence.py``).  Keyword arguments as
-    :func:`turbulence_objective_vector` (minus the eigenvector-dependent
-    pieces).  Two-positional ``(state, runtime)`` — drive it toward zero /
-    negative in :func:`vmex.core.optimize.least_squares` with
-    ``jac=None`` or ``jac="implicit"``.
+    GKX's ``solver_growth_rate_from_geometry``: one dense ``eig`` of its
+    operator, differentiated implicitly in both modes -- a Jacobian costs one
+    bordered LU plus one operator JVP per column, never a materialized
+    ``dA``.  Keyword arguments as :func:`turbulence_objective_vector` (minus
+    the eigenvector-dependent pieces).  Two-positional ``(state, runtime)``
+    -- drive it toward zero / negative in
+    :func:`vmex.core.optimize.least_squares` with ``jac=None`` or
+    ``jac="implicit"``.
     """
     geometry_kwargs, solver_kwargs = _split_kwargs(dict(kwargs))
     gkx = _gkx()
+    geom = flux_tube_geometry(state, rt, **geometry_kwargs)
     params_linear = _linear_params(
         solver_kwargs.pop("params_linear", None),
         solver_kwargs.pop("r_over_lt", None), solver_kwargs.pop("r_over_ln", None),
-        aspect_ratio(state, rt))
-    geom = flux_tube_geometry(state, rt, **geometry_kwargs)
-    matrix = gkx.solver_linear_operator_matrix_from_geometry(
+        aspect_ratio(state, rt),
+        solver_kwargs.pop("a_over_lt", None), solver_kwargs.pop("a_over_ln", None),
+        geom)
+    return gkx.solver_growth_rate_from_geometry(
         geom, params_linear=params_linear, **solver_kwargs)
-    eigenvalues = jnp.linalg.eigvals(matrix)
-    return jnp.real(eigenvalues[jnp.argmax(jnp.real(eigenvalues))])
 
 
 def quasilinear_flux_proxy(state: SpectralState, rt: SolverRuntime, **kwargs) -> jnp.ndarray:
-    """Mixing-length quasilinear heat-flux proxy (value-level; ``jac=None``).
+    """Mixing-length quasilinear heat-flux proxy (traceable).
 
     GKX objective kind ``"quasilinear_flux"``: ``gamma * W_Q /
     max(kperp_eff^2, 1e-12)`` with ``W_Q`` the dominant mode's normalized
     heat-flux weight — the mixing-length saturation rule of its quasilinear
-    transport lane.  Eigenvector-weighted, hence value-level (module
-    docstring): use ``jac=None``.  Keyword arguments as
+    transport lane.  Eigenvector-weighted; GKX's implicit eigenpair rule
+    differentiates it in both modes.  Keyword arguments as
     :func:`turbulence_objective_vector`.
     """
     gkx = _gkx()
@@ -697,7 +770,7 @@ def nonlinear_heat_flux_proxy(
     saturation_floor: float = 1.0e-10,
     **kwargs,
 ) -> jnp.ndarray:
-    """Smooth reduced nonlinear-window heat-flux surrogate (value-level; ``jac=None``).
+    """Smooth reduced nonlinear-window heat-flux surrogate (traceable).
 
     GKX objective kind ``"nonlinear_window_heat_flux"``: its
     saturation-rule closure ``csat * max(W_Q, 0) * 2 gamma_+ /
@@ -706,8 +779,8 @@ def nonlinear_heat_flux_proxy(
     (``gkx.objectives.vmec_transport._solver_table_to_nonlinear_window_proxy``,
     the exact objective its VMEX optimization scripts use for this kind).
     A smooth *surrogate* only — see the module docstring's audit caveat.
-    Eigenvector-weighted like :func:`quasilinear_flux_proxy` — use
-    ``jac=None``.  Keyword arguments as
+    Eigenvector-weighted and differentiable like
+    :func:`quasilinear_flux_proxy`.  Keyword arguments as
     :func:`turbulence_objective_vector`.
     """
     _gkx()

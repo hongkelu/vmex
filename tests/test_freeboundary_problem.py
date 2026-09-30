@@ -317,9 +317,10 @@ def test_dense_derivatives_seed_every_accepted_step(scalar):
         assert all(seed.closed for seed in stats["seeds"][:-1])
 
 
-def test_dense_derivative_that_misses_its_gate_retries_matrix_free(scalar):
+def test_dense_derivative_that_misses_its_gate_retries_matrix_free(scalar, monkeypatch):
     p, stats, *_ = scalar
-    p.enable_matrix_free(dense_derivatives=True)
+    monkeypatch.setattr(api._LURefresh, "observe", lambda self, cost: True)  # no cost refresh redoes that dense solve
+    p.enable_matrix_free(dense_derivatives=True, refresh_horizon=10)
     seed = stats["seeds"][0]
     stats["dense_fail"] = True
     x = np.full(5, .001)

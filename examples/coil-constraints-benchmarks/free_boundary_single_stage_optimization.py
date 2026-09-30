@@ -174,11 +174,20 @@ def bootstrap_mismatch(inp, redl):
     """
     if P.BOOTSTRAP_MODEL == "redl":
         return redl.total_state
+    import numpy as np
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=P.DKX_SURFACES,
-                                    collision_operator=P.DKX_COLLISION_OPERATOR,
-                                    mboz=P.QI_OPTIONS["mboz"], nboz=P.QI_OPTIONS["nboz"]).total
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=P.DKX_SURFACES,
+                                       collision_operator=P.DKX_COLLISION_OPERATOR,
+                                       mboz=P.QI_OPTIONS["mboz"], nboz=P.QI_OPTIONS["nboz"])
+
+    def mismatch(state, runtime):
+        # DKX reads the radial grid on the host. Under jit it is a tracer, but it is
+        # always linspace(0, 1, ns), so hand DKX that concrete grid.
+        grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
+        return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
+
+    return mismatch
 
 
 def restart_input(run):
@@ -506,7 +515,7 @@ def main(argv=None):
     lower, upper, row_scales = zip(
         (P.IOTA_FLOOR + P.IOTA_MARGIN, np.inf, P.IOTA_FLOOR),
         (P.RADIUS_TARGET - width, P.RADIUS_TARGET + width, P.RADIUS_TOLERANCE), *mirror_bounds,
-        *[(-np.inf, P.IOTA_CEILING - P.IOTA_MARGIN, P.IOTA_FLOOR)] * len(ceiling),
+        *([(-np.inf, P.IOTA_CEILING - P.IOTA_MARGIN, P.IOTA_FLOOR)] if ceiling else []),
         *[(-np.inf, P.REDL_TOLERANCE, P.REDL_TOLERANCE)] * nredl,
         (P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN, np.inf, P.COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, aspect_scale))

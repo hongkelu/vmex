@@ -1832,10 +1832,34 @@ def test_dense_explicit_residual_gate_and_diagnostics(monkeypatch):
     with pytest.raises(AdjointSolveError):
         call(diagnostics)
     assert len(diagnostics)==1 and diagnostics[0]['accepted'] is False
-    np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*np.sqrt(3.))
+    # Backward-error gate: 1e-9 (||b|| + ||A|| ||x||) with A = 2 I, b = 1 and x ~ b/2.
+    np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*2*np.sqrt(3.),rtol=1e-6)
+    np.testing.assert_allclose(diagnostics[0]['operator_norm'],2.,rtol=1e-12)
     actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),
         adjoint_solver='forward_dense_jax',adjoint_residual_rtol=1e-9)
     assert actual.adjoint_residual_rtol==1e-9
+
+
+def test_dense_gate_is_a_normwise_backward_error_bound(monkeypatch):
+    """A residual at the rounding floor of ||A|| ||x|| passes although it fails the
+    relative 1e-9 ||b|| test; an unconverged solve (residual 1e-4 ||b||) still fails."""
+    cfg = _dense_cfg(adjoint_residual_rtol=1e-9)
+    matrix = jnp.diag(jnp.array([1e4, 1., 1.]))
+    rhs = jnp.array([[1e-2, 0., 0.], [0., 1e-2, 0.]])
+    exact = np.linalg.solve(np.asarray(matrix), np.asarray(rhs).T).T
+    # Row 0: residual 1.5e-11, above 1e-9 ||b|| = 1e-11 but below 1e-9 (||b|| + ||A|| ||x||) = 2e-11.
+    # Row 1: residual 1e-6, far above 1e-9 (||b|| + ||A|| ||x||) = 1e-7.
+    offset = np.array([[1.5e-15, 0., 0.], [0., 1e-6, 0.]])
+    monkeypatch.setattr(dense, '_factor_solve', lambda m, b, **kw: (jnp.asarray(exact + offset), None))
+    monkeypatch.setattr(dense.jsl, 'lu_solve', lambda factors, b, **kw: jnp.zeros_like(b))
+    reports = []
+    with pytest.raises(AdjointSolveError, match='row 1'):
+        dense.solve_dense_adjoint(lambda z, *_: matrix @ z, jnp.zeros(3), None, None, None, None, None,
+                                  rhs, jnp.ones(3), cfg, diagnostics=reports)
+    row0, row1 = reports
+    np.testing.assert_allclose(row0['operator_norm'], 1e4, rtol=1e-12)
+    assert row0['relative_residual'] > 1e-9 and row0['accepted'] and row0['backward_error'] < 1e-9
+    assert row1['backward_error'] > 1e-9 and not row1['accepted']
 
 
 @pytest.mark.parametrize('retained', [False, True])

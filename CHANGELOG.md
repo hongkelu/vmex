@@ -21,7 +21,9 @@ revision it was measured at, and the pages that cite it.
   `dense_derivatives=True` to reseed it at every accepted step), polish roots
   (`enable_root_polishing`) and Newton-correct predicted trials
   (`enable_newton_correction`). An invalid GPU LU pivot buffer is refactored on
-  CPU.
+  CPU. Its dense, matrix-free and tangent checks accept a solve by its normwise
+  backward error, `||r|| <= tol (||A|| ||x|| + ||b||)`, so a row whose `||b||` is
+  small against `||A|| ||x||` no longer fails at the rounding floor.
 - `solve_free_boundary(include_edge_in_convergence=True,
   edge_force_tolerance=...)` also requires the spectral edge force, reported as
   `SolveResult.fedge`, to converge.

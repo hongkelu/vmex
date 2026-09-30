@@ -44,7 +44,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
-from _common import NORMAL_FIELD_CONSTRAINT, resize_coils, seed_input, target_residual  # noqa: E402
+from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, current_from_wout, dkx_mismatch,  # noqa: E402
+                     max_abs_iota, redl_profiles, resize_coils, seed_input, target_residual)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
@@ -72,17 +73,26 @@ def read_history(run):
     return rows, keys
 
 
-def limits():
-    """Constrained quantities and their bounds, as the two benchmarks impose them."""
+def limits(keys):
+    """Logged quantities and their bounds, as the two benchmarks impose them (None: no bound)."""
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
+    # At beta > 0 the fixed arm limits the total (B_coils + B_plasma).n/|B|, logged as
+    # total_normal_field_rms, and logs the coil-only normal_field_rms unconstrained.
+    coil_only_limit = None if "total_normal_field_rms" in keys else NORMAL_FIELD_CONSTRAINT
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
+        "max_abs_iota": ("max |iota|", None, P.IOTA_CEILING),
         "aspect": ("aspect ratio", *P.ASPECT_RANGE),
         "mirror_ratio": ("mirror ratio", None, P.MIRROR_LIMIT),
         "major_radius_m": ("major radius [m]", P.RADIUS_TARGET - width, P.RADIUS_TARGET + width),
+        "redl_mismatch": (f"bootstrap mismatch ({P.BOOTSTRAP_MODEL})", None, P.REDL_TOLERANCE),
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
-        "normal_field_rms": ("rms B.n/|B|", None, NORMAL_FIELD_CONSTRAINT),
+        "plasma_minimum_scaled_slack": ("min plasma-row slack", 0.0, None),
+        "normal_field_rms": ("rms coil-only B.n/|B|", None, coil_only_limit),
+        "total_normal_field_rms": ("rms (B_coils + B_plasma).n/|B|", None, NORMAL_FIELD_CONSTRAINT),
+        "rbtor_ratio": ("edge R B_phi / coils' mu0 I / 2 pi", 1 - FIELD_STRENGTH_TOLERANCE,
+                        1 + FIELD_STRENGTH_TOLERANCE),
         "flux_ratio": ("coil flux / PHIEDGE", None, None),
         "phiedge_factor": ("PHIEDGE / seed PHIEDGE", None, None),
     }
@@ -105,7 +115,7 @@ def plot_history(rows, keys, out):
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
     figure.tight_layout(), figure.savefig(out / "loss.png", dpi=200), plt.close(figure)
 
-    panels = [(k, *spec) for k, spec in limits().items() if k in keys]
+    panels = [(k, *spec) for k, spec in limits(keys).items() if k in keys]
     columns = 3
     figure, axes = plt.subplots((len(panels) + columns - 1) // columns, columns,
                                 figsize=(4 * columns, 3 * ((len(panels) + columns - 1) // columns)), squeeze=False)
@@ -259,11 +269,15 @@ def dense_solve(frame, args, rows, out):
             mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
     else:  # older runs: the case's seed deck
         inp = seed_input()
-    phiedge = float(vmex.read_wout(wout_path).phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
+    row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
+    bootstrap = "redl_mismatch" in row  # --bootstrap run: input.run holds the seed current, the WOUT the final one
+    run_wout = vmex.read_wout(wout_path)
+    if bootstrap:
+        inp = current_from_wout(inp, run_wout)
+    phiedge = float(run_wout.phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]), phiedge=phiedge,
                   ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
-    row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
     scale = 1.0 / row["flux_ratio"] if args.match_flux else 1.0
     if scale != 1.0:
         coils = Coils(coils.curves, coils.dofs_currents_raw * scale, currents_scale=coils.currents_scale)
@@ -284,12 +298,22 @@ def dense_solve(frame, args, rows, out):
                   converged=converged, iterations=int(result.iterations), seconds=time.monotonic() - started, **forces)
     if converged:
         wout = vmex.wout_from_state(inp=inp, state=result.state, niter=int(result.iterations), converged=True,
-                               vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
+                                    vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
         path = vmex.write_wout(str(out / "wout_dense.nc"), wout)
         rt = prepare_runtime(inp, resolution)
         residuals = target_residual().residuals_state(result.state, rt)
         report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
-                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)))
+                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)),
+                      max_abs_iota=float(max_abs_iota(result.state, rt)))
+        if P.MIRROR_LIMIT:
+            report["mirror_ratio"] = float(opt.mirror_ratio(result.state, rt))
+        if bootstrap:  # the Redl mismatch, and for a DKX case also the DKX one the run held
+            report["redl_mismatch"] = float(redl_profiles(inp)[1].total_state(result.state, rt))
+            if P.BOOTSTRAP_MODEL == "dkx":
+                try:
+                    report["dkx_mismatch"] = float(dkx_mismatch(inp)(result.state, rt))
+                except ImportError:
+                    print("dkx is not installed: dense.json has no dkx_mismatch", flush=True)
         report["figures"] = [str(p) for p in vmex.plot_wout(path, out, name="dense").values()]
     else:
         print("dense solve did not converge; seed it closer with --seed-wout", flush=True)

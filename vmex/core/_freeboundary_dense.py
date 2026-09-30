@@ -32,7 +32,7 @@ class _Space(NamedTuple):
 
 
 def _active_space(cfg, mask, max_dofs):
-    """Sparse orthonormal Q with QQ.T equal to main's DOF projector.
+    """Sparse orthonormal Q with QQ.T equal to :func:`vmex.core.implicit._dof_projector`.
 
     Equal Z_sin pairs and opposite Z_cos pairs each supply one coordinate.
     The mask must already have equal support within each constrained pair.
@@ -84,7 +84,7 @@ def _compress(value, space):
 
 
 def _prepare_tangent(z, params, field, frozen, rcon, zcon, *, residual):
-    # Main's residual is already compiled. Keep linearize host-eager: wrapping
+    # The projected residual is already compiled. Keep linearize host-eager: wrapping
     # the returned JVP closure in another jit can leak nested force-kernel
     # tracers through its static callable data on supported JAX versions.
     return jax.linearize(lambda x:residual(x, params, field, frozen, rcon, zcon), z)[1]
@@ -121,6 +121,9 @@ def _assemble_device(tangent, template, space, *, batch_size):
 
 
 RADIAL_BANDWIDTH = 2  # coupled raw rows reach two surfaces at the free boundary
+#: Largest relative ``J v`` mismatch at which a colored assembly is accepted;
+#: above it the Jacobian is rebuilt column by column.
+_COLORED_ASSEMBLY_RTOL = 1e-9
 
 
 def _radial_probes(template, space, bandwidth=RADIAL_BANDWIDTH, edge_axis=False):
@@ -186,7 +189,7 @@ def _assemble(tangent, template, space, *, batch_size):
                                           jnp.asarray(surface), batch_size=batch_size,
                                           bandwidth=RADIAL_BANDWIDTH, edge_axis=edge_axis)
             error = _assembly_error(tangent, template, space, transpose)
-            if np.isfinite(error) and error <= 1e-9:
+            if np.isfinite(error) and error <= _COLORED_ASSEMBLY_RTOL:
                 _EDGE_AXIS_LAYOUT[key] = edge_axis
                 return transpose
             del transpose
@@ -195,9 +198,12 @@ def _assemble(tangent, template, space, *, batch_size):
     return _assemble_device(tangent, template, space, batch_size=batch_size)
 
 
-def _factor_solve(matrix, rhs, *, return_factors=False):
-    # matrix is the Jacobian transpose; its LU is retained for every later solve.
-    """One factorization, all transpose RHS columns, without assuming symmetry."""
+def _factor_solve(matrix, rhs):
+    """Factor the Jacobian transpose once and solve every RHS row.
+
+    Returns ``(solution, factors)``; the LU is retained for every later solve
+    at this root. No symmetry is assumed.
+    """
     factors = jsl.lu_factor(matrix)
     # A CUDA factorization can return an invalid pivot buffer even when the
     # LU entries are finite. Never feed sentinel indices to lu_solve: refactor
@@ -215,7 +221,7 @@ def _factor_solve(matrix, rhs, *, return_factors=False):
             solution = jnp.asarray(sl.lu_solve(factors, np.asarray(rhs).T, trans=0).T)
     else:
         solution = jsl.lu_solve(factors, rhs.T, trans=0).T
-    return (solution, factors) if return_factors else solution
+    return solution, factors
 
 
 def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
@@ -249,7 +255,7 @@ class DenseRootLinearization:
     """Owned numerical factors and tape for exactly one certified root.
 
     Created only after successful adjoint certification. Its caller owns the
-    accepted-state lifetime; there is no global numerical cache or slow fallback.
+    accepted-state lifetime; nothing is cached globally across roots.
     """
     residual: object
     z: object
@@ -372,7 +378,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
     if not bool(jnp.all(jnp.isfinite(matrix))):
         reject(0,np.inf,0.)
     try:
-        solution, factors = _factor_solve(matrix,rhs,return_factors=True)
+        solution, factors = _factor_solve(matrix,rhs)
     except (np.linalg.LinAlgError, sl.LinAlgWarning):
         reject(0,np.inf,0.)
     # Check the actual dense equation after the solve, independently of the

@@ -29,6 +29,13 @@ revision it was measured at, and the pages that cite it.
   `SolveResult.fedge`, to converge.
 - `opt.major_radius` returns the wout `Rmajor_p`, and
   `plot_optimization_movie(frame_labels=)` titles each frame.
+- `CoilParameters(phiedge=...)` makes PHIEDGE a free-boundary design
+  coordinate, so fixed coil currents hold B0 while the plasma size varies.
+- `CoilParameters(plasma_current=...)` makes the prescribed current profile
+  (AC or current-spline values, and CURTOR) free-boundary design coordinates,
+  for example to hold a Redl bootstrap current self-consistent.
+- `VmecProblem.from_tuples(..., vary_phiedge=True)` appends the same relative
+  PHIEDGE coordinate to fixed-boundary problems (implicit derivatives only).
 
 ## 0.11.6 - 2026-09-28
 

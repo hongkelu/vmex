@@ -53,7 +53,7 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
-from _common import (NORMAL_FIELD_CONSTRAINT, boundary_diagnostics, boundary_from_wout, bootstrap_input,  # noqa: E402
+from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, boundary_diagnostics, boundary_from_wout, bootstrap_input,  # noqa: E402
                      bootstrap_mismatch, coil_field, finite_beta_input, max_abs_iota, normal_field_rms,
                      redl_profiles, resize_coils, restart_input, scale_coil_currents, seed_input,
                      target_residual, weighted_rms)
@@ -65,7 +65,6 @@ ESS_ALPHA = 1.2
 BOUNDARY_STEP, COIL_STEP = (0.1 if P.SEED is None else 0.02), P.COIL_STEP
 NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
-FIELD_STRENGTH_TOLERANCE = 0.005   # finite beta: relative band on edge R B_phi around the coils' mu0 I / 2 pi
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32
 
@@ -313,6 +312,7 @@ def main(argv=None):
                    min_abs_iota=float(opt.min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
                    major_radius_m=float(opt.major_radius(state, ctx)),
                    **({"mirror_ratio": float(opt.mirror_ratio(state, ctx))} if P.MIRROR_LIMIT else {}),
+                   **({"max_abs_iota": float(max_abs_iota(state, ctx))} if P.IOTA_CEILING else {}),
                    coil_surface_distance_m=float(coil_limits.surface_distance(coils, surface)),
                    coil_minimum_scaled_slack=float(np.min(rows)),
                    normal_field_rms=float(normal_field_rms(coils, surface)),
@@ -330,6 +330,7 @@ def main(argv=None):
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {P.TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
+              + (f"max_iota={row['max_abs_iota']:.5f} " if P.IOTA_CEILING else "") +
               f"aspect={row['aspect']:.4f} R={row['major_radius_m']:.5f} flux={row['flux_ratio']:.5f} "
               f"B.n={row.get('total_normal_field_rms', row['normal_field_rms']):.2e} beta={row['beta']:.4%} "
               f"RBphi={row.get('rbtor_ratio', float('nan')):.5f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "

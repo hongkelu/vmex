@@ -16,7 +16,8 @@ from dataclasses import replace
 
 import parameters as P
 
-NORMAL_FIELD_CONSTRAINT = 0.008   # fixed arm: limit on the area-weighted RMS B.n/|B|
+NORMAL_FIELD_CONSTRAINT = 0.008   # fixed arm: limit on the area-weighted RMS B.n/|B| (total B at beta > 0)
+FIELD_STRENGTH_TOLERANCE = 0.005  # fixed arm, beta > 0: relative band on edge R B_phi around the coils' mu0 I / 2 pi
 
 
 def seed_input():
@@ -178,6 +179,21 @@ def bootstrap_mismatch(inp, redl, device):
     """
     if P.BOOTSTRAP_MODEL == "redl":
         return redl.total_state
+    mismatch = dkx_mismatch(inp)
+    # DKX builds its per-surface operators and Boozer plan on the host at the first
+    # call and caches them; make that call on a concrete equilibrium, so the
+    # optimizer's traced calls only find the cache.
+    from vmex import optimize as opt
+
+    seed = opt.solve_equilibrium(replace(inp, lfreeb=False), device=device, raise_on_max_iterations=True,
+                                 polish_force_balance=False)
+    print(f"DKX bootstrap mismatch of the fixed-boundary seed: {float(mismatch(seed.state, seed.solver_context)):.3e}",
+          flush=True)
+    return mismatch
+
+
+def dkx_mismatch(inp):
+    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
     import numpy as np
     from dkx.bootstrap import KineticBootstrapMismatch
 
@@ -191,15 +207,6 @@ def bootstrap_mismatch(inp, redl, device):
         grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
         return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
 
-    # DKX builds its per-surface operators and Boozer plan on the host at the first
-    # call and caches them; make that call on a concrete equilibrium, so the
-    # optimizer's traced calls only find the cache.
-    from vmex import optimize as opt
-
-    seed = opt.solve_equilibrium(replace(inp, lfreeb=False), device=device, raise_on_max_iterations=True,
-                                 polish_force_balance=False)
-    print(f"DKX bootstrap mismatch of the fixed-boundary seed: {float(mismatch(seed.state, seed.solver_context)):.3e}",
-          flush=True)
     return mismatch
 
 
@@ -217,11 +224,16 @@ def boundary_from_wout(inp, wout):
 
 def restart_input(run):
     """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current (``--restart``)."""
-    import numpy as np
     import vmex as vj
 
     inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
-    inp = replace(boundary_from_wout(inp, w), phiedge=float(w.phi[-1]), lfreeb=False)
+    return current_from_wout(replace(boundary_from_wout(inp, w), phiedge=float(w.phi[-1]), lfreeb=False), w)
+
+
+def current_from_wout(inp, w):
+    """``inp`` with ``w``'s CURTOR and current-profile coefficients, when ``inp`` prescribes the current."""
+    import numpy as np
+
     if int(inp.ncurr) == 1:
         spline = "spline" in str(inp.pcurr_type)
         field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)

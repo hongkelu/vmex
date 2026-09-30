@@ -3,9 +3,11 @@
 
 Only the coils vary. Each trial solves the vacuum free-boundary equilibrium of
 those coils, predicted from the accepted root and certified before use, and
-SLSQP minimizes quasisymmetry subject to hard inequalities: minimum |iota|,
-major radius, aspect ratio, coil-to-plasma clearance, and per-coil length,
-curvature, mean squared curvature and coil separation (``parameters.py``).
+SLSQP minimizes quasisymmetry (or, for ``COIL_CASE=qi``, the constructed QI
+residual) subject to hard inequalities: minimum |iota|, major radius, aspect
+ratio, the QI case's mirror ratio, coil-to-plasma clearance, and per-coil
+length, curvature, mean squared curvature and coil separation
+(``parameters.py``).
 
 The coil currents share one free factor. In vacuum only the flux per ampere
 sets the plasma size, so fixing both the currents and PHIEDGE pins it: at
@@ -14,6 +16,7 @@ shared factor lets SLSQP reach aspect 5.1 (QA ~0.004). SHARED_CURRENT = False
 restores fixed currents.
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
+    COIL_CASE=qh python free_boundary_single_stage_optimization.py --steps 5 --output runs/free-qh
 
 Every accepted step appends one line to ``metrics.jsonl``. Coils and a WOUT
 are saved every ``--save-every`` steps and at the end; restart from them with
@@ -34,6 +37,7 @@ import parameters as P  # noqa: E402
 
 # Numerical controls of the equilibrium, adjoint and matrix-free solves.
 ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
+ROOT_POLISH_STEPS = 10             # damped Newton steps may be needed from a 1e-9 ordinary-solve residual
 OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
@@ -49,7 +53,7 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
-    parser.add_argument("--coils", type=Path, default=HERE / "coils.initial.json")
+    parser.add_argument("--coils", type=Path, default=P.COILS_FILE)
     parser.add_argument("--wout", type=Path, help="restart the initial solve from this WOUT")
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
     parser.add_argument("--save-every", type=int, default=25)
@@ -68,6 +72,42 @@ def resize_coils(coils, order, n_segments):
     curves = Curves(raw, n_segments=n_segments, nfp=coils.nfp, stellsym=coils.stellsym,
                     scaling_type=old.scaling_type, scaling_factor=old.scaling_factor, scale_fixed=old.scale_fixed)
     return Coils(curves, coils.dofs_currents_raw, currents_scale=coils.currents_scale)
+
+
+def seed_input(vj):
+    """The case's fixed-boundary seed at the optimization resolution.
+
+    With ``P.SEED = (nfp, aspect, ratio)`` the boundary is the rotating ellipse
+    R = R0 + a cos(theta) - b cos(theta + nfp phi), Z = a sin(theta) + b sin(theta + nfp phi)
+    with a^2 - b^2 = (R0 / aspect)^2, b = ratio R0 / aspect and PHIEDGE for B0 ~ 1 T.
+    """
+    import numpy as np
+
+    mpol, ntor, ns = P.RESOLUTION
+    inp = vj.VmecInput.from_file(HERE / "input.rotating_ellipse")
+    if P.SEED is not None:
+        inp = replace(inp, nfp=P.SEED[0])
+    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
+    if P.SEED is not None:
+        _, aspect, ratio = P.SEED
+        minor = P.RADIUS_TARGET / aspect
+        rbc, zbs = np.zeros_like(inp.rbc), np.zeros_like(inp.zbs)
+        rbc[ntor, 0] = P.RADIUS_TARGET
+        rbc[ntor, 1] = zbs[ntor, 1] = minor * np.sqrt(1.0 + ratio**2)
+        rbc[ntor - 1, 1], zbs[ntor - 1, 1] = -ratio * minor, ratio * minor
+        inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=np.pi * minor**2)
+    return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
+
+
+def target_residual():
+    """Residual vector of the case's target: quasisymmetry of ``P.HELICITY``, or constructed QI."""
+    import numpy as np
+    from vmex import optimize as opt
+    from vmex.core.qi import ConstructedQIResidual
+
+    if P.HELICITY is None:
+        return ConstructedQIResidual(np.asarray(P.QI_SURFACES), **P.QI_OPTIONS)
+    return opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), *P.HELICITY)
 
 
 def main(argv=None):
@@ -89,9 +129,7 @@ def main(argv=None):
 
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
-    inp = vj.VmecInput.from_file(HERE / "input.rotating_ellipse")
-    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
-    inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
+    inp = seed_input(vj)
     if args.wout is not None:
         seed = vj.state_from_wout(vj.read_wout(args.wout), inp=inp, ns=ns)
     else:
@@ -106,7 +144,7 @@ def main(argv=None):
     scales = np.r_[np.full(len(current_dofs), CURRENT_STEP),
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = opt.CoilParameters.from_coils(coils0, current_dofs=current_dofs, scales=scales)
-    qs = opt.QuasisymmetryRatioResidual(np.asarray(P.QA_SURFACES), 1, 0)
+    qs = target_residual()
 
     def boundary(state, runtime, grid):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)
@@ -145,14 +183,15 @@ def main(argv=None):
     monitoring.register_event_duration_secs_listener(lambda event, duration, **_: record(
         "compile", seconds=duration) if event.startswith("/jax/core/compile/") else None)
 
+    mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius), coil_quantities=(clearance, aspect),
+        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror), coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
-    problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE)
+    problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)
     if NEWTON_STEPS:
@@ -170,11 +209,14 @@ def main(argv=None):
     tie = np.zeros((max(len(current_dofs) - 1, 0), chart.size))
     for row in range(tie.shape[0]):  # equal relative currents: one common factor
         tie[row, row], tie[row, row + 1] = 1.0, -1.0
+    mirror_bounds = [(-np.inf, P.MIRROR_LIMIT - P.MIRROR_MARGIN, P.MIRROR_LIMIT)] if mirror else []
+    lower, upper, row_scales = zip(
+        (P.IOTA_FLOOR + P.IOTA_MARGIN, np.inf, P.IOTA_FLOOR),
+        (P.RADIUS_TARGET - width, P.RADIUS_TARGET + width, P.RADIUS_TOLERANCE), *mirror_bounds,
+        (P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN, np.inf, P.COIL_SURFACE_DISTANCE_LIMIT),
+        (aspect_lower, aspect_upper, aspect_scale))
     constraints = [LinearConstraint(tie, 0.0, 0.0)] * bool(tie.size) + [problem.nonlinear_constraint(
-        [P.IOTA_FLOOR + P.IOTA_MARGIN, P.RADIUS_TARGET - width, P.COIL_SURFACE_DISTANCE_LIMIT + P.DISTANCE_MARGIN,
-         aspect_lower],
-        [np.inf, P.RADIUS_TARGET + width, np.inf, aspect_upper],
-        scales=[P.IOTA_FLOOR, P.RADIUS_TOLERANCE, P.COIL_SURFACE_DISTANCE_LIMIT, aspect_scale]), coil_rows]
+        list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
     def save(tag):
         x = problem.accepted.parameters
@@ -186,10 +228,11 @@ def main(argv=None):
 
     def log_step():
         x, record = problem.accepted.parameters, problem.accepted
-        iota, radius, surface, aspect_value = map(float, problem.constraint_values(x))
+        values = list(map(float, problem.constraint_values(x)))
+        iota, radius, surface, aspect_value = values[0], values[1], values[-2], values[-1]
         now = time.monotonic()
         row = dict(step=problem.accepted_step, qa=float(qa_of(record.state)), objective=problem.fun(x), min_abs_iota=iota, major_radius_m=radius,
-                   aspect=aspect_value, coil_surface_distance_m=surface,
+                   aspect=aspect_value, **({'mirror_ratio': values[2]} if mirror else {}), coil_surface_distance_m=surface,
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    current_factor=float(chart.base_currents_at(x)[0] / chart.currents[0]),
                    step_u_linf=float(np.max(np.abs((x - last["x"]) / problem.scales))),
@@ -201,7 +244,7 @@ def main(argv=None):
         last.update(time=now, x=x.copy())
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps({k: (float(v) if isinstance(v, np.floating) else v) for k, v in row.items()}) + "\n")
-        print(f"[step {row['step']}] QA={row['qa']:.6e} iota={iota:.5f} R={radius:.5f} aspect={aspect_value:.4f} "
+        print(f"[step {row['step']}] {P.TARGET_NAME}={row['qa']:.6e} iota={iota:.5f} R={radius:.5f} aspect={aspect_value:.4f} "
               f"clearance={surface:.4f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"{row['step_seconds']:.1f}s", flush=True)
         if row["step"] % args.save_every == 0:

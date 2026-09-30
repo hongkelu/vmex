@@ -1650,7 +1650,6 @@ def reguess_initial_axis(
 # -- Iteration body (evolve.f + TimeStepControl + the eqsolve.f checks) ----------------------------------------------
 
 
-
 def _force_convergence(fsqr, fsqz, fsql, fedge, ftol, *,
                        edge_tolerance=None, vacuum_active=True):
     """Ordinary stopping rule with an opt-in finite spectral edge gate."""
@@ -1659,6 +1658,7 @@ def _force_convergence(fsqr, fsqz, fsql, fedge, ftol, *,
         return interior
     return (interior & vacuum_active & jnp.isfinite(fedge) &
             (fedge >= 0) & (fedge <= edge_tolerance))
+
 
 def _make_body(
     rt: SolverRuntime,
@@ -2089,7 +2089,9 @@ class SolveResult:
     ``(fsqr, fsqz, fsql, fsqr1, fsqz1, fsql1)``.  ``wmhd`` is the printed
     ``WMHD = (wb + wp/(gamma-1)) * (2 pi)^2``.  ``vacuum`` is ``None`` for
     fixed-boundary solves.  The five polish fields are ``None`` on the
-    unchanged default path.
+    unchanged default path.  ``fedge`` is the final spectral edge force, the
+    quantity the strict free-boundary acceptance
+    (``include_edge_in_convergence``) bounds.
     """
 
     converged: bool; iterations: int; ier_flag: int

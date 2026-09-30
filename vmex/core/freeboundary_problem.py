@@ -1265,7 +1265,8 @@ class FreeBoundaryProblem(FunctionProblem):
             reason = "dense"  # the accepted derivative was a dense solve: its LU is the new seed
         refresh = (None if self._lu_refresh is None else
                    replace(self._lu_refresh, costs=list(self._lu_refresh.costs)))
-        if refresh is not None and reason is None and refresh.observe(
+        # After a matrix-free fallback the dense solve at this root just missed its gate: do not refresh with it.
+        if refresh is not None and reason is None and not self._matrixfree_fallback and refresh.observe(
             self._adjoint_seconds + self._tangent_seconds + self._polish_seconds
         ):
             reason = "cost"

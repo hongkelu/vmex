@@ -2363,7 +2363,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         As for :func:`scipy.optimize.minimize`; constraints are
         :class:`~scipy.optimize.LinearConstraint` or
         :class:`~scipy.optimize.NonlinearConstraint` with an analytic
-        Jacobian. A constraint value that raises :class:`TrialRejected`
+        Jacobian. A constraint value that raises :class:`~vmex.core.errors.TrialRejected`
         reports a point far outside its bounds.
     callback:
         Called after each accepted step with ``x``, or with an

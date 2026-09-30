@@ -78,7 +78,7 @@ def parse_args(argv=None):
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
     parser.add_argument("--save-every", type=int, default=25)
     parser.add_argument("--beta", type=float, default=0.0,
-                        help="seed beta: volume-average, or on-axis (WOUT betaxis) for COIL_CASE=qa6")
+                        help="seed beta: on-axis (WOUT betaxis) for COIL_CASE=ellipse5-beta7, else volume-average")
     parser.add_argument("--bootstrap", action="store_true",
                         help="reactor-like kinetic profiles and a self-consistent Redl bootstrap current")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
@@ -109,30 +109,29 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
     """Give ``inp`` a pressure p ~ ``am`` (power series in s, default 1 - s) whose fixed-boundary seed has ``beta``.
 
     ``P.BETA_DEFINITION`` "volume": ``beta`` is <beta>; "axis": WOUT ``betaxis``.
-    The pressure is ramped in with hot restarts, then rescaled to ``beta``.
-    With ``P.B0`` set, PHIEDGE is rescaled until the edge R B_phi (the coils'
-    mu0 I / 2 pi) is B0 R0, so the field strength follows the flux as in
-    upstream #426. Returns the input and the last fixed-boundary solve.
+    The pressure is ramped in with hot restarts, then three corrections rescale
+    PHIEDGE until the edge R B_phi (the coils' mu0 I / 2 pi) is ``P.B0`` R0, as in
+    upstream #426, and the pressure to ``beta``. Returns the input and the last
+    fixed-boundary solve.
     """
     import numpy as np
     from vmex import optimize as opt
 
     axis, r0 = P.BETA_DEFINITION == "axis", float(inp.rbc[inp.ntor, 0])
-    b0 = 1.0 if P.B0 is None else P.B0
+    b0 = P.B0
     pressure = beta * b0**2 / (8e-7 * np.pi) if axis else beta / (4e-7 * np.pi)
     shape = np.zeros_like(np.asarray(inp.am, dtype=float))
     shape[: len(am)] = am
     inp = replace(inp, am=shape)
     fixed = None
     ramp = (0.25, 0.5, 0.75, 1.0) if beta > 0 else (1.0,)
-    corrections = 3 if axis or P.B0 is not None else 1
-    for index in range(len(ramp) + corrections):
+    for index in range(len(ramp) + 3):
         if index < len(ramp):
             inp = replace(inp, pres_scale=ramp[index] * pressure)
         else:
             # beta ~ p / PHIEDGE^2 at fixed shape, so a flux rescale carries its pressure along
             measured = float(fixed.wout.betaxis if axis else fixed.wout.betatotal)
-            flux = 1.0 if P.B0 is None else b0 * r0 / abs(float(fixed.wout.rbtor))
+            flux = b0 * r0 / abs(float(fixed.wout.rbtor))
             inp = replace(inp, phiedge=float(inp.phiedge) * flux,
                           pres_scale=inp.pres_scale * flux**2 * (beta / measured if beta > 0 else 1.0))
         fixed = opt.solve_equilibrium(inp, initial_state=None if fixed is None else fixed.state, device=device,
@@ -148,7 +147,7 @@ def redl_profiles(inp):
     import numpy as np
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
-    r0, b0 = float(inp.rbc[inp.ntor, 0]), 1.0 if P.B0 is None else P.B0
+    r0, b0 = float(inp.rbc[inp.ntor, 0]), P.B0
     t0 = P.REACTOR_T0 * (b0 / P.REACTOR_B0) ** (2 / 3) * (r0 / P.REACTOR_R0) ** (1 / 3)
     n0 = P.REACTOR_N0 * (b0 / P.REACTOR_B0) ** (4 / 3) * (P.REACTOR_R0 / r0) ** (1 / 3)
     scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
@@ -306,7 +305,7 @@ def boundary_diagnostics(wout, coils, nphi=61, ntheta=64):
                 pressure_balance_rms=float(jnp.sqrt(jnp.sum(weights * balance**2))))
 
 
-def fit_coils_to_plasma(coils, wout, inp, *, maxiter=COIL_FIT_MAXITER):
+def fit_coils_to_plasma(coils, wout, inp):
     """Coils whose field with the plasma's own is tangent to a fixed-boundary finite-beta seed."""
     import jax
     import jax.numpy as jnp
@@ -345,7 +344,7 @@ def fit_coils_to_plasma(coils, wout, inp, *, maxiter=COIL_FIT_MAXITER):
     value_and_grad = jax.jit(jax.value_and_grad(objective))
     before = float(normal_field_rms(coils))
     fit = minimize(lambda u: tuple(map(np.asarray, value_and_grad(jnp.asarray(u)))), np.zeros(x0.size), jac=True,
-                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=maxiter, maxcor=20))
+                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=COIL_FIT_MAXITER, maxcor=20))
     fitted = coils_from_u(jnp.asarray(fit.x))
     print(f"[coil fit] {fit.nit} L-BFGS-B iterations: (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
@@ -374,8 +373,7 @@ def seed_input(vj):
         rbc[ntor, 1] = zbs[ntor, 1] = minor * np.sqrt(1.0 + ratio**2)
         rbc[ntor - 1, 1], zbs[ntor - 1, 1] = -ratio * minor, ratio * minor
         inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=np.pi * minor**2)
-    inp = replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
-    return inp if P.NITER is None else replace(inp, niter_array=np.array([P.NITER]), delt=P.DELT)
+    return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([P.EQUILIBRIUM_FTOL]), lfreeb=False)
 
 
 def target_residual():
@@ -409,27 +407,24 @@ def main(argv=None):
     started = time.monotonic()
     mpol, ntor, ns = P.RESOLUTION
     inp = seed_input(vj)
-    seed = redl = None
-    if args.restart is not None:
+    redl = None
+    if args.restart is not None:  # parse_args set --wout to the run's WOUT
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, args.device)
-        seed = fixed.state
-    elif args.beta > 0 or P.B0 is not None:
+    else:  # also in vacuum: it sets PHIEDGE for B0
         inp, fixed = finite_beta_input(inp, args.beta, args.device)
-        seed = fixed.state
     if args.wout is not None:
         seed = vj.state_from_wout(vj.read_wout(args.wout), inp=inp, ns=ns)
-    elif seed is None:
-        seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
-                                     polish_force_balance=False).state
+    else:
+        seed = fixed.state
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
 
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
-    if P.B0 is not None and args.restart is None:  # a restart keeps the run's own currents
+    if args.restart is None:  # a restart keeps the run's own currents
         coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
     if args.beta > 0 and args.wout is None and not args.no_coil_fit:  # at beta = 0 a uniform scale keeps B.n/|B|
         coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
@@ -499,8 +494,7 @@ def main(argv=None):
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)
-    if NEWTON_STEPS:
-        problem.enable_newton_correction(max_steps=NEWTON_STEPS)
+    problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 
     coil_rows = coil_limits.constraint(chart.coils_from_x)
     for method in ("fun", "jac"):

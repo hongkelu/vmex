@@ -17,11 +17,6 @@ varies PHIEDGE, so the plasma size stays free while the field strength and,
 at finite beta, beta hold.
 
 ``COIL_CASE=ellipse5-beta7`` keeps the ellipse with an iota floor of 0.16 and ``--beta`` on axis.
-``COIL_CASE=qa6`` selects the aspect-6 case: the Landreman & Paul (2021) QA
-boundary at R = 1 m, B0 = 1 T set through PHIEDGE (R B_phi = B0 R0 outside the
-plasma), ``--beta`` read as on-axis beta (WOUT ``betaxis``), and the coil limits
-of Jorge et al. (2023, section 4.2) with three order-6 coils, except a 6.5 m
-per-coil length for this nfp-2 device.
 ``COIL_CASE=qa4-beta`` and ``qi6-beta`` are the finite-beta, self-consistent bootstrap
 cases: a compact nfp-2 QA (aspect 3.5-4.5, Redl) and an nfp-4 QI at aspect 6, whose
 bootstrap current comes from the DKX drift-kinetic solver (Redl assumes quasisymmetry).
@@ -45,7 +40,6 @@ INPUT_FILE = HERE / "input.rotating_ellipse"
 COILS_FILE = HERE / "coils.initial.json"
 BETA_DEFINITION = "volume"         # --beta is <beta>; "axis": WOUT betaxis
 B0 = 1.0                           # T: coil currents give R B_phi = B0 R0; the seed PHIEDGE matches it
-NITER, DELT = None, None            # override the deck's iteration budget / time step when set
 FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE and currents)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
@@ -89,17 +83,7 @@ COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m, to the current plasma boundary
 # Interior margins of the sampled constraints; endpoint checks use the limits.
 CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5, 0.001
 
-if CASE == "qa6":
-    INPUT_FILE = HERE.parents[1] / "examples/data/input.LandremanPaul2021_QA_lowres"
-    BETA_DEFINITION = "axis"
-    NITER, DELT = 30000, 0.7       # one NS stage at FTOL 1e-15 instead of the deck's multigrid ladder
-    IOTA_FLOOR = 0.42
-    ASPECT_RANGE = (5.9, 6.1)
-    COIL_ORDER = 6
-    LENGTH_LIMIT = 6.5              # m: nfp 2, 3 coils/half-period (Jorge 2023: 5.5 m at nfp 3, 2 coils)
-    COIL_DISTANCE_LIMIT = 0.10
-    COIL_SURFACE_DISTANCE_LIMIT = 0.15
-elif CASE == "ellipse5-beta7":
+if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
     BETA_DEFINITION = "axis"
     IOTA_FLOOR = 0.16

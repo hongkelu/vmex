@@ -53,7 +53,8 @@ Array = Any
 #: ``coupled_gcrot`` is the certified default; ``boundary_schur`` eliminates
 #: the radial bulk and assembles the edge system column by column;
 #: ``edge_response`` iterates the coupled transpose on a dense model of
-#: NESTOR.
+#: NESTOR; ``forward_dense_jax`` LU-factors the active Jacobian and serves
+#: only :func:`free_boundary_state_pullback_multi_rhs`.
 _ADJOINT_SOLVERS = ("boundary_schur", "coupled_gcrot", "edge_response",
                     "forward_dense_jax")
 

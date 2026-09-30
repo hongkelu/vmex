@@ -630,6 +630,38 @@ def test_direct_jaxopt_and_optax_contracts():
     assert float(problem.jax_fun(x)) < float(problem.jax_fun(problem.x0))
 
 
+def test_vary_phiedge_appends_a_relative_phiedge_dof():
+    """vary_phiedge: a named trailing dof, round-tripped through the input,
+    whose implicit Jacobian column matches central differences of re-solves."""
+    import dataclasses
+    from pathlib import Path
+
+    from vmex.core import optimize as opt
+    from vmex.core.input import VmecInput
+
+    inp = VmecInput.from_file(
+        Path(__file__).resolve().parents[1] / "examples/data/input.solovev"
+    )
+    terms = [(opt.volume_average_beta, 0.0, 1.0)]
+    problem = opt.VmecProblem.from_tuples(inp, terms, max_mode=1, vary_phiedge=True)
+    assert problem.names[-1] == "PHIEDGE/nominal" and problem.x0[-1] == 0.0
+    x = problem.x0.copy()
+    x[-1] = 0.1
+    assert np.isclose(problem.input_from_x(x).phiedge, 1.1 * inp.phiedge)
+    np.testing.assert_allclose(problem.x_from_input(problem.input_from_x(x)), x)
+
+    def beta(scale):
+        trial = dataclasses.replace(inp, phiedge=inp.phiedge * scale)
+        return float(np.ravel(opt._call_term(opt.volume_average_beta, opt.solve_equilibrium(trial)))[0])
+
+    step = 1e-4
+    difference = (beta(1 + step) - beta(1 - step)) / (2 * step)
+    np.testing.assert_allclose(problem.residual_jac(problem.x0)[0, -1], difference, rtol=1e-4)
+    with pytest.raises(ValueError, match="vary_phiedge requires"):
+        opt.make_problem(inp, objective_terms=terms, vary_phiedge=True,
+                         derivative_method="finite_difference")
+
+
 def test_vmec_finite_difference_factory_uses_parallel_provider(monkeypatch):
     """The VMEC factory composes tuples and differentiates opaque host terms."""
     from pathlib import Path

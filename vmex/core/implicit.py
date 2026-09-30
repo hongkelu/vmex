@@ -1787,7 +1787,10 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
         return best_z, best
 
     if initial_correction is not None:
-        candidate = jax.tree.map(jnp.add, z0, P(initial_correction))
+        # The memo outlives the problem that stored it: another problem on
+        # the same canonical config may run on a different device.
+        home = jax.tree.leaves(z0)[0].sharding
+        candidate = jax.tree.map(jnp.add, z0, P(jax.device_put(initial_correction, home)))
         candidate_f = F(candidate, params)
         candidate_residual = float(_tree_norm(candidate_f))
         if np.isfinite(candidate_residual) and candidate_residual < base:

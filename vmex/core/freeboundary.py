@@ -2306,6 +2306,13 @@ def solve_free_boundary(
     recovery mirror :func:`vmex.core.solver.solve`. The returned
     ``result.vacuum`` contains the final NESTOR potential modes and surface
     fields, without internal matrix caches.
+
+    ``include_edge_in_convergence=True`` is the strict acceptance used by
+    free-boundary optimization: the solve converges only when, in addition
+    to ``fsqr``, ``fsqz`` and ``fsql``, the spectral edge force
+    ``result.fedge`` is at most ``edge_force_tolerance`` (default ``ftol``).
+    Every iteration then evaluates a full vacuum and a fresh force
+    normalization, and the vacuum-activation pass cannot converge on its own.
     """
     if resolution is None:
         # The angular grid depends on the field table (VMEC2000's NZETA

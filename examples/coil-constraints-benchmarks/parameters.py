@@ -88,6 +88,7 @@ LENGTH_LIMIT = 5.0                 # m, each independent coil
 # Set: the limits follow the widest plasma allowed, a = R / aspect_min, and the clearance d:
 # LENGTH_LIMIT = c_L 2 pi (a + d), CURVATURE_LIMIT = c_k / (a + d), MSC_LIMIT = c_m / (a + d)^2.
 COIL_LIMIT_FACTORS = None          # (c_L, c_k, c_m)
+COIL_FIT_MAXITER = 200             # L-BFGS-B iterations of the free arm's finite-beta coil refit
 CURVATURE_LIMIT = 5.0              # 1/m, everywhere along each coil
 MSC_LIMIT = 5.0                    # 1/m^2, each coil
 COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
@@ -118,6 +119,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     COILS_FILE = HERE / f"coils.{CASE}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
+    COIL_FIT_MAXITER = 1000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value

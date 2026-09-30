@@ -70,7 +70,7 @@ ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
-COIL_FIT_MAXITER, COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 200, 1.0e-3, 1.0e3
+COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
 PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
 DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
@@ -132,7 +132,7 @@ def fit_coils_to_plasma(coils, wout, inp):
     value_and_grad = jax.jit(jax.value_and_grad(objective))
     before = float(normal_field_rms(coils))
     fit = minimize(lambda u: tuple(map(np.asarray, value_and_grad(jnp.asarray(u)))), np.zeros(x0.size), jac=True,
-                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=COIL_FIT_MAXITER, maxcor=20))
+                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=P.COIL_FIT_MAXITER, maxcor=20))
     fitted = coils_from_u(jnp.asarray(fit.x))
     print(f"[coil fit] {fit.nit} L-BFGS-B iterations: (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)

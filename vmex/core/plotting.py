@@ -1164,7 +1164,7 @@ def _j_invariant_map(
     pitch: float | None = None,
     pitch_fraction: float = 0.2,
     nalpha: int = 192,
-    points_per_period: int = 256,
+    points_per_period: int = 512,
 ) -> dict[str, Any]:
     """Second adiabatic invariant ``J(alpha, s)`` at one physical pitch.
 

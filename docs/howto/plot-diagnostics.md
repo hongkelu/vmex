@@ -67,7 +67,8 @@ throughout the disk, so $|v_\parallel|/v$ varies elsewhere. Blank regions
 have no complete trapped well at that
 pitch. Where several wells exist, the panel displays the largest complete-well
 $J$, so concentric contours alone do not certify every trapped orbit; branch
-changes and radial slopes need care. The panel samples 192 field-line angles;
+changes and radial slopes need care. The panel samples 192 field-line angles
+and 512 points per field period;
 abrupt well-branch changes can remain visible after numerical refinement.
 `|B|` in Boozer
 coordinates appears at mid radius and on

@@ -328,19 +328,17 @@ class DenseRootLinearization:
             defect = jax.tree.map(lambda ax,b:ax+b,self.action(response),rhs)
             norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
             rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
-            rtol = self.cfg.adjoint_residual_rtol
-            tolerance = (float(im._adjoint_acceptance(self.cfg.implicit,rhs_norm))
-                         if rtol is None else rtol*rhs_norm)
             finite = all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(response))
-            accepted = finite and np.isfinite(norm) and norm <= tolerance
+            report = im._adjoint_diagnostic(self.cfg.implicit, residual_norm=norm, rhs_norm=rhs_norm,
+                iterations=iterations, backend=self._tangent_backend,
+                residual_rtol=self.cfg.adjoint_residual_rtol, finite=finite,
+                scaled_reuse=scale is not None)
             if diagnostics is not None:
-                diagnostics.append(dict(row=None,residual_norm=norm,rhs_norm=rhs_norm,
-                    relative_residual=norm/rhs_norm if rhs_norm else (0. if norm == 0 else float('inf')),
-                    tolerance=tolerance,iterations=iterations,accepted=bool(accepted),
-                    backend=self._tangent_backend,scaled_reuse=scale is not None))
-            if not accepted:
+                diagnostics.append(report)
+            if not report["accepted"]:
                 im._raise_adjoint_unconverged(self.cfg.implicit,iterations=iterations,
-                    residual_norm=norm,tolerance=tolerance,method=self._tangent_backend+' tangent')
+                    residual_norm=norm,tolerance=report["tolerance"],
+                    method=self._tangent_backend+' tangent')
             if scale is None:
                 self._direction = vector.copy()
                 self._response, self._rhs = response, rhs

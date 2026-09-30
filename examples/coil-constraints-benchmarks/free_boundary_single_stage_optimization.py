@@ -138,6 +138,8 @@ def main(argv=None):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"
+    # Unlike the fixed arm, also on GPU: this process-wide placement overrides VMEX's CPU default for the
+    # implicit (adjoint) solves, and the free-boundary solves and their derivatives should all run on args.device.
     os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu" if args.device == "gpu" else "cpu")
 
     import jax

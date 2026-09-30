@@ -53,13 +53,16 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
+from _common import (NORMAL_FIELD_CONSTRAINT, boundary_diagnostics, boundary_from_wout, bootstrap_input,  # noqa: E402
+                     bootstrap_mismatch, coil_field, finite_beta_input, max_abs_iota, normal_field_rms,
+                     redl_profiles, resize_coils, restart_input, scale_coil_currents, seed_input,
+                     target_residual, weighted_rms)
 
 MAX_MODE = 8                       # boundary modes varied; RBC(0,0) stays fixed
 ESS_ALPHA = 1.2
 # SLSQP's first step has an identity Hessian: the QH and QI residuals start near 1,
 # 50 times the QA seed's, so their boundary coordinates are scaled down.
 BOUNDARY_STEP, COIL_STEP = (0.1 if P.SEED is None else 0.02), P.COIL_STEP
-NORMAL_FIELD_CONSTRAINT = 0.008   # area-weighted RMS B.n/|B| limit
 NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
 FIELD_STRENGTH_TOLERANCE = 0.005   # finite beta: relative band on edge R B_phi around the coils' mu0 I / 2 pi
@@ -89,19 +92,6 @@ def parse_args(argv=None):
     return args
 
 
-def boundary_from_wout(inp, wout):
-    """``inp`` with the boundary of ``wout``'s last surface, truncated to its resolution."""
-    from dataclasses import replace
-    import numpy as np
-
-    rbc, zbs = np.zeros_like(inp.rbc), np.zeros_like(inp.zbs)
-    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // wout.nfp,
-                          wout.rmnc[-1], wout.zmns[-1]):
-        if m < rbc.shape[1] and abs(n) <= inp.ntor:
-            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
-    return replace(inp, rbc=rbc, zbs=zbs)
-
-
 def main(argv=None):
     args = parse_args(argv)
     out = args.output.resolve()
@@ -124,13 +114,9 @@ def main(argv=None):
     from vmex.core import virtual_casing as vc
     from vmex.core.fields import surface_currents
     from vmex.core.statephysics import _field_chain
-    from free_boundary_single_stage_optimization import (boundary_diagnostics, bootstrap_input, finite_beta_input,
-                                                         redl_profiles, resize_coils, restart_input,
-                                                         scale_coil_currents, seed_input, target_residual,
-                                                         bootstrap_mismatch, max_abs_iota)
 
     started = time.monotonic()
-    inp = seed_input(vj)
+    inp = seed_input()
     if args.wout is not None:
         inp = boundary_from_wout(inp, vj.read_wout(args.wout))
     redl = None
@@ -196,10 +182,6 @@ def main(argv=None):
         b_phi = jax.vmap(BiotSavart(coils).B)(points)[:, 1].reshape(r.shape)
         return jnp.sum(rho_weights[:, None] * b_phi * area) * (2.0 * np.pi / theta.size)
 
-    def coil_field(coils):
-        field = BiotSavart(coils)
-        return lambda points: jax.vmap(field.B)(points.reshape(-1, 3)).reshape(points.shape)
-
     if args.beta > 0:
         # Virtual casing picks its quadrature once, on the concrete seed, so the
         # plasma field stays differentiable in the boundary on every trial.
@@ -227,13 +209,7 @@ def main(argv=None):
         data = vc.surface_field_data_from_state(inp, state, runtime=ctx, nphi=NPHI, ntheta=NTHETA)
         interface = vc.PlasmaVacuumInterface.from_surface_data(data, digits=VC_DIGITS, precision=precision)
         normal = interface.bnormal_residual(coil_field(coils)) / jnp.linalg.norm(data.B_total, axis=0)
-        return jnp.sqrt(jnp.sum(interface.weights * normal**2))
-
-    def normal_field_rms(coils, surface):
-        field = jax.vmap(BiotSavart(coils).B)(surface.gamma.reshape(-1, 3)).reshape(surface.gamma.shape)
-        normal = jnp.sum(field * surface.unitnormal, axis=2) / jnp.linalg.norm(field, axis=2)
-        weights = surface.area_element / jnp.sum(surface.area_element)
-        return jnp.sqrt(jnp.sum(weights * normal**2))
+        return weighted_rms(interface.weights, normal)
 
     aspect_lower, aspect_upper = P.ASPECT_RANGE
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)

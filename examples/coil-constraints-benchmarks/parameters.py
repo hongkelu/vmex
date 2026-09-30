@@ -40,6 +40,7 @@ REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m,
 REDL_SURFACES = tuple(0.1 + 0.8 * i / 7 for i in range(8))
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 PICARD_ITERATIONS, PICARD_TOLERANCE = 10, 1e-3
+BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
 
 # Physical targets. The free-boundary arm imposes them as hard inequalities.

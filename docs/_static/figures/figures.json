@@ -134,8 +134,8 @@
     },
     {
       "path": "docs/_static/figures/readme_diagnostics_qa.webp",
-      "sha256": "06db14b0f227460ade6133f9961b5ea932a86ef2db402c6d61401fa266c36934",
-      "bytes": 138802,
+      "sha256": "49a5b3ada3e6b51f229fffd7f89fd39ec5f24ca132af6808b0b8e8198ca4d9c3",
+      "bytes": 138974,
       "generator": "docs/_static/figures/sources/make_readme_diagnostics_figures.py",
       "command": "python docs/_static/figures/sources/make_readme_diagnostics_figures.py",
       "inputs": [
@@ -149,12 +149,12 @@
       "used_in": [
         "README.md"
       ],
-      "note": "The `vmex examples/data/input.nfp2_QA_finite_beta --plot` summary panel, rendered with the vmex[neoclassical] extra (NEO_JAX, so the pressure panel carries effective ripple) and the DESC-normalized force panel (bootstrap <J.B> on its right axis), and downsampled to 1760 px webp. The record file carries the deck hash, the solved scalars, the equivalent CLI command, and the run's commit and versions. Re-rendered on 2026-09-23 after <J.B> moved from the iota panel to the force panel; a second run reproduced the bytes. Re-rendered on 2026-09-29 with the fixed-physical-pitch J map, largest complete-well action, and dimensionless |v_parallel|/v label."
+      "note": "The `vmex examples/data/input.nfp2_QA_finite_beta --plot` summary panel, rendered with the vmex[neoclassical] extra (NEO_JAX, so the pressure panel carries effective ripple) and the DESC-normalized force panel (bootstrap <J.B> on its right axis), and downsampled to 1760 px webp. The record file carries the deck hash, the solved scalars, the equivalent CLI command, and the run's commit and versions. Re-rendered on 2026-09-23 after <J.B> moved from the iota panel to the force panel; a second run reproduced the bytes. Re-rendered on 2026-09-29 with the fixed-physical-pitch J map, largest complete-well action, 192 angles, and dimensionless |v_parallel|/v label."
     },
     {
       "path": "docs/_static/figures/readme_diagnostics_summary.webp",
-      "sha256": "a7d10e8f63d18853cb128a0a4219c399c9ddb79fcb585b3130460b835e4a236a",
-      "bytes": 177278,
+      "sha256": "f9e7b42ec0cad8cdcc5ff825324a4c27cb0b1ee3f27369136a9ebafb0258a885",
+      "bytes": 177274,
       "generator": "docs/_static/figures/sources/make_readme_diagnostics_figures.py",
       "command": "python docs/_static/figures/sources/make_readme_diagnostics_figures.py",
       "inputs": [
@@ -169,7 +169,7 @@
         "README.md",
         "docs/explanation/validation.md"
       ],
-      "note": "Regenerated from a bundled deck in 2026-09; the figure it replaced had no generator and no recorded input. Re-rendered on 2026-09-14 as the `vmex examples/data/input.nfp4_QI_finite_beta --plot` summary panel with the vmex[neoclassical] extra (NEO_JAX, so the pressure panel carries effective ripple), the DESC-normalized force panel (bootstrap <J.B> on its right axis) and D_R reconstructed on the solver grid, downsampled to 1760 px webp. The record file carries the deck hash, the solved scalars the validation page quotes, the equivalent CLI command, and the run's commit and versions. Re-rendered on 2026-09-23 after <J.B> moved from the iota panel to the force panel; a second run reproduced the bytes. Re-rendered on 2026-09-29 with the fixed-physical-pitch J map, largest complete-well action, and dimensionless |v_parallel|/v label."
+      "note": "Regenerated from a bundled deck in 2026-09; the figure it replaced had no generator and no recorded input. Re-rendered on 2026-09-14 as the `vmex examples/data/input.nfp4_QI_finite_beta --plot` summary panel with the vmex[neoclassical] extra (NEO_JAX, so the pressure panel carries effective ripple), the DESC-normalized force panel (bootstrap <J.B> on its right axis) and D_R reconstructed on the solver grid, downsampled to 1760 px webp. The record file carries the deck hash, the solved scalars the validation page quotes, the equivalent CLI command, and the run's commit and versions. Re-rendered on 2026-09-23 after <J.B> moved from the iota panel to the force panel; a second run reproduced the bytes. Re-rendered on 2026-09-29 with the fixed-physical-pitch J map, largest complete-well action, 192 angles, and dimensionless |v_parallel|/v label."
     },
     {
       "path": "docs/_static/figures/readme_equilibrium_showcase.webp",

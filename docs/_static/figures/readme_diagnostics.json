@@ -2,7 +2,7 @@
   "schema": "vmex.readme-diagnostics-figures/1",
   "generator": "docs/_static/figures/sources/make_readme_diagnostics_figures.py",
   "provenance": {
-    "measurement_commit": "244bf4595322deaf4d493609c00c0f56c5559eb6",
+    "measurement_commit": "9eaff31ab4ebc1f6bc7e8b68f80d2f1cbc8b22de",
     "measurement_dirty": false,
     "input_data_embedded": false,
     "measurement_date": "2026-09-29",
@@ -24,7 +24,7 @@
       "deck_sha256": "90de9afb5a70e764f1f31a56223df8606787c971ce27aa3297c0e4b1986fd405",
       "cli_equivalent": "vmex examples/data/input.nfp2_QA_finite_beta --plot",
       "figure": "docs/_static/figures/readme_diagnostics_qa.webp",
-      "figure_sha256": "06db14b0f227460ade6133f9961b5ea932a86ef2db402c6d61401fa266c36934",
+      "figure_sha256": "49a5b3ada3e6b51f229fffd7f89fd39ec5f24ca132af6808b0b8e8198ca4d9c3",
       "figure_pixels": [
         1760,
         1349
@@ -44,7 +44,7 @@
       "deck_sha256": "a13dea2bdeb7643d377bfca0d9b96efd3b39b37614a442e2025982e618312ff1",
       "cli_equivalent": "vmex examples/data/input.nfp4_QI_finite_beta --plot",
       "figure": "docs/_static/figures/readme_diagnostics_summary.webp",
-      "figure_sha256": "a7d10e8f63d18853cb128a0a4219c399c9ddb79fcb585b3130460b835e4a236a",
+      "figure_sha256": "f9e7b42ec0cad8cdcc5ff825324a4c27cb0b1ee3f27369136a9ebafb0258a885",
       "figure_pixels": [
         1760,
         1349

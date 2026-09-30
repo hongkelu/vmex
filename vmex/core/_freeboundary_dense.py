@@ -224,6 +224,53 @@ def _factor_solve(matrix, rhs):
     return solution, factors
 
 
+_OPERATOR_NORM_ITERATIONS = 20  # power iterations for the backward-error scale ||A||_2
+
+
+def _operator_norm(matrix):
+    """A lower bound on ``||A||_2`` from a fixed-start power iteration.
+
+    It scales the backward-error gate below; underestimating ``||A||`` only
+    makes that gate stricter.
+    """
+    vector = jnp.ones(matrix.shape[1], matrix.dtype) / np.sqrt(matrix.shape[1])
+    for _ in range(_OPERATOR_NORM_ITERATIONS):
+        product = matrix.T @ (matrix @ vector)
+        size = float(jnp.linalg.norm(product))
+        if not np.isfinite(size) or size == 0.0:
+            return 0.0
+        vector = product / size
+    return float(jnp.linalg.norm(matrix @ vector))
+
+
+def _acceptance(cfg, rhs_norm, solution_norm, operator_norm):
+    """Largest accepted residual: the normwise backward-error gate.
+
+    ``||r|| <= tol (||A|| ||x|| + ||b||)``, where ``tol ||b||`` is the shared
+    relative-residual acceptance (``10 adjoint_tol``, or
+    ``adjoint_residual_rtol``). It is never tighter than that relative gate, and
+    it still bounds the forward error by ``cond(A) tol``; a row whose
+    ``||b||`` is small against ``||A|| ||x||`` no longer fails at the rounding
+    floor of ``A x``.
+    """
+    scale = rhs_norm + operator_norm * solution_norm
+    rtol = getattr(cfg, "adjoint_residual_rtol", None)
+    return im._adjoint_acceptance(cfg.implicit, scale) if rtol is None else rtol * scale
+
+
+def _backward_error_report(cfg, *, residual_norm, rhs_norm, solution_norm, operator_norm, **details):
+    """``im._adjoint_diagnostic`` judged by :func:`_acceptance`, with its norms."""
+    norm, rhs_norm = float(residual_norm), float(rhs_norm)
+    solution_norm, operator_norm = float(solution_norm), float(operator_norm)
+    scale = rhs_norm + operator_norm * solution_norm
+    report = im._adjoint_diagnostic(cfg.implicit, residual_norm=norm, rhs_norm=scale,
+                                    residual_rtol=getattr(cfg, "adjoint_residual_rtol", None), **details)
+    report.update(rhs_norm=rhs_norm, solution_norm=solution_norm, operator_norm=operator_norm,
+                  relative_residual=norm / rhs_norm if rhs_norm else (0.0 if norm == 0 else float("inf")),
+                  backward_error=norm / scale if scale else (0.0 if norm == 0 else float("inf")))
+    return report
+
+
 def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
     """Correct failed rows with the same LU; retain only residual improvements."""
     xp, solve = jnp, jsl.lu_solve
@@ -268,6 +315,7 @@ class DenseRootLinearization:
     factors: object
     action: object
     cfg: object
+    operator_norm: float = 0.0  # ||A||_2 estimate of the dense operator, for the backward-error gate
     _direction: object = None
     _response: object = None
     _rhs: object = None
@@ -329,10 +377,10 @@ class DenseRootLinearization:
             norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
             rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
             finite = all(bool(jnp.all(jnp.isfinite(x))) for x in jax.tree.leaves(response))
-            report = im._adjoint_diagnostic(self.cfg.implicit, residual_norm=norm, rhs_norm=rhs_norm,
-                iterations=iterations, backend=self._tangent_backend,
-                residual_rtol=self.cfg.adjoint_residual_rtol, finite=finite,
-                scaled_reuse=scale is not None)
+            report = _backward_error_report(self.cfg, residual_norm=norm, rhs_norm=rhs_norm,
+                solution_norm=float(jnp.linalg.norm(ravel_pytree(response)[0])),
+                operator_norm=self.operator_norm, iterations=iterations,
+                backend=self._tangent_backend, finite=finite, scaled_reuse=scale is not None)
             if diagnostics is not None:
                 diagnostics.append(report)
             if not report["accepted"]:
@@ -381,31 +429,30 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
         reject(0,np.inf,0.)
     # Check the actual dense equation after the solve, independently of the
     # factorization's status. Singular/nonfinite solutions always fail closed.
+    operator_norm = _operator_norm(matrix)
     rhs_norms = jnp.linalg.norm(rhs,axis=1)
-    residual_rtol = getattr(cfg, 'adjoint_residual_rtol', None)
-    tolerances = (im._adjoint_acceptance(cfg.implicit,rhs_norms) if residual_rtol is None
-                  else residual_rtol * rhs_norms)
+    tolerances = _acceptance(cfg, rhs_norms, jnp.linalg.norm(solution, axis=1), operator_norm)
     solution, norms, initial_norms, refinement_steps = _refine_dense_solution(
         matrix, rhs, solution, factors, np.asarray(tolerances))
+    solution_norms = jnp.linalg.norm(solution, axis=1)
     for row in range(rhs.shape[0]):
         finite = bool(jnp.isfinite(norms[row]) & jnp.all(jnp.isfinite(solution[row])))
-        accepted = finite and float(norms[row]) <= float(tolerances[row])
+        report = _backward_error_report(cfg, residual_norm=norms[row], rhs_norm=rhs_norms[row],
+            solution_norm=solution_norms[row], operator_norm=operator_norm, iterations=1,
+            row=row, backend=cfg.adjoint_solver, finite=finite)
+        report.update(initial_residual_norm=float(initial_norms[row]),
+                      refinement_steps=int(refinement_steps[row]))
         if diagnostics is not None:
-            report = im._adjoint_diagnostic(cfg.implicit,
-                residual_norm=norms[row], rhs_norm=rhs_norms[row], iterations=1,
-                row=row, backend=cfg.adjoint_solver, residual_rtol=residual_rtol, finite=finite)
-            report.update(initial_residual_norm=float(initial_norms[row]),
-                          refinement_steps=int(refinement_steps[row]))
             diagnostics.append(report)
-        if not accepted:
+        if not report["accepted"]:
             if cfg.adjoint_fail != 'best_effort' or not finite:
-                reject(row,norms[row],tolerances[row])
+                reject(row,norms[row],report["tolerance"])
             warnings.warn(f'{cfg.adjoint_solver} row {row} residual exceeds acceptance; '
                           "returning an inaccurate best-effort adjoint",RuntimeWarning,stacklevel=2)
     adjoints = jax.vmap(lambda value:_expand(value,z,space))(jnp.asarray(solution))
     if return_linearization:
         return adjoints, DenseRootLinearization(
-            residual,z,params,field,frozen,rcon,zcon,space,factors,tangent,cfg)
+            residual,z,params,field,frozen,rcon,zcon,space,factors,tangent,cfg,operator_norm=operator_norm)
     return adjoints
 
 def _signature(tree):
@@ -432,6 +479,7 @@ class SeedLU:
     restart: int
     max_restarts: int
     rhs_batch_size: int = 1
+    operator_norm: float = 0.0  # ||A||_2 estimate at the seed root, scaling the backward-error gate
 
     @classmethod
     def from_root(
@@ -468,6 +516,7 @@ class SeedLU:
             restart=restart,
             max_restarts=max_restarts,
             rhs_batch_size=rhs_batch_size,
+            operator_norm=root.operator_norm,
         )
 
     def validate(self, z, field, space, cfg):
@@ -645,9 +694,10 @@ def solve_matrixfree_adjoint(
         defect = jax.tree.map(jnp.subtract, applied, rhs)
         norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
         rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))
-        report = im._adjoint_diagnostic(cfg.implicit, row=row, residual_norm=norm,
-            rhs_norm=rhs_norm, iterations=iterations, backend="matrixfree_seed_lu",
-            residual_rtol=cfg.adjoint_residual_rtol, finite=bool(jnp.all(jnp.isfinite(solution))))
+        # The seed root's ||A|| scales the gate: the current operator is a nearby one.
+        report = _backward_error_report(cfg, row=row, residual_norm=norm, rhs_norm=rhs_norm,
+            solution_norm=float(jnp.linalg.norm(solution)), operator_norm=preconditioner.operator_norm,
+            iterations=iterations, backend="matrixfree_seed_lu", finite=bool(jnp.all(jnp.isfinite(solution))))
         tolerance, full_passed = report["tolerance"], report["accepted"]
         passed = full_passed
         if diagnostics is not None:
@@ -688,6 +738,7 @@ def solve_matrixfree_adjoint(
             preconditioner.factors,
             action,
             cfg,
+            operator_norm=preconditioner.operator_norm,
             **options,
         )
         return result, root

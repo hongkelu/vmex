@@ -133,6 +133,7 @@ UNTESTED_EXAMPLES = {
     "examples/coil-constraints-benchmarks/single_stage_optimization.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
     "examples/coil-constraints-benchmarks/parameters.py": "shared case constants imported by the two benchmarks",
     "examples/coil-constraints-benchmarks/postprocess.py": "post-processes a finished GPU benchmark run",
+    "examples/coil-constraints-benchmarks/fit_coils.py": "regenerates the committed stage-two coil files; a GPU fit",
 }
 
 

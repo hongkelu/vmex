@@ -53,7 +53,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
 from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, current_from_wout, dkx_mismatch,  # noqa: E402
-                     max_abs_iota, redl_profiles, resize_coils, seed_input, target_residual)
+                     max_abs_iota, min_abs_iota, redl_profiles, resize_coils, seed_input, target_residual)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
@@ -310,7 +310,7 @@ def dense_solve(frame, args, rows, out):
         path = vmex.write_wout(str(out / "wout_dense.nc"), wout)
         rt = prepare_runtime(inp, resolution)
         residuals = target_residual().residuals_state(result.state, rt)
-        report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
+        report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(min_abs_iota(result.state, rt)),
                       aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)),
                       max_abs_iota=float(max_abs_iota(result.state, rt)))
         if P.MIRROR_LIMIT:

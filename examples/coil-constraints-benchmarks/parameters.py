@@ -78,6 +78,7 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conse
 # Physical targets. The free-boundary arm imposes them as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
+IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 
@@ -121,6 +122,8 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 1000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
+    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor; R0 is held to 1 mm.
+    IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20

@@ -164,6 +164,10 @@ The `J` map follows one physical pitch, labels its `|v_parallel|/v` at midradius
 ![vmex --plot summary of the bundled finite-beta NFP=2 QA equilibrium](docs/_static/figures/readme_diagnostics_qa.webp)
 ![vmex --plot summary of the bundled finite-beta NFP=4 QI equilibrium](docs/_static/figures/readme_diagnostics_summary.webp)
 
+Cold and warm timings include NEO and writing all five figures; the J calculation is shown separately ([settings](benchmarks/plot_diagnostics.json)).
+
+![Cold and warm VMEX plotting times](docs/_static/figures/readme_plot_timing.webp)
+
 VMEX follows the deck's `NS_ARRAY`, `FTOL_ARRAY` and `NITER_ARRAY`. In Python:
 
 ```python

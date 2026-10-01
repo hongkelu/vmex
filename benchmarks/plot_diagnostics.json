@@ -1,0 +1,23 @@
+{
+  "hardware": "Apple M2, CPU",
+  "date": "2026-09-30",
+  "python": "3.11.14",
+  "jax": "0.10.2",
+  "neo_jax": "1.0.2",
+  "booz_xform_jax_commit": "d5ce4b2",
+  "vmex_commit": "bd57c91e",
+  "vmex_dirty": true,
+  "persistent_cache": "disabled",
+  "blas_threads": 1,
+  "method": "Fresh-process CLI writes all five PNGs; warm plot_wout repeats in the same process with a new WOUT read. Includes image writing; one measurement per case.",
+  "cases": [
+    {"case": "Landreman-Paul QA", "wout": "wout_LandremanPaul2021_QA_lowres.nc", "cold_cli_s": 20.960, "warm_plot_s": 13.278, "cold_boozer_s": 0.307, "warm_boozer_s": 0.018, "cold_j_s": 0.575, "warm_j_s": 0.558, "cold_epsilon_s": 11.009, "warm_epsilon_s": 6.540},
+    {"case": "W7-X standard", "wout": "W7-X/Standard/wout.nc", "source": "https://github.com/landreman/vmec_equilibria", "cold_cli_s": 24.251, "warm_plot_s": 15.359, "cold_boozer_s": 0.255, "warm_boozer_s": 0.028, "cold_j_s": 0.859, "warm_j_s": 0.844, "cold_epsilon_s": 11.344, "warm_epsilon_s": 5.546}
+  ],
+  "bad_reference": {
+    "source": "https://github.com/RalfMackenbach/BAD",
+    "method": "Exact Fourier B, refined roots, 200-point sine-mapped Gauss-Legendre; complete wells only, largest action. 72 surface/pitch/alpha checks, four trapping depths, three alpha labels at s nearest 0.5.",
+    "well_count_differences": 0,
+    "max_relative_j_error": {"QA": 6.531e-7, "QH": 8.117e-6, "QI": 6.391e-5, "W7-X": 5.903e-5, "NCSX": 2.913e-6, "LASYM tokamak": 6.410e-6}
+  }
+}

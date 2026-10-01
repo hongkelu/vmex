@@ -1168,20 +1168,12 @@ def _j_invariant_map(
 ) -> dict[str, Any]:
     """Second adiabatic invariant ``J(alpha, s)`` at one physical pitch.
 
-    The polar presentation and pitch convention follow Fig. 10 of Rodríguez,
-    Helander & Goodman, J. Plasma Phys. 90, 905900212 (2024): on each surface,
-    the same physical ``lambda`` must be followed radially to diagnose
-    ``partial J / partial psi``. By default, we choose ``1/lambda`` inside the
-    trapping interval common to every plotted surface; ``pitch`` can instead
-    select the physical ``lambda`` used by an optimization. Omnigenity makes ``J``
-    independent of ``alpha``, so its contours in ``x=s*cos(alpha)``,
-    ``y=s*sin(alpha)`` become concentric circles; maximum-J additionally makes
-    ``J`` decrease radially. If several wells exist, the largest complete-well
-    action is displayed; it is one branch, not a certificate for every orbit.
-    ``J`` is normalized to ``J/(v R0)``. The display integrates the square-root
-    factor of piecewise-linear field-line samples over each complete well,
-    with a midpoint approximation for ``dl/dzeta``. This avoids a JIT compile;
-    differentiable objectives still use :func:`vmex.core.bounce.bounce_action`.
+    One physical ``lambda`` is held fixed radially. The default lies one
+    fifth into the common trapping band; ``pitch`` supplies another lambda.
+    Return the largest complete-well ``J/v`` from root-aware, piecewise-linear
+    samples and midpoint ``dl/dzeta``. Missing wells remain NaN. The panel
+    normalizes by ``R0``; one displayed well cannot certify omnigenity.
+    Differentiable objectives use :func:`vmex.core.bounce.bounce_action`.
     """
     bmnc_b = booz["bmnc_b"]
     nsurf = int(bmnc_b.shape[0])
@@ -1203,8 +1195,10 @@ def _j_invariant_map(
                        int(points_per_period) * num_periods + 1)
     xm = np.asarray(booz["xm_b"])
     xn = np.asarray(booz["xn_b"])
-    cos_alpha = np.cos(alpha[:, None] * xm)
-    sin_alpha = np.sin(alpha[:, None] * xm)
+    order = np.argsort(xm, kind="stable")
+    poloidal, starts = np.unique(xm[order], return_index=True)
+    cos_alpha = np.cos(alpha[:, None] * poloidal)
+    sin_alpha = np.sin(alpha[:, None] * poloidal)
     fields = []
     for k in range(nsurf):
         phase = (xm * iota_b[k] - xn)[:, None] * zeta
@@ -1212,8 +1206,11 @@ def _j_invariant_map(
         c = bmnc_b[k][:, None]
         s = (np.zeros_like(c) if booz["bmns_b"] is None
              else booz["bmns_b"][k][:, None])
-        fields.append(cos_alpha @ (c * cp + s * sp)
-                      + sin_alpha @ (s * cp - c * sp))
+        # Sum toroidal harmonics before sampling alpha; only distinct m
+        # values enter the two matrix products.
+        cosine = np.add.reduceat((c * cp + s * sp)[order], starts, axis=0)
+        sine = np.add.reduceat((s * cp - c * sp)[order], starts, axis=0)
+        fields.append(cos_alpha @ cosine + sin_alpha @ sine)
     line_min = np.stack([b.min(axis=1) for b in fields])
     line_max = np.stack([b.max(axis=1) for b in fields])
     b_min = line_min.min(axis=1); b_max = line_max.max(axis=1)

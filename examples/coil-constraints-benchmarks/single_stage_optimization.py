@@ -82,6 +82,7 @@ def parse_args(argv=None):
                         help="seed beta: on-axis (WOUT betaxis) for COIL_CASE=ellipse5-beta7, else volume-average")
     parser.add_argument("--wout", type=Path, help="restart the boundary from this WOUT's last surface")
     parser.add_argument("--save-every", type=int, default=25, help="save coils and WOUT every N steps")
+    parser.add_argument("--ns", type=int, help="radial resolution of the optimization solves (default: P.RESOLUTION)")
     parser.add_argument("--bootstrap", action="store_true",
                         help="reactor-like kinetic profiles and a self-consistent bootstrap current (P.BOOTSTRAP_MODEL)")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
@@ -96,6 +97,8 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.ns:
+        P.RESOLUTION = (*P.RESOLUTION[:2], args.ns)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"

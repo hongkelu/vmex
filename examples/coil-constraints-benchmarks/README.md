@@ -48,7 +48,9 @@ R B_phi. With `--bootstrap` both hold the bootstrap mismatch under
 
 `--beta` is <beta> or, for `ellipse5-beta7`, the on-axis beta (WOUT
 `betaxis`). A `-tok` suffix (`qa4-beta-tok`, `qi6-beta-tok`) seeds the same
-case from a circular tokamak with a 0.05 m helical ripple. For `qa4-beta*`
+case from a circular tokamak with a 1% helical ripple (`input.minimal_seed_nfp*`),
+whose beta ramp starts at a prescribed Ohmic current (`OHMIC_CURRENT`) that is
+then blended into the bootstrap current. For `qa4-beta*`
 and `qi6-beta*` the coil length, curvature and MSC limits are
 (1.8, 2.5, 1.2) times the circumference, curvature and squared curvature of a
 circle 0.20 or 0.15 m outside the widest allowed plasma. The iota floors keep

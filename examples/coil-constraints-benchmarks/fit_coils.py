@@ -16,7 +16,7 @@ them again, to an edge R B_phi of B0 R0 (``_common.scale_coil_currents``).
 
 The winding radii were 0.55 m for ``qa4-beta*``, 0.46 m for ``qi6-beta*`` and
 0.42-0.5 m for ``qa3``, ``qh`` and ``qi`` (``--radius``), with 3000 iterations
-and weight 1. The fit is fast on a GPU and slow on a loaded CPU:
+and weight 1 (100 for ``qa4-beta-tok``, whose coils otherwise exceed the length limit). The fit is fast on a GPU and slow on a loaded CPU:
 the coil-coil distance over all symmetry copies dominates.
 """
 import argparse

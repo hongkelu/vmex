@@ -120,7 +120,9 @@ def bootstrap_input(inp, beta, device):
     ``P.CURRENT_KNOTS`` spline knots. Above ``P.BOOTSTRAP_BETA_STEP`` beta is ramped in
     steps of at most that size, each step's pressure ramp carrying the previous step's
     bootstrap current, so its transform holds the equilibrium together as beta rises;
-    with ``P.BOOTSTRAP_BETA_START`` the ramp first doubles beta from that value.
+    with ``P.BOOTSTRAP_BETA_START`` the ramp first doubles beta from that value. With
+    ``P.OHMIC_CURRENT`` (a near-axisymmetric seed) beta is instead ramped at that prescribed
+    current and the current then blended into Redl's.
     Returns the input, the equilibrium and the Redl mismatch.
     """
     import math
@@ -139,13 +141,36 @@ def bootstrap_input(inp, beta, device):
         betas.insert(len(betas) - steps, start)
         start *= 2
     stages = len(betas)
+
+    def picard_at(inp, n_iter):
+        return self_consistent_bootstrap(inp, redl_profiles(inp)[0], 0, n_iter=n_iter, tol=P.PICARD_TOLERANCE,
+                                         relax=P.PICARD_RELAX, degree=P.CURRENT_KNOTS - 1,
+                                         s_eval=np.asarray(P.REDL_SURFACES), solve_kwargs=dict(device=device))
+
+    if P.OHMIC_CURRENT:
+        # A near-axisymmetric seed has no vacuum transform and, at low beta, little bootstrap current: an
+        # Ohmic current I' = 2 I (1 - s) holds it together while beta rises, then is blended into the Redl
+        # current at full beta, so the seed ends with the bootstrap current alone.
+        ohmic = np.zeros_like(ac)
+        ohmic[:2] = 2.0 * P.OHMIC_CURRENT * np.array([1.0, -1.0])
+        inp = replace(inp, ac=ohmic, curtor=P.OHMIC_CURRENT)
+        for stage_beta in betas:
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        for weight in (0.25, 0.5, 0.75):
+            boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
+            ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
+            ac_boot[: boot.ac.size] = boot.ac
+            ac_mix = (1 - weight) * np.pad(ohmic, (0, ac_boot.size - ohmic.size)) + weight * ac_boot
+            inp = replace(boot, ac=ac_mix, curtor=(1 - weight) * P.OHMIC_CURRENT + weight * float(boot.curtor))
+            print(f"Ohmic-to-bootstrap blend {weight:.2f}: CURTOR = {float(inp.curtor):.1f} A", flush=True)
+        betas = []
+        picard = picard_at(inp, P.PICARD_ITERATIONS)
+        profiles, redl = redl_profiles(inp)
+        inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
         inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
         profiles, redl = redl_profiles(inp)
-        picard = self_consistent_bootstrap(inp, profiles, 0, n_iter=P.PICARD_ITERATIONS, tol=P.PICARD_TOLERANCE,
-                                           relax=P.PICARD_RELAX,
-                                           degree=P.CURRENT_KNOTS - 1, s_eval=np.asarray(P.REDL_SURFACES),
-                                           solve_kwargs=dict(device=device))
+        picard = picard_at(inp, P.PICARD_ITERATIONS)
         inp = picard.input
         if stages > 1:
             print(f"bootstrap ramp {stage}/{stages}: beta {stage_beta:.4f}, CURTOR = "

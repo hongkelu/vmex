@@ -65,6 +65,7 @@ PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
+OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
 SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
 HELICITY = (1, 0)                  # quasisymmetry (M, N); None minimizes the constructed QI residual
@@ -134,10 +135,11 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
-if CASE.endswith("-tok"):  # a circular tokamak with a 0.05 m helical ripple (vmex examples/data/input.minimal_seed_nfp*)
-    SEED = (SEED[0], SEED[1], 0.05 * SEED[1] / RADIUS_TARGET)
-    if CASE.startswith("qa4-beta"):
-        BOOTSTRAP_BETA_START = 0.0005  # vacuum iota ~0.07: no equilibrium at a first 0.5% stage
+if CASE.endswith("-tok"):
+    # A circular tokamak with a 1% helical ripple b / a, as vmex examples/data/input.minimal_seed_nfp*.
+    # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
+    SEED = (SEED[0], SEED[1], 0.01)
+    OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else 6.0e4
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius

@@ -14,7 +14,7 @@ SLSQP minimizes
 with r the quasisymmetry residual of ``P.HELICITY`` (or the constructed QI
 residual when it is None), subject to hard inequalities, in this row order:
 
-- min |iota| >= ``IOTA_FLOOR``; major radius within ``RADIUS_TOLERANCE`` of R0;
+- min |iota| >= ``IOTA_FLOOR`` (with ``IOTA_AXIS`` on the axis too); major radius within ``RADIUS_TOLERANCE`` of R0;
 - the edge mirror ratio <= ``MIRROR_LIMIT`` and max |iota| <= ``IOTA_CEILING``,
   for the cases that set them;
 - with ``--bootstrap``, the bootstrap mismatch <= ``REDL_TOLERANCE``;
@@ -31,8 +31,8 @@ its 4.9 floor (QA ~0.02), while a free PHIEDGE reaches 5.1 (QA ~0.004).
 (<beta>, or on-axis beta for ``ellipse5-beta7``, ``P.BETA_DEFINITION``) with zero
 net current, and refits the seed coils to (B_coils + B_plasma).n = 0 on that
 seed (virtual-casing B_plasma, coil limits as penalties, no equilibrium
-solves). The virtual-casing B.n/|B| and pressure balance of the saved states
-are diagnostics only. ``--bootstrap`` (with ``--beta``) uses reactor-like
+solves). A converged free-boundary state has B.n = 0 by construction, so no
+virtual-casing B.n is evaluated during the run. ``--bootstrap`` (with ``--beta``) uses reactor-like
 kinetic profiles and a self-consistent bootstrap current, Redl's or, for
 ``P.BOOTSTRAP_MODEL = "dkx"`` (``qi6-beta*``, needs the ``dkx`` package), DKX's.
 
@@ -58,8 +58,8 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
-from _common import (boundary_diagnostics, bootstrap_input, bootstrap_mismatch, coil_field,  # noqa: E402
-                     finite_beta_input, max_abs_iota, redl_profiles, resize_coils, restart_input,
+from _common import (bootstrap_input, bootstrap_mismatch, coil_field,  # noqa: E402
+                     finite_beta_input, max_abs_iota, min_abs_iota, redl_profiles, resize_coils, restart_input,
                      scale_coil_currents, seed_input, target_residual, total_normal_field, weighted_rms)
 
 # Numerical controls of the equilibrium, adjoint and matrix-free solves.
@@ -237,7 +237,7 @@ def main(argv=None):
     mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if P.IOTA_CEILING else ()
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror, *ceiling,
+        inp, loss, quantities=(min_abs_iota, opt.major_radius, *mirror, *ceiling,
                                *([bootstrap_mismatch(inp, redl, args.device)] if redl is not None else [])),
         coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
@@ -277,16 +277,10 @@ def main(argv=None):
         # Diagnostics only: none of these enter the loss or the constraints.
         row = dict(step=problem.accepted_step, phiedge=float(wout.phi[-1]), b0=float(wout.b0),
                    rbtor=abs(float(wout.rbtor)), betaxis=float(wout.betaxis))
-        if args.beta > 0:
-            row.update(boundary_diagnostics(wout, problem.coils_from_x(x)))
         with open(out / "diagnostics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[diagnostics] PHIEDGE={row['phiedge']:.5f} Wb B0={row['b0']:.4f} T R B_phi={row['rbtor']:.4f} T m "
               f"betaxis={row['betaxis']:.4%}", flush=True)
-        if args.beta > 0:
-            print(f"[diagnostics] beta={row['beta']:.4%} B.n/|B| rms={row['normal_field_rms']:.3e} "
-                  f"max={row['normal_field_max']:.3e} coil-only rms={row['coil_normal_field_rms']:.3e} "
-                  f"pressure balance rms={row['pressure_balance_rms']:.3e}")
 
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())
     def log_step():

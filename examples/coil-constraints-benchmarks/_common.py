@@ -163,12 +163,34 @@ def bootstrap_input(inp, beta, device):
     return inp, fixed, redl
 
 
-def max_abs_iota(state, runtime):
-    """Largest |iota| over the half-mesh surfaces (axis excluded), the counterpart of ``opt.min_abs_iota``."""
-    import jax.numpy as jnp
-    from vmex.core.statephysics import _iotas_half  # private: opt.min_abs_iota has no max counterpart
+def abs_iota(state, runtime):
+    """|iota| bounded by the floor and ceiling rows.
 
-    return jnp.max(jnp.abs(_iotas_half(state, runtime)[1:]))
+    The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
+    ``P.IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
+    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    """
+    import jax.numpy as jnp
+    from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
+
+    half = _iotas_half(state, runtime)[1:]
+    if P.IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    return jnp.abs(half)
+
+
+def min_abs_iota(state, runtime):
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, or with ``P.IOTA_AXIS`` including the axis."""
+    import jax.numpy as jnp
+
+    return jnp.min(abs_iota(state, runtime))
+
+
+def max_abs_iota(state, runtime):
+    """Largest |iota| of ``abs_iota``, the counterpart of ``min_abs_iota``."""
+    import jax.numpy as jnp
+
+    return jnp.max(abs_iota(state, runtime))
 
 
 def bootstrap_mismatch(inp, redl, device):

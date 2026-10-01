@@ -57,7 +57,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
 from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, boundary_diagnostics, boundary_from_wout, bootstrap_input,  # noqa: E402
-                     bootstrap_mismatch, coil_field, finite_beta_input, max_abs_iota, normal_field_rms,
+                     bootstrap_mismatch, coil_field, finite_beta_input, max_abs_iota, min_abs_iota, normal_field_rms,
                      redl_profiles, resize_coils, restart_input, scale_coil_currents, seed_input,
                      target_residual, weighted_rms)
 
@@ -219,7 +219,7 @@ def main(argv=None):
 
     def plasma_rows(state, ctx, coils):
         """Rows that need the equilibrium, scaled so c >= 0 is feasible."""
-        iota, aspect, radius = opt.min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
+        iota, aspect, radius = min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
         rows = [(iota - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
                 (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
                 (radius - P.RADIUS_TARGET + width) / P.RADIUS_TOLERANCE,
@@ -312,7 +312,7 @@ def main(argv=None):
         rows = np.asarray(coil_limits.coil_inequalities(coils))
         now = time.monotonic()
         row = dict(step=last["step"], qa=cache["qa"], objective=value,
-                   min_abs_iota=float(opt.min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
+                   min_abs_iota=float(min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
                    major_radius_m=float(opt.major_radius(state, ctx)),
                    **({"mirror_ratio": float(opt.mirror_ratio(state, ctx))} if P.MIRROR_LIMIT else {}),
                    **({"max_abs_iota": float(max_abs_iota(state, ctx))} if P.IOTA_CEILING else {}),

@@ -159,14 +159,9 @@ cores. Runtimes exclude compilation and field set-up ([benchmark](benchmarks/tra
 `|B|` in VMEC angles, Mercier stability and the 3-D LCFS. The summary adds Boozer `|B|`, a `J` map,
 `D_R` and the DESC-normalized force balance (effective ripple needs `vmex[neoclassical]`). The QA and QI panels are
 `vmex examples/data/input.nfp2_QA_finite_beta --plot` and `vmex examples/data/input.nfp4_QI_finite_beta --plot`.
-The `J` map follows one physical pitch, labels its `|v_parallel|/v` at midradius `B_min`, and shows the largest complete well.
 
 ![vmex --plot summary of the bundled finite-beta NFP=2 QA equilibrium](docs/_static/figures/readme_diagnostics_qa.webp)
 ![vmex --plot summary of the bundled finite-beta NFP=4 QI equilibrium](docs/_static/figures/readme_diagnostics_summary.webp)
-
-Cold and warm timings include NEO and writing all five figures; the J calculation is shown separately ([settings](benchmarks/plot_diagnostics.json)).
-
-![Cold and warm VMEX plotting times](docs/_static/figures/readme_plot_timing.webp)
 
 VMEX follows the deck's `NS_ARRAY`, `FTOL_ARRAY` and `NITER_ARRAY`. In Python:
 

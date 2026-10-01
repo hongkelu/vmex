@@ -5,14 +5,23 @@
   "jax": "0.10.2",
   "neo_jax": "1.0.2",
   "booz_xform_jax_commit": "d5ce4b2",
+  "vmex_source_commit": "2153cfc4",
   "vmex_commit": "bd57c91e",
   "vmex_dirty": true,
   "persistent_cache": "disabled",
   "blas_threads": 1,
   "method": "Fresh-process CLI writes all five PNGs; warm plot_wout repeats in the same process with a new WOUT read. Includes image writing; one measurement per case.",
   "cases": [
-    {"case": "Landreman-Paul QA", "wout": "wout_LandremanPaul2021_QA_lowres.nc", "cold_cli_s": 20.960, "warm_plot_s": 13.278, "cold_boozer_s": 0.307, "warm_boozer_s": 0.018, "cold_j_s": 0.575, "warm_j_s": 0.558, "cold_epsilon_s": 11.009, "warm_epsilon_s": 6.540},
-    {"case": "W7-X standard", "wout": "W7-X/Standard/wout.nc", "source": "https://github.com/landreman/vmec_equilibria", "cold_cli_s": 24.251, "warm_plot_s": 15.359, "cold_boozer_s": 0.255, "warm_boozer_s": 0.028, "cold_j_s": 0.859, "warm_j_s": 0.844, "cold_epsilon_s": 11.344, "warm_epsilon_s": 5.546}
+    {"case": "Landreman-Paul QA", "wout": "wout_LandremanPaul2021_QA_lowres.nc",
+     "source": "https://github.com/hiddenSymmetries/simsopt/tree/d32e5a69082958c5a0a4c1037050b71938854636/tests/test_files",
+     "wout_sha256": "4d301a3c32aa6b12f0c13f2c440d223427275fb00862fac3e64e52dc8421c23c",
+     "cold_cli_s": 20.960, "warm_plot_s": 13.278, "cold_boozer_s": 0.307, "warm_boozer_s": 0.018,
+     "cold_j_s": 0.575, "warm_j_s": 0.558, "cold_epsilon_s": 11.009, "warm_epsilon_s": 6.540},
+    {"case": "W7-X standard", "wout": "W7-X/Standard/wout.nc",
+     "source": "https://github.com/landreman/vmec_equilibria/tree/41fcf8beb9fb743f0ee6e9c1397981e7ac7b29aa",
+     "wout_sha256": "681aa2a94e4e55d88b91d8130ae6181cdd432154396db11e2d215693908e4131",
+     "cold_cli_s": 24.251, "warm_plot_s": 15.359, "cold_boozer_s": 0.255, "warm_boozer_s": 0.028,
+     "cold_j_s": 0.859, "warm_j_s": 0.844, "cold_epsilon_s": 11.344, "warm_epsilon_s": 5.546}
   ],
   "bad_reference": {
     "source": "https://github.com/RalfMackenbach/BAD",

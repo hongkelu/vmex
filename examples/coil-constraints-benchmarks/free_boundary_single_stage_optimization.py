@@ -66,7 +66,7 @@ from _common import (bootstrap_input, bootstrap_mismatch, coil_field,  # noqa: E
 ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
 ROOT_POLISH_STEPS = 30             # damped Newton from a 1e-9 ordinary-solve residual (a finite-beta restart needs >10)
 OPTIMIZER_FTOL = 1e-10
-ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
+ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 40000  # dense up to ns ~ 100
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
@@ -86,6 +86,7 @@ def parse_args(argv=None):
     parser.add_argument("--wout", type=Path, help="restart the initial solve from this WOUT")
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
     parser.add_argument("--save-every", type=int, default=25)
+    parser.add_argument("--ns", type=int, help="radial resolution of the optimization solves (default: P.RESOLUTION)")
     parser.add_argument("--beta", type=float, default=0.0,
                         help="seed beta: on-axis (WOUT betaxis) for COIL_CASE=ellipse5-beta7, else volume-average")
     parser.add_argument("--bootstrap", action="store_true",
@@ -141,6 +142,8 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.ns:
+        P.RESOLUTION = (*P.RESOLUTION[:2], args.ns)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"

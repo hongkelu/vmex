@@ -156,30 +156,14 @@ class AlphaTracingResult:
 
 
 def essos_vmec_field(source: Any, **kwargs: Any) -> Any:
-    """Return the ``essos.fields.Vmec`` field for an equilibrium or wout file.
+    """Build an ESSOS VMEC field from a wout path or :class:`WoutData`.
 
-    ``source`` is a path to a ``wout_*.nc`` file or an in-memory
-    :class:`~vmex.core.wout.WoutData`.  Released ESSOS reads a wout *file*,
-    so an in-memory equilibrium is written to a temporary wout; ESSOS loads
-    every table eagerly in its constructor, so the file is gone by the time
-    the field is returned.  That write severs the gradient — this seam is
-    for diagnostics, not for differentiating through ESSOS.
-
-    ``kwargs`` reach ``essos.fields.Vmec`` unchanged (``ntheta``, ``nphi``,
-    ``close`` and ``range_torus`` on the released constructor, which set the
-    resolution of the ``field.surface`` ESSOS builds alongside the field).
-
-    Released ESSOS reads the stellarator-symmetric wout tables only, so an
-    ``lasym`` equilibrium is rejected rather than silently half-transferred.
+    In-memory data use a temporary wout loaded eagerly by ESSOS; this
+    diagnostic handoff severs gradients. Constructor ``kwargs`` pass through.
     """
     _, _, fields = _essos_imports()
 
     if hasattr(source, "rmnc") and hasattr(source, "xm"):  # WoutData
-        if bool(source.lasym):
-            raise ValueError(
-                "released ESSOS reads stellarator-symmetric wout tables only; "
-                "the lasym partner tables would be silently dropped"
-            )
         from .wout import write_wout
 
         with tempfile.TemporaryDirectory(prefix="vmex_essos_") as tmp:
@@ -187,16 +171,7 @@ def essos_vmec_field(source: Any, **kwargs: Any) -> Any:
             write_wout(wout_path, source)
             return fields.Vmec(str(wout_path), **kwargs)
 
-    wout_path = Path(source)
-    import netCDF4
-
-    with netCDF4.Dataset(str(wout_path)) as ds:
-        if bool(int(ds.variables["lasym__logical__"][()])):
-            raise ValueError(
-                "released ESSOS reads stellarator-symmetric wout tables only; "
-                f"{wout_path.name} is an lasym equilibrium"
-            )
-    return fields.Vmec(str(wout_path), **kwargs)
+    return fields.Vmec(str(Path(source)), **kwargs)
 
 
 def boozer_field(wout, *, mboz: int = 32, nboz: int = 32, mode_tolerance: float = MODE_TOLERANCE):

@@ -1,14 +1,4 @@
-"""The ESSOS field handoff and alpha tracing (``vmex.core.tracing``).
-
-Small and honest: 8 particles over ``tmax = 1e-5`` s on the solovev quick
-case.  Gates: ``essos_vmec_field`` builds the same field from a wout path
-and from an in-memory equilibrium, the trace runs on the released ESSOS
-surface, the counts are mutually consistent, the loss fraction is a
-fraction, the in-memory equilibrium route (temporary-wout hop) reproduces
-the file route, and ``vmex --trace`` scales to ARIES-CS size in memory and
-writes its JSON/NPZ summary and figures end to end.  Skips cleanly
-without ESSOS.
-"""
+"""Released ESSOS field handoff, alpha tracing, and CLI output contracts."""
 
 from __future__ import annotations
 
@@ -338,15 +328,25 @@ def test_trace_boundary_handoff_keeps_sine_partners(solovev_wout, monkeypatch):
 
 
 def test_asymmetric_trace_preserves_sine_boundary(tmp_path):
-    from inspect import signature
-    from essos.boozer import BoozerField
     from vmex.core.tracing import boozer_field
 
-    if "bmns" not in signature(BoozerField.from_booz).parameters:
-        pytest.skip("requires ESSOS sine-spectrum support")
     assert cli.main([str(DATA_DIR / "input.up_down_asymmetric_tokamak"),
                      "--ftol", "1e-10", "--quiet", "--outdir", str(tmp_path)]) == 0
     wout = read_wout(tmp_path / "wout_up_down_asymmetric_tokamak.nc")
+    native = [essos_vmec_field(source, ntheta=8, nphi=8)
+              for source in (tmp_path / "wout_up_down_asymmetric_tokamak.nc", wout)]
+    for field in native:
+        for name in ("rmns", "zmnc", "bmns", "gmns", "bsubsmnc", "bsubumns",
+                     "bsubvmns", "bsupumns", "bsupvmns"):
+            expected, actual = getattr(wout, name), getattr(field, name)
+            if actual is None:
+                assert expected is None or not np.any(expected)
+            else:
+                np.testing.assert_array_equal(actual, expected)
+    for point in ([0.3, 0.4, 0.1], [0.7, 2.2, 0.9]):
+        for name in ("AbsB", "to_xyz", "B_covariant", "B_contravariant", "sqrtg"):
+            np.testing.assert_array_equal(getattr(native[0], name)(point),
+                                          getattr(native[1], name)(point))
     field, bx = boozer_field(wout, mboz=8, nboz=8)
     assert field.sine_coef is not None and np.max(np.abs(field.sine_coef)) > 1e-10
     result = trace_alphas(wout, scale=None, tmax=1e-6, timestep=1e-8, nparticles=4,

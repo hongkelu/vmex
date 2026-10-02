@@ -264,13 +264,11 @@ def _pullback(accepted, cfg, state_cotangents, *, diagnostics=None, precondition
     """Field-parameter derivatives at the supplied root, retaining its linearization.
 
     ``structured_options`` are the GMRES controls of a structured-factor solve
-    (``adjoint_factorization="structured"``); default ``_MATRIX_FREE_DEFAULTS``.
+    (``adjoint_factorization="structured"``; see ``FreeBoundaryProblem._factor_options``).
     """
     if accepted._owner is not cfg._owner:
         raise ValueError("root belongs to a different configuration")
-    options = {}
-    if getattr(cfg.solver, "adjoint_factorization", "dense") == "structured":
-        options["structured_options"] = structured_options or _MATRIX_FREE_DEFAULTS
+    options = {} if structured_options is None else {"structured_options": structured_options}
     if preconditioner is not None:
         if not isinstance(preconditioner, _LUPreconditioner) or preconditioner._cfg is not cfg:
             raise ValueError("preconditioner is closed or belongs to a different configuration")
@@ -940,7 +938,7 @@ class FreeBoundaryProblem(FunctionProblem):
             options = {} if preconditioner is None else {"preconditioner": preconditioner}
             try:
                 linearization = _pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics, structured_options=self._matrixfree_options,
+                    record, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options,
                     **options)
             except AdjointSolveError as error:
                 fallback = self._recovery_seed(preconditioner)
@@ -952,7 +950,7 @@ class FreeBoundaryProblem(FunctionProblem):
                 # A matrix-free retry is not timed as a dense solve.
                 dense_started = None if fallback is not None else time.monotonic()
                 linearization = _pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics, structured_options=self._matrixfree_options,
+                    record, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options,
                     **({} if fallback is None else {"preconditioner": fallback}))
                 self._matrixfree_fallback, self._recovered = fallback is not None, fallback is None
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
@@ -1001,6 +999,13 @@ class FreeBoundaryProblem(FunctionProblem):
             root_polish_atol=None if self._root_polish_options is None else self._root_polish_options['tolerance'],
             adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None),
             factorization=getattr(self.solver, "adjoint_factorization", "dense"))
+
+    @property
+    def _factor_options(self):
+        """``_pullback`` options: structured factors solve by GMRES with the matrix-free controls."""
+        if getattr(self.solver, "adjoint_factorization", "dense") != "structured":
+            return {}
+        return {"structured_options": self._matrixfree_options or _MATRIX_FREE_DEFAULTS}
 
     def enable_root_polishing(self, *, tolerance=1e-12, max_steps=3):
         """Newton-polish the accepted root and every later trial before use.
@@ -1096,7 +1101,7 @@ class FreeBoundaryProblem(FunctionProblem):
             self._check_time()
             rhs, _ = self._scalar_jac(root.state, jnp.asarray(root.parameters))
             dense_root = _pullback(
-                root, self.cfg, rhs, structured_options=self._matrixfree_options)
+                root, self.cfg, rhs, **self._factor_options)
             try:
                 seed = dense_root.preconditioner(**(self._matrixfree_options or _MATRIX_FREE_DEFAULTS))
             except BaseException:
@@ -1422,7 +1427,7 @@ class FreeBoundaryProblem(FunctionProblem):
             dense_seconds=refresh.dense_seconds, horizon=refresh.horizon)
         rhs, direct = self._scalar_jac(candidate.state, jnp.asarray(candidate.parameters))
         linearization = _pullback(
-            candidate, self.cfg, rhs, diagnostics=diagnostics, structured_options=self._matrixfree_options)
+            candidate, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options)
         try:
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
             if not np.all(np.isfinite(jac)):

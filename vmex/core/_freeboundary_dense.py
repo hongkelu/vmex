@@ -235,6 +235,10 @@ def _factor_solve(matrix, rhs):
 
 
 _OPERATOR_NORM_ITERATIONS = 20  # power iterations for the backward-error scale ||A||_2
+# Without a matrix each iteration applies the full coupled operator twice
+# (~0.3 s at ns = 51). At a finite-beta QA root five iterations reach 96% of
+# the 20-iteration bound: a gate at most that much stricter, ~9 s per step less.
+_OPERATOR_NORM_MATVEC_ITERATIONS = 5
 
 
 def _operator_norm(matrix):
@@ -246,10 +250,10 @@ def _operator_norm(matrix):
     return _operator_norm_matvec(lambda v: matrix @ v, lambda v: matrix.T @ v, matrix.shape[1], matrix.dtype)
 
 
-def _operator_norm_matvec(apply, apply_transpose, size, dtype):
+def _operator_norm_matvec(apply, apply_transpose, size, dtype, iterations=_OPERATOR_NORM_ITERATIONS):
     """:func:`_operator_norm` of the operator ``apply`` with transpose ``apply_transpose``."""
     vector = jnp.ones(size, dtype) / np.sqrt(size)
-    for _ in range(_OPERATOR_NORM_ITERATIONS):
+    for _ in range(iterations):
         product = apply_transpose(apply(vector))
         norm = float(jnp.linalg.norm(product))
         if not np.isfinite(norm) or norm == 0.0:
@@ -844,7 +848,7 @@ def structured_seed(residual, z, params, field, frozen, rcon, zcon, mask, cfg, f
     forward = jax.tree_util.Partial(_forward_from_transpose, transpose, z)
     operator_norm = _operator_norm_matvec(
         lambda v: _active_apply(forward, z, space, v), lambda v: _active_apply_transpose(transpose, z, space, v),
-        int(space.left.shape[0]), ravel_pytree(z)[0].dtype)
+        int(space.left.shape[0]), ravel_pytree(z)[0].dtype, _OPERATOR_NORM_MATVEC_ITERATIONS)
     return SeedLU(
         factors=jax.tree.map(_frozen_host_copy, factors),
         space=jax.tree.map(_frozen_host_copy, space),

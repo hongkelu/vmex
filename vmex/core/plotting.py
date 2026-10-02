@@ -1581,6 +1581,12 @@ def _boundary_3d_panel(ax, wout, *, ntheta: int, nzeta: int):
     class Surface(Poly3DCollection):
         """Reuse unchanged projections during layout and rendering."""
 
+        # Match NumPy's summation order and positive-zero identity for quads.
+        _zsort_functions = dict(
+            Poly3DCollection._zsort_functions,
+            average=lambda z: (z[0] + z[1] + z[2] + z[3] + 0.0) * 0.25
+            if len(z) == 4 else np.average(z))
+
         def do_3d_projection(self):
             cached = getattr(self, "_projection_cache", None)
             if not self.stale and cached is not None and np.array_equal(self.axes.M, cached[0]):

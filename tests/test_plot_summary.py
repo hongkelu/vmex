@@ -267,7 +267,8 @@ def test_summary_style_constants():
     assert signature.parameters["ntheta"].default >= 120
 
 
-def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypatch):
+@pytest.mark.parametrize("zsort", ("average", "min", "max"))
+def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypatch, zsort):
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
@@ -282,6 +283,10 @@ def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypat
     ax = fig.add_subplot(projection="3d")
     plotting._boundary_3d_panel(ax, SimpleNamespace(ns=2), ntheta=8, nzeta=12)
     artist = ax.collections[0]
+    artist.set_zsort(zsort)
+    for depths in np.array([[-0.0] * 4, [1e16, 1.0, -1e16, 1.0]]):
+        expected = Poly3DCollection._zsort_functions[zsort](depths)
+        assert artist._zsortfunc(depths).view(np.uint64) == expected.view(np.uint64)
     original, calls = Poly3DCollection.do_3d_projection, []
 
     def project(self):
@@ -302,6 +307,7 @@ def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypat
             pixels = np.asarray(fig.canvas.buffer_rgba()).copy()
             with monkeypatch.context() as reference:
                 reference.setattr(type(artist), "do_3d_projection", original)
+                reference.setattr(artist, "_zsortfunc", Poly3DCollection._zsort_functions[zsort])
                 fig.canvas.draw()
             np.testing.assert_array_equal(fig.canvas.buffer_rgba(), pixels)
     finally:

@@ -280,6 +280,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Orbit integrator (default: rk4; dopri8 requires ESSOS method support).",
     )
     p.add_argument(
+        "--trace-compact", action=argparse.BooleanOptionalAction, default=None,
+        help="Compact early losses when supported (default: on; --no-trace-compact disables it).",
+    )
+    p.add_argument(
         "--trace-timestep", type=float, default=None,
         help=(
             "Orbit step in seconds (default: 1.25e-7 times "
@@ -1056,6 +1060,7 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             seed=int(args.trace_seed),
             timestep=args.trace_timestep,
             method=args.trace_method,
+            compact=args.trace_compact,
             times_to_trace=int(args.trace_times),
             scale=scale,
             birth=args.trace_birth,

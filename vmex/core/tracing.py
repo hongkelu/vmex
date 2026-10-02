@@ -256,6 +256,7 @@ def trace_alphas(
     seed: int = 42,
     timestep: float | None = None,
     method: str = "rk4",
+    compact: bool | None = None,
     times_to_trace: int = 1000,
     scale: str | None = "volavgB",
     birth: str = "surface",
@@ -291,6 +292,8 @@ def trace_alphas(
         Boozer resolution and the relative amplitude of dropped modes.
     method:
         ``"rk4"`` (default) or optional eighth-order ``"dopri8"``.
+    compact:
+        Enable survivor compaction when supported; ``False`` disables it.
     progress:
         ``None``, or ``progress(done, total)``, called as the horizon advances
         (ESSOS runs it in host-side chunks; the orbits are unchanged).
@@ -300,16 +303,22 @@ def trace_alphas(
     require_optional("essos", "alpha-particle tracing")
     from essos import constants
     from essos.boozer import trace_boozer
+    from inspect import signature
+
+    parameters = signature(trace_boozer).parameters
+    trace_kwargs = {}
+    if "compact" in parameters:
+        trace_kwargs["compact"] = compact is None or bool(compact)
+    elif compact:
+        raise ImportError("Compaction requires ESSOS with trace_boozer(compact=...); upgrade ESSOS")
+    compact = trace_kwargs.get("compact", False)
 
     if method not in ("rk4", "dopri8"):
         raise ValueError("method must be 'rk4' or 'dopri8'")
-    method_kwargs = {}
     if method == "dopri8":
-        from inspect import signature
-
-        if "method" not in signature(trace_boozer).parameters:
+        if "method" not in parameters:
             raise ImportError("Dopri8 requires ESSOS with trace_boozer(method=...); upgrade ESSOS")
-        method_kwargs["method"] = method
+        trace_kwargs["method"] = method
 
     from .scaling import SCALE_TARGETS, aries_cs_scales, scale_wout
     from .wout import read_wout
@@ -335,7 +344,7 @@ def trace_alphas(
         charge=charge, tmax=float(tmax), timestep=float(timestep),
         n_save=min(int(times_to_trace), 101), seed=int(seed),
         species=background_species(ne0, T0_keV) if collisions else None,
-        progress=progress, **method_kwargs)
+        progress=progress, **trace_kwargs)
     wall = time.perf_counter() - start
     times = np.linspace(0.0, float(tmax), int(times_to_trace))
     lost = trace.loss_times >= 0
@@ -367,7 +376,7 @@ def trace_alphas(
         tmax=float(tmax), timestep=float(timestep), s=float(s), seed=int(seed),
         birth=birth, collisions=bool(collisions), ne0=float(ne0), T0_keV=float(T0_keV),
         method=method, integrator=f"{method.upper()} (Boozer guiding centre)",
-        boozer_modes=int(field.xm.size),
+        compact=bool(compact), boozer_modes=int(field.xm.size),
         mode_tolerance=float(mode_tolerance), mboz=int(mboz), nboz=int(nboz),
         scale_target=scale, b_scale=b_scale, r_scale=r_scale,
         volavgB=float(wout.volavgB), Aminor_p=float(wout.Aminor_p),

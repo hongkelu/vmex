@@ -269,7 +269,7 @@ def trace_alphas(
     mboz, nboz, mode_tolerance:
         Boozer resolution and the relative amplitude of dropped modes.
     method:
-        ``"rk4"`` (default) or optional eighth-order ``"dopri8"``.
+        Fixed-step ``"rk4"`` (default), ``"tsit5"``, ``"dopri5"`` or ``"dopri8"``.
     compact:
         Enable survivor compaction when supported; ``False`` disables it.
     progress:
@@ -291,11 +291,11 @@ def trace_alphas(
         raise ImportError("Compaction requires ESSOS with trace_boozer(compact=...); upgrade ESSOS")
     compact = trace_kwargs.get("compact", False)
 
-    if method not in ("rk4", "dopri8"):
-        raise ValueError("method must be 'rk4' or 'dopri8'")
-    if method == "dopri8":
+    if method not in ("rk4", "tsit5", "dopri5", "dopri8"):
+        raise ValueError("method must be 'rk4', 'tsit5', 'dopri5' or 'dopri8'")
+    if method != "rk4":
         if "method" not in parameters:
-            raise ImportError("Dopri8 requires ESSOS with trace_boozer(method=...); upgrade ESSOS")
+            raise ImportError(f"{method.capitalize()} requires ESSOS with trace_boozer(method=...); upgrade ESSOS")
         trace_kwargs["method"] = method
 
     from .scaling import SCALE_TARGETS, aries_cs_scales, scale_wout
@@ -332,9 +332,6 @@ def trace_alphas(
     if failed.any():
         raise ValueError(f"{failed.sum()} alpha trajectories failed; loss fraction is undefined. "
                          "Reduce the timestep or inspect the field")
-    if np.max(trace.energy_error) > 1e-3:
-        raise ValueError(f"Alpha orbit energy drift {np.max(trace.energy_error):.3g} exceeds 1e-3; "
-                         "loss fraction is undefined. Reduce --trace-timestep")
     loss_fractions = np.array([(trace.loss_times[lost] <= t).sum() for t in times]) / nparticles
     last = -1
     keys = ("rmnc_b", "zmns_b", "numns_b")

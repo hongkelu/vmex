@@ -27,7 +27,7 @@ its binomial error:
 |---|---|---|---|
 | `--trace-particles N` | 500 | ensemble size; the error is `sqrt(f (1 - f) / N)` | linear in `N` |
 | `--trace-tmax T` | `1e-2` | horizon in seconds | linear in `T` |
-| `--trace-method rk4\|dopri8` | `rk4` | orbit integrator; Dopri8 requires ESSOS method support | field dependent |
+| `--trace-method rk4\|tsit5\|dopri5\|dopri8` | `rk4` | fixed-step integrator; alternatives require ESSOS method support | field dependent |
 | `--trace-timestep DT` | size-scaled step | orbit step in seconds | `1 / DT` |
 | `--trace-compact`, `--no-trace-compact` | on when supported | compact early losses | loss dependent |
 | `--trace-birth surface\|volume` | `surface` | births on `--trace-s` or through the volume at the D-T fusion rate | none |

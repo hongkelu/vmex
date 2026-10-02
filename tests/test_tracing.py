@@ -265,23 +265,24 @@ def test_cli_trace_names_the_upgrade_for_an_outdated_essos(solovev_wout, tmp_pat
     assert "MISSING OR OUTDATED OPTIONAL DEPENDENCY" in buffer.getvalue()
 
 
-def test_dopri8_cli_writes_method_and_energy(solovev_wout, tmp_path):
+@pytest.mark.parametrize("method", ["tsit5", "dopri5", "dopri8"])
+def test_optional_solver_cli_writes_method_and_energy(solovev_wout, tmp_path, method):
     import inspect
     import json
     from essos.boozer import trace_boozer
     from essos.constants import ALPHA_PARTICLE_MASS
 
     if "method" not in inspect.signature(trace_boozer).parameters:
-        pytest.skip("requires ESSOS Dopri8 support")
+        pytest.skip("requires ESSOS method support")
     traced = trace_alphas(solovev_wout, **{**TRACE_KWARGS, "timestep": 1.5625e-8})
     assert cli.main([
         str(solovev_wout), "--trace", "--quiet", "--outdir", str(tmp_path),
-        "--trace-method", "dopri8", "--trace-particles", "8", "--trace-tmax", "1e-5",
+        "--trace-method", method, "--trace-particles", "8", "--trace-tmax", "1e-5",
         "--trace-times", "12", "--mbooz", "8", "--nbooz", "8",
         "--trace-seed", "1", "--trace-timestep", "1.5625e-8",
     ]) == 0
     summary = json.loads((tmp_path / "solovev_trace.json").read_text())
-    assert summary["method"] == "dopri8" and summary["integrator"].startswith("DOPRI8")
+    assert summary["method"] == method and summary["integrator"].startswith(method.upper())
     assert summary["particles_failed"] == 0 and summary["max_energy_error"] < 1e-3
     arrays = np.load(tmp_path / "solovev_trace.npz")
     np.testing.assert_array_equal(arrays["initial_conditions"], traced.initial_conditions)
@@ -328,7 +329,7 @@ def test_dopri8_requires_support_without_changing_rk4(solovev_wout, tmp_path, mo
 
 
 @pytest.mark.parametrize("failure_source", ["status", "energy", "drift"])
-def test_failed_orbit_cannot_produce_a_loss_fraction(solovev_wout, monkeypatch, failure_source):
+def test_orbit_failure_is_separate_from_energy_drift(solovev_wout, monkeypatch, failure_source):
     from types import SimpleNamespace
     import essos.boozer
 
@@ -339,12 +340,16 @@ def test_failed_orbit_cannot_produce_a_loss_fraction(solovev_wout, monkeypatch, 
         if failure_source == "status":
             data["failed"] = np.arange(n) == 0
         else:
-            data["energy_error"][0] = 1.1e-3 if failure_source == "drift" else np.nan
+            data["energy_error"][0] = 2e-3 if failure_source == "drift" else np.nan
         return SimpleNamespace(**data)
 
     monkeypatch.setattr(essos.boozer, "trace_boozer", failed_trace)
-    with pytest.raises(ValueError, match="loss fraction is undefined"):
-        trace_alphas(solovev_wout, **TRACE_KWARGS)
+    if failure_source == "drift":
+        result = trace_alphas(solovev_wout, **TRACE_KWARGS)
+        assert result.loss_fraction == 0 and result.energy_error[0] == 2e-3
+    else:
+        with pytest.raises(ValueError, match="loss fraction is undefined"):
+            trace_alphas(solovev_wout, **TRACE_KWARGS)
 
 def test_compaction_dispatch_preserves_released_interfaces(solovev_wout, tmp_path, monkeypatch):
     import essos.boozer

@@ -208,7 +208,10 @@ def boozer_field(wout, *, mboz: int = 32, nboz: int = 32, mode_tolerance: float 
     from .wout import write_wout
 
     if bool(wout.lasym):
-        raise ValueError("--trace supports stellarator-symmetric equilibria only")
+        from inspect import signature
+
+        if "bmns" not in signature(BoozerField.from_booz).parameters:
+            raise ImportError("Non-symmetric tracing requires ESSOS sine-spectrum support; upgrade ESSOS")
     bx = Booz_xform(verbose=0, mboz=int(mboz), nboz=int(nboz))
     with tempfile.TemporaryDirectory(prefix="vmex_booz_") as tmp:
         path = Path(tmp) / "wout_trace.nc"
@@ -339,7 +342,10 @@ def trace_alphas(
     failed = ~np.isfinite(trace.states).all(axis=(1, 2)) & ~lost
     loss_fractions = np.array([(trace.loss_times[lost] <= t).sum() for t in times]) / nparticles
     last = -1
-    boundary = {key: np.asarray(getattr(bx, key))[:, last] for key in ("rmnc_b", "zmns_b", "numns_b")}
+    keys = ("rmnc_b", "zmns_b", "numns_b")
+    if bool(bx.asym):
+        keys += ("rmns_b", "zmnc_b", "numnc_b")
+    boundary = {key: np.asarray(getattr(bx, key))[:, last] for key in keys}
     result = AlphaTracingResult(
         nparticles=int(nparticles), loss_fraction=float(lost.mean()),
         particles_lost=int(lost.sum()),
@@ -350,7 +356,7 @@ def trace_alphas(
         initial_conditions=births, final_states=trace.states[:, -1],
         energy_error=trace.energy_error, trajectories=trace.states,
         boozer=dict(boundary, xm_b=np.asarray(bx.xm_b), xn_b=np.asarray(bx.xn_b),
-                    nfp=int(bx.nfp), s=np.asarray(bx.s_b), iota=np.asarray(bx.iota)),
+                    nfp=int(bx.nfp), asym=bool(bx.asym), s=np.asarray(bx.s_b), iota=np.asarray(bx.iota)),
     )
     result.metadata.update(
         tmax=float(tmax), timestep=float(timestep), s=float(s), seed=int(seed),

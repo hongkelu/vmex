@@ -170,7 +170,7 @@ def test_cli_trace_writes_summary_files_and_figures(solovev_wout, tmp_path):
     assert rc == 0, stdout
     for line in ("Loss fraction:", "Thermalized:", "Solver failures:",
                  "Scaling: B_scale=", "compile", "volavgB=5.8646 T, Aminor_p=1.7044 m",
-                 "mode cut 0.001 of B00", "Change with --trace-particles N"):
+                 "mode cut 0.001 of largest amplitude", "Change with --trace-particles N"):
         assert line in stdout, line
     assert "traced 100% of tmax" in progress.getvalue()
     for suffix in ("trace.png", "trace_3d.png", "trace.npz"):
@@ -308,3 +308,65 @@ def test_compaction_dispatch_preserves_released_interfaces(solovev_wout, tmp_pat
     np.testing.assert_array_equal(default.trajectories, disabled.trajectories)
     parser = cli.build_parser()
     assert parser.parse_args([str(solovev_wout), "--no-trace-compact"]).trace_compact is False
+
+
+def test_asymmetric_trace_requires_complete_backend(solovev_wout, monkeypatch):
+    from dataclasses import replace
+    from essos.boozer import BoozerField
+    from vmex.core.tracing import boozer_field
+
+    monkeypatch.setattr(BoozerField, "from_booz", lambda *args, **kwargs: None)
+    with pytest.raises(ImportError, match="sine-spectrum support"):
+        boozer_field(replace(read_wout(solovev_wout), lasym=True))
+
+
+def test_trace_boundary_handoff_keeps_sine_partners(solovev_wout, monkeypatch):
+    import vmex.core.tracing as tracing
+
+    wout = read_wout(solovev_wout)
+    field, bx = tracing.boozer_field(wout, mboz=8, nboz=8)
+    bx.asym = True
+    names = ("rmns_b", "zmnc_b", "numnc_b")
+    for name in names:
+        setattr(bx, name, np.full_like(bx.rmnc_b, 0.125))
+    monkeypatch.setattr(tracing, "boozer_field", lambda *a, **k: (field, bx))
+    result = trace_alphas(wout, scale=None, **{
+        **TRACE_KWARGS, "tmax": 1e-7, "timestep": 1e-7, "times_to_trace": 2})
+    assert result.boozer["asym"] is True
+    for name in names:
+        np.testing.assert_array_equal(result.boozer[name], getattr(bx, name)[:, -1])
+
+
+def test_asymmetric_trace_preserves_sine_boundary(tmp_path):
+    from inspect import signature
+    from essos.boozer import BoozerField
+    from vmex.core.tracing import boozer_field
+
+    if "bmns" not in signature(BoozerField.from_booz).parameters:
+        pytest.skip("requires ESSOS sine-spectrum support")
+    assert cli.main([str(DATA_DIR / "input.up_down_asymmetric_tokamak"),
+                     "--ftol", "1e-10", "--quiet", "--outdir", str(tmp_path)]) == 0
+    wout = read_wout(tmp_path / "wout_up_down_asymmetric_tokamak.nc")
+    field, bx = boozer_field(wout, mboz=8, nboz=8)
+    assert field.sine_coef is not None and np.max(np.abs(field.sine_coef)) > 1e-10
+    result = trace_alphas(wout, scale=None, tmax=1e-6, timestep=1e-8, nparticles=4,
+                          times_to_trace=3, mboz=8, nboz=8)
+    assert result.boozer["asym"] is True and result.particles_failed == 0
+    assert np.isfinite(result.trajectories).all() and result.energy_error.max() < 1e-5
+    assert {"rmns_b", "zmnc_b", "numnc_b"} <= result.boozer.keys()
+
+
+def test_asymmetric_boundary_cartesian_coordinates():
+    from vmex.core.plotting import _boozer_boundary_xyz
+
+    theta, zeta = np.array([0.2, 0.7]), np.array([0.3, 0.4])
+    bz = dict(xm_b=np.array([0, 1]), xn_b=np.array([0, 2]), asym=True,
+              rmnc_b=np.array([10, 0.3]), rmns_b=np.array([0, -0.4]),
+              zmns_b=np.array([0, 0.2]), zmnc_b=np.array([0, 0.05]),
+              numns_b=np.array([0, 0.04]), numnc_b=np.array([0, 0.06]))
+    angle = theta - 2*zeta
+    radius = 10 + 0.3*np.cos(angle) - 0.4*np.sin(angle)
+    phi = zeta - 0.04*np.sin(angle) - 0.06*np.cos(angle)
+    expected = (radius*np.cos(phi), radius*np.sin(phi),
+                0.2*np.sin(angle) + 0.05*np.cos(angle))
+    np.testing.assert_allclose(_boozer_boundary_xyz(bz, theta, zeta), expected, atol=1e-14)

@@ -102,8 +102,9 @@ class AlphaTracingResult:
     ``initial_conditions`` holds the births ``(s, theta_B, zeta_B, v_par/v)``;
     ``final_states`` holds ``(s, theta_B, zeta_B, v_par, v)`` at the loss,
     thermalisation or final time; ``lost_times`` and ``thermalized_times`` are
-    ``-1`` for particles without that outcome.  ``energy_error`` is the largest
-    relative change of the orbit energy over one step, per particle.
+    ``-1`` for particles without that outcome. ``energy_error`` is the maximum
+    relative numerical energy drift: accumulated from birth without collisions,
+    or per orbit step before each collision kick.
     """
 
     nparticles: int
@@ -338,7 +339,15 @@ def trace_alphas(
     wall = time.perf_counter() - start
     times = np.linspace(0.0, float(tmax), int(times_to_trace))
     lost = trace.loss_times >= 0
-    failed = ~np.isfinite(trace.states).all(axis=(1, 2)) & ~lost
+    failed = (~np.isfinite(trace.states).all(axis=(1, 2)) |
+              ~np.isfinite(trace.energy_error) |
+              np.asarray(getattr(trace, "failed", np.zeros(nparticles, dtype=bool))))
+    if failed.any():
+        raise ValueError(f"{failed.sum()} alpha trajectories failed; loss fraction is undefined. "
+                         "Reduce the timestep or inspect the field")
+    if np.max(trace.energy_error) > 1e-3:
+        raise ValueError(f"Alpha orbit energy drift {np.max(trace.energy_error):.3g} exceeds 1e-3; "
+                         "loss fraction is undefined. Reduce --trace-timestep")
     loss_fractions = np.array([(trace.loss_times[lost] <= t).sum() for t in times]) / nparticles
     last = -1
     boundary = {key: np.asarray(getattr(bx, key))[:, last] for key in ("rmnc_b", "zmns_b", "numns_b")}

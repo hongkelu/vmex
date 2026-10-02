@@ -335,3 +335,23 @@ def test_dopri8_requires_support_without_changing_rk4(solovev_wout, tmp_path, mo
     assert result.metadata["integrator"].startswith("DOPRI8")
     np.testing.assert_array_equal(result.initial_conditions, reference.initial_conditions)
     np.testing.assert_array_equal(result.final_states, reference.final_states)
+
+
+@pytest.mark.parametrize("failure_source", ["status", "energy", "drift"])
+def test_failed_orbit_cannot_produce_a_loss_fraction(solovev_wout, monkeypatch, failure_source):
+    from types import SimpleNamespace
+    import essos.boozer
+
+    def failed_trace(_field, s, *_angles, **_kwargs):
+        n = len(s)
+        data = dict(states=np.zeros((n, 2, 5)), loss_times=np.full(n, -1.0),
+                    thermalized_times=np.full(n, -1.0), energy_error=np.zeros(n))
+        if failure_source == "status":
+            data["failed"] = np.arange(n) == 0
+        else:
+            data["energy_error"][0] = 1.1e-3 if failure_source == "drift" else np.nan
+        return SimpleNamespace(**data)
+
+    monkeypatch.setattr(essos.boozer, "trace_boozer", failed_trace)
+    with pytest.raises(ValueError, match="loss fraction is undefined"):
+        trace_alphas(solovev_wout, **TRACE_KWARGS)

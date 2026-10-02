@@ -26,6 +26,7 @@ from vmex.core.freeboundary_implicit import (
     solve_free_boundary_implicit,
     solve_free_boundary_implicit_status,
 )
+from vmex.core import _freeboundary_dense as dense
 from vmex.core import freeboundary_implicit as fbi
 from vmex.core.errors import (
     AdjointSolveError, VmecConvergenceError, VmecJacobianError)
@@ -33,6 +34,16 @@ from vmex.core.errors import (
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
 pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
+
+
+def _dense_cfg(*, adjoint_tol=1e-11, **overrides):
+    """A minimal ``forward_dense_jax`` configuration for unit-level dense tests."""
+    implicit = SimpleNamespace(device=None, lconm1=False, adjoint_tol=adjoint_tol,
+                               adjoint_gcrot_m=3, adjoint_gcrot_k=1, adjoint_maxiter=10)
+    options = dict(implicit=implicit, adjoint_solver="forward_dense_jax", adjoint_fail="error",
+                   adjoint_dense_batch_size=2, adjoint_dense_max_dofs=100,
+                   adjoint_residual_rtol=None)
+    return SimpleNamespace(**{**options, **overrides})
 
 
 def test_free_boundary_status_callback_turns_trial_error_into_status(monkeypatch):
@@ -75,9 +86,8 @@ def test_free_boundary_config_rejects_fixed_boundary_input():
 
 def test_free_boundary_config_validates_adjoint_solver():
     inp, field = lasym_free_input(DATA), lasym_free_field()
-    for removed in ("dense", "reverse_gcrot"):
-        with pytest.raises(ValueError, match="adjoint_solver must be one of"):
-            make_free_boundary_config(inp, field, adjoint_solver=removed)
+    with pytest.raises(ValueError, match="adjoint_solver must be one of"):
+        make_free_boundary_config(inp, field, adjoint_solver="dense")
     for name in fbi._ADJOINT_SOLVERS:
         assert make_free_boundary_config(
             inp, field, adjoint_solver=name).adjoint_solver == name
@@ -404,20 +414,6 @@ def test_schur_lanes_are_reusable_and_leak_nothing_per_gradient():
     assert after == before + 1
     np.testing.assert_allclose(forced, elimination, rtol=1.0e-6, atol=0.0)
 
-    # Exercise the public multi-row Schur dispatch on the very same physical
-    # state. This is an integration check, not the production root tolerance.
-    p, external, state, mask, rcon, zcon = saved[:6]
-    residual = fbi._projected_residual(cfg, mask)
-    root_norm = float(im._tree_norm(residual(state, p, external, state, rcon, zcon)))
-    rows = jax.tree.map(lambda value: jnp.stack([value, -value]), state_bar)
-    reports = []
-    _, gradient = fbi.free_boundary_state_pullback_multi_rhs(
-        p, external, cfg, state, mask, rows, rcon0=rcon, zcon0=zcon,
-        root_residual_atol=max(1e-5, 1.01*root_norm), diagnostics=reports)
-    np.testing.assert_allclose(gradient, np.stack([elimination, -elimination]), rtol=1e-6, atol=1e-12)
-    assert any(row["backend"] == "boundary_schur" for row in reports)
-    assert {row["row"] for row in reports if row["accepted"]} == {0, 1}
-
 
 def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
     """Under an outer jax.jit the pullback is taken at the root, then staged GCROT."""
@@ -558,70 +554,16 @@ def test_prepared_operators_track_changed_root_data():
             assert np.linalg.norm(expected - reference) > 1e-4
 
 
-def test_multi_rhs_pullback_matches_nonsymmetric_analytic_response(monkeypatch):
-    """All rows, including a zero row, match an independent dense derivative."""
-    matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
-    profile_map = jnp.array([[1., 2.], [-1., .2], [.5, -.3]])
-    field_map = jnp.array([[.3], [1.], [-.4]])
-
-    def residual(z, params, field, base, rcon, zcon):
-        return matrix @ z + .2*z**2 - profile_map @ params['drive'] - field_map @ field['scale']
-
-    cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
-                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    z = jnp.array([.2, .4, -.1])
-    params, field = {'drive':jnp.array([.1, .2])}, {'scale':jnp.array([.3])}
-    rhs = jnp.array([[1., 0., 0.], [0., 1., 1.], [1., -2., .2], [0., 0., 0.]])
-    counts = {'state':0, 'parameter':0}
-    state_name = "_prepare_transpose"
-    prepare_state, prepare_parameter = getattr(fbi, state_name), fbi._prepare_parameter_pullback
-    def counted_state(*args, **kwargs):
-        counts['state'] += 1
-        return prepare_state(*args, **kwargs)
-    def counted_parameter(*args, **kwargs):
-        counts['parameter'] += 1
-        return prepare_parameter(*args, **kwargs)
-    monkeypatch.setattr(fbi, state_name, counted_state)
-    monkeypatch.setattr(fbi, '_prepare_parameter_pullback', counted_parameter)
-    pb, fb = fbi._host_pullback_multi_rhs(residual,z,params,field,z,None,None,rhs,cfg)
-    jacobian = np.asarray(matrix + jnp.diag(.4*z))
-    np.testing.assert_allclose(pb['drive'], np.asarray(rhs) @ np.linalg.solve(jacobian,profile_map), rtol=1e-9, atol=1e-11)
-    np.testing.assert_allclose(fb['scale'], np.asarray(rhs) @ np.linalg.solve(jacobian,field_map), rtol=1e-9, atol=1e-11)
-    assert counts == {'state':1, 'parameter':1}
-
-
-def test_multi_rhs_pullback_rejects_one_failed_row(monkeypatch):
-    """Successful neighboring rows cannot hide a false-success middle row."""
-    cfg = SimpleNamespace(adjoint_tol=1e-11, adjoint_maxiter=10,
-                          adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    calls = []
-    native = fbi.gcrotmk
-    def faulty(matrix, rhs, **kwargs):
-        calls.append(rhs)
-        return (np.zeros_like(rhs), 0) if len(calls) == 2 else native(matrix,rhs,**kwargs)
-    monkeypatch.setattr(fbi, 'gcrotmk', faulty)
-    def residual(z, p, field, *_):
-        return 2*z-p-field
-    with pytest.raises(AdjointSolveError, match='row 1'):
-        fbi._host_pullback_multi_rhs(residual,jnp.zeros(3),jnp.zeros(3),jnp.zeros(3),
-                                    None,None,None,jnp.eye(3),cfg)
-    assert len(calls) == 2
-
-
 @pytest.mark.parametrize('cotangents', [jnp.zeros((0,3)), jnp.zeros((2,4)), jnp.zeros(3)])
 def test_multi_rhs_pullback_rejects_bad_batch_shape(cotangents):
-    cfg = SimpleNamespace(adjoint_solver='coupled_gcrot')
+    cfg = SimpleNamespace(adjoint_solver='forward_dense_jax')
     with pytest.raises(ValueError, match='leading RHS axis'):
         fbi.free_boundary_state_pullback_multi_rhs(None,None,cfg,jnp.zeros(3),
             jnp.ones(3),cotangents,rcon0=None,zcon0=None)
 
 
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "forward_dense_jax"])
-def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
-    controls = SimpleNamespace(device=None, lconm1=False, adjoint_tol=1e-11, adjoint_maxiter=10,
-                               adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    cfg = SimpleNamespace(implicit=controls,adjoint_solver=backend,adjoint_fail='error',
-                          adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
+def test_multi_rhs_public_projection_and_root_gate(monkeypatch):
+    cfg = _dense_cfg()
     def residual(z, p, field, *_):
         return 2*z-p-field
     monkeypatch.setattr(fbi, '_projected_residual', lambda *_, **__:residual)
@@ -633,6 +575,26 @@ def test_multi_rhs_public_projection_and_root_gate(monkeypatch, backend):
     np.testing.assert_allclose(fb,np.asarray(rhs*mask/2),atol=1e-12)
     with pytest.raises(ValueError, match='root residual'):
         fbi.free_boundary_state_pullback_multi_rhs(zero,zero,cfg,jnp.ones(3),mask,rhs,rcon0=None,zcon0=None)
+
+
+@pytest.mark.parametrize("backend", ["coupled_gcrot", "boundary_schur", "edge_response"])
+def test_multi_rhs_pullback_is_dense_only(backend):
+    cfg = _dense_cfg(adjoint_solver=backend)
+    with pytest.raises(ValueError, match="requires adjoint_solver='forward_dense_jax'"):
+        fbi.free_boundary_state_pullback_multi_rhs(None, None, cfg, jnp.zeros(3),
+            jnp.ones(3), jnp.eye(3), rcon0=None, zcon0=None)
+
+
+def test_scalar_implicit_gradient_rejects_dense_adjoint():
+    zero = jnp.zeros(2)
+    with pytest.raises(ValueError, match="free_boundary_state_pullback_multi_rhs"):
+        fbi._solve_bwd_impl(_dense_cfg(), (zero,) * 3 + (None,) * 3, zero)
+
+
+def test_adjoint_residual_rtol_requires_dense_adjoint():
+    with pytest.raises(ValueError, match="adjoint_residual_rtol applies only"):
+        make_free_boundary_config(lasym_free_input(DATA), lasym_free_field(),
+                                  adjoint_solver="coupled_gcrot", adjoint_residual_rtol=1e-9)
 
 
 def test_cold_start_ladders_only_when_one_rung_cannot_converge(monkeypatch):
@@ -1774,12 +1736,8 @@ def test_free_boundary_root_is_a_function_of_the_parameters():
 
 @pytest.mark.parametrize("compiled", [False,True])
 def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(compiled, monkeypatch):
-    backend = "forward_dense_jax"
-    from vmex.core import _freeboundary_dense as dense
     matrix = jnp.array([[4., .3, -.2], [.1, 3., .4], [.2, -.1, 5.]])
-    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-11,
-        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
-        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
+    cfg = _dense_cfg()
     def residual(z,p,f,base,rc,zc):return matrix@z+.5*(p+f+base+rc+zc)*z**2
     if compiled:
         residual=jax.jit(residual)
@@ -1801,8 +1759,7 @@ def test_dense_adjoint_dynamic_nonsymmetric_and_shared_factorization(compiled, m
 
 
 @pytest.mark.parametrize("lasym", [False,True])
-def test_dense_active_basis_matches_main_projector_and_pair_signs(monkeypatch,lasym):
-    from vmex.core import _freeboundary_dense as dense
+def test_dense_active_basis_matches_dof_projector_and_pair_signs(monkeypatch,lasym):
     from vmex.core.solver import SpectralState
     cfg=SimpleNamespace(lconm1=True,resolution=SimpleNamespace(ntor=1,lasym=lasym))
     monkeypatch.setattr(im,'_m1_pair_columns',lambda _:(np.array([1]),np.array([2])))
@@ -1826,11 +1783,7 @@ def test_dense_active_basis_matches_main_projector_and_pair_signs(monkeypatch,la
 
 @pytest.mark.parametrize("failure", ['singular','false_success','nonfinite'])
 def test_dense_failure_policy(failure,monkeypatch):
-    backend = "forward_dense_jax"
-    from vmex.core import _freeboundary_dense as dense
-    cfg=SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-11,
-        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
-        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100)
+    cfg = _dense_cfg()
     def residual(z,*args):return (0. if failure=='singular' else 2.)*z
     if failure!='singular':
         monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,**kw:
@@ -1851,7 +1804,6 @@ def test_dense_failure_policy(failure,monkeypatch):
 
 
 def test_dense_dimension_and_mask_guards():
-    from vmex.core import _freeboundary_dense as dense
     cfg=SimpleNamespace(lconm1=False)
     for mask in (jnp.zeros(3),jnp.ones(4)):
         with pytest.raises(ValueError,match='active dimension'):
@@ -1868,12 +1820,7 @@ def test_dense_config_rejects_invalid_controls(name,value):
 
 
 def test_dense_explicit_residual_gate_and_diagnostics(monkeypatch):
-    backend = "forward_dense_jax"
-    from vmex.core import _freeboundary_dense as dense
-    cfg=SimpleNamespace(implicit=SimpleNamespace(lconm1=False,adjoint_tol=1e-5,
-        adjoint_gcrot_m=3,adjoint_gcrot_k=1,adjoint_maxiter=10),adjoint_solver=backend,
-        adjoint_fail='error',adjoint_dense_batch_size=2,adjoint_dense_max_dofs=100,
-        adjoint_residual_rtol=None)
+    cfg = _dense_cfg(adjoint_tol=1e-5)
     monkeypatch.setattr(dense,'_factor_solve',lambda matrix,rhs,**kw:(rhs/2+1e-7,None))
     monkeypatch.setattr(dense.jsl, 'lu_solve', lambda factors,rhs,**kw: jnp.zeros_like(rhs))
     def residual(z,*args):return 2*z
@@ -1885,22 +1832,41 @@ def test_dense_explicit_residual_gate_and_diagnostics(monkeypatch):
     with pytest.raises(AdjointSolveError):
         call(diagnostics)
     assert len(diagnostics)==1 and diagnostics[0]['accepted'] is False
-    np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*np.sqrt(3.))
+    # Backward-error gate: 1e-9 (||b|| + ||A|| ||x||) with A = 2 I, b = 1 and x ~ b/2.
+    np.testing.assert_allclose(diagnostics[0]['tolerance'],1e-9*2*np.sqrt(3.),rtol=1e-6)
+    np.testing.assert_allclose(diagnostics[0]['operator_norm'],2.,rtol=1e-12)
     actual=make_free_boundary_config(lasym_free_input(DATA),lasym_free_field(),
-        adjoint_solver=backend,adjoint_residual_rtol=1e-9)
+        adjoint_solver='forward_dense_jax',adjoint_residual_rtol=1e-9)
     assert actual.adjoint_residual_rtol==1e-9
+
+
+def test_dense_gate_is_a_normwise_backward_error_bound(monkeypatch):
+    """A residual at the rounding floor of ||A|| ||x|| passes although it fails the
+    relative 1e-9 ||b|| test; an unconverged solve (residual 1e-4 ||b||) still fails."""
+    cfg = _dense_cfg(adjoint_residual_rtol=1e-9)
+    matrix = jnp.diag(jnp.array([1e4, 1., 1.]))
+    rhs = jnp.array([[1e-2, 0., 0.], [0., 1e-2, 0.]])
+    exact = np.linalg.solve(np.asarray(matrix), np.asarray(rhs).T).T
+    # Row 0: residual 1.5e-11, above 1e-9 ||b|| = 1e-11 but below 1e-9 (||b|| + ||A|| ||x||) = 2e-11.
+    # Row 1: residual 1e-6, far above 1e-9 (||b|| + ||A|| ||x||) = 1e-7.
+    offset = np.array([[1.5e-15, 0., 0.], [0., 1e-6, 0.]])
+    monkeypatch.setattr(dense, '_factor_solve', lambda m, b, **kw: (jnp.asarray(exact + offset), None))
+    monkeypatch.setattr(dense.jsl, 'lu_solve', lambda factors, b, **kw: jnp.zeros_like(b))
+    reports = []
+    with pytest.raises(AdjointSolveError, match='row 1'):
+        dense.solve_dense_adjoint(lambda z, *_: matrix @ z, jnp.zeros(3), None, None, None, None, None,
+                                  rhs, jnp.ones(3), cfg, diagnostics=reports)
+    row0, row1 = reports
+    np.testing.assert_allclose(row0['operator_norm'], 1e4, rtol=1e-12)
+    assert row0['relative_residual'] > 1e-9 and row0['accepted'] and row0['backward_error'] < 1e-9
+    assert row1['backward_error'] > 1e-9 and not row1['accepted']
 
 
 @pytest.mark.parametrize('retained', [False, True])
 def test_dense_defect_correction_reuses_lu_and_preserves_passed_rows(retained, monkeypatch):
-    backend = 'forward_dense_jax'
-    from vmex.core import _freeboundary_dense as dense
     matrix = jnp.array([[3., 1., -.2], [-.1, 4., .3], [.5, -.4, 2.]])
     rhs = jnp.array([[1., 2., -1.], [.1, -.2, .5], [0., 0., 0.]])
-    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False, adjoint_tol=1e-11,
-        adjoint_gcrot_m=3, adjoint_gcrot_k=1, adjoint_maxiter=10), adjoint_solver=backend,
-        adjoint_fail='error', adjoint_dense_batch_size=2, adjoint_dense_max_dofs=100,
-        adjoint_residual_rtol=1e-12)
+    cfg = _dense_cfg(adjoint_residual_rtol=1e-12)
     factor = dense._factor_solve
     original = []
 
@@ -1928,12 +1894,7 @@ def test_dense_defect_correction_reuses_lu_and_preserves_passed_rows(retained, m
 
 
 def test_dense_correction_budget_fails_closed(monkeypatch):
-    backend = 'forward_dense_jax'
-    from vmex.core import _freeboundary_dense as dense
-    cfg = SimpleNamespace(implicit=SimpleNamespace(lconm1=False, adjoint_tol=1e-11,
-        adjoint_gcrot_m=3, adjoint_gcrot_k=1, adjoint_maxiter=10), adjoint_solver=backend,
-        adjoint_fail='error', adjoint_dense_batch_size=2, adjoint_dense_max_dofs=100,
-        adjoint_residual_rtol=1e-12)
+    cfg = _dense_cfg(adjoint_residual_rtol=1e-12)
     module = dense.jsl
     solve, calls = module.lu_solve, []
 
@@ -1955,7 +1916,6 @@ def test_dense_correction_budget_fails_closed(monkeypatch):
 def test_colored_assembly_is_exact_for_radial_bands_and_falls_back_otherwise(banded, monkeypatch):
     """Colored probes recover a radially banded Jacobian, also with an edge-axis block
     (a prescribed plasma current); a dense one is caught and rebuilt."""
-    from vmex.core import _freeboundary_dense as dense
     monkeypatch.setattr(dense, "_EDGE_AXIS_LAYOUT", {})
     from vmex.core.solver import SpectralState
     ns, mnmax = 12, 3
@@ -1994,47 +1954,16 @@ def test_dense_invalid_gpu_pivots_refactor_on_host(monkeypatch):
 
     The matrix is the Jacobian transpose, so the solve is ``matrix @ x = rhs``.
     """
-    from vmex.core import _freeboundary_dense as dense
     matrix = jnp.array([[3., 1., -.2], [-.1, 4., .3], [.5, -.4, 2.]])
     rhs = jnp.array([[1., 2., -1.], [.1, -.2, .5]])
     native = dense.jsl.lu_factor
     monkeypatch.setattr(dense.jsl, 'lu_factor',
                         lambda a: (native(a)[0], jnp.full(a.shape[0], -2, dtype=jnp.int32)))
     with pytest.warns(RuntimeWarning, match='invalid pivot'):
-        solution, factors = dense._factor_solve(matrix, rhs, return_factors=True)
+        solution, factors = dense._factor_solve(matrix, rhs)
     np.testing.assert_allclose(solution, np.linalg.solve(np.asarray(matrix), np.asarray(rhs.T)).T,
                                rtol=1e-12, atol=1e-14)
     assert np.all(np.asarray(factors[1]) >= 0)
-
-
-def test_shared_adjoint_report_enforces_strict_true_residual(monkeypatch):
-    controls = SimpleNamespace(device=None, adjoint_tol=1e-3, adjoint_maxiter=10,
-                               adjoint_gcrot_m=3, adjoint_gcrot_k=1)
-    residual = jax.jit(lambda z, p, f, *_: 2*z-p-f)
-    monkeypatch.setattr(fbi, "gcrotmk", lambda *a, **k: (np.ones(3)*.500001, 0))
-    records = []
-    with pytest.raises(AdjointSolveError, match="did not converge"):
-        fbi._host_pullback_multi_rhs(residual, jnp.zeros(3), jnp.zeros(3), jnp.zeros(3),
-            jnp.zeros(3), None, None, jnp.ones((1,3)), controls,
-            residual_rtol=1e-9, diagnostics=records)
-    assert records[-1]["backend"] == "coupled_gcrot" and not records[-1]["accepted"]
-    assert records[-1]["tolerance"] == pytest.approx(1e-9*np.sqrt(3))
-
-
-@pytest.mark.parametrize("backend", ["coupled_gcrot", "boundary_schur", "edge_response"])
-def test_traced_upstream_adjoint_honors_explicit_residual_gate(monkeypatch, backend):
-    from contextlib import nullcontext
-    monkeypatch.setattr(fbi, "_projected_residual", lambda *a, **k: lambda z, p, f, *_: 2*z-p-f)
-    monkeypatch.setattr(im, "_dof_projector", lambda *a: lambda x: x)
-    monkeypatch.setattr(im, "_adjoint_solve_gcrot", lambda action, rhs, cfg: (rhs/2+1e-6, None))
-    cfg = SimpleNamespace(implicit=SimpleNamespace(adjoint_tol=1e-3), adjoint_solver=backend,
-                          adjoint_fail="error", adjoint_residual_rtol=1e-9)
-    zero = jnp.zeros(2)
-    saved = (zero, zero, zero, None, None, None)
-    context = pytest.warns(RuntimeWarning, match="not available under jax.jit") if backend == "boundary_schur" else nullcontext()
-    with context:
-        gradient = jax.jit(lambda rhs: fbi._solve_bwd_impl(cfg, saved, rhs))(jnp.ones(2))
-    assert all(np.all(np.isnan(value)) for value in jax.tree.leaves(gradient))
 
 
 @pytest.mark.full

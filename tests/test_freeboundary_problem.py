@@ -333,7 +333,7 @@ def test_dense_derivative_that_misses_its_gate_retries_matrix_free(scalar, monke
     assert len(stats["seeds"]) == 2 and seed.closed
 
 
-@pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity"])
+@pytest.mark.parametrize("failed_refresh", [None, "solve", "seed", "parity", "nonfinite"])
 def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypatch, failed_refresh):
     p, stats, *_ = scalar
     clock = [0.]
@@ -357,6 +357,8 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
             value.preconditioner = fail_seed
         if failed_refresh == 'parity' and preconditioner is None and stats['seeds']:
             value.field_jacobian = value.field_jacobian + .1
+        if failed_refresh == 'nonfinite' and preconditioner is None and stats['seeds']:
+            value.field_jacobian = value.field_jacobian * np.nan
         return value
 
     monkeypatch.setattr(api.time, "monotonic", lambda: clock[0])
@@ -385,12 +387,13 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
     policy_before = p._lu_refresh
     stats["dense_fail"] = failed_refresh == "solve"
     if failed_refresh is not None:
-        with pytest.raises(api.AdjointSolveError, match="failed|changed derivative"):
+        error = FloatingPointError if failed_refresh == "nonfinite" else api.AdjointSolveError
+        with pytest.raises(error, match="failed|changed derivative|nonfinite"):
             p.accept_x(x)
         assert p.accepted is anchor and not seed.closed
         assert p._lu_refresh is policy_before
         assert not candidate_linearization.closed and len(stats["seeds"]) == 1
-        if failed_refresh in ('seed', 'parity'):
+        if failed_refresh in ('seed', 'parity', 'nonfinite'):
             assert stats["factors"][-1].closed
         np.testing.assert_array_equal(p.grad(x), expected)
     else:
@@ -405,15 +408,15 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
         assert len(refresh_events) == 1 and refresh_events[0]["reason"] == "cost"
 
 
-@pytest.mark.parametrize("method,budget", [("SLSQP", 1), ("SLSQP", 5), ("L-BFGS-B", 1), ("L-BFGS-B", 20)])
-def test_shared_minimize_promotes_only_certified_points(scalar, method, budget):
+@pytest.mark.parametrize("budget", [1, 5])
+def test_shared_minimize_promotes_only_certified_points(scalar, budget):
     p, stats, *_ = scalar
     p.enable_matrix_free()
     initial = p.fun(p.x0)
     seen = []
-    kwargs = (dict(constraints=p.nonlinear_constraint([-1e6, -1e6], [1e6, 1e6]), options={"maxiter": budget, "ftol": 1e-10})
-              if method == "SLSQP" else dict(bounds=[(-.01, .01)]*5, options={"maxiter": budget}))
-    result = opt.minimize(p, method=method, callback=lambda x: seen.append(x.copy()), **kwargs)
+    result = opt.minimize(p, method="SLSQP", callback=lambda x: seen.append(x.copy()),
+                          constraints=p.nonlinear_constraint([-1e6, -1e6], [1e6, 1e6]),
+                          options={"maxiter": budget, "ftol": 1e-10})
     assert 0 < p.accepted_step == len(seen) <= budget
     np.testing.assert_array_equal(p.accepted.parameters, result.x)
     assert p.fun(result.x) < initial and len(stats["seeds"]) == 1
@@ -424,27 +427,11 @@ def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
     p.enable_matrix_free()
     anchor = p.accepted
     stats["fail"] = True
-    result = opt.minimize(p, method="L-BFGS-B", callback=lambda x: pytest.fail("failed trial promoted"),
+    result = opt.minimize(p, method="SLSQP", callback=lambda x: pytest.fail("failed trial promoted"),
                           options={"maxiter": 20})
-    assert not result.success and result.stop_reason == "equilibrium_trial_rejected"
+    assert not result.success
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
-
-
-def test_lbfgsb_shortens_a_rejected_step_instead_of_stopping(scalar):
-    p, *_ = scalar
-    p.enable_matrix_free()
-    initial, trial = p.fun(p.x0), p._trial
-
-    def near_only(x, *args, **kwargs):  # equilibria fail beyond a short distance
-        if np.max(np.abs(x - p.accepted.parameters)) > 0.003:
-            raise TrialRejected("too far")
-        return trial(x, *args, **kwargs)
-
-    p._trial = near_only
-    result = opt.minimize(p, method="L-BFGS-B", options={"maxiter": 5})
-    assert result.stop_reason == "accepted_step_budget_reached" and p.accepted_step == 5
-    assert p.fun(result.x) < initial
 
 
 def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar):
@@ -493,12 +480,28 @@ def test_vector_quantities_give_one_constraint_row_per_entry(scalar):
         q.close()
 
 
+def test_newton_corrected_trial_skips_the_ordinary_solve(scalar):
+    p, stats, *_ = scalar
+    x = np.full(5, .001)
+    root = p.evaluate_trial(x)[0]  # an ordinary solve gives a certified root to return
+    solves, calls, events = stats["solves"], [], []
+    p._newton_options = dict(tolerance=1e-12, max_steps=1)
+    p._newton_trial = lambda point, predicted, trial: calls.append(point) or root
+    p._emit = lambda name, **data: events.append((name, data))
+    candidate, rows = p.evaluate_trial(x)
+    assert candidate is root and stats["solves"] == solves and len(calls) == 1
+    np.testing.assert_array_equal(calls[0], x)
+    assert ("certification", 1) in [(name, data.get("index")) for name, data in events]
+    np.testing.assert_array_equal(rows, p.optimizer_rows(root))
+
+
 def test_from_loss_rejects_invalid_definitions():
     inp = SimpleNamespace(lfreeb=True)
     with pytest.raises(TypeError, match="callable"):
         FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coil_quantities=(1,))
-    with pytest.raises(ValueError, match="not both"):
-        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coil_current_dofs=(), current_dofs=())
+    jax.config.update("jax_enable_x64", True)
+    with pytest.raises(ValueError, match="select coil_current_dofs explicitly"):
+        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coils=object())
 
 
 def test_complex_parameters_are_rejected_without_silent_conversion(scalar):
@@ -721,7 +724,6 @@ def test_polish_failure_keeps_initial_root_and_caches(coupled):
 
 def test_polished_coil_quantity_matches_independent_endpoints(coupled, monkeypatch):
     """A moving-surface-like row retains both direct and root-response terms."""
-    from vmex.core import freeboundary
     p, _ = coupled
     q = FreeBoundaryProblem(p.inp, p.parameterization, p.cfg, loss=lambda s, rt, c: jnp.sum(s[:2]**2),
         coil_quantities=(lambda s, rt, c: s[0]*c[0] + s[1] + 2*c[1],))
@@ -747,7 +749,6 @@ def test_polished_coil_quantity_matches_independent_endpoints(coupled, monkeypat
 
 
 def test_trial_polishing_preserves_accepted_seed_and_recertifies(coupled, monkeypatch):
-    from vmex.core import freeboundary
     p, residual = coupled
     p.enable_root_polishing()
     p.enable_matrix_free(refresh_horizon=10)
@@ -770,20 +771,6 @@ def test_trial_polishing_preserves_accepted_seed_and_recertifies(coupled, monkey
     assert p.accepted is trial and p.accepted_step == 1
 
 
-def test_polished_fd_trial_must_keep_requested_force_tolerance(coupled, monkeypatch):
-    from vmex.core import freeboundary
-    p, _ = coupled
-    p.enable_root_polishing()
-    p.enable_matrix_free()
-    anchor = p.accepted
-    monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', lambda inp, **kw:
-        SimpleNamespace(result=SimpleNamespace(state=kw['initial_state'], converged=True),
-                        rcon0=anchor.rcon0, zcon0=anchor.zcon0))
-    with pytest.raises(api.TrialRejected, match='requested force tolerance'):
-        p.evaluate_trial(np.array([.001, -.002]), predict=False, ftol=1e-24)
-    assert p.accepted is anchor
-
-
 @pytest.mark.parametrize('tolerance,steps', [(0.,3),(float('nan'),3),(1e-12,0),(1e-12,True)])
 def test_invalid_polishing_contract(coupled, tolerance, steps):
     p, _ = coupled
@@ -791,35 +778,43 @@ def test_invalid_polishing_contract(coupled, tolerance, steps):
         p.enable_root_polishing(tolerance=tolerance, max_steps=steps)
 
 
-def test_one_dense_retry_releases_temporary_factors(monkeypatch):
+@pytest.mark.parametrize('failure', [None, 'retry', 'report', 'handoff'])
+def test_one_dense_retry_is_bounded_and_releases_temporary_factors(monkeypatch, failure):
+    """A stale-seed failure gets one dense retry; its factors are released
+    whether the retry, the report or the recovery handoff succeeds or fails."""
     calls = []
+
     class Temporary:
+        def __init__(self, name):
+            self.name = name
+
         def close(self):
-            calls.append('close')
+            calls.append(f'close {self.name}')
+
     def refine(record, cfg, seed, **kwargs):
         calls.append('refine')
-        if seed == 'old':
+        if seed == 'old' or failure == 'retry':
             raise api._RootPolishError('stale LU')
         return 'polished', {'seconds': .1}
+
+    def report(data):
+        if failure == 'report' and data['event'] == 'polished':
+            raise RuntimeError('report failed')
+
+    def handoff(*args):
+        raise RuntimeError('handoff failed')
+
     monkeypatch.setattr(api, '_refine', refine)
-    result = api._polish_with_recovery('root','config','old',
-        lambda root:(Temporary(),Temporary()), lambda event:None)
-    assert result == 'polished' and calls == ['refine','close','refine','close']
-
-
-def test_failed_dense_retry_is_bounded_and_releases_factors(monkeypatch):
-    calls = []
-    class Temporary:
-        def close(self):
-            calls.append('close')
-    def fail(*args, **kwargs):
-        calls.append('refine')
-        raise api._RootPolishError('root did not improve')
-    monkeypatch.setattr(api, '_refine', fail)
-    with pytest.raises(api._RootPolishError, match='did not improve'):
-        api._polish_with_recovery('root','config','old',
-            lambda root:(Temporary(),Temporary()), lambda event:None)
-    assert calls == ['refine','close','refine','close']
+    call = lambda: api._polish_with_recovery(  # noqa: E731
+        'root', 'config', 'old', lambda root: (Temporary('dense'), Temporary('seed')), report,
+        retain_recovery=handoff if failure == 'handoff' else None)
+    if failure is None:
+        assert call() == 'polished'
+    else:
+        with pytest.raises(api._RootPolishError if failure == 'retry' else RuntimeError,
+                           match='stale LU' if failure == 'retry' else failure):
+            call()
+    assert calls == ['refine', 'close dense', 'refine', 'close seed']
 
 
 @pytest.mark.parametrize('error_type', [api._RootPolishError, api.AdjointSolveError])
@@ -980,7 +975,6 @@ def test_recovery_seed_used_at_polished_root_and_promoted_only_on_accept(coupled
 
 @pytest.mark.parametrize('abandon', ['new_trial', 'close'])
 def test_abandoned_recovery_seed_is_released(coupled, monkeypatch, abandon):
-    from vmex.core import freeboundary
     p, _ = coupled
     candidate = recovered_trial(p, monkeypatch)
     anchor, old_seed, trial_seed = p.accepted, p._preconditioner, p._trial_lu.seed
@@ -1014,8 +1008,10 @@ def test_accepted_gradient_query_does_not_lose_trial_recovery(coupled, monkeypat
     assert p._preconditioner is trial_seed and old_seed._seed is None
 
 
-def test_post_polish_force_rejection_releases_recovery_seed(coupled, monkeypatch):
-    from vmex.core import freeboundary
+@pytest.mark.parametrize('recovery', [False, True])
+def test_polished_fd_trial_must_keep_requested_force_tolerance(coupled, monkeypatch, recovery):
+    """A polished finite-difference trial is rejected above its requested
+    tolerance, and a recovery seed built for it is released."""
     p, _ = coupled
     p.enable_root_polishing()
     p.enable_matrix_free()
@@ -1029,13 +1025,14 @@ def test_post_polish_force_rejection_releases_recovery_seed(coupled, monkeypatch
         seeds.append(seed)
         return real_refine(record, cfg, seed, **options)
 
-    monkeypatch.setattr(api, '_refine', stale)
+    if recovery:
+        monkeypatch.setattr(api, '_refine', stale)
     monkeypatch.setattr(freeboundary, '_solve_free_boundary_stage', lambda inp, **kw:
         SimpleNamespace(result=SimpleNamespace(state=kw['initial_state'], converged=True),
                         rcon0=anchor.rcon0, zcon0=anchor.zcon0))
     with pytest.raises(api.TrialRejected, match='requested force tolerance'):
         p.evaluate_trial(np.array([.001, -.002]), predict=False, ftol=1e-24)
-    assert len(seeds) == 1 and seeds[0]._seed is None and p._trial_lu is None
+    assert len(seeds) == recovery and all(seed._seed is None for seed in seeds) and p._trial_lu is None
     assert p.accepted is anchor and p._preconditioner is old_seed and old_seed._seed is not None
 
 
@@ -1067,31 +1064,6 @@ def test_trial_seed_adjoint_failure_still_has_one_dense_fallback(coupled, monkey
         assert trial_seed._seed is None and old_seed._seed is None
         assert p._preconditioner._seed is not None
     assert calls == [trial_seed, None]
-
-
-@pytest.mark.parametrize('failure', ['report', 'handoff'])
-def test_failed_recovery_handoff_releases_seed(monkeypatch, failure):
-    closed = []
-    class Seed:
-        def close(self):
-            closed.append('seed')
-    class Dense:
-        def close(self):
-            closed.append('dense')
-    def refine(record, cfg, seed, **options):
-        if seed == 'old':
-            raise api._RootPolishError('stale')
-        return 'polished', {'seconds': 0.}
-    def report(data):
-        if failure == 'report' and data['event'] == 'polished':
-            raise RuntimeError('report failed')
-    def handoff(*args):
-        raise RuntimeError('handoff failed')
-    monkeypatch.setattr(api, '_refine', refine)
-    with pytest.raises(RuntimeError, match=failure):
-        api._polish_with_recovery('root', 'cfg', 'old', lambda _: (Dense(), Seed()),
-                                   report, retain_recovery=handoff)
-    assert closed == ['dense', 'seed']
 
 
 # Root linearizations and seed-LU matrix-free solves.

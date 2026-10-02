@@ -1,7 +1,12 @@
 """Scalar free-boundary coil optimization from an accepted equilibrium.
 
-Only accept() changes the accepted root; ordinary function evaluation,
-reporting, and rejected trials never promote it.
+:class:`FreeBoundaryProblem` varies only the coils (through a
+:class:`CoilParameters` chart). Every trial is predicted from the accepted
+root, solved with strict edge convergence and freshly certified; derivatives
+use the dense ``forward_dense_jax`` adjoint, optionally reusing the accepted
+LU as a matrix-free preconditioner. Only :meth:`FreeBoundaryProblem.accept`
+changes the accepted root; ordinary function evaluation, reporting and
+rejected trials never promote it.
 """
 
 from __future__ import annotations
@@ -18,12 +23,30 @@ import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 
-from .problem import FunctionProblem
-from .optimize import Equilibrium
-from .transforms import register_pytree_dataclass
-from . import _freeboundary_dense as dense, freeboundary_implicit as fbi, implicit as im
+from . import _freeboundary_dense as dense, freeboundary as fb, freeboundary_implicit as fbi, implicit as im
 from .errors import AdjointSolveError, TrialRejected, VmecError
-from .solver import SolveResult, SpectralState
+from .optimize import Equilibrium
+from .problem import FunctionProblem
+from .solver import SolveResult, SpectralState, evaluate_forces
+from .statephysics import volume
+from .transforms import register_pytree_dataclass
+from .wout import wout_from_state
+
+__all__ = ["CoilParameters", "DirectCoilField", "FreeBoundaryProblem"]
+
+#: Relative residual at which :func:`_refine` solves each Newton step with
+#: GMRES on the seed LU.
+_NEWTON_KRYLOV_RTOL = 1e-6
+#: Largest relative defect of a Newton step in the raw linear equation it
+#: solves; a larger defect means the seed LU no longer preconditions the root.
+_NEWTON_LINEAR_RTOL = 1e-5
+#: Step halvings tried before a Newton step counts as failed.
+_NEWTON_BACKTRACKS = 8
+#: Largest change of a structurally inactive coordinate a refinement may make.
+_INACTIVE_DRIFT_ATOL = 1e-12
+#: Defaults of :meth:`FreeBoundaryProblem.enable_matrix_free`; they also build
+#: the temporary seed of a root polish that runs before it.
+_MATRIX_FREE_DEFAULTS = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -59,6 +82,11 @@ def _positive(value, name):
 
 
 def _tree_norm(tree):
+    """Euclidean norm of the flattened tree, as a host float.
+
+    Kept separate from ``implicit._tree_norm`` (a sum of per-leaf dot
+    products), whose rounding differs.
+    """
     return float(jnp.linalg.norm(ravel_pytree(tree)[0]))
 
 
@@ -115,9 +143,6 @@ def _config_from_state(solver, params, anchor, *, state, rcon0, zcon0, parameter
 
 def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None):
     """Evaluate fixed-geometry vacuum, force and root checks; never change state."""
-    from .solver import evaluate_forces
-    from .wout import wout_from_state
-    from .statephysics import volume
     solver, icfg = cfg.solver, cfg.solver.implicit
     if result is not None:
         if not isinstance(result, SolveResult) or not result.converged:
@@ -207,13 +232,15 @@ class _Linearization:
     _cfg: Any = field(repr=False)
     _root: Any = field(repr=False)
 
-    def preconditioner(self, *, rtol=1e-11, restart=30, max_restarts=10, rhs_batch_size=1):
-        """Copy certified dense seed factors for bounded matrix-free solves."""
+    def preconditioner(self, **options):
+        """Copy certified dense seed factors for bounded matrix-free solves.
+
+        ``options`` are the GMRES controls of :meth:`SeedLU.from_root
+        <vmex.core._freeboundary_dense.SeedLU.from_root>`.
+        """
         if self._root is None:
             raise ValueError("linearization is closed")
-        seed = dense.SeedLU.from_root(self._root, rtol=rtol, restart=restart,
-                                      max_restarts=max_restarts, rhs_batch_size=rhs_batch_size)
-        return _LUPreconditioner(self._cfg, seed)
+        return _LUPreconditioner(self._cfg, dense.SeedLU.from_root(self._root, **options))
 
     def offload_factors(self):
         if self._root is None:
@@ -251,12 +278,17 @@ def _pullback(accepted, cfg, state_cotangents, *, diagnostics=None, precondition
     return _Linearization(field_bar, accepted, cfg, linearization)
 
 
+@dataclass
 class _RootPolishError(VmecError):
-    """A bounded numerical root-refinement failure."""
+    """A bounded numerical root-refinement failure.
 
-    def __init__(self, message, *, diagnostics=None):
-        super().__init__(message)
-        self.diagnostics = diagnostics
+    Attributes
+    ----------
+    diagnostics:
+        The failed Newton step's linear-solve report, when there is one.
+    """
+
+    diagnostics: dict | None = None
 
 
 def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, check_time=lambda: None):
@@ -294,23 +326,24 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
                                residual=raw)
         correction, its, krylov_norm, converged = dense.solve(
             action, z, space, factors, -dense._compress(f, space), transpose=False,
-            rtol=1e-6, restart=seed.restart, max_restarts=seed.max_restarts, return_info=True)
+            rtol=_NEWTON_KRYLOV_RTOL, restart=seed.restart, max_restarts=seed.max_restarts,
+            return_info=True)
         delta = dense._expand(correction, z, space)
         defect_norm = _tree_norm(jax.tree.map(jnp.add, action(delta), f))
         relative_linear_error = defect_norm / _tree_norm(f)
-        if not np.isfinite(relative_linear_error) or relative_linear_error > 1e-5:
+        if not np.isfinite(relative_linear_error) or relative_linear_error > _NEWTON_LINEAR_RTOL:
             raise _RootPolishError(f"Newton linear residual failed: {relative_linear_error}",
                 diagnostics=dict(iteration=iteration + 1, root_residual=magnitude,
                     defect_norm=defect_norm, linear_relative_error=relative_linear_error,
-                    linear_relative_tolerance=1e-5, krylov_iterations=int(its),
+                    linear_relative_tolerance=_NEWTON_LINEAR_RTOL, krylov_iterations=int(its),
                     krylov_converged=bool(converged), krylov_norm=float(krylov_norm),
-                    krylov_rtol=1e-6))
+                    krylov_rtol=_NEWTON_KRYLOV_RTOL))
         # Accept a step that lowers the raw residual it solves or the
         # preconditioned one: a full Newton step can raise the preconditioned
         # norm once before converging quadratically, and near the root the raw
         # norm sits on its rounding floor.
         raw_norm = _tree_norm(f)
-        for backtrack in range(8):
+        for backtrack in range(_NEWTON_BACKTRACKS):
             check_time()
             alpha = 0.5**backtrack
             trial = jax.tree.map(lambda a, b: a + alpha * b, z, delta)
@@ -331,7 +364,7 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
     displacement = project(jax.tree.map(jnp.subtract, z, frozen))
     state = jax.tree.map(jnp.add, frozen, displacement)
     inactive_change = _tree_norm(jax.tree.map(jnp.subtract, displacement, project(displacement)))
-    if inactive_change > 1e-12:
+    if inactive_change > _INACTIVE_DRIFT_ATOL:
         raise _RootPolishError(f"inactive coordinate drift: {inactive_change}")
     tick = time.perf_counter()
     # Recompute vacuum, force diagnostics, geometry and root residual for the new state.
@@ -385,7 +418,23 @@ def _polish_with_recovery(record, cfg, preconditioner, build_dense, report, *,
 
 @dataclass(frozen=True, eq=False)
 class DirectCoilField:
-    """Filament-quadrature magnetic field with JAX derivatives."""
+    """Biot-Savart field of filament coils, as a differentiable pytree.
+
+    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
+    static ``self``, so every new coil geometry recompiles and no derivative
+    flows back to the coil arrays. This pytree carries the arrays as leaves
+    instead: one compiled program serves every trial and JAX differentiates
+    the field with respect to the coil parameters. The field is the mean
+    over each coil's quadrature points of the filament Biot-Savart integrand.
+
+    Parameters
+    ----------
+    gamma, gamma_dash:
+        Quadrature points and tangents of each coil, shape
+        ``(coils, points, 3)``, in metres.
+    currents:
+        Coil currents in amperes, shape ``(coils,)``.
+    """
 
     gamma: Any
     gamma_dash: Any
@@ -414,7 +463,31 @@ register_pytree_dataclass(DirectCoilField)
 
 
 class CoilParameters:
-    """Map a finite design vector to ESSOS coils without an equilibrium solve."""
+    """Map a finite design vector to ESSOS coils without an equilibrium solve.
+
+    The design vector ``x`` holds, first, relative changes of the selected
+    base-coil currents (``current[i] = nominal[i] * (1 + x[k])``) and then
+    additive changes of every base coil's Cartesian Fourier coefficients in
+    metres. ``x = 0`` reproduces the nominal coils. Calling the chart returns
+    the :class:`DirectCoilField` of ``coils_from_x(x)``.
+
+    Parameters
+    ----------
+    coefficients:
+        Nominal Cartesian Fourier coefficients, shape
+        ``(coils, 3, 2 * order + 1)``, in metres.
+    currents:
+        Nominal base-coil currents in amperes, shape ``(coils,)``.
+    current_dofs:
+        Indices of the base coils whose currents vary (``()`` fixes all).
+        Each selected current must be nonzero.
+    nfp, stellsym, n_segments:
+        ESSOS symmetry and quadrature of the coils.
+    scales:
+        Positive coordinate scales used to condition the optimizer; by
+        default 0.06 per relative current, 0.002 m per constant Fourier
+        coefficient and ``0.002 / k**2`` m per coefficient of order ``k``.
+    """
 
     def __init__(
         self,
@@ -477,7 +550,7 @@ class CoilParameters:
 
         ESSOS exposes scaled curve DOFs but raw currents. Convert the curve
         coefficients once here; our design coordinates are always in metres.
-        Both ESSOS main and the research branch support these accessors.
+        ``kwargs`` (``current_dofs``, ``scales``) are passed to the constructor.
         """
         return cls(
             np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :],
@@ -518,7 +591,7 @@ class CoilParameters:
         return Coils(Curves(self.curve_dofs_at(x), self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
 
     def __call__(self, x):
-        """Return the same filament-quadrature field used by the maintained case."""
+        """Return the differentiable filament field of ``coils_from_x(x)``."""
         coils = self.coils_from_x(x)
         return DirectCoilField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
 
@@ -541,26 +614,33 @@ class _TrialLU:
     seconds: float
 
 
+#: Accepted steps after a new seed whose timings are ignored: they can compile
+#: new adjoint and predictor paths.
+_REFRESH_WARMUP_STEPS = 2
+#: Accepted steps in the running median of derivative costs.
+_REFRESH_WINDOW = 3
+
+
 @dataclass
 class _LURefresh:
     """Estimate whether warm solve savings can repay a dense rebuild."""
 
     horizon: int
     dense_seconds: float
-    warmup: int = 2
+    warmup: int = _REFRESH_WARMUP_STEPS
     costs: list = field(default_factory=list)
     best_seconds: float = float("inf")
     remaining: int | None = None
 
     def observe(self, seconds):
+        """Record one accepted step's cost; return whether a rebuild pays off."""
         if self.remaining is not None:
             self.remaining = max(0, self.remaining - 1)
-        # The first two accepted steps can compile new adjoint/predictor paths.
         if self.warmup:
             self.warmup -= 1
             return False
-        self.costs = (self.costs + [seconds])[-3:]
-        if len(self.costs) < 3:
+        self.costs = (self.costs + [seconds])[-_REFRESH_WINDOW:]
+        if len(self.costs) < _REFRESH_WINDOW:
             return False
         recent = float(np.median(self.costs))
         self.best_seconds = min(self.best_seconds, recent)
@@ -571,81 +651,106 @@ class _LURefresh:
 class FreeBoundaryProblem(FunctionProblem):
     """Weighted plasma objectives and derivatives with respect to coil variables.
 
-    Build with from_loss(). The equilibrium/adjoint machinery is
-    eager; the state objective functions are JIT compiled. No files, environment
-    variables, CLI state, or signal handlers are owned by this class.
+    Build with :meth:`from_loss`. The equilibrium and adjoint machinery is
+    host-eager; the state objective functions are JIT compiled. No files,
+    environment variables, CLI state or signal handlers are owned by this
+    class. Pass it to :func:`vmex.core.optimize.minimize` (SLSQP), which calls
+    :meth:`accept_x` only for iterates SciPy accepts.
+
+    Attributes
+    ----------
+    accepted:
+        The accepted, certified root (parameters, state, result, DOF mask,
+        constraint baselines and root residual norm).
+    accepted_step:
+        Number of accepted optimizer steps.
+    metadata:
+        ``metadata["holder"]["failed_trials"]`` counts rejected trials.
     """
 
     @classmethod
     def from_loss(cls, inp, loss, *, coils=None, coil_current_dofs=None,
                   parameterization=None, scales=None, restart_from=None,
-                  solver_options=None, quantities=(), coil_quantities=(), **kwargs):
-        """Build a scalar ``loss(state, runtime, coils)`` for any host optimizer.
+                  solver_options=None, quantities=(), coil_quantities=(),
+                  continuation_step=0.1, max_continuation_steps=64,
+                  root_residual_atol=2e-6, event=None, deadline=None):
+        """Solve and certify the seed equilibrium of a scalar coil loss.
 
-        ``quantities`` are scalar or 1-D ``function(state, runtime)`` observables for
-        constraint_values/constraint_jac; the optimizer defines their bounds.
-        ``coil_quantities`` append scalar or 1-D ``function(state, runtime, coils)``
-        observables, including both explicit coil and equilibrium derivatives.
-        Use ordinary optimizer constraints for quantities depending only on
-        coils to avoid unnecessary equilibrium adjoint right-hand sides.
-        The total gradient includes both the equilibrium response and explicit
-        coil dependence. The scalar loss is used without normalization.
+        Parameters
+        ----------
+        inp:
+            Free-boundary input (``lfreeb``); it fixes the pressure and plasma
+            current profiles. Only the coils vary.
+        loss:
+            Scalar ``loss(state, runtime, coils)``, used without normalization.
+            Its gradient includes the equilibrium response and the explicit
+            coil dependence.
+        coils, coil_current_dofs:
+            Nominal ESSOS coils and the indices of the base coils whose
+            currents vary (``()`` fixes all currents). Give these, or
+            ``parameterization``, not both.
+        parameterization:
+            A :class:`CoilParameters` chart (or any chart with ``x0``,
+            ``scales``, ``dof_names``, ``coils_from_x`` and ``__call__``
+            returning the external field).
+        scales:
+            Coordinate scales for the chart built from ``coils``.
+        restart_from:
+            Spectral state or WOUT path seeding the one ordinary solve.
+        solver_options:
+            Keyword arguments of
+            :func:`~vmex.core.freeboundary_implicit.make_free_boundary_config`
+            (for example ``device``, ``ftol``, ``edge_force_tolerance``,
+            ``max_iterations``, ``adjoint_dense_batch_size`` (default 32),
+            ``adjoint_dense_max_dofs`` and ``adjoint_residual_rtol``). Strict
+            edge convergence, ``adjoint_solver="forward_dense_jax"`` and
+            ``adjoint_fail="error"`` are required.
+        quantities:
+            Scalar or 1-D ``function(state, runtime)`` observables, the rows
+            of :meth:`constraint_values`; the optimizer defines their bounds.
+        coil_quantities:
+            Scalar or 1-D ``function(state, runtime, coils)`` observables,
+            appended after ``quantities``; their derivatives include the
+            explicit coil and the equilibrium terms. Constraints on coils
+            alone belong in ordinary optimizer constraints, which need no
+            equilibrium adjoint.
+        continuation_step, max_continuation_steps:
+            A trial whose largest scaled step ``max |dx / scales|`` exceeds
+            ``continuation_step * max_continuation_steps`` is rejected
+            without a solve.
+        root_residual_atol:
+            Bound on the projected root residual of every certified root.
+        event:
+            Optional ``event(name, **data)`` callback for progress and timing.
+            Names: ``proposal``, ``tangent``, ``correction``,
+            ``certification``, ``candidate``, ``newton_correction``,
+            ``root_polish``, ``adjoint_start``, ``adjoint``,
+            ``matrixfree_recovery``, ``dense_recovery``,
+            ``preconditioner_refresh_start`` and ``preconditioner_refresh``;
+            data carries ``seconds`` where a phase is timed.
+        deadline:
+            Optional :func:`time.monotonic` value; construction, trials and
+            derivatives raise :class:`TimeoutError` once it has passed.
 
-        Supply coils with explicit coil_current_dofs (indices, or () to fix
-        all coil currents), or a CoilParameters chart. The older current_dofs
-        keyword still means coil currents here; it never varies the plasma
-        current profile. Pressure and plasma-current profiles come from inp.
-        solver_options configure the equilibrium and full adjoint residual gate.
-        restart_from accepts a state or WOUT path. Ordinary evaluations never
-        promote a root: call accept_x only after optimizer acceptance.
+        Returns
+        -------
+        FreeBoundaryProblem
+            A problem whose accepted root is the certified seed equilibrium.
+            Ordinary evaluations never promote a root.
         """
-        if coil_current_dofs is not None:
-            if "current_dofs" in kwargs:
-                raise ValueError("use coil_current_dofs or current_dofs, not both")
-            kwargs["current_dofs"] = coil_current_dofs
         quantities = tuple(quantities)
         coil_quantities = tuple(coil_quantities)
         if not callable(loss) or not all(callable(q) for q in quantities + coil_quantities):
             raise TypeError("loss and quantities must be callable")
-        return cls._build(inp, loss=loss, quantities=quantities, coil_quantities=coil_quantities,
-                          coils=coils,
-                          parameterization=parameterization, scales=scales,
-                          restart_from=restart_from, solver_options=solver_options, **kwargs)
-
-    @classmethod
-    def _build(
-        cls,
-        inp,
-        *,
-        loss,
-        quantities=(),
-        coil_quantities=(),
-        coils=None,
-        parameterization=None,
-        current_dofs=None,
-        scales=None,
-        restart_from=None,
-        solver_options=None,
-        continuation_step=0.1,
-        max_continuation_steps=64,
-        root_residual_atol=2e-6,
-        event=None,
-        deadline=None,
-    ):
-        """Construct a coil problem and solve/certify its seed equilibrium.
-
-        Pass coils plus current_dofs, or an explicit CoilParameters chart.
-        restart_from is a spectral seed for one ordinary solve.
-        """
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary implicit optimization requires JAX_ENABLE_X64=1")
         if (coils is None) == (parameterization is None):
             raise ValueError("provide exactly one of coils or parameterization")
         if parameterization is None:
-            if current_dofs is None:
-                raise ValueError("select current_dofs explicitly (or () to fix all currents)")
-            parameterization = CoilParameters.from_coils(coils, current_dofs=current_dofs, scales=scales)
-        elif any(x is not None for x in (current_dofs, scales)):
+            if coil_current_dofs is None:
+                raise ValueError("select coil_current_dofs explicitly (or () to fix all currents)")
+            parameterization = CoilParameters.from_coils(coils, current_dofs=coil_current_dofs, scales=scales)
+        elif any(x is not None for x in (coil_current_dofs, scales)):
             raise ValueError("coordinate settings belong to the supplied parameterization")
         if not inp.lfreeb:
             raise ValueError("input must enable free-boundary equilibrium")
@@ -663,14 +768,13 @@ class FreeBoundaryProblem(FunctionProblem):
             inp, parameterization(jnp.asarray(point)), field_from_parameters=parameterization, **opts
         )
         params = im.params_from_input(inp)
-        from .freeboundary import _solve_free_boundary_stage
 
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("walltime")
         if isinstance(restart_from, (str, Path)):
             from .restart import restart_state
             restart_from = restart_state(restart_from, inp, ns=solver.resolution.ns)
-        stage = _solve_free_boundary_stage(
+        stage = fb._solve_free_boundary_stage(
             inp,
             external_field=parameterization(jnp.asarray(point)),
             resolution=solver.resolution,
@@ -748,7 +852,6 @@ class FreeBoundaryProblem(FunctionProblem):
         initial = self.optimizer_rows(self.accepted)
         if not np.all(np.isfinite(initial)):
             raise ValueError("nonfinite objective or physical constraints")
-        self.constraint_scales = np.ones(initial.size - 1)
         super().__init__(
             self.accepted.parameters,
             names=parameterization.dof_names,
@@ -804,6 +907,12 @@ class FreeBoundaryProblem(FunctionProblem):
             self._trial_lu = None
 
     def _derivatives(self, record):
+        """Total compact derivative rows at ``record``, retaining its linearization.
+
+        A trial recovered by dense polishing uses its own LU; otherwise dense
+        mode factors afresh and matrix-free mode uses the accepted seed LU.
+        A failed solve gets one recovery at this certified root.
+        """
         self._check_time()
         if self._linearization_record is record:
             return self._compact_jac
@@ -814,8 +923,6 @@ class FreeBoundaryProblem(FunctionProblem):
             return self._compact_jac
         diagnostics = []
         trial_lu = self._trial_lu
-        # A recovered trial's own LU preconditions its adjoint; otherwise the
-        # dense mode factors afresh rather than reuse an older root's LU.
         preconditioner = (trial_lu.seed if trial_lu is not None and trial_lu.record is record
                           else None if self._dense_derivatives else self._preconditioner)
         self._emit("adjoint_start")
@@ -829,27 +936,18 @@ class FreeBoundaryProblem(FunctionProblem):
                 linearization = _pullback(
                     record, self.cfg, rhs, diagnostics=diagnostics, **options)
             except AdjointSolveError as error:
-                # A dense derivative that misses its gate retries matrix-free on
-                # the accepted seed LU, under the same residual gate.
-                fallback = self._preconditioner if preconditioner is None and self._dense_derivatives else None
+                fallback = self._recovery_seed(preconditioner)
                 if preconditioner is None and fallback is None:
                     raise
-                import traceback
                 traceback.clear_frames(error.__traceback__)
-                if fallback is not None:
-                    self._emit("matrixfree_recovery", candidate=record, error=str(error))
-                    dense_started = None
-                    linearization = _pullback(
-                        record, self.cfg, rhs, diagnostics=diagnostics, preconditioner=fallback)
-                    self._matrixfree_fallback = True
-                else:
-                    # One checked dense retry at this certified root. A rejected
-                    # candidate cannot replace the accepted preconditioner.
-                    self._emit("dense_recovery", candidate=record, error=str(error))
-                    dense_started = time.monotonic()
-                    linearization = _pullback(
-                        record, self.cfg, rhs, diagnostics=diagnostics)
-                    self._recovered = True
+                self._emit("matrixfree_recovery" if fallback is not None else "dense_recovery",
+                           candidate=record, error=str(error))
+                # A matrix-free retry is not timed as a dense solve.
+                dense_started = None if fallback is not None else time.monotonic()
+                linearization = _pullback(
+                    record, self.cfg, rhs, diagnostics=diagnostics,
+                    **({} if fallback is None else {"preconditioner": fallback}))
+                self._matrixfree_fallback, self._recovered = fallback is not None, fallback is None
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
             if not np.all(np.isfinite(jac)):
                 linearization.close()
@@ -871,6 +969,17 @@ class FreeBoundaryProblem(FunctionProblem):
             self._emit("adjoint", seconds=self._adjoint_seconds, rows=diagnostics, solver=self.solver_info)
         return self._compact_jac
 
+    def _recovery_seed(self, preconditioner):
+        """Choose the one retry after a failed derivative solve.
+
+        Returns the accepted seed LU for a matrix-free retry of a dense
+        derivative that missed its gate (dense mode), or ``None`` for a
+        checked dense retry of a failed seed-LU solve. A dense derivative
+        without a seed has no retry (``preconditioner`` and the result are
+        both ``None``). A rejected candidate never replaces the accepted seed.
+        """
+        return self._preconditioner if preconditioner is None and self._dense_derivatives else None
+
     @property
     def solver_info(self):
         """Configured adjoint, reuse policy and predictor; actual solves report rows."""
@@ -886,14 +995,28 @@ class FreeBoundaryProblem(FunctionProblem):
             adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None))
 
     def enable_root_polishing(self, *, tolerance=1e-12, max_steps=3):
-        """Polish the initial root and every subsequent trial before evaluation.
+        """Newton-polish the accepted root and every later trial before use.
 
-        Opt-in, before enabling matrix-free reuse or accepting optimization
-        steps. Ordinary equilibrium
-        convergence is still required. Each bounded Newton refinement retains
-        inactive coordinates and constraint baselines, then freshly certifies
-        the coupled residual and physical forces. Independent FD trials receive
-        the same polishing, without a predictor. No optimizer step is accepted.
+        Call before :meth:`enable_matrix_free` and before any accepted step.
+        Ordinary equilibrium convergence is still required. Each bounded
+        Newton refinement keeps inactive coordinates and constraint baselines,
+        then freshly certifies the coupled residual and physical forces.
+        Independent finite-difference trials get the same polishing, without
+        a predictor. A refinement that fails on the accepted seed LU is retried
+        once with a fresh dense LU. No optimizer step is accepted.
+
+        Parameters
+        ----------
+        tolerance:
+            Projected root-residual norm every polished root must reach.
+        max_steps:
+            Newton steps allowed per root.
+
+        Returns
+        -------
+        root
+            The (possibly polished) accepted root. On failure the original
+            root and derivative caches are kept.
         """
         if self._preconditioner is not None or self.accepted_step != 0:
             raise ValueError('enable root polishing before matrix-free setup and optimization')
@@ -918,10 +1041,17 @@ class FreeBoundaryProblem(FunctionProblem):
     def enable_newton_correction(self, *, max_steps=8):
         """Correct predicted trials by Newton on the coupled root before any ordinary solve.
 
-        Requires root polishing and matrix-free reuse. Newton starts from the
-        tangent prediction, uses the accepted seed LU, and must reach the
-        polishing tolerance; the result is certified freshly. Any failure falls
-        back to the ordinary equilibrium solve for that trial.
+        Requires :meth:`enable_root_polishing` and :meth:`enable_matrix_free`.
+        Newton starts from the tangent prediction, uses the accepted seed LU
+        and must reach the polishing tolerance; the result is certified
+        freshly. Any failure falls back to the ordinary equilibrium solve for
+        that trial. Finite-difference trials (``predict=False`` or an explicit
+        ``ftol``) always use the ordinary solve.
+
+        Parameters
+        ----------
+        max_steps:
+            Newton steps allowed per trial.
         """
         if self._root_polish_options is None or self._preconditioner is None:
             raise ValueError("enable root polishing and matrix-free reuse before Newton correction")
@@ -960,8 +1090,7 @@ class FreeBoundaryProblem(FunctionProblem):
             dense_root = _pullback(
                 root, self.cfg, rhs)
             try:
-                seed = dense_root.preconditioner(**(self._matrixfree_options or dict(
-                    rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)))
+                seed = dense_root.preconditioner(**(self._matrixfree_options or _MATRIX_FREE_DEFAULTS))
             except BaseException:
                 dense_root.close()
                 raise
@@ -1001,23 +1130,41 @@ class FreeBoundaryProblem(FunctionProblem):
     def enable_matrix_free(self, *, rtol=1e-11, restart=100, max_restarts=3,
                            rhs_batch_size=3, parity_rtol=1e-6, refresh_horizon=None,
                            refresh_max_steps=None, dense_derivatives=False):
-        """Initialize matrix-free reuse from a checked dense LU at the accepted root.
+        """Keep a checked dense LU of the accepted root as a seed preconditioner.
 
-        Full residuals still obey solver_options['adjoint_residual_rtol'].
-        A failed trial adjoint gets one dense retry. Its seed replaces the old
-        one only on acceptance.
+        Call once. The seed preconditions matrix-free GMRES solves of trial
+        adjoints, tangents and Newton corrections; full residuals still obey
+        ``solver_options["adjoint_residual_rtol"]``. A failed trial adjoint
+        gets one dense retry, whose LU replaces the seed only if that trial is
+        accepted.
 
-        Optional refresh_horizon is the number of future accepted steps over
-        which estimated warm solve savings should repay a dense rebuild. Only
-        accepted steps contribute timings. Skip the first two after each seed,
-        then compare the latest three-step median with the best median. None
-        retains refresh-on-failure only. Refresh never relaxes residual gates.
-        refresh_max_steps optionally bounds the remaining accepted-step budget,
-        avoiding rebuilds that cannot pay back before the optimizer stops.
-        dense_derivatives computes every derivative with the dense solve and makes
-        each accepted step's LU the new seed: no matrix-free adjoint on older
-        factors, and trial Newton corrections start from the latest root's LU.
-        Rebuild derivatives must agree with the current rows within parity_rtol.
+        Parameters
+        ----------
+        rtol, restart, max_restarts:
+            GMRES relative tolerance, restart length and restart cycles.
+        rhs_batch_size:
+            Distinct right-hand sides solved together (1 to 4).
+        parity_rtol:
+            Largest relative change of any derivative row when a cost refresh
+            rebuilds the dense LU.
+        refresh_horizon:
+            Number of future accepted steps over which estimated warm-solve
+            savings should repay a dense rebuild. Only accepted steps
+            contribute timings: the first two after each seed are skipped,
+            then the latest three-step median is compared with the best one.
+            ``None`` refreshes only on failure. A refresh never relaxes a
+            residual gate.
+        refresh_max_steps:
+            Optional remaining accepted-step budget (requires
+            ``refresh_horizon``), so no rebuild is started that cannot pay
+            back before the optimizer stops.
+        dense_derivatives:
+            Compute every derivative with the dense solve and make each
+            accepted step's LU the new seed: no matrix-free adjoint on older
+            factors, and trial Newton corrections start from the latest
+            root's LU. A dense derivative that misses its gate retries
+            matrix-free on the seed, and that root's LU is then not used as a
+            seed.
         """
         if self._preconditioner is not None:
             raise ValueError("enable matrix-free once")
@@ -1045,16 +1192,15 @@ class FreeBoundaryProblem(FunctionProblem):
         """Return compact objective/constraint rows without a derivative solve."""
         return np.asarray(self._scalar_rows(record.state, jnp.asarray(record.parameters)))
 
-    def linearize(self):
-        """Return compact objective/constraint rows and derivatives at the accepted root.
-
-        The first row is the scalar loss; remaining rows are physical quantities.
-        """
-        return self.optimizer_rows(self.accepted), self._derivatives(self.accepted).copy()
-
     def _trial(self, x, trial, *, predict=True, ftol=None):
-        from .freeboundary import _solve_free_boundary_stage
+        """Predict, correct and certify one trial point; never promote it.
 
+        The trial starts from the tangent prediction at the accepted root
+        (``predict=False``: from the accepted state itself), is Newton
+        corrected when enabled, and otherwise solved once with strict edge
+        convergence, certified and polished. Any failure is a
+        :class:`~vmex.core.errors.TrialRejected`.
+        """
         self._check_time()
         # A new proposal abandons the previous candidate's recovery factors.
         # Accepted factors and its predictor linearization remain independent.
@@ -1062,19 +1208,19 @@ class FreeBoundaryProblem(FunctionProblem):
         self._polish_seconds = 0.0
         x = np.asarray(x, dtype=float)
         delta = x - self.accepted.parameters
-        count = max(1, int(np.ceil(np.max(np.abs(delta / self.scales)) / self.cfg.continuation_step)))
-        if count > self.cfg.max_continuation_steps:
+        # Bound the distance from the accepted root that a single tangent
+        # prediction is asked to cover.
+        substeps = max(1, int(np.ceil(np.max(np.abs(delta / self.scales)) / self.cfg.continuation_step)))
+        if substeps > self.cfg.max_continuation_steps:
             raise TrialRejected("continuation budget exceeded")
         if predict:
             self._derivatives(self.accepted)
-        self._emit("proposal", delta=delta.copy(), trial=trial, points=count,
+        self._emit("proposal", delta=delta.copy(), trial=trial, points=1,
                    jacobian=self._compact_jac.copy() if predict else None)
-        # Correct a single tangent proposal; the distance is bounded above.
-        count = 1
         tolerance = self.solver.implicit.ftol if ftol is None else float(ftol)
         if not np.isfinite(tolerance) or tolerance <= 0:
             raise ValueError("positive finite force tolerance required")
-        last_stage = point = None
+        stage = point = None
         try:
             diagnostics = []
             started = time.monotonic()
@@ -1086,69 +1232,55 @@ class FreeBoundaryProblem(FunctionProblem):
                 seconds = time.monotonic() - started
                 self._tangent_seconds = seconds if predict else 0.0
                 self._emit("tangent", trial=trial, seconds=seconds, rows=diagnostics)
-            previous = self.accepted
-            for index in range(1, count + 1):
-                self._check_time()
-                # Correct the exact requested endpoint: reconstructing x from
-                # its increment can change its last bit and break cache identity.
-                point = x if index == count else self.accepted.parameters + delta * (index / count)
-                predicted = jax.tree.map(lambda x, dx: x + dx / count, previous.state, tangent)
-                if self._newton_options is not None and predict and ftol is None:
-                    corrected = self._newton_trial(point, predicted, trial)
-                    if corrected is not None:
-                        self._emit("certification", candidate=corrected, trial=trial, index=index)
-                        return corrected
-                started = time.monotonic()
-                try:
-                    last_stage = _solve_free_boundary_stage(
-                        self.inp,
-                        external_field=self.parameterization(jnp.asarray(point)),
-                        resolution=self.solver.resolution,
-                        ftol=tolerance,
-                        max_iterations=self.solver.implicit.max_iterations,
-                        initial_state=predicted,
-                        constraint_continuation=(previous.rcon0, previous.zcon0),
-                        include_edge_in_convergence=True,
-                        edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
-                        error_on_no_convergence=False,
-                        jacobian_retries=0,
-                        allow_initial_axis_reguess=False,
-                        use_fft=False,
-                    )
-                except BaseException:
-                    # A failed solve is still a correction cost; record it before rejecting.
-                    self._emit("correction", stage=None, parameters=point, trial=trial, index=index,
-                               points=count, failed=True, seconds=time.monotonic() - started)
-                    raise
-                self._emit(
-                    "correction",
-                    stage=last_stage,
-                    parameters=point,
-                    trial=trial,
-                    index=index,
-                    points=count,
-                    seconds=time.monotonic() - started,
+            anchor = self.accepted
+            self._check_time()
+            # Solve at the exact requested x: rebuilding it from the accepted
+            # point and delta can change its last bit and break cache identity.
+            point = x
+            predicted = jax.tree.map(lambda value, change: value + change, anchor.state, tangent)
+            if self._newton_options is not None and predict and ftol is None:
+                corrected = self._newton_trial(point, predicted, trial)
+                if corrected is not None:
+                    self._emit("certification", candidate=corrected, trial=trial, index=1)
+                    return corrected
+            started = time.monotonic()
+            try:
+                stage = fb._solve_free_boundary_stage(
+                    self.inp,
+                    external_field=self.parameterization(jnp.asarray(point)),
+                    resolution=self.solver.resolution,
+                    ftol=tolerance,
+                    max_iterations=self.solver.implicit.max_iterations,
+                    initial_state=predicted,
+                    constraint_continuation=(anchor.rcon0, anchor.zcon0),
+                    include_edge_in_convergence=True,
+                    edge_force_tolerance=self.solver.edge_force_tolerance if ftol is None else tolerance,
+                    error_on_no_convergence=False,
+                    jacobian_retries=0,
+                    allow_initial_axis_reguess=False,
+                    use_fft=False,
                 )
-                if not last_stage.result.converged:
-                    raise TrialRejected("ordinary equilibrium did not converge")
-                started = time.monotonic()
-                previous = _certify(
-                    self.cfg,
-                    point,
-                    last_stage.result.state,
-                    rcon0=last_stage.rcon0,
-                    zcon0=last_stage.zcon0,
-                    result=last_stage.result,
-                )
-                certified = time.monotonic() - started
-                previous = self._polish_record(previous)
-                if ftol is not None and self._root_polish_options is not None:
-                    forces = [float(getattr(previous.result, name))
-                              for name in ('fsqr', 'fsqz', 'fsql', 'fedge')]
-                    if not all(np.isfinite(value) and value <= tolerance for value in forces):
-                        raise TrialRejected('polished trial exceeds requested force tolerance')
-                self._emit("certification", candidate=previous, trial=trial, index=index, seconds=certified)
-            return previous
+            except BaseException:
+                # A failed solve is still a correction cost; record it before rejecting.
+                self._emit("correction", stage=None, parameters=point, trial=trial, index=1,
+                           points=1, failed=True, seconds=time.monotonic() - started)
+                raise
+            self._emit("correction", stage=stage, parameters=point, trial=trial, index=1,
+                       points=1, seconds=time.monotonic() - started)
+            if not stage.result.converged:
+                raise TrialRejected("ordinary equilibrium did not converge")
+            started = time.monotonic()
+            candidate = _certify(self.cfg, point, stage.result.state, rcon0=stage.rcon0,
+                                 zcon0=stage.zcon0, result=stage.result)
+            certified = time.monotonic() - started
+            candidate = self._polish_record(candidate)
+            if ftol is not None and self._root_polish_options is not None:
+                forces = [float(getattr(candidate.result, name))
+                          for name in ('fsqr', 'fsqz', 'fsql', 'fedge')]
+                if not all(np.isfinite(value) and value <= tolerance for value in forces):
+                    raise TrialRejected('polished trial exceeds requested force tolerance')
+            self._emit("certification", candidate=candidate, trial=trial, index=1, seconds=certified)
+            return candidate
         except (VmecError, TrialRejected) as exc:
             self._close_trial_lu()
             self.metadata["holder"]["failed_trials"] += 1
@@ -1159,13 +1291,38 @@ class FreeBoundaryProblem(FunctionProblem):
             self._close_trial_lu()
             raise
         finally:
-            self._emit("candidate", stage=last_stage, parameters=point, trial=trial)
+            self._emit("candidate", stage=stage, parameters=point, trial=trial)
 
     def evaluate_trial(self, delta, trial=0, *, predict=True, ftol=None):
-        """Evaluate a bounded proposal without promotion.
+        """Evaluate the point ``accepted.parameters + delta`` without promoting it.
 
-        predict=False bypasses the tangent for independent finite differences;
-        ftol optionally tightens both ordinary and edge force convergence.
+        This is the finite-difference verification interface; optimizers use
+        ``fun``/``value_and_grad`` and :meth:`accept_x`.
+
+        Parameters
+        ----------
+        delta:
+            Step from the accepted parameters, in the chart's coordinates.
+        trial:
+            Label passed to the ``event`` callback.
+        predict:
+            ``False`` starts the solve from the accepted state instead of the
+            tangent prediction, and needs no derivative, for independent
+            finite differences.
+        ftol:
+            Optional tighter tolerance for both the ordinary and the edge
+            force convergence (also checked after polishing).
+
+        Returns
+        -------
+        tuple
+            ``(candidate, rows)``: the certified root, which :meth:`accept`
+            can promote, and its loss and quantity rows.
+
+        Raises
+        ------
+        vmex.core.errors.TrialRejected
+            If the trial cannot be solved or certified.
         """
         delta = self._validate_x(delta)
         candidate = self._trial(self.accepted.parameters + delta, trial, predict=predict, ftol=ftol)
@@ -1173,7 +1330,18 @@ class FreeBoundaryProblem(FunctionProblem):
         return candidate, self.optimizer_rows(candidate)
 
     def accept(self, candidate):
-        """Promote a candidate returned by this problem after optimizer acceptance."""
+        """Promote a candidate returned by this problem after optimizer acceptance.
+
+        The candidate's derivative is computed (or reused) first; its dense LU
+        becomes the new seed preconditioner after a recovery, in dense mode,
+        or when a cost refresh pays off. Nothing changes if that fails.
+
+        Parameters
+        ----------
+        candidate:
+            A root from :meth:`evaluate_trial`, or the root of the most
+            recent evaluation.
+        """
         if self._records.get(self._key(candidate.parameters)) is not candidate:
             raise ValueError("candidate is not a current evaluation of this problem")
         if candidate is self.accepted:
@@ -1192,31 +1360,7 @@ class FreeBoundaryProblem(FunctionProblem):
             self._adjoint_seconds + self._tangent_seconds + self._polish_seconds
         ):
             reason = "cost"
-            self._check_time()
-            diagnostics = []
-            started = time.monotonic()
-            self._emit("preconditioner_refresh_start", reason=reason,
-                recent_seconds=float(np.median(refresh.costs)), best_seconds=refresh.best_seconds,
-                dense_seconds=refresh.dense_seconds, horizon=refresh.horizon)
-            rhs, direct = self._scalar_jac(candidate.state, jnp.asarray(candidate.parameters))
-            linearization = _pullback(
-                candidate, self.cfg, rhs, diagnostics=diagnostics)
-            try:
-                jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
-                if not np.all(np.isfinite(jac)):
-                    raise FloatingPointError("nonfinite total derivative")
-                errors = np.linalg.norm(jac-self._compact_jac, axis=1) / np.maximum(
-                    np.linalg.norm(jac, axis=1), 1e-30)
-                if not np.all(errors <= self._refresh_parity_rtol):
-                    raise AdjointSolveError(f'dense refresh changed derivative rows: {errors}')
-                linearization.offload_factors()
-            except BaseException:
-                linearization.close()
-                raise
-            self._dense_seconds = time.monotonic() - started
-            self._emit("adjoint", seconds=self._dense_seconds, rows=diagnostics,
-                solver=self.solver_info, reason="preconditioner_refresh",
-                gradient_relative_errors=errors.tolist())
+            linearization, jac = self._refresh_linearization(candidate, refresh)
         try:
             replacement = (trial_lu.seed if reason == "root_recovery" else
                            linearization.preconditioner(**self._matrixfree_options)
@@ -1249,13 +1393,45 @@ class FreeBoundaryProblem(FunctionProblem):
             self._emit("preconditioner_refresh", reason=reason,
                        seconds=0.0 if reason == "dense" else self._dense_seconds)
         self._close_trial_lu()
-        # Keep the immutable numerical context: seeds and tapes must not
-        # cross configuration identities. All proposals use self.accepted,
-        # never the config's generic memoized continuation solver.
+        # Seeds and tapes never cross configuration identities; every later
+        # proposal is predicted from this accepted root.
         self.accepted_step += 1
         self._rejected = None  # a rejection holds only for the anchor it was predicted from
         self._records = {self._key(self.accepted.parameters): self.accepted}
         self._vg_cache = self._rj_cache = None
+
+    def _refresh_linearization(self, candidate, refresh):
+        """Rebuild the dense LU at ``candidate`` for a cost refresh.
+
+        The rebuilt derivative rows must match the current ones within the
+        parity tolerance; the caller installs the new seed.
+        """
+        self._check_time()
+        diagnostics = []
+        started = time.monotonic()
+        self._emit("preconditioner_refresh_start", reason="cost",
+            recent_seconds=float(np.median(refresh.costs)), best_seconds=refresh.best_seconds,
+            dense_seconds=refresh.dense_seconds, horizon=refresh.horizon)
+        rhs, direct = self._scalar_jac(candidate.state, jnp.asarray(candidate.parameters))
+        linearization = _pullback(
+            candidate, self.cfg, rhs, diagnostics=diagnostics)
+        try:
+            jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
+            if not np.all(np.isfinite(jac)):
+                raise FloatingPointError("nonfinite total derivative")
+            errors = np.linalg.norm(jac-self._compact_jac, axis=1) / np.maximum(
+                np.linalg.norm(jac, axis=1), 1e-30)
+            if not np.all(errors <= self._refresh_parity_rtol):
+                raise AdjointSolveError(f'dense refresh changed derivative rows: {errors}')
+            linearization.offload_factors()
+        except BaseException:
+            linearization.close()
+            raise
+        self._dense_seconds = time.monotonic() - started
+        self._emit("adjoint", seconds=self._dense_seconds, rows=diagnostics,
+            solver=self.solver_info, reason="preconditioner_refresh",
+            gradient_relative_errors=errors.tolist())
+        return linearization, jac
 
     def accept_x(self, x):
         """Promote an already evaluated point after the optimizer accepts it."""
@@ -1281,7 +1457,7 @@ class FreeBoundaryProblem(FunctionProblem):
     def constraint_jac(self, x):
         """Return derivatives of the physical quantities with respect to x."""
         record = self._record(x)
-        return self._derivatives(record)[1:].copy() * self.constraint_scales[:, None]
+        return self._derivatives(record)[1:].copy()
 
     def nonlinear_constraint(self, lower, upper, *, scales=1.0):
         """Bound the physical quantities supplied to from_loss, in their units."""
@@ -1307,14 +1483,10 @@ class FreeBoundaryProblem(FunctionProblem):
         self._accepted_linearization = self._accepted_jac = self._preconditioner = None
 
     def _wout(self, record):
-        from .wout import wout_from_state
-
         currents = np.asarray(self.parameterization.base_currents_at(jnp.asarray(record.parameters)))
         # Re-evaluate the vacuum on this exact fixed plasma/coil geometry for
         # every exported pair. Imported anchors have no attached VacuumOutput;
         # ordinary results can carry cadence caches from a preceding geometry.
-        from vmex.core.freeboundary import _vacuum_executables, _vacuum_output, FreeBoundaryState
-
         export_rt = replace(
             self.rt,
             rcon0=record.rcon0,
@@ -1324,7 +1496,7 @@ class FreeBoundaryProblem(FunctionProblem):
             presf_ns_scale=fbi._presf_ns_scale_traceable(self.params, self.inp, int(self.solver.resolution.ns)),
         )
         axis_r = jnp.full((self.solver.resolution.nzeta,), float(np.asarray(self.inp.rbc)[self.inp.ntor, 0]))
-        basis, program, _ = _vacuum_executables(
+        basis, program, _ = fb._vacuum_executables(
             self.solver.resolution,
             mf=int(self.inp.mpol) + 1,
             nf=int(self.inp.ntor),
@@ -1337,8 +1509,8 @@ class FreeBoundaryProblem(FunctionProblem):
             solve_on_plasma_device=True,
         )
         vacuum_values = program.full(record.state, export_rt, self.parameterization(jnp.asarray(record.parameters)))
-        vacuum = _vacuum_output(
-            FreeBoundaryState(potvac=vacuum_values["potvac"], surface_fields=vacuum_values["surface_fields"]), basis
+        vacuum = fb._vacuum_output(
+            fb.FreeBoundaryState(potvac=vacuum_values["potvac"], surface_fields=vacuum_values["surface_fields"]), basis
         )
         if vacuum is None or any(
             not np.all(np.isfinite(np.asarray(x)))

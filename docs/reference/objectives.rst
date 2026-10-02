@@ -102,6 +102,8 @@ and composable with both gradient modes:
 
 - :func:`~vmex.core.optimize.aspect_ratio` — the VMEC/simsopt effective
   aspect ratio;
+- :func:`~vmex.core.optimize.major_radius` — the wout ``Rmajor_p`` major
+  radius, in metres;
 - :func:`~vmex.core.optimize.volume` — plasma volume;
 - :func:`~vmex.core.optimize.min_abs_iota` — the smallest ``|iota|`` over the
   half-mesh surfaces, and the default transform floor in the shipped
@@ -272,7 +274,7 @@ stage of 20 evaluations: on a 36-core workstation at four threads it reaches
 constructed QI 3.0e-3 (fine-grid validation 2.8e-3) with the ι, mirror and
 elongation limits met in 612 s, where the previous circular-seed example ran
 1,456 s and ended in a final solve that did not converge
-(``benchmarks/qi_optimization_profile_office.json``);
+(``benchmarks/qi_optimization_profile_cpu.json``);
 :doc:`/howto/optimize-a-boundary` describes the workflow.  The
 earlier Goodman-style *wout-lane* residual
 (:func:`~vmex.core.optimize.quasi_isodynamic_residual`, host NumPy,

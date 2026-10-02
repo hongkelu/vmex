@@ -336,7 +336,7 @@ toroidal rule, validated numerically, not taken from a reference.
 Spatial derivatives of the direct path come from the same closed-form
 kernels on the finest schedule level, where nested ``jacfwd`` through the
 schedule used to differentiate the quadrature: the values agree to 1e-12. On
-the office workstation (A/B/A/B, ``benchmarks/extender_ab_20260923.json``,
+a 36-core CPU host (A/B/A/B, ``benchmarks/extender_ab_20260923.json``,
 generator ``benchmarks/extender_ab.py``) the first ``B`` to ``gradgradgradB``
 calls at 16 targets took 2.9 s against 6.0 s, and a warm ``gradgradgradB``
 took 0.09 s against 0.50 s at 16 targets and 0.47 s against 1.98 s at 128.
@@ -404,11 +404,14 @@ transpose still takes about one to two minutes to compile on the reference
 CPU and is not yet a practical GPU path. Its ``device="auto"`` policy therefore
 uses the CPU on an accelerator host unless the process already pins JAX
 placement, while retaining an explicit per-call GPU override.
-Three transpose solvers are available through ``adjoint_solver``:
-``"coupled_gcrot"`` (the certified default), ``"edge_response"``, which
-iterates the coupled transpose on a dense model of NESTOR's edge response
-built once per gradient, and ``"boundary_schur"``, the boundary-Schur
-transpose. The boundary-Schur solver
+Three transpose solvers serve this scalar gradient through
+``adjoint_solver``: ``"coupled_gcrot"`` (the certified default),
+``"edge_response"``, which iterates the coupled transpose on a dense model of
+NESTOR's edge response built once per gradient, and ``"boundary_schur"``, the
+boundary-Schur transpose. A fourth, ``"forward_dense_jax"``, assembles and LU
+factors the active Jacobian and serves only the multi-RHS pullback of
+:class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`. The
+boundary-Schur solver
 differentiates one three-surface force row at a time, retains every terminal
 radial stencil coupling in the bulk, isolates the one evolved edge row that
 contains NESTOR's response, and eliminates the radial bulk with a

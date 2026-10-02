@@ -634,7 +634,9 @@ def test_free_boundary_backward_traces_like_the_forward_solve(monkeypatch):
 
 
 @pytest.mark.usefixtures("_module_jit_enabled")
-def test_host_anchor_factors_rehomes_the_cached_root(monkeypatch):
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("home", [None, "callback", "root"])
+def test_host_anchor_factors_rehomes_the_cached_root(monkeypatch, reverse, home):
     from vmex.core import implicit as im
 
     devices = jax.devices("cpu")
@@ -643,7 +645,11 @@ def test_host_anchor_factors_rehomes_the_cached_root(monkeypatch):
     callback_device, root_device = devices[:2]
     if callback_device == root_device:
         pytest.skip("requires two devices")
-    cfg = im.make_config(VmecInput.from_file(DATA / "input.solovev"), device=None)
+    if reverse:
+        callback_device, root_device = root_device, callback_device
+    target = root_device if home == "root" else callback_device
+    cfg = im.make_config(VmecInput.from_file(DATA / "input.solovev"),
+                         device=None if home is None else target)
     params_np = jax.device_put(np.array([0.3, 0.7]), callback_device)
     cached_state = jax.device_put(np.array([0.2, -0.4]), root_device)
     key = im._params_key(params_np)
@@ -665,6 +671,6 @@ def test_host_anchor_factors_rehomes_the_cached_root(monkeypatch):
     expected = np.asarray(params_np) + np.array([0.2, -0.4]) + np.array([0.2, -0.4])**2
     np.testing.assert_allclose(first, expected, atol=1e-15)
     np.testing.assert_array_equal(second, first)
-    assert seen == [[{callback_device}] * 4]
+    assert seen == [[{target}] * 4]
     assert im._LAST_REFINED[cfg][1] is cached_state
     assert cached_state.devices() == {root_device}

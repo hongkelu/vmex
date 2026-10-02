@@ -1578,6 +1578,17 @@ def _boundary_3d_panel(ax, wout, *, ntheta: int, nzeta: int):
     from matplotlib.colors import Normalize
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+    class Surface(Poly3DCollection):
+        """Reuse unchanged projections during layout and rendering."""
+
+        def do_3d_projection(self):
+            cached = getattr(self, "_projection_cache", None)
+            if not self.stale and cached is not None and np.array_equal(self.axes.M, cached[0]):
+                return cached[1]
+            depth = super().do_3d_projection()
+            self._projection_cache = self.axes.M.copy(), depth
+            return depth
+
     cmap = matplotlib.colormaps[_CMAP_3D]
     theta = np.linspace(0.0, 2.0 * np.pi, int(ntheta))
     phi = np.linspace(0.0, 2.0 * np.pi, int(nzeta))
@@ -1591,7 +1602,7 @@ def _boundary_3d_panel(ax, wout, *, ntheta: int, nzeta: int):
         vertices = np.stack((points[:-1, :-1], points[:-1, 1:],
                              points[1:, 1:], points[1:, :-1]), axis=-2)
         colors = cmap(norm(B[:-1, :-1])).reshape(-1, 4)
-        ax.add_collection3d(Poly3DCollection(
+        ax.add_collection3d(Surface(
             vertices.reshape(-1, 4, 3), facecolors=colors, edgecolors=colors,
             antialiased=False, linewidth=0.0))
     else:

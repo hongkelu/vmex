@@ -38,7 +38,7 @@ its binomial error:
 | `--mbooz M`, `--nbooz N` | 32, 32 | Boozer resolution of the traced field | small |
 | `--trace-seed K` | 42 | births and collision noise | none |
 | `--trace-times K` | 1000 | samples of the loss-fraction curve | none |
-| `--trace-mode-cut C` | `1e-4` | drop Boozer `|B|` modes below `C B00` | about `1 / C` in modes |
+| `--trace-mode-cut C` | `1e-4` | drop modes below `C` times the largest cosine/sine amplitude | about `1 / C` in modes |
 
 The wall time is `particles × tmax / timestep` times a per-step cost. For
 example, going from the default to 5000 alphas over 0.1 s costs 50 times the
@@ -62,8 +62,8 @@ s = 0.3 lost within 0.2 s.
   equilibrium is first scaled in memory to ARIES-CS size: `<B> = 5.8646 T`
   and `a = 1.7044 m` (the `--scale` rule, see {doc}`scale-a-configuration`).
 - **Field.** `booz_xform_jax` transforms every surface to Boozer coordinates.
-  The `|B|` spectrum, cut at modes below `1e-4` of the largest amplitude (`B00`), is
-  splined in `sqrt(s)`, and `iota`, `G` and `I` are splined in `s`.
+  The cosine and sine `|B|` spectra are cut below `1e-4` of the largest
+  combined amplitude and splined in `sqrt(s)`; `iota`, `G` and `I` are splined in `s`.
 - **Orbits.** The guiding-centre equations in Boozer coordinates (White; the
   `K = 0` form of SIMSOPT) are integrated with fixed-step RK4 in the chart
   `sqrt(s) (cos theta, sin theta)`, which is regular on the magnetic axis, so

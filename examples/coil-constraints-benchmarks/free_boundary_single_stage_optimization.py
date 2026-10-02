@@ -22,6 +22,10 @@ residual when it is None), subject to hard inequalities, in this row order:
 - and the pure-coil rows of ``_coil_constraints.py``: per-coil length,
   curvature and mean squared curvature, coil-coil distance.
 
+Every trial is an ordinary VMEC free-boundary solve from the tangent prediction,
+then Newton-polished onto the coupled root, as the fixed arm refines its VMEC
+solves; there is no Newton correction in place of the VMEC solve.
+
 The limits are in ``parameters.py``. The coil currents are scaled once so the
 edge R B_phi is B0 R0 (B0 = 1 T); PHIEDGE then sets the plasma size. Fixing
 both pins the size: for ``ellipse5`` in vacuum that holds the aspect ratio at
@@ -41,7 +45,7 @@ kinetic profiles and a self-consistent bootstrap current, Redl's or, for
 
 Outputs in ``--output``: ``input.run`` (the deck as run), ``coils.initial.json``,
 one ``metrics.jsonl`` line per accepted step (``qa``, ``min_abs_iota``,
-``redl_mismatch``, ...), ``events.jsonl``, ``diagnostics.jsonl``,
+``redl_mismatch``, ...), ``diagnostics.jsonl``,
 ``coils.stepN.json`` / ``wout.stepN.nc`` every ``--save-every`` steps, and the
 final ``coils.json``, ``wout.nc`` and ``summary.json``. ``--restart <run>``
 continues a finished run from its deck, coils and WOUT.
@@ -71,7 +75,6 @@ MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
 LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
 COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
-NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
 PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
 DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
 
@@ -225,10 +228,6 @@ def main(argv=None):
     def record(name, **data):
         if name == "proposal":
             seconds["trials"] = seconds.get("trials", 0) + 1
-        if name == "newton_correction":  # keep why a trial fell back to the ordinary solve
-            with open(out / "events.jsonl", "a") as stream:
-                stream.write(json.dumps(dict(event=name, **{k: v for k, v in data.items()
-                                                            if isinstance(v, (bool, int, float, str))})) + "\n")
         if "seconds" in data:
             seconds[name] = seconds.get(name, 0.0) + float(data["seconds"])
 
@@ -251,7 +250,6 @@ def main(argv=None):
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)
-    problem.enable_newton_correction(max_steps=NEWTON_STEPS)
 
     coil_rows = coil_limits.constraint(chart.coils_from_x)
     for method in ("fun", "jac"):

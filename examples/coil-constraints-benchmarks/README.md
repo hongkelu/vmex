@@ -109,7 +109,7 @@ The scripts need ESSOS (`pip install "vmex[coils]"`), virtual casing for
 Each run directory holds `input.run` (the deck as run), `coils.initial.json`,
 `metrics.jsonl` (one line per step), `coils.stepN.json` / `wout.stepN.nc`
 checkpoints, and the final `coils.json`, `wout.nc` and `summary.json`. The
-free arm also writes `diagnostics.jsonl` and `events.jsonl`. `--restart <run>`
+free arm also writes `diagnostics.jsonl`. `--restart <run>`
 continues a finished run.
 
 ## Stage-two coils

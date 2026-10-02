@@ -284,9 +284,21 @@ def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypat
     plotting._boundary_3d_panel(ax, SimpleNamespace(ns=2), ntheta=8, nzeta=12)
     artist = ax.collections[0]
     artist.set_zsort(zsort)
-    for depths in np.array([[-0.0] * 4, [1e16, 1.0, -1e16, 1.0]]):
-        expected = Poly3DCollection._zsort_functions[zsort](depths)
-        assert artist._zsortfunc(depths).view(np.uint64) == expected.view(np.uint64)
+    depths = np.array([[-0.0] * 4, [1e16, 1.0, -1e16, 1.0]])
+    for row in (*depths, depths[0, :3]):
+        expected = Poly3DCollection._zsort_functions[zsort](row)
+        assert artist._zsortfunc(row).view(np.uint64) == expected.view(np.uint64)
+    masked = np.ma.array(depths, mask=depths < 0)
+    for values, axis in ((depths, -1), (depths, 0), (np.tile(depths, (2, 1)), None),
+                         (depths[0], -1), (depths[:, :3], -1), (depths[:0], -1),
+                         (masked, -1), (masked[1], None)):
+        try:
+            expected = Poly3DCollection._zsort_functions[zsort](values, axis=axis)
+        except (ValueError, ZeroDivisionError) as exc:
+            with pytest.raises(type(exc)):
+                artist._zsortfunc(values, axis=axis)
+        else:
+            np.testing.assert_array_equal(artist._zsortfunc(values, axis=axis), expected)
     original, calls = Poly3DCollection.do_3d_projection, []
 
     def project(self):

@@ -355,6 +355,7 @@ def test_failed_orbit_cannot_produce_a_loss_fraction(solovev_wout, monkeypatch, 
     monkeypatch.setattr(essos.boozer, "trace_boozer", failed_trace)
     with pytest.raises(ValueError, match="loss fraction is undefined"):
         trace_alphas(solovev_wout, **TRACE_KWARGS)
+
 def test_compaction_dispatch_preserves_released_interfaces(solovev_wout, tmp_path, monkeypatch):
     import essos.boozer
     from inspect import signature

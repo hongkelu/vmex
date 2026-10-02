@@ -608,9 +608,7 @@ class SeedLU:
 
 
 @jax.jit
-@jax.jit
 def _forward_from_transpose(transpose, template, vector):
-    """``J vector`` from the saved transpose; compiled, also for the eager defect checks."""
     return jax.linear_transpose(lambda value: transpose(value)[0], template)(vector)[0]
 
 
@@ -620,12 +618,6 @@ def prepare(z, params, field, frozen, rcon, zcon, *, residual):
 
     transpose = _prepare_linearized_transpose(z, params, field, frozen, rcon, zcon, residual=residual)
     return jax.tree_util.Partial(_forward_from_transpose, transpose, z)
-
-
-@jax.jit
-def _transpose_apply(action, template, vector):
-    """``J^T vector`` for the forward linearization ``action``, compiled once per tape shape."""
-    return jax.linear_transpose(action, template)(vector)[0]
 
 
 @partial(jax.jit, static_argnames=("transpose", "rtol", "restart", "max_restarts", "return_info"))
@@ -772,7 +764,7 @@ def solve_matrixfree_adjoint(
             krylov_norm, converged = float(krylov_norm), bool(converged)
         adjoint = _expand(solution, z, space)
         rhs = jax.tree.map(lambda value: value[row], rhs_batch)
-        applied = _transpose_apply(action, z, adjoint)
+        applied = jax.linear_transpose(action, z)(adjoint)[0]
         defect = jax.tree.map(jnp.subtract, applied, rhs)
         norm = float(jnp.linalg.norm(ravel_pytree(defect)[0]))
         rhs_norm = float(jnp.linalg.norm(ravel_pytree(rhs)[0]))

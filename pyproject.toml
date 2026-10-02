@@ -41,7 +41,7 @@ dependencies = [
   # JAX's persistent compilation cache uses file locks across processes.
   "filelock",
   # Boozer spectra and differentiable geometry, including asymmetric fields.
-  "booz_xform_jax>=0.4.2",
+  "booz_xform_jax>=0.4.3",
   # 0.21.0 is the first release whose tridiagonal_solve/tridiagonal_solve_checked
   # (the radial preconditioner's solves) run their Thomas sweeps through the
   # accelerator-batched scan (unroll=2 off CPU; the CPU sweep is unchanged).
@@ -77,7 +77,7 @@ optimizers = [
 # Effective ripple through the independently validated NEO_JAX backend. It is
 # optional so the equilibrium solver and default installation remain slim.
 neoclassical = [
-  "neo-jax>=1.0.3",
+  "neo-jax>=1.0.4",
 ]
 # Differentiable virtual casing on a specified boundary; this is not a NESTOR
 # equilibrium adjoint. 0.0.8 keeps the a-priori (per-derivative-order) error
@@ -97,7 +97,7 @@ freeb = [
 # published as ``spectraxgk``). 2.4.0 is the first release whose nonlinear
 # heat-flux window compiles once per shape and bounds its adjoint memory,
 # which the turbulence optimization examples rely on; 2.4.1 adds
-# solvax>=0.27.0 and booz_xform_jax>=0.4.2; 2.4.2 differentiates its dense
+# solvax>=0.27.0 and booz_xform_jax>=0.4.1; 2.4.2 differentiates its dense
 # eigen-objectives in forward mode (the implicit least-squares Jacobian).
 turbulence = [
   "gkx>=2.4.2",

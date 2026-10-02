@@ -1585,7 +1585,7 @@ def _boundary_3d_panel(ax, wout, *, ntheta: int, nzeta: int):
         _zsort_functions = dict(
             Poly3DCollection._zsort_functions,
             average=lambda z, axis=None: (z[0] + z[1] + z[2] + z[3] + 0.0) * 0.25
-            if axis is None and np.ndim(z) == 1 and len(z) == 4 and not np.ma.isMaskedArray(z)
+            if axis is None and type(z) is np.ndarray and z.shape == (4,) and z.dtype == np.float64
             else np.average(z, axis=axis))
 
         def do_3d_projection(self):

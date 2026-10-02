@@ -291,14 +291,19 @@ def test_surface_projection_cache_preserves_geometry_colors_and_camera(monkeypat
     masked = np.ma.array(depths, mask=depths < 0)
     for values, axis in ((depths, -1), (depths, 0), (np.tile(depths, (2, 1)), None),
                          (depths[0], -1), (depths[:, :3], -1), (depths[:0], -1),
-                         (masked, -1), (masked[1], None)):
+                         (masked, -1), (masked[1], None),
+                         (np.full(4, np.iinfo(np.int64).max, dtype=np.int64), None),
+                         (np.array([True, True, True, False]), None),
+                         (np.array([np.finfo(np.float32).smallest_subnormal, 0, 0, 0], dtype=np.float32), None)):
         try:
             expected = Poly3DCollection._zsort_functions[zsort](values, axis=axis)
         except (ValueError, ZeroDivisionError) as exc:
             with pytest.raises(type(exc)):
                 artist._zsortfunc(values, axis=axis)
         else:
-            np.testing.assert_array_equal(artist._zsortfunc(values, axis=axis), expected)
+            actual = artist._zsortfunc(values, axis=axis)
+            np.testing.assert_array_equal(actual, expected)
+            assert np.asarray(actual).dtype == np.asarray(expected).dtype
     original, calls = Poly3DCollection.do_3d_projection, []
 
     def project(self):

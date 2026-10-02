@@ -3,9 +3,13 @@
 The dense path factors the active-space Jacobian at each root. The
 matrix-free path reuses only an explicitly retained seed LU as a GMRES
 preconditioner; acceptance checks always use the full current operator.
+A structured seed (:class:`StructuredFactors`) replaces the dense LU by the
+radial block-tridiagonal factors plus NESTOR's low-rank coupling, O(ns)
+instead of O(ns^2) storage, under the same full-operator gates.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 from functools import partial
 import warnings
@@ -18,6 +22,7 @@ import jax.scipy.linalg as jsl
 import numpy as np
 import scipy.linalg as sl
 from jax.flatten_util import ravel_pytree
+from solvax import block_thomas_solve
 from solvax.krylov import gmres
 
 from . import implicit as im
@@ -68,6 +73,11 @@ def _active_space(cfg, mask, max_dofs):
     sign = np.asarray([0]*len(singles) + [p[2] for p in pairs], dtype=np.float64)
     weight = np.asarray([1.]*len(singles) + [1/np.sqrt(2.)]*len(pairs), dtype=np.float64)
     return _Space(left, right, sign, weight)
+
+
+def _max_dofs(cfg):
+    """Active-dimension cap: the dense matrix's, none for structured factors."""
+    return np.inf if getattr(cfg, "adjoint_factorization", "dense") == "structured" else cfg.adjoint_dense_max_dofs
 
 
 def _expand(value, template, space):
@@ -233,14 +243,19 @@ def _operator_norm(matrix):
     It scales the backward-error gate below; underestimating ``||A||`` only
     makes that gate stricter.
     """
-    vector = jnp.ones(matrix.shape[1], matrix.dtype) / np.sqrt(matrix.shape[1])
+    return _operator_norm_matvec(lambda v: matrix @ v, lambda v: matrix.T @ v, matrix.shape[1], matrix.dtype)
+
+
+def _operator_norm_matvec(apply, apply_transpose, size, dtype):
+    """:func:`_operator_norm` of the operator ``apply`` with transpose ``apply_transpose``."""
+    vector = jnp.ones(size, dtype) / np.sqrt(size)
     for _ in range(_OPERATOR_NORM_ITERATIONS):
-        product = matrix.T @ (matrix @ vector)
-        size = float(jnp.linalg.norm(product))
-        if not np.isfinite(size) or size == 0.0:
+        product = apply_transpose(apply(vector))
+        norm = float(jnp.linalg.norm(product))
+        if not np.isfinite(norm) or norm == 0.0:
             return 0.0
-        vector = product / size
-    return float(jnp.linalg.norm(matrix @ vector))
+        vector = product / norm
+    return float(jnp.linalg.norm(apply(vector)))
 
 
 def _acceptance(cfg, rhs_norm, solution_norm, operator_norm):
@@ -297,6 +312,64 @@ def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
     return solution, norms, initial, steps
 
 
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class StructuredFactors:
+    """Inverse of the raw coupled Jacobian ``J = A + P Q`` at the root where it was built.
+
+    ``A`` is the radial block tridiagonal at frozen vacuum pressure, held as
+    block-Thomas factors of its two-sided scaling ``row_scale A column_scale``;
+    ``P Q`` is NESTOR's low-rank edge coupling, added by the Woodbury identity
+    with ``bulk_p = A^-1 P``, ``q = Q`` and ``lu`` the factors of
+    ``I + Q A^-1 P``. Storage is O(ns) where the dense LU is O(ns^2). Rows are
+    packed surface by surface from ``fields``; inactive coordinates carry an
+    identity equation. Built by
+    :func:`vmex.core.freeboundary_implicit._structured_factors`.
+    """
+
+    blocks: object
+    bulk_p: object
+    q: object
+    lu: object
+    row_scale: object
+    column_scale: object
+    fields: tuple = dataclasses.field(metadata=dict(static=True))
+
+
+def _structured_inverse(factors, packed, transpose):
+    """``J^-1 packed`` (``J^-T`` with ``transpose``) for flat packed rows."""
+    shape, dtype = factors.row_scale.shape, packed.dtype
+    if not transpose:
+        scaled = packed.reshape(shape) * factors.row_scale
+        bulk = block_thomas_solve(factors.blocks, scaled[..., None])[..., 0].astype(dtype)
+        bulk = (bulk * factors.column_scale).ravel()
+        return bulk - factors.bulk_p @ jsl.lu_solve(factors.lu, factors.q @ bulk)
+    # J^-1 = (I - Bp C^-1 Q) S with S = diag(cs) T^-1 diag(rs), so J^-T = S^T (I - Q^T C^-T Bp^T).
+    corrected = packed - factors.q.T @ jsl.lu_solve(factors.lu, factors.bulk_p.T @ packed, trans=1)
+    scaled = corrected.reshape(shape) * factors.column_scale
+    bulk = block_thomas_solve(factors.blocks, scaled[..., None], transpose=True)[..., 0].astype(dtype)
+    return (bulk * factors.row_scale).ravel()
+
+
+def _precondition(factors, template, space, value, *, transpose):
+    """Apply retained factors to an active-space vector: ``J^-T`` with ``transpose``, else ``J^-1``."""
+    if isinstance(factors, StructuredFactors):
+        tree = _expand(value, template, space)
+        packed = jnp.concatenate([getattr(tree, name) for name in factors.fields], axis=1).ravel()
+        rows = _structured_inverse(factors, packed, transpose).reshape(factors.row_scale.shape)
+        parts = dict(zip(factors.fields, jnp.split(rows, len(factors.fields), axis=1)))
+        return _compress(type(tree)(**{name: parts.get(name, jnp.zeros_like(getattr(tree, name)))
+                                       for name in im._STATE_FIELDS}), space)
+    # Dense factors are of the Jacobian transpose: a transposed solve uses trans=0.
+    return jsl.lu_solve(factors, value, trans=int(not transpose))
+
+
+def _frozen_host_copy(value):
+    copy = np.array(value, copy=True)
+    copy.setflags(write=False)
+    return copy
+
+
 @dataclass(eq=False)
 class DenseRootLinearization:
     """Owned numerical factors and tape for exactly one certified root.
@@ -316,6 +389,7 @@ class DenseRootLinearization:
     action: object
     cfg: object
     operator_norm: float = 0.0  # ||A||_2 estimate of the dense operator, for the backward-error gate
+    fresh_factors: bool = True  # the factors were built at this root (a seed may be taken from it)
     _direction: object = None
     _response: object = None
     _rhs: object = None
@@ -329,11 +403,8 @@ class DenseRootLinearization:
         """Move dense factors to immutable host storage between predictor calls."""
         if self.factors is None:
             raise ValueError("root linearization is closed")
-        if not all(isinstance(x, np.ndarray) and not x.flags.writeable for x in self.factors):
-            factors = tuple(np.array(x, copy=True) for x in self.factors)
-            for value in factors:
-                value.setflags(write=False)
-            self.factors = factors
+        if not all(isinstance(x, np.ndarray) and not x.flags.writeable for x in jax.tree.leaves(self.factors)):
+            self.factors = jax.tree.map(_frozen_host_copy, self.factors)
 
     def close(self):
         """Release root-specific arrays/tapes and permanently invalidate reuse."""
@@ -492,20 +563,19 @@ class SeedLU:
         rhs_batch_size=1,
     ):
         """Snapshot a dense seed without retaining its numerical differentiation tape."""
-        if type(root) is not DenseRootLinearization or root.factors is None:
-            raise ValueError("a live dense linearization is required to create a seed LU")
+        if not isinstance(root, DenseRootLinearization) or not root.fresh_factors or root.factors is None:
+            raise ValueError("a live dense linearization (or structured factors built at its root) is required "
+                             "to create a seed LU")
         if not np.isfinite(rtol) or not 0 < rtol < 1:
             raise ValueError("Krylov rtol must be finite and in (0, 1)")
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in (restart, max_restarts)):
             raise ValueError("restart and max_restarts must be positive integers")
         if isinstance(rhs_batch_size, bool) or not isinstance(rhs_batch_size, int) or not 1 <= rhs_batch_size <= 4:
             raise ValueError("rhs_batch_size must be an integer in [1, 4]")
-        factors = tuple(np.array(x, copy=True) for x in root.factors)
-        space = jax.tree.map(lambda x: np.array(x, copy=True), root.space)
-        if factors[0].dtype != np.float64:
+        factors = jax.tree.map(_frozen_host_copy, root.factors)
+        space = jax.tree.map(_frozen_host_copy, root.space)
+        if not isinstance(factors, StructuredFactors) and factors[0].dtype != np.float64:
             raise TypeError("seed LU requires float64")
-        for value in (*factors, *space):
-            value.setflags(write=False)
         return cls(
             factors=factors,
             space=space,
@@ -558,8 +628,7 @@ def solve(action, template, space, factors, rhs, *, transpose, rtol, restart, ma
     answer = gmres(
         operator,
         rhs,
-        # Factors are of the Jacobian transpose: a transposed solve uses trans=0.
-        precond=lambda value: jsl.lu_solve(factors, value, trans=int(not transpose)),
+        precond=lambda value: _precondition(factors, template, space, value, transpose=transpose),
         rtol=rtol,
         atol=0.0,
         restart=min(restart, rhs.size),
@@ -616,6 +685,7 @@ class MatrixFreeRootLinearization(DenseRootLinearization):
     rtol: float = 1e-11
     restart: int = 30
     max_restarts: int = 10
+    fresh_factors: bool = False  # True only when the seed's structured factors were built at this root
     _tangent_backend = "matrixfree_seed_lu"
 
     def _solve_tangent(self, rhs):
@@ -652,7 +722,7 @@ def solve_matrixfree_adjoint(
     """Solve arbitrary RHS batches; reuse only exact equal/opposite RHS solutions."""
     if cfg.adjoint_solver != "forward_dense_jax" or cfg.adjoint_fail != "error":
         raise ValueError("seed LU requires forward_dense_jax with adjoint_fail=error")
-    space = _active_space(cfg.implicit, mask, cfg.adjoint_dense_max_dofs)
+    space = _active_space(cfg.implicit, mask, _max_dofs(cfg))
     preconditioner.validate(z, field, space, cfg)
     space = jax.tree.map(jnp.asarray, space)
     factors = jax.tree.map(jnp.asarray, preconditioner.factors)
@@ -743,3 +813,47 @@ def solve_matrixfree_adjoint(
         )
         return result, root
     return result
+
+
+@jax.jit
+def _active_apply(linear, template, space, vector):
+    """Active-space ``J v`` from a forward linearization."""
+    return _compress(linear(_expand(vector, template, space)), space)
+
+
+@jax.jit
+def _active_apply_transpose(transpose, template, space, vector):
+    """Active-space ``J^T v`` from a saved transpose."""
+    return _compress(transpose(_expand(vector, template, space))[0], space)
+
+
+def structured_seed(residual, z, params, field, frozen, rcon, zcon, mask, cfg, factors, *,
+                    rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3):
+    """A :class:`SeedLU` holding :class:`StructuredFactors` built at this root.
+
+    It plays the role of a dense root's seed: :func:`solve_matrixfree_adjoint`
+    with it solves the root's own adjoint, its tangents and Newton steps by
+    GMRES preconditioned with an inverse that is exact where it was built, and
+    every row passes the same full-operator backward-error gate, scaled by this
+    root's ``||J||_2`` (a power-iteration lower bound).
+    """
+    from .freeboundary_implicit import _prepare_linearized_transpose
+
+    space = jax.tree.map(jnp.asarray, _active_space(cfg.implicit, mask, _max_dofs(cfg)))
+    transpose = _prepare_linearized_transpose(z, params, field, frozen, rcon, zcon, residual=residual)
+    forward = jax.tree_util.Partial(_forward_from_transpose, transpose, z)
+    operator_norm = _operator_norm_matvec(
+        lambda v: _active_apply(forward, z, space, v), lambda v: _active_apply_transpose(transpose, z, space, v),
+        int(space.left.shape[0]), ravel_pytree(z)[0].dtype)
+    return SeedLU(
+        factors=jax.tree.map(_frozen_host_copy, factors),
+        space=jax.tree.map(_frozen_host_copy, space),
+        signature=_signature(z),
+        field_shape=field.shape,
+        cfg=cfg,
+        rtol=rtol,
+        restart=restart,
+        max_restarts=max_restarts,
+        rhs_batch_size=rhs_batch_size,
+        operator_norm=operator_norm,
+    )

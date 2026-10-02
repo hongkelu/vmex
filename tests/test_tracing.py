@@ -182,6 +182,7 @@ def test_cli_trace_writes_summary_files_and_figures(solovev_wout, tmp_path):
     assert summary["volavgB"] == pytest.approx(5.8646)
     assert summary["Aminor_p"] == pytest.approx(1.7044)
     assert summary["timestep"] == pytest.approx(1.25e-7)
+    assert summary["method"] == "rk4"
     assert summary["nparticles"] == 8 and summary["scale_target"] == "volavgB"
     assert summary["collisions"] is True
     assert {"loss_fraction_sigma", "compile_time_s", "devices", "versions"} <= set(summary)
@@ -272,3 +273,65 @@ def test_cli_trace_names_the_upgrade_for_an_outdated_essos(solovev_wout, tmp_pat
     assert rc != 0
     assert 'pip install -U "essos>=999.0"' in buffer.getvalue()
     assert "MISSING OR OUTDATED OPTIONAL DEPENDENCY" in buffer.getvalue()
+
+
+def test_dopri8_cli_writes_method_and_energy(solovev_wout, tmp_path):
+    import inspect
+    import json
+    from essos.boozer import trace_boozer
+    from essos.constants import ALPHA_PARTICLE_MASS
+
+    if "method" not in inspect.signature(trace_boozer).parameters:
+        pytest.skip("requires ESSOS Dopri8 support")
+    traced = trace_alphas(solovev_wout, **{**TRACE_KWARGS, "timestep": 1.5625e-8})
+    assert cli.main([
+        str(solovev_wout), "--trace", "--quiet", "--outdir", str(tmp_path),
+        "--trace-method", "dopri8", "--trace-particles", "8", "--trace-tmax", "1e-5",
+        "--trace-times", "12", "--mbooz", "8", "--nbooz", "8",
+        "--trace-seed", "1", "--trace-timestep", "1.5625e-8",
+    ]) == 0
+    summary = json.loads((tmp_path / "solovev_trace.json").read_text())
+    assert summary["method"] == "dopri8" and summary["integrator"].startswith("DOPRI8")
+    assert summary["particles_failed"] == 0 and summary["max_energy_error"] < 1e-3
+    arrays = np.load(tmp_path / "solovev_trace.npz")
+    np.testing.assert_array_equal(arrays["initial_conditions"], traced.initial_conditions)
+    np.testing.assert_array_equal(arrays["lost_times"], traced.lost_times)
+    birth_speed = np.sqrt(2 * traced.particle_energy / ALPHA_PARTICLE_MASS)
+    scale = [1, 1, 1, birth_speed, birth_speed]
+    np.testing.assert_allclose(arrays["final_states"] / scale, traced.final_states / scale,
+                               rtol=1e-6, atol=1e-6)
+
+
+def test_dopri8_requires_support_without_changing_rk4(solovev_wout, tmp_path, monkeypatch):
+    import essos.boozer
+
+    original = essos.boozer.trace_boozer
+
+    def released_trace(*args, **kwargs):
+        assert "method" not in kwargs
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(essos.boozer, "trace_boozer", released_trace)
+    reference = trace_alphas(solovev_wout, **TRACE_KWARGS)
+    assert reference.metadata["method"] == "rk4"
+    with pytest.raises(ValueError, match="method must be"):
+        trace_alphas(None, method="unknown")
+    with pytest.raises(ImportError, match="Dopri8 requires ESSOS"):
+        trace_alphas(solovev_wout, method="dopri8", **TRACE_KWARGS)
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = cli.main([str(solovev_wout), "--trace", "--quiet", "--outdir", str(tmp_path),
+                       "--trace-method", "dopri8"])
+    assert rc != 0 and "Dopri8 requires ESSOS" in buffer.getvalue()
+    assert not (tmp_path / "solovev_trace.json").exists()
+
+    # Check keyword dispatch independently of the installed integrator version.
+    def supported_trace(*args, method, **kwargs):
+        assert method == "dopri8"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(essos.boozer, "trace_boozer", supported_trace)
+    result = trace_alphas(solovev_wout, method="dopri8", **TRACE_KWARGS)
+    assert result.metadata["integrator"].startswith("DOPRI8")
+    np.testing.assert_array_equal(result.initial_conditions, reference.initial_conditions)
+    np.testing.assert_array_equal(result.final_states, reference.final_states)

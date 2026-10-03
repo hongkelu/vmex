@@ -112,6 +112,14 @@ checkpoints, and the final `coils.json`, `wout.nc` and `summary.json`. The
 free arm also writes `diagnostics.jsonl`. `--restart <run>`
 continues a finished run.
 
+The free arm's derivatives use structured factors by default
+(`--factorization structured`): O(ns) memory where the dense LU
+(`--factorization dense`) needs O(ns^2). At 8x8 modes and NS 51 the run
+peaks at 7.8 GiB instead of 15.4 GiB; NS 101 (8.7 GiB) and 12x12 modes at
+NS 51 (10.7 GiB), which the dense LU cannot fit on a 32 GB GPU, run on a
+24 GB one. `--ns`, `--modes MPOL NTOR` and `--max-iterations` (the VMEC cap;
+12x12 needs about 40000) set the resolution.
+
 ## Stage-two coils
 
 `fit_coils.py` fits circular coils to B.n = 0 on the case's fixed-boundary

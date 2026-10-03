@@ -24,6 +24,14 @@ revision it was measured at, and the pages that cite it.
   CPU. Its dense, matrix-free and tangent checks accept a solve by its normwise
   backward error, `||r|| <= tol (||A|| ||x|| + ||b||)`, so a row whose `||b||` is
   small against `||A|| ||x||` no longer fails at the rounding floor.
+- `make_free_boundary_config(adjoint_factorization="structured")` replaces the
+  dense active-space LU by block-Thomas factors of the radial block tridiagonal
+  plus NESTOR's low-rank Woodbury coupling, built at each root and used by
+  GMRES under the same backward-error gate: O(ns) instead of O(ns^2) memory
+  (15.4 to 7.8 GiB at 8x8 modes, NS 51), which opens NS 101 and 12x12 modes on
+  one GPU. `adjoint_factor_dtype=jnp.float32` (off by default) factors in
+  single precision. `enable_matrix_free(rhs_batch_size=...)` now allows up to
+  8 right-hand sides per GMRES batch.
 - `solve_free_boundary(include_edge_in_convergence=True,
   edge_force_tolerance=...)` also requires the spectral edge force, reported as
   `SolveResult.fedge`, to converge.

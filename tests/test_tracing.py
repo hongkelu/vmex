@@ -307,13 +307,13 @@ def test_dopri8_requires_support_without_changing_rk4(solovev_wout, tmp_path, mo
     assert reference.metadata["method"] == "rk4"
     with pytest.raises(ValueError, match="method must be"):
         trace_alphas(None, method="unknown")
-    with pytest.raises(ImportError, match="Dopri8 requires ESSOS"):
+    with pytest.raises(ImportError, match="Dopri8 requires ESSOS>=0.19.4"):
         trace_alphas(solovev_wout, method="dopri8", **TRACE_KWARGS)
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         rc = cli.main([str(solovev_wout), "--trace", "--quiet", "--outdir", str(tmp_path),
                        "--trace-method", "dopri8"])
-    assert rc != 0 and "Dopri8 requires ESSOS" in buffer.getvalue()
+    assert rc != 0 and "Dopri8 requires ESSOS>=0.19.4" in buffer.getvalue()
     assert not (tmp_path / "solovev_trace.json").exists()
 
     # Check keyword dispatch independently of the installed integrator version.

@@ -296,7 +296,7 @@ def trace_alphas(
         raise ValueError("method must be 'rk4', 'dopri5' or 'dopri8'")
     if method != "rk4":
         if "method" not in parameters:
-            raise ImportError(f"{method.capitalize()} requires ESSOS with trace_boozer(method=...); upgrade ESSOS")
+            raise ImportError(f"{method.capitalize()} requires ESSOS>=0.19.4 with trace_boozer(method=...); upgrade ESSOS")
         trace_kwargs["method"] = method
 
     from .scaling import SCALE_TARGETS, aries_cs_scales, scale_wout

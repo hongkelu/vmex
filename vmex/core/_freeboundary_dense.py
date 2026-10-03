@@ -236,8 +236,9 @@ def _factor_solve(matrix, rhs):
 
 _OPERATOR_NORM_ITERATIONS = 20  # power iterations for the backward-error scale ||A||_2
 # Without a matrix each iteration applies the full coupled operator twice
-# (~0.3 s at ns = 51). At a finite-beta QA root five iterations reach 96% of
-# the 20-iteration bound: a gate at most that much stricter, ~9 s per step less.
+# (~0.3 s at ns = 51). Five iterations reach 82-96% of the 20-iteration bound at
+# finite-beta QA roots (early to late in a run), a gate only that much stricter:
+# there the rows pass it by more than 10^6, and each step takes ~9 s less.
 _OPERATOR_NORM_MATVEC_ITERATIONS = 5
 
 

@@ -109,10 +109,17 @@ turbulence = [
 coils = [
   "essos>=0.19.3",
 ]
+# Drift-kinetic bootstrap current (DKX, uwplasma's JAX SFINCS,
+# https://github.com/uwplasma/DKX) for the quasi-isodynamic coil-constraint
+# benchmark cases, where the Redl formula (quasisymmetry only) does not apply.
+# 2.7.0 provides dkx.bootstrap.KineticBootstrapMismatch, traced through VMEX.
+kinetic = [
+  "dkx>=2.7.0",
+]
 # Everything the examples and the documented workflows need, so a reader does
 # not have to assemble the list themselves.
 all = [
-  "vmex[coils,freeb,neoclassical,optimizers,turbulence]",
+  "vmex[coils,freeb,kinetic,neoclassical,optimizers,turbulence]",
 ]
 docs = [
   "sphinx",

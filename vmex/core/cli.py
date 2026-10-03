@@ -276,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sampling seed for births and collisions (default: 42).",
     )
     p.add_argument(
-        "--trace-method", choices=("rk4", "tsit5", "dopri5", "dopri8"), default="rk4",
+        "--trace-method", choices=("rk4", "dopri5", "dopri8"), default="rk4",
         help="Fixed-step orbit integrator (default: rk4; alternatives require ESSOS method support).",
     )
     p.add_argument(

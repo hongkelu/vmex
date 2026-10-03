@@ -265,7 +265,7 @@ def test_cli_trace_names_the_upgrade_for_an_outdated_essos(solovev_wout, tmp_pat
     assert "MISSING OR OUTDATED OPTIONAL DEPENDENCY" in buffer.getvalue()
 
 
-@pytest.mark.parametrize("method", ["tsit5", "dopri5", "dopri8"])
+@pytest.mark.parametrize("method", ["dopri5", "dopri8"])
 def test_optional_solver_cli_writes_method_and_energy(solovev_wout, tmp_path, method):
     import inspect
     import json

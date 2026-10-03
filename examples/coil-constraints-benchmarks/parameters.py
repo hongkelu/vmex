@@ -59,7 +59,7 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
-REDL_SURFACES = tuple(0.1 + 0.8 * i / 7 for i in range(8))
+REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this

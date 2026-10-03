@@ -95,6 +95,17 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
     return inp, fixed
 
 
+def redl_surfaces():
+    """Surfaces of the Redl self-consistency check: ``P.REDL_SURFACES``, or by default every VMEC
+    half-grid surface s = (j - 1/2) / (ns - 1) at the run's ns, as simsopt's ``RedlGeomVmec``."""
+    import numpy as np
+
+    if P.REDL_SURFACES is not None:
+        return np.asarray(P.REDL_SURFACES)
+    ns = int(P.RESOLUTION[2])
+    return (np.arange(1, ns) - 0.5) / (ns - 1)
+
+
 def redl_profiles(inp):
     """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
     import numpy as np
@@ -107,7 +118,7 @@ def redl_profiles(inp):
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
-    return profiles, RedlBootstrapMismatch(profiles, 0, np.asarray(P.REDL_SURFACES), n_lambda=P.REDL_N_LAMBDA)
+    return profiles, RedlBootstrapMismatch(profiles, 0, redl_surfaces(), n_lambda=P.REDL_N_LAMBDA)
 
 
 def bootstrap_input(inp, beta, device):
@@ -145,7 +156,7 @@ def bootstrap_input(inp, beta, device):
     def picard_at(inp, n_iter):
         return self_consistent_bootstrap(inp, redl_profiles(inp)[0], 0, n_iter=n_iter, tol=P.PICARD_TOLERANCE,
                                          relax=P.PICARD_RELAX, degree=P.CURRENT_KNOTS - 1,
-                                         s_eval=np.asarray(P.REDL_SURFACES), solve_kwargs=dict(device=device))
+                                         s_eval=redl_surfaces(), solve_kwargs=dict(device=device))
 
     if P.OHMIC_CURRENT:
         # A near-axisymmetric seed has no vacuum transform and, at low beta, little bootstrap current: an

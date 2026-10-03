@@ -102,9 +102,10 @@ class AlphaTracingResult:
     ``initial_conditions`` holds the births ``(s, theta_B, zeta_B, v_par/v)``;
     ``final_states`` holds ``(s, theta_B, zeta_B, v_par, v)`` at the loss,
     thermalisation or final time; ``lost_times`` and ``thermalized_times`` are
-    ``-1`` for particles without that outcome. ``energy_error`` is the maximum
-    relative numerical energy drift: accumulated from birth without collisions,
-    or per orbit step before each collision kick.
+    ``-1`` for particles without that outcome. Collisionless ``energy_error``
+    is the maximum ``|E/E_initial - 1|`` over accepted steps, per particle.
+    With collisions, the reference resets after each collision kick, so the
+    metric measures orbital step error separately from collisional changes.
     """
 
     nparticles: int
@@ -269,7 +270,7 @@ def trace_alphas(
     mboz, nboz, mode_tolerance:
         Boozer resolution and the relative amplitude of dropped modes.
     method:
-        Fixed-step ``"rk4"`` (default), ``"tsit5"``, ``"dopri5"`` or ``"dopri8"``.
+        Fixed-step ``"rk4"`` (default), ``"dopri5"`` or ``"dopri8"``.
     compact:
         Enable survivor compaction when supported; ``False`` disables it.
     progress:
@@ -291,8 +292,8 @@ def trace_alphas(
         raise ImportError("Compaction requires ESSOS with trace_boozer(compact=...); upgrade ESSOS")
     compact = trace_kwargs.get("compact", False)
 
-    if method not in ("rk4", "tsit5", "dopri5", "dopri8"):
-        raise ValueError("method must be 'rk4', 'tsit5', 'dopri5' or 'dopri8'")
+    if method not in ("rk4", "dopri5", "dopri8"):
+        raise ValueError("method must be 'rk4', 'dopri5' or 'dopri8'")
     if method != "rk4":
         if "method" not in parameters:
             raise ImportError(f"{method.capitalize()} requires ESSOS with trace_boozer(method=...); upgrade ESSOS")

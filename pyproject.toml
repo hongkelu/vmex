@@ -77,7 +77,7 @@ optimizers = [
 # Effective ripple through the independently validated NEO_JAX backend. It is
 # optional so the equilibrium solver and default installation remain slim.
 neoclassical = [
-  "neo-jax>=1.0.4",
+  "neo-jax>=1.0.5",
 ]
 # Differentiable virtual casing on a specified boundary; this is not a NESTOR
 # equilibrium adjoint. 0.0.8 keeps the a-priori (per-derivative-order) error
@@ -105,9 +105,9 @@ turbulence = [
   "jax>=0.10.1",
   "jaxlib>=0.10.1",
 ]
-# Coil geometry and full asymmetric VMEC/Boozer tracing require ESSOS 0.19.3.
+# Coil geometry and VMEC/Boozer tracing, including fixed-step solver options.
 coils = [
-  "essos>=0.19.3",
+  "essos>=0.19.4",
 ]
 # Everything the examples and the documented workflows need, so a reader does
 # not have to assemble the list themselves.

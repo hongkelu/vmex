@@ -55,3 +55,11 @@ and a GPU for the default resolution:
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free
     python single_stage_optimization.py --steps 5 --output runs/fixed
     python postprocess.py runs/free
+
+The free arm's derivatives use structured factors by default
+(`--factorization structured`): O(ns) memory where the dense LU
+(`--factorization dense`) needs O(ns^2). For a finite-beta QA case with a
+bootstrap current this halves the peak (15.4 to 7.8 GiB at 8x8 modes and NS 51)
+and fits NS 101 (8.9 GiB) and 12x12 modes at NS 51 (10.8 GiB), which the dense
+LU cannot fit on a 32 GB GPU. `--ns`, `--modes MPOL NTOR` and
+`--max-iterations` (the VMEC cap) set the resolution.

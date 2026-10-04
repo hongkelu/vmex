@@ -1383,7 +1383,7 @@ def test_redundant_paired_coordinates():
         np.testing.assert_allclose(solution, np.linalg.solve(active.T if transpose else active, rhs), rtol=1e-10)
 
 
-@pytest.mark.parametrize("size", [0, 5, True, 1.5])
+@pytest.mark.parametrize("size", [0, 9, True, 1.5])
 def test_rhs_batch_size_is_bounded(monkeypatch, size):
     accepted, cfg, _, _ = linear_root(monkeypatch)
     root = api._pullback(accepted, cfg, jnp.eye(2))

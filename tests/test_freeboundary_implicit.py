@@ -1027,6 +1027,104 @@ def _toy_anchor(monkeypatch, *, jacobian_sign=1.0, refine_tol=1.0e-10):
     return run, state, mask, cfg, root, calls
 
 
+def test_structured_inverse_is_exact_for_block_tridiagonal_plus_low_rank():
+    """``_structured_inverse`` against a dense inverse, forward and transposed."""
+    rng = np.random.default_rng(7)
+    ns, block, rank = 4, 3, 2
+    lower, diagonal, upper = (rng.standard_normal((ns, block, block)) for _ in range(3))
+    diagonal += 6 * np.eye(block)
+    row_scale, column_scale = rng.uniform(.5, 2., (ns, block)), rng.uniform(.5, 2., (ns, block))
+    dense_a = np.zeros((ns * block, ns * block))
+    for k in range(ns):
+        dense_a[k*block:(k+1)*block, k*block:(k+1)*block] = diagonal[k]
+        if k:
+            dense_a[k*block:(k+1)*block, (k-1)*block:k*block] = lower[k]
+        if k + 1 < ns:
+            dense_a[k*block:(k+1)*block, (k+1)*block:(k+2)*block] = upper[k]
+    p_cols, q_rows = rng.standard_normal((ns * block, rank)), rng.standard_normal((rank, ns * block))
+    blocks = fbi._anchor_factor(*(jnp.asarray(x) for x in (lower, diagonal, upper, row_scale, column_scale)))
+    # The factors invert the two-sided scaling, so A^-1 = diag(cs) T^-1 diag(rs) with T their matrix.
+    a_inverse = (np.diag(column_scale.ravel()) @ np.linalg.inv(
+        np.diag(row_scale.ravel()) @ dense_a @ np.diag(column_scale.ravel())) @ np.diag(row_scale.ravel()))
+    bulk_p = a_inverse @ p_cols
+    lu = jax.scipy.linalg.lu_factor(jnp.eye(rank) + q_rows @ bulk_p)
+    factors = dense.StructuredFactors(blocks, jnp.asarray(bulk_p), jnp.asarray(q_rows), lu,
+                                      jnp.asarray(row_scale), jnp.asarray(column_scale), fields=("R_cos",))
+    exact = np.linalg.inv(dense_a + p_cols @ q_rows)
+    vector = rng.standard_normal(ns * block)
+    for transpose, expected in ((False, exact @ vector), (True, exact.T @ vector)):
+        np.testing.assert_allclose(np.asarray(dense._structured_inverse(factors, jnp.asarray(vector), transpose)),
+                                   expected, rtol=1e-11, atol=1e-12)
+
+
+def test_structured_factorization_requires_the_dense_backend():
+    inp, field = lasym_free_input(DATA), lasym_free_field()
+    with pytest.raises(ValueError, match="'dense' or 'structured'"):
+        make_free_boundary_config(inp, field, adjoint_factorization="banded")
+    with pytest.raises(ValueError, match="structured factors require"):
+        make_free_boundary_config(inp, field, adjoint_factorization="structured")
+    with pytest.raises(ValueError, match="adjoint_factor_dtype"):
+        make_free_boundary_config(inp, field, adjoint_solver="forward_dense_jax", adjoint_factor_dtype=jnp.float32)
+    cfg = make_free_boundary_config(inp, field, adjoint_solver="forward_dense_jax",
+                                    adjoint_factorization="structured", adjoint_factor_dtype=jnp.float32)
+    assert cfg.adjoint_factorization == "structured" and cfg.adjoint_factor_dtype == np.float32
+    assert dense._max_dofs(cfg) == np.inf
+
+
+@pytest.mark.parametrize("factor_dtype", [None, jnp.float32])
+def test_structured_pullback_matches_dense_on_a_small_deck(factor_dtype):
+    """Structured factors give the dense pullback, tangent and seed at a real root.
+
+    Same deck as the anchor test: the rows are GMRES solves preconditioned by
+    the block-tridiagonal + Woodbury inverse built at this root, each certified
+    by the full-operator gate; float32 factors only cost iterations.
+    """
+    inp = dataclasses.replace(
+        lasym_free_input(DATA).change_resolution(mpol=3, ntor=0, ntheta=10, nzeta=4),
+        ns_array=np.array([5]), ftol_array=np.array([1.0e-6]), niter_array=np.array([400]))
+    field = lasym_free_field()
+    params = im.params_from_input(inp)
+
+    def configure(**options):
+        return make_free_boundary_config(
+            inp, field, ns=5, ftol=1.0e-6, max_iterations=400, adjoint_solver="forward_dense_jax",
+            adjoint_residual_rtol=1e-9, field_from_parameters=lambda current: dataclasses.replace(
+                field, extcur=current), device="cpu", **options)
+
+    dense_cfg = configure()
+    structured_cfg = configure(adjoint_factorization="structured", adjoint_factor_dtype=factor_dtype)
+    current = jnp.asarray(field.extcur)
+    state, mask, rcon0, zcon0, *_ = fbi._host_solve_and_mask_status(dense_cfg, params, current)
+    state, mask = (jax.tree.map(jnp.asarray, tree) for tree in (state, mask))
+    rcon0, zcon0 = jnp.asarray(rcon0), jnp.asarray(zcon0)
+    rng = np.random.default_rng(11)
+    cotangents = jax.tree.map(lambda leaf: jnp.asarray(rng.standard_normal((2,) + leaf.shape)), state)
+
+    def pullback(cfg, reports):
+        return fbi.free_boundary_state_pullback_multi_rhs(
+            params, current, cfg, state, mask, cotangents, rcon0=rcon0, zcon0=zcon0,
+            # Both lanes solve the same linear system at this state; its root quality does not matter here.
+            root_residual_atol=1.0, diagnostics=reports, return_linearization=True)
+
+    dense_reports, structured_reports = [], []
+    (_, dense_bar), dense_root = pullback(dense_cfg, dense_reports)
+    (_, structured_bar), structured_root = pullback(structured_cfg, structured_reports)
+    try:
+        np.testing.assert_allclose(np.asarray(structured_bar), np.asarray(dense_bar), rtol=1e-8, atol=0.0)
+        assert all(r["accepted"] and r["backend"] == "matrixfree_seed_lu" for r in structured_reports)
+        assert isinstance(structured_root.factors, dense.StructuredFactors) and structured_root.fresh_factors
+        direction = np.asarray(rng.standard_normal(current.shape))
+        np.testing.assert_allclose(
+            _flat(structured_root.tangent(direction)), _flat(dense_root.tangent(direction)), rtol=1e-8, atol=1e-14)
+        seed = dense.SeedLU.from_root(structured_root)
+        assert isinstance(seed.factors, dense.StructuredFactors)
+        assert all(not leaf.flags.writeable for leaf in jax.tree.leaves(seed.factors))
+        seed.close()
+    finally:
+        dense_root.close()
+        structured_root.close()
+
+
 def test_newton_anchor_lands_on_the_root_and_reports_what_it_did(
         monkeypatch, capsys):
     """Damped Newton reaches the known toy root; each exit is reported."""

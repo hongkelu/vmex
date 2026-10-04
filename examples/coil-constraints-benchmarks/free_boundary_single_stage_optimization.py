@@ -21,6 +21,11 @@ restores fixed currents.
 Every accepted step appends one line to ``metrics.jsonl``. Coils and a WOUT
 are saved every ``--save-every`` steps and at the end; restart from them with
 ``--coils <out>/coils.json --wout <out>/wout.nc``. This case is vacuum only.
+
+Derivatives use structured factors of the coupled Jacobian (radial block
+tridiagonal plus NESTOR's low-rank coupling, ``--factorization structured``):
+O(ns) memory, so ``--ns``/``--modes`` can exceed what the dense LU
+(``--factorization dense``, O(ns^2)) fits on a GPU, with the same accuracy gate.
 """
 
 import argparse
@@ -40,12 +45,12 @@ ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
 ROOT_POLISH_STEPS = 10             # damped Newton steps may be needed from a 1e-9 ordinary-solve residual
 OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 20000
-MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
+MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=6)  # all six rows in one GMRES batch
 LU_REFRESH_HORIZON = 10
 NEWTON_STEPS = 8  # Newton-correct predicted trials on the seed LU before any ordinary solve
 SHARED_CURRENT = True  # all coil currents vary by one common factor (a free flux per ampere)
 CURRENT_STEP = 0.05  # coordinate scale of that relative current factor
-DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
+DENSE_DERIVATIVES = True  # every derivative on fresh factors of its own root, which seed the next step's trials
 
 
 def parse_args(argv=None):
@@ -57,6 +62,13 @@ def parse_args(argv=None):
     parser.add_argument("--wout", type=Path, help="restart the initial solve from this WOUT")
     parser.add_argument("--max-seconds", type=float, default=float("inf"), help="optimization wall-time budget")
     parser.add_argument("--save-every", type=int, default=25)
+    parser.add_argument("--ns", type=int, help="radial resolution of the optimization solves (default: P.RESOLUTION)")
+    parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"),
+                        help="poloidal and toroidal modes of the optimization solves (default: P.RESOLUTION)")
+    parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every free-boundary solve "
+                        "(default: the deck's NITER)")
+    parser.add_argument("--factorization", choices=("structured", "dense"), default="structured",
+                        help="derivative factors: O(ns) block-Thomas + Woodbury (default), or the dense LU")
     return parser.parse_args(argv)
 
 
@@ -112,6 +124,7 @@ def target_residual():
 
 def main(argv=None):
     args = parse_args(argv)
+    P.RESOLUTION = (*(args.modes or P.RESOLUTION[:2]), args.ns or P.RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"
@@ -135,6 +148,8 @@ def main(argv=None):
     else:
         seed = opt.solve_equilibrium(inp, device=args.device, raise_on_max_iterations=True,
                                      polish_force_balance=False).state
+    if args.max_iterations:
+        inp = replace(inp, niter_array=np.array([args.max_iterations]))
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
 
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
@@ -190,7 +205,8 @@ def main(argv=None):
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
-                            adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
+                            adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL,
+                            adjoint_factorization=args.factorization))
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)

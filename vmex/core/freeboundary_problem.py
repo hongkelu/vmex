@@ -260,11 +260,15 @@ class _Linearization:
         self._root = self._accepted = self._cfg = self.field_jacobian = None
 
 
-def _pullback(accepted, cfg, state_cotangents, *, diagnostics=None, preconditioner=None):
-    """Field-parameter derivatives at the supplied root, retaining its linearization."""
+def _pullback(accepted, cfg, state_cotangents, *, diagnostics=None, preconditioner=None, structured_options=None):
+    """Field-parameter derivatives at the supplied root, retaining its linearization.
+
+    ``structured_options`` are the GMRES controls of a structured-factor solve
+    (``adjoint_factorization="structured"``; see ``FreeBoundaryProblem._factor_options``).
+    """
     if accepted._owner is not cfg._owner:
         raise ValueError("root belongs to a different configuration")
-    options = {}
+    options = {} if structured_options is None else {"structured_options": structured_options}
     if preconditioner is not None:
         if not isinstance(preconditioner, _LUPreconditioner) or preconditioner._cfg is not cfg:
             raise ValueError("preconditioner is closed or belongs to a different configuration")
@@ -306,7 +310,7 @@ def _refine(accepted, cfg, preconditioner, *, tolerance=1e-12, max_steps=3, chec
     raw = fbi._projected_residual(solver, accepted.dof_mask, formulation="raw")
     field_x = jnp.asarray(accepted.parameters)
     z = project(frozen)
-    space = dense._active_space(solver.implicit, accepted.dof_mask, solver.adjoint_dense_max_dofs)
+    space = dense._active_space(solver.implicit, accepted.dof_mask, dense._max_dofs(solver))
     seed.validate(z, field_x, space, solver)
     space = jax.tree.map(jnp.asarray, space)
     factors = jax.tree.map(jnp.asarray, seed.factors)
@@ -789,7 +793,8 @@ class FreeBoundaryProblem(FunctionProblem):
             use_fft=False,
         )
         if not stage.result.converged:
-            raise VmecError("initial ordinary equilibrium did not converge")
+            forces = ", ".join(f"{k}={float(getattr(stage.result, k, np.nan)):.3e}" for k in ("fsqr", "fsqz", "fsql", "fedge"))
+            raise VmecError(f"initial ordinary equilibrium did not converge: {forces}")
         cfg = _config_from_state(
             solver,
             params,
@@ -934,7 +939,8 @@ class FreeBoundaryProblem(FunctionProblem):
             options = {} if preconditioner is None else {"preconditioner": preconditioner}
             try:
                 linearization = _pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics, **options)
+                    record, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options,
+                    **options)
             except AdjointSolveError as error:
                 fallback = self._recovery_seed(preconditioner)
                 if preconditioner is None and fallback is None:
@@ -945,7 +951,7 @@ class FreeBoundaryProblem(FunctionProblem):
                 # A matrix-free retry is not timed as a dense solve.
                 dense_started = None if fallback is not None else time.monotonic()
                 linearization = _pullback(
-                    record, self.cfg, rhs, diagnostics=diagnostics,
+                    record, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options,
                     **({} if fallback is None else {"preconditioner": fallback}))
                 self._matrixfree_fallback, self._recovered = fallback is not None, fallback is None
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
@@ -992,7 +998,15 @@ class FreeBoundaryProblem(FunctionProblem):
             predictor="matrixfree_seed_lu" if reuse else "reused_dense_lu",
             refresh_horizon=None if self._lu_refresh is None else self._lu_refresh.horizon,
             root_polish_atol=None if self._root_polish_options is None else self._root_polish_options['tolerance'],
-            adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None))
+            adjoint_residual_rtol=getattr(self.solver, "adjoint_residual_rtol", None),
+            factorization=getattr(self.solver, "adjoint_factorization", "dense"))
+
+    @property
+    def _factor_options(self):
+        """``_pullback`` options: structured factors solve by GMRES with the matrix-free controls."""
+        if getattr(self.solver, "adjoint_factorization", "dense") != "structured":
+            return {}
+        return {"structured_options": self._matrixfree_options or _MATRIX_FREE_DEFAULTS}
 
     def enable_root_polishing(self, *, tolerance=1e-12, max_steps=3):
         """Newton-polish the accepted root and every later trial before use.
@@ -1088,7 +1102,7 @@ class FreeBoundaryProblem(FunctionProblem):
             self._check_time()
             rhs, _ = self._scalar_jac(root.state, jnp.asarray(root.parameters))
             dense_root = _pullback(
-                root, self.cfg, rhs)
+                root, self.cfg, rhs, **self._factor_options)
             try:
                 seed = dense_root.preconditioner(**(self._matrixfree_options or _MATRIX_FREE_DEFAULTS))
             except BaseException:
@@ -1143,7 +1157,7 @@ class FreeBoundaryProblem(FunctionProblem):
         rtol, restart, max_restarts:
             GMRES relative tolerance, restart length and restart cycles.
         rhs_batch_size:
-            Distinct right-hand sides solved together (1 to 4).
+            Distinct right-hand sides solved together (1 to 8).
         parity_rtol:
             Largest relative change of any derivative row when a cost refresh
             rebuilds the dense LU.
@@ -1414,7 +1428,7 @@ class FreeBoundaryProblem(FunctionProblem):
             dense_seconds=refresh.dense_seconds, horizon=refresh.horizon)
         rhs, direct = self._scalar_jac(candidate.state, jnp.asarray(candidate.parameters))
         linearization = _pullback(
-            candidate, self.cfg, rhs, diagnostics=diagnostics)
+            candidate, self.cfg, rhs, diagnostics=diagnostics, **self._factor_options)
         try:
             jac = np.asarray(linearization.field_jacobian) + np.asarray(direct)
             if not np.all(np.isfinite(jac)):

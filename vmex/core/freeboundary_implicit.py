@@ -44,7 +44,7 @@ from .freeboundary import (
     _vacuum_scalars,
     free_boundary_resolution,
 )
-from .errors import VmecConvergenceError, VmecError
+from .errors import AdjointSolveError, VmecConvergenceError, VmecError
 from .input import VmecInput
 from .solver import SpectralState, evaluate_forces
 
@@ -79,6 +79,8 @@ class FreeBoundaryImplicitConfig:
     vacuum_program: Any = None
     adjoint_dense_batch_size: int = 4
     adjoint_dense_max_dofs: int = 4096
+    adjoint_factorization: str = "dense"
+    adjoint_factor_dtype: Any = None
 
     @property
     def resolution(self):
@@ -105,6 +107,8 @@ def make_free_boundary_config(
     schur_probe_chunk_size: int = 1,
     adjoint_dense_batch_size: int = 4,
     adjoint_dense_max_dofs: int = 4096,
+    adjoint_factorization: str = "dense",
+    adjoint_factor_dtype: Any = None,
     field_from_parameters: Callable[[Any], Any] | None = None,
     device: Any = AUTO,
     max_fsq_ratio: float = 1.0,
@@ -128,6 +132,13 @@ def make_free_boundary_config(
     ``adjoint_dense_max_dofs`` (largest active dimension), and certified with
     ``adjoint_residual_rtol`` (relative full-residual gate; ``None`` uses the
     shared ``adjoint_tol`` acceptance) when given.
+    ``adjoint_factorization="structured"`` (with ``"forward_dense_jax"``)
+    replaces that dense LU by the radial block-tridiagonal factors plus
+    NESTOR's low-rank Woodbury coupling (O(ns) instead of O(ns^2) memory) and
+    solves the same rows by GMRES preconditioned with them, certified by the
+    same gate; ``adjoint_dense_max_dofs`` then no longer limits the size.
+    ``adjoint_factor_dtype=jnp.float32`` factors the blocks in single
+    precision (GMRES and every residual stay float64; more iterations).
     ``"boundary_schur"`` selects the advanced radial-elimination path, which
     stays well conditioned on marginally converged roots where the coupled
     Krylov solve stalls.  ``"edge_response"`` is the coupled Krylov solve
@@ -195,6 +206,13 @@ def make_free_boundary_config(
         raise ValueError("adjoint_residual_rtol applies only to adjoint_solver='forward_dense_jax'")
     if schur_probe_chunk_size < 1:
         raise ValueError("schur_probe_chunk_size must be positive")
+    if adjoint_factorization not in ("dense", "structured"):
+        raise ValueError("adjoint_factorization must be 'dense' or 'structured'")
+    if adjoint_factorization == "structured" and (adjoint_solver != "forward_dense_jax" or adjoint_fail != "error"):
+        raise ValueError("structured factors require adjoint_solver='forward_dense_jax' and adjoint_fail='error'")
+    if adjoint_factor_dtype is not None and (adjoint_factorization != "structured"
+                                             or np.dtype(adjoint_factor_dtype) != np.float32):
+        raise ValueError("adjoint_factor_dtype is None or float32, with structured factors")
     for name, value in (("adjoint_dense_batch_size", adjoint_dense_batch_size),
                         ("adjoint_dense_max_dofs", adjoint_dense_max_dofs)):
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
@@ -211,6 +229,8 @@ def make_free_boundary_config(
         schur_probe_chunk_size=int(schur_probe_chunk_size),
         adjoint_dense_batch_size=int(adjoint_dense_batch_size),
         adjoint_dense_max_dofs=int(adjoint_dense_max_dofs),
+        adjoint_factorization=adjoint_factorization,
+        adjoint_factor_dtype=None if adjoint_factor_dtype is None else np.dtype(adjoint_factor_dtype),
     )
     return dataclasses.replace(config, vacuum_program=_vacuum_program(config))
 
@@ -245,6 +265,12 @@ def _vacuum_inputs(state: SpectralState, rt) -> tuple:
     return (*_edge_fourier_jax(state, rt), ctor, axis_r, axis_z)
 
 
+#: Forward-mode columns of the NESTOR edge response, and Woodbury columns and
+#: rows of its coupling, evaluated together. At ns = 51 (8x8 modes) 16 builds
+#: the response in 3.8 s instead of 5.9 s for 8, with the same peak memory.
+_EDGE_RESPONSE_BATCH = 16
+
+
 # Module scope with ``cfg`` the only static key: every per-gradient array is
 # an argument, so one executable serves a whole optimization and no trial's
 # arrays are baked into a cached trace.
@@ -273,11 +299,10 @@ def _edge_response(cfg: FreeBoundaryImplicitConfig, params, field_parameters,
     def kernel(vector):
         return cfg.vacuum_program.bsq_edge(*unflatten(vector), field)
 
-    value, jacobian = jax.vmap(
-        lambda tangent: jax.jvp(kernel, (flat,), (tangent,)),
-        out_axes=(None, -1),
-    )(jnp.eye(flat.size, dtype=flat.dtype))
-    return jax.lax.stop_gradient((value, jacobian, flat))
+    # In batches: one vmap over all ~400 columns needs a 6 GB temporary at ns = 51.
+    columns = jax.lax.map(lambda tangent: jax.jvp(kernel, (flat,), (tangent,))[1],
+                          jnp.eye(flat.size, dtype=flat.dtype), batch_size=_EDGE_RESPONSE_BATCH)
+    return jax.lax.stop_gradient((kernel(flat), jnp.moveaxis(columns, 0, -1), flat))
 
 
 def _linearized_bsqvac(state, rt, response):
@@ -1235,8 +1260,8 @@ def _anchor_norm(z, params, field_parameters, frozen, rcon0, zcon0, dof_mask,
         None, cfg=cfg, formulation="preconditioned"))
 
 
-@jax.jit
-def _anchor_factor(lower, diagonal, upper, row_scale, column_scale):
+@functools.partial(jax.jit, static_argnames=("factor_dtype",))
+def _anchor_factor(lower, diagonal, upper, row_scale, column_scale, factor_dtype=None):
     """Block-Thomas factors of the scaled bulk block tridiagonal.
 
     The same two-sided scaling the Schur adjoint's sparse LU uses; here the
@@ -1250,7 +1275,8 @@ def _anchor_factor(lower, diagonal, upper, row_scale, column_scale):
     return block_thomas_factor(
         row_scale[:, :, None] * lower * column_scale[previous][:, None, :],
         row_scale[:, :, None] * diagonal * column_scale[:, None, :],
-        row_scale[:, :, None] * upper * column_scale[following][:, None, :])
+        row_scale[:, :, None] * upper * column_scale[following][:, None, :],
+        factor_dtype=factor_dtype)
 
 
 @functools.partial(jax.jit, static_argnames=("cfg",))
@@ -1282,26 +1308,51 @@ def _anchor_coupling(z, params, field_parameters, frozen, rcon0, zcon0,
         lambda bsq: pack(_projected_residual_lane(
             z, params, field_parameters, frozen, rcon0, zcon0, dof_mask, bsq,
             None, cfg=cfg, formulation="raw")), value)
-    columns = jax.vmap(force_of_pressure, in_axes=-1, out_axes=-1)(jacobian)
-    columns = columns.reshape(-1, columns.shape[-1])
+    columns = jax.lax.map(force_of_pressure, jnp.moveaxis(jacobian, -1, 0),
+                          batch_size=_EDGE_RESPONSE_BATCH)
+    count = columns.shape[0]
 
     def inputs(packed):
         state = jax.tree.map(jnp.add, frozen, project(unpack(packed)))
         return ravel_pytree(_vacuum_inputs(state, rt))[0]
 
     _, inputs_t = jax.vjp(inputs, jnp.zeros(shape, row_scale.dtype))
-    rows = jax.vmap(lambda e: inputs_t(e)[0])(
-        jnp.eye(columns.shape[-1], dtype=columns.dtype))
-    rows = rows.reshape(rows.shape[0], -1)
-
-    def bulk_inverse(flat):
-        scaled = flat.reshape(shape) * row_scale
-        solved = block_thomas_solve(factors, scaled[..., None])[..., 0]
-        return (solved * column_scale).ravel()
-
-    solved = jax.vmap(bulk_inverse, in_axes=-1, out_axes=-1)(columns)
-    capacitance = jnp.eye(rows.shape[0], dtype=rows.dtype) + rows @ solved
+    rows = jax.lax.map(lambda e: inputs_t(e)[0], jnp.eye(count, dtype=columns.dtype),
+                       batch_size=_EDGE_RESPONSE_BATCH).reshape(count, -1)
+    # Every bulk solve in one block-Thomas sweep: (ns, block, count) right-hand sides.
+    scaled = jnp.moveaxis(columns, 0, -1) * row_scale[..., None]
+    solved = block_thomas_solve(factors, scaled).astype(columns.dtype) * column_scale[..., None]
+    solved = solved.reshape(-1, count)
+    capacitance = jnp.eye(count, dtype=rows.dtype) + rows @ solved
     return solved, rows, jax.scipy.linalg.lu_factor(capacitance)
+
+
+def _structured_factors(cfg, params, field_parameters, frozen, rcon0, zcon0, dof_mask, z):
+    """:class:`~vmex.core._freeboundary_dense.StructuredFactors` of the raw coupled Jacobian at ``z``.
+
+    The Newton anchor's preconditioner, exact where it is built: the radial
+    block tridiagonal at frozen vacuum pressure, block-Thomas factored after
+    the Schur adjoint's two-sided scaling (``cfg.adjoint_factor_dtype``), plus
+    NESTOR's coupling through its dense edge response and the Woodbury identity.
+    """
+    from ._freeboundary_dense import StructuredFactors
+
+    icfg = cfg.implicit
+    ns = int(icfg.resolution.ns)
+    rt = dataclasses.replace(
+        im.runtime_from_params(params, icfg), rcon0=rcon0, zcon0=zcon0, lfreeb=True, jmax=ns,
+        presf_ns_scale=_presf_ns_scale_traceable(params, icfg.inp, ns))
+    field = cfg.field_from_parameters(field_parameters)
+    bsqvac = jax.lax.stop_gradient(cfg.vacuum_program.bsq(frozen, rt, field))
+    lower, diagonal, upper, row_scale, column_scale = _frozen_bulk_blocks(
+        *im.commit_to_single_device((params, field_parameters, frozen, rcon0, zcon0, dof_mask, z, bsqvac)),
+        cfg=cfg, probe_chunk_size=_bulk_probe_chunk(cfg, dof_mask))
+    blocks = _anchor_factor(lower, diagonal, upper, row_scale, column_scale,
+                            factor_dtype=cfg.adjoint_factor_dtype)
+    response = _edge_response(cfg, params, field_parameters, frozen, rcon0, zcon0)
+    bulk_p, q, lu = _anchor_coupling(z, params, field_parameters, frozen, rcon0, zcon0, dof_mask, response,
+                                     blocks, row_scale, column_scale, cfg=cfg)
+    return StructuredFactors(blocks, bulk_p, q, lu, row_scale, column_scale, fields=im._active_state_fields(icfg))
 
 
 @functools.partial(jax.jit, static_argnames=("cfg",))
@@ -1795,6 +1846,7 @@ def free_boundary_state_pullback_multi_rhs(
     diagnostics: list | None = None,
     return_linearization: bool = False,
     preconditioner=None,
+    structured_options: dict | None = None,
 ):
     """Pull back several state cotangents at one accepted free-boundary root.
 
@@ -1829,6 +1881,12 @@ def free_boundary_state_pullback_multi_rhs(
         replaces dense reassembly by a matrix-free GMRES solve on the current
         root; the seed never changes automatically. Requires
         ``adjoint_fail="error"``.
+    structured_options:
+        GMRES controls of :func:`~vmex.core._freeboundary_dense.structured_seed`
+        when ``cfg.adjoint_factorization == "structured"`` and no
+        ``preconditioner`` is given: the rows are then solved on structured
+        factors built at this root, and the dense solve is the fallback for a
+        row that misses its gate.
 
     Returns
     -------
@@ -1859,7 +1917,7 @@ def free_boundary_state_pullback_multi_rhs(
         for row, reference in zip(leaves, jax.tree.leaves(state))
     ):
         raise ValueError("state_cotangents require a nonempty consistent leading RHS axis")
-    from ._freeboundary_dense import solve_dense_adjoint, solve_matrixfree_adjoint
+    from ._freeboundary_dense import solve_dense_adjoint, solve_matrixfree_adjoint, structured_seed
 
     icfg = cfg.implicit
     with im._device_context(icfg):
@@ -1880,17 +1938,29 @@ def free_boundary_state_pullback_multi_rhs(
         # assembles it by colored probes. At the certified root its adjoint,
         # parameter pullback and tangent equal the preconditioned ones.
         residual = _projected_residual(cfg, dof_mask, formulation="raw")
-        solve_adjoint = solve_dense_adjoint
-        options = {}
-        if preconditioner is not None:
-            solve_adjoint = solve_matrixfree_adjoint
-            options['preconditioner'] = preconditioner
-        result = solve_adjoint(
-            residual,z_star,params,field_parameters,frozen,rcon0,zcon0,
-            jax.vmap(project)(state_cotangents),dof_mask,cfg,diagnostics=diagnostics,
-            **options,
-            **({'return_linearization': True} if return_linearization else {}))
+        lane = (residual, z_star, params, field_parameters, frozen, rcon0, zcon0)
+        rhs = jax.vmap(project)(state_cotangents)
+        retain = {'return_linearization': True} if return_linearization else {}
+        fresh = preconditioner is None and getattr(cfg, "adjoint_factorization", "dense") == "structured"
+        if fresh:
+            factors = _structured_factors(cfg, params, field_parameters, frozen, rcon0, zcon0, dof_mask, z_star)
+            preconditioner = structured_seed(*lane, dof_mask, cfg, factors, **(structured_options or {}))
+        if preconditioner is None:
+            result = solve_dense_adjoint(*lane, rhs, dof_mask, cfg, diagnostics=diagnostics, **retain)
+        else:
+            try:
+                result = solve_matrixfree_adjoint(*lane, rhs, dof_mask, cfg, diagnostics=diagnostics,
+                                                  preconditioner=preconditioner, **retain)
+            except AdjointSolveError:
+                if not fresh:
+                    raise
+                # Structured rows that miss the gate are solved densely at this root.
+                im._count(icfg, adjoint_certificate_fallbacks=1)
+                result = solve_dense_adjoint(*lane, rhs, dof_mask, cfg, diagnostics=diagnostics, **retain)
+                fresh = False
         adjoints, linearization = result if return_linearization else (result, None)
+        if fresh and linearization is not None:
+            linearization.fresh_factors = True
         parameter_pullback = _prepare_parameter_pullback(
             z_star,params,field_parameters,frozen,rcon0,zcon0,residual=residual)
         rows = [_apply_parameter_pullback(

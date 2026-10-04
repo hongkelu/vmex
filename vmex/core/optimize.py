@@ -3775,7 +3775,7 @@ def _least_squares_implicit(
     def equilibrium_from_x(
         x: np.ndarray, *, newton_iterations: int = 10
     ) -> Equilibrium:
-        """Materialize the exact accepted state already used by the objective."""
+        """Materialize the certified state used by the objective at ``x``."""
         from .extender import (
             VmecExtender, VmecInteriorField, _source_nphi_for_digits)
 
@@ -3797,7 +3797,7 @@ def _least_squares_implicit(
             else:
                 scalar_fun_host(x)
             hit = imp._LAST_SOLVE.get(cfg)
-        if hit is None or hit[0] != imp._params_key(params_np):
+        if not certified_trial(x):
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )
@@ -3808,7 +3808,7 @@ def _least_squares_implicit(
         if refined is None or refined[0] != hit[0]:
             imp._host_solve_and_mask_status(cfg, params_np)
             refined = imp._LAST_REFINED.get(cfg)
-        if refined is None or refined[0] != hit[0]:
+        if refined is None or refined[0] != hit[0] or refined[2]:
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )

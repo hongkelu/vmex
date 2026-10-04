@@ -49,6 +49,11 @@ one ``metrics.jsonl`` line per accepted step (``qa``, ``min_abs_iota``,
 ``coils.stepN.json`` / ``wout.stepN.nc`` every ``--save-every`` steps, and the
 final ``coils.json``, ``wout.nc`` and ``summary.json``. ``--restart <run>``
 continues a finished run from its deck, coils and WOUT.
+
+Derivatives use structured factors of the coupled Jacobian (radial block
+tridiagonal plus NESTOR's low-rank coupling, ``--factorization structured``):
+O(ns) memory, so ``--ns``/``--modes`` can exceed what the dense LU
+(``--factorization dense``, O(ns^2)) fits on a GPU, with the same accuracy gate.
 """
 
 import argparse
@@ -71,7 +76,7 @@ ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
 ROOT_POLISH_STEPS = 30             # damped Newton from a 1e-9 ordinary-solve residual (a finite-beta restart needs >10)
 OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 40000  # dense up to ns ~ 100
-MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=3)
+MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=6)  # all six rows in one GMRES batch
 LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
 COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
@@ -96,6 +101,12 @@ def parse_args(argv=None):
                         help="reactor-like kinetic profiles and a self-consistent bootstrap current (P.BOOTSTRAP_MODEL)")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
                         "WOUT (no seed calibration or coil refit); pass the run's --beta/--bootstrap")
+    parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"),
+                        help="poloidal and toroidal modes of the optimization solves (default: P.RESOLUTION)")
+    parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every free-boundary solve "
+                        "(default: the deck's NITER)")
+    parser.add_argument("--factorization", choices=("structured", "dense"), default="structured",
+                        help="derivative factors: O(ns) block-Thomas + Woodbury (default), or the dense LU")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils, args.wout = args.restart / "coils.json", args.restart / "wout.nc"
@@ -145,8 +156,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.ns:
-        P.RESOLUTION = (*P.RESOLUTION[:2], args.ns)
+    P.RESOLUTION = (*(args.modes or P.RESOLUTION[:2]), args.ns or P.RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"
@@ -179,6 +189,8 @@ def main(argv=None):
         seed = vj.state_from_wout(vj.read_wout(args.wout), inp=inp, ns=ns)
     else:
         seed = fixed.state
+    if args.max_iterations:
+        inp = replace(inp, niter_array=np.array([args.max_iterations]))
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
 
@@ -246,7 +258,8 @@ def main(argv=None):
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
-                            adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL))
+                            adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL,
+                            adjoint_factorization=args.factorization))
     problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)

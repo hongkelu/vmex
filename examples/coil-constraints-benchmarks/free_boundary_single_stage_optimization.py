@@ -27,7 +27,8 @@ then Newton-polished onto the coupled root, as the fixed arm refines its VMEC
 solves; there is no Newton correction in place of the VMEC solve.
 
 The limits are in ``parameters.py``. The coil currents are scaled once so the
-edge R B_phi is B0 R0 (B0 = 1 T); PHIEDGE then sets the plasma size. Fixing
+edge R B_phi is B0 R0 (B0 = 1 T), or at finite beta the seed's own edge R B_phi;
+PHIEDGE then sets the plasma size. Fixing
 both pins the size: for ``ellipse5`` in vacuum that holds the aspect ratio at
 its 4.9 floor (QA ~0.02), while a free PHIEDGE reaches 5.1 (QA ~0.004).
 
@@ -201,7 +202,10 @@ def main(argv=None):
     # Reload the saved coils so a restart builds a bit-identical coordinate chart.
     coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
     if args.restart is None:  # a restart keeps the run's own currents
-        coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
+        # At finite beta the seed's own edge R B_phi (below B0 R0 by its diamagnetism): with B.n = 0
+        # alone, a net-current mismatch leaves a toroidal-field jump that breaks pressure balance.
+        rbtor = abs(float(fixed.wout.rbtor)) if args.beta > 0 and args.wout is None else P.B0 * float(inp.rbc[inp.ntor, 0])
+        coils = scale_coil_currents(coils, rbtor)
     if args.beta > 0 and args.wout is None and not args.no_coil_fit:  # at beta = 0 a uniform scale keeps B.n/|B|
         coils = fit_coils_to_plasma(coils, fixed.wout, replace(inp, lfreeb=False))
     coils.to_json(str(out / "coils.initial.json"))

@@ -90,7 +90,10 @@ def boundary_residual(inp: VmecInput, state, external_field: Any, *, runtime=Non
 def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
     """RMS of each condition from :func:`boundary_residual`'s output."""
     rows, weights = np.asarray(rows), np.asarray(weights)
-    rms = lambda value: float(np.sqrt(np.sum(weights * value**2)))
+
+    def rms(value):
+        return float(np.sqrt(np.sum(weights * value**2)))
+
     return BoundaryResidual(normal=rms(rows[0]), pressure=rms(rows[1]),
                             sheet_current=rms(np.linalg.norm(rows[2:], axis=0)))
 

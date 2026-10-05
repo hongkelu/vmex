@@ -147,9 +147,10 @@ def fit_coils_to_plasma(coils, wout, inp):
     value_and_grad = jax.jit(jax.value_and_grad(objective))
     before = float(normal_field_rms(coils))
     fit = minimize(lambda u: tuple(map(np.asarray, value_and_grad(jnp.asarray(u)))), np.zeros(x0.size), jac=True,
-                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size, options=dict(maxiter=P.COIL_FIT_MAXITER, maxcor=20))
+                   method="L-BFGS-B", bounds=[(-5.0, 5.0)] * x0.size,
+                   options=dict(maxiter=P.COIL_FIT_MAXITER, maxcor=20, ftol=1e-15, gtol=1e-12))
     fitted = coils_from_u(jnp.asarray(fit.x))
-    print(f"[coil fit] {fit.nit} L-BFGS-B iterations: (B_coils + B_plasma).n/|B| RMS "
+    print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
     return fitted
 

@@ -75,13 +75,13 @@ from _common import (bootstrap_input, bootstrap_mismatch, coil_field,  # noqa: E
 ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
 ROOT_POLISH_STEPS = 30             # damped Newton from a 1e-9 ordinary-solve residual (a finite-beta restart needs >10)
 OPTIMIZER_FTOL = 1e-10
-ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 40000  # dense up to ns ~ 100
-MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=6)  # all six rows in one GMRES batch
+ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 40000  # the cap binds --factorization dense only
+MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=6)  # derivative rows per GMRES batch
 LU_REFRESH_HORIZON = 10
 # Finite-beta seed coil refit: iterations, B.n/|B| unit, and penalty weight of the scaled coil rows.
 COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
 PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
-DENSE_DERIVATIVES = True  # every derivative a dense solve whose LU seeds the next step's trials (~2x faster)
+DENSE_DERIVATIVES = True  # every derivative on fresh factors of its own root, which seed the next step's trials
 
 
 def parse_args(argv=None):

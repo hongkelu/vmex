@@ -46,6 +46,7 @@ CASE = os.environ.get("COIL_CASE", "ellipse5")
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
+EDGE_FORCE_TOLERANCE = 1e-14         # free arm: VMEX fedge settles at ~2-5e-15 at 12x12 modes
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 INPUT_FILE = HERE / "input.rotating_ellipse"
 COILS_FILE = HERE / "coils.initial.json"

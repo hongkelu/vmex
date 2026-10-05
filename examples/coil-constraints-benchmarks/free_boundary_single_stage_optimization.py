@@ -257,7 +257,7 @@ def main(argv=None):
         coil_quantities=(clearance, aspect),
         parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
-        solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
+        solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EDGE_FORCE_TOLERANCE,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL,
                             adjoint_factorization=args.factorization))

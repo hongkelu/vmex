@@ -7,11 +7,18 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
-- `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
-  free-boundary root. Trials start from a tangent prediction, are solved with
-  strict edge convergence and certified, and only accepted iterates are
-  promoted; a failed trial raises the new `TrialRejected`. `from_loss` takes
-  `event=` progress callbacks and a wall-time `deadline=`.
+- `FreeBoundaryProblem` optimizes the external field from an accepted
+  free-boundary root. `from_loss(inp, loss, x0, field_from_parameters=...)`
+  takes the same differentiable field map as `make_free_boundary_config`, so
+  the coils (or any other field) and their chart stay with the caller, and an
+  optional `plasma_from_parameters(params, x)` lets the design vector also set
+  PHIEDGE or the current profile. The loss and `parameter_quantities` receive
+  `x`. Trials start from a tangent prediction, are solved with strict edge
+  convergence and certified, and only accepted iterates are promoted; a failed
+  trial raises the new `TrialRejected`. `from_loss` takes `event=` progress
+  callbacks and a wall-time `deadline=`. The coil-constraint benchmarks keep
+  their coil chart in `_coil_constraints.py` and take coil length, curvature
+  and curve points from ESSOS.
 - `opt.minimize(problem, method="SLSQP", ...)` runs SciPy SLSQP on a
   `FunctionProblem` in its own units and reports `stop_reason` and
   `accepted_steps`.

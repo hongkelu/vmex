@@ -48,8 +48,14 @@ limits, which SLSQP then enforces:
     COIL_CASE=qi python postprocess.py runs/free-qi
 
 `input.rotating_ellipse` is the seed and `coils.initial.json` the coils fitted
-to it. `_coil_constraints.py` evaluates the coil inequalities and the
-independent endpoint checks. The scripts need ESSOS (`pip install "vmex[coils]"`)
+to it. `_coil_constraints.py` holds the coil chart (the design vector to ESSOS
+coils and the differentiable field the free arm passes to `FreeBoundaryProblem`
+as `field_from_parameters`), the coil inequalities and the independent
+endpoint checks. Coil length, curvature and curve points come from ESSOS
+`Curves`; the module adds only what ESSOS lacks as hard SLSQP rows: mean
+squared curvature, the minimum coil-coil and nonadjacent self-segment
+distances (ESSOS has hinge penalties for separation and clearance) and the
+coil-plasma clearance. The scripts need ESSOS (`pip install "vmex[coils]"`)
 and a GPU for the default resolution:
 
     python free_boundary_single_stage_optimization.py --steps 5 --output runs/free

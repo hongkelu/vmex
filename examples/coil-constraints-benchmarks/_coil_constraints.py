@@ -1,12 +1,20 @@
-"""Shared differentiable coil inequalities and independent endpoint checks.
+"""Coil chart, coil inequalities and independent endpoint checks of the benchmarks.
 
-Geometry uses raw metre-valued coefficients, independently of field quadrature.
-All returned inequality rows are dimensionless and favourable-positive.
-Distance constraints are on polygonal curves / a sampled moving surface;
-verification refines both and reports that scope, never a winding-pack claim.
+:class:`CoilChart` maps the design vector to ESSOS coils and to the
+differentiable filament field that ``FreeBoundaryProblem`` solves in. Coil
+length, curvature and curve points come from ESSOS ``Curves``, resampled at
+the constraint resolution independently of the field quadrature. Only what
+ESSOS lacks is computed here: mean squared curvature, the minimum coil-coil
+and nonadjacent self-segment distances (ESSOS has hinge penalties, not hard
+rows) and the coil-surface clearance. All inequality rows are dimensionless
+and favourable-positive. Distance constraints are on polygonal curves / a
+sampled moving surface; verification refines both and reports that scope,
+never a winding-pack claim.
 """
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -23,19 +31,96 @@ VERIFY_POINTS = max(2048, 256*P.COIL_ORDER)
 SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
 
 
-def geometry(raw, points):
-    """Analytic Fourier coordinates, speed and curvature; raw shape (coil,xyz,mode)."""
-    t = jnp.arange(points) / points
-    w = 2*jnp.pi*jnp.arange(1, (raw.shape[-1]+1)//2)
-    sn, cs = jnp.sin(t[:, None]*w), jnp.cos(t[:, None]*w)
-    a, b = raw[:, :, 1::2], raw[:, :, 2::2]
-    xyz = raw[:, None, :, 0] + jnp.einsum('tk,ijk->itj', sn, a) + jnp.einsum('tk,ijk->itj', cs, b)
-    v = jnp.einsum('tk,ijk->itj', cs*w, a) - jnp.einsum('tk,ijk->itj', sn*w, b)
-    acc = -jnp.einsum('tk,ijk->itj', sn*w*w, a) - jnp.einsum('tk,ijk->itj', cs*w*w, b)
-    speed = jnp.sqrt(jnp.sum(v*v, axis=-1)+1e-30)
-    cross = jnp.cross(v, acc)
-    curvature = jnp.sqrt(jnp.sum(cross*cross, axis=-1)+1e-30)/speed**3
-    return xyz, speed, curvature
+@dataclass(frozen=True, eq=False)
+class DirectCoilField:
+    """Biot-Savart field of filament coils, as a differentiable pytree.
+
+    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
+    static ``self``, so every new coil geometry recompiles and no derivative
+    flows back to the coil arrays. This pytree carries the arrays as leaves
+    instead: one compiled program serves every trial and JAX differentiates
+    the field with respect to the coil parameters. The field is the mean over
+    each coil's quadrature points of the filament Biot-Savart integrand.
+    ``gamma``/``gamma_dash`` are ESSOS' points and tangents, shape
+    ``(coils, points, 3)`` in metres; ``currents`` are in amperes.
+    """
+
+    gamma: Any
+    gamma_dash: Any
+    currents: Any
+
+    def b_cyl(self, r, phi, z):
+        """Evaluate the filament field in cylindrical coordinates, in tesla."""
+        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
+        cosine, sine = jnp.cos(pp), jnp.sin(pp)
+        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
+        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
+        radius2 = jnp.sum(displacement * displacement, axis=-1)
+        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
+        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
+        differential = differential * inv_radius3[..., None]
+        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
+        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
+        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
+        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
+        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
+        return br, bphi, bxyz[..., 2]
+
+
+jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
+
+
+class CoilChart:
+    """Design vector -> ESSOS coils, and the ``field_from_parameters`` of the free arm.
+
+    ``x`` holds, first, relative changes of the selected base-coil currents
+    (``current[i] = nominal[i] * (1 + x[k])``), then additive changes of every
+    base coil's Cartesian Fourier coefficients in metres; ``x0 = 0`` gives the
+    nominal coils. ``scales`` condition the optimizer, one per coordinate.
+    """
+
+    def __init__(self, coils, *, current_dofs, scales):
+        self.coefficients = np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :]
+        self.currents = np.asarray(coils.dofs_currents_raw, dtype=float)
+        self.current_dofs = tuple(int(i) for i in current_dofs)
+        self.nfp, self.stellsym, self.n_segments = int(coils.nfp), bool(coils.stellsym), int(coils.n_segments)
+        self.x0 = np.zeros(len(self.current_dofs) + self.coefficients.size)
+        self.scales = np.asarray(scales, dtype=float)
+        if self.scales.shape != self.x0.shape:
+            raise ValueError("one scale per coordinate required")
+        modes = ["constant"] + [f"{kind}({k})" for k in range(1, coils.order + 1) for kind in ("sin", "cos")]
+        self.dof_names = tuple([f"current[{i}]/nominal" for i in self.current_dofs]
+                               + [f"coil[{i}].{axis}.{mode}" for i in range(len(self.currents))
+                                  for axis in "xyz" for mode in modes])
+
+    def base_currents_at(self, x):
+        """Physical base-coil currents in amperes."""
+        currents = jnp.asarray(self.currents)
+        for local, base in enumerate(self.current_dofs):
+            currents = currents.at[base].add(x[local] * self.currents[base])
+        return currents
+
+    def coils_from_x(self, x):
+        """ESSOS coils at ``x``, without changing the nominal coils."""
+        from essos.coils import Coils, Curves
+
+        x = jnp.asarray(x)
+        raw = jnp.asarray(self.coefficients) + x[len(self.current_dofs):].reshape(self.coefficients.shape)
+        return Coils(Curves(raw, self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
+
+    def __call__(self, x):
+        """The differentiable filament field of ``coils_from_x(x)``."""
+        coils = self.coils_from_x(x)
+        return DirectCoilField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
+
+
+def resampled(coils, points, *, symmetric=True):
+    """ESSOS curves of ``coils`` on ``points`` quadrature points; base curves only unless ``symmetric``."""
+    curves = coils.curves.copy()
+    curves.n_segments = points
+    if not symmetric:
+        curves.nfp, curves.stellsym = 1, False
+    return curves
 
 
 def segment_distances(a, b):
@@ -72,13 +157,14 @@ def separations(points):
 
 
 def coil_metrics(coils, *, curvature_points=CURVATURE_POINTS, distance_points=DISTANCE_POINTS):
-    raw = coils.curves.curves
-    _, speed, curvature = geometry(raw[:P.N_COILS], curvature_points)
-    points, _, _ = geometry(raw, distance_points)
-    cc, own = separations(points)
-    return dict(length=jnp.mean(speed, axis=1), peak=jnp.max(curvature, axis=1),
+    """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks."""
+    base = resampled(coils, curvature_points, symmetric=False)
+    speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
+    curvature = base.curvature
+    cc, own = separations(resampled(coils, distance_points).gamma)
+    return dict(length=base.length, peak=jnp.max(curvature, axis=1),
                 msc=jnp.sum(curvature**2*speed, axis=1)/jnp.sum(speed, axis=1),
-                coil_distance=cc, self_distance=own, min_speed=jnp.min(speed,axis=1))
+                coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
 
 
 def coil_inequalities(coils):
@@ -93,7 +179,7 @@ def coil_inequalities(coils):
 
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
-    points, _, _ = geometry(coils.curves.curves, DISTANCE_POINTS)
+    points = resampled(coils, DISTANCE_POINTS).gamma
     targets = surface.gamma.reshape(-1,3)
     # Mapping bounds memory and preserves exact differentiation of the active min.
     return jnp.min(jax.lax.map(lambda p: jnp.sqrt(jnp.min(jnp.sum((p-targets)**2,axis=1))+1e-30),

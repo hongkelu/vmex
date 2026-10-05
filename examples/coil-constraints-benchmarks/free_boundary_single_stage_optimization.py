@@ -158,7 +158,7 @@ def main(argv=None):
     current_dofs = tuple(range(len(coils0.dofs_currents_raw))) if SHARED_CURRENT else ()
     scales = np.r_[np.full(len(current_dofs), CURRENT_STEP),
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = opt.CoilParameters.from_coils(coils0, current_dofs=current_dofs, scales=scales)
+    chart = coil_limits.CoilChart(coils0, current_dofs=current_dofs, scales=scales)
     qs = target_residual()
 
     def boundary(state, runtime, grid):
@@ -172,17 +172,17 @@ def main(argv=None):
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
 
-    def clearance(state, runtime, coils):
-        return coil_limits.surface_distance(coils, boundary(state, runtime, coil_limits.SURFACE_GRID))
+    def clearance(state, runtime, x):
+        return coil_limits.surface_distance(chart.coils_from_x(x), boundary(state, runtime, coil_limits.SURFACE_GRID))
 
     def qa(state, runtime):
         residuals = qs.residuals_state(state, runtime)
         return jnp.vdot(residuals, residuals)
 
-    def loss(state, runtime, coils):
+    def loss(state, runtime, x):
         return 0.5 * qa(state, runtime)
 
-    def aspect(state, runtime, coils):
+    def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
     seconds = {}
@@ -200,8 +200,9 @@ def main(argv=None):
 
     mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(opt.min_abs_iota, opt.major_radius, *mirror), coil_quantities=(clearance, aspect),
-        parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
+        inp, loss, chart.x0, field_from_parameters=chart, scales=chart.scales, names=chart.dof_names,
+        quantities=(opt.min_abs_iota, opt.major_radius, *mirror), parameter_quantities=(clearance, aspect),
+        restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
@@ -222,7 +223,7 @@ def main(argv=None):
             return value
         setattr(coil_rows, method, timed)
     from scipy.optimize import LinearConstraint
-    tie = np.zeros((max(len(current_dofs) - 1, 0), chart.size))
+    tie = np.zeros((max(len(current_dofs) - 1, 0), chart.x0.size))
     for row in range(tie.shape[0]):  # equal relative currents: one common factor
         tie[row, row], tie[row, row + 1] = 1.0, -1.0
     mirror_bounds = [(-np.inf, P.MIRROR_LIMIT - P.MIRROR_MARGIN, P.MIRROR_LIMIT)] if mirror else []
@@ -236,7 +237,7 @@ def main(argv=None):
 
     def save(tag):
         x = problem.accepted.parameters
-        problem.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
+        chart.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last = dict(time=time.monotonic(), x=problem.accepted.parameters.copy())

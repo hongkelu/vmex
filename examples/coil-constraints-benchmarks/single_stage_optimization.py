@@ -351,9 +351,18 @@ def main(argv=None):
         vj.write_wout(str(out / f"wout{tag}.nc"), plasma_problem.equilibrium_from_x(x[:n_boundary]).wout)
 
     def checkpoint(u):
-        log_step(u)
+        # SLSQP can accept a point whose equilibrium re-solve fails; log that and keep optimizing.
+        try:
+            log_step(u)
+        except RuntimeError as error:
+            last.update(time=time.monotonic(), step=last["step"] + 1)
+            print(f"[step {last['step'] - 1}] not logged: {error}", flush=True)
+            return
         if args.save_every and (last["step"] - 1) % args.save_every == 0:
-            save(f".step{last['step'] - 1}", u)
+            try:
+                save(f".step{last['step'] - 1}", u)
+            except RuntimeError as error:
+                print(f"[save] step {last['step'] - 1} not saved: {error}", flush=True)
 
     u0 = np.zeros_like(x0)
     checkpoint(u0)

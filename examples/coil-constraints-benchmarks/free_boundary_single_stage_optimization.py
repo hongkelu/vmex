@@ -74,6 +74,7 @@ from _common import (bootstrap_input, bootstrap_mismatch, coil_field,  # noqa: E
 # Numerical controls of the equilibrium, adjoint and matrix-free solves.
 ROOT_TOLERANCE, ROOT_POLISH_TOLERANCE = 2e-6, 1e-12
 ROOT_POLISH_STEPS = 30             # damped Newton from a 1e-9 ordinary-solve residual (a finite-beta restart needs >10)
+ROOT_POLISH_LADDER = (1e-12, 1e-10, 1e-9, 1e-8, 1e-7)  # loosest polish target the start may settle on
 OPTIMIZER_FTOL = 1e-10
 ADJOINT_RESIDUAL_RTOL, ADJOINT_BATCH_SIZE, ADJOINT_MAX_DOFS = 1e-9, 32, 40000  # the cap binds --factorization dense only
 MATRIXFREE = dict(rtol=1e-11, restart=100, max_restarts=3, rhs_batch_size=6)  # derivative rows per GMRES batch
@@ -263,7 +264,17 @@ def main(argv=None):
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL,
                             adjoint_factorization=args.factorization))
-    problem.enable_root_polishing(tolerance=args.polish_tolerance, max_steps=ROOT_POLISH_STEPS)
+    # The coupled root residual has a resolution-dependent floor (~1e-11 at 12x12 modes): polish to the
+    # tightest target the converged start reaches, so that later trials are held to it too.
+    for tolerance in [args.polish_tolerance] + [v for v in ROOT_POLISH_LADDER if v > args.polish_tolerance]:
+        try:
+            problem.enable_root_polishing(tolerance=tolerance, max_steps=ROOT_POLISH_STEPS)
+            break
+        except vj.VmecError as error:  # transactional: the unpolished root stays usable
+            if tolerance >= ROOT_POLISH_LADDER[-1]:
+                raise
+            print(f"[polish] {tolerance:.0e} not reached ({error}); trying a looser target", flush=True)
+    print(f"[polish] Newton root-polish target {tolerance:.0e}", flush=True)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)
 

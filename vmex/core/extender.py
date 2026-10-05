@@ -1504,6 +1504,7 @@ class VmecExtender(MagneticField):
 
     @graded_target_batch_size.setter
     def graded_target_batch_size(self, size: int | None) -> None:
+        """Set a static target batch and discard configuration-dependent caches."""
         from . import virtual_casing as vc
 
         self._graded_target_batch_size = vc._graded_target_batch_size(size)

@@ -403,6 +403,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--boundary-condition",
+        choices=("nestor", "virtual-casing"),
+        default="nestor",
+        help=(
+            "Plasma-vacuum interface condition of an LFREEB = T deck: NESTOR's "
+            "vacuum pressure (default) or the three virtual-casing conditions "
+            "B.n = 0, pressure balance and no sheet current, solved for the "
+            "boundary from the deck's (requires virtual-casing-jax)."
+        ),
+    )
+    p.add_argument(
         "--coils",
         metavar="PATH",
         type=str,
@@ -840,6 +851,7 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
             # Opt-in cold-run overlap; the library default is also False.
             prefetch_compile=bool(args.prefetch_compile),
             jacobian_retries=int(args.jacobian_retries),
+            boundary_condition=getattr(args, "boundary_condition", "nestor").replace("-", "_"),
             **freeb_plan.solver_kwargs,
         )
     else:

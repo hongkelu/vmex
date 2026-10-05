@@ -127,6 +127,44 @@ field = vj.MgridField.from_input(inp, order=3)          # deck + mgrid file
 coil_field = vj.MgridField.from_coils(coils, order=3)   # ESSOS coils
 ```
 
+## Without a sheet current (virtual casing)
+
+NESTOR makes the boundary a flux surface of the vacuum field and balances only
+`|B|` across it, so a VMEC/NESTOR equilibrium may carry an edge sheet current
+`K` (a jump in the direction of the tangential field). Different such states
+can solve the same deck, and the solve can leave the one whose coils were fitted
+to it. `boundary_condition="virtual_casing"` instead solves for the boundary on
+which all three interface conditions hold, with the plasma's own field from
+virtual casing (Conlin et al. 2024, arXiv:2412.05680):
+`B_out . n = 0`, `|B_out|^2 = |B_in|^2 + 2 mu0 p`, and `n x (B_out - B_in) = 0`.
+Each trial boundary is a fixed-boundary equilibrium, and Gauss--Newton with
+exact implicit derivatives drives the three residuals to zero:
+
+```python
+import vmex as vj
+
+result = vj.solve_free_boundary_multigrid(
+    inp, external_field=coil_field, boundary_condition="virtual_casing",
+    virtual_casing_options=dict(max_nfev=30))
+print(result.boundary_residual)   # RMS of B.n, pressure jump and mu0 K, over |B|
+```
+
+or `vmex input.case --boundary-condition virtual-casing` on the command line.
+The deck boundary is the initial guess, so a fixed-boundary design and the
+coils fitted to it are a natural start. The edge pressure must vanish (a
+pressure jump needs a sheet current), and `virtual-casing-jax` must be
+installed. Virtual casing dominates the cost and runs on the default JAX device,
+so use a GPU; expect several times the cost of a NESTOR solve.
+{func}`vmex.core.freeboundary_vc.solve_free_boundary_virtual_casing`
+exposes the grid, weights and least-squares controls.
+
+To check a NESTOR result instead, pass `report_boundary_residual=True`: the
+three conditions are evaluated on the converged boundary and returned as
+`result.boundary_residual`. VMEC + NESTOR (VMEX and VMEC2000 alike) leaves a
+floor of a few 1e-4 even for an exact external field, and the virtual-casing
+evaluation itself is accurate to about 2e-4 on its default 48 x 48 grid, so a
+`sheet_current` well above 1e-3 marks a genuine edge sheet current.
+
 ## Key knobs
 
 - `EXTCUR` — coil-group currents scaling the mgrid field.

@@ -65,3 +65,23 @@ def test_turbulence_cli_smoke(tmp_path, capsys):
     assert np.all(np.isfinite(summary["gamma"])) and np.all(np.isfinite(summary["heat_flux"]))
     for suffix in ("", "_geometry", "_fluxes"):
         assert (tmp_path / f"smoke_turbulence{suffix}.png").stat().st_size > 10_000
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_turbulence_flag_runs_after_a_solve_and_reports_missing_gkx(tmp_path, monkeypatch):
+    """The solve path hands its WOUT to the driver; an ImportError becomes the dependency message."""
+    from vmex.core import cli
+    from vmex.core.errors import VmecInputError
+
+    calls = []
+    monkeypatch.setattr(gk_run, "run_turbulence", lambda wout, outdir, cfg, emit: calls.append((wout, cfg)))
+    assert main(["--test", "--turbulence", "--turbulence-s", "0.3", "--outdir", str(tmp_path), "--quiet"]) == 0
+    assert calls and calls[0][0].name.startswith("wout_") and calls[0][1].s == 0.3
+
+    def missing(*args, **kwargs):
+        raise ImportError("vmex --turbulence needs gkx>=2.5.0")
+
+    monkeypatch.setattr(gk_run, "run_turbulence", missing)
+    args = cli.build_parser().parse_args([str(calls[0][0]), "--turbulence"])
+    with pytest.raises(VmecInputError, match="OPTIONAL DEPENDENCY"):
+        cli._run_turbulence(calls[0][0], args, tmp_path, emit=print, quiet=True)

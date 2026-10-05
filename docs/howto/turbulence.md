@@ -71,8 +71,8 @@ the stella W7-X study of González-Jerez et al. (2022, *J. Plasma Phys.*).
 
 ## Cost
 
-The table times the default run of `examples/data/input.LandremanPaul2021_QA_lowres` on the office
-workstation. The equilibrium solve is listed separately and depends on the deck.
+The table times the default run of `examples/data/input.LandremanPaul2021_QA_lowres` on a 36-core
+Linux workstation with an RTX A4000. The equilibrium solve is listed separately and depends on the deck.
 
 | Stage | CPU (36-core Xeon) | GPU (RTX A4000) |
 |---|---|---|

@@ -57,7 +57,7 @@ class TurbulenceSettings:
     d_hyper: float = 0.05  # k_perp hyperdiffusion coefficient
 
 
-# Linear-run horizon (a / v_ti); GKX falls back to a Krylov eigensolve when the
+# Linear-run horizon (a / v_ti, capped at t_max); GKX falls back to a Krylov eigensolve when the
 # time fit is not a clean growing mode.
 _T_LINEAR = 50.0
 
@@ -143,7 +143,7 @@ def write_deck(path: Path, wout: Path, cfg: TurbulenceSettings, *, nonlinear: bo
                                    tprim=cfg.tprim, fprim=cfg.fprim, nu=0.0)
     y0 = 1.0 / cfg.ky_min
     path.write_text(_DECK.format(
-        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, t_max=cfg.t_max if nonlinear else _T_LINEAR,
+        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, t_max=cfg.t_max if nonlinear else min(_T_LINEAR, cfg.t_max),
         nx=cfg.nx if nonlinear else 1, ny=cfg.ny if nonlinear else 3 * int(ky_grid(cfg)[-1] * y0 + 0.5) + 1, nz=cfg.nz,
         lx=2 * np.pi * y0, ly=2 * np.pi * y0, y0=y0, boundary="fix aspect" if nonlinear else "linked",
         linear=str(not nonlinear).lower(), nonlinear=str(nonlinear).lower(),
@@ -406,11 +406,14 @@ def plot_turbulence(summary: dict, geom: dict, mode, nl, ky_grid, outdir: str | 
         a.grid(False)
 
         a = ax[1, 1]
-        z, ef = np.asarray(mode.z, float) / np.pi, np.asarray(mode.eigenfunction)
-        ef = ef / ef[np.argmax(np.abs(ef))]
-        a.plot(z, np.abs(ef), label=r"$|\phi|$")
-        a.plot(z, ef.real, "--", label=r"Re $\phi$")
-        a.plot(z, ef.imag, ":", label=r"Im $\phi$")
+        if mode.eigenfunction is not None and mode.z is not None:
+            z, ef = np.asarray(mode.z, float) / np.pi, np.asarray(mode.eigenfunction)
+            ef = ef / ef[np.argmax(np.abs(ef))]
+            a.plot(z, np.abs(ef), label=r"$|\phi|$")
+            a.plot(z, ef.real, "--", label=r"Re $\phi$")
+            a.plot(z, ef.imag, ":", label=r"Im $\phi$")
+        else:  # GKX's Krylov route returns no eigenfunction (e.g. a damped mode)
+            a.text(0.5, 0.5, "no eigenfunction returned", ha="center", transform=a.transAxes)
         a.set(xlabel=r"$\theta/\pi$", ylabel=r"$\phi/\phi_{\max}$",
               title=f"linear eigenfunction, $k_y\\rho_i$={summary['ky_peak']:.2g}")
         a2 = a.twinx()

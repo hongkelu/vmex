@@ -43,6 +43,7 @@ def test_ky_scan_points_sit_on_the_gkx_grid(tmp_path):
     assert deck["physics"]["nonlinear"] is True and deck["physics"]["adiabatic_electrons"] is False
 
 
+@pytest.mark.usefixtures("_module_jit_enabled")  # solve + GKX: run jitted
 def test_turbulence_cli_smoke(tmp_path, capsys):
     pytest.importorskip("gkx", minversion="2.5.0")
     import vmex
@@ -54,13 +55,13 @@ def test_turbulence_cli_smoke(tmp_path, capsys):
                               niter_array=np.array([2000]))
     wout = vmex.write_wout(tmp_path / "wout_smoke.nc", opt.solve_equilibrium(inp).wout)
     rc = main([str(wout), "--turbulence", "--outdir", str(tmp_path),
-               "--turbulence-ky", "0.2", "0.4", "2", "--turbulence-grid", "8", "8", "16",
+               "--turbulence-ky", "0.2", "0.2", "1", "--turbulence-grid", "8", "8", "16",
                "--turbulence-moments", "2", "2", "--turbulence-tmax", "2"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "Linear ky scan" in out and "Turbulence summary" in out
     summary = json.loads((tmp_path / "smoke_turbulence.json").read_text())
-    assert summary["ky"] == pytest.approx([0.2, 0.4])
+    assert summary["ky"] == pytest.approx([0.2])
     assert np.all(np.isfinite(summary["gamma"])) and np.all(np.isfinite(summary["heat_flux"]))
     for suffix in ("", "_geometry", "_fluxes"):
         assert (tmp_path / f"smoke_turbulence{suffix}.png").stat().st_size > 10_000

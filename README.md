@@ -27,8 +27,8 @@ and stability diagnostics, and has a separate lane for open mirrors.
 - **Design with gradients:** implicit scalar adjoints and residual Jacobians for SciPy, JAXopt or
   Optax, with quasisymmetry, quasi-isodynamic, Mercier, ballooning, bootstrap and maximum-`J` objectives.
 - **Inspect the physics:** Boozer transforms, the magnetic field and its first three spatial
-  derivatives, effective ripple, the `--plot` diagnostic summary, `--scale` to reactor size and
-  `--trace` alpha-particle losses.
+  derivatives, effective ripple, the `--plot` diagnostic summary, `--scale` to reactor size,
+  `--trace` alpha-particle losses and `--turbulence` gyrokinetic runs.
 - **Choose the hardware:** CPU or GPU equilibrium solves (optimization gradients default to CPU),
   reusable compilation and independent-case ensembles.
 - **Connect coils:** ESSOS coil fields, NESTOR free boundary from an MGRID table or coils, and the
@@ -75,7 +75,7 @@ or pick what you need:
 | `pip install "vmex[coils]"` | `essos>=0.19.4` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
 | `pip install "vmex[freeb]"` | `virtual-casing-jax>=0.0.9` | the virtual-casing exterior field of the plasma (`VmecExtender`) |
 | `pip install "vmex[neoclassical]"` | `neo-jax>=1.0.5` | effective ripple `ε_eff` from a WOUT or Boozer spectrum (`vmex.epsilon_effective_from_wout`) and the `--plot` ripple panel |
-| `pip install "vmex[turbulence]"` | `gkx>=2.4.2` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) |
+| `pip install "vmex[turbulence]"` | `gkx>=2.5.0` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) and `vmex --turbulence` |
 | `pip install "vmex[optimizers]"` | `jaxopt`, `optax` | the JAXopt and Optax optimization drivers |
 | `pip install "vmex[all]"` | all of the above | every example and documented workflow |
 
@@ -88,7 +88,7 @@ The same packages can be installed by name; the floors are the ones in `pyprojec
 | `essos` | 0.19.4 | `vmex[coils]` | `pip install "essos>=0.19.4"` |
 | `virtual-casing-jax` | 0.0.9 | `vmex[freeb]` | `pip install "virtual-casing-jax>=0.0.9"` |
 | `neo-jax` | 1.0.5 | `vmex[neoclassical]` | `pip install "neo-jax>=1.0.5"` |
-| `gkx` | 2.4.2 | `vmex[turbulence]` | `pip install "gkx>=2.4.2"` |
+| `gkx` | 2.5.0 | `vmex[turbulence]` | `pip install "gkx>=2.5.0"` |
 | `jaxopt`, `optax` | none | `vmex[optimizers]` | `pip install jaxopt optax` |
 
 Installing into an environment that already holds older packages is supported: every floor above
@@ -129,6 +129,7 @@ vmex --plot wout_my_case.nc
 vmex --booz wout_my_case.nc
 vmex --scale wout_my_case.nc
 vmex --trace wout_my_case.nc
+vmex input.my_case --turbulence
 vmex input.nearby --restart wout_my_case.nc
 vmex wout_my_case.nc --to-input    # writes input.my_case
 ```
@@ -154,6 +155,16 @@ cores. Runtimes exclude compilation and field set-up ([benchmark](benchmarks/tra
 | SIMSOPT | 11.9 % ± 1.0 % | 1079 s |
 
 ![Loss fraction against time and runtime for VMEX, SIMPLE and SIMSOPT](docs/_static/figures/readme_trace_benchmark.webp)
+
+`--turbulence` (needs `vmex[turbulence]`, GKX >= 2.5.0) samples the flux tube at `s = 0.5`, `α = 0` and runs
+[GKX](https://github.com/uwplasma/GKX) on it: a linear `k_y` scan, the eigenfunction at the fastest-growing `k_y`,
+and a short nonlinear ITG simulation (`a/L_T = 3`, `a/L_n = 1`, adiabatic electrons). The terminal shows each
+stage with an estimate of the time left. The run writes the saturated heat flux with its standard error, a
+summary figure, the field-line geometry and the flux traces. `--turbulence-s`, `-alpha`, `-ky`, `-grid`,
+`-moments`, `-tmax`, `-gradients` and `--turbulence-kinetic-electrons` change the run
+([guide](docs/howto/turbulence.md)). The defaults are a few-minute survey and are not converged.
+
+![vmex --turbulence summary: heat flux, growth-rate and flux spectra, phi(x,y), eigenfunction, zonal energy](docs/_static/figures/readme_turbulence.webp)
 
 `--plot` writes five PNGs beside the input or in `--outdir`: the summary below, flux-surface cross-sections,
 `|B|` in VMEC angles, Mercier stability and the 3-D LCFS. The summary adds Boozer `|B|`, a `J` map,

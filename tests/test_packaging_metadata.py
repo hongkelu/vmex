@@ -90,7 +90,7 @@ def test_plain_install_includes_plotting_and_qi_dependencies() -> None:
     assert "packaging" in dependency_names
     assert "numpy" in dependency_names
     assert "solvax>=0.27.0" in project_dependencies
-    assert "gkx>=2.4.2" in optional_dependencies["turbulence"]
+    assert "gkx>=2.5.0" in optional_dependencies["turbulence"]
     assert "virtual-casing-jax>=0.0.9" in optional_dependencies["freeb"]
     assert "plots" not in optional_dependencies
     assert "plot" not in optional_dependencies

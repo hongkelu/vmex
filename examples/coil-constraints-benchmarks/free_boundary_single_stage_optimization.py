@@ -105,6 +105,8 @@ def parse_args(argv=None):
                         help="poloidal and toroidal modes of the optimization solves (default: P.RESOLUTION)")
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every free-boundary solve "
                         "(default: the deck's NITER)")
+    parser.add_argument("--polish-tolerance", type=float, default=ROOT_POLISH_TOLERANCE,
+                        help="Newton root-polish target (the root residual floors near 1e-11 at 12x12 modes)")
     parser.add_argument("--factorization", choices=("structured", "dense"), default="structured",
                         help="derivative factors: O(ns) block-Thomas + Woodbury (default), or the dense LU")
     args = parser.parse_args(argv)
@@ -261,7 +263,7 @@ def main(argv=None):
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
                             adjoint_dense_max_dofs=ADJOINT_MAX_DOFS, adjoint_residual_rtol=ADJOINT_RESIDUAL_RTOL,
                             adjoint_factorization=args.factorization))
-    problem.enable_root_polishing(tolerance=ROOT_POLISH_TOLERANCE, max_steps=ROOT_POLISH_STEPS)
+    problem.enable_root_polishing(tolerance=args.polish_tolerance, max_steps=ROOT_POLISH_STEPS)
     problem.enable_matrix_free(**MATRIXFREE, refresh_horizon=LU_REFRESH_HORIZON, refresh_max_steps=args.steps,
                                dense_derivatives=DENSE_DERIVATIVES)
 

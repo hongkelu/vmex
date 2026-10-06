@@ -2985,8 +2985,13 @@ def _implicit_evolved_tangent_multi_rhs(
         )[1]
         return jax.tree.map(jnp.negative, value)
 
+    # The right-hand sides in chunks too: one batch of every direction holds a
+    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
     initial, _ = _raw_block_solve(
-        system, jax.vmap(raw_rhs)(tangent_batch), cfg
+        system,
+        chunk_map(raw_rhs, tangent_batch,
+                  chunk_size=max(1, int(response_chunk_size))),
+        cfg,
     )
 
     def correct(args):

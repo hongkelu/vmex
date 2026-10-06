@@ -293,6 +293,43 @@ Rung 5 is tier 5 evidence: those CSVs, and
 that **no test asserts on**. They are provenance for a campaign that was
 run, not gates that would fail if the physics regressed. Read them as such.
 
+### Three-term free boundary against VMEC + NESTOR and DESC
+
+`benchmarks/run_three_term_resolution.py` builds a free boundary whose answer is
+known: a coil field (a winding-surface current at 1.2 minor radii) is fitted to
+cancel the plasma's normal field on the 12 x 12 fixed-boundary QA equilibrium
+of `input.LandremanPaul2021_QA_beta2p5_bootstrap` (beta 2.5%, ns 51), so
+that equilibrium is the free boundary without a sheet current. Every method
+starts from the same boundary, the target's with its minor radius scaled by
+0.97 (11 mm away), and every result is scored the same way. The boundary is
+re-solved as a fixed-boundary equilibrium, and the three conditions are
+evaluated on a 48 x 48 virtual-casing grid. The record is
+`benchmarks/three_term_resolution.json`, with `benchmarks/plot_three_term_resolution.py`
+drawing it and `benchmarks/three_term_resolution_desc.py` running DESC. Columns
+are the largest LCFS distance to the target, the sheet current `mu0 |K| / |B|`,
+wall time with compilation, and peak GPU memory, all on one RTX 5090:
+
+| M = N | three-term: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | VMEX + NESTOR: mm / K / converged |
+| --- | --- | --- | --- |
+| 4 | 5.8 / 1.2e-03 / 546 / 2.0 | 12.6 / 5.2e-03 / 700 / 1.0 | 24.0 / 7.5e-03 / yes |
+| 5 | 5.5 / 6.2e-04 / 599 / 2.1 | 10.4 / 2.7e-03 / 771 / 1.1 | 12.4 / 3.0e-03 / yes |
+| 6 | 4.1 / 3.8e-04 / 612 / 2.2 | 4.3 / 2.1e-03 / 1002 / 1.6 | 6.9 / 2.7e-03 / yes |
+| 7 | 3.4 / 2.7e-04 / 603 / 2.3 | 3.9 / 1.2e-03 / 1421 / 3.7 | 13.6 / 1.8e-03 / no |
+| 8 | 3.5 / 2.3e-04 / 636 / 2.5 | 3.9 / 1.2e-03 / 2874 / 9.0 | 35.6 / 8.4e-03 / no |
+| 9 | 3.3 / 1.8e-04 / 704 / 3.5 | | 20.9 / 4.2e-03 / no |
+| 10 | 2.3 / 1.4e-04 / 988 / 5.0 | | 17.3 / 2.6e-03 / yes |
+| 11 | 2.1 / 9.2e-05 / 1655 / 6.5 | | 34.8 / 6.8e-03 / no |
+| 12 | 2.1 / 7.4e-05 / 2520 / 10.0 | | 22.6 / 4.4e-03 / no |
+
+NESTOR stops at 7 to 36 mm with a sheet current of 2e-3 to 8e-3, whether it
+converges or reaches its 40,000 iterations, and does no better on the same
+field tabulated as an mgrid. The three-term boundary approaches the target as
+the resolution grows. Its last 2 mm is the evaluation's own floor. The field
+cancels `B.n` on the target only, and there the pressure jump and the sheet
+current read 2.7e-4 and 2.8e-4, the 48 x 48 virtual-casing error. The three-term
+solution satisfies all three conditions together more closely than that, at
+5e-5 to 7e-5.
+
 ## Mirror geometry: analytic limits
 
 The mirror module is the one place where the answer is known in closed form,

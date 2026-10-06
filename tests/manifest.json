@@ -46,6 +46,7 @@
     ["tests/test_freeboundary_problem.py", "free-boundary", "ad", "fast", "cpu-gpu", "generated", "analytic", ["pr-parity-a1", "pr-fast", "full-free-boundary-adjoint"]],
     ["tests/test_virtual_casing_api.py", "virtual-casing", "unit", "fast", "cpu", "none", "none", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_virtual_casing_physics.py", "virtual-casing", "ad", "medium", "cpu-gpu", "reference-nc", "fd", ["pr-parity-a1", "optional", "full-core-fb-a"]],
+    ["tests/test_freeboundary_vc.py", "free-boundary", "integration", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_freeboundary_multigrid.py", "free-boundary", "integration", "slow", "cpu-gpu", "golden", "vmec2000", ["pr-parity-a1", "full-core-fb-b"]],
     ["tests/test_freeboundary_stress.py", "free-boundary", "integration", "medium", "cpu-gpu", "generated", "analytic", ["pr-parity-a1"]],
     ["tests/test_solve_phiedge.py", "free-boundary", "integration", "medium", "cpu-gpu", "generated", "analytic", ["pr-parity-f", "full-core-fb-a"]],

@@ -166,7 +166,7 @@ def solve_free_boundary_three_term(
     chunk: int = 8,
     bootstrap=None,
     bootstrap_helicity: int = 0,
-    bootstrap_weight: float = 1.0,
+    bootstrap_weight: float = 100.0,
     previous=None,
     verbose: int = 0,
 ):
@@ -295,7 +295,9 @@ class ThreeTermFreeBoundaryModel:
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
     values on every half-mesh surface after the boundary coordinates
     (``n_boundary`` of them), and the rows gain one self-consistency row per
-    surface, scaled by ``bootstrap_weight`` (see
+    surface, scaled by ``bootstrap_weight`` (large by default: the current is
+    no interface condition to trade against the others, so its block is solved
+    far below their floor; see
     :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
     ``ns <= 97``, a prescribed-current deck).  The current then follows the
     equilibrium instead of being an input, and :meth:`bootstrap_residual`
@@ -304,7 +306,7 @@ class ThreeTermFreeBoundaryModel:
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=1.0):
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0):
         from . import implicit as im
         from .freeboundary import _vacuum_scalars
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary, solve_equilibrium

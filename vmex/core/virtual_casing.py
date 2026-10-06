@@ -58,8 +58,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .mgrid import MgridField
-
 try:  # optional dependency (uwplasma/virtual_casing_jax)
     from virtual_casing_jax import (
         ExteriorFieldConfig,
@@ -1030,7 +1028,8 @@ def external_B_cartesian(
     Dispatches on the external-field type, staying differentiable in its dofs:
 
     - :class:`~vmex.core.mgrid.MgridField` -> trilinear mgrid (diff. in
-      ``extcur``),
+      ``extcur``), or any field with the same ``b_cyl(r, phi, z)`` method
+      (e.g. :class:`~vmex.core.freeboundary_problem.DirectCoilField`),
     - a plain callable ``xyz(..., 3) -> B(..., 3)`` (e.g. an ESSOS ``Coils``
       Biot-Savart field, ``lambda pts: coils.B(pts)``; diff. in its own dofs).
 
@@ -1039,7 +1038,7 @@ def external_B_cartesian(
 
     x, y, z = gamma[0], gamma[1], gamma[2]
 
-    if isinstance(external_field, MgridField):
+    if hasattr(external_field, "b_cyl"):
         r = jnp.sqrt(x * x + y * y)
         phi = jnp.arctan2(y, x) if phi_grid is None else phi_grid[:, None]
         Br, Bphi, Bz = external_field.b_cyl(r, phi, z)
@@ -1054,7 +1053,7 @@ def external_B_cartesian(
         return jnp.moveaxis(B, -1, 0) if B.shape[-1] == 3 else B
 
     raise TypeError(
-        f"external_field must be an MgridField or callable, got {type(external_field).__name__}"
+        f"external_field must have b_cyl (e.g. an MgridField) or be callable, got {type(external_field).__name__}"
     )
 
 

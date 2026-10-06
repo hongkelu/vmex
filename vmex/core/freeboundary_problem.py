@@ -1336,7 +1336,6 @@ class FreeBoundaryProblem(FunctionProblem):
 
     def _wout(self, record):
         """WOUT of ``record``; external currents stay with the caller's field (no EXTCUR)."""
-        params = _params_at(self.cfg, record.parameters)
         # Re-evaluate the vacuum on this exact fixed plasma/coil geometry for
         # every exported pair. Imported anchors have no attached VacuumOutput;
         # ordinary results can carry cadence caches from a preceding geometry.

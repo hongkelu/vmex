@@ -301,22 +301,28 @@ class ThreeTermFreeBoundaryModel:
     :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
     ``ns <= 97``, a prescribed-current deck).  The current then follows the
     equilibrium instead of being an input, and :meth:`bootstrap_residual`
-    reports how far it is from Redl's.
+    reports how far it is from Redl's.  ``fixed_boundary=True`` (with
+    ``bootstrap``) holds the boundary at that of ``params`` and solves only the
+    current: ``x`` is the current values alone, the rows are the bootstrap ones
+    and no external field or virtual casing enters -- the fixed-boundary
+    single stage's equilibrium, with the same Jacobians and pullbacks.
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0):
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
+                 fixed_boundary=False):
         from . import implicit as im
-        from .freeboundary import _vacuum_scalars
-        from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary, solve_equilibrium
+        from .bootstrap import HalfMeshCurrent
+        from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
-        from .bootstrap import HalfMeshCurrent
-
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
+        self.fixed_boundary = bool(fixed_boundary)
+        if self.fixed_boundary and self.bootstrap is None:
+            raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
@@ -336,6 +342,8 @@ class ThreeTermFreeBoundaryModel:
         im._template_runtime(cfg)
         self.x0 = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
+        if self.fixed_boundary:
+            self.x0, self.x_scale = self.x0[:0], self.x_scale[:0]
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
@@ -343,8 +351,9 @@ class ThreeTermFreeBoundaryModel:
         self.chunk = int(chunk)
 
         def with_boundary(params, x):
-            rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
-            params = replace(params, rbc=rbc, zbs=zbs)
+            if not self.fixed_boundary:
+                rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
+                params = replace(params, rbc=rbc, zbs=zbs)
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
@@ -353,6 +362,17 @@ class ThreeTermFreeBoundaryModel:
             from .errors import VmecConvergenceError
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
+        self.seed = (state, mask)
+        if not self.fixed_boundary:
+            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
+        self._implicit_setup()
+
+    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight):
+        """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
+        from .freeboundary import _vacuum_scalars
+        from .optimize import solve_equilibrium
+
+        im, cfg, fixed = self._im, self.cfg, self.fixed
         runtime = im.runtime_from_params(self.params0, cfg)
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
@@ -365,7 +385,6 @@ class ThreeTermFreeBoundaryModel:
         scale = jnp.repeat(jnp.asarray(weights, dtype=float), jnp.asarray([1, 1, 3]))[:, None, None]
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
-        self.seed = (state, mask)
 
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
@@ -378,20 +397,24 @@ class ThreeTermFreeBoundaryModel:
             G = jnp.abs(_vacuum_scalars(state, runtime)[1])
             return jnp.concatenate([interface, (net_current_weight * (G - G_coil) / G_coil)[None]])
 
-        def rows(state, params, field):
-            runtime = im.runtime_from_params(params, cfg)
-            interface = rows_at(state, runtime, field)
-            if self.bootstrap is None:
-                return interface
-            return jnp.concatenate([interface, self.bootstrap.rows(state, runtime, params)])
-
         self.rows_at = rows_at
-        self.rows = rows
-        self._rows = jax.jit(rows)
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
 
+    def _implicit_setup(self):
+        """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
+        im, cfg = self._im, self.cfg
+
+        def rows(state, params, field):
+            runtime = im.runtime_from_params(params, cfg)
+            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            if self.bootstrap is not None:
+                parts.append(self.bootstrap.rows(state, runtime, params))
+            return jnp.concatenate(parts)
+
+        self.rows = rows
+        self._rows = jax.jit(rows)
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
@@ -529,7 +552,7 @@ class ThreeTermFreeBoundaryModel:
         nb = self.n_boundary
         # Boundary, bootstrap-current and extra directions each in a program of its own: one batch of every
         # direction can exhaust the GPU.
-        groups = [jax.tree.map(lambda a: a[:nb], directions)]
+        groups = [jax.tree.map(lambda a: a[:nb], directions)] if nb else []
         if self.bootstrap is not None:
             groups.append(jax.tree.map(lambda a: a[nb:], directions))
         n_coordinates = len(groups)

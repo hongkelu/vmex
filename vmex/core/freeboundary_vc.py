@@ -46,6 +46,7 @@ Entry points, from the most to the least packaged:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import time
 from typing import Any
 
 import numpy as np
@@ -415,19 +416,34 @@ class ThreeTermFreeBoundaryModel:
 
         self.pullback = pullback
         self._linearization = None
+        self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
 
-        ``tight=False`` solves to the trial tolerance.
+        ``tight=False`` solves to the trial tolerance, without the Newton refinement that certifies a state for
+        differentiation (:meth:`linearize` re-solves tight first).
         """
         im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
-        state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
-        if int(status) != 0:
-            return None
+        if tight:
+            state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
+            if int(status) != 0:
+                return None
+        else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
+            from .errors import VmecError
+
+            with im._device_context(cfg):
+                try:
+                    state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)
+                except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError
+                    return None
+            result = im._LAST_SOLVE[cfg][1]
+            fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
+            if not (bool(result.converged) or fsq / cfg.ftol <= cfg.max_fsq_ratio):
+                return None
         place = lambda tree: jax.device_put(jax.tree.map(jnp.asarray, tree), cfg.device)  # noqa: E731
         return place(state), place(mask)
 
@@ -499,14 +515,16 @@ class ThreeTermFreeBoundaryModel:
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+            self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"]) and close:
                 return dict(out, jacobian=jacobian, njev=0)
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+            self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
                 return dict(again, jacobian=J1, njev=1)
@@ -536,44 +554,73 @@ class ThreeTermFreeBoundaryModel:
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+        self._radius = out["radius"]
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose):
-    """Levenberg-Marquardt steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
+    """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
-    Each step costs one evaluation; Marquardt column scaling and one SVD serve every damping, which rises
-    after a step that fails to reduce the cost and falls after one that succeeds.  Stops at a relative cost
-    change of ``ftol`` or when even short steps fail.
+    Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
+    whose length is the trust radius (the Gauss-Newton step if shorter), from one SVD of ``J``.  The radius
+    shrinks to a quarter of a step that gained less than a quarter of its predicted reduction, or that failed
+    to solve, and doubles after a step at the radius that gained three quarters of it.  ``radius`` carries the
+    last solve's radius over (at least 1/20 of the first Gauss-Newton step; default: that step's length).
+    Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
+    that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
+    Gauss-Newton step.
     """
     J = np.asarray(J)
     norms = np.linalg.norm(J, axis=0)
     norms[norms == 0.0] = 1.0
     U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-    nfev, accepted, damping, failed, converged = 1, 0, 0.0, False, False
+    nfev, accepted, converged, slow = 1, 0, False, 0
+    started = time.perf_counter()
+
+    def step(g, lam):
+        return -(sv / (sv**2 + lam)) * g  # in the singular basis of the scaled Jacobian
+
     while nfev < max_nfev:
         g = U.T @ r
         cost = 0.5 * r @ r
         if 0.5 * g @ g <= ftol * cost:  # the Gauss-Newton step's predicted gain
             converged = True
             break
-        x_new = x - (Vt.T @ (sv / (sv**2 + damping * sv[0] ** 2) * g)) / norms
+        full = np.linalg.norm(step(g, 0.0))
+        if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
+            radius = full if radius is None else max(radius, 0.05 * full)
+        if radius < 1e-4 * full:
+            break
+        lam = 0.0
+        if full > radius:  # the damping whose step has the radius' length (bisection in log lam)
+            lo, hi = np.log(sv[-1] ** 2 * 1e-12 + 1e-300), np.log(sv[0] ** 2 * (full / radius) + 1e-300)
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                lo, hi = (mid, hi) if np.linalg.norm(step(g, np.exp(mid))) > radius else (lo, mid)
+            lam = np.exp(hi)
+        z = step(g, lam)
+        length = np.linalg.norm(z)
+        predicted = cost - 0.5 * (r @ r - g @ g + np.sum((g + sv * z) ** 2))
+        x_new = x + (Vt.T @ z) / norms
         got = evaluate(x_new)
         nfev += 1
         cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
+        rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
         if verbose:
-            print(f"Levenberg-Marquardt step {nfev - 1}: damping {damping:.1e}, cost {cost:.6e} -> {cost_new:.6e}")
+            print(f"Levenberg-Marquardt step {nfev - 1}: |step| {length:.2e} (radius {radius:.2e}), cost "
+                  f"{cost:.6e} -> {cost_new:.6e}, gain ratio {rho:.2f} ({time.perf_counter() - started:.1f} s)",
+                  flush=True)
+        if rho < 0.25:
+            radius = 0.25 * length
+        elif rho > 0.75 and length > 0.99 * radius:
+            radius = 2.0 * radius
+        slow = slow + 1 if cost_new > 0.95 * cost else 0
         if cost_new < cost:
             x, (r, aux), accepted = x_new, got, accepted + 1
-            if cost - cost_new <= ftol * cost:
+            if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged = True
                 break
-            if not failed:  # lower the damping only after two successes in a row
-                damping = 0.0 if damping < 1e-8 else damping / 4
-            failed = False
-        elif damping >= 1.0:
+        if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
             break
-        else:
-            damping, failed = (1e-6 if damping == 0.0 else 4 * damping), True
-    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged)
+    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius)

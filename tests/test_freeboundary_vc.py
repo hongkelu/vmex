@@ -205,3 +205,70 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     for name in ("normal", "pressure", "sheet_current"):
         assert getattr(res, name) < 0.25 * getattr(design, name), name
     assert res.sheet_current < 1.5e-3
+
+
+def _lp_beta0p5_profiles(inp):
+    """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""
+    from vmex.core import bootstrap as bs
+
+    n0 = 1.5e20
+    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0)
+    return bs.KineticProfiles(ne_coeffs=n0 * np.array([1, 0, 0, 0, 0, -1.0]), Te_coeffs=T0 * np.array([1, -1.0]),
+                              Ti_coeffs=T0 * np.array([1, -1.0]))
+
+
+def test_bootstrap_current_profile_layout():
+    """A knot per half-mesh surface, I'(0) = 0 with the s^(1/4) asymptote inside s_1, CURTOR its integral."""
+    from vmex.core.profiles import current
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False)
+    from vmex.core.bootstrap import HalfMeshCurrent
+
+    block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
+    s = (np.arange(1, 25) - 0.5) / 24
+    np.testing.assert_allclose(block.knots[4:-1], s)
+    values = np.asarray(block.values(block.x0))
+    assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
+    np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
+    np.testing.assert_allclose(block.deck.ac_aux_f, values)
+    np.testing.assert_allclose(values[1:4], block.x0[0] * np.array(block.SUB) ** 0.25)
+    assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
+    # the deck's own enclosed current away from the axis, where only the first cell differs
+    deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
+        current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, 1.0))
+    outer = s[s > 0.2]
+    np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
+
+
+@needs_vc
+@pytest.mark.full
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_bootstrap_current_solved_with_the_free_boundary():
+    """LP QA at 0.5% beta: boundary and Redl current in one solve, with exact columns for both."""
+    from vmex.core import bootstrap as bs
+
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    profiles = _lp_beta0p5_profiles(inp)
+    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles)
+    model = fit.model
+    state, mask, params, _ = fit.aux
+    assert fit.x.size == model.n_boundary + 24
+    assert model.bootstrap_residual(state, params) < 1e-2
+    assert fit.boundary_residual.sheet_current < 2e-3
+    # independently of the inversion: VMEC's <J.B> (finite-difference identity) is Redl's away from the ends
+    runtime = model._im.runtime_from_params(params, model.cfg)
+    hm = bs._half_mesh_fields(state, runtime)
+    s = np.asarray(hm.s_half)
+    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA), 0)[0])
+    jv = np.asarray(bs._jv_from_half(hm, hm.s_half))
+    inner = (s > 0.1) & (s < 0.9)
+    assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))
+    # Jacobian columns of a boundary and two current coordinates against central differences of re-solved rows
+    J = model.linearize(fit.x, fit.aux, field)[0]
+    for k in (0, model.n_boundary + 3, model.n_boundary + 15):
+        h = 1e-3 * model.x_scale[k]
+        rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
+                for sign in (1, -1)]
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 2e-3 * np.linalg.norm(fd), k

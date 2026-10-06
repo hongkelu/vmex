@@ -9,8 +9,9 @@ coils, where the solve agrees with NESTOR and is independent of its start.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -18,6 +19,8 @@ import pytest
 jax = pytest.importorskip("jax")
 
 jax.config.update("jax_enable_x64", True)
+
+import jax.numpy as jnp  # noqa: E402
 
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
@@ -35,14 +38,33 @@ def _deck(name, mpol, ns):
                    niter_array=np.array([5000]), ftol_array=np.array([1e-10]), delt=0.5)
 
 
+@dataclass(frozen=True)
+class _FilamentField:
+    """Biot-Savart field of filament coils as a pytree (arrays as leaves, so the model compiles once)."""
+
+    gamma: Any  # (coils, points, 3)
+    gamma_dash: Any
+    currents: Any  # (coils,)
+
+    def b_cyl(self, r, phi, z):
+        xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
+        d = xyz[..., None, None, :] - self.gamma
+        dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
+        B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
+        cos, sin = jnp.cos(phi), jnp.sin(phi)
+        return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
+
+
+jax.tree_util.register_dataclass(_FilamentField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
+
+
 def _coil_field(name):
-    """The bundled ESSOS coils as VMEX's exact filament field (no mgrid tabulation)."""
+    """The bundled ESSOS coils as an exact filament field (no mgrid tabulation)."""
     pytest.importorskip("essos")
     from essos.coils import Coils
-    from vmex.core.freeboundary_problem import CoilParameters
 
-    chart = CoilParameters.from_coils(Coils.from_json(str(DATA / name)), current_dofs=())
-    return chart(chart.x0)
+    coils = Coils.from_json(str(DATA / name))
+    return _FilamentField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
 
 
 def test_nonzero_edge_pressure_is_rejected():

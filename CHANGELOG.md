@@ -9,7 +9,7 @@ revision it was measured at, and the pages that cite it.
 
 - `boundary_condition="three_term"` (Python, CLI, or the deck's `BOUNDARY_CONDITION`
   directive) solves for a free boundary without a sheet current;
-  `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any coils.
+  `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any field.
 - `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
   free-boundary root. Trials start from a tangent prediction, are solved with
   strict edge convergence and certified, and only accepted iterates are

@@ -490,7 +490,7 @@ class CoilParameters:
     AC_AUX_F current-spline values when ``plasma_current_spline``, followed by
     CURTOR in A; ``ncurr = 1``) the next ``k + 1`` coordinates move the
     prescribed current profile: value = nominal + x * unit, with unit the
-    largest nominal shape value and the nominal |CURTOR| respectively.
+    largest nominal shape value and the nominal ``abs(CURTOR)`` respectively.
 
     Parameters
     ----------

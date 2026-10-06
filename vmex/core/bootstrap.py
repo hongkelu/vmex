@@ -827,6 +827,7 @@ class HalfMeshCurrent:
         return dataclasses.replace(deck, ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
 
     def apply(self, params, v):
+        """``ImplicitParams`` with the half-mesh values ``v`` and their CURTOR (traceable)."""
         values = self.values(v)
         return dataclasses.replace(params, ac_aux_f=values, curtor=self.current(values, 1.0))
 
@@ -837,6 +838,7 @@ class HalfMeshCurrent:
         return params.ac_aux_f[first : first + target.size] - target, target
 
     def rows(self, state, runtime, params):
+        """The self-consistency rows ``weight (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (traceable)."""
         return self.weight * self.mismatch(state, runtime, params)[0] / self.ref
 
 

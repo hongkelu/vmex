@@ -11,9 +11,7 @@ and favourable-positive. Distance constraints are on polygonal curves / a
 sampled moving surface; verification refines both and reports that scope,
 never a winding-pack claim.
 """
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import jax

@@ -164,6 +164,9 @@ def solve_free_boundary_three_term(
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
     chunk: int = 8,
+    bootstrap=None,
+    bootstrap_helicity: int = 0,
+    bootstrap_weight: float = 1.0,
     previous=None,
     verbose: int = 0,
 ):
@@ -205,17 +208,20 @@ def solve_free_boundary_three_term(
     neither new coils nor a repeat solve compile anything.  ``quadrature``,
     ``trial_ftol`` and ``chunk`` are :class:`ThreeTermFreeBoundaryModel`'s (fixed
     singular quadrature, looser trial equilibria, Jacobian columns per batch).
+    ``bootstrap`` (kinetic profiles), ``bootstrap_helicity`` and
+    ``bootstrap_weight`` solve for a Redl-self-consistent current profile
+    together with the boundary (:class:`ThreeTermFreeBoundaryModel`).
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
-    coordinates), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
-    ``nfev``, ``njev``, ``input`` (the free boundary as a fixed-boundary deck),
+    coordinates, then any bootstrap-current values), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
+    ``nfev``, ``njev``, ``input`` (the free boundary, and the current, as a fixed-boundary deck),
     ``equilibrium``, ``model``, ``boundary_residual`` and
     ``initial_boundary_residual`` (:class:`BoundaryResidual` at the start).
     """
     from scipy.optimize import OptimizeResult
 
     from .freeboundary import _external_field_from_input
-    from .optimize import solve_equilibrium, unpack_boundary
+    from .optimize import solve_equilibrium
 
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
@@ -234,7 +240,8 @@ def solve_free_boundary_three_term(
         model = ThreeTermFreeBoundaryModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
                                    digits=digits, weights=weights, net_current_weight=net_current_weight,
                                    label_weight=label_weight, quadrature=quadrature, trial_ftol=trial_ftol,
-                                   chunk=chunk)
+                                   chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
+                                   bootstrap_weight=bootstrap_weight)
         x0 = jacobian = None
     seed_state = model.seed[0] if previous is None else previous.aux[0]
     seed_params = model.params0 if previous is None else previous.aux[2]
@@ -243,7 +250,7 @@ def solve_free_boundary_three_term(
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
                                max_nfev=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]
-    boundary = unpack_boundary(model.fixed, out["x"], model.max_mode, vary_major_radius=True)
+    boundary = model._im.input_with_params(model.fixed, params)
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
         njev=out["njev"], success=True, message=f"{out['accepted']} Levenberg-Marquardt steps after the trust region",
@@ -282,17 +289,34 @@ class ThreeTermFreeBoundaryModel:
     quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
     ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
     shaped boundary; ``chunk`` bounds the Jacobian columns per batch.
+
+    ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
+    ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
+    current profile Redl's bootstrap current in the same solve: ``x`` gains its
+    values on every half-mesh surface after the boundary coordinates
+    (``n_boundary`` of them), and the rows gain one self-consistency row per
+    surface, scaled by ``bootstrap_weight`` (see
+    :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
+    ``ns <= 97``, a prescribed-current deck).  The current then follows the
+    equilibrium instead of being an input, and :meth:`bootstrap_residual`
+    reports how far it is from Redl's.
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
-                 trial_ftol=None, quadrature=None):
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=1.0):
         from . import implicit as im
         from .freeboundary import _vacuum_scalars
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary, solve_equilibrium
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
+        from .bootstrap import HalfMeshCurrent
+
+        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
+                                                                       bootstrap_weight)
+        if self.bootstrap is not None:
+            self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
         cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
@@ -310,11 +334,16 @@ class ThreeTermFreeBoundaryModel:
         im._template_runtime(cfg)
         self.x0 = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
+        self.n_boundary = nb = self.x0.size
+        if self.bootstrap is not None:
+            self.x0 = np.r_[self.x0, self.bootstrap.x0]
+            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         self.chunk = int(chunk)
 
         def with_boundary(params, x):
-            rbc, zbs = boundary_arrays_from_x(fixed, x, self.max_mode, vary_major_radius=True)
-            return replace(params, rbc=rbc, zbs=zbs)
+            rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
+            params = replace(params, rbc=rbc, zbs=zbs)
+            return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
         seed = self.solve(self.params0)
@@ -348,7 +377,11 @@ class ThreeTermFreeBoundaryModel:
             return jnp.concatenate([interface, (net_current_weight * (G - G_coil) / G_coil)[None]])
 
         def rows(state, params, field):
-            return rows_at(state, im.runtime_from_params(params, cfg), field)
+            runtime = im.runtime_from_params(params, cfg)
+            interface = rows_at(state, runtime, field)
+            if self.bootstrap is None:
+                return interface
+            return jnp.concatenate([interface, self.bootstrap.rows(state, runtime, params)])
 
         self.rows_at = rows_at
         self.rows = rows
@@ -451,6 +484,12 @@ class ThreeTermFreeBoundaryModel:
         """:class:`BoundaryResidual` of a solved state."""
         return summarize_boundary_residual(*map(np.asarray, self._terms(state, params, field)))
 
+    def bootstrap_residual(self, state, params) -> float:
+        """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
+        difference, target = map(np.asarray, self.bootstrap.mismatch(
+            state, self._im.runtime_from_params(params, self.cfg), params))
+        return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
+
     def evaluate(self, x, params, field, seed=None, tight=False):
         """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
         failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
@@ -484,16 +523,25 @@ class ThreeTermFreeBoundaryModel:
                 raise RuntimeError("the trial state does not converge to the deck's tolerance")
             state, mask = solved
             aux = (state, mask, params_x, True)
-        batch = self.boundary_directions(params_x, x)
-        dz = self._tangents(params_x, state, mask, batch)
+        directions = self.boundary_directions(params_x, x)
+        nb = self.n_boundary
+        # Boundary, bootstrap-current and extra directions each in a program of its own: one batch of every
+        # direction can exhaust the GPU.
+        groups = [jax.tree.map(lambda a: a[:nb], directions)]
+        if self.bootstrap is not None:
+            groups.append(jax.tree.map(lambda a: a[nb:], directions))
+        n_coordinates = len(groups)
+        if extra is not None:
+            groups.append(extra)
+        parts = [(self._tangents(params_x, state, mask, batch), batch) for batch in groups]
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
+                             for dz, batch in parts])
+        join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
-        columns = np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
-        if extra is not None:  # a program of its own: one batch of every direction can exhaust the GPU
-            dz_extra = self._tangents(params_x, state, mask, extra)
-            columns = np.hstack([columns, np.asarray(self._push_rows(state, mask, params_x, dz_extra, extra,
-                                                                     field)).T])
-            join = lambda a, b: jnp.concatenate([a, b])  # noqa: E731
-            dz, batch = jax.tree.map(join, dz, dz_extra), jax.tree.map(join, batch, extra)
+        if extra is not None:
+            dz = jax.tree.map(join, dz, parts[-1][0])
+        batch = jax.tree.map(join, *[batch for _, batch in parts])
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,

@@ -1316,12 +1316,6 @@ class FreeBoundaryProblem(FunctionProblem):
             return self.inp
         return im.input_with_params(self.inp, _params_at(self.cfg, x))
 
-    def _inp_at(self, x):
-        """The input deck with the plasma parameters of design point ``x``."""
-        if getattr(self.solver, "plasma_from_parameters", None) is None:
-            return self.inp
-        return im.input_with_params(self.inp, _params_at(self.cfg, x))
-
     def equilibrium_from_x(self, x):
         """Return a certified equilibrium; WOUT uses its exact fixed-geometry vacuum."""
         record = self._record(x)

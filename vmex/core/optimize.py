@@ -135,7 +135,6 @@ from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRe
 __all__ = [
     "report_targets",
     "FreeBoundaryProblem",  # noqa: F822
-    "CoilParameters",  # noqa: F822
     "TrialRejected",
     "VmecProblem",
     "FunctionProblem",
@@ -199,9 +198,6 @@ def __getattr__(name: str):  # PEP 562 lazy re-export
     if name == "FreeBoundaryProblem":
         from .freeboundary_problem import FreeBoundaryProblem
         return FreeBoundaryProblem
-    if name == "CoilParameters":
-        from .freeboundary_problem import CoilParameters
-        return CoilParameters
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":

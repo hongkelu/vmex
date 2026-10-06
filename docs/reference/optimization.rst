@@ -441,13 +441,18 @@ for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
 :class:`vmex.core.freeboundary_problem.FreeBoundaryProblem` packages the same
-coil-only path for host optimizers that step from an accepted equilibrium
+field-only path for host optimizers that step from an accepted equilibrium.
+It takes the same ``field_from_parameters`` map: VMEX keeps no coil code, so
+the coils and their chart come from ESSOS, here as a differentiable
+Biot-Savart field of ``coils_from_x(x)``
 (``examples/coil-constraints-benchmarks`` runs it with coil constraints)::
 
    from dataclasses import replace
 
+   import jax.numpy as jnp
    import numpy as np
    from essos.coils import Coils
+   from essos.fields import BiotSavart
    import vmex as vj
    from vmex import optimize as opt
 
@@ -455,11 +460,17 @@ coil-only path for host optimizers that step from an accepted equilibrium
    seed = opt.solve_equilibrium(inp).state   # fixed-boundary seed state
    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
    qs = opt.QuasisymmetryRatioResidual(np.linspace(0.1, 1.0, 10), 1, 0)
-   chart = opt.CoilParameters.from_coils(Coils.from_json("coils.json"), current_dofs=())
+   coils0 = Coils.from_json("coils.json")
+   x0 = np.asarray(coils0.dofs_curves).ravel()
+
+   def coils_from_x(x):
+       return coils0.with_dofs(jnp.concatenate((x, coils0.dofs_currents)))
+
    problem = opt.FreeBoundaryProblem.from_loss(
-       inp, lambda state, rt, coils: qs.total_state(state, rt),
-       quantities=(opt.min_abs_iota, opt.aspect_ratio),
-       parameterization=chart, restart_from=seed)
+       inp, lambda state, rt, x: qs.total_state(state, rt), x0,
+       field_from_parameters=lambda x: BiotSavart(coils_from_x(x)),
+       scales=np.full(x0.size, 0.01),
+       quantities=(opt.min_abs_iota, opt.aspect_ratio), restart_from=seed)
    problem.enable_root_polishing()   # optional Newton polish of each root
    problem.enable_matrix_free(dense_derivatives=True)   # seed LU of the accepted root
    problem.enable_newton_correction()   # optional Newton correction of predicted trials
@@ -472,9 +483,15 @@ with strict edge convergence and freshly certified before its value is used.
 ``opt.minimize`` supports SLSQP for problems, promotes only the iterates SciPy
 accepts, and a rejected trial (:class:`~vmex.core.errors.TrialRejected`) never
 changes the accepted root; the result's ``stop_reason`` says why a run
-stopped. ``quantities`` are ``function(state, rt)`` constraint rows;
-``coil_quantities`` also receive the coils, so their derivatives include both
-the explicit coil term and the equilibrium response. The problem uses the
+stopped. The loss is ``loss(state, rt, x)``; ``quantities`` are
+``function(state, rt)`` constraint rows and ``parameter_quantities`` are
+``function(state, rt, x)`` rows (a coil-plasma clearance, say), whose
+derivatives include both the explicit term and the equilibrium response.
+Constraints on ``x`` alone, such as coil length or curvature from ESSOS, are
+ordinary optimizer constraints and need no adjoint. An optional
+``plasma_from_parameters(params, x)`` makes the design vector also set plasma
+parameters, for example PHIEDGE, which then enter the residual, the trials and
+the exported WOUT. The problem uses the
 ``forward_dense_jax`` adjoint. After the first dense factorization,
 matrix-free solves use that LU as a GMRES preconditioner, with one dense retry
 on failure; ``refresh_horizon`` rebuilds the LU when warm solves slow down,

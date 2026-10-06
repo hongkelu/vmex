@@ -156,7 +156,11 @@ pressure jump needs a sheet current), and `virtual-casing-jax` must be
 installed. Virtual casing dominates the cost and runs on the default JAX device,
 so use a GPU; expect several times the cost of a NESTOR solve.
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_virtual_casing`
-exposes the grid, weights and least-squares controls.
+exposes the grid, weights and least-squares controls, and its `previous=`
+restarts from an earlier result (after a coil change, say) in a few
+equilibrium solves without compiling anything. For many fields and plasma
+parameters, as in an optimization, {class}`vmex.core.freeboundary_vc.VirtualCasingModel`
+gives the residual, its Jacobian and the state tangents directly.
 
 To check a NESTOR result instead, pass `report_boundary_residual=True`: the
 three conditions are evaluated on the converged boundary and returned as

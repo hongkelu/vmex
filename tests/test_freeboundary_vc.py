@@ -141,6 +141,10 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     before = _residual(inp, nestor, field)
     for name in ("normal", "pressure", "sheet_current"):   # the gate on the NESTOR result
         np.testing.assert_allclose(getattr(reported, name), getattr(before, name), rtol=0.25)
+    # The net-current row's reference: outside the plasma the toroidal circulation is the coils' alone, so a
+    # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
+    np.testing.assert_allclose(abs(fvc._coil_net_current(field, nestor.wout)), abs(float(nestor.wout.rbtor)),
+                               rtol=1e-3)
     fits = [fvc.solve_free_boundary_virtual_casing(inp, external_field=field, initial_boundary=start)
             for start in (None, nestor_deck)]
     for fit in fits:
@@ -150,6 +154,19 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     for wall in walls:   # budget: NESTOR's own floor (~1.6 mm) plus the flat least-squares minimum (~3 mm)
         assert _lcfs_distance(wall, nestor.wout) < 5e-3
     np.testing.assert_allclose(np.asarray(walls[0].iotaf)[[0, -1]], np.asarray(nestor.wout.iotaf)[[0, -1]], atol=3e-3)
+    # The model's Jacobian (implicit state tangents, field as an argument) is upstream's implicit Jacobian of
+    # the same rows at the same state (the seed's: two independent re-solves of a boundary differ at the
+    # floor); and a warm restart at an unchanged field stays where it is.
+    fit, model = fits[0], fits[0].model
+    problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
+        state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
+        vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0])
+    J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
+    J_upstream = np.asarray(problem.residual_jac(model.x0))
+    assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
+    again = fvc.solve_free_boundary_virtual_casing(inp, external_field=field, previous=fit)
+    assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
+    assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
 
 @needs_vc

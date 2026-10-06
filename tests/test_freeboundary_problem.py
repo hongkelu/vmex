@@ -1,4 +1,4 @@
-"""Scalar free-boundary coil optimization: ownership, derivatives, reuse and polishing.
+"""Scalar free-boundary field optimization: ownership, derivatives, reuse and polishing.
 
 Analytic roots exercise the real API, dense/seed-LU kernels and optimizers;
 they do not qualify a plasma equilibrium.
@@ -20,14 +20,14 @@ from vmex import optimize as opt
 from vmex.core import freeboundary, freeboundary_implicit as fbi, implicit as im
 from vmex.core import freeboundary_problem as api
 from vmex.core.errors import TrialRejected, VmecError
-from vmex.core.freeboundary_problem import CoilParameters, FreeBoundaryProblem
+from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
 pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
 
 
 def test_public_names_share_the_core_classes():
     assert opt.TrialRejected is TrialRejected
-    assert opt.FreeBoundaryProblem is FreeBoundaryProblem and opt.CoilParameters is CoilParameters
+    assert opt.FreeBoundaryProblem is FreeBoundaryProblem
 
 
 @dataclass(frozen=True, eq=False)
@@ -65,25 +65,15 @@ def scalar(monkeypatch):
     def derivative(x):
         return matrix + 0.2 * np.diag(np.asarray(x))
 
-    class Chart:
-        x0 = np.zeros(size)
-        scales = np.ones(size)
-        dof_names = tuple(f"coil[{i}]" for i in range(size))
-
-        def __call__(self, x):
-            return x
-
-        def coils_from_x(self, x):
-            return jnp.asarray(x)
-
-    chart = Chart()
+    x0, scales = np.zeros(size), np.ones(size)
     inp = SimpleNamespace(lfreeb=True)
     solver = SimpleNamespace(
         implicit=SimpleNamespace(inp=inp, ftol=1e-11, max_iterations=10),
-        resolution=None, edge_force_tolerance=1e-11, field_from_parameters=chart,
+        resolution=None, edge_force_tolerance=1e-11, field_from_parameters=lambda x: x,
+        plasma_from_parameters=None,
         include_edge_in_convergence=True, adjoint_solver="forward_dense_jax", adjoint_fail="error",
     )
-    cfg = Config(solver, None, Root(chart.x0.copy(), state(chart.x0)), chart.scales)
+    cfg = Config(solver, None, Root(x0.copy(), state(x0)), scales)
     stats = dict(rhs=[], solves=0, closed=0, fail=False, seeds=[], factors=[],
                  matrixfree_fail=False, dense_fail=False, predictions=[])
     monkeypatch.setattr(api.im, "runtime_from_params", lambda *a: None)
@@ -142,19 +132,19 @@ def scalar(monkeypatch):
     monkeypatch.setattr(api, "_certify", certify)
     monkeypatch.setattr(freeboundary, "_solve_free_boundary_stage", correct)
 
-    def loss(s, rt, coils):
-        return 0.5 * jnp.sum(s * s) + jnp.sum(coils * s) + 3 * jnp.sum(coils * coils)
+    def loss(s, rt, x):
+        return 0.5 * jnp.sum(s * s) + jnp.sum(x * s) + 3 * jnp.sum(x * x)
 
-    problem = FreeBoundaryProblem(inp, chart, cfg, loss=loss,
+    problem = FreeBoundaryProblem(inp, cfg, loss=loss,
                                   quantities=(lambda s, rt: s[0], lambda s, rt: s[1]))
     yield problem, stats, state, derivative
     problem.close()
 
 
 def build(scalar, loss, **kwargs):
-    """Another problem sharing the fixture's analytic root, chart and patches."""
+    """Another problem sharing the fixture's analytic root and patches."""
     p = scalar[0]
-    return FreeBoundaryProblem(p.inp, p.parameterization, p.cfg, loss=loss, **kwargs)
+    return FreeBoundaryProblem(p.inp, p.cfg, loss=loss, **kwargs)
 
 
 def test_total_gradient_constraints_and_independent_differences(scalar):
@@ -434,10 +424,10 @@ def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
     assert p.accepted is anchor and p.accepted_step == 0
 
 
-def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar):
+def test_parameter_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar):
     _, stats, state, derivative = scalar
-    q = build(scalar, lambda s, rt, c: jnp.sum(s*s), quantities=(lambda s, rt: s[0],),
-              coil_quantities=(lambda s, rt, c: jnp.dot(s, c) + 2*s[1],))
+    q = build(scalar, lambda s, rt, x: jnp.sum(s*s), quantities=(lambda s, rt: s[0],),
+              parameter_quantities=(lambda s, rt, x: jnp.dot(s, x) + 2*s[1],))
     try:
         x = np.arange(5)*.001
         expected = np.asarray(state(x))
@@ -458,8 +448,8 @@ def test_coil_quantity_includes_direct_and_moving_equilibrium_derivatives(scalar
 
 
 @pytest.mark.parametrize("kwargs,error,match", [
-    (dict(loss=lambda s, rt, coils: s), ValueError, "scalar"),
-    (dict(loss=lambda s, rt, c: jnp.sum(s), coil_quantities=(lambda s, rt, c: jnp.outer(c, c),)), ValueError,
+    (dict(loss=lambda s, rt, x: s), ValueError, "scalar"),
+    (dict(loss=lambda s, rt, x: jnp.sum(s), parameter_quantities=(lambda s, rt, x: jnp.outer(x, x),)), ValueError,
      "one-dimensional"),
 ])
 def test_scalar_rows_are_validated_before_optimization(scalar, kwargs, error, match):
@@ -469,13 +459,31 @@ def test_scalar_rows_are_validated_before_optimization(scalar, kwargs, error, ma
 
 def test_vector_quantities_give_one_constraint_row_per_entry(scalar):
     _, _, state, derivative = scalar
-    q = build(scalar, lambda s, rt, c: jnp.sum(s * s), quantities=(lambda s, rt: s[:3], lambda s, rt: s[4]))
+    q = build(scalar, lambda s, rt, x: jnp.sum(s * s), quantities=(lambda s, rt: s[:3], lambda s, rt: s[4]))
     try:
         x = np.full(5, .001)
         expected = np.asarray(state(x))
         np.testing.assert_allclose(q.constraint_values(x), np.r_[expected[:3], expected[4]])
         np.testing.assert_allclose(q.constraint_jac(x), derivative(x)[[0, 1, 2, 4]], rtol=1e-13)
         assert q.nonlinear_constraint(np.zeros(4), np.full(4, np.inf)).jac(x).shape == (4, 5)
+    finally:
+        q.close()
+
+
+def test_plasma_parameters_of_the_design_point_reach_rows_trials_and_exports(scalar, monkeypatch):
+    p, _, state, derivative = scalar
+    monkeypatch.setattr(api.im, "runtime_from_params", lambda params, icfg: params)
+    monkeypatch.setattr(api.im, "input_with_params", lambda inp, params: ("input", params))
+    solver = SimpleNamespace(**{**vars(p.solver), "plasma_from_parameters": lambda params, x: 2.0 + x[0]})
+    q = FreeBoundaryProblem(p.inp, replace(p.cfg, solver=solver), loss=lambda s, rt, x: rt * jnp.sum(s))
+    try:
+        x = np.arange(1., 6.) * .001
+        expected = np.asarray(state(x))
+        value, gradient = q.value_and_grad(x)
+        np.testing.assert_allclose(value, (2 + x[0]) * expected.sum(), rtol=1e-14)
+        np.testing.assert_allclose(gradient, (2 + x[0]) * derivative(x).sum(axis=0) + np.eye(5)[0] * expected.sum(),
+                                   rtol=1e-13)
+        assert q._inp_at(x) == ("input", 2 + x[0]) and q.equilibrium_from_x(x).inp == ("input", 2 + x[0])
     finally:
         q.close()
 
@@ -497,19 +505,22 @@ def test_newton_corrected_trial_skips_the_ordinary_solve(scalar):
 
 def test_from_loss_rejects_invalid_definitions():
     inp = SimpleNamespace(lfreeb=True)
+    field = lambda x: x  # noqa: E731
     with pytest.raises(TypeError, match="callable"):
-        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coil_quantities=(1,))
+        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., np.zeros(2), field_from_parameters=field,
+                                      parameter_quantities=(1,))
+    with pytest.raises(TypeError, match="callable"):
+        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., np.zeros(2), field_from_parameters=None)
     jax.config.update("jax_enable_x64", True)
-    with pytest.raises(ValueError, match="select coil_current_dofs explicitly"):
-        FreeBoundaryProblem.from_loss(inp, lambda *a: 0., coils=object())
+    with pytest.raises(ValueError, match="free-boundary"):
+        FreeBoundaryProblem.from_loss(SimpleNamespace(lfreeb=False), lambda *a: 0., np.zeros(2),
+                                      field_from_parameters=field)
 
 
 def test_complex_parameters_are_rejected_without_silent_conversion(scalar):
     problem, *_ = scalar
     with pytest.raises(ValueError, match="real"):
         problem.fun(problem.x0.astype(complex) + 1j)
-    with pytest.raises(ValueError, match="real"):
-        CoilParameters(np.zeros((1, 3, 3), dtype=complex), [1.0], current_dofs=(0,))
 
 
 def test_equilibrium_preserves_standard_type_and_lazy_fixed_geometry_wout(scalar, monkeypatch):
@@ -554,19 +565,19 @@ def test_constructor_solves_once_and_checks_the_initial_root(scalar, monkeypatch
     monkeypatch.setattr(api.im, "params_from_input", lambda inp: None)
     monkeypatch.setattr(freeboundary, "_solve_free_boundary_stage", solve)
     monkeypatch.setattr(api, "_config_from_state", certify)
-    kwargs = dict(parameterization=p.parameterization, restart_from=p.accepted.state,
+    kwargs = dict(field_from_parameters=p.solver.field_from_parameters, restart_from=p.accepted.state,
                   solver_options=dict(ftol=1e-11, **({"adjoint_solver": "coupled_gcrot"} if failure == "adjoint" else {})))
-    loss = lambda s, rt, coils: jnp.sum(s)  # noqa: E731
+    loss = lambda s, rt, x: jnp.sum(s)  # noqa: E731
     if failure == "adjoint":
         with pytest.raises(ValueError, match="forward_dense_jax"):
-            FreeBoundaryProblem.from_loss(p.inp, loss, **kwargs)
+            FreeBoundaryProblem.from_loss(p.inp, loss, p.x0, **kwargs)
         assert stats["solves"] == 0
         return
     if failure:
         with pytest.raises(VmecError):
-            FreeBoundaryProblem.from_loss(p.inp, loss, **kwargs)
+            FreeBoundaryProblem.from_loss(p.inp, loss, p.x0, **kwargs)
     else:
-        FreeBoundaryProblem.from_loss(p.inp, loss, **kwargs).close()
+        FreeBoundaryProblem.from_loss(p.inp, loss, p.x0, **kwargs).close()
         assert seen["certify"]["root_residual_atol"] == 2e-6
         assert seen["options"]["adjoint_solver"] == "forward_dense_jax"
     assert stats["solves"] == 1
@@ -579,21 +590,21 @@ def test_real_dense_and_matrixfree_pullbacks_through_the_public_api(monkeypatch)
     matrix = jnp.array([[3., 2.], [-1., 4.]])
     coupling = jnp.array([[1., -2.], [3., 1.]])
     residual = jax.jit(lambda z, p, x, *_: matrix @ z + coupling @ x - p)
-    chart = SimpleNamespace(x0=np.zeros(2), scales=np.ones(2), dof_names=("a", "b"), coils_from_x=lambda x: x)
     inp = SimpleNamespace(lfreeb=True)
     solver = SimpleNamespace(implicit=SimpleNamespace(inp=inp, device=None, lconm1=False, adjoint_tol=1e-11,
         adjoint_maxiter=10, adjoint_gcrot_m=2, adjoint_gcrot_k=1),
         adjoint_dense_batch_size=2, adjoint_dense_max_dofs=10, adjoint_solver="forward_dense_jax",
-        adjoint_fail="error", adjoint_residual_rtol=1e-9, include_edge_in_convergence=True, field_from_parameters=chart)
+        adjoint_fail="error", adjoint_residual_rtol=1e-9, include_edge_in_convergence=True,
+        field_from_parameters=lambda x: x, plasma_from_parameters=None)
     owner = object()
     root = SimpleNamespace(_owner=owner, parameters=np.zeros(2), state=jnp.zeros(2), dof_mask=jnp.ones(2),
                            rcon0=None, zcon0=None)
     cfg = SimpleNamespace(_owner=owner, _anchor=root, params=jnp.zeros(2), solver=solver,
-                          root_residual_atol=2e-6, parameter_scales=chart.scales)
+                          root_residual_atol=2e-6, parameter_scales=np.ones(2))
     monkeypatch.setattr(fbi, "_projected_residual", lambda *_, **__: residual)
     monkeypatch.setattr(im, "_dof_projector", lambda _, mask: lambda x: x*mask)
     monkeypatch.setattr(im, "runtime_from_params", lambda *_: None)
-    p = FreeBoundaryProblem(inp, chart, cfg, loss=lambda s, rt, c: jnp.sum((s-1)**2)+jnp.sum(c),
+    p = FreeBoundaryProblem(inp, cfg, loss=lambda s, rt, x: jnp.sum((s-1)**2)+jnp.sum(x),
                             quantities=(lambda s, rt: s[0], lambda s, rt: s[1]))
     try:
         expected = -np.linalg.solve(matrix, coupling)
@@ -638,31 +649,20 @@ def coupled(monkeypatch):
     params = jnp.array([.6, -.2, 0.])
     residual = jax.jit(lambda z, p, x, *_: matrix@z + .1*z*z*mask - p - coupling@x)
 
-    class Chart:
-        x0 = np.zeros(2)
-        scales = np.ones(2)
-        dof_names = ('a', 'b')
-
-        def __call__(self, x):
-            return x
-
-        def coils_from_x(self, x):
-            return x
-
-    chart = Chart()
+    x0, scales = np.zeros(2), np.ones(2)
     inp = SimpleNamespace(lfreeb=True)
     solver = SimpleNamespace(implicit=SimpleNamespace(inp=inp, device=None, lconm1=False,
         ftol=1e-15, max_iterations=10), resolution=None, edge_force_tolerance=1e-15,
         adjoint_dense_batch_size=2, adjoint_dense_max_dofs=10, adjoint_solver='forward_dense_jax',
         adjoint_fail='error', adjoint_residual_rtol=1e-9, include_edge_in_convergence=True,
-        field_from_parameters=chart)
+        field_from_parameters=lambda x: x, plasma_from_parameters=None)
     owner = object()
     initial = jnp.array([.2, -.01, 7.])
-    anchor = PolishRoot(chart.x0.copy(), initial, mask, owner,
-        float(jnp.linalg.norm(residual(initial*mask, params, chart.x0))),
+    anchor = PolishRoot(x0.copy(), initial, mask, owner,
+        float(jnp.linalg.norm(residual(initial*mask, params, x0))),
         jnp.array([2.]), jnp.array([3.]), SimpleNamespace(iterations=5))
     cfg = SimpleNamespace(_owner=owner, _anchor=anchor, params=params, solver=solver,
-        parameter_scales=chart.scales, continuation_step=.1, max_continuation_steps=64,
+        parameter_scales=scales, continuation_step=.1, max_continuation_steps=64,
         root_residual_atol=1.)
     monkeypatch.setattr(api.fbi, '_projected_residual', lambda *_, **__: residual)
     monkeypatch.setattr(api.im, '_dof_projector', lambda _, m: lambda x: x*m)
@@ -687,8 +687,8 @@ def coupled(monkeypatch):
         return PolishRoot(np.asarray(point).copy(), state, mask, owner, norm, rcon0, zcon0, result)
 
     monkeypatch.setattr(api, '_certify', certify)
-    problem = FreeBoundaryProblem(inp, chart, cfg,
-        loss=lambda s, rt, c: .5*jnp.sum(s[:2]**2)+jnp.sum(c*c),
+    problem = FreeBoundaryProblem(inp, cfg,
+        loss=lambda s, rt, x: .5*jnp.sum(s[:2]**2)+jnp.sum(x*x),
         quantities=(lambda s, rt: s[0], lambda s, rt: s[1]))
     yield problem, residual
     problem.close()
@@ -722,11 +722,11 @@ def test_polish_failure_keeps_initial_root_and_caches(coupled):
     np.testing.assert_array_equal(p.grad(p.x0), grad)
 
 
-def test_polished_coil_quantity_matches_independent_endpoints(coupled, monkeypatch):
+def test_polished_parameter_quantity_matches_independent_endpoints(coupled, monkeypatch):
     """A moving-surface-like row retains both direct and root-response terms."""
     p, _ = coupled
-    q = FreeBoundaryProblem(p.inp, p.parameterization, p.cfg, loss=lambda s, rt, c: jnp.sum(s[:2]**2),
-        coil_quantities=(lambda s, rt, c: s[0]*c[0] + s[1] + 2*c[1],))
+    q = FreeBoundaryProblem(p.inp, p.cfg, loss=lambda s, rt, x: jnp.sum(s[:2]**2),
+        parameter_quantities=(lambda s, rt, x: s[0]*x[0] + s[1] + 2*x[1],))
     try:
         q.enable_root_polishing()
         anchor = q.accepted
@@ -1498,9 +1498,9 @@ def callback(monkeypatch, tmp_path, *, converge=True, certify=True):
     problem.accepted = anchor
     problem.cfg = NS(continuation_step=.1, max_continuation_steps=64)
     problem.solver = NS(resolution=None, edge_force_tolerance=1e-11,
-                        implicit=NS(ftol=1e-11, max_iterations=12000))
+                        implicit=NS(ftol=1e-11, max_iterations=12000),
+                        field_from_parameters=lambda p: p, plasma_from_parameters=None)
     problem.inp = None
-    problem.parameterization = lambda p: p
     problem._linearization = NS(tangent=tangent)
     problem._linearization_record = anchor
     problem._compact_jac = np.zeros((4, 1))
@@ -1553,133 +1553,3 @@ def test_failed_derivative_preparation_never_launches_correction(monkeypatch, tm
     solve.assert_not_called()
     tangent.assert_not_called()
     cert.assert_not_called()
-
-
-# Coil coordinates.
-
-def test_coil_chart_selects_currents_and_keeps_nominal_data_immutable():
-    rng = np.random.default_rng(38)
-    coefficients = rng.normal(size=(2, 3, 5))
-    currents = np.array([3e5, -2e5])
-    chart = CoilParameters(coefficients, currents, current_dofs=(1,), nfp=3)
-    x = rng.normal(size=chart.size) * 0.001
-    assert chart.size == 31 and len(chart.dof_names) == 31
-    np.testing.assert_allclose(chart.base_currents_at(x), [currents[0], currents[1] * (1 + x[0])])
-    np.testing.assert_allclose(chart.curve_dofs_at(x), coefficients + x[1:].reshape(2, 3, 5))
-    coefficients[:] = 0
-    currents[:] = 0
-    assert np.any(chart.coefficients) and np.any(chart.currents)
-
-
-def test_coil_chart_phiedge_coordinate_comes_first():
-    rng = np.random.default_rng(39)
-    coefficients, currents = rng.normal(size=(2, 3, 5)), np.array([3e5, -2e5])
-    chart = CoilParameters(coefficients, currents, current_dofs=(1,), nfp=3, phiedge=0.08, phiedge_scale=0.02)
-    x = rng.normal(size=chart.size) * 0.001
-    assert chart.size == 32 and chart.dof_names[0] == "phiedge/nominal" and chart.scales[0] == 0.02
-    np.testing.assert_allclose(chart.phiedge_at(x), 0.08 * (1 + x[0]))
-    np.testing.assert_allclose(chart.base_currents_at(x), [currents[0], currents[1] * (1 + x[1])])
-    np.testing.assert_allclose(chart.curve_dofs_at(x), coefficients + x[2:].reshape(2, 3, 5))
-    with pytest.raises(ValueError, match="does not vary PHIEDGE"):
-        CoilParameters(coefficients, currents, current_dofs=()).phiedge_at(np.zeros(30))
-
-
-def test_coil_chart_plasma_current_coordinates_follow_phiedge():
-    rng = np.random.default_rng(40)
-    coefficients, currents = rng.normal(size=(2, 3, 5)), np.array([3e5, -2e5])
-    nominal = np.array([2.0, -4.0, 1.5e4])  # two AC_AUX_F values, then CURTOR [A]
-    chart = CoilParameters(coefficients, currents, current_dofs=(1,), phiedge=0.08, plasma_current=nominal,
-                           plasma_current_spline=True, plasma_current_scale=0.1)
-    x = rng.normal(size=chart.size) * 0.01
-    assert chart.size == 35 and chart.dof_names[1:4] == ("plasma_current[0]/unit", "plasma_current[1]/unit",
-                                                         "curtor/nominal")
-    np.testing.assert_array_equal(chart.scales[1:4], 0.1)
-    @dataclass
-    class Params:
-        phiedge: float
-        curtor: float
-        ac: object
-        ac_aux_f: object
-
-    params = Params(0.0, 0.0, jnp.zeros(3), jnp.full(3, 7.0))
-    moved = chart.plasma_params_at(params, x)
-    np.testing.assert_allclose(moved.phiedge, 0.08 * (1 + x[0]))
-    np.testing.assert_allclose(moved.ac_aux_f, [2 + 4 * x[1], -4 + 4 * x[2], 7.0])
-    np.testing.assert_allclose(moved.curtor, 1.5e4 * (1 + x[3]))
-    np.testing.assert_allclose(chart.base_currents_at(x), [currents[0], currents[1] * (1 + x[4])])
-    np.testing.assert_allclose(chart.curve_dofs_at(x), coefficients + x[5:].reshape(2, 3, 5))
-    with pytest.raises(ValueError, match="nonzero CURTOR"):
-        CoilParameters(coefficients, currents, current_dofs=(), plasma_current=[1.0, 0.0])
-
-
-def test_essos_coil_parameter_roundtrip():
-    pytest.importorskip("essos.coils")
-    rng = np.random.default_rng(483)
-    chart = CoilParameters(rng.normal(size=(2, 3, 5)), [2e5, -3e5], current_dofs=(1,), nfp=2, stellsym=True,
-                           n_segments=24)
-    reconstructed = CoilParameters.from_coils(chart.coils_from_x(chart.x0), current_dofs=(1,))
-    np.testing.assert_array_equal(reconstructed.coefficients, chart.coefficients)
-    np.testing.assert_array_equal(reconstructed.currents, chart.currents)
-    assert reconstructed.nfp == 2 and reconstructed.stellsym and reconstructed.n_segments == 24
-
-
-@pytest.fixture
-def physical_coils():
-    essos_coils = pytest.importorskip("essos.coils")
-    jax.config.update("jax_enable_x64", True)
-    coefficients = np.random.default_rng(747).normal(size=(2, 3, 5))
-    curves = essos_coils.Curves(jnp.asarray(coefficients), 24, 2, True, scaling_factor=0.7, scale_fixed=2.5)
-    currents = jnp.array([2.4e5, -3.1e5])
-    return essos_coils.Coils(curves, currents, currents_scale=8e4), coefficients, currents
-
-
-def test_import_preserves_physical_units_and_symmetry(physical_coils):
-    coils, coefficients, currents = physical_coils
-    chart = CoilParameters.from_coils(coils, current_dofs=(1,))
-    np.testing.assert_allclose(chart.coefficients, coefficients, rtol=2e-15, atol=2e-15)
-    np.testing.assert_array_equal(chart.currents, currents)
-    restored = chart.coils_from_x(chart.x0)
-    np.testing.assert_allclose(restored.gamma, coils.gamma, rtol=2e-14, atol=2e-14)
-    np.testing.assert_allclose(restored.gamma_dash, coils.gamma_dash, rtol=2e-14, atol=2e-14)
-    np.testing.assert_array_equal(restored.currents, coils.currents)
-    assert (chart.nfp, chart.stellsym, chart.n_segments, chart.size) == (2, True, 24, 31)
-
-
-def test_export_reload_keeps_physical_currents_and_geometry(physical_coils, tmp_path):
-    coils, _, _ = physical_coils
-    chart = CoilParameters.from_coils(coils, current_dofs=(1,))
-    x = np.random.default_rng(483).normal(size=chart.size) * chart.scales
-    exported = chart.coils_from_x(x)
-    path = tmp_path / "coils.json"
-    exported.to_json(str(path))
-    reloaded = pytest.importorskip("essos.coils").Coils.from_json(str(path))
-    rebuilt = CoilParameters.from_coils(reloaded, current_dofs=(1,))
-    np.testing.assert_allclose(rebuilt.coefficients, chart.curve_dofs_at(x), rtol=2e-15, atol=2e-15)
-    np.testing.assert_array_equal(rebuilt.currents, chart.base_currents_at(x))
-    np.testing.assert_allclose(reloaded.gamma, exported.gamma, rtol=2e-14, atol=2e-14)
-
-
-def test_field_derivatives_under_jit_and_nested_transforms(physical_coils):
-    coils, _, _ = physical_coils
-    chart = CoilParameters.from_coils(coils, current_dofs=(1,))
-    scales = jnp.asarray(chart.scales)
-
-    def field(u):
-        return jnp.stack(
-            chart(u * scales).b_cyl(jnp.array([0.8, 1.1, 1.4]), jnp.array([0.1, 0.3, 0.7]), jnp.array([0.2, -0.1, 0.3]))
-        ).ravel()
-
-    compiled = jax.jit(field)
-    derivative = jax.jit(jax.jacfwd(compiled))
-    rng = np.random.default_rng(748)
-    for u in (np.zeros(chart.size), rng.normal(size=chart.size)):
-        jacobian = derivative(u)
-        assert np.isfinite(jacobian).all()
-        # Exercise current and Fourier directions independently, at two states.
-        for index in (0, 1, chart.size - 1):
-            delta = np.eye(chart.size)[index] * 1e-4
-            fd = (compiled(u + delta) - compiled(u - delta)) / 2e-4
-            np.testing.assert_allclose(jacobian[:, index], fd, rtol=3e-6, atol=1e-10)
-        weights = jnp.linspace(0.2, 1.0, 9)
-        reverse = jax.jit(jax.grad(lambda v: jnp.vdot(compiled(v), weights)))(u)
-        np.testing.assert_allclose(reverse, weights @ jacobian, rtol=2e-12, atol=1e-12)

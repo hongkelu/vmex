@@ -214,9 +214,10 @@ def main(argv=None):
     current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
     scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales,
-                                          phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
-                                          plasma_current=current, plasma_current_spline=True)
+    chart = coil_limits.CoilChart(coils0, current_dofs=(), scales=scales,
+                                  phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
+                                  plasma_current=current, plasma_current_spline=True)
+    chart.check_input(inp)
     qs = target_residual()
 
     def boundary(state, runtime, grid):
@@ -230,17 +231,17 @@ def main(argv=None):
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
 
-    def clearance(state, runtime, coils):
-        return coil_limits.surface_distance(coils, boundary(state, runtime, coil_limits.SURFACE_GRID))
+    def clearance(state, runtime, x):
+        return coil_limits.surface_distance(chart.coils_from_x(x), boundary(state, runtime, coil_limits.SURFACE_GRID))
 
     def qa(state, runtime):
         residuals = qs.residuals_state(state, runtime)
         return jnp.vdot(residuals, residuals)
 
-    def loss(state, runtime, coils):
+    def loss(state, runtime, x):
         return 0.5 * qa(state, runtime)
 
-    def aspect(state, runtime, coils):
+    def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
     seconds = {}
@@ -259,10 +260,11 @@ def main(argv=None):
     mirror = (opt.mirror_ratio,) if P.MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if P.IOTA_CEILING else ()
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, quantities=(min_abs_iota, opt.major_radius, *mirror, *ceiling,
-                               *([bootstrap_mismatch(inp, redl, args.device)] if redl is not None else [])),
-        coil_quantities=(clearance, aspect),
-        parameterization=chart, restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
+        inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_from_parameters,
+        scales=chart.scales, names=chart.dof_names,
+        quantities=(min_abs_iota, opt.major_radius, *mirror, *ceiling,
+                    *([bootstrap_mismatch(inp, redl, args.device)] if redl is not None else [])),
+        parameter_quantities=(clearance, aspect), restart_from=seed, root_residual_atol=ROOT_TOLERANCE, event=record,
         deadline=started + args.max_seconds,
         solver_options=dict(device=args.device, ftol=P.EQUILIBRIUM_FTOL, edge_force_tolerance=P.EDGE_FORCE_TOLERANCE,
                             max_iterations=int(inp.niter_array[-1]), adjoint_dense_batch_size=ADJOINT_BATCH_SIZE,
@@ -303,7 +305,7 @@ def main(argv=None):
 
     def save(tag):
         x = problem.accepted.parameters
-        problem.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
+        chart.coils_from_x(x).to_json(str(out / f"coils{tag}.json"))
         wout = problem.equilibrium_from_x(x).wout
         vj.write_wout(str(out / f"wout{tag}.nc"), wout)
         # Diagnostics only: none of these enter the loss or the constraints.

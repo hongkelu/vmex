@@ -7,7 +7,7 @@
 DESC (https://github.com/PlasmaControl/DESC, not a VMEX dependency) starts from
 ``OUT/mM/wout_start.nc``, with that run's pressure, enclosed current and toroidal
 flux.  It uses the same external field, ``OUT/field.npz``, as the exact filament
-sum B = 1e-7 sum_c I_c gamma'_c x d / |d|^3 of VMEX's ``DirectCoilField``
+sum B = 1e-7 sum_c I_c gamma'_c x d / |d|^3 of the benchmark's ``filament_field``
 (checked to 1e-10).  The boundary is solved with all three interface conditions
 and the sheet current potential held at zero (``FixSheetCurrent``).  This
 writes ``OUT/mM/desc/report.json``, holding the wall time and peak GPU memory of

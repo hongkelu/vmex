@@ -517,6 +517,55 @@ def test_from_loss_rejects_invalid_definitions():
                                       field_from_parameters=field)
 
 
+def test_parameter_vectors_are_validated():
+    owner = NS(x0=np.zeros(2))
+    with pytest.raises(ValueError, match="real"):
+        FreeBoundaryProblem._validate_x(owner, np.array([1j, 0.0]))
+    with pytest.raises(ValueError, match="invalid parameter vector"):
+        FreeBoundaryProblem._validate_x(owner, np.zeros(3))
+
+
+def test_certification_uses_the_design_points_plasma_parameters(monkeypatch):
+    seen = []
+    monkeypatch.setattr(api.im, "runtime_from_params",
+                        lambda params, icfg: seen.append(params) or NS(modes=NS(mnmax=1)))
+    cfg = NS(params="params", parameter_scales=np.ones(2),
+             solver=NS(implicit=NS(resolution=NS(ns=3)), plasma_from_parameters=lambda p, x: (p, float(x[0]))))
+    with pytest.raises(TypeError, match="SpectralState"):
+        api._certify(cfg, np.array([0.5, 0.0]), object(), rcon0=None, zcon0=None)
+    assert seen == [("params", 0.5)]
+
+
+def test_wout_reevaluates_the_vacuum_of_the_design_points_field(monkeypatch):
+    @dataclass
+    class Runtime:
+        rcon0: object = None
+        zcon0: object = None
+        lfreeb: bool = False
+        jmax: int = 0
+        presf_ns_scale: object = None
+
+    params_seen, fields = [], []
+    monkeypatch.setattr(api.im, "runtime_from_params", lambda params, icfg: params_seen.append(params) or Runtime())
+    monkeypatch.setattr(api.fbi, "_presf_ns_scale_traceable", lambda params, inp, ns: 1.0)
+    program = NS(full=lambda state, rt, field: fields.append(field) or {"potvac": 0.0, "surface_fields": 0.0})
+    monkeypatch.setattr(api.fb, "_vacuum_executables", lambda *a, **k: ("basis", program, None))
+    finite = np.zeros(2)
+    monkeypatch.setattr(api.fb, "_vacuum_output", lambda state, basis: NS(
+        potsin=finite, bsubu=finite, bsubv=finite, bsupu=finite, bsupv=finite))
+    monkeypatch.setattr(api, "wout_from_state", lambda **kwargs: kwargs)
+    plasma = lambda p, x: (p, float(x[0]))  # noqa: E731
+    owner = NS(cfg=NS(params="params", solver=NS(plasma_from_parameters=plasma)),
+               solver=NS(implicit="icfg", resolution=NS(ns=3, nzeta=4), field_from_parameters=lambda x: float(x[0])),
+               inp=NS(mpol=2, ntor=1, rbc=np.ones((3, 2))), _inp_at=lambda x: ("input", float(x[0])),
+               rt=NS(setup=NS(signgs=-1), trig=NS(wint=np.ones(2)), modes="modes"))
+    record = NS(parameters=np.array([0.5, 0.0]), state="state", rcon0=0.0, zcon0=0.0,
+                result=NS(iterations=3, fsqr=1e-12, fsqz=1e-12, fsql=1e-12))
+    wout = FreeBoundaryProblem._wout(owner, record)
+    assert params_seen == [("params", 0.5)] and fields == [0.5]
+    assert wout["inp"] == ("input", 0.5) and wout["state"] == "state" and wout["niter"] == 3
+
+
 def test_complex_parameters_are_rejected_without_silent_conversion(scalar):
     problem, *_ = scalar
     with pytest.raises(ValueError, match="real"):

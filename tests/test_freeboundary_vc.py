@@ -265,10 +265,11 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inner = (s > 0.1) & (s < 0.9)
     assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))
     # Jacobian columns of a boundary and two current coordinates against central differences of re-solved rows
+    # (small steps: near the axis Redl's rows are strongly nonlinear in the boundary, through f_t ~ eps^(1/2))
     J = model.linearize(fit.x, fit.aux, field)[0]
     for k in (0, model.n_boundary + 3, model.n_boundary + 15):
-        h = 1e-3 * model.x_scale[k]
+        h = 1e-5 * model.x_scale[k]
         rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
                 for sign in (1, -1)]
         fd = (rows[0] - rows[1]) / (2 * h)
-        assert np.linalg.norm(J[:, k] - fd) < 2e-3 * np.linalg.norm(fd), k
+        assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k

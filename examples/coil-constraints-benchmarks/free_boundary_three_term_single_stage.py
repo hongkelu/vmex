@@ -134,9 +134,9 @@ def main(argv=None):
     current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
     scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
                    P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = opt.CoilParameters.from_coils(coils0, current_dofs=(), scales=scales,
-                                          phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
-                                          plasma_current=current, plasma_current_spline=True)
+    chart = coil_limits.CoilChart(coils0, current_dofs=(), scales=scales,
+                                  phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
+                                  plasma_current=current, plasma_current_spline=True)
     nplasma = chart.nphiedge + chart.nplasma
     qs = target_residual()
 

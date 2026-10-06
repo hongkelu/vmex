@@ -432,12 +432,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--boundary-condition",
-        choices=("nestor", "virtual-casing"),
+        choices=("nestor", "three-term"),
         default=None,
         help=(
             "Plasma-vacuum interface condition of an LFREEB = T deck: NESTOR's "
-            "vacuum pressure (default) or the three virtual-casing conditions "
-            "B.n = 0, pressure balance and no sheet current, solved for the "
+            "vacuum pressure (default) or the three-term free boundary: B.n = 0, "
+            "pressure balance and no sheet current (plasma field by virtual casing), solved for the "
             "boundary from the deck's (requires virtual-casing-jax). Overrides "
             "the deck's !@VMEX BOUNDARY_CONDITION directive."
         ),

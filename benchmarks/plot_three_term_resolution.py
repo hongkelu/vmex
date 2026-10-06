@@ -6,7 +6,9 @@
 Reads ``OUT/m*/<method>.json`` and ``OUT/m*/wout_<method>.nc`` (any method or resolution still missing is left
 out, so the figures can be redrawn as runs finish) and writes ``OUT/three_term_resolution.png`` (distance to the
 target, the three interface conditions, wall time and peak GPU memory against mpol = ntor) and
-``OUT/three_term_resolution_lcfs.png`` (LCFS cross-sections of every method on the target's at a few resolutions).
+``OUT/three_term_resolution_lcfs.png`` (LCFS cross-sections of every method on the target's at a few resolutions)
+and ``OUT/three_term_resolution_surfaces.png`` (nested flux surfaces at ``--interior`` resolutions, the largest
+distance of every surface to the target's at the same normalized flux, and the iota profiles).
 """
 
 import argparse
@@ -31,18 +33,39 @@ METHODS = {  # name: (label, colour, marker, line style)
 }
 
 
-def lcfs(path, theta, phi):
+def lcfs(path, theta, phi, js=-1):
+    """``R, Z`` of surface(s) ``js`` (row of ``rmnc``) at toroidal angle ``phi``."""
     with netCDF4.Dataset(path) as nc:
         xm, xn = np.asarray(nc["xm"][:], float), np.asarray(nc["xn"][:], float)
-        rmnc, zmns = np.asarray(nc["rmnc"][:])[-1], np.asarray(nc["zmns"][:])[-1]
+        rmnc, zmns = np.asarray(nc["rmnc"][:])[js], np.asarray(nc["zmns"][:])[js]
     a = np.outer(theta, xm) - xn * phi
-    return np.cos(a) @ rmnc, np.sin(a) @ zmns
+    return np.cos(a) @ rmnc.T, np.sin(a) @ zmns.T
+
+
+def surfaces(path):
+    """Normalized flux of every surface, |iota| and the surface arrays of a wout."""
+    with netCDF4.Dataset(path) as nc:
+        ns = int(nc["ns"][:])
+        return np.linspace(0.0, 1.0, ns), np.abs(np.asarray(nc["iotaf"][:], float))
+
+
+def surface_mm(path_a, path_b, nfp, js):
+    """Largest distance of each surface ``js`` of ``path_a`` to the same surface of ``path_b`` (four planes), mm."""
+    theta = np.linspace(0, 2 * np.pi, 361)
+    worst = np.zeros(len(js))
+    for phi in np.linspace(0, np.pi / nfp, 4):
+        (Ra, Za), (Rb, Zb) = lcfs(path_a, theta, phi, js), lcfs(path_b, theta, phi, js)
+        for k in range(len(js)):
+            d = np.hypot(Ra[:, k, None] - Rb[None, :, k], Za[:, k, None] - Zb[None, :, k])
+            worst[k] = max(worst[k], float(np.max(np.min(d, axis=1))))
+    return 1e3 * worst
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("out", type=Path)
     p.add_argument("--sections", type=int, nargs="+", default=[4, 6, 8, 10, 12])
+    p.add_argument("--interior", type=int, nargs="+", default=[8, 12])
     a = p.parse_args()
     rows = [json.loads(f.read_text()) for f in sorted(a.out.glob("m*/*.json"))]
     by = {m: sorted((r for r in rows if r["method"] == m), key=lambda r: r["modes"]) for m in METHODS}
@@ -109,7 +132,71 @@ def main():
     fig.tight_layout()
     fig.savefig(a.out / "three_term_resolution_lcfs.png", dpi=120)
     plt.close(fig)
-    print("wrote", a.out / "three_term_resolution.png", a.out / "three_term_resolution_lcfs.png")
+    interior(a.out, truth, nfp, [m for m in a.interior if (a.out / f"m{m}").exists()])
+    print("wrote", a.out / "three_term_resolution.png", a.out / "three_term_resolution_lcfs.png",
+          a.out / "three_term_resolution_surfaces.png")
+
+
+def interior(out, truth, nfp, resolutions):
+    """Nested surfaces, their distance to the target's and the iota profiles at ``resolutions``."""
+    s_truth, iota_truth = surfaces(truth)
+    ns = s_truth.size
+    shown = [round(f * (ns - 1)) for f in (0.04, 0.25, 0.5, 0.75, 1.0)]
+    theta = np.linspace(0, 2 * np.pi, 361)
+    planes = [0.0, np.pi / (2 * nfp), np.pi / nfp]
+    methods = [m for m in METHODS if m not in ("target", "start")]
+    fig, axes = plt.subplots(len(resolutions) + 1, 3, figsize=(13.5, 4.3 * (len(resolutions) + 1)), squeeze=False)
+    for i, modes in enumerate(resolutions):
+        for j, phi in enumerate(planes):
+            ax = axes[i, j]
+            R, Z = lcfs(truth, theta, phi, shown)
+            ax.plot(R, Z, color="0.6", lw=3.5)
+            ax.plot(*[c[:1, 0] for c in lcfs(truth, np.zeros(1), phi, [0])], "o", color="0.6", ms=7)
+            for m in methods:
+                w = out / f"m{modes}" / f"wout_{m}.nc"
+                if not w.exists():
+                    continue
+                label, colour, _, ls = METHODS[m]
+                with netCDF4.Dataset(w) as nc:
+                    n = int(nc["ns"][:])
+                rows = [round(f * (n - 1)) for f in (0.04, 0.25, 0.5, 0.75, 1.0)]
+                R, Z = lcfs(w, theta, phi, rows)
+                ax.plot(R, Z, ls, color=colour, lw=1.1)
+                ax.plot(*[c[:1, 0] for c in lcfs(w, np.zeros(1), phi, [0])], "+", color=colour, ms=8)
+            ax.set_aspect("equal")
+            ax.set_title(f"mpol = ntor = {modes},  phi = {phi * nfp / (2 * np.pi):.2f} field period\n"
+                         "s = 0.04, 0.25, 0.5, 0.75, 1 and the axis (grey: 12 x 12 target)", fontsize=8)
+            ax.tick_params(labelsize=7)
+    # distance of every surface to the target's, and the iota profiles
+    ax_d, ax_i, ax_di = axes[-1]
+    for modes, marker in zip(resolutions, ("o", "s", "^", "D")):
+        for m in methods:
+            w = out / f"m{modes}" / f"wout_{m}.nc"
+            if not w.exists():
+                continue
+            label, colour, _, ls = METHODS[m]
+            s_m, iota_m = surfaces(w)
+            js = list(range(1, s_m.size))
+            if s_m.size == ns:
+                ax_d.plot(s_m[1:], surface_mm(w, truth, nfp, js), ls, color=colour, marker=marker, ms=3, lw=1,
+                          markevery=5, label=f"{label}, {modes} x {modes}")
+            ax_i.plot(s_m, iota_m, ls, color=colour, lw=1, marker=marker, ms=3, markevery=5)
+            ax_di.plot(s_m, np.abs(iota_m - np.interp(s_m, s_truth, iota_truth)), ls, color=colour, lw=1,
+                       marker=marker, ms=3, markevery=5)
+    ax_i.plot(s_truth, iota_truth, color="0.4", lw=3, alpha=0.6, label="12 x 12 target")
+    ax_d.set_ylabel("largest distance to the target's surface [mm]", fontsize=8)
+    ax_i.set_ylabel("|iota|", fontsize=8)
+    ax_di.set_ylabel("| |iota| - |iota_target| |", fontsize=8)
+    ax_di.set_yscale("log")
+    for ax in (ax_d, ax_i, ax_di):
+        ax.set_xlabel("normalized toroidal flux s", fontsize=8)
+        ax.grid(alpha=0.3, which="both")
+        ax.tick_params(labelsize=7)
+    ax_d.legend(fontsize=6)
+    ax_i.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(out / "three_term_resolution_surfaces.png", dpi=115)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

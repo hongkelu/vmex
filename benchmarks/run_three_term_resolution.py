@@ -40,6 +40,8 @@ the difference between the codes.  ``$VMEC2000_CMD`` is the command that runs
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import json
 import os
 import sys
@@ -116,13 +118,45 @@ class Meter:
                     peak_gpu_gib=round(stats.get("peak_bytes_in_use", 0) / 2**30, 2), device=str(jax.devices()[0]))
 
 
-def load_field(out):
+@functools.cache
+def _filament_class():
+    """The filament field type, made once (JAX is imported lazily: ``table`` needs no JAX)."""
+    import jax
     import jax.numpy as jnp
-    from vmex.core.freeboundary_problem import DirectCoilField
 
+    @dataclasses.dataclass(frozen=True)
+    class FilamentField:
+        gamma: object  # (coils, points, 3)
+        gamma_dash: object
+        currents: object  # (coils,)
+
+        def b_cyl(self, r, phi, z):
+            xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
+            d = xyz[..., None, None, :] - self.gamma
+            dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
+            B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
+            cos, sin = jnp.cos(phi), jnp.sin(phi)
+            return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
+
+    jax.tree_util.register_dataclass(FilamentField, data_fields=["gamma", "gamma_dash", "currents"],
+                                     meta_fields=[])
+    return FilamentField
+
+
+def filament_field(gamma, gamma_dash, currents):
+    """Biot-Savart field B = 1e-7 sum_c I_c mean_p gamma'_cp x d / |d|^3 of filaments, as a pytree with ``b_cyl``.
+
+    VMEX holds no coil code; any field with ``b_cyl(r, phi, z)`` whose arrays are pytree leaves serves the
+    three-term model without recompiling.
+    """
+    import jax.numpy as jnp
+
+    return _filament_class()(jnp.asarray(gamma), jnp.asarray(gamma_dash), jnp.asarray(currents))
+
+
+def load_field(out):
     data = np.load(out / "field.npz")
-    return DirectCoilField(gamma=jnp.asarray(data["gamma"]), gamma_dash=jnp.asarray(data["gamma_dash"]),
-                           currents=jnp.asarray(data["currents"]))
+    return filament_field(data["gamma"], data["gamma_dash"], data["currents"])
 
 
 # ---- field: the 12 x 12 target and the winding-surface current fitted to it ------------------------------------
@@ -229,7 +263,7 @@ def make_field(out):
         phi_t += cm * m * np.cos(a)
         phi_p += cm * (-n * nfp) * np.cos(a)
     K = np.asarray(jnp.asarray(phi_t)[:, None] * ep_w - jnp.asarray(phi_p)[:, None] * et_w)
-    # As a DirectCoilField (B = 1e-7 sum_c I_c gamma'_c x d / |d|^3): one one-point "coil" per surface element.
+    # As filaments (filament_field: B = 1e-7 sum_c I_c gamma'_c x d / |d|^3): one one-point "coil" per element.
     gamma, gamma_dash = np.asarray(src)[:, None, :], (K * dA)[:, None, :]
     currents = np.full(th.size, 1.0 / (4 * np.pi * 1e-7))
     rng = np.random.default_rng(0)

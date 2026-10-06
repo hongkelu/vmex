@@ -273,3 +273,27 @@ def test_bootstrap_current_solved_with_the_free_boundary():
                 for sign in (1, -1)]
         fd = (rows[0] - rows[1]) / (2 * h)
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_fixed_boundary_bootstrap_model_matches_picard():
+    """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is the Picard loop's, with exact columns."""
+    from vmex.core import bootstrap as bs
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False,
+                  ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
+    profiles = _lp_beta0p5_profiles(inp)
+    model = fvc.ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
+    assert model.n_boundary == 0 and model.x0.size == 24
+    out = model.solve_boundary(model.params0, None, ftol=1e-10)
+    state, _, params, _ = out["aux"]
+    assert model.bootstrap_residual(state, params) < 1e-4
+    picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
+    np.testing.assert_allclose(np.asarray(params.ac_aux_f), picard.input.ac_aux_f,
+                               rtol=0, atol=2e-4 * np.max(np.abs(picard.input.ac_aux_f)))
+    J = model.linearize(out["x"], out["aux"], None)[0]
+    k, h = 5, 1e-5 * model.x_scale[5]
+    rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
+            for sign in (1, -1)]
+    fd = (rows[0] - rows[1]) / (2 * h)
+    assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)

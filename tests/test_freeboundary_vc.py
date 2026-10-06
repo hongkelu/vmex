@@ -250,7 +250,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles)
+    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
     model = fit.model
     state, mask, params, _ = fit.aux
     assert fit.x.size == model.n_boundary + 24

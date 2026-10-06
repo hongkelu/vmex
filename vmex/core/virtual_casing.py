@@ -1029,7 +1029,7 @@ def external_B_cartesian(
 
     - :class:`~vmex.core.mgrid.MgridField` -> trilinear mgrid (diff. in
       ``extcur``), or any field with the same ``b_cyl(r, phi, z)`` method
-      (e.g. :class:`~vmex.core.freeboundary_problem.DirectCoilField`),
+      (a pytree whose arrays are leaves stays differentiable and compiles once),
     - a plain callable ``xyz(..., 3) -> B(..., 3)`` (e.g. an ESSOS ``Coils``
       Biot-Savart field, ``lambda pts: coils.B(pts)``; diff. in its own dofs).
 

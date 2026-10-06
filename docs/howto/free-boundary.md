@@ -149,7 +149,20 @@ result = vj.solve_free_boundary_multigrid(
 print(result.boundary_residual)   # RMS of B.n, pressure jump and mu0 K, over |B|
 ```
 
-or `vmex input.case --boundary-condition virtual-casing` on the command line.
+or `vmex input.case --boundary-condition virtual-casing` on the command line,
+or a directive in the deck itself, which VMEC2000 reads as a comment (the CLI
+flag and the `solve_file` keyword override it):
+
+```fortran
+!@VMEX BOUNDARY_CONDITION = VIRTUAL_CASING
+&INDATA
+  LFREEB = T
+  MGRID_FILE = 'mgrid_case.nc'
+  ...
+/
+```
+
+(`"_vmex": {"boundary_condition": "virtual_casing"}` in a JSON input).
 The deck boundary is the initial guess, so a fixed-boundary design and the
 coils fitted to it are a natural start. The edge pressure must vanish (a
 pressure jump needs a sheet current), and `virtual-casing-jax` must be
@@ -158,9 +171,23 @@ so use a GPU; expect several times the cost of a NESTOR solve.
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_virtual_casing`
 exposes the grid, weights and least-squares controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few
-equilibrium solves without compiling anything. For many fields and plasma
-parameters, as in an optimization, {class}`vmex.core.freeboundary_vc.VirtualCasingModel`
-gives the residual, its Jacobian and the state tangents directly.
+equilibrium solves without compiling anything:
+
+```python
+from vmex.core.freeboundary_vc import solve_free_boundary_virtual_casing
+
+fit = solve_free_boundary_virtual_casing(inp, external_field=coil_field)
+fit.boundary_residual, fit.equilibrium.wout          # the conditions, the free boundary
+moved = solve_free_boundary_virtual_casing(inp, external_field=new_coil_field, previous=fit)
+```
+
+For many fields and plasma parameters, as in a free-boundary single-stage
+optimization, {class}`vmex.core.freeboundary_vc.VirtualCasingModel` gives the
+pieces directly: `solve_boundary` (cold or warm), `linearize` (the interface
+Jacobian and the state responses to the boundary and any plasma parameters),
+and `pullback` (reverse-mode gradients of other functions of the equilibrium,
+e.g. a quasi-symmetry residual), with the coils an argument of the compiled
+code.
 
 To check a NESTOR result instead, pass `report_boundary_residual=True`: the
 three conditions are evaluated on the converged boundary and returned as

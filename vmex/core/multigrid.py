@@ -1044,6 +1044,7 @@ def solve_file(
     polish: bool | str | None = None,
     polish_config: Any = None,
     polish_fail: str | None = None,
+    boundary_condition: str | None = None,
     write_wout: bool = True,
     outdir=None,
     **solve_kwargs,
@@ -1060,6 +1061,9 @@ def solve_file(
     does the same and emits a :class:`RuntimeWarning`, with the documented
     precedence ``CLI flag > Python keyword > file directive > package
     default``; an explicit ``polish_config`` wins over ``polish_fail``.
+    ``boundary_condition`` (``"nestor"`` or ``"virtual_casing"``) overrides the
+    deck's ``!@VMEX BOUNDARY_CONDITION`` for an ``LFREEB = T`` deck (see
+    :func:`solve_free_boundary_multigrid`).
 
     ``write_wout=True`` writes ``wout_<case>.nc`` beside the input (or into
     ``outdir``) — the same output contract as ``vmex <input>``.  When
@@ -1085,7 +1089,7 @@ def solve_file(
         return solve_mirror_file(path, write_mout=write_wout, outdir=outdir, **solve_kwargs)
     request = read_input_request(path)
     options, sources = resolve_run_options(
-        request.options, polish=polish, polish_fail=polish_fail,
+        request.options, polish=polish, polish_fail=polish_fail, boundary_condition=boundary_condition,
     )
     config = polish_config_from_options(options, polish_config)
     inp = request.input
@@ -1118,7 +1122,8 @@ def solve_file(
                 f"the polish request came from the {sources['polish']}"
             )
         plan_kwargs = {} if freeb_plan is None else freeb_plan.solver_kwargs
-        result = solve_free_boundary_multigrid(inp, **{**plan_kwargs, **solve_kwargs})
+        result = solve_free_boundary_multigrid(
+            inp, **{**plan_kwargs, "boundary_condition": options.boundary_condition, **solve_kwargs})
     else:
         if bool(solve_kwargs.get("verbose")) and options.polish is not False:
             print(f"polish = {options.polish!r} (from {sources['polish']})")

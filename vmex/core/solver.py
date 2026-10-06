@@ -2093,7 +2093,7 @@ class SolveResult:
     quantity the strict free-boundary acceptance
     (``include_edge_in_convergence``) bounds.  ``boundary_residual`` is the
     :class:`~vmex.core.freeboundary_vc.BoundaryResidual` of a free boundary
-    solved with ``boundary_condition="virtual_casing"`` or reported with
+    solved with ``boundary_condition="three_term"`` or reported with
     ``report_boundary_residual=True``, else ``None``.
     """
 

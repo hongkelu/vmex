@@ -354,9 +354,9 @@ def test_polish_cli_flags_override_file_directives():
     assert options.polish_fail == "error" and sources["polish_fail"] == "cli"
     # The free-boundary interface condition follows the same precedence.
     from vmex.core.run_options import RunOptions
-    deck_vc = RunOptions(boundary_condition="virtual_casing")
+    deck_vc = RunOptions(boundary_condition="three_term")
     options, sources = cli._resolve_polish_cli(cli.build_parser().parse_args(["input.x"]), deck_vc)
-    assert options.boundary_condition == "virtual_casing" and sources["boundary_condition"] == "file"
+    assert options.boundary_condition == "three_term" and sources["boundary_condition"] == "file"
     args = cli.build_parser().parse_args(["input.x", "--boundary-condition", "nestor"])
     options, sources = cli._resolve_polish_cli(args, deck_vc)
     assert options.boundary_condition == "nestor" and sources["boundary_condition"] == "cli"

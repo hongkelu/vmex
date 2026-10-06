@@ -557,7 +557,7 @@ def test_report_boundary_residual_evaluates_the_final_nestor_state(monkeypatch) 
 def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) -> None:
     inp = VmecInput.from_file(DECK)
     with pytest.raises(NotImplementedError, match="deck boundary"):
-        solve_free_boundary_multigrid(inp, external_field=object(), boundary_condition="virtual_casing",
+        solve_free_boundary_multigrid(inp, external_field=object(), boundary_condition="three_term",
                                       initial_state=_state(3, 1, 0.0))
     with pytest.raises(ValueError, match="boundary_condition"):
         solve_free_boundary_multigrid(inp, external_field=object(), boundary_condition="unknown")
@@ -575,12 +575,12 @@ def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) 
         calls["polish"] = (inp_, kwargs)
         return _Result(kwargs["initial_state"])
 
-    _fake_freeboundary_vc(monkeypatch, solve_free_boundary_virtual_casing=fake_fit)
+    _fake_freeboundary_vc(monkeypatch, solve_free_boundary_three_term=fake_fit)
     monkeypatch.setattr(MG, "solve_multigrid", fake_solve_multigrid)
     field = object()
     result = solve_free_boundary_multigrid(
-        inp, ns_array=[5, 9], external_field=field, boundary_condition="virtual_casing",
-        virtual_casing_options={"max_nfev": 3})
+        inp, ns_array=[5, 9], external_field=field, boundary_condition="three_term",
+        three_term_options={"max_nfev": 3})
 
     ladder, kwargs = calls["fit"]
     np.testing.assert_array_equal(ladder.ns_array, [5, 9])

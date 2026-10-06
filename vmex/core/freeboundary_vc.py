@@ -15,7 +15,7 @@ field jump: a VMEC/NESTOR equilibrium may carry an edge sheet current.  Here
 the boundary is the unknown instead.  Every trial boundary is a fixed-boundary
 equilibrium, and a Gauss-Newton least-squares solve minimizes the stacked
 residual of all three conditions with exact implicit derivatives
-(:class:`VirtualCasingModel`).  At an exact
+(:class:`ThreeTermFreeBoundaryModel`).  At an exact
 solution all three vanish together; at finite resolution they stop at a floor
 set mainly by ``mpol`` (about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where
 the relative ``weights`` decide the balance.
@@ -30,13 +30,13 @@ rejected.
 
 Entry points, from the most to the least packaged:
 
-- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = VIRTUAL_CASING``
+- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = THREE_TERM``
   (``vmex input.case``, :func:`~vmex.core.multigrid.solve_file`), the CLI flag
-  ``--boundary-condition virtual-casing``, or
-  ``solve_free_boundary_multigrid(..., boundary_condition="virtual_casing")``;
-- :func:`solve_free_boundary_virtual_casing`: one solve with every control, and
+  ``--boundary-condition three-term``, or
+  ``solve_free_boundary_multigrid(..., boundary_condition="three_term")``;
+- :func:`solve_free_boundary_three_term`: one solve with every control, and
   ``previous=`` to restart from an earlier result after the coils change;
-- :class:`VirtualCasingModel`: the residual, its Jacobian, state tangents and
+- :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state tangents and
   pullbacks for one deck and any external field or plasma parameters, without
   recompiling -- the pieces an optimizer needs;
 - :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
@@ -144,7 +144,7 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
-def solve_free_boundary_virtual_casing(
+def solve_free_boundary_three_term(
     inp: VmecInput,
     *,
     external_field: Any = None,
@@ -195,14 +195,14 @@ def solve_free_boundary_virtual_casing(
     circulation around the seed's magnetic axis), the direction the
     normal-field rows cannot see.
 
-    A trust region with exact implicit Jacobians (:class:`VirtualCasingModel`)
+    A trust region with exact implicit Jacobians (:class:`ThreeTermFreeBoundaryModel`)
     runs to a relative cost change of ``jacobian_ftol``; Levenberg-Marquardt
     steps with its last Jacobian then go on to ``ftol``, the floor set by the
     resolution (``None``: the trust region runs to ``ftol``).  ``previous``, an
     earlier result for the same deck (typically before a coil change), starts
     from its boundary with those steps and its Jacobian, and from its model:
     neither new coils nor a repeat solve compile anything.  ``quadrature``,
-    ``trial_ftol`` and ``chunk`` are :class:`VirtualCasingModel`'s (fixed
+    ``trial_ftol`` and ``chunk`` are :class:`ThreeTermFreeBoundaryModel`'s (fixed
     singular quadrature, looser trial equilibria, Jacobian columns per batch).
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
@@ -230,7 +230,7 @@ def solve_free_boundary_virtual_casing(
         start = inp if initial_boundary is None else replace(
             inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
-        model = VirtualCasingModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
+        model = ThreeTermFreeBoundaryModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
                                    digits=digits, weights=weights, net_current_weight=net_current_weight,
                                    label_weight=label_weight, quadrature=quadrature, trial_ftol=trial_ftol,
                                    chunk=chunk)
@@ -250,7 +250,7 @@ def solve_free_boundary_virtual_casing(
         boundary_residual=model.boundary_residual(state, params, external_field), initial_boundary_residual=initial)
 
 
-class VirtualCasingModel:
+class ThreeTermFreeBoundaryModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
     The fixed-boundary equilibria and their derivatives come from
@@ -264,7 +264,7 @@ class VirtualCasingModel:
     ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
     deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
     (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
-    replaces.  The rows are those of :func:`solve_free_boundary_virtual_casing`,
+    replaces.  The rows are those of :func:`solve_free_boundary_three_term`,
     with the quadrature plan and the labelling reference fixed on the deck's
     boundary (``seed``: its ``(state, mask)``).
 
@@ -486,7 +486,7 @@ class VirtualCasingModel:
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_virtual_casing`).
+        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """

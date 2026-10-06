@@ -49,13 +49,13 @@ def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
     with pytest.raises(ValueError, match="edge pressure"):
-        fvc.solve_free_boundary_virtual_casing(inp, external_field=lambda xyz: xyz)
+        fvc.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
 
 
 def test_asymmetric_boundary_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), lasym=True)
     with pytest.raises(NotImplementedError, match="lasym"):
-        fvc.solve_free_boundary_virtual_casing(inp, external_field=lambda xyz: xyz)
+        fvc.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
 
 
 def test_unknown_boundary_condition_is_rejected():
@@ -145,7 +145,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fvc._coil_net_current(field, nestor.wout)), abs(float(nestor.wout.rbtor)),
                                rtol=1e-3)
-    fits = [fvc.solve_free_boundary_virtual_casing(inp, external_field=field, initial_boundary=start)
+    fits = [fvc.solve_free_boundary_three_term(inp, external_field=field, initial_boundary=start)
             for start in (None, nestor_deck)]
     for fit in fits:
         after = _residual(inp, fit.equilibrium, field)
@@ -164,7 +164,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
-    again = fvc.solve_free_boundary_virtual_casing(inp, external_field=field, previous=fit)
+    again = fvc.solve_free_boundary_three_term(inp, external_field=field, previous=fit)
     assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
@@ -177,7 +177,7 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field)
-    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="virtual_casing")
+    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term")
     assert result.converged and result.vacuum is None
     res = result.boundary_residual
     for name in ("normal", "pressure", "sheet_current"):

@@ -640,7 +640,7 @@ def solve_free_boundary_multigrid(
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
     boundary_condition: str = "nestor",
-    virtual_casing_options: dict | None = None,
+    three_term_options: dict | None = None,
     report_boundary_residual: bool = False,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
@@ -704,12 +704,12 @@ def solve_free_boundary_multigrid(
     on-demand compilation, and background threads are joined before the
     ``release_stage_cache`` point exactly like the fixed-boundary ladder.
 
-    ``boundary_condition="virtual_casing"`` replaces NESTOR's vacuum pressure
+    ``boundary_condition="three_term"`` replaces NESTOR's vacuum pressure
     by all three plasma-vacuum interface conditions (``B . n = 0``, pressure
     balance and no sheet current) with the plasma field from virtual casing:
     the boundary is solved for by
-    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_virtual_casing`
-    (keywords in ``virtual_casing_options``) starting from the deck boundary,
+    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term`
+    (keywords in ``three_term_options``) starting from the deck boundary,
     and the result is the fixed-boundary ladder's final stage on that boundary,
     with ``result.boundary_residual`` set and ``result.vacuum = None``.  Only
     the ladder, external-field, ``verbose``/``emit`` and ``device`` arguments
@@ -723,19 +723,19 @@ def solve_free_boundary_multigrid(
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
-    if boundary_condition == "virtual_casing":
+    if boundary_condition == "three_term":
         if initial_state is not None or restart_from is not None:
             raise NotImplementedError(
-                "boundary_condition='virtual_casing' starts from the deck boundary; "
+                "boundary_condition='three_term' starts from the deck boundary; "
                 "set it on inp instead of passing initial_state/restart_from")
-        from .freeboundary_vc import solve_free_boundary_virtual_casing
+        from .freeboundary_vc import solve_free_boundary_three_term
 
         ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
                          ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
                          niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
-        fit = solve_free_boundary_virtual_casing(
+        fit = solve_free_boundary_three_term(
             ladder, external_field=external_field, mgrid_path=mgrid_path,
-            **(virtual_casing_options or {}))
+            **(three_term_options or {}))
         ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
         result = solve_multigrid(
             fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
@@ -743,7 +743,7 @@ def solve_free_boundary_multigrid(
             initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
         return replace(result, boundary_residual=fit.boundary_residual)
     if boundary_condition != "nestor":
-        raise ValueError(f"boundary_condition must be 'nestor' or 'virtual_casing', got {boundary_condition!r}")
+        raise ValueError(f"boundary_condition must be 'nestor' or 'three_term', got {boundary_condition!r}")
 
     ns_arr = _vmec_ns_prefix(inp.ns_array if ns_array is None else ns_array)
     if ns_arr.size == 0:
@@ -1061,7 +1061,7 @@ def solve_file(
     does the same and emits a :class:`RuntimeWarning`, with the documented
     precedence ``CLI flag > Python keyword > file directive > package
     default``; an explicit ``polish_config`` wins over ``polish_fail``.
-    ``boundary_condition`` (``"nestor"`` or ``"virtual_casing"``) overrides the
+    ``boundary_condition`` (``"nestor"`` or ``"three_term"``) overrides the
     deck's ``!@VMEX BOUNDARY_CONDITION`` for an ``LFREEB = T`` deck (see
     :func:`solve_free_boundary_multigrid`).
 

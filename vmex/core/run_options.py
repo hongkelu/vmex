@@ -12,7 +12,7 @@ Two directive spellings are accepted, both VMEC-safe comments::
 
     !@VMEX POLISH = AUTO
     !@VMEX POLISH_FAIL = ERROR
-    !@VMEX BOUNDARY_CONDITION = VIRTUAL_CASING
+    !@VMEX BOUNDARY_CONDITION = THREE_TERM
 
 and the original single-flag form from the polishing integration::
 
@@ -47,7 +47,7 @@ __all__ = [
 
 _POLISH_MODES = (False, True, "auto")
 _FAIL_MODES = ("error", "fallback", "warn")
-_BOUNDARY_CONDITIONS = ("nestor", "virtual_casing")
+_BOUNDARY_CONDITIONS = ("nestor", "three_term")
 
 #: ``!@VMEX KEY = VALUE`` — the canonical directive family.
 # [ \t] rather than \s throughout: a greedy \s* would consume the newline
@@ -75,7 +75,7 @@ class RunOptions:
     ``"fallback"`` returns the unpolished state silently, ``"warn"`` returns
     it with a :class:`RuntimeWarning`.  ``boundary_condition`` is the
     plasma-vacuum interface of an ``LFREEB = T`` deck: ``"nestor"`` (NESTOR's
-    vacuum pressure) or ``"virtual_casing"`` (the three interface conditions,
+    vacuum pressure) or ``"three_term"`` (the three interface conditions,
     no sheet current; :mod:`vmex.core.freeboundary_vc`).
     """
 
@@ -153,7 +153,7 @@ def _parse_directive_value(key: str, token: str) -> tuple[str, Any]:
 
 
 def _boundary_condition(token: str) -> str:
-    """``VIRTUAL_CASING``, ``virtual-casing``, ``'nestor'``, ... -> the canonical lower-case name."""
+    """``THREE_TERM``, ``virtual-casing``, ``'nestor'``, ... -> the canonical lower-case name."""
     return token.strip().strip("'\"").lower().replace("-", "_")
 
 

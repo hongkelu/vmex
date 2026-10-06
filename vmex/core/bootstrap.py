@@ -161,7 +161,48 @@ jax.tree_util.register_dataclass(
 # ===========================================================================
 
 
-def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAMBDA):
+def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) -> Array:
+    """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
+
+    ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant
+    from the grid extremum find the continuous one; its location is held fixed when differentiating, so
+    the derivative is that of the interpolant's extremum (envelope theorem) -- continuous where the
+    grid extremum jumps between points, unlike a hard grid ``max``.
+    """
+    nsurf, nt, nz = modB.shape
+    F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
+    kt = jnp.asarray(np.fft.fftfreq(nt, 1.0 / nt), dtype=modB.dtype)[:, None]
+    kz = jnp.asarray(np.fft.fftfreq(nz, 1.0 / nz), dtype=modB.dtype)[None, :]
+
+    def value_grad_hess(Fs, t, z):
+        terms = Fs * jnp.exp(1j * (kt * t + kz * z))
+        b = jnp.real(jnp.sum(terms))
+        g = jnp.real(jnp.stack([jnp.sum(1j * kt * terms), jnp.sum(1j * kz * terms)]))
+        h = -jnp.real(jnp.array([[jnp.sum(kt * kt * terms), jnp.sum(kt * kz * terms)],
+                                 [jnp.sum(kt * kz * terms), jnp.sum(kz * kz * terms)]]))
+        return b, g, h
+
+    cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
+
+    def locate(Fs, Bs):
+        idx = jnp.argmax(sign * Bs)
+        t = 2 * jnp.pi * (idx // nz) / nt
+        z = 2 * jnp.pi * (idx % nz) / nz
+        for _ in range(newton_steps):
+            _, g, h = value_grad_hess(Fs, t, z)
+            step = -jnp.linalg.solve(h, g)
+            ok = jnp.all(jnp.isfinite(step)) & (jnp.linalg.det(h) > 0) & (sign * h[0, 0] < 0)
+            step = jnp.where(ok, jnp.clip(step, -cell, cell), 0.0)
+            t, z = t + step[0], z + step[1]
+        return t, z
+
+    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB.reshape(nsurf, -1)))
+    value = jax.vmap(lambda Fs, a, b: value_grad_hess(Fs, a, b)[0])(F, t, z)
+    grid = sign * jnp.max(sign * modB.reshape(nsurf, -1), axis=1)
+    return sign * jnp.maximum(sign * value, sign * grid)  # never inside the grid extremum
+
+
+def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAMBDA, refine_extrema: bool = False):
     r"""Effective trapped fraction and flux-surface averages per surface.
 
     ``f_t = 1 - (3/4) <B^2> \int_0^{1/Bmax} lambda dlambda / <sqrt(1 - lambda B)>``
@@ -181,6 +222,11 @@ def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAM
         length ``nsurf`` (same tuple as simsopt).  ``Bmin/Bmax`` are hard grid
         extrema: piecewise-smooth gradients, adequate for trust-region least
         squares (same stance as :func:`vmex.core.optimize.mirror_ratio`).
+        ``refine_extrema`` takes them from the grid's trigonometric
+        interpolant instead (:func:`_interpolant_extremum`): continuous
+        derivatives, which a Newton solve of per-surface rows needs near the
+        axis, where ``|B|`` barely varies on a surface and the grid extremum
+        jumps between points.
     """
     modB = jnp.asarray(modB)
     sqrtg = jnp.asarray(sqrtg)
@@ -191,8 +237,11 @@ def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAM
     Vp = jnp.mean(w, axis=(1, 2))
     fsa_B2 = jnp.mean(modB * modB * w, axis=(1, 2)) / Vp
     fsa_1overB = jnp.mean(w / modB, axis=(1, 2)) / Vp
-    Bmax = jnp.max(modB, axis=(1, 2))
-    Bmin = jnp.min(modB, axis=(1, 2))
+    if refine_extrema:
+        Bmax, Bmin = _interpolant_extremum(modB, 1.0), _interpolant_extremum(modB, -1.0)
+    else:
+        Bmax = jnp.max(modB, axis=(1, 2))
+        Bmin = jnp.min(modB, axis=(1, 2))
     epsilon = (Bmax - Bmin) / (Bmax + Bmin)
 
     # Gauss-Legendre nodes/weights on [0, 1] (host constants, order is static).
@@ -468,7 +517,8 @@ def _half_mesh_fields(state: SpectralState, rt: SolverRuntime) -> _HalfMeshField
         nfp=nfp)
 
 
-def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int) -> RedlGeometry:
+def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int,
+                        refine_extrema: bool = False) -> RedlGeometry:
     """Interpolate half-mesh fields onto ``surfaces`` -> :class:`RedlGeometry`."""
     iota = _interp_half_grid(hm.iota, surfaces, hm.s_half)
     G = _interp_half_grid(hm.G, surfaces, hm.s_half)
@@ -477,7 +527,7 @@ def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int) -> Redl
     sqrtg = _interp_half_grid(hm.w, surfaces, hm.s_half)
 
     Bmin, Bmax, epsilon, fsa_B2, fsa_1overB, f_t = compute_trapped_fraction(
-        modB, sqrtg, n_lambda=n_lambda)
+        modB, sqrtg, n_lambda=n_lambda, refine_extrema=refine_extrema)
     R = (G + iota * I) * fsa_1overB
     return RedlGeometry(
         surfaces=surfaces, iota=iota, G=G, I=I, R=R, epsilon=epsilon, f_t=f_t,
@@ -708,10 +758,11 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
     then converted to the toroidal current in A.  A current profile with this derivative at every
     half-mesh surface is self-consistent with Redl there; unlike ``<J.B>_vmec - <J.B>_Redl``, the
     difference of two such derivatives also sees a current that alternates from surface to surface.
-    Traceable in ``(state, rt)``.
+    Traceable in ``(state, rt)``, with continuous derivatives (``|B|`` extrema of
+    the angular interpolant, ``compute_trapped_fraction(refine_extrema=True)``).
     """
     hm = _half_mesh_fields(state, rt)
-    geom = _geometry_from_half(hm, hm.s_half, n_lambda=n_lambda)
+    geom = _geometry_from_half(hm, hm.s_half, n_lambda=n_lambda, refine_extrema=True)
     jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
     hs = hm.s_half[1] - hm.s_half[0]
     dI_boozer = (jr * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / geom.fsa_B2

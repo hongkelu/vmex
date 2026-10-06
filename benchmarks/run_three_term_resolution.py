@@ -60,6 +60,9 @@ TRUTH_MODES = 12
 START_SCALE = 0.97
 VC_GRID = 48
 QA_SURFACES = np.arange(1, 11) / 10
+# A score keeps these entries of the other code's own report.json (its time, memory and convergence).
+REPORT_KEYS = ("seconds", "total_seconds", "peak_gpu_gib", "peak_rss_gib", "device", "nfev", "message", "converged",
+               "exit_code", "free_fsq")
 
 
 def deck(modes, ns=NS):
@@ -442,8 +445,7 @@ def run_score(modes, out, name, path):
     report = Path(path).with_name("report.json")
     if report.exists():  # the other code's own time and memory
         data = json.loads(report.read_text())
-        extra = {k: data[k] for k in ("seconds", "peak_gpu_gib", "device", "total_seconds", "nfev", "message",
-                                      "converged", "exit_code", "free_fsq") if k in data}
+        extra = {k: data[k] for k in REPORT_KEYS if k in data}
         if "block_rms" in data:  # the code's own interface residuals, for reference
             extra["own_residual_rms"] = data["block_rms"]
     try:

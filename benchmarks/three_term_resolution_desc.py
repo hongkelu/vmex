@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DESC arm of ``run_three_term_resolution.py``: the free boundary without a sheet current at L = 2M, M = N.
 
-    python benchmarks/three_term_resolution_desc.py M OUT [--grid 32]
+    python benchmarks/three_term_resolution_desc.py M OUT [--grid 32] [--cpu]
     python benchmarks/run_three_term_resolution.py score M OUT desc OUT/mM/desc/wout_desc.nc
 
 DESC (https://github.com/PlasmaControl/DESC, not a VMEX dependency) starts from
@@ -12,7 +12,9 @@ sum B = 1e-7 sum_c I_c gamma'_c x d / |d|^3 of VMEX's ``DirectCoilField``
 and the sheet current potential held at zero (``FixSheetCurrent``).  This
 writes ``OUT/mM/desc/report.json``, holding the wall time and peak GPU memory of
 the free-boundary solve and of the whole run, with ``eq.h5`` and
-``wout_desc.nc``.
+``wout_desc.nc``.  ``--cpu`` runs on the host, for resolutions whose dense
+force Jacobian does not fit a GPU (over 30 GB at M = 10), and records the peak
+resident memory instead of the GPU's.
 """
 
 import argparse
@@ -31,14 +33,18 @@ p.add_argument("M", type=int)
 p.add_argument("out", type=Path)
 p.add_argument("--grid", type=int, default=32)
 p.add_argument("--maxiter", type=int, default=100)
+p.add_argument("--cpu", action="store_true", help="run on the host (the dense Jacobian in RAM)")
 args = p.parse_args()
+if args.cpu:
+    os.environ["JAX_PLATFORMS"] = "cpu"
 wout = args.out / f"m{args.M}" / "wout_start.nc"
 out = args.out / f"m{args.M}" / "desc"
 out.mkdir(parents=True, exist_ok=True)
 
 from desc import set_device  # noqa: E402
 
-set_device("gpu")
+if not args.cpu:
+    set_device("gpu")
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import desc  # noqa: E402
@@ -61,6 +67,12 @@ def log(msg):
 
 def peak_gib():
     return round((jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30, 2)
+
+
+def peak_rss_gib():
+    import resource
+
+    return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20, 2)  # ru_maxrss in KiB (Linux)
 
 
 def dump():
@@ -125,7 +137,8 @@ eq, free = eq.optimize(objective, constraints, optimizer="proximal-lsq-exact", f
 eq, _ = eq.solve(objective="force", optimizer="lsq-exact", ftol=1e-10, xtol=1e-12, gtol=1e-12, maxiter=300,
                  verbose=1)
 report.update(seconds=round(time.perf_counter() - t, 1), nfev=int(free.nfev), message=str(free.message),
-              total_seconds=round(time.perf_counter() - t0, 1), peak_gpu_gib=peak_gib())
+              total_seconds=round(time.perf_counter() - t0, 1),
+              **({"peak_rss_gib": peak_rss_gib()} if args.cpu else {"peak_gpu_gib": peak_gib()}))
 objective.build(verbose=0)
 f = np.asarray(objective.compute_unscaled(objective.x(eq))).reshape(-1, grid.num_nodes)
 report["block_rms"] = [float(np.sqrt(np.mean(b**2))) for b in f]

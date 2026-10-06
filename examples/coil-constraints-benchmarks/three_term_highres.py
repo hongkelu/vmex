@@ -35,7 +35,7 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from essos.coils import Coils  # noqa: E402
 import vmex as vj  # noqa: E402
-from vmex import optimize as opt  # noqa: E402
+import _coil_constraints as coil_limits  # noqa: E402
 from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel  # noqa: E402
 from vmex.core.optimize import solve_equilibrium, unpack_boundary  # noqa: E402
 from _common import min_abs_iota, restart_input, target_residual  # noqa: E402
@@ -51,7 +51,7 @@ def log(msg):
 mpol, ntor = args.modes
 inp = restart_input(args.run).change_resolution(mpol=mpol, ntor=ntor, ntheta=2 * mpol + 6, nzeta=2 * ntor + 6)
 inp = replace(inp, ns_array=np.array([args.ns]), ftol_array=np.array([1e-13]), niter_array=np.array([100000]))
-chart = opt.CoilParameters.from_coils(Coils.from_json(str(args.run / "coils.json")), current_dofs=())
+chart = coil_limits.CoilChart(Coils.from_json(str(args.run / "coils.json")), current_dofs=())
 field = chart(jnp.asarray(chart.x0))
 rng = np.random.default_rng(0)
 check = jnp.asarray(np.c_[1.0 + 0.3 * rng.uniform(-1, 1, 64), 0.3 * rng.uniform(-1, 1, 64), 0.3 * rng.uniform(-1, 1, 64)])

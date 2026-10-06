@@ -112,6 +112,15 @@ checkpoints, and the final `coils.json`, `wout.nc` and `summary.json`. The
 free arm also writes `diagnostics.jsonl`. `--restart <run>`
 continues a finished run.
 
+`_coil_constraints.py` holds the coil chart: the design vector to ESSOS coils,
+PHIEDGE and the current profile, and the differentiable field the free arm passes
+to `FreeBoundaryProblem` as `field_from_parameters`. It also holds the coil
+inequalities and the independent endpoint checks. Coil length, curvature and
+curve points come from ESSOS `Curves`. The module adds only what ESSOS lacks as
+hard SLSQP rows: mean squared curvature, the minimum coil-coil and nonadjacent
+self-segment distances (ESSOS has hinge penalties only) and the coil-plasma
+clearance.
+
 ## Stage-two coils
 
 `fit_coils.py` fits circular coils to B.n = 0 on the case's fixed-boundary

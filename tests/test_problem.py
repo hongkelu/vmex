@@ -630,9 +630,24 @@ def test_direct_jaxopt_and_optax_contracts():
     assert float(problem.jax_fun(x)) < float(problem.jax_fun(problem.x0))
 
 
+def test_vary_phiedge_requires_implicit_derivatives():
+    from pathlib import Path
+
+    from vmex.core import optimize as opt
+    from vmex.core.input import VmecInput
+
+    inp = VmecInput.from_file(Path(__file__).resolve().parents[1] / "examples/data/input.solovev")
+    with pytest.raises(ValueError, match="vary_phiedge requires"):
+        opt.make_problem(inp, objective_terms=[(opt.volume_average_beta, 0.0, 1.0)], vary_phiedge=True,
+                         derivative_method="finite_difference")
+
+
+@pytest.mark.full
 def test_vary_phiedge_appends_a_relative_phiedge_dof():
     """vary_phiedge: a named trailing dof, round-tripped through the input,
-    whose implicit Jacobian column matches central differences of re-solves."""
+    whose implicit Jacobian column matches central differences of re-solves.
+
+    Full lane: three equilibria to FTOL 1e-14 (about 6.5 min on a CI runner)."""
     import dataclasses
     from pathlib import Path
 
@@ -657,9 +672,6 @@ def test_vary_phiedge_appends_a_relative_phiedge_dof():
     step = 1e-4
     difference = (beta(1 + step) - beta(1 - step)) / (2 * step)
     np.testing.assert_allclose(problem.residual_jac(problem.x0)[0, -1], difference, rtol=1e-4)
-    with pytest.raises(ValueError, match="vary_phiedge requires"):
-        opt.make_problem(inp, objective_terms=terms, vary_phiedge=True,
-                         derivative_method="finite_difference")
 
 
 def test_vmec_finite_difference_factory_uses_parallel_provider(monkeypatch):

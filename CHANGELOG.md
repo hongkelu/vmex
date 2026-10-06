@@ -9,12 +9,12 @@ revision it was measured at, and the pages that cite it.
 
 - `boundary_condition="three_term"` (Python, CLI, or the deck's `BOUNDARY_CONDITION`
   directive) solves for a free boundary without a sheet current;
-  `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any coils.
-- `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
-  free-boundary root: trials start from a tangent prediction, are solved with
-  strict edge convergence and certified, and only accepted iterates are
-  promoted (a failed trial raises `TrialRejected`). `from_loss` takes `event=`
-  callbacks and a wall-time `deadline=`.
+  `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any field.
+- `FreeBoundaryProblem` optimizes the external field from an accepted root:
+  `from_loss(inp, loss, x0, field_from_parameters=..., plasma_from_parameters=...)`
+  keeps the coil chart with the caller (`_coil_constraints.py`), and `x` may set
+  PHIEDGE or the current profile. Trials are certified, and only accepted
+  iterates are promoted (a failed trial raises `TrialRejected`).
 - `opt.minimize(problem, method="SLSQP", ...)` runs SciPy SLSQP on a
   `FunctionProblem` and reports `stop_reason` and `accepted_steps`.
 - `adjoint_solver="forward_dense_jax"` factors the active Jacobian for the

@@ -2091,7 +2091,10 @@ class SolveResult:
     fixed-boundary solves.  The five polish fields are ``None`` on the
     unchanged default path.  ``fedge`` is the final spectral edge force, the
     quantity the strict free-boundary acceptance
-    (``include_edge_in_convergence``) bounds.
+    (``include_edge_in_convergence``) bounds.  ``boundary_residual`` is the
+    :class:`~vmex.core.freeboundary_vc.BoundaryResidual` of a free boundary
+    solved with ``boundary_condition="three_term"`` or reported with
+    ``report_boundary_residual=True``, else ``None``.
     """
 
     converged: bool; iterations: int; ier_flag: int
@@ -2109,6 +2112,7 @@ class SolveResult:
     strong_force: Any = None
     polish_report: Any = None
     fedge: float = 0.0
+    boundary_residual: Any = None
 
 
 def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:

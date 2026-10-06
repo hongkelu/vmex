@@ -167,8 +167,7 @@ odd-`m` coefficient, which put `li383_low_res` surfaces 1.2 cm (R) and 5.9 cm
 (Z) off at mid-radius; it now reproduces the wout table to 6.7e-16 m and all
 126 adjacent surface pairs nest. Points well outside the plasma return NaN
 instead of raising, the inversion starts from the best of three seeds, and a
-query on the magnetic axis no longer returns NaN. Full notes in the GitHub
-release.
+query on the magnetic axis no longer returns NaN. Full notes in the release.
 
 ## 0.9.1 - 2026-09-16
 
@@ -198,5 +197,4 @@ The PRs behind it and the full notes are in the GitHub release: #300, #310,
 
 The cold-start performance release: cold CLI, Python and optimization runs
 faster than every previous release on every deck measured, from 773 XLA
-programs at QA resolution to 343 (#227-#234). Full notes in the GitHub
-release.
+programs at QA resolution to 343 (#227-#234). Full notes in the release.

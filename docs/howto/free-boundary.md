@@ -196,6 +196,10 @@ floor of a few 1e-4 even for an exact external field, and the virtual-casing
 evaluation itself is accurate to about 2e-4 on its default 48 x 48 grid, so a
 `sheet_current` well above 1e-3 marks a genuine edge sheet current.
 
+How close each method gets to a known answer at mpol = ntor = 4 to 12, and at
+what cost, is recorded in {doc}`/explanation/validation`
+("Three-term free boundary against VMEC + NESTOR and DESC").
+
 ## Key knobs
 
 - `EXTCUR` — coil-group currents scaling the mgrid field.

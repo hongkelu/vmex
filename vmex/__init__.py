@@ -23,7 +23,9 @@ links to the module that documents it.
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
 - :func:`~vmex.core.freeboundary_vc.solve_free_boundary_virtual_casing` /
   :func:`~vmex.core.freeboundary_vc.boundary_residual` — free boundary from
-  the three virtual-casing interface conditions (no sheet current)
+  the three virtual-casing interface conditions (no sheet current);
+  :class:`~vmex.core.freeboundary_vc.VirtualCasingModel` — its residual,
+  Jacobian and gradients for any coils without recompiling (optimizers)
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -247,6 +249,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "solve_free_boundary_virtual_casing": (
         ".core.freeboundary_vc", "solve_free_boundary_virtual_casing"),
     "boundary_residual": (".core.freeboundary_vc", "boundary_residual"),
+    "VirtualCasingModel": (".core.freeboundary_vc", "VirtualCasingModel"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),

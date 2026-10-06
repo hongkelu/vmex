@@ -27,6 +27,20 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 (``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.
+
+Entry points, from the most to the least packaged:
+
+- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = VIRTUAL_CASING``
+  (``vmex input.case``, :func:`~vmex.core.multigrid.solve_file`), the CLI flag
+  ``--boundary-condition virtual-casing``, or
+  ``solve_free_boundary_multigrid(..., boundary_condition="virtual_casing")``;
+- :func:`solve_free_boundary_virtual_casing`: one solve with every control, and
+  ``previous=`` to restart from an earlier result after the coils change;
+- :class:`VirtualCasingModel`: the residual, its Jacobian, state tangents and
+  pullbacks for one deck and any external field or plasma parameters, without
+  recompiling -- the pieces an optimizer needs;
+- :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
+  check a NESTOR result.
 """
 
 from __future__ import annotations
@@ -146,6 +160,9 @@ def solve_free_boundary_virtual_casing(
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
+    quadrature: tuple[int, int] | None = None,
+    trial_ftol: float | None = None,
+    chunk: int = 8,
     previous=None,
     verbose: int = 0,
 ):
@@ -184,7 +201,9 @@ def solve_free_boundary_virtual_casing(
     resolution (``None``: the trust region runs to ``ftol``).  ``previous``, an
     earlier result for the same deck (typically before a coil change), starts
     from its boundary with those steps and its Jacobian, and from its model:
-    neither new coils nor a repeat solve compile anything.
+    neither new coils nor a repeat solve compile anything.  ``quadrature``,
+    ``trial_ftol`` and ``chunk`` are :class:`VirtualCasingModel`'s (fixed
+    singular quadrature, looser trial equilibria, Jacobian columns per batch).
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
@@ -213,7 +232,8 @@ def solve_free_boundary_virtual_casing(
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
         model = VirtualCasingModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
                                    digits=digits, weights=weights, net_current_weight=net_current_weight,
-                                   label_weight=label_weight)
+                                   label_weight=label_weight, quadrature=quadrature, trial_ftol=trial_ftol,
+                                   chunk=chunk)
         x0 = jacobian = None
     seed_state = model.seed[0] if previous is None else previous.aux[0]
     seed_params = model.params0 if previous is None else previous.aux[2]
@@ -234,25 +254,43 @@ class VirtualCasingModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
     The fixed-boundary equilibria and their derivatives come from
-    :mod:`vmex.core.implicit` with the boundary, PHIEDGE and current profile
+    :mod:`vmex.core.implicit`, with the boundary, PHIEDGE and current profile
     as traced :class:`~vmex.core.implicit.ImplicitParams`, and the external
-    field enters the compiled interface rows as an argument, so neither new
-    coils nor new plasma parameters recompile anything.  ``x`` are the
-    boundary coefficients up to ``max_mode`` and ``RBC(0,0)``
-    (:func:`~vmex.core.optimize.pack_boundary`); ``params`` an
-    :class:`~vmex.core.implicit.ImplicitParams` whose boundary ``x`` replaces.
-    The rows are those of :func:`solve_free_boundary_virtual_casing`, with the
-    quadrature plan and the labelling reference fixed on the seed boundary.
+    field enters the compiled interface rows as an argument: neither new coils
+    nor new plasma parameters recompile anything, which is what an optimizer
+    that solves the free boundary at every step needs.
+
+    Coordinates: ``x`` are the boundary coefficients up to ``max_mode`` and
+    ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
+    deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
+    (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
+    replaces.  The rows are those of :func:`solve_free_boundary_virtual_casing`,
+    with the quadrature plan and the labelling reference fixed on the deck's
+    boundary (``seed``: its ``(state, mask)``).
+
+    Methods: :meth:`solve_boundary` (the K = 0 boundary, cold or warm),
+    :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
+    and the state responses), :meth:`pullback` (reverse-mode gradients of other
+    functions of the equilibrium), :meth:`boundary_residual` and
+    :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
+    runtime, field)`` are the traceable rows themselves.
+
+    ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
+    force residual (each is re-solved to the deck's before it is
+    differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
+    quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
+    ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
+    shaped boundary; ``chunk`` bounds the Jacobian columns per batch.
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
-                 trial_ftol=None):
+                 trial_ftol=None, quadrature=None):
         from . import implicit as im
         from .freeboundary import _vacuum_scalars
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary, solve_equilibrium
 
-        self.im = im
+        self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
@@ -285,7 +323,8 @@ class VirtualCasingModel:
         state, mask = seed[:2]
         runtime = im.runtime_from_params(self.params0, cfg)
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
-        precision = vc.plan_vc_precision(surface, digits=digits)
+        quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
+        precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
         gamma0 = jnp.asarray(surface.gamma)
         wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
         e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma0, axis=-1), axis=-1))
@@ -316,7 +355,6 @@ class VirtualCasingModel:
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
-        self.surface_area_rows = 6 * nphi * ntheta
 
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
@@ -353,10 +391,29 @@ class VirtualCasingModel:
         self._tangents = jax.jit(tangents)
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
-        self.push = push
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
+
+        def pullback(fun, state, mask, params, cotangents, *args):
+            """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium, per i.
+
+            Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
+            scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
+            parameter direction.
+            """
+            frozen = jax.lax.stop_gradient(state)
+            back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
+                                            probe_chunk_size=self.chunk)
+            _, vjp = jax.vjp(lambda s, p: fun(s, p, *args), frozen, params)
+
+            def row(c):
+                state_bar, params_bar = vjp(c)
+                return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
+
+            return jax.lax.map(row, cotangents)
+
+        self.pullback = pullback
         self._linearization = None
 
     def solve(self, params, seed=None, tight=True):
@@ -364,7 +421,7 @@ class VirtualCasingModel:
 
         ``tight=False`` solves to the trial tolerance.
         """
-        im, cfg = self.im, (self.cfg if tight else self.cfg_trial)
+        im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
@@ -401,8 +458,8 @@ class VirtualCasingModel:
         """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).
 
         A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
-        the projected state responses of every column, for pushing other functions of the equilibrium through the
-        same directions (:meth:`push`), and the state they belong to.
+        the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
+        they belong to.  The responses also seed the next trials (first-order predicted states).
         """
         state, mask, params_x, tight = aux
         if not tight:
@@ -446,7 +503,14 @@ class VirtualCasingModel:
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"]) and close:
                 return dict(out, jacobian=jacobian, njev=0)
-            x, nfev = out["x"], out["nfev"]
+            # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
+            J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
+            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose)
+            again["nfev"] += out["nfev"]
+            if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
+                return dict(again, jacobian=J1, njev=1)
+            x, nfev = again["x"], again["nfev"]
         memo = {}
 
         def fun(z):

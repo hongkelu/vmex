@@ -16,7 +16,7 @@ and engineering limit a hard SLSQP inequality:
   the like-for-like comparison of both arms. `--poincare 2000` adds a
   Poincare section of the final coils' field, and `--trace` the
   `vmex --trace` alpha losses at ARIES-CS size.
-- `fit_coils.py` is the stage-two fit that produced the `coils.<case>.json`
+- `fit_coils.py` is the stage-two fit that produced the `examples/data/ESSOS_coils_<case>.json`
   files.
 - `parameters.py` holds the cases, `_coil_constraints.py` the differentiable
   coil inequalities and `_common.py` the helpers the scripts share.
@@ -38,7 +38,7 @@ R B_phi. With `--bootstrap` both hold the bootstrap mismatch under
 
 | case | configuration and seed | `--beta` | bootstrap | iota | coils per half period, limits |
 |---|---|---|---|---|---|
-| `ellipse5` | QA, nfp 2, aspect 4.9-5.1, `input.rotating_ellipse` | volume | Redl | >= 0.41 | 3 x order 16, `coils.initial.json`: 5 m, 5 /m, 5 /m^2, 0.15 m apart, 0.20 m clear |
+| `ellipse5` | QA, nfp 2, aspect 4.9-5.1, `examples/data/input.rotating_ellipse_nfp2` | volume | Redl | >= 0.41 | 3 x order 16, `ESSOS_coils_ellipse5.json`: 5 m, 5 /m, 5 /m^2, 0.15 m apart, 0.20 m clear |
 | `ellipse5-beta7` | as `ellipse5` | on axis | Redl (damped Picard) | >= 0.16 | as `ellipse5` |
 | `qa3` | QA, nfp 3, aspect 5.9-6.1, rotating ellipse | volume | Redl | >= 0.41 | 3 x order 8: 3.5 m, 8 /m, 10 /m^2, 0.08 m apart, 0.15 m clear |
 | `qh` | QH (1, -1), nfp 4, aspect 5.9-6.1, rotating ellipse | volume | Redl | >= 1.1 | as `qa3` |
@@ -128,7 +128,7 @@ seed, with the coil limits as penalties (L-BFGS-B, no equilibrium solves).
 It then scales the currents to enclose PHIEDGE; the optimization scripts
 rescale them to B0 R0 at the start of a run.
 
-    COIL_CASE=qa4-beta python fit_coils.py --output coils.qa4-beta.json
+    COIL_CASE=qa4-beta python fit_coils.py --output ESSOS_coils_qa4_beta.json
 
 The winding radii were 0.55 m for `qa4-beta*`, 0.46 m for `qi6-beta*` and
 0.42-0.5 m for `qa3`, `qh` and `qi` (rms B.n/|B| 3.7e-3, 4.4e-3 and 5e-4).

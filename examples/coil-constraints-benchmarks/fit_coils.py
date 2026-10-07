@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Stage-two coil fit that produced the committed ``coils.<case>.json`` files.
+"""Stage-two coil fit that produced the committed ``examples/data/ESSOS_coils_<case>.json`` files.
 
 Starting from ``P.N_COILS`` circular coils of radius ``--radius`` per half
 period, centred on R = ``P.RADIUS_TARGET``, L-BFGS-B minimizes
@@ -12,7 +12,7 @@ clearance. The currents are then scaled so the coils' toroidal flux through
 the seed's phi = 0 cross-section is PHIEDGE. The optimization scripts rescale
 them again, to an edge R B_phi of B0 R0 (``_common.scale_coil_currents``).
 
-    COIL_CASE=qa4-beta python fit_coils.py --output coils.qa4-beta.json
+    COIL_CASE=qa4-beta python fit_coils.py --output ESSOS_coils_qa4_beta.json
 
 The winding radii were 0.55 m for ``qa4-beta*``, 0.46 m for ``qi6-beta*`` and
 0.42-0.5 m for ``qa3``, ``qh`` and ``qi`` (``--radius``), with 3000 iterations

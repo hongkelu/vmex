@@ -81,7 +81,7 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 
     pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
     coils = pyproject["project"]["optional-dependencies"]["coils"]
-    assert coils == ["essos>=0.19.5"], coils
+    assert coils == ["essos>=0.20.0"], coils
 
     for script in ESSOS_COIL_EXAMPLES:
         text = script.read_text()
@@ -129,16 +129,9 @@ UNTESTED_EXAMPLES = {
     "examples/optimization/stellarator_asymmetry/QI_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/optimization/stellarator_asymmetry/QP_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
-    "examples/coil-constraints-benchmarks/free_boundary_single_stage_optimization.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
-    "examples/coil-constraints-benchmarks/single_stage_optimization.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
-    "examples/coil-constraints-benchmarks/parameters.py": "shared case constants imported by the two benchmarks",
-    "examples/coil-constraints-benchmarks/postprocess.py": "post-processes a finished GPU benchmark run",
-    "examples/coil-constraints-benchmarks/fit_coils.py": "regenerates the committed stage-two coil files; a GPU fit",
-    "examples/coil-constraints-benchmarks/free_boundary_three_term_single_stage.py": "GPU benchmark; ThreeTermFreeBoundaryModel is covered by tests/test_freeboundary_vc.py",
-    "examples/coil-constraints-benchmarks/three_term_highres.py": "re-solves a finished GPU benchmark run",
-    "examples/coil-constraints-benchmarks/three_term_postprocess.py": "post-processes a finished GPU benchmark run",
-    "examples/coil-constraints-benchmarks/three_term_desc_check.py": "needs DESC and a finished run",
-    "examples/coil-constraints-benchmarks/evolution_gifs.py": "draws the saved steps of a finished run",
+    "examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
+    "examples/optimization/single_stage_optimization_coil_constraints.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
+    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "GPU benchmark; ThreeTermFreeBoundaryModel is covered by tests/test_freeboundary_vc.py",
 }
 
 
@@ -1052,14 +1045,18 @@ def test_qa_ballooning_optimization_example(tmp_path):
     script = EXAMPLES / "optimization" / "QA_optimization_ballooning.py"
     out = _run_example(script, tmp_path, timeout=1800)
     _assert_cost_decreased(out, "QA-ballooning")
-    seed = re.search(r"max lambda = ([0-9.eE+-]+) \(unstable\)", out)
     final = re.search(r"max lambda ([0-9.eE+-]+) -> ([0-9.eE+-]+)", out)
-    assert seed is not None and final is not None
+    mercier = re.search(r"min PHIEDGE\^2 DMerc ([0-9.eE+-]+) -> ([0-9.eE+-]+)", out)
+    beta = re.search(r"beta ([0-9.]+)% -> ([0-9.]+)%", out)
+    assert final is not None and mercier is not None and beta is not None
     # The seed must be the case the objective is for: ballooning-unstable while
     # Mercier says nothing is wrong.  Otherwise the example proves nothing.
-    assert float(seed.group(1)) > 0.0
-    assert re.search(r"min DMerc = \+[0-9.eE+-]+ \(Mercier-stable\)", out)
+    assert float(final.group(1)) > 0.0
+    assert float(mercier.group(1)) > 0.0
+    # Ballooning improves without buying it with Mercier or beta.
     assert float(final.group(2)) < float(final.group(1))
+    assert float(mercier.group(2)) > 0.0
+    assert abs(float(beta.group(2)) - float(beta.group(1))) < 0.1
     assert (tmp_path / "input.QA_ballooning_optimized").exists()
     assert (tmp_path / "wout_QA_ballooning_optimized.nc").exists()
     assert (tmp_path / "QA_ballooning_optimized_stability.png").stat().st_size > 10_000

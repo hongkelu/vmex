@@ -445,7 +445,8 @@ field-only path for host optimizers that step from an accepted equilibrium.
 It takes the same ``field_from_parameters`` map: VMEX keeps no coil code, so
 the coils and their chart come from ESSOS, here as a differentiable
 Biot-Savart field of ``coils_from_x(x)``
-(``examples/coil-constraints-benchmarks`` runs it with coil constraints)::
+(``examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py``
+runs it with coil constraints)::
 
    from dataclasses import replace
 
@@ -456,11 +457,11 @@ Biot-Savart field of ``coils_from_x(x)``
    import vmex as vj
    from vmex import optimize as opt
 
-   inp = vj.VmecInput.from_file("input.rotating_ellipse")
+   inp = vj.VmecInput.from_file("examples/data/input.rotating_ellipse_nfp2")
    seed = opt.solve_equilibrium(inp).state   # fixed-boundary seed state
    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
    qs = opt.QuasisymmetryRatioResidual(np.linspace(0.1, 1.0, 10), 1, 0)
-   coils0 = Coils.from_json("coils.json")
+   coils0 = Coils.from_json("examples/data/ESSOS_coils_ellipse5.json")
    x0 = np.asarray(coils0.dofs_curves).ravel()
 
    def coils_from_x(x):

@@ -1,14 +1,17 @@
 #!/usr/bin/env python
-"""Post-process a finished run of either coil-constraint benchmark.
+"""Post-process a finished run of either coil-constraint single-stage example.
 
-    python postprocess.py runs/free                   # free-boundary arm
-    python postprocess.py runs/fixed --match-flux     # fixed-boundary arm
-    COIL_CASE=qi6-beta python postprocess.py runs/free-qi6 --no-dense
+    python benchmarks/coil_constraints_postprocess.py runs/free                 # free-boundary arm
+    python benchmarks/coil_constraints_postprocess.py runs/fixed --match-flux   # fixed-boundary arm
+    COIL_CASE=qi6-beta python benchmarks/coil_constraints_postprocess.py runs/free-qi6 --no-dense
 
-Run it with the run's ``COIL_CASE``: the limits and targets come from
-``parameters.py``. Reads what both optimization scripts write: ``metrics.jsonl``, the initial
-coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
-``coils.json`` / ``wout.nc``. Writes into ``<run>/postprocess``:
+The runs are those of ``examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py``
+and ``single_stage_optimization_coil_constraints.py``. Run it with the run's
+``COIL_CASE``: the limits and targets are the examples' (the case values this
+script reads are repeated below). Reads what both optimization scripts write:
+``metrics.jsonl``, the initial coils, the ``coils.stepN.json`` /
+``wout.stepN.nc`` checkpoints and the final ``coils.json`` / ``wout.nc``.
+Writes into ``<run>/postprocess``:
 
 - ``history.csv``, ``loss.png`` (QA and objective) and ``constraints.png``:
   every logged constrained quantity against its limits (iota floor and
@@ -49,19 +52,230 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import parameters as P  # noqa: E402
-from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, current_from_wout, dkx_mismatch,  # noqa: E402
-                     max_abs_iota, min_abs_iota, redl_profiles, resize_coils, seed_input, target_residual)
+# ---- cases ----------------------------------------------------------------------------------------------------------
+# COIL_CASE selects the case of the examples; only the values read here are repeated. The values are ellipse5's; the
+# blocks after them override them per case.
+DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
+CASE = os.environ.get("COIL_CASE", "ellipse5")
+RESOLUTION = (8, 8, 51)            # MPOL, NTOR of the dense solve; NS of the Redl surfaces
+GRID = (64, 64)                    # NTHETA, NZETA
+EQUILIBRIUM_FTOL = 1e-15
+QA_SURFACES = tuple(i / 10 for i in range(1, 11))
+INPUT_FILE = DATA / "input.rotating_ellipse_nfp2"
+B0 = 1.0                           # T
+# --bootstrap runs: the reactor-like kinetic profiles of the examples and their bootstrap model.
+REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
+REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
+REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
+DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conserving Fokker-Planck
+SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
+HELICITY = (1, 0)                  # quasisymmetry (M, N); None: the constructed QI residual
+TARGET_NAME = "QA"
+QI_SURFACES = tuple(i / 5 for i in range(1, 6))
+QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples/optimization/QI_optimization.py
+MIRROR_LIMIT = None                # upper limit on the edge mirror ratio
+IOTA_FLOOR = 0.41
+IOTA_CEILING = None                # upper limit on max |iota|
+IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
+IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
+ASPECT_RANGE = (4.9, 5.1)
+RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
+COIL_ORDER, N_SEGMENTS = 16, 256
+COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m
+NORMAL_FIELD_CONSTRAINT = 0.008   # fixed arm: limit on the area-weighted RMS B.n/|B| (total B at beta > 0)
+FIELD_STRENGTH_TOLERANCE = 0.005  # fixed arm, beta > 0: relative band on edge R B_phi around the coils' mu0 I / 2 pi
+
+if CASE == "ellipse5-beta7":
+    IOTA_FLOOR = 0.16
+elif CASE in ("qa3", "qh", "qi"):
+    COIL_ORDER, COIL_SURFACE_DISTANCE_LIMIT = 8, 0.15
+    if CASE == "qa3":
+        SEED, ASPECT_RANGE = (3, 6.0, 0.5), (5.9, 6.1)
+    elif CASE == "qh":
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, IOTA_FLOOR = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1), 1.1
+    else:
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
+        IOTA_FLOOR = 0.51
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
+    COIL_ORDER = 12
+    IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
+    if CASE.startswith("qa4-beta"):
+        SEED, IOTA_FLOOR, ASPECT_RANGE, IOTA_S_MIN = (2, 4.0, 0.5), 0.27, (3.5, 4.5), 0.02
+    elif CASE.startswith("qh4-beta"):
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, IOTA_FLOOR = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1), 1.1
+        COIL_SURFACE_DISTANCE_LIMIT, IOTA_S_MIN = 0.15, 0.02
+    else:
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
+        IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
+        COIL_SURFACE_DISTANCE_LIMIT = 0.15
+elif CASE != "ellipse5":
+    raise ValueError(f"unknown COIL_CASE {CASE!r}")
+if CASE.endswith("-tok"):
+    SEED = (SEED[0], SEED[1], 0.01)  # a circular tokamak with a 1% helical ripple
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
 
 
+# ---- the examples' seed, targets and current helpers ----------------------------------------------------------------
+def seed_input():
+    """The case's fixed-boundary seed at the optimization resolution.
+
+    With ``SEED = (nfp, aspect, ratio)`` the boundary is the rotating ellipse
+    R = R0 + a cos(theta) - b cos(theta + nfp phi), Z = a sin(theta) + b sin(theta + nfp phi)
+    with a^2 - b^2 = (R0 / aspect)^2, b = ratio R0 / aspect and PHIEDGE for B0 ~ 1 T;
+    otherwise it is ``INPUT_FILE``'s. ``finite_beta_input`` then calibrates PHIEDGE.
+    """
+    import numpy as np
+    import vmex as vj
+
+    mpol, ntor, ns = RESOLUTION
+    inp = vj.VmecInput.from_file(INPUT_FILE)
+    if SEED is not None:
+        inp = replace(inp, nfp=SEED[0])
+    inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=GRID[0], nzeta=GRID[1])
+    if SEED is not None:
+        _, aspect, ratio = SEED
+        minor = RADIUS_TARGET / aspect
+        rbc, zbs = np.zeros_like(inp.rbc), np.zeros_like(inp.zbs)
+        rbc[ntor, 0] = RADIUS_TARGET
+        rbc[ntor, 1] = zbs[ntor, 1] = minor * np.sqrt(1.0 + ratio**2)
+        rbc[ntor - 1, 1], zbs[ntor - 1, 1] = -ratio * minor, ratio * minor
+        inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=np.pi * minor**2)
+    return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]), lfreeb=False)
+
+
+def target_residual():
+    """Residual vector of the case's target: quasisymmetry of ``HELICITY``, or constructed QI."""
+    import numpy as np
+    from vmex import optimize as opt
+    from vmex.core.qi import ConstructedQIResidual
+
+    if HELICITY is None:
+        return ConstructedQIResidual(np.asarray(QI_SURFACES), **QI_OPTIONS)
+    return opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), *HELICITY)
+
+
+def redl_surfaces():
+    """Surfaces of the Redl self-consistency check: ``REDL_SURFACES``, or by default every VMEC
+    half-grid surface s = (j - 1/2) / (ns - 1) at the run's ns, as simsopt's ``RedlGeomVmec``."""
+    import numpy as np
+
+    if REDL_SURFACES is not None:
+        return np.asarray(REDL_SURFACES)
+    ns = int(RESOLUTION[2])
+    return (np.arange(1, ns) - 0.5) / (ns - 1)
+
+
+def redl_profiles(inp):
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    import numpy as np
+    from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
+
+    r0, b0 = float(inp.rbc[inp.ntor, 0]), B0
+    t0 = REACTOR_T0 * (b0 / REACTOR_B0) ** (2 / 3) * (r0 / REACTOR_R0) ** (1 / 3)
+    n0 = REACTOR_N0 * (b0 / REACTOR_B0) ** (4 / 3) * (REACTOR_R0 / r0) ** (1 / 3)
+    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
+    n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
+    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
+                               t0 * np.array([1.0, -1.0]))
+    return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
+
+
+def abs_iota(state, runtime):
+    """|iota| bounded by the floor and ceiling rows.
+
+    The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
+    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
+    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
+    iota interpolated there, then the half-mesh surfaces beyond (and the edge
+    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+    from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
+
+    half = _iotas_half(state, runtime)[1:]
+    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
+    if IOTA_S_MIN is not None:
+        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
+        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
+        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
+    elif IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
+    return jnp.abs(half)
+
+
+def min_abs_iota(state, runtime):
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
+    ``IOTA_S_MIN``."""
+    import jax.numpy as jnp
+
+    return jnp.min(abs_iota(state, runtime))
+
+
+def max_abs_iota(state, runtime):
+    """Largest |iota| of ``abs_iota``, the counterpart of ``min_abs_iota``."""
+    import jax.numpy as jnp
+
+    return jnp.max(abs_iota(state, runtime))
+
+
+def dkx_mismatch(inp):
+    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
+    import numpy as np
+    from dkx.bootstrap import KineticBootstrapMismatch
+
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=DKX_SURFACES,
+                                       collision_operator=DKX_COLLISION_OPERATOR,
+                                       mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+
+    def mismatch(state, runtime):
+        # DKX reads the radial grid on the host. Under jit it is a tracer, but it is
+        # always linspace(0, 1, ns), so hand DKX that concrete grid.
+        grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
+        return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
+
+    return mismatch
+
+
+def current_from_wout(inp, w):
+    """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
+    prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
+    import numpy as np
+
+    if int(inp.ncurr) == 1:
+        kind = str(w.pcurr_type).strip()
+        if "spline" in kind or "line_segment" in kind:  # VmecInput trims both to the knots before the -1 padding
+            inp = replace(inp, pcurr_type=kind, ac_aux_s=np.asarray(w.ac_aux_s, dtype=float),
+                          ac_aux_f=np.asarray(w.ac_aux_f, dtype=float), curtor=float(w.ctor))
+        else:
+            inp = replace(inp, pcurr_type=kind, ac=np.asarray(w.ac, dtype=float)[: np.size(inp.ac)],
+                          curtor=float(w.ctor))
+    return inp
+
+
+def resize_coils(coils, order, n_segments):
+    """Zero-pad higher Fourier modes without changing the curves or currents."""
+    import jax.numpy as jnp
+    from essos.coils import Coils, Curves
+
+    if order < coils.order:
+        raise ValueError(f"cannot truncate order-{coils.order} coils to order {order}")
+    old = coils.curves
+    raw = jnp.pad(old.dofs / old.scaling, ((0, 0), (0, 0), (0, 2 * (order - coils.order))))
+    curves = Curves(raw, n_segments=n_segments, nfp=coils.nfp, stellsym=coils.stellsym,
+                    scaling_type=old.scaling_type, scaling_factor=old.scaling_factor, scale_fixed=old.scale_fixed)
+    return Coils(curves, coils.dofs_currents_raw, currents_scale=coils.currents_scale)
+
+
+# ---- post-processing -------------------------------------------------------------------------------------------------
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("run", type=Path, help="run directory written by either benchmark")
+    parser.add_argument("run", type=Path, help="run directory written by either example")
     parser.add_argument("--ns", type=int, default=201, help="radial resolution of the dense free-boundary solve")
     parser.add_argument("--no-dense", action="store_true", help="skip the dense free-boundary solve")
     parser.add_argument("--match-flux", action="store_true", help="rescale fixed-arm currents to enclose PHIEDGE")
@@ -83,18 +297,18 @@ def read_history(run):
 
 def limits(keys):
     """Logged quantities and their bounds, as the two benchmarks impose them (None: no bound)."""
-    width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
+    width = RADIUS_TOLERANCE - RADIUS_MARGIN
     # At beta > 0 the fixed arm limits the total (B_coils + B_plasma).n/|B|, logged as
     # total_normal_field_rms, and logs the coil-only normal_field_rms unconstrained.
     coil_only_limit = None if "total_normal_field_rms" in keys else NORMAL_FIELD_CONSTRAINT
     return {
-        "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
-        "max_abs_iota": ("max |iota|", None, P.IOTA_CEILING),
-        "aspect": ("aspect ratio", *P.ASPECT_RANGE),
-        "mirror_ratio": ("mirror ratio", None, P.MIRROR_LIMIT),
-        "major_radius_m": ("major radius [m]", P.RADIUS_TARGET - width, P.RADIUS_TARGET + width),
-        "redl_mismatch": (f"bootstrap mismatch ({P.BOOTSTRAP_MODEL})", None, P.REDL_TOLERANCE),
-        "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
+        "min_abs_iota": ("min |iota|", IOTA_FLOOR, None),
+        "max_abs_iota": ("max |iota|", None, IOTA_CEILING),
+        "aspect": ("aspect ratio", *ASPECT_RANGE),
+        "mirror_ratio": ("mirror ratio", None, MIRROR_LIMIT),
+        "major_radius_m": ("major radius [m]", RADIUS_TARGET - width, RADIUS_TARGET + width),
+        "redl_mismatch": (f"bootstrap mismatch ({BOOTSTRAP_MODEL})", None, REDL_TOLERANCE),
+        "coil_surface_distance_m": ("coil-plasma distance [m]", COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
         "plasma_minimum_scaled_slack": ("min plasma-row slack", 0.0, None),
         "normal_field_rms": ("rms coil-only B.n/|B|", None, coil_only_limit),
@@ -117,7 +331,7 @@ def plot_history(rows, keys, out):
         writer.writerows(rows)
     step = [r["step"] for r in rows]
     figure, axis = plt.subplots(figsize=(7, 4))
-    for key, label in (("qa", P.TARGET_NAME), ("objective", "objective")):
+    for key, label in (("qa", TARGET_NAME), ("objective", "objective")):
         if key in keys:
             axis.semilogy(step, [max(r[key], 1e-16) for r in rows], label=label)
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
@@ -245,7 +459,7 @@ def poincare(frame, transits, out):
               label="WOUT flux surfaces s = " + ", ".join(f"{s:g}" for s in POINCARE_SURFACES[:-1]))
     axis.plot([], [], color="black", lw=1.0, label="WOUT LCFS")
     axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.07), fontsize=7, frameon=False)
-    axis.set_title(f"{P.CASE} {label}: coil-field Poincaré section, φ = 0, ≥{transits} transits")
+    axis.set_title(f"{CASE} {label}: coil-field Poincaré section, φ = 0, ≥{transits} transits")
     axis.set_xlabel("R [m]"), axis.set_ylabel("Z [m]"), axis.set_aspect("equal")
     figure.tight_layout(), figure.savefig(out / "poincare.png", dpi=200), plt.close(figure)
     per_surface = {str(s): dict(max_distance_m=max(line["max_distance_m"] for line in lines if line["s"] == s),
@@ -270,11 +484,11 @@ def dense_solve(frame, args, rows, out):
     from essos.fields import BiotSavart
 
     label, coil_path, wout_path = frame
-    mpol, ntor, _ = P.RESOLUTION
+    mpol, ntor, _ = RESOLUTION
     run = Path(coil_path).parent
     if (run / "input.run").exists():
         inp = vmex.VmecInput.from_file(run / "input.run").change_resolution(
-            mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
+            mpol=mpol, ntor=ntor, ntheta=GRID[0], nzeta=GRID[1])
     else:  # older runs: the case's seed deck
         inp = seed_input()
     row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
@@ -284,8 +498,8 @@ def dense_solve(frame, args, rows, out):
         inp = current_from_wout(inp, run_wout)
     phiedge = float(run_wout.phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
     inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]), phiedge=phiedge,
-                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
-    coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
+                  ftol_array=np.array([EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
+    coils = resize_coils(Coils.from_json(str(coil_path)), COIL_ORDER, N_SEGMENTS)
     scale = 1.0 / row["flux_ratio"] if args.match_flux else 1.0
     if scale != 1.0:
         coils = Coils(coils.curves, coils.dofs_currents_raw * scale, currents_scale=coils.currents_scale)
@@ -295,13 +509,13 @@ def dense_solve(frame, args, rows, out):
     resolution = free_boundary_resolution(inp, field, ns=args.ns)
     started = time.monotonic()
     stage = _solve_free_boundary_stage(
-        inp, external_field=field, resolution=resolution, initial_state=state, ftol=P.EQUILIBRIUM_FTOL,
-        max_iterations=args.max_iterations, include_edge_in_convergence=True, edge_force_tolerance=P.EQUILIBRIUM_FTOL,
+        inp, external_field=field, resolution=resolution, initial_state=state, ftol=EQUILIBRIUM_FTOL,
+        max_iterations=args.max_iterations, include_edge_in_convergence=True, edge_force_tolerance=EQUILIBRIUM_FTOL,
         use_fft=False, error_on_no_convergence=False, jacobian_retries=0, allow_initial_axis_reguess=False)
     result = stage.result
     forces = {k: float(getattr(result, k)) for k in ("fsqr", "fsqz", "fsql", "fedge")}
     converged = bool(result.converged and result.vacuum is not None
-                     and all(np.isfinite(v) and 0 <= v <= P.EQUILIBRIUM_FTOL for v in forces.values()))
+                     and all(np.isfinite(v) and 0 <= v <= EQUILIBRIUM_FTOL for v in forces.values()))
     report = dict(frame=label, coils=str(coil_path), ns=args.ns, seed=str(seed), current_scale=scale, currents_A=np.asarray(coils.currents).tolist(),
                   converged=converged, iterations=int(result.iterations), seconds=time.monotonic() - started, **forces)
     if converged:
@@ -313,11 +527,11 @@ def dense_solve(frame, args, rows, out):
         report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(min_abs_iota(result.state, rt)),
                       aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)),
                       max_abs_iota=float(max_abs_iota(result.state, rt)))
-        if P.MIRROR_LIMIT:
+        if MIRROR_LIMIT:
             report["mirror_ratio"] = float(opt.mirror_ratio(result.state, rt))
         if bootstrap:  # the Redl mismatch, and for a DKX case also the DKX one the run held
             report["redl_mismatch"] = float(redl_profiles(inp)[1].total_state(result.state, rt))
-            if P.BOOTSTRAP_MODEL == "dkx":
+            if BOOTSTRAP_MODEL == "dkx":
                 try:
                     report["dkx_mismatch"] = float(dkx_mismatch(inp)(result.state, rt))
                 except ImportError:

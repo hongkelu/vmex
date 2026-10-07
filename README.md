@@ -72,9 +72,9 @@ or pick what you need:
 
 | Install | Adds | Enables |
 |---|---|---|
-| `pip install "vmex[coils]"` | `essos>=0.19.5` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
+| `pip install "vmex[coils]"` | `essos>=0.20.0` | ESSOS coil fields, `vmex --coils` free boundary, single-stage plasma and coil optimization, field-line and alpha-particle tracing |
 | `pip install "vmex[freeb]"` | `virtual-casing-jax>=0.0.9` | the virtual-casing exterior field of the plasma (`VmecExtender`) |
-| `pip install "vmex[neoclassical]"` | `neo-jax>=1.0.5` | effective ripple `ε_eff` from a WOUT or Boozer spectrum (`vmex.epsilon_effective_from_wout`) and the `--plot` ripple panel |
+| `pip install "vmex[neoclassical]"` | `neo-jax>=1.0.5`, `dkx>=2.8.0` | effective ripple `ε_eff` from a WOUT or Boozer spectrum (`vmex.epsilon_effective_from_wout`), the `--plot` ripple panel and `vmex --neoclassical` |
 | `pip install "vmex[turbulence]"` | `gkx>=2.5.0` (with `jax>=0.10.1`) | gyrokinetic turbulence-proxy objectives (`vmex.core.turbulence`) and `vmex --turbulence` |
 | `pip install "vmex[optimizers]"` | `jaxopt`, `optax` | the JAXopt and Optax optimization drivers |
 | `pip install "vmex[all]"` | all of the above | every example and documented workflow |
@@ -85,9 +85,10 @@ The same packages can be installed by name; the floors are the ones in `pyprojec
 |---|---|---|---|
 | `solvax` | 0.27.0 | `pip install vmex` | `pip install "solvax>=0.27.0"` |
 | `booz_xform_jax` | 0.4.3 | `pip install vmex` | `pip install "booz_xform_jax>=0.4.3"` |
-| `essos` | 0.19.5 | `vmex[coils]` | `pip install "essos>=0.19.5"` |
+| `essos` | 0.20.0 | `vmex[coils]` | `pip install "essos>=0.20.0"` |
 | `virtual-casing-jax` | 0.0.9 | `vmex[freeb]` | `pip install "virtual-casing-jax>=0.0.9"` |
 | `neo-jax` | 1.0.5 | `vmex[neoclassical]` | `pip install "neo-jax>=1.0.5"` |
+| `dkx` | 2.8.0 | `vmex[neoclassical]` | `pip install "dkx>=2.8.0"` |
 | `gkx` | 2.5.0 | `vmex[turbulence]` | `pip install "gkx>=2.5.0"` |
 | `jaxopt`, `optax` | none | `vmex[optimizers]` | `pip install jaxopt optax` |
 
@@ -130,6 +131,7 @@ vmex --booz wout_my_case.nc
 vmex --scale wout_my_case.nc
 vmex --trace wout_my_case.nc
 vmex input.my_case --turbulence
+vmex --neoclassical wout_my_case.nc --nc-profiles profiles.json
 vmex input.nearby --restart wout_my_case.nc
 vmex wout_my_case.nc --to-input    # writes input.my_case
 ```
@@ -190,6 +192,31 @@ If `input.my_case` exists, the CLI writes `input.my_case_from_wout` instead.
 
 `vmex equilibrium.h5` reads DESC text inputs and HDF5/pickle outputs without installing DESC, using the final stage or equilibrium; it writes `input.equilibrium` and solves it to write `wout_equilibrium.nc`.
 `--desc-tol 0` retains all boundary modes. The default 1% boundary tolerance does not guarantee magnetic-field accuracy. WOUT iota has the opposite sign to DESC.
+
+## Neoclassical transport
+
+A stellarator's confinement is set as much by neoclassical transport as by its shape. Collisions and drifts in the 3-D
+field fix the radial electric field, the bootstrap current that changes the rotational transform, and a 1/ν
+loss channel that tokamaks do not have. `vmex --neoclassical` (needs `vmex[neoclassical]`) runs the drift-kinetic solver
+[DKX](https://github.com/uwplasma/DKX) on a solved equilibrium and returns all three:
+- the monoenergetic coefficients `D11*`, `D31*`, `D33*` against collisionality;
+- the ambipolar root `E_r(r)`;
+- the particle and heat fluxes of each species at that root;
+- the bootstrap `<j·B>`, set against VMEX's Redl formula on the same profiles and the equilibrium's own current.
+
+The `--nc-profiles` file holds `n_e`, `T_e` and `T_i` as polynomials in `s`
+([guide](docs/howto/neoclassical-transport.md)). On the bundled QA, β = 2.5 % deck:
+
+```console
+vmex wout_LandremanPaul2021_QA_beta2p5_bootstrap.nc --neoclassical \
+     --nc-profiles examples/data/kinetic_profiles.LandremanPaul2021_QA_beta2p5_bootstrap.json
+```
+
+It writes `*_neoclassical.png` and `*_neoclassical.h5`. The figure below is drawn from that `.h5`
+([script](docs/_static/figures/sources/make_neoclassical_figure.py)). Runtime: 6.5 min on 4 CPU cores,
+compilation included.
+
+![vmex --neoclassical: monoenergetic D11, D31, D33, |B|, ambipolar Er, bootstrap current from DKX, Redl and the equilibrium, particle and heat fluxes](docs/_static/figures/readme_neoclassical_output.webp)
 
 ## Differentiate and optimize
 
@@ -376,7 +403,7 @@ python examples/take_fixed_boundary_gradients.py
 | JAXopt and Optax drivers | `QI_optimization_jaxopt.py`, `QI_optimization_optax.py` | `vmex[optimizers]` |
 | Asymmetric boundary design | [stellarator_asymmetry](examples/optimization/stellarator_asymmetry/) vacuum and finite-beta scripts | core |
 | Single-stage plasma and coils | `single_stage_optimization.py`, `single_stage_free_boundary_optimization.py` | `vmex[coils]` |
-| Single-stage coils under hard engineering limits, fixed- and free-boundary | [coil-constraints-benchmarks](examples/coil-constraints-benchmarks/) | `vmex[coils]`, a GPU; `vmex[freeb]` at finite beta |
+| Single-stage coils under hard engineering limits, fixed- and free-boundary | `single_stage_optimization_coil_constraints.py`, `single_stage_free_boundary_optimization_coil_constraints.py`, `single_stage_free_boundary_optimization_three_term.py` | `vmex[coils]`, a GPU; `vmex[freeb]` at finite beta |
 | Fields and spatial derivatives | `python examples/vmex_get_B_gradB.py` | core |
 | Exterior field from coils and plasma | `python examples/vmex_get_B_outside_plasma.py` | `vmex[coils,freeb]` |
 | ESSOS coils and a free-boundary beta scan | `python examples/free_boundary_essos_coils.py` | `vmex[coils]` |

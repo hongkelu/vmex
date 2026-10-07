@@ -73,7 +73,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     if CASE.startswith("qa4-beta"):
         SEED, ASPECT_RANGE = (2, 4.0, 0.5), (3.5, 4.5)
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
-    elif CASE == "qh4-beta":
+    elif CASE.startswith("qh4-beta"):
         N_COILS, SEED, ASPECT_RANGE = 3, (4, 6.0, 0.9), (5.9, 6.1)
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
     else:

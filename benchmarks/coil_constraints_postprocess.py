@@ -102,7 +102,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE, IOTA_S_MIN = (2, 4.0, 0.5), 0.27, (3.5, 4.5), 0.02
-    elif CASE == "qh4-beta":
+    elif CASE.startswith("qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, IOTA_FLOOR = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1), 1.1
         COIL_SURFACE_DISTANCE_LIMIT, IOTA_S_MIN = 0.15, 0.02
     else:

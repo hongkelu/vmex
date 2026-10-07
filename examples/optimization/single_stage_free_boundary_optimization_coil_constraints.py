@@ -222,7 +222,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         # A bootstrap current vanishes on the axis and its part of iota rises steeply off it (~ s^(1/4)), within
         # the one or two innermost surfaces; from s = 0.02 (rho 0.14) on iota is converged in ns at ns >= 51.
         IOTA_S_MIN = 0.02
-    elif CASE == "qh4-beta":
+    elif CASE.startswith("qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1)
         IOTA_FLOOR = 1.1           # between the iota = 1 and 8/7 resonances, as qh
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15

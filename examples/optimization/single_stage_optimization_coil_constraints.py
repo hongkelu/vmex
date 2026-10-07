@@ -114,8 +114,7 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conse
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
-IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
-IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
+IOTA_AXIS = False                  # True: floor and ceiling also bound the axis iota (opt.axis_iota) and edge iotaf
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 
@@ -158,19 +157,19 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
-    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor; R0 is held to 1 mm.
+    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor, so the rows bound the axis too,
+    # with opt.axis_iota: a bootstrap current vanishes on the axis, and VMEC's extrapolated iotaf[0] carries its
+    # steep part of iota (~ s^(1/4)) onto it; R0 is held to 1 mm.
     IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
-        # A bootstrap current vanishes on the axis and its part of iota rises steeply off it (~ s^(1/4)), within
-        # the one or two innermost surfaces; from s = 0.02 (rho 0.14) on iota is converged in ns at ns >= 51.
-        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
+        BOOTSTRAP_IN_SOLVE = True
     elif CASE.startswith("qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1)
         IOTA_FLOOR = 1.1           # between the iota = 1 and 8/7 resonances, as qh
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
-        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
+        BOOTSTRAP_IN_SOLVE = True
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
@@ -373,8 +372,9 @@ def bootstrap_input(inp, beta, device):
     w = fixed.wout
     print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
           f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
-          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = {float(np.min(np.abs(w.iotaf))):.4f}"
-          f"..{float(np.max(np.abs(w.iotaf))):.4f}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
+          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = "
+          f"{float(min_abs_iota(fixed.state, fixed.runtime)):.4f}..{float(max_abs_iota(fixed.state, fixed.runtime)):.4f}"
+          f", edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed, redl
 
 
@@ -382,29 +382,24 @@ def abs_iota(state, runtime):
     """|iota| bounded by the floor and ceiling rows.
 
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
-    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
-    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
-    iota interpolated there, then the half-mesh surfaces beyond (and the edge
-    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
+    ``IOTA_AXIS`` also the axis and the edge: ``opt.axis_iota``, the iota
+    without its enclosed-current part extrapolated to the axis, where that
+    current vanishes (VMEC's iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] mostly
+    extrapolates the steep bootstrap part off the axis and drifts with ns),
+    and VMEC's iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
     """
     import jax.numpy as jnp
+    from vmex import optimize as opt
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
-    if IOTA_S_MIN is not None:
-        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
-        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
-        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
-    elif IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
+    if IOTA_AXIS:
+        half = jnp.concatenate([opt.axis_iota(state, runtime)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
-    ``IOTA_S_MIN``."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis and edge."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -922,6 +917,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         now = time.monotonic()
         row = dict(step=last["step"], qa=float(values[:nq] @ values[:nq]),
                    objective=fun(np.asarray(u, dtype=float)), min_abs_iota=float(min_abs_iota(state, runtime)),
+                   iota_axis=float(abs(opt.axis_iota(state, runtime))),
                    aspect=float(opt.aspect_ratio(state, runtime)), major_radius_m=float(opt.major_radius(state, runtime)),
                    total_normal_field_rms=float(values[nq]), rbtor_ratio=float(rbtor_ratio(state, runtime)),
                    coil_surface_distance_m=float(surface_distance(coils, surface_from_x(jnp.asarray(x)))),
@@ -1249,7 +1245,8 @@ def main(argv=None):
         rows = np.asarray(coil_inequalities(coils))
         now = time.monotonic()
         row = dict(step=last["step"], qa=cache["qa"], objective=value,
-                   min_abs_iota=float(min_abs_iota(state, ctx)), aspect=float(opt.aspect_ratio(state, ctx)),
+                   min_abs_iota=float(min_abs_iota(state, ctx)), iota_axis=float(abs(opt.axis_iota(state, ctx))),
+                   aspect=float(opt.aspect_ratio(state, ctx)),
                    major_radius_m=float(opt.major_radius(state, ctx)),
                    **({"mirror_ratio": float(opt.mirror_ratio(state, ctx))} if MIRROR_LIMIT else {}),
                    **({"max_abs_iota": float(max_abs_iota(state, ctx))} if IOTA_CEILING else {}),

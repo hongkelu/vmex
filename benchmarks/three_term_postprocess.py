@@ -27,8 +27,7 @@ if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 # None: the constructed QI residual
 HELICITY = (1, -1) if CASE == "qh" or CASE.startswith("qh4-beta") else None if CASE.startswith("qi") else (1, 0)
-IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include the extrapolated axis and edge
-IOTA_S_MIN = 0.02 if CASE.startswith(("qa4-beta", "qh4-beta")) else None  # iota rows start at this s
+IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include opt.axis_iota and edge
 REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
@@ -81,30 +80,24 @@ def abs_iota(state, runtime):
     """|iota| bounded by the floor and ceiling rows.
 
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
-    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
-    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
-    iota interpolated there, then the half-mesh surfaces beyond (and the edge
-    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
+    ``IOTA_AXIS`` also the axis and the edge: ``opt.axis_iota``, the iota
+    without its enclosed-current part extrapolated to the axis, where that
+    current vanishes (VMEC's iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] mostly
+    extrapolates the steep bootstrap part off the axis and drifts with ns),
+    and VMEC's iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
     """
     import jax.numpy as jnp
-    import numpy as np
+    from vmex import optimize as opt
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
-    if IOTA_S_MIN is not None:
-        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
-        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
-        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
-    elif IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
+    if IOTA_AXIS:
+        half = jnp.concatenate([opt.axis_iota(state, runtime)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
-    ``IOTA_S_MIN``."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis and edge."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -184,7 +177,7 @@ vmex.write_wout(str(path), w)
 q = np.asarray(target_residual().residuals_state(eq.solution, eq.solver_context))
 report = dict(ns=args.ns, fsq=float(w.fsqr + w.fsqz + w.fsql), qa=float(q @ q),
               min_abs_iota=float(min_abs_iota(eq.solution, eq.solver_context)),
-              max_abs_iota=float(max_abs_iota(eq.solution, eq.solver_context)), aspect=float(w.aspect),
+              iota_axis=float(abs(opt.axis_iota(eq.solution, eq.solver_context))), max_abs_iota=float(max_abs_iota(eq.solution, eq.solver_context)), aspect=float(w.aspect),
               major_radius_m=float(w.Rmajor_p), betatotal=float(w.betatotal))
 if args.bootstrap:
     report["redl_mismatch"] = float(redl_profiles(deck)[1].total_state(eq.solution, eq.solver_context))

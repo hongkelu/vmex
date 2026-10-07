@@ -288,7 +288,12 @@ class ThreeTermFreeBoundaryModel:
     differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
     quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
     ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
-    shaped boundary; ``chunk`` bounds the Jacobian columns per batch.
+    shaped boundary.  Use ``(4 nfp nphi, 2 ntheta)``: with ``quad_np = ntheta``
+    the tangential plasma field on a vacuum surface is off by ~3e-4 |B|, the
+    fit absorbs it in the boundary, and its near-resonant B.n harmonics grow
+    several-fold (8 x 8 vacuum benchmark: field lines leave the LCFS by 7 mm
+    instead of 1 mm), at no extra memory.  ``chunk`` bounds the Jacobian
+    columns per batch.
 
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the

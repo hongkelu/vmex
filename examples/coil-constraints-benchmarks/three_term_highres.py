@@ -26,7 +26,7 @@ p.add_argument("out", type=Path)
 p.add_argument("--modes", type=int, nargs=2, default=(12, 12))
 p.add_argument("--ns", type=int, default=101)
 p.add_argument("--chunk", type=int, default=4)
-p.add_argument("--quadrature", type=int, nargs=2, help="default 4 nfp 48 x 48")
+p.add_argument("--quadrature", type=int, nargs=2, help="default 4 nfp 48 x 96")
 p.add_argument("--export-only", action="store_true", help="write coils.npz and stop")
 args = p.parse_args()
 
@@ -63,7 +63,7 @@ log(f"deck {mpol}x{ntor} ns {args.ns}; {np.asarray(field.gamma).shape[0]} coils 
 if args.export_only:
     sys.exit(0)
 
-model = ThreeTermFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 48),
+model = ThreeTermFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 96),
                            trial_ftol=1e-11)
 log(f"model: {model.x0.size} boundary coordinates")
 out = model.solve_boundary(model.params0, field, verbose=2, max_nfev=80)

@@ -25,7 +25,7 @@ coefficient scaled by ``START_SCALE``.  Every result is scored the same way: its
 boundary is re-solved as a fixed-boundary equilibrium at that resolution, and
 the three interface conditions (B.n, the pressure jump
 (|B_out|^2 - |B_in|^2 - 2 mu0 p) / (2 |B_in|^2) and the sheet current) are evaluated with a 48 x 48 virtual-casing grid
-and a fixed singular quadrature.  Other scores are the force residual, the QA
+and a fixed singular quadrature (4 nfp 48 x 96).  Other scores are the force residual, the QA
 residual, iota on the axis and the edge, and the largest LCFS distance to the
 12 x 12 target and to the target at the same resolution.  DESC runs with
 ``benchmarks/three_term_resolution_desc.py`` (DESC is not a VMEX dependency),
@@ -304,7 +304,7 @@ def score(modes, out, name, eq, extra):
     w = eq.wout
     surface = vc.surface_field_data_from_state(inp, eq.solution, runtime=eq.solver_context, nphi=VC_GRID,
                                                ntheta=VC_GRID)
-    plan = vc.plan_vc_precision(surface, digits=4, quad_nt=4 * int(inp.nfp) * VC_GRID, quad_np=VC_GRID)
+    plan = vc.plan_vc_precision(surface, digits=4, quad_nt=4 * int(inp.nfp) * VC_GRID, quad_np=2 * VC_GRID)
     res = summarize_boundary_residual(*boundary_residual(inp, eq.solution, load_field(out),
                                                          runtime=eq.solver_context, nphi=VC_GRID,
                                                          ntheta=VC_GRID, precision=plan))
@@ -463,7 +463,7 @@ def run_three_term(modes, out, chunk):
     inp = replace(deck(modes), lfreeb=True, mgrid_file="field(direct)")
     fit = solve_free_boundary_three_term(inp, external_field=load_field(out), initial_boundary=start_boundary(inp),
                                          nphi=VC_GRID, ntheta=VC_GRID, max_nfev=60, trial_ftol=1e-11, chunk=chunk,
-                                         quadrature=(4 * int(inp.nfp) * VC_GRID, VC_GRID), verbose=2)
+                                         quadrature=(4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID), verbose=2)
     score(modes, out, "three_term", fit.equilibrium, dict(nfev=int(fit.nfev), njev=int(fit.njev),
                                                           cost=float(fit.cost), **meter()))
 

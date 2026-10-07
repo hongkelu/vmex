@@ -62,8 +62,8 @@ def parse_args(argv=None):
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
     parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
     parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
-                        help="virtual-casing singular quadrature (default 4 nfp grid x grid: 384 x 48 for nfp 2, the "
-                        "4-digit plan of the qa4-beta seed, within 1%% of 4x finer on its optimized boundary)")
+                        help="virtual-casing singular quadrature (default 4 nfp grid x 2 grid: 384 x 96 for nfp 2; "
+                        "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel)")
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
@@ -140,7 +140,8 @@ def main(argv=None):
     nplasma = chart.nphiedge + chart.nplasma
     qs = target_residual()
 
-    quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, args.vc_grid)  # quad_nt: a multiple of nfp grid
+    # quad_nt: a multiple of nfp grid
+    quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid)
     model = ThreeTermFreeBoundaryModel(inp, nphi=args.vc_grid, ntheta=args.vc_grid, trial_ftol=args.trial_forward_ftol,
                                chunk=args.chunk, quadrature=quadrature)
     print(f"[model] {model.x0.size} boundary coordinates, {nplasma} plasma coordinates, "

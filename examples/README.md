@@ -173,9 +173,10 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   coil-engineering limit a hard SLSQP inequality, from vacuum to finite beta
   with a self-consistent Redl or DKX bootstrap current. Each script is
   self-contained. `COIL_CASE` selects the case (`ellipse5`, `ellipse5-beta7`,
-  `qa3`, `qh`, `qi`, `qa4-beta[-tok]`, `qi6-beta[-tok]`; the table is in the
-  free-boundary script's docstring), seeded from
-  `data/input.rotating_ellipse_nfp2` and `data/ESSOS_coils_<case>.json`. They
+  `qa3`, `qh`, `qi`, `qa4-beta[-tok]`, `qi6-beta[-tok]`, `qh4-beta`; the table
+  is in the free-boundary script's docstring), seeded from
+  `data/input.rotating_ellipse_nfp2` and `data/ESSOS_coils_<case>.json`
+  (`qh4-beta`: the `qh` coils). They
   need `vmex[coils]` and a GPU, `vmex[freeb]` for `--beta` and `vmex[kinetic]`
   for the DKX cases, e.g.
   `COIL_CASE=qi python single_stage_free_boundary_optimization_coil_constraints.py --steps 5 --output runs/free-qi`.

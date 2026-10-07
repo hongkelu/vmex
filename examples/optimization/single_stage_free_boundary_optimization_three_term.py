@@ -9,7 +9,10 @@ VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
 jump free. The cases (``COIL_CASE``; the case table is in that script's
 docstring), the design variables (coil shapes, PHIEDGE and, with
 ``--bootstrap``, the current spline values and CURTOR), the loss, the
-constraint rows and their bounds, and the run directory are that script's.
+constraint rows and their bounds, and the run directory are that script's --
+except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
+boundary, Redl's on every half-grid surface, and neither its values nor the
+bootstrap-mismatch row enter the optimization.
 
 Each trial starts from the latest solved boundary, after a first-order prediction
 of the boundary change, and takes trust-region Gauss-Newton steps with its Jacobian;
@@ -85,6 +88,10 @@ BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, 
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
+# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermFreeBoundaryModel
+# bootstrap=, both arms), Redl-self-consistent on every half-grid surface, with I'(0) = 0 (a quasisymmetric bootstrap
+# current density vanishes on the axis with the trapped fraction, f_t ~ eps^(1/2)).
+BOOTSTRAP_IN_SOLVE = False
 SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
 HELICITY = (1, 0)                  # quasisymmetry (M, N); None minimizes the constructed QI residual
 TARGET_NAME = "QA"
@@ -98,6 +105,7 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conse
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
 IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
+IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 
@@ -134,9 +142,10 @@ elif CASE in ("qa3", "qh", "qi"):
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
         IOTA_FLOOR = 0.51          # above the iota = 1/2 resonance
-elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
-    # Finite-beta, self-consistent bootstrap cases (Redl for the QA, DKX for the QI), 4 order-12 coils per half period.
-    COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_')}.json"
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
+    # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
+    # half period (qh4-beta: the 3 QH coils).
+    COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_') if CASE != 'qh4-beta' else 'qh'}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
@@ -146,6 +155,14 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
+        # A bootstrap current vanishes on the axis and its part of iota rises steeply off it (~ s^(1/4)), within
+        # the one or two innermost surfaces; from s = 0.02 (rho 0.14) on iota is converged in ns at ns >= 51.
+        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
+    elif CASE == "qh4-beta":
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1)
+        IOTA_FLOOR = 1.1           # between the iota = 1 and 8/7 resonances, as qh
+        COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
@@ -158,6 +175,11 @@ if CASE.endswith("-tok"):
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
     SEED = (SEED[0], SEED[1], 0.01)
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else 6.0e4
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
+# SLSQP's first step has an identity Hessian, so it grows with the target residual, which starts near 1 for
+# a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as the
+# fixed arm scales its seeded boundary steps (0.1 -> 0.02).
+DESIGN_STEP_SCALE = 1.0 if TARGET_NAME == "QA" else 0.2
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
@@ -263,7 +285,7 @@ def redl_profiles(inp):
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
-    return profiles, RedlBootstrapMismatch(profiles, 0, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
+    return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
 def bootstrap_input(inp, beta, device):
@@ -296,7 +318,8 @@ def bootstrap_input(inp, beta, device):
     stages = len(betas)
 
     def picard_at(inp, n_iter):
-        return self_consistent_bootstrap(inp, redl_profiles(inp)[0], 0, n_iter=n_iter, tol=PICARD_TOLERANCE,
+        return self_consistent_bootstrap(inp, redl_profiles(inp)[0], REDL_HELICITY, n_iter=n_iter,
+                                         tol=PICARD_TOLERANCE,
                                          relax=PICARD_RELAX, degree=CURRENT_KNOTS - 1,
                                          s_eval=redl_surfaces(), solve_kwargs=dict(device=device))
 
@@ -347,18 +370,27 @@ def abs_iota(state, runtime):
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
     ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
     ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
+    iota interpolated there, then the half-mesh surfaces beyond (and the edge
+    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
     """
     import jax.numpy as jnp
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    if IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
+    if IOTA_S_MIN is not None:
+        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
+        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
+        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
+    elif IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, or with ``IOTA_AXIS`` including the axis."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
+    ``IOTA_S_MIN``."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -429,13 +461,17 @@ def restart_input(run):
 
 
 def current_from_wout(inp, w):
-    """``inp`` with ``w``'s CURTOR and current-profile coefficients, when ``inp`` prescribes the current."""
+    """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
+    prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
 
     if int(inp.ncurr) == 1:
-        spline = "spline" in str(inp.pcurr_type)
-        field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)
-        inp = replace(inp, curtor=float(w.ctor),
-                      **{field_name: np.asarray(values, dtype=float)[: np.size(getattr(inp, field_name))]})
+        kind = str(w.pcurr_type).strip()
+        if "spline" in kind or "line_segment" in kind:  # VmecInput trims both to the knots before the -1 padding
+            inp = replace(inp, pcurr_type=kind, ac_aux_s=np.asarray(w.ac_aux_s, dtype=float),
+                          ac_aux_f=np.asarray(w.ac_aux_f, dtype=float), curtor=float(w.ctor))
+        else:
+            inp = replace(inp, pcurr_type=kind, ac=np.asarray(w.ac, dtype=float)[: np.size(inp.ac)],
+                          curtor=float(w.ctor))
     return inp
 
 
@@ -774,8 +810,8 @@ def parse_args(argv=None):
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
     parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
     parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
-                        help="virtual-casing singular quadrature (default 4 nfp grid x grid: 384 x 48 for nfp 2, the "
-                        "4-digit plan of the qa4-beta seed, within 1%% of 4x finer on its optimized boundary)")
+                        help="virtual-casing singular quadrature (default 4 nfp grid x 2 grid: 384 x 96 for nfp 2; "
+                        "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel)")
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
@@ -868,6 +904,9 @@ def main(argv=None):
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
+    fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
+    profiles = redl_profiles(inp)[0] if fold else None
+    redl = None if fold else redl
     if args.max_iterations:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
@@ -880,19 +919,23 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[: CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
-    scales = np.r_[[PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
-                   COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
+    current = np.r_[np.asarray(inp.ac_aux_f)[: CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap and not fold else None
+    scales = DESIGN_STEP_SCALE * np.r_[
+        [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
+        COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = CoilChart(coils0, current_dofs=(), scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     nplasma = chart.nphiedge + chart.nplasma
     qs = target_residual()
 
-    quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, args.vc_grid)  # quad_nt: a multiple of nfp grid
+    # quad_nt: a multiple of nfp grid
+    quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid)
     model = ThreeTermFreeBoundaryModel(inp, nphi=args.vc_grid, ntheta=args.vc_grid, trial_ftol=args.trial_forward_ftol,
-                               chunk=args.chunk, quadrature=quadrature)
-    print(f"[model] {model.x0.size} boundary coordinates, {nplasma} plasma coordinates, "
+                                       chunk=args.chunk, quadrature=quadrature, bootstrap=profiles,
+                                       bootstrap_helicity=REDL_HELICITY)
+    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
+          f"{nplasma} plasma coordinates, "
           f"{chart.size - nplasma} coil coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
     # ---- rows of the run: loss residual, then the constraint quantities in the free arm's order --------------------
@@ -1121,6 +1164,7 @@ def main(argv=None):
                 break
         row = dict(step=state["step"], qa=float(q @ q), min_abs_iota=float(h[0]), major_radius_m=float(h[1]),
                    **({"redl_mismatch": float(h[2 + len(mirror) + len(ceiling)])} if nredl else {}),
+                   **({"redl_max_relative": model.bootstrap_residual(sol["state"], sol["params"])} if fold else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
@@ -1136,6 +1180,7 @@ def main(argv=None):
               f"R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
+              + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s", flush=True)
         print(f"[timing] trials {row['trials']} ({row['solve_seconds']:.0f} s, {row['lm_evaluations']} boundary "
               f"evaluations), linearizations {row['linearizations']} ({row['linearize_seconds']:.0f} s), "
@@ -1209,6 +1254,8 @@ def main(argv=None):
         rng = np.random.default_rng(0)
         for k in range(args.check_gradient):
             d = rng.normal(size=u.size)
+            if k == 0 and nplasma:  # first along the plasma coordinates only
+                d[nplasma:] = 0.0
             d /= np.linalg.norm(d)
             for h in (1e-2, 3e-3):
                 plus, minus = (solve((u + s * h * d) * u_scale) for s in (1, -1))

@@ -28,7 +28,7 @@ p.add_argument("out", type=Path)
 p.add_argument("--modes", type=int, nargs=2, default=(12, 12))
 p.add_argument("--ns", type=int, default=101)
 p.add_argument("--chunk", type=int, default=4)
-p.add_argument("--quadrature", type=int, nargs=2, help="default 4 nfp 48 x 48")
+p.add_argument("--quadrature", type=int, nargs=2, help="default 4 nfp 48 x 96")
 p.add_argument("--export-only", action="store_true", help="write coils.npz and stop")
 args = p.parse_args()
 
@@ -43,10 +43,13 @@ from vmex.core.optimize import solve_equilibrium, unpack_boundary  # noqa: E402
 
 # The examples' COIL_CASE values this script reads: the target and the iota rows.
 CASE = os.environ.get("COIL_CASE", "ellipse5")
-if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa4-beta-tok", "qi6-beta", "qi6-beta-tok"):
+if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa4-beta-tok", "qi6-beta", "qi6-beta-tok",
+                "qh4-beta", "qh4-beta-tok"):
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
-HELICITY = (1, -1) if CASE == "qh" else None if CASE.startswith("qi") else (1, 0)  # None: the constructed QI residual
-IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta")  # iota rows include the extrapolated axis and edge
+# None: the constructed QI residual (qh4-beta-tok takes the qi6-beta values, as the examples' case table)
+HELICITY = (1, -1) if CASE in ("qh", "qh4-beta") else None if CASE.startswith("qi") or CASE == "qh4-beta-tok" else (1, 0)
+IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include the extrapolated axis and edge
+IOTA_S_MIN = 0.02 if CASE.startswith("qa4-beta") or CASE == "qh4-beta" else None  # iota rows start at this s
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)
@@ -69,18 +72,28 @@ def abs_iota(state, runtime):
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
     ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
     ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
+    iota interpolated there, then the half-mesh surfaces beyond (and the edge
+    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
     """
     import jax.numpy as jnp
+    import numpy as np
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    if IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
+    if IOTA_S_MIN is not None:
+        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
+        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
+        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
+    elif IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, or with ``IOTA_AXIS`` including the axis."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
+    ``IOTA_S_MIN``."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -107,14 +120,18 @@ def restart_input(run):
 
 
 def current_from_wout(inp, w):
-    """``inp`` with ``w``'s CURTOR and current-profile coefficients, when ``inp`` prescribes the current."""
+    """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
+    prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
     import numpy as np
 
     if int(inp.ncurr) == 1:
-        spline = "spline" in str(inp.pcurr_type)
-        field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)
-        inp = replace(inp, curtor=float(w.ctor),
-                      **{field_name: np.asarray(values, dtype=float)[: np.size(getattr(inp, field_name))]})
+        kind = str(w.pcurr_type).strip()
+        if "spline" in kind or "line_segment" in kind:  # VmecInput trims both to the knots before the -1 padding
+            inp = replace(inp, pcurr_type=kind, ac_aux_s=np.asarray(w.ac_aux_s, dtype=float),
+                          ac_aux_f=np.asarray(w.ac_aux_f, dtype=float), curtor=float(w.ctor))
+        else:
+            inp = replace(inp, pcurr_type=kind, ac=np.asarray(w.ac, dtype=float)[: np.size(inp.ac)],
+                          curtor=float(w.ctor))
     return inp
 
 
@@ -188,7 +205,7 @@ log(f"deck {mpol}x{ntor} ns {args.ns}; {np.asarray(field.gamma).shape[0]} coils 
 if args.export_only:
     sys.exit(0)
 
-model = ThreeTermFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 48),
+model = ThreeTermFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 96),
                            trial_ftol=1e-11)
 log(f"model: {model.x0.size} boundary coordinates")
 out = model.solve_boundary(model.params0, field, verbose=2, max_nfev=80)

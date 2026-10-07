@@ -46,10 +46,10 @@ CASE = os.environ.get("COIL_CASE", "ellipse5")
 if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa4-beta-tok", "qi6-beta", "qi6-beta-tok",
                 "qh4-beta", "qh4-beta-tok"):
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
-# None: the constructed QI residual (qh4-beta-tok takes the qi6-beta values, as the examples' case table)
-HELICITY = (1, -1) if CASE in ("qh", "qh4-beta") else None if CASE.startswith("qi") or CASE == "qh4-beta-tok" else (1, 0)
+# None: the constructed QI residual
+HELICITY = (1, -1) if CASE == "qh" or CASE.startswith("qh4-beta") else None if CASE.startswith("qi") else (1, 0)
 IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include the extrapolated axis and edge
-IOTA_S_MIN = 0.02 if CASE.startswith("qa4-beta") or CASE == "qh4-beta" else None  # iota rows start at this s
+IOTA_S_MIN = 0.02 if CASE.startswith(("qa4-beta", "qh4-beta")) else None  # iota rows start at this s
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)

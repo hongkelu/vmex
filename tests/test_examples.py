@@ -134,6 +134,11 @@ UNTESTED_EXAMPLES = {
     "examples/coil-constraints-benchmarks/parameters.py": "shared case constants imported by the two benchmarks",
     "examples/coil-constraints-benchmarks/postprocess.py": "post-processes a finished GPU benchmark run",
     "examples/coil-constraints-benchmarks/fit_coils.py": "regenerates the committed stage-two coil files; a GPU fit",
+    "examples/coil-constraints-benchmarks/free_boundary_three_term_single_stage.py": "GPU benchmark; ThreeTermFreeBoundaryModel is covered by tests/test_freeboundary_vc.py",
+    "examples/coil-constraints-benchmarks/three_term_highres.py": "re-solves a finished GPU benchmark run",
+    "examples/coil-constraints-benchmarks/three_term_postprocess.py": "post-processes a finished GPU benchmark run",
+    "examples/coil-constraints-benchmarks/three_term_desc_check.py": "needs DESC and a finished run",
+    "examples/coil-constraints-benchmarks/evolution_gifs.py": "draws the saved steps of a finished run",
 }
 
 

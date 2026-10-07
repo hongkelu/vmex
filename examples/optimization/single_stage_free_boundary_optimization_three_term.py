@@ -38,8 +38,7 @@ differences, and ``--profile-rows`` times and sizes the compiled programs at the
 seed. ``metrics.jsonl`` adds the three interface residuals (``bn``,
 ``pressure_balance``, ``sheet_current``) and each step's forward-solve counts
 and peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
-re-solves the final coils at another resolution and exports them for
-``benchmarks/three_term_desc_check.py`` (DESC, the same filaments),
+re-solves the final coils at another resolution and exports them,
 ``benchmarks/three_term_postprocess.py`` re-solves the final boundary densely
 for the WOUT figures and alpha losses, and
 ``benchmarks/coil_constraints_evolution_gifs.py`` draws the coils and LCFS of

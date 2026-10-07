@@ -12,8 +12,8 @@ uncited records are reachable through git history: link them with a
 permalink (`https://github.com/uwplasma/vmex/blob/<commit>/benchmarks/...`)
 rather than keeping the file.
 
-34 committed artifacts: 29 standalone records and 1 grouped directory holding
-5 files. 30 of the 30 entries below are cited by a page, a test or another
+35 committed artifacts: 30 standalone records and 1 grouped directory holding
+5 files. 31 of the 31 entries below are cited by a page, a test or another
 script; 0 are cited by nothing.
 
 `commit` is the revision recorded inside the artifact (short form) and
@@ -53,6 +53,7 @@ hand rather than by a script in this tree.
 | `benchmarks/strong_force_comparison_m4.json` | `benchmarks/make_strong_force_comparison.py` |  |  | `docs/_static/figures/figures.json`, `docs/explanation/validation.md`, `tests/test_performance_docs.py` |
 | `benchmarks/strong_force_m4.json` | `benchmarks/strong_force.py` | `9481f64a` |  | `docs/reference/performance.rst` |
 | `benchmarks/three_term_resolution.json` | `benchmarks/run_three_term_resolution.py` |  |  | `docs/explanation/validation.md` |
+| `benchmarks/three_term_resolution_vacuum.json` | `benchmarks/run_three_term_resolution.py` |  |  | `docs/explanation/validation.md` |
 | `benchmarks/trace_cross_code.json` | `benchmarks/trace_cross_code.py` |  | 2026-09-27 | `docs/_static/figures/figures.json`, `docs/_static/figures/sources/make_trace_figures.py`, `docs/howto/trace-alpha-particles.md` |
 
 ## Grouped directories

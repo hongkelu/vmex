@@ -1,12 +1,15 @@
-"""Scalar free-boundary coil optimization from an accepted equilibrium.
+"""Scalar free-boundary optimization of the external field from an accepted equilibrium.
 
-:class:`FreeBoundaryProblem` varies only the coils (through a
-:class:`CoilParameters` chart). Every trial is predicted from the accepted
-root, solved with strict edge convergence and freshly certified; derivatives
-use the dense ``forward_dense_jax`` adjoint, optionally reusing the accepted
-LU as a matrix-free preconditioner. Only :meth:`FreeBoundaryProblem.accept`
-changes the accepted root; ordinary function evaluation, reporting and
-rejected trials never promote it.
+:class:`FreeBoundaryProblem` varies a design vector ``x`` that sets the
+external field through ``field_from_parameters(x)`` (coils, currents, or any
+differentiable field; coil charts live with the caller, for example in ESSOS)
+and, optionally, plasma parameters such as PHIEDGE through
+``plasma_from_parameters(params, x)``. Every trial is predicted from the
+accepted root, solved with strict edge convergence and freshly certified;
+derivatives use the dense ``forward_dense_jax`` adjoint, optionally reusing
+the accepted LU as a matrix-free preconditioner. Only
+:meth:`FreeBoundaryProblem.accept` changes the accepted root; ordinary
+function evaluation, reporting and rejected trials never promote it.
 """
 
 from __future__ import annotations
@@ -29,10 +32,9 @@ from .optimize import Equilibrium
 from .problem import FunctionProblem
 from .solver import SolveResult, SpectralState, evaluate_forces
 from .statephysics import volume
-from .transforms import register_pytree_dataclass
 from .wout import wout_from_state
 
-__all__ = ["CoilParameters", "DirectCoilField", "FreeBoundaryProblem"]
+__all__ = ["FreeBoundaryProblem"]
 
 #: Relative residual at which :func:`_refine` solves each Newton step with
 #: GMRES on the seed LU.
@@ -109,7 +111,7 @@ class _Root:
 
 @dataclass(frozen=True, eq=False)
 class _Config:
-    """Fixed profiles, field chart, accepted anchor and trial step bounds."""
+    """Fixed profiles, solver (with the field map), accepted anchor and trial step bounds."""
 
     solver: fbi.FreeBoundaryImplicitConfig
     params: im.ImplicitParams
@@ -119,6 +121,12 @@ class _Config:
     root_residual_atol: float
     _anchor: _Root | None = field(default=None, repr=False)
     _owner: Any = field(default_factory=object, repr=False)
+
+
+def _params_at(cfg, point):
+    """``cfg.params`` with the plasma parameters the design point sets, if any."""
+    plasma = cfg.solver.plasma_from_parameters
+    return cfg.params if plasma is None else plasma(cfg.params, jnp.asarray(point))
 
 
 def _config_from_state(solver, params, anchor, *, state, rcon0, zcon0, parameter_scales,
@@ -151,7 +159,8 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
                for a, b in zip(jax.tree.leaves(state), jax.tree.leaves(result.state), strict=True)):
             raise ValueError("result and supplied state differ")
     point = _vector(parameters, cfg.parameter_scales.shape)
-    rt = im.runtime_from_params(cfg.params, icfg)
+    params = _params_at(cfg, point)
+    rt = im.runtime_from_params(params, icfg)
     expected = (icfg.resolution.ns, rt.modes.mnmax)
     if not isinstance(state, SpectralState):
         raise TypeError("state must be SpectralState")
@@ -166,7 +175,7 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
     with im._device_context(icfg):
         state, rcon0, zcon0 = im._device_pin(icfg, jax.tree.map(jnp.asarray, (state, rcon0, zcon0)))
         rt = replace(rt, rcon0=rcon0, zcon0=zcon0, lfreeb=True, jmax=int(icfg.resolution.ns),
-                     presf_ns_scale=fbi._presf_ns_scale_traceable(cfg.params, icfg.inp, int(icfg.resolution.ns)))
+                     presf_ns_scale=fbi._presf_ns_scale_traceable(params, icfg.inp, int(icfg.resolution.ns)))
         external = solver.field_from_parameters(jnp.asarray(point))
         bsqvac = solver.vacuum_program.bsq(state, rt, external)
         if not np.all(np.isfinite(np.asarray(bsqvac))):
@@ -195,7 +204,7 @@ def _certify(cfg, parameters, state, *, rcon0, zcon0, iterations=0, result=None)
         if not np.isfinite(vol) or vol <= 0:
             raise VmecError("fresh volume must be finite and positive")
         if result is None:
-            inp = im.input_with_params(icfg.inp, cfg.params)
+            inp = im.input_with_params(icfg.inp, params)
             w = wout_from_state(inp=inp, state=state, niter=iterations,
                                 **{n: values[n] for n in ("fsqr", "fsqz", "fsql")})
             wb, wp = float(diagnostics.wb), float(diagnostics.wp)
@@ -420,186 +429,6 @@ def _polish_with_recovery(record, cfg, preconditioner, build_dense, report, *,
     return polished
 
 
-@dataclass(frozen=True, eq=False)
-class DirectCoilField:
-    """Biot-Savart field of filament coils, as a differentiable pytree.
-
-    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
-    static ``self``, so every new coil geometry recompiles and no derivative
-    flows back to the coil arrays. This pytree carries the arrays as leaves
-    instead: one compiled program serves every trial and JAX differentiates
-    the field with respect to the coil parameters. The field is the mean
-    over each coil's quadrature points of the filament Biot-Savart integrand.
-
-    Parameters
-    ----------
-    gamma, gamma_dash:
-        Quadrature points and tangents of each coil, shape
-        ``(coils, points, 3)``, in metres.
-    currents:
-        Coil currents in amperes, shape ``(coils,)``.
-    """
-
-    gamma: Any
-    gamma_dash: Any
-    currents: Any
-
-    def b_cyl(self, r: Any, phi: Any, z: Any) -> tuple[Any, Any, Any]:
-        """Evaluate the filament field in cylindrical coordinates, in tesla."""
-        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
-        cosine, sine = jnp.cos(pp), jnp.sin(pp)
-        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
-        differential = differential * inv_radius3[..., None]
-        point_ndim = xyz.ndim - 1
-        current_shape = (1,) * point_ndim + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
-        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
-        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
-        return br, bphi, bxyz[..., 2]
-
-
-register_pytree_dataclass(DirectCoilField)
-
-
-class CoilParameters:
-    """Map a finite design vector to ESSOS coils without an equilibrium solve.
-
-    The design vector ``x`` holds, first, relative changes of the selected
-    base-coil currents (``current[i] = nominal[i] * (1 + x[k])``) and then
-    additive changes of every base coil's Cartesian Fourier coefficients in
-    metres. ``x = 0`` reproduces the nominal coils. Calling the chart returns
-    the :class:`DirectCoilField` of ``coils_from_x(x)``.
-
-    Parameters
-    ----------
-    coefficients:
-        Nominal Cartesian Fourier coefficients, shape
-        ``(coils, 3, 2 * order + 1)``, in metres.
-    currents:
-        Nominal base-coil currents in amperes, shape ``(coils,)``.
-    current_dofs:
-        Indices of the base coils whose currents vary (``()`` fixes all).
-        Each selected current must be nonzero.
-    nfp, stellsym, n_segments:
-        ESSOS symmetry and quadrature of the coils.
-    scales:
-        Positive coordinate scales used to condition the optimizer; by
-        default 0.06 per relative current, 0.002 m per constant Fourier
-        coefficient and ``0.002 / k**2`` m per coefficient of order ``k``.
-    """
-
-    def __init__(
-        self,
-        coefficients,
-        currents,
-        *,
-        current_dofs,
-        nfp=2,
-        stellsym=True,
-        n_segments=75,
-        scales=None,
-    ):
-        if np.iscomplexobj(coefficients) or np.iscomplexobj(currents):
-            raise ValueError("coil coefficients and currents must be real")
-        coefficients, currents = np.asarray(coefficients, dtype=float), np.asarray(currents, dtype=float)
-        if (
-            coefficients.ndim != 3
-            or coefficients.shape[0] < 1
-            or coefficients.shape[1] != 3
-            or coefficients.shape[2] % 2 != 1
-            or currents.shape != (coefficients.shape[0],)
-            or not np.all(np.isfinite(coefficients))
-            or not np.all(np.isfinite(currents))
-        ):
-            raise ValueError("finite coefficients (coils, 3, 2*order+1) and base currents required")
-        self.current_dofs = tuple(current_dofs)
-        if len(set(self.current_dofs)) != len(self.current_dofs) or any(
-            int(i) != i or not 0 <= i < len(currents) for i in self.current_dofs
-        ):
-            raise ValueError("current_dofs must be unique base-coil indices")
-        self.current_dofs = tuple(int(i) for i in self.current_dofs)
-        if any(currents[i] == 0 for i in self.current_dofs):
-            raise ValueError("relative current coordinates require nonzero nominal currents")
-        if int(nfp) != nfp or nfp < 1 or int(n_segments) != n_segments or n_segments < 3:
-            raise ValueError("positive nfp and at least three segments required")
-        # Immutable NumPy backing data prevents changes to the coordinate chart.
-        self.coefficients = np.frombuffer(coefficients.tobytes(), dtype=float).reshape(coefficients.shape)
-        self.currents = np.frombuffer(currents.tobytes(), dtype=float)
-        self.mode = (coefficients.shape[2] - 1) // 2
-        self.nfp, self.stellsym, self.n_segments = int(nfp), bool(stellsym), int(n_segments)
-        self.curve_shape = (len(currents), 3, 2 * self.mode + 1)
-        self.ncurrent = len(self.current_dofs)
-        self.size = self.ncurrent + int(np.prod(self.curve_shape))
-        self.x0 = np.zeros(self.size)
-        names = [f"current[{i}]/nominal" for i in self.current_dofs]
-        modes = ["constant"] + [f"{kind}({k})" for k in range(1, self.mode + 1) for kind in ("sin", "cos")]
-        names += [f"coil[{i}].{axis}.{mode}" for i in range(len(currents)) for axis in "xyz" for mode in modes]
-        self.dof_names = tuple(names)
-        if scales is None:
-            mode_scales = [0.002] + [0.002 / k**2 for k in range(1, self.mode + 1) for _ in range(2)]
-            scales = np.r_[np.full(self.ncurrent, 0.06), np.tile(mode_scales, 3 * len(currents))]
-        scales = np.asarray(scales, dtype=float)
-        if scales.shape != (self.size,) or not np.all(np.isfinite(scales)) or np.any(scales <= 0):
-            raise ValueError("one positive finite scale per coordinate required")
-        self.scales = np.frombuffer(scales.tobytes(), dtype=float)
-
-    @classmethod
-    def from_coils(cls, coils, **kwargs):
-        """Import physical geometry/current arrays through standard ESSOS APIs.
-
-        ESSOS exposes scaled curve DOFs but raw currents. Convert the curve
-        coefficients once here; our design coordinates are always in metres.
-        ``kwargs`` (``current_dofs``, ``scales``) are passed to the constructor.
-        """
-        return cls(
-            np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :],
-            coils.dofs_currents_raw,
-            nfp=coils.nfp,
-            stellsym=coils.stellsym,
-            n_segments=coils.n_segments,
-            **kwargs,
-        )
-
-    def _parameters(self, x):
-        values = jnp.asarray(x)
-        if values.shape != (self.size,) or not jnp.issubdtype(values.dtype, jnp.floating):
-            raise ValueError(f"expected floating parameter vector of shape ({self.size},)")
-        return values
-
-    def base_currents_at(self, x):
-        """Return physical base-coil currents in amperes."""
-        x = self._parameters(x)
-        currents = jnp.asarray(self.currents)
-        for local, base in enumerate(self.current_dofs):
-            currents = currents.at[base].add(x[local] * self.currents[base])
-        return currents
-
-    def curve_dofs_at(self, x):
-        """Return full Cartesian Fourier coefficients in metres."""
-        x = self._parameters(x)
-        return (
-            jnp.asarray(self.coefficients)
-            .at[:, :, : 2 * self.mode + 1]
-            .add(x[self.ncurrent :].reshape(self.curve_shape))
-        )
-
-    def coils_from_x(self, x):
-        """Construct coils without mutating the nominal input coils."""
-        from essos.coils import Coils, Curves
-
-        return Coils(Curves(self.curve_dofs_at(x), self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
-
-    def __call__(self, x):
-        """Return the differentiable filament field of ``coils_from_x(x)``."""
-        coils = self.coils_from_x(x)
-        return DirectCoilField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
-
-
 @dataclass(frozen=True)
 class _Equilibrium(Equilibrium):
     _wout_factory: Callable = field(kw_only=True, repr=False)
@@ -653,7 +482,7 @@ class _LURefresh:
 
 
 class FreeBoundaryProblem(FunctionProblem):
-    """Weighted plasma objectives and derivatives with respect to coil variables.
+    """Weighted plasma objectives and derivatives with respect to field variables.
 
     Build with :meth:`from_loss`. The equilibrium and adjoint machinery is
     host-eager; the state objective functions are JIT compiled. No files,
@@ -673,32 +502,35 @@ class FreeBoundaryProblem(FunctionProblem):
     """
 
     @classmethod
-    def from_loss(cls, inp, loss, *, coils=None, coil_current_dofs=None,
-                  parameterization=None, scales=None, restart_from=None,
-                  solver_options=None, quantities=(), coil_quantities=(),
+    def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None,
+                  scales=None, names=None, restart_from=None, solver_options=None,
+                  quantities=(), parameter_quantities=(),
                   continuation_step=0.1, max_continuation_steps=64,
                   root_residual_atol=2e-6, event=None, deadline=None):
-        """Solve and certify the seed equilibrium of a scalar coil loss.
+        """Solve and certify the seed equilibrium of a scalar loss of ``x``.
 
         Parameters
         ----------
         inp:
             Free-boundary input (``lfreeb``); it fixes the pressure and plasma
-            current profiles. Only the coils vary.
+            current profiles, except where ``plasma_from_parameters`` sets them.
         loss:
-            Scalar ``loss(state, runtime, coils)``, used without normalization.
+            Scalar ``loss(state, runtime, x)``, used without normalization.
             Its gradient includes the equilibrium response and the explicit
-            coil dependence.
-        coils, coil_current_dofs:
-            Nominal ESSOS coils and the indices of the base coils whose
-            currents vary (``()`` fixes all currents). Give these, or
-            ``parameterization``, not both.
-        parameterization:
-            A :class:`CoilParameters` chart (or any chart with ``x0``,
-            ``scales``, ``dof_names``, ``coils_from_x`` and ``__call__``
-            returning the external field).
-        scales:
-            Coordinate scales for the chart built from ``coils``.
+            dependence on ``x``.
+        x0:
+            Initial design vector.
+        field_from_parameters:
+            Differentiable ``x -> external field`` (anything with ``b_cyl``,
+            for example a Biot-Savart field of coils built from ``x``), as in
+            :func:`~vmex.core.freeboundary_implicit.make_free_boundary_config`.
+        plasma_from_parameters:
+            Optional differentiable ``(params, x) -> params`` setting plasma
+            parameters (for example PHIEDGE or the prescribed current profile)
+            from ``x``; ``params`` are the input's
+            :class:`~vmex.core.implicit.ImplicitParams`.
+        scales, names:
+            Coordinate scales (default ones) and names of ``x``.
         restart_from:
             Spectral state or WOUT path seeding the one ordinary solve.
         solver_options:
@@ -712,12 +544,12 @@ class FreeBoundaryProblem(FunctionProblem):
         quantities:
             Scalar or 1-D ``function(state, runtime)`` observables, the rows
             of :meth:`constraint_values`; the optimizer defines their bounds.
-        coil_quantities:
-            Scalar or 1-D ``function(state, runtime, coils)`` observables,
+        parameter_quantities:
+            Scalar or 1-D ``function(state, runtime, x)`` observables,
             appended after ``quantities``; their derivatives include the
-            explicit coil and the equilibrium terms. Constraints on coils
-            alone belong in ordinary optimizer constraints, which need no
-            equilibrium adjoint.
+            explicit and the equilibrium terms. Constraints on ``x`` alone
+            (coil geometry, say) belong in ordinary optimizer constraints,
+            which need no equilibrium adjoint.
         continuation_step, max_continuation_steps:
             A trial whose largest scaled step ``max |dx / scales|`` exceeds
             ``continuation_step * max_continuation_steps`` is rejected
@@ -743,22 +575,15 @@ class FreeBoundaryProblem(FunctionProblem):
             Ordinary evaluations never promote a root.
         """
         quantities = tuple(quantities)
-        coil_quantities = tuple(coil_quantities)
-        if not callable(loss) or not all(callable(q) for q in quantities + coil_quantities):
-            raise TypeError("loss and quantities must be callable")
+        parameter_quantities = tuple(parameter_quantities)
+        if not all(callable(f) for f in (loss, field_from_parameters, *quantities, *parameter_quantities)) or (
+                plasma_from_parameters is not None and not callable(plasma_from_parameters)):
+            raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary implicit optimization requires JAX_ENABLE_X64=1")
-        if (coils is None) == (parameterization is None):
-            raise ValueError("provide exactly one of coils or parameterization")
-        if parameterization is None:
-            if coil_current_dofs is None:
-                raise ValueError("select coil_current_dofs explicitly (or () to fix all currents)")
-            parameterization = CoilParameters.from_coils(coils, current_dofs=coil_current_dofs, scales=scales)
-        elif any(x is not None for x in (coil_current_dofs, scales)):
-            raise ValueError("coordinate settings belong to the supplied parameterization")
         if not inp.lfreeb:
             raise ValueError("input must enable free-boundary equilibrium")
-        point = parameterization.x0
+        point = _vector(x0)
         opts = dict(solver_options or {})
         if opts.get("include_edge_in_convergence", True) is not True:
             raise ValueError("free-boundary optimization requires strict edge convergence")
@@ -769,9 +594,11 @@ class FreeBoundaryProblem(FunctionProblem):
         if opts["adjoint_solver"] != "forward_dense_jax" or opts["adjoint_fail"] != "error":
             raise ValueError("optimization requires adjoint_solver='forward_dense_jax' and adjoint_fail='error'")
         solver = fbi.make_free_boundary_config(
-            inp, parameterization(jnp.asarray(point)), field_from_parameters=parameterization, **opts
-        )
+            inp, field_from_parameters(jnp.asarray(point)), field_from_parameters=field_from_parameters,
+            plasma_from_parameters=plasma_from_parameters, **opts)
         params = im.params_from_input(inp)
+        seed_inp = inp if plasma_from_parameters is None else im.input_with_params(
+            inp, plasma_from_parameters(params, jnp.asarray(point)))
 
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("walltime")
@@ -779,8 +606,8 @@ class FreeBoundaryProblem(FunctionProblem):
             from .restart import restart_state
             restart_from = restart_state(restart_from, inp, ns=solver.resolution.ns)
         stage = fb._solve_free_boundary_stage(
-            inp,
-            external_field=parameterization(jnp.asarray(point)),
+            seed_inp,
+            external_field=field_from_parameters(jnp.asarray(point)),
             resolution=solver.resolution,
             ftol=solver.implicit.ftol,
             max_iterations=solver.implicit.max_iterations,
@@ -802,7 +629,7 @@ class FreeBoundaryProblem(FunctionProblem):
             state=stage.result.state,
             rcon0=stage.rcon0,
             zcon0=stage.zcon0,
-            parameter_scales=parameterization.scales,
+            parameter_scales=np.ones_like(point) if scales is None else scales,
             continuation_step=continuation_step,
             max_continuation_steps=max_continuation_steps,
             root_residual_atol=root_residual_atol,
@@ -812,10 +639,10 @@ class FreeBoundaryProblem(FunctionProblem):
             raise VmecError("initial certification changed the ordinary state")
         if not np.isclose(stage.result.fedge, cfg._anchor.result.fedge, rtol=1e-5, atol=1e-15):
             raise VmecError("ordinary/fresh edge residual disagreement")
-        return cls(inp, parameterization, cfg, loss=loss, quantities=quantities,
-                   coil_quantities=coil_quantities, event=event, deadline=deadline)
+        return cls(inp, cfg, loss=loss, names=names, quantities=quantities,
+                   parameter_quantities=parameter_quantities, event=event, deadline=deadline)
 
-    def __init__(self, inp, parameterization, cfg, *, loss, quantities=(), coil_quantities=(),
+    def __init__(self, inp, cfg, *, loss, names=None, quantities=(), parameter_quantities=(),
                  event=None, deadline=None):
         self._accepted_linearization = self._accepted_jac = None
         self._preconditioner = self._matrixfree_options = None
@@ -829,9 +656,15 @@ class FreeBoundaryProblem(FunctionProblem):
         self._refresh_parity_rtol = 1e-6
         self._dense_derivatives = self._matrixfree_fallback = False
         self._recovered = False
-        self.inp, self.parameterization, self.cfg = inp, parameterization, cfg
+        self.inp, self.cfg = inp, cfg
         self.solver, self.params = cfg.solver, cfg.params
         self.rt = im.runtime_from_params(self.params, self.solver.implicit)
+        if self.solver.plasma_from_parameters is None:
+            def runtime(x):
+                return self.rt
+        else:  # rows see the design point's plasma parameters; self.rt keeps the input's
+            def runtime(x):
+                return im.runtime_from_params(_params_at(cfg, x), self.solver.implicit)
         self.accepted = cfg._anchor
         self.accepted_step = 0
         self._emit = event or (lambda *args, **kwargs: None)
@@ -840,13 +673,13 @@ class FreeBoundaryProblem(FunctionProblem):
         self._compact_jac = None
         self._records = {self._key(self.accepted.parameters): self.accepted}
         def scalar_rows(state, x):
-            coils = parameterization.coils_from_x(x)
-            value = jnp.asarray(loss(state, self.rt, coils))
+            rt = runtime(x)
+            value = jnp.asarray(loss(state, rt, x))
             if value.shape != ():
                 raise ValueError("loss must return a scalar")
             # A quantity may be a scalar or a vector of rows (e.g. iota per surface).
-            values = [jnp.asarray(function(state, self.rt)) for function in quantities]
-            values += [jnp.asarray(function(state, self.rt, coils)) for function in coil_quantities]
+            values = [jnp.asarray(function(state, rt)) for function in quantities]
+            values += [jnp.asarray(function(state, rt, x)) for function in parameter_quantities]
             if any(v.ndim > 1 for v in values):
                 raise ValueError("quantities must be scalars or one-dimensional arrays")
             return jnp.concatenate([value[None], *(jnp.ravel(v) for v in values)])
@@ -859,8 +692,8 @@ class FreeBoundaryProblem(FunctionProblem):
             raise ValueError("nonfinite objective or physical constraints")
         super().__init__(
             self.accepted.parameters,
-            names=parameterization.dof_names,
-            scales=parameterization.scales,
+            names=names,
+            scales=cfg.parameter_scales,
             fun=self._value,
             value_and_grad=self._value_gradient,
             metadata={"holder": {"failed_trials": 0}},
@@ -873,15 +706,15 @@ class FreeBoundaryProblem(FunctionProblem):
     @staticmethod
     def _x(x):
         if np.iscomplexobj(x):
-            raise ValueError("coil parameters must be real")
+            raise ValueError("parameters must be real")
         return FunctionProblem._x(x)
 
     def _validate_x(self, x):
         if np.iscomplexobj(x):
-            raise ValueError("coil parameters must be real")
+            raise ValueError("parameters must be real")
         x = np.asarray(x, dtype=float)
         if x.shape != self.x0.shape or not np.all(np.isfinite(x)):
-            raise ValueError("invalid coil parameter vector")
+            raise ValueError("invalid parameter vector")
         return x
 
     def _record(self, x):
@@ -1260,8 +1093,8 @@ class FreeBoundaryProblem(FunctionProblem):
             started = time.monotonic()
             try:
                 stage = fb._solve_free_boundary_stage(
-                    self.inp,
-                    external_field=self.parameterization(jnp.asarray(point)),
+                    self._inp_at(point),
+                    external_field=self.solver.field_from_parameters(jnp.asarray(point)),
                     resolution=self.solver.resolution,
                     ftol=tolerance,
                     max_iterations=self.solver.implicit.max_iterations,
@@ -1316,7 +1149,7 @@ class FreeBoundaryProblem(FunctionProblem):
         Parameters
         ----------
         delta:
-            Step from the accepted parameters, in the chart's coordinates.
+            Step from the accepted parameters.
         trial:
             Label passed to the ``event`` callback.
         predict:
@@ -1477,14 +1310,19 @@ class FreeBoundaryProblem(FunctionProblem):
         """Bound the physical quantities supplied to from_loss, in their units."""
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
-    def coils_from_x(self, x):
-        """Reconstruct coils, without solving or changing the accepted equilibrium."""
-        return self.parameterization.coils_from_x(self._validate_x(x))
+    def _inp_at(self, x):
+        """The input deck with the plasma parameters of design point ``x``."""
+        if self.solver.plasma_from_parameters is None:
+            return self.inp
+        return im.input_with_params(self.inp, _params_at(self.cfg, x))
 
     def equilibrium_from_x(self, x):
         """Return a certified equilibrium; WOUT uses its exact fixed-geometry vacuum."""
         record = self._record(x)
-        return _Equilibrium(self.inp, record.state, self.rt, record.result, _wout_factory=lambda: self._wout(record))
+        rt = (self.rt if self.solver.plasma_from_parameters is None else
+              im.runtime_from_params(_params_at(self.cfg, record.parameters), self.solver.implicit))
+        return _Equilibrium(self._inp_at(record.parameters), record.state, rt, record.result,
+                            _wout_factory=lambda: self._wout(record))
 
     def close(self):
         """Release retained derivative factors without altering accepted results."""
@@ -1497,17 +1335,18 @@ class FreeBoundaryProblem(FunctionProblem):
         self._accepted_linearization = self._accepted_jac = self._preconditioner = None
 
     def _wout(self, record):
-        currents = np.asarray(self.parameterization.base_currents_at(jnp.asarray(record.parameters)))
+        """WOUT of ``record``; external currents stay with the caller's field (no EXTCUR)."""
         # Re-evaluate the vacuum on this exact fixed plasma/coil geometry for
         # every exported pair. Imported anchors have no attached VacuumOutput;
         # ordinary results can carry cadence caches from a preceding geometry.
+        params = _params_at(self.cfg, record.parameters)
         export_rt = replace(
-            self.rt,
+            im.runtime_from_params(params, self.solver.implicit),
             rcon0=record.rcon0,
             zcon0=record.zcon0,
             lfreeb=True,
             jmax=int(self.solver.resolution.ns),
-            presf_ns_scale=fbi._presf_ns_scale_traceable(self.params, self.inp, int(self.solver.resolution.ns)),
+            presf_ns_scale=fbi._presf_ns_scale_traceable(params, self.inp, int(self.solver.resolution.ns)),
         )
         axis_r = jnp.full((self.solver.resolution.nzeta,), float(np.asarray(self.inp.rbc)[self.inp.ntor, 0]))
         basis, program, _ = fb._vacuum_executables(
@@ -1522,7 +1361,8 @@ class FreeBoundaryProblem(FunctionProblem):
             use_fft=False,
             solve_on_plasma_device=True,
         )
-        vacuum_values = program.full(record.state, export_rt, self.parameterization(jnp.asarray(record.parameters)))
+        field = self.solver.field_from_parameters(jnp.asarray(record.parameters))
+        vacuum_values = program.full(record.state, export_rt, field)
         vacuum = fb._vacuum_output(
             fb.FreeBoundaryState(potvac=vacuum_values["potvac"], surface_fields=vacuum_values["surface_fields"]), basis
         )
@@ -1532,14 +1372,11 @@ class FreeBoundaryProblem(FunctionProblem):
         ):
             raise ValueError("snapshot requires finite fixed-geometry vacuum output")
         return wout_from_state(
-            inp=self.inp,
+            inp=self._inp_at(record.parameters),
             state=record.state,
             niter=record.result.iterations,
             fsqr=record.result.fsqr,
             fsqz=record.result.fsqz,
             fsql=record.result.fsql,
             vacuum_output=vacuum,
-            nextcur=len(currents),
-            extcur=currents,
-            curlabel=tuple(f"base_coil_{i}" for i in range(len(currents))),
         )

@@ -3,13 +3,18 @@
 
     python postprocess.py runs/free                   # free-boundary arm
     python postprocess.py runs/fixed --match-flux     # fixed-boundary arm
+    COIL_CASE=qi6-beta python postprocess.py runs/free-qi6 --no-dense
 
-Reads what both optimization scripts write: ``metrics.jsonl``, the initial
+Run it with the run's ``COIL_CASE``: the limits and targets come from
+``parameters.py``. Reads what both optimization scripts write: ``metrics.jsonl``, the initial
 coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
 ``coils.json`` / ``wout.nc``. Writes into ``<run>/postprocess``:
 
-- ``history.csv``, ``loss.png`` (QA and objective) and ``constraints.png``
-  (every constrained quantity against its limits, from ``parameters.py``);
+- ``history.csv``, ``loss.png`` (QA and objective) and ``constraints.png``:
+  every logged constrained quantity against its limits (iota floor and
+  ceiling, aspect, major radius, mirror ratio, bootstrap mismatch, clearance,
+  B.n/|B|, edge R B_phi, ...; ``limits``). At beta > 0 the fixed arm's
+  normal-field limit is drawn on the total B.n it constrains;
 - ``evolution.gif``: coils and LCFS at every checkpoint, coloured by |B| of
   the coil field, and ``initial_final.png``;
 - with ``--poincare N``, ``poincare.png`` / ``poincare.json``: field lines of
@@ -19,8 +24,11 @@ coils, the ``coils.stepN.json`` / ``wout.stepN.nc`` checkpoints and the final
   distance from its surface; islands and stochastic layers show up here even
   though the nested-surface equilibrium cannot represent them;
 - ``wout_dense.nc``, ``dense.json`` and the ``vmex.plot_wout`` figures: the
-  final (or latest checkpoint) coils solved free-boundary at ``--ns`` (default NS201), the like-for-
-  like QA of both arms. A fixed-arm run need not enclose PHIEDGE; with
+  final (or latest checkpoint) coils solved free-boundary at ``--ns`` (default
+  201), the like-for-like comparison of both arms: QA, min and max |iota|,
+  aspect, major radius, the mirror ratio where the case limits it and, for
+  ``--bootstrap`` runs (solved at the run's final current), the Redl mismatch
+  and for DKX cases the DKX one. A fixed-arm run need not enclose PHIEDGE; with
   ``--match-flux`` its currents are rescaled by the logged coil-flux ratio,
   which in vacuum changes the field strength only.
 - with ``--trace``, ``trace/``: ``vmex --trace`` alpha losses of that dense
@@ -44,6 +52,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import parameters as P  # noqa: E402
+from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, current_from_wout, dkx_mismatch,  # noqa: E402
+                     max_abs_iota, min_abs_iota, redl_profiles, resize_coils, seed_input, target_residual)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
@@ -57,7 +67,6 @@ def parse_args(argv=None):
     parser.add_argument("--match-flux", action="store_true", help="rescale fixed-arm currents to enclose PHIEDGE")
     parser.add_argument("--seed-wout", type=Path, help="initial state of the dense solve (default: the run's wout.nc)")
     parser.add_argument("--max-iterations", type=int, default=12000, help="iteration cap of the dense solve")
-    parser.add_argument("--flux-tolerance", type=float, help="flux band the fixed-arm run used, for the plot")
     parser.add_argument("--poincare", type=int, default=0, metavar="N",
                         help="trace the final coils' field lines for N toroidal transits (0: skip)")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
@@ -72,25 +81,32 @@ def read_history(run):
     return rows, keys
 
 
-def limits(flux_tolerance=None):
-    """Constrained quantities and their bounds, as the two benchmarks impose them."""
-    import single_stage_optimization as fixed
+def limits(keys):
+    """Logged quantities and their bounds, as the two benchmarks impose them (None: no bound)."""
     width = P.RADIUS_TOLERANCE - P.RADIUS_MARGIN
-    band = (None, None) if flux_tolerance is None else (1 - flux_tolerance, 1 + flux_tolerance)
+    # At beta > 0 the fixed arm limits the total (B_coils + B_plasma).n/|B|, logged as
+    # total_normal_field_rms, and logs the coil-only normal_field_rms unconstrained.
+    coil_only_limit = None if "total_normal_field_rms" in keys else NORMAL_FIELD_CONSTRAINT
     return {
         "min_abs_iota": ("min |iota|", P.IOTA_FLOOR, None),
+        "max_abs_iota": ("max |iota|", None, P.IOTA_CEILING),
         "aspect": ("aspect ratio", *P.ASPECT_RANGE),
         "mirror_ratio": ("mirror ratio", None, P.MIRROR_LIMIT),
         "major_radius_m": ("major radius [m]", P.RADIUS_TARGET - width, P.RADIUS_TARGET + width),
+        "redl_mismatch": (f"bootstrap mismatch ({P.BOOTSTRAP_MODEL})", None, P.REDL_TOLERANCE),
         "coil_surface_distance_m": ("coil-plasma distance [m]", P.COIL_SURFACE_DISTANCE_LIMIT, None),
         "coil_minimum_scaled_slack": ("min coil slack", 0.0, None),
-        "normal_field_rms": ("rms B.n/|B|", None, fixed.NORMAL_FIELD_CONSTRAINT),
-        "flux_ratio": ("coil flux / PHIEDGE", *band),
-        "current_factor": ("coil current factor", None, None),
+        "plasma_minimum_scaled_slack": ("min plasma-row slack", 0.0, None),
+        "normal_field_rms": ("rms coil-only B.n/|B|", None, coil_only_limit),
+        "total_normal_field_rms": ("rms (B_coils + B_plasma).n/|B|", None, NORMAL_FIELD_CONSTRAINT),
+        "rbtor_ratio": ("edge R B_phi / coils' mu0 I / 2 pi", 1 - FIELD_STRENGTH_TOLERANCE,
+                        1 + FIELD_STRENGTH_TOLERANCE),
+        "flux_ratio": ("coil flux / PHIEDGE", None, None),
+        "phiedge_factor": ("PHIEDGE / seed PHIEDGE", None, None),
     }
 
 
-def plot_history(rows, keys, out, flux_tolerance=None):
+def plot_history(rows, keys, out):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -107,7 +123,7 @@ def plot_history(rows, keys, out, flux_tolerance=None):
     axis.set_xlabel("accepted step"), axis.grid(True, alpha=0.3), axis.legend()
     figure.tight_layout(), figure.savefig(out / "loss.png", dpi=200), plt.close(figure)
 
-    panels = [(k, *spec) for k, spec in limits(flux_tolerance).items() if k in keys]
+    panels = [(k, *spec) for k, spec in limits(keys).items() if k in keys]
     columns = 3
     figure, axes = plt.subplots((len(panels) + columns - 1) // columns, columns,
                                 figsize=(4 * columns, 3 * ((len(panels) + columns - 1) // columns)), squeeze=False)
@@ -247,19 +263,29 @@ def dense_solve(frame, args, rows, out):
     import numpy as np
     import vmex
     from vmex import optimize as opt
+    # Private: the one free-boundary stage solve that accepts an ESSOS field and a seed state at a new NS.
     from vmex.core.freeboundary import _solve_free_boundary_stage, free_boundary_resolution
     from vmex.core.solver import prepare_runtime
-    from vmex.core.statephysics import major_radius
-    from vmex.core.wout import wout_from_state
     from essos.coils import Coils
     from essos.fields import BiotSavart
-    from free_boundary_single_stage_optimization import resize_coils, seed_input, target_residual
 
-    inp = replace(seed_input(vmex), lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]),
-                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
     label, coil_path, wout_path = frame
-    coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
+    mpol, ntor, _ = P.RESOLUTION
+    run = Path(coil_path).parent
+    if (run / "input.run").exists():
+        inp = vmex.VmecInput.from_file(run / "input.run").change_resolution(
+            mpol=mpol, ntor=ntor, ntheta=P.GRID[0], nzeta=P.GRID[1])
+    else:  # older runs: the case's seed deck
+        inp = seed_input()
     row = rows[-1] if label == "final" else next(r for r in rows if f"step {r['step']}" == label)
+    bootstrap = "redl_mismatch" in row  # --bootstrap run: input.run holds the seed current, the WOUT the final one
+    run_wout = vmex.read_wout(wout_path)
+    if bootstrap:
+        inp = current_from_wout(inp, run_wout)
+    phiedge = float(run_wout.phi[-1])  # a free-PHIEDGE run ends at its own PHIEDGE
+    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", ns_array=np.array([args.ns]), phiedge=phiedge,
+                  ftol_array=np.array([P.EQUILIBRIUM_FTOL]), niter_array=np.array([args.max_iterations]))
+    coils = resize_coils(Coils.from_json(str(coil_path)), P.COIL_ORDER, P.N_SEGMENTS)
     scale = 1.0 / row["flux_ratio"] if args.match_flux else 1.0
     if scale != 1.0:
         coils = Coils(coils.curves, coils.dofs_currents_raw * scale, currents_scale=coils.currents_scale)
@@ -279,13 +305,23 @@ def dense_solve(frame, args, rows, out):
     report = dict(frame=label, coils=str(coil_path), ns=args.ns, seed=str(seed), current_scale=scale, currents_A=np.asarray(coils.currents).tolist(),
                   converged=converged, iterations=int(result.iterations), seconds=time.monotonic() - started, **forces)
     if converged:
-        wout = wout_from_state(inp=inp, state=result.state, niter=int(result.iterations), converged=True,
-                               vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
+        wout = vmex.wout_from_state(inp=inp, state=result.state, niter=int(result.iterations), converged=True,
+                                    vacuum_output=result.vacuum, **{k: forces[k] for k in ("fsqr", "fsqz", "fsql")})
         path = vmex.write_wout(str(out / "wout_dense.nc"), wout)
         rt = prepare_runtime(inp, resolution)
         residuals = target_residual().residuals_state(result.state, rt)
-        report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(opt.min_abs_iota(result.state, rt)),
-                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(major_radius(result.state, rt)))
+        report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(min_abs_iota(result.state, rt)),
+                      aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)),
+                      max_abs_iota=float(max_abs_iota(result.state, rt)))
+        if P.MIRROR_LIMIT:
+            report["mirror_ratio"] = float(opt.mirror_ratio(result.state, rt))
+        if bootstrap:  # the Redl mismatch, and for a DKX case also the DKX one the run held
+            report["redl_mismatch"] = float(redl_profiles(inp)[1].total_state(result.state, rt))
+            if P.BOOTSTRAP_MODEL == "dkx":
+                try:
+                    report["dkx_mismatch"] = float(dkx_mismatch(inp)(result.state, rt))
+                except ImportError:
+                    print("dkx is not installed: dense.json has no dkx_mismatch", flush=True)
         report["figures"] = [str(p) for p in vmex.plot_wout(path, out, name="dense").values()]
     else:
         print("dense solve did not converge; seed it closer with --seed-wout", flush=True)
@@ -309,7 +345,7 @@ def main(argv=None):
     rows, keys = read_history(run)
     if args.match_flux and "flux_ratio" not in keys:
         raise SystemExit("--match-flux needs a fixed-arm run that logs flux_ratio")
-    plot_history(rows, keys, out, args.flux_tolerance)
+    plot_history(rows, keys, out)
     frames = checkpoints(run)
     if frames:
         plot_evolution(frames, out, final_step=rows[-1]["step"])

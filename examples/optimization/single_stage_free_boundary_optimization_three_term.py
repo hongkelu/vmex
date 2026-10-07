@@ -4,40 +4,27 @@ r"""Free-boundary single-stage coil optimization on sheet-current-free equilibri
 The free arm of ``single_stage_free_boundary_optimization_coil_constraints.py``
 with its equilibrium replaced: every trial is the free boundary that satisfies
 all three plasma-vacuum interface conditions (B.n = 0, pressure balance and no
-sheet current, ``vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel``), not a
-VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
-jump free. The cases (``COIL_CASE``; the case table is in that script's
-docstring), the design variables (coil shapes, PHIEDGE and, with
+sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves
+the tangential field jump free. The cases (``COIL_CASE``; the case table is in
+that script's docstring), the design variables (coil shapes, PHIEDGE and, with
 ``--bootstrap``, the current spline values and CURTOR), the loss, the
 constraint rows and their bounds, and the run directory are that script's --
 except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
 boundary, Redl's on every half-grid surface, and neither its values nor the
 bootstrap-mismatch row enter the optimization.
 
-Each trial starts from the latest solved boundary, after a first-order prediction
-of the boundary change, and takes trust-region Gauss-Newton steps with its Jacobian;
-each SLSQP gradient linearizes the solved boundary once: the state tangents of
-the boundary and plasma coordinates (one block factorization) give the
-interface Jacobian and the objective and constraint rows' derivatives, and by
-the implicit function theorem of the boundary least squares a row ``h`` has the
-design gradient
-
-    dh/dx = dh/dx|_boundary - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db,
-
-with ``r`` the interface rows, ``J_b`` their boundary Jacobian and ``dr/dx``
-through the plasma parameters (state tangents) and the coil field (one reverse
-pass at the fixed state).  Nothing recompiles when the coils or plasma
-parameters change.
+The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
+(:class:`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`): warm-started
+trial boundaries and design gradients by the implicit function theorem of the
+boundary fit, without recompiling when the coils or plasma parameters change.
 
     COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_term.py --beta 0.025 --bootstrap \
         --modes 8 8 --ns 51 --output runs/three-term-qa4
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
-``--check-gradient N`` compares the gradients with re-solved central
-differences, and ``--profile-rows`` times and sizes the compiled programs at the
-seed. ``metrics.jsonl`` adds the three interface residuals (``bn``,
-``pressure_balance``, ``sheet_current``) and each step's forward-solve counts
-and peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
+``metrics.jsonl`` adds the three interface residuals (``bn``,
+``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
+counts and the peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
 re-solves the final coils at another resolution and exports them,
 ``benchmarks/three_term_postprocess.py`` re-solves the final boundary densely
 for the WOUT figures and alpha losses, and
@@ -817,13 +804,6 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--trial-verbose", action="store_true", help="print every boundary step of every trial")
-    parser.add_argument("--profile-rows", action="store_true",
-                        help="time the rows, their gradient and the linearization at the seed (with and without the "
-                        "bootstrap row), report each compiled program's memory, then stop")
-    parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
-                        help="before optimizing, compare the gradients with central differences along N random "
-                        "directions, then stop")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -881,13 +861,11 @@ def main(argv=None):
 
     import jax
     import jax.numpy as jnp
-    import scipy.optimize
     from essos.coils import Coils
     from essos.surfaces import surfacerzfourier_from_boundary
     import vmex as vj
     from vmex import optimize as opt
     from vmex.core import implicit as im
-    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
 
     started = time.monotonic()
     mpol, ntor, ns = RESOLUTION
@@ -925,371 +903,108 @@ def main(argv=None):
     chart = CoilChart(coils0, current_dofs=(), scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
-    nplasma = chart.nphiedge + chart.nplasma
     qs = target_residual()
-
-    # quad_nt: a multiple of nfp grid
-    quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid)
-    model = ThreeTermFreeBoundaryModel(inp, nphi=args.vc_grid, ntheta=args.vc_grid, trial_ftol=args.trial_forward_ftol,
-                                       chunk=args.chunk, quadrature=quadrature, bootstrap=profiles,
-                                       bootstrap_helicity=REDL_HELICITY)
-    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
-          f"{nplasma} plasma coordinates, "
-          f"{chart.size - nplasma} coil coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
-
-    # ---- rows of the run: loss residual, then the constraint quantities in the free arm's order --------------------
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
-    plasma_rows = (min_abs_iota, opt.major_radius, *mirror, *ceiling,
-                   *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []))
 
     def boundary_surface(state, runtime):
-        rmnc, _, _, zmns = im._edge_physical(state, runtime)
+        rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
         rows, cols = np.asarray(runtime.modes.n) + ntor, np.asarray(runtime.modes.m)
         rbc = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(rmnc)
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
-        return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0],
-                                              ntheta=SURFACE_GRID[1])
+        return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
 
-    def quantities(state, params, x):
-        """``[QA residuals..., plasma rows..., clearance, aspect]`` at a fixed-boundary state."""
-        runtime = im.runtime_from_params(params, model.cfg)
-        clearance = surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
-        return jnp.concatenate([qs.residuals_state(state, runtime),
-                                jnp.stack([f(state, runtime) for f in plasma_rows]
-                                          + [clearance, opt.aspect_ratio(state, runtime)])])
+    def loss(state, runtime, x):
+        residuals = qs.residuals_state(state, runtime)
+        return 0.5 * jnp.vdot(residuals, residuals)
 
-    nq = int(np.asarray(qs.residuals_state(model.seed[0], im.runtime_from_params(model.params0, model.cfg))).size)
-    nrows = len(plasma_rows) + 2
-    quantities_jit = jax.jit(quantities)
-    # The loss and constraint rows are few scalars of expensive functions (QI residual, DKX): their gradients
-    # by reverse mode through one shared block factorization, then onto the boundary and plasma coordinates.
-    quantity_pullback = jax.jit(lambda state, mask, params, cots, x: model.pullback(
-        quantities, state, mask, params, cots, x))
+    def clearance(state, runtime, x):
+        return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
 
-    @jax.jit
-    def to_coordinates(params, x_b, x, params_bar):
-        _, boundary_vjp = jax.vjp(lambda z: model.with_boundary(params, z), x_b)
-        _, plasma_vjp = jax.vjp(lambda z: chart.plasma_params_at(params, z), x)
-        return jax.vmap(lambda bar: jnp.concatenate([boundary_vjp(bar)[0], plasma_vjp(bar)[0][:nplasma]]))(
-            params_bar)
-    coil_gradient = jax.jit(lambda state, params, x, cot: jax.vjp(lambda xx: quantities(state, params, xx), x)[1](cot)[0])
-    rows_coil_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(lambda xx: model.rows(state, params, chart(xx)), x)[1](
-        lam)[0])
-    rows_coil_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(lambda xx: model.rows(state, params, chart(xx)), (x,),
-                                                                  (dx,))[1])
+    def aspect(state, runtime, x):
+        return opt.aspect_ratio(state, runtime)
 
-    def plasma_params(x):
-        return chart.plasma_params_at(model.params0, jnp.asarray(x))
+    problem = opt.FreeBoundaryProblem.from_loss(
+        inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
+        scales=chart.scales, names=chart.dof_names,
+        quantities=(min_abs_iota, opt.major_radius, *mirror, *ceiling,
+                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
+        parameter_quantities=(clearance, aspect), boundary_condition="three_term",
+        three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+                                quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
+                                trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
+                                bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol))
+    model = problem.model
+    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
+          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
-    plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
-        lambda xx: chart.plasma_params_at(params, xx), (x,), (e,))[1])(jnp.eye(chart.size)[:nplasma]))
-
-    # ---- the free-boundary solve of a design point, cached ----------------------------------------------------------
-    cache = {}
-    anchor = {}  # the latest linearized solution: boundary, Jacobian (boundary and plasma columns), design point
-    counters = dict(trials=0, failed=0, lm_evaluations=0, linearizations=0, solve_seconds=0.0, linearize_seconds=0.0)
-
-    def solve(x):
-        key = np.asarray(x, dtype=float).tobytes()
-        if key in cache:
-            return cache[key]
-        t = time.monotonic()
-        counters["trials"] += 1
-        x = np.asarray(x, dtype=float)
-        params = plasma_params(x)
-        field = chart(jnp.asarray(x))
-        x_b, J = None, None
-        if anchor:
-            # First-order boundary prediction from the anchor's linearization.
-            dx = x - anchor["x"]
-            dr = anchor["J_p"] @ dx[:nplasma] + np.asarray(rows_coil_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
-            x_b = anchor["x_b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0]
-            J = anchor["J_b"]
-        result = None
-        # From the predicted boundary, then (if its equilibrium fails) from the anchor's; a trial far above the
-        # last floor (a large coil change) goes on with fresh Jacobians.
-        for start in ([x_b, anchor["x_b"]] if anchor else [None]):
-            try:
-                result = model.solve_boundary(params, field, x0=start, jacobian=J, ftol=args.trial_ftol, max_nfev=40,
-                                              target_cost=4 * anchor["cost"] if anchor else None,
-                                              verbose=int(args.trial_verbose))
-                break
-            except (vj.VmecError, RuntimeError) as error:  # an uncertified equilibrium ends this SLSQP call
-                print(f"[trial] failed: {str(error)[:300]}", flush=True)
-        counters["solve_seconds"] += time.monotonic() - t
-        if result is None:
-            counters["failed"] += 1
-            cache[key] = None
-            return None
-        counters["lm_evaluations"] += result["nfev"]
-        state, mask, params_x, _ = result["aux"]
-        values = np.asarray(quantities_jit(state, params_x, jnp.asarray(x)))
-        cache[key] = dict(result, values=values, state=state, mask=mask, params=params_x)
-        return cache[key]
-
-    def linearize(x):
-        """Design gradients of the loss and every row at ``x``'s solution (implicit function theorem)."""
-        sol = solve(x)
-        if "gradients" in sol:
-            return sol["gradients"]
-        t = time.monotonic()
-        counters["linearizations"] += 1
-        state, params_x = sol["state"], sol["params"]
-        extra = plasma_directions(params_x, jnp.asarray(x))
-        field = chart(jnp.asarray(x))
-        nb = model.x0.size
-
-        def tight_linearization():
-            """Linearize at the solution, re-solved to the deck's tolerance; its values come from that state."""
-            J, dz, params_batch, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
-            state, mask, params_x, _ = aux
-            sol.update(aux=aux, state=state, mask=mask, params=params_x,
-                       rows=np.asarray(model._rows(state, params_x, field)),
-                       values=np.asarray(quantities_jit(state, params_x, jnp.asarray(x))))
-            return J, dz, params_batch
-
-        J, dz, params_batch = tight_linearization()
-        # Trials stop early on a Jacobian from an earlier point; polish this one onto the floor with its own
-        # Jacobian, and linearize again where the polish went (if it gained), so the gradient belongs to it.
-        cost = 0.5 * sol["rows"] @ sol["rows"]
-        polished = model.solve_boundary(plasma_params(x), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                        max_nfev=20)
-        counters["lm_evaluations"] += polished["nfev"]
-        if 0.5 * polished["rows"] @ polished["rows"] < 0.9 * cost:
-            sol.update(x=polished["x"], aux=polished["aux"])
-            J, dz, params_batch = tight_linearization()
-            counters["linearizations"] += 1
-        state, params_x = sol["state"], sol["params"]
-        J_b, J_p = J[:, :nb], J[:, nb:]
-        values = sol["values"]
-        q = values[:nq]
-        # loss 0.5 |q|^2, then each row: (1 + nrows) x (nb + np) fixed-boundary derivatives
-        cotangents = jnp.asarray(np.vstack([np.r_[q, np.zeros(nrows)], np.c_[np.zeros((nrows, nq)), np.eye(nrows)]]))
-        params_bar = quantity_pullback(state, sol["mask"], params_x, cotangents, jnp.asarray(x))
-        G = np.asarray(to_coordinates(params_x, jnp.asarray(sol["x"]), jnp.asarray(x), params_bar))
-        Q, R = np.linalg.qr(J_b)
-        lam = Q @ np.linalg.solve(R.T, G[:, :nb].T)  # residual-space multipliers, one column per row
-        gradients = np.zeros((1 + nrows, chart.size))
-        for i in range(1 + nrows):
-            cot_i = jnp.asarray(np.r_[q if i == 0 else np.zeros(nq), np.eye(nrows)[i - 1] if i else np.zeros(nrows)])
-            direct = np.asarray(coil_gradient(state, params_x, jnp.asarray(x), cot_i))
-            through_rows = np.asarray(rows_coil_vjp(state, params_x, jnp.asarray(x), jnp.asarray(lam[:, i])))
-            gradients[i] = direct - through_rows
-            gradients[i, :nplasma] += G[i, nb:] - lam[:, i] @ J_p
-        anchor.update(x=np.asarray(x, dtype=float).copy(), x_b=sol["x"], J_b=J_b, J_p=J_p, state=state,
-                      params=params_x, cost=0.5 * sol["rows"] @ sol["rows"])
-        sol["gradients"] = gradients
-        counters["linearize_seconds"] += time.monotonic() - t
-        return gradients
-
-    # ---- SLSQP problem ------------------------------------------------------------------------------------------------
     aspect_lower, aspect_upper = ASPECT_RANGE
     width = RADIUS_TOLERANCE - RADIUS_MARGIN
     nredl = int(redl is not None)
-    bounds = [(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
-              (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
-              *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
-              *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-              *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
-              (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
-              (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower))]
-    lower, upper, row_scale = map(np.asarray, zip(*bounds))
-    has_lower, has_upper = np.isfinite(lower), np.isfinite(upper)
-    u_scale = chart.scales  # optimizer coordinates u = x / scales
-
-    def failed():
-        raise _TrialRejected
-
-    def fun(u):
-        sol = solve(u * u_scale)
-        if sol is None:
-            failed()
-        q = sol["values"][:nq]
-        return 0.5 * float(q @ q)
-
-    def jac(u):
-        if solve(u * u_scale) is None:
-            failed()
-        return linearize(u * u_scale)[0] * u_scale
-
-    def ineq(u):
-        sol = solve(u * u_scale)
-        if sol is None:
-            failed()
-        h = sol["values"][nq:]
-        return np.r_[((h - lower) / row_scale)[has_lower], ((upper - h) / row_scale)[has_upper]]
-
-    def ineq_jac(u):
-        if solve(u * u_scale) is None:
-            failed()
-        g = linearize(u * u_scale)[1:] * u_scale
-        return np.vstack([(g / row_scale[:, None])[has_lower], (-g / row_scale[:, None])[has_upper]])
-
+    lower, upper, row_scales = zip(
+        (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
+        (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
+        *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
+        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
+        *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
+        (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
+        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
     coil_rows = coil_constraint(chart.coils_from_x)
-    constraints = [dict(type="ineq", fun=ineq, jac=ineq_jac),
-                   dict(type="ineq", fun=lambda u: coil_rows.fun(u * u_scale),
-                        jac=lambda u: coil_rows.jac(u * u_scale) * u_scale)]
+    constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
-    # ---- logging -----------------------------------------------------------------------------------------------------
-    state = dict(step=0, time=time.monotonic(), x=chart.x0.copy())
-    solver_seen = {}
-
-    def save(tag, x):
-        sol = solve(x)
+    def save(tag):
+        x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
-        from vmex.core.optimize import solve_equilibrium
-        deck = im.input_with_params(model.fixed, sol["params"])
-        vj.write_wout(str(out / f"wout{tag}.nc"), solve_equilibrium(deck, initial_state=sol["state"]).wout)
+        vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
-    def log_step(x):
-        sol = solve(x)
-        if sol is None:
-            raise RuntimeError("the accepted point has no certified free-boundary solution")
-        h = sol["values"][nq:]
-        q = sol["values"][:nq]
-        res = model.boundary_residual(sol["state"], sol["params"], chart(jnp.asarray(x)))
+    last = dict(time=time.monotonic())
+
+    def log_step():
+        x = problem.accepted.parameters
+        h = problem.constraint_values(x)
+        res = problem.boundary_residual(x)
         now = time.monotonic()
-        # forward solves of the trials and of the tight re-solves: count, VMEC iterations and seconds by part
-        solver = {}
-        for tag, cfg in (("trial", model.cfg_trial), ("tight", model.cfg)):
-            stats = dict(im._SOLVE_STATS.get(cfg, {}))
-            last = solver_seen.get(tag, {})
-            solver[tag] = {k: round(v - last.get(k, 0), 2) for k, v in stats.items()
-                           if isinstance(v, (int, float)) and v - last.get(k, 0)}
-            solver_seen[tag] = stats
-            if model.cfg_trial is model.cfg:
-                break
-        row = dict(step=state["step"], qa=float(q @ q), min_abs_iota=float(h[0]), major_radius_m=float(h[1]),
+        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[0]),
+                   major_radius_m=float(h[1]),
                    **({"redl_mismatch": float(h[2 + len(mirror) + len(ceiling)])} if nredl else {}),
-                   **({"redl_max_relative": model.bootstrap_residual(sol["state"], sol["params"])} if fold else {}),
+                   **({"redl_max_relative": model.bootstrap_residual(*problem.state(x))} if fold else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
-                   step_seconds=now - state["time"], elapsed_seconds=now - started, **counters, solver=solver,
+                   step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        for k in ("trials", "failed", "lm_evaluations", "linearizations"):
-            counters[k] = 0
-        counters["solve_seconds"] = counters["linearize_seconds"] = 0.0
+        last.update(time=now)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
-              f"R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} clearance={row['coil_surface_distance_m']:.4f} "
+              f"R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} "
+              f"clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
-              + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s", flush=True)
-        print(f"[timing] trials {row['trials']} ({row['solve_seconds']:.0f} s, {row['lm_evaluations']} boundary "
-              f"evaluations), linearizations {row['linearizations']} ({row['linearize_seconds']:.0f} s), "
-              f"peak {row['peak_gpu_gib']:.1f} GiB; forward solves {json.dumps(solver)}", flush=True)
-        if state["step"] % args.save_every == 0:
-            save(f".step{state['step']}", x)
-        state.update(step=state["step"] + 1, time=now, x=np.asarray(x).copy())
-        if len(cache) > 64:  # keep the accepted point only
-            keep = np.asarray(x, dtype=float).tobytes()
-            for k in [k for k in cache if k != keep]:
-                del cache[k]
+              + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "
+              f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
+              f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
+        if row["step"] % args.save_every == 0:
+            save(f".step{row['step']}")
 
-    log_step(chart.x0)
-    u = chart.x0 / u_scale
-    if args.profile_rows:
-        sol = solve(chart.x0)
-        state, mask, params_x, x = sol["state"], sol["mask"], sol["params"], jnp.asarray(chart.x0)
-        no_bootstrap = [f for f in plasma_rows if f is not plasma_rows[-1]] if redl is not None else list(plasma_rows)
-
-        def without(state, params, x):
-            runtime = im.runtime_from_params(params, model.cfg)
-            return jnp.concatenate([qs.residuals_state(state, runtime),
-                                    jnp.stack([f(state, runtime) for f in no_bootstrap])])
-
-        def timed(name, fn, repeat=3):
-            jax.block_until_ready(fn())
-            t = time.perf_counter()
-            for _ in range(repeat):
-                jax.block_until_ready(fn())
-            print(f"[profile] {name}: {(time.perf_counter() - t) / repeat:.2f} s", flush=True)
-
-        n_all, n_without = nq + nrows, nq + len(no_bootstrap)
-        cot_all = jnp.asarray(np.eye(n_all)[[0] + list(range(nq, n_all))])
-        cot_without = jnp.asarray(np.eye(n_without)[[0] + list(range(nq, n_without))])
-        pull_without = jax.jit(lambda s_, m_, p_, c_: model.pullback(lambda a, b: without(a, b, x), s_, m_, p_, c_))
-        timed("rows (all)", lambda: quantities_jit(state, params_x, x))
-        timed("rows (no bootstrap row)", lambda: jax.jit(without)(state, params_x, x))
-        timed(f"reverse gradient of {cot_all.shape[0]} rows (all)",
-              lambda: quantity_pullback(state, mask, params_x, cot_all, x), repeat=1)
-        timed(f"reverse gradient of {cot_without.shape[0]} rows (no bootstrap)",
-              lambda: pull_without(state, mask, params_x, cot_without), repeat=1)
-        extra = plasma_directions(params_x, x)
-        timed("interface linearization (boundary + plasma columns)",
-              lambda: model.linearize(sol["x"], sol["aux"], chart(x), extra=extra)[0], repeat=1)
-
-        def memory(name, fn, *a):
-            m = fn.lower(*a).compile().memory_analysis()
-            print(f"[memory] {name}: temp {m.temp_size_in_bytes / 2**30:.2f} GiB, arguments "
-                  f"{m.argument_size_in_bytes / 2**30:.2f} GiB, output {m.output_size_in_bytes / 2**30:.2f} GiB",
-                  flush=True)
-
-        field = chart(x)
-        batch = model.boundary_directions(params_x, sol["x"])
-        dz = model._tangents(params_x, state, mask, batch)
-        memory("interface rows", model._rows, state, params_x, field)
-        memory("quantities (QI, plasma rows, clearance, aspect)", quantities_jit, state, params_x, x)
-        memory(f"state tangents ({model.x0.size} boundary directions)", model._tangents, params_x, state, mask, batch)
-        memory("rows along the tangents", model._push_rows, state, mask, params_x, dz, batch, field)
-        memory(f"reverse gradient of {cot_all.shape[0]} rows", quantity_pullback, state, mask, params_x, cot_all, x)
-        memory("coil gradient of a row", coil_gradient, state, params_x, x, cot_all[0])
-        memory("interface rows' coil pullback", rows_coil_vjp, state, params_x, x,
-               jnp.zeros(np.asarray(sol["rows"]).size))
-        print(f"[memory] peak so far {(jax.devices()[0].memory_stats() or {}).get('peak_bytes_in_use', 0) / 2**30:.2f} "
-              "GiB", flush=True)
-        return
-    if args.check_gradient:
-        # Directional derivatives of the loss and rows: gradient . d against central differences of
-        # re-solved boundaries (each trial tight, from the seed solution's linearization).
-        args.trial_ftol = 1e-8
-        g0 = linearize(chart.x0) * u_scale  # loss and rows, per optimizer coordinate
-        rng = np.random.default_rng(0)
-        for k in range(args.check_gradient):
-            d = rng.normal(size=u.size)
-            if k == 0 and nplasma:  # first along the plasma coordinates only
-                d[nplasma:] = 0.0
-            d /= np.linalg.norm(d)
-            for h in (1e-2, 3e-3):
-                plus, minus = (solve((u + s * h * d) * u_scale) for s in (1, -1))
-                values = [np.r_[0.5 * sol["values"][:nq] @ sol["values"][:nq], sol["values"][nq:]]
-                          for sol in (plus, minus)]
-                fd = (values[0] - values[1]) / (2 * h)
-                exact = g0 @ d
-                print(f"[gradient check] direction {k} h {h:g}: loss {exact[0]:+.6e} vs {fd[0]:+.6e}; rows rel. err "
-                      + " ".join(f"{abs(e - f) / max(abs(f), 1e-14):.1e}" for e, f in zip(exact[1:], fd[1:])),
-                      flush=True)
-        return
-    stop = dict(message="", success=False)
-    while state["step"] <= args.steps:
-        before = state["step"]
-        try:
-            result = scipy.optimize.minimize(fun, u, jac=jac, method="SLSQP", constraints=constraints,
-                                             callback=lambda uk: log_step(uk * u_scale),
-                                             options=dict(maxiter=args.steps + 1 - before, ftol=OPTIMIZER_FTOL))
-            stop = dict(message=str(result.message), success=bool(result.success))
+    log_step()
+    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+        before = problem.accepted_step
+        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                              callback=lambda x: log_step(),
+                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+        if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
+                or problem.accepted_step >= args.steps):
             break
-        except _TrialRejected:
-            print("[slsqp] trial rejected: restarting from the accepted point", flush=True)
-            u = state["x"] / u_scale
-            if state["step"] == before:
-                stop = dict(message="trial rejected before any progress", success=False)
-                break
-    save("", state["x"])
-    summary = dict(accepted_steps=state["step"] - 1, **stop, elapsed_seconds=time.monotonic() - started)
+    save("")
+    summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
+                   stop_reason=getattr(result, "stop_reason", None),
+                   failed_trials=problem.metadata["holder"]["failed_trials"],
+                   elapsed_seconds=time.monotonic() - started)
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))
-
-
-class _TrialRejected(Exception):
-    """A trial point without a certified free-boundary solution."""
-
 
 if __name__ == "__main__":
     main()

@@ -142,3 +142,35 @@ bootstrap current this halves the peak (15.4 to 7.8 GiB at 8x8 modes and NS 51)
 and fits NS 101 (8.9 GiB) and 12x12 modes at NS 51 (10.8 GiB), which the dense
 LU cannot fit on a 32 GB GPU. `--ns`, `--modes MPOL NTOR` and
 `--max-iterations` (the VMEC cap) set the resolution.
+
+## Three-term free arm
+
+`free_boundary_three_term_single_stage.py` is the free arm with its equilibrium
+replaced by the three-term free boundary
+(`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel`). Every trial is the
+boundary that satisfies B.n = 0, pressure balance and no sheet current, not a
+VMEC + NESTOR solve. The design variables, loss, constraints and run directory
+are the free arm's. Gradients come from the implicit function theorem of the
+boundary least squares, and new coils or plasma parameters compile nothing:
+
+    COIL_CASE=qa4-beta python free_boundary_three_term_single_stage.py --beta 0.025 --bootstrap \
+        --modes 8 8 --ns 51 --output runs/three-term-qa4
+
+`--seed-run <run>` starts from another run's calibrated deck and fitted coils.
+`--check-gradient N` compares the gradients with re-solved central differences,
+and `--profile-rows` times and sizes the compiled programs at the seed.
+`metrics.jsonl` adds the three interface residuals (`bn`, `pressure_balance`,
+`sheet_current`) and each step's forward-solve counts and peak GPU memory.
+
+The tools after a run:
+
+    python three_term_highres.py runs/three-term-qa4 runs/hr12 --modes 12 12 --ns 51   # same coils, finer
+    python three_term_desc_check.py runs/hr12/wout_three_term.nc runs/hr12/coils.npz runs/desc12 \
+        --compare three_term=runs/hr12/wout_three_term.nc                             # DESC, same filaments
+    python three_term_postprocess.py runs/three-term-qa4 --bootstrap                       # dense re-solve, losses
+    python evolution_gifs.py "QA, three-term" runs/qa4 runs/three-term-qa4                 # coils and LCFS GIFs
+
+`three_term_highres.py` re-solves the final coils at another resolution and
+exports them (`coils.npz`) for `three_term_desc_check.py`, which needs DESC.
+`three_term_postprocess.py` re-solves the final boundary as a fixed boundary
+at NS 201 for the `vmex.plot_wout` figures and `vmex --trace` alpha losses.

@@ -905,3 +905,25 @@ def test_filter_bsubuv_lasym_halves_the_self_conjugate_nyquist_modes():
     assert out_u.shape == bsubu.shape and out_v.shape == bsubv.shape
     assert np.all(np.isfinite(out_u)) and np.all(np.isfinite(out_v))
     assert float(np.max(np.abs(out_u - bsubu))) > 1e-3
+
+
+def test_half_mesh_picard_makes_the_current_redls():
+    """Fixed boundary, LP QA at 0.5% beta: I' on every half-mesh surface iterated to Redl's, I'(0) = 0."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+        mpol=3, ntor=3, ntheta=12, nzeta=12)
+    inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+                              niter_array=np.array([10000]))
+    n0 = 1.5e20
+    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0)
+    profiles = _paper_profiles(n0, T0)
+    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh")
+    assert result.converged and result.input.pcurr_type == "line_segment_ip"
+    assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
+    state, rt = result.equilibrium.solution, result.equilibrium.solver_context
+    # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
+    hm = bs._half_mesh_fields(state, rt)
+    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA), 0)[0])
+    jv = np.asarray(bs._jv_from_half(hm, hm.s_half))
+    s = np.asarray(hm.s_half)
+    inner = (s > 0.1) & (s < 0.9)
+    assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))

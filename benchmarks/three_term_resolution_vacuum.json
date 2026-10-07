@@ -1656,6 +1656,62 @@
    "poincare_lost": 0
   },
   {
+   "method": "desc",
+   "modes": 9,
+   "ns": 51,
+   "force_fsq": 1.8366726762093775e-13,
+   "bn": 0.00013698703080203153,
+   "pressure_balance": 0.00015436874325864189,
+   "sheet_current": 0.0002064336169528986,
+   "qa": 2.9151721455122266e-05,
+   "iota_axis": 0.4232016806454867,
+   "iota_edge": 0.4158361876806931,
+   "aspect": 5.999955659524023,
+   "volume_m3": 0.5646949540806478,
+   "lcfs_mm_vs_truth": 1.64,
+   "seconds": 5368.2,
+   "total_seconds": 5849.9,
+   "peak_gpu_gib": 17.37,
+   "device": "cuda:0",
+   "nfev": 55,
+   "message": "`gtol` condition satisfied. (gtol=1.00e-08)",
+   "own_residual_rms": [
+    1.2027443809743869e-06,
+    1.5429905075411489e-06,
+    1.7204596986036893e-06
+   ],
+   "lcfs_mm_vs_target": 1.64,
+   "poincare_surfaces": {
+    "0.1": [
+     0.123,
+     0.036
+    ],
+    "0.3": [
+     0.407,
+     0.105
+    ],
+    "0.5": [
+     0.77,
+     0.213
+    ],
+    "0.7": [
+     0.934,
+     0.265
+    ],
+    "0.9": [
+     0.764,
+     0.229
+    ],
+    "1": [
+     0.63,
+     0.185
+    ]
+   },
+   "poincare_mm_max": 0.63,
+   "poincare_mm_rms": 0.185,
+   "poincare_lost": 0
+  },
+  {
    "method": "desc_lm",
    "modes": 9,
    "ns": 51,
@@ -1904,6 +1960,62 @@
    "poincare_lost": 0
   },
   {
+   "method": "desc_lm",
+   "modes": 10,
+   "ns": 51,
+   "force_fsq": 2.3875011345828625e-13,
+   "bn": 0.0001257193040289105,
+   "pressure_balance": 0.0001689361449735141,
+   "sheet_current": 0.00021155110831951683,
+   "qa": 3.528554262934211e-05,
+   "iota_axis": 0.4234447726090701,
+   "iota_edge": 0.4158592150321594,
+   "aspect": 5.999817372189825,
+   "volume_m3": 0.5646730416531148,
+   "lcfs_mm_vs_truth": 1.634,
+   "seconds": 1280.2,
+   "total_seconds": 1416.9,
+   "peak_gpu_gib": 7.51,
+   "device": "cuda:0",
+   "nfev": 68,
+   "message": "Optimization terminated successfully.\n`ftol` condition satisfied. (ftol=1.00e-08)\n`xtol` condition satisfied. (xtol=1.00e-10)",
+   "own_residual_rms": [
+    3.962378978470044e-06,
+    2.350822161590883e-06,
+    7.575426670491281e-06
+   ],
+   "lcfs_mm_vs_target": 1.634,
+   "poincare_surfaces": {
+    "0.1": [
+     0.421,
+     0.137
+    ],
+    "0.3": [
+     0.308,
+     0.073
+    ],
+    "0.5": [
+     0.54,
+     0.097
+    ],
+    "0.7": [
+     0.963,
+     0.17
+    ],
+    "0.9": [
+     1.098,
+     0.195
+    ],
+    "1": [
+     0.899,
+     0.152
+    ]
+   },
+   "poincare_mm_max": 0.899,
+   "poincare_mm_rms": 0.152,
+   "poincare_lost": 0
+  },
+  {
    "method": "nestor",
    "modes": 10,
    "ns": 51,
@@ -2093,6 +2205,62 @@
    },
    "poincare_mm_max": 1.145,
    "poincare_mm_rms": 0.262,
+   "poincare_lost": 0
+  },
+  {
+   "method": "desc_lm",
+   "modes": 11,
+   "ns": 51,
+   "force_fsq": 2.4142606560801777e-13,
+   "bn": 5.0370565505461754e-05,
+   "pressure_balance": 3.2888612230183536e-05,
+   "sheet_current": 6.139629794570066e-05,
+   "qa": 2.2632579109287026e-06,
+   "iota_axis": 0.423095363623368,
+   "iota_edge": 0.41585442996934796,
+   "aspect": 5.999831867830199,
+   "volume_m3": 0.5646697058342874,
+   "lcfs_mm_vs_truth": 1.604,
+   "seconds": 1562.3,
+   "total_seconds": 1816.8,
+   "peak_gpu_gib": 11.78,
+   "device": "cuda:0",
+   "nfev": 45,
+   "message": "`gtol` condition satisfied. (gtol=1.00e-08)",
+   "own_residual_rms": [
+    1.0320465646148987e-06,
+    1.4327227875859385e-06,
+    1.4173874672585135e-06
+   ],
+   "lcfs_mm_vs_target": 1.604,
+   "poincare_surfaces": {
+    "0.1": [
+     0.248,
+     0.08
+    ],
+    "0.3": [
+     0.312,
+     0.064
+    ],
+    "0.5": [
+     0.518,
+     0.105
+    ],
+    "0.7": [
+     0.682,
+     0.149
+    ],
+    "0.9": [
+     0.789,
+     0.173
+    ],
+    "1": [
+     0.82,
+     0.177
+    ]
+   },
+   "poincare_mm_max": 0.82,
+   "poincare_mm_rms": 0.177,
    "poincare_lost": 0
   },
   {
@@ -2307,6 +2475,62 @@
    "exit_code": 1,
    "free_fsq": 2.1608564566271072e-13,
    "lcfs_mm_vs_target": 2.321
+  },
+  {
+   "method": "desc_lm",
+   "modes": 12,
+   "ns": 51,
+   "force_fsq": 2.1303847360588467e-13,
+   "bn": 8.500826421564585e-05,
+   "pressure_balance": 0.00010666619946711432,
+   "sheet_current": 0.00013925259641447944,
+   "qa": 1.5273744503953415e-05,
+   "iota_axis": 0.4228362626493155,
+   "iota_edge": 0.4159111130176294,
+   "aspect": 5.99994741961792,
+   "volume_m3": 0.5646938735929977,
+   "lcfs_mm_vs_truth": 1.548,
+   "seconds": 1643.2,
+   "total_seconds": 2026.6,
+   "peak_gpu_gib": 19.04,
+   "device": "cuda:0",
+   "nfev": 44,
+   "message": "Optimization terminated successfully.\n`xtol` condition satisfied. (xtol=1.00e-10)",
+   "own_residual_rms": [
+    8.263904729881914e-07,
+    1.20580075338481e-06,
+    1.0988437016666547e-06
+   ],
+   "lcfs_mm_vs_target": 1.548,
+   "poincare_surfaces": {
+    "0.1": [
+     0.152,
+     0.034
+    ],
+    "0.3": [
+     0.435,
+     0.09
+    ],
+    "0.5": [
+     0.667,
+     0.143
+    ],
+    "0.7": [
+     0.659,
+     0.167
+    ],
+    "0.9": [
+     0.597,
+     0.161
+    ],
+    "1": [
+     0.603,
+     0.146
+    ]
+   },
+   "poincare_mm_max": 0.603,
+   "poincare_mm_rms": 0.146,
+   "poincare_lost": 0
   },
   {
    "method": "nestor",

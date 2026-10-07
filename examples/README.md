@@ -183,9 +183,8 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   In `../benchmarks/`, `coil_constraints_postprocess.py` compares the arms on
   one dense free-boundary solve, `coil_constraints_fit_coils.py` regenerates
   the stage-two coils, `coil_constraints_evolution_gifs.py` draws a run's
-  coils and LCFS, and `three_term_highres.py`, `three_term_desc_check.py` and
-  `three_term_postprocess.py` re-solve, cross-check with DESC and
-  post-process three-term runs.
+  coils and LCFS, and `three_term_highres.py` and `three_term_postprocess.py`
+  re-solve and post-process three-term runs.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

@@ -18,16 +18,16 @@
    "method": "desc",
    "modes": 4,
    "ns": 51,
-   "force_fsq": 1.2432927428869528e-13,
-   "bn": 0.0018060485706993881,
-   "pressure_balance": 0.0012141403626748182,
-   "sheet_current": 0.002348789707074803,
-   "qa": 0.00026568830498349005,
-   "iota_axis": 0.4260292436101042,
-   "iota_edge": 0.4148734874512894,
-   "aspect": 6.0001234351266755,
-   "volume_m3": 0.564743250894663,
-   "lcfs_mm_vs_truth": 2.177,
+   "force_fsq": 1.362829138778274e-13,
+   "bn": 0.0002616131180766405,
+   "pressure_balance": 0.0001842371473583682,
+   "sheet_current": 0.0003336634074185642,
+   "qa": 3.5688750689724854e-05,
+   "iota_axis": 0.4209888405501808,
+   "iota_edge": 0.4153672448446125,
+   "aspect": 6.0003518894652625,
+   "volume_m3": 0.5647454749218485,
+   "lcfs_mm_vs_truth": 1.626,
    "seconds": 427.8,
    "total_seconds": 475.9,
    "peak_gpu_gib": 1.03,
@@ -68,22 +68,31 @@
    "poincare_mm_max": 2.876,
    "poincare_mm_rms": 0.657,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 2.187
+   "lcfs_mm_vs_target": 1.678,
+   "axis_mm": 2.669,
+   "coil_bn_max": 0.0006906938458760277,
+   "coil_bn_rms": 0.0002478758273769349,
+   "resonant_bn": [
+    3,
+    2,
+    0.0002722038754878182,
+    -0.753
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 4,
    "ns": 51,
-   "force_fsq": 1.3586145379269368e-13,
-   "bn": 0.0015115868704600915,
-   "pressure_balance": 0.0005083007890497081,
-   "sheet_current": 0.001580990243282768,
-   "qa": 8.81996228559426e-05,
-   "iota_axis": 0.4122356177230899,
-   "iota_edge": 0.41026245444059356,
-   "aspect": 6.0210701964569555,
-   "volume_m3": 0.5684138662572271,
-   "lcfs_mm_vs_truth": 11.749,
+   "force_fsq": 1.7598608811665318e-13,
+   "bn": 0.0013573319245912604,
+   "pressure_balance": 0.00026126828250725304,
+   "sheet_current": 0.0013669604834886117,
+   "qa": 5.712613751744826e-05,
+   "iota_axis": 0.4140750387673161,
+   "iota_edge": 0.4103817263533821,
+   "aspect": 6.02126553307973,
+   "volume_m3": 0.5684176410232251,
+   "lcfs_mm_vs_truth": 12.32,
    "seconds": 159.5,
    "total_seconds": 205.9,
    "peak_gpu_gib": 1.02,
@@ -124,7 +133,16 @@
    "poincare_mm_max": 19.896,
    "poincare_mm_rms": 5.913,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 12.148
+   "lcfs_mm_vs_target": 12.546,
+   "axis_mm": 11.658,
+   "coil_bn_max": 0.003492487856011867,
+   "coil_bn_rms": 0.001335903205476949,
+   "resonant_bn": [
+    1,
+    0,
+    0.0014409180956359321,
+    0.4157
+   ]
   },
   {
    "method": "nestor",
@@ -176,7 +194,16 @@
      0.98
     ]
    },
-   "lcfs_mm_vs_target": 2.274
+   "lcfs_mm_vs_target": 2.274,
+   "axis_mm": 0.371,
+   "coil_bn_max": 0.0023707995343867417,
+   "coil_bn_rms": 0.0004744007560160318,
+   "resonant_bn": [
+    4,
+    2,
+    0.00023186217227508048,
+    -0.3365
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -228,7 +255,16 @@
      1.005
     ]
    },
-   "lcfs_mm_vs_target": 2.321
+   "lcfs_mm_vs_target": 2.321,
+   "axis_mm": 0.373,
+   "coil_bn_max": 0.0025176531325034235,
+   "coil_bn_rms": 0.0004834457222105874,
+   "resonant_bn": [
+    4,
+    2,
+    0.00024112231014554084,
+    -0.3366
+   ]
   },
   {
    "method": "start",
@@ -316,7 +352,16 @@
    },
    "poincare_mm_max": 1.555,
    "poincare_mm_rms": 0.38,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.346,
+   "coil_bn_max": 0.001010945280317498,
+   "coil_bn_rms": 0.00024157828197599558,
+   "resonant_bn": [
+    4,
+    2,
+    6.18962874631149e-05,
+    -0.3388
+   ]
   },
   {
    "method": "vmec2000",
@@ -366,22 +411,31 @@
      0.997
     ]
    },
-   "lcfs_mm_vs_target": 2.304
+   "lcfs_mm_vs_target": 2.304,
+   "axis_mm": 0.374,
+   "coil_bn_max": 0.0026679679888728324,
+   "coil_bn_rms": 0.000509906935576026,
+   "resonant_bn": [
+    4,
+    2,
+    0.00024123662176872747,
+    -0.3367
+   ]
   },
   {
    "method": "desc",
    "modes": 5,
    "ns": 51,
-   "force_fsq": 1.7598323647119265e-13,
-   "bn": 0.0006255529677955028,
-   "pressure_balance": 0.000561551401205389,
-   "sheet_current": 0.0008794523500204628,
-   "qa": 9.867079616071215e-05,
-   "iota_axis": 0.4215179176588226,
-   "iota_edge": 0.4159754921420887,
-   "aspect": 5.999707925205646,
-   "volume_m3": 0.5646382194933627,
-   "lcfs_mm_vs_truth": 1.605,
+   "force_fsq": 1.59371634145475e-13,
+   "bn": 9.715478036678936e-05,
+   "pressure_balance": 0.00010894524797255476,
+   "sheet_current": 0.0001369593971314138,
+   "qa": 7.076234128839775e-06,
+   "iota_axis": 0.42233826437796784,
+   "iota_edge": 0.4155443214028902,
+   "aspect": 5.999674217372026,
+   "volume_m3": 0.5646377939274472,
+   "lcfs_mm_vs_truth": 1.604,
    "seconds": 260.6,
    "total_seconds": 315.1,
    "peak_gpu_gib": 1.06,
@@ -422,22 +476,31 @@
    "poincare_mm_max": 2.06,
    "poincare_mm_rms": 0.403,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.625
+   "lcfs_mm_vs_target": 1.6,
+   "axis_mm": 0.029,
+   "coil_bn_max": 0.0001517048134870232,
+   "coil_bn_rms": 5.010790069940368e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.8863670998584684e-05,
+    0.0786
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 5,
    "ns": 51,
-   "force_fsq": 2.357033344154814e-13,
-   "bn": 0.0005717362493352844,
-   "pressure_balance": 0.0010480505488469356,
-   "sheet_current": 0.0012154315005284116,
-   "qa": 0.0003320568318083742,
-   "iota_axis": 0.42506341976406825,
-   "iota_edge": 0.4148282374177193,
-   "aspect": 6.00228473589846,
-   "volume_m3": 0.5650943213964662,
-   "lcfs_mm_vs_truth": 2.126,
+   "force_fsq": 2.1223953855003526e-13,
+   "bn": 0.00019009339868345833,
+   "pressure_balance": 0.00025938379597122645,
+   "sheet_current": 0.0003236146922367198,
+   "qa": 1.2860264635777243e-05,
+   "iota_axis": 0.42252155099245314,
+   "iota_edge": 0.41510609491157013,
+   "aspect": 6.00234352392061,
+   "volume_m3": 0.5650909096918426,
+   "lcfs_mm_vs_truth": 1.87,
    "seconds": 200.3,
    "total_seconds": 244.8,
    "peak_gpu_gib": 1.04,
@@ -478,7 +541,16 @@
    "poincare_mm_max": 5.345,
    "poincare_mm_rms": 1.064,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 2.136
+   "lcfs_mm_vs_target": 1.833,
+   "axis_mm": 0.69,
+   "coil_bn_max": 0.0004650992582798755,
+   "coil_bn_rms": 0.00019250376227597038,
+   "resonant_bn": [
+    1,
+    0,
+    0.00015925992636397357,
+    0.4159
+   ]
   },
   {
    "method": "nestor",
@@ -530,7 +602,16 @@
      2.756
     ]
    },
-   "lcfs_mm_vs_target": 5.622
+   "lcfs_mm_vs_target": 5.622,
+   "axis_mm": 0.888,
+   "coil_bn_max": 0.005056665495893188,
+   "coil_bn_rms": 0.0011711004968393184,
+   "resonant_bn": [
+    5,
+    2,
+    0.0001280749325198831,
+    0.0819
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -582,7 +663,16 @@
      2.761
     ]
    },
-   "lcfs_mm_vs_target": 5.672
+   "lcfs_mm_vs_target": 5.672,
+   "axis_mm": 0.892,
+   "coil_bn_max": 0.005062326506420231,
+   "coil_bn_rms": 0.001171434122887519,
+   "resonant_bn": [
+    5,
+    2,
+    0.0001275212078745177,
+    0.0821
+   ]
   },
   {
    "method": "start",
@@ -670,7 +760,16 @@
    },
    "poincare_mm_max": 0.829,
    "poincare_mm_rms": 0.166,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.388,
+   "coil_bn_max": 0.00019655234999777182,
+   "coil_bn_rms": 4.845937580516512e-05,
+   "resonant_bn": [
+    6,
+    2,
+    1.912084586266741e-05,
+    0.4941
+   ]
   },
   {
    "method": "vmec2000",
@@ -720,22 +819,31 @@
    "poincare_mm_max": 11.581,
    "poincare_mm_rms": 2.766,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 5.587
+   "lcfs_mm_vs_target": 5.587,
+   "axis_mm": 0.884,
+   "coil_bn_max": 0.005142436176758569,
+   "coil_bn_rms": 0.0011825015638358986,
+   "resonant_bn": [
+    5,
+    2,
+    0.00012917893726359736,
+    0.082
+   ]
   },
   {
    "method": "desc",
    "modes": 6,
    "ns": 51,
-   "force_fsq": 1.3616844303605208e-13,
-   "bn": 0.0007162667112620042,
-   "pressure_balance": 0.0012782465095415307,
-   "sheet_current": 0.0014798923519933086,
-   "qa": 0.0003273438752757773,
-   "iota_axis": 0.4264689231058346,
-   "iota_edge": 0.41467104695789603,
-   "aspect": 5.999642543238673,
-   "volume_m3": 0.5646407491562767,
-   "lcfs_mm_vs_truth": 1.619,
+   "force_fsq": 2.1604854454914623e-13,
+   "bn": 9.24124050370384e-05,
+   "pressure_balance": 0.00010647633994010439,
+   "sheet_current": 0.00014075137952598564,
+   "qa": 1.8630030089685446e-05,
+   "iota_axis": 0.4232769408991692,
+   "iota_edge": 0.4160750037527727,
+   "aspect": 5.999645492210729,
+   "volume_m3": 0.5646463798126977,
+   "lcfs_mm_vs_truth": 1.487,
    "seconds": 389.1,
    "total_seconds": 476.8,
    "peak_gpu_gib": 1.63,
@@ -776,22 +884,31 @@
    "poincare_mm_max": 1.297,
    "poincare_mm_rms": 0.327,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.619
+   "lcfs_mm_vs_target": 1.487,
+   "axis_mm": 0.258,
+   "coil_bn_max": 0.00020715188852482875,
+   "coil_bn_rms": 6.924420716770937e-05,
+   "resonant_bn": [
+    5,
+    2,
+    7.922585071460993e-06,
+    0.0788
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 6,
    "ns": 51,
-   "force_fsq": 2.0095510155840654e-13,
-   "bn": 0.00022406439836165535,
-   "pressure_balance": 0.00014135774909519415,
-   "sheet_current": 0.0002712628740850449,
-   "qa": 6.954969899556742e-06,
-   "iota_axis": 0.42438727717584523,
-   "iota_edge": 0.41672942365852295,
-   "aspect": 5.998413173729883,
-   "volume_m3": 0.5644212766078299,
-   "lcfs_mm_vs_truth": 1.688,
+   "force_fsq": 1.9613708643998932e-13,
+   "bn": 0.00017067433720898507,
+   "pressure_balance": 6.28271576809867e-05,
+   "sheet_current": 0.0001880363466772685,
+   "qa": 6.906298753524492e-06,
+   "iota_axis": 0.4240505170735891,
+   "iota_edge": 0.41653275220936414,
+   "aspect": 5.998416327759676,
+   "volume_m3": 0.5644211521486467,
+   "lcfs_mm_vs_truth": 1.677,
    "seconds": 443.0,
    "total_seconds": 490.3,
    "peak_gpu_gib": 1.06,
@@ -832,7 +949,16 @@
    "poincare_mm_max": 3.311,
    "poincare_mm_rms": 0.732,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.688
+   "lcfs_mm_vs_target": 1.677,
+   "axis_mm": 0.103,
+   "coil_bn_max": 0.0005539535636651643,
+   "coil_bn_rms": 0.00018550899298251666,
+   "resonant_bn": [
+    1,
+    0,
+    0.00014149362233556738,
+    0.4156
+   ]
   },
   {
    "method": "nestor",
@@ -884,7 +1010,16 @@
      0.347
     ]
    },
-   "lcfs_mm_vs_target": 1.685
+   "lcfs_mm_vs_target": 1.685,
+   "axis_mm": 0.318,
+   "coil_bn_max": 0.0006548371211743582,
+   "coil_bn_rms": 0.00018736631015035845,
+   "resonant_bn": [
+    5,
+    2,
+    1.3429645144472966e-05,
+    0.0804
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -936,7 +1071,16 @@
      0.393
     ]
    },
-   "lcfs_mm_vs_target": 1.691
+   "lcfs_mm_vs_target": 1.691,
+   "axis_mm": 0.318,
+   "coil_bn_max": 0.0007270851737744734,
+   "coil_bn_rms": 0.00019822281618890012,
+   "resonant_bn": [
+    5,
+    2,
+    1.7122914106898126e-05,
+    0.0802
+   ]
   },
   {
    "method": "start",
@@ -1024,7 +1168,16 @@
    },
    "poincare_mm_max": 0.997,
    "poincare_mm_rms": 0.229,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.382,
+   "coil_bn_max": 9.371777040828858e-05,
+   "coil_bn_rms": 2.938465834652707e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.3246968349033839e-05,
+    0.0791
+   ]
   },
   {
    "method": "vmec2000",
@@ -1045,22 +1198,60 @@
    "converged": true,
    "exit_code": 1,
    "free_fsq": 2.0725754392287188e-13,
-   "lcfs_mm_vs_target": 1.691
+   "lcfs_mm_vs_target": 1.691,
+   "poincare_surfaces": {
+    "0.1": [
+     0.455,
+     0.115
+    ],
+    "0.3": [
+     0.682,
+     0.155
+    ],
+    "0.5": [
+     0.915,
+     0.177
+    ],
+    "0.7": [
+     1.124,
+     0.25
+    ],
+    "0.9": [
+     1.576,
+     0.345
+    ],
+    "1": [
+     1.829,
+     0.393
+    ]
+   },
+   "poincare_mm_max": 1.829,
+   "poincare_mm_rms": 0.393,
+   "poincare_lost": 0,
+   "axis_mm": 0.318,
+   "coil_bn_max": 0.0007270851672235417,
+   "coil_bn_rms": 0.00019822281147256722,
+   "resonant_bn": [
+    5,
+    2,
+    1.712290073332027e-05,
+    0.0802
+   ]
   },
   {
    "method": "desc",
    "modes": 7,
    "ns": 51,
-   "force_fsq": 1.998413330780353e-13,
-   "bn": 0.0002995782916848611,
-   "pressure_balance": 0.0003900422412118901,
-   "sheet_current": 0.0004971375538857333,
-   "qa": 7.165860031527688e-05,
-   "iota_axis": 0.4258169299179754,
-   "iota_edge": 0.4159055841682402,
-   "aspect": 5.999555395640615,
-   "volume_m3": 0.5646193527379982,
-   "lcfs_mm_vs_truth": 1.643,
+   "force_fsq": 1.9634429940554391e-13,
+   "bn": 8.011479068750002e-05,
+   "pressure_balance": 3.9913861003284025e-05,
+   "sheet_current": 8.681636762646034e-05,
+   "qa": 2.387386084200666e-06,
+   "iota_axis": 0.4231219959545107,
+   "iota_edge": 0.415651975751693,
+   "aspect": 5.999552989667886,
+   "volume_m3": 0.5646186309119166,
+   "lcfs_mm_vs_truth": 1.647,
    "seconds": 1241.1,
    "total_seconds": 1382.2,
    "peak_gpu_gib": 3.73,
@@ -1101,22 +1292,31 @@
    "poincare_mm_max": 3.418,
    "poincare_mm_rms": 0.74,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.643
+   "lcfs_mm_vs_target": 1.647,
+   "axis_mm": 0.05,
+   "coil_bn_max": 0.00021743098482583287,
+   "coil_bn_rms": 7.488662513326735e-05,
+   "resonant_bn": [
+    5,
+    2,
+    4.196209814257739e-05,
+    0.0789
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 7,
    "ns": 51,
-   "force_fsq": 1.7358278732565873e-13,
-   "bn": 0.0001219683614271256,
-   "pressure_balance": 0.00016973869608776193,
-   "sheet_current": 0.00021489093806241775,
-   "qa": 3.08786040427007e-05,
-   "iota_axis": 0.4239285649714015,
-   "iota_edge": 0.4159163209862864,
-   "aspect": 5.999756484557521,
-   "volume_m3": 0.5646614299493061,
-   "lcfs_mm_vs_truth": 1.652,
+   "force_fsq": 1.7869872097051087e-13,
+   "bn": 6.216706219945384e-05,
+   "pressure_balance": 4.675018162723488e-05,
+   "sheet_current": 7.598717789802243e-05,
+   "qa": 8.263521026625146e-06,
+   "iota_axis": 0.42382968312121383,
+   "iota_edge": 0.4160602190193306,
+   "aspect": 5.999756365852473,
+   "volume_m3": 0.5646614373106932,
+   "lcfs_mm_vs_truth": 1.643,
    "seconds": 596.7,
    "total_seconds": 656.4,
    "peak_gpu_gib": 1.12,
@@ -1157,7 +1357,16 @@
    "poincare_mm_max": 1.498,
    "poincare_mm_rms": 0.383,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.652
+   "lcfs_mm_vs_target": 1.643,
+   "axis_mm": 0.138,
+   "coil_bn_max": 0.00015345592932152456,
+   "coil_bn_rms": 5.5669796540551235e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.0255507409977834e-05,
+    0.0789
+   ]
   },
   {
    "method": "nestor",
@@ -1209,7 +1418,16 @@
      1.937
     ]
    },
-   "lcfs_mm_vs_target": 3.957
+   "lcfs_mm_vs_target": 3.957,
+   "axis_mm": 0.422,
+   "coil_bn_max": 0.0023785157255501884,
+   "coil_bn_rms": 0.0005478074707012822,
+   "resonant_bn": [
+    5,
+    2,
+    0.0001290704517803357,
+    0.0767
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -1261,7 +1479,16 @@
      1.986
     ]
    },
-   "lcfs_mm_vs_target": 4.06
+   "lcfs_mm_vs_target": 4.06,
+   "axis_mm": 0.418,
+   "coil_bn_max": 0.002338323446570637,
+   "coil_bn_rms": 0.0005467832276627243,
+   "resonant_bn": [
+    5,
+    2,
+    0.0001345441534642443,
+    0.0764
+   ]
   },
   {
    "method": "start",
@@ -1349,22 +1576,31 @@
    },
    "poincare_mm_max": 1.33,
    "poincare_mm_rms": 0.306,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.382,
+   "coil_bn_max": 9.245188917043609e-05,
+   "coil_bn_rms": 2.6796419262075706e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.8587934230872862e-05,
+    0.079
+   ]
   },
   {
    "method": "desc",
    "modes": 8,
    "ns": 51,
-   "force_fsq": 1.741813143105719e-13,
-   "bn": 0.0001954259248276375,
-   "pressure_balance": 0.00029194365183750397,
-   "sheet_current": 0.00035360511255929034,
-   "qa": 2.918593792656811e-05,
-   "iota_axis": 0.4230522392687357,
-   "iota_edge": 0.4155043305042857,
-   "aspect": 5.99994870317083,
-   "volume_m3": 0.5646942359875584,
-   "lcfs_mm_vs_truth": 1.525,
+   "force_fsq": 2.2057920534936364e-13,
+   "bn": 5.5298674772207305e-05,
+   "pressure_balance": 5.121045092922426e-05,
+   "sheet_current": 7.427071236654698e-05,
+   "qa": 6.695648052378468e-06,
+   "iota_axis": 0.4231384358766246,
+   "iota_edge": 0.4158197544356199,
+   "aspect": 5.999949387135255,
+   "volume_m3": 0.5646940527752731,
+   "lcfs_mm_vs_truth": 1.543,
    "seconds": 3341.3,
    "total_seconds": 3604.6,
    "peak_gpu_gib": 9.0,
@@ -1405,22 +1641,31 @@
    "poincare_mm_max": 1.187,
    "poincare_mm_rms": 0.294,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.525
+   "lcfs_mm_vs_target": 1.543,
+   "axis_mm": 0.032,
+   "coil_bn_max": 0.0001318233857794692,
+   "coil_bn_rms": 5.169005405003244e-05,
+   "resonant_bn": [
+    4,
+    2,
+    6.151332080742955e-05,
+    -0.3368
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 8,
    "ns": 51,
-   "force_fsq": 2.0595607601176462e-13,
-   "bn": 9.460191210417735e-05,
-   "pressure_balance": 0.00010031257017473423,
-   "sheet_current": 0.00014172071307070995,
-   "qa": 1.0053767691794019e-05,
-   "iota_axis": 0.42291217918642493,
-   "iota_edge": 0.41583204996631773,
-   "aspect": 5.999921798588033,
-   "volume_m3": 0.5646835337315665,
-   "lcfs_mm_vs_truth": 1.645,
+   "force_fsq": 2.3340066052762254e-13,
+   "bn": 5.773657397379208e-05,
+   "pressure_balance": 3.641914706662595e-05,
+   "sheet_current": 7.256721762244623e-05,
+   "qa": 5.556199543175042e-06,
+   "iota_axis": 0.4234055419905895,
+   "iota_edge": 0.41568788589337247,
+   "aspect": 5.999921826503629,
+   "volume_m3": 0.5646835318120186,
+   "lcfs_mm_vs_truth": 1.627,
    "seconds": 387.6,
    "total_seconds": 473.0,
    "peak_gpu_gib": 2.3,
@@ -1461,7 +1706,16 @@
    "poincare_mm_max": 2.724,
    "poincare_mm_rms": 0.61,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.645
+   "lcfs_mm_vs_target": 1.627,
+   "axis_mm": 0.257,
+   "coil_bn_max": 0.00015935654504019555,
+   "coil_bn_rms": 6.0766043390515757e-05,
+   "resonant_bn": [
+    5,
+    2,
+    2.927940531860495e-05,
+    0.0789
+   ]
   },
   {
    "method": "nestor",
@@ -1513,7 +1767,16 @@
      0.617
     ]
    },
-   "lcfs_mm_vs_target": 1.652
+   "lcfs_mm_vs_target": 1.652,
+   "axis_mm": 0.355,
+   "coil_bn_max": 0.0014551968933763228,
+   "coil_bn_rms": 0.0002558468501381166,
+   "resonant_bn": [
+    5,
+    2,
+    5.628216230130119e-05,
+    0.0805
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -1565,7 +1828,16 @@
      0.556
     ]
    },
-   "lcfs_mm_vs_target": 1.637
+   "lcfs_mm_vs_target": 1.637,
+   "axis_mm": 0.348,
+   "coil_bn_max": 0.0012653120703754303,
+   "coil_bn_rms": 0.00024222276175620987,
+   "resonant_bn": [
+    5,
+    2,
+    5.129244183897458e-05,
+    0.0805
+   ]
   },
   {
    "method": "start",
@@ -1653,22 +1925,31 @@
    },
    "poincare_mm_max": 1.186,
    "poincare_mm_rms": 0.277,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.407,
+   "coil_bn_max": 9.024135841219563e-05,
+   "coil_bn_rms": 2.756325310413075e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.909064396654795e-05,
+    0.0792
+   ]
   },
   {
    "method": "desc",
    "modes": 9,
    "ns": 51,
-   "force_fsq": 1.8366726762093775e-13,
-   "bn": 0.00013698703080203153,
-   "pressure_balance": 0.00015436874325864189,
-   "sheet_current": 0.0002064336169528986,
-   "qa": 2.9151721455122266e-05,
-   "iota_axis": 0.4232016806454867,
-   "iota_edge": 0.4158361876806931,
-   "aspect": 5.999955659524023,
-   "volume_m3": 0.5646949540806478,
-   "lcfs_mm_vs_truth": 1.64,
+   "force_fsq": 2.1954457635605872e-13,
+   "bn": 5.0544411839643025e-05,
+   "pressure_balance": 2.7396702434276845e-05,
+   "sheet_current": 5.3980130001022833e-05,
+   "qa": 2.989180785250719e-06,
+   "iota_axis": 0.42248292104204177,
+   "iota_edge": 0.4157744516227605,
+   "aspect": 5.999955388124389,
+   "volume_m3": 0.5646950000165271,
+   "lcfs_mm_vs_truth": 1.626,
    "seconds": 5368.2,
    "total_seconds": 5849.9,
    "peak_gpu_gib": 17.37,
@@ -1680,7 +1961,7 @@
     1.5429905075411489e-06,
     1.7204596986036893e-06
    ],
-   "lcfs_mm_vs_target": 1.64,
+   "lcfs_mm_vs_target": 1.626,
    "poincare_surfaces": {
     "0.1": [
      0.123,
@@ -1709,22 +1990,31 @@
    },
    "poincare_mm_max": 0.63,
    "poincare_mm_rms": 0.185,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.02,
+   "coil_bn_max": 0.00012042918031059086,
+   "coil_bn_rms": 4.3568081035672435e-05,
+   "resonant_bn": [
+    4,
+    2,
+    4.448296738018534e-05,
+    -0.3369
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 9,
    "ns": 51,
-   "force_fsq": 2.197845133844116e-13,
-   "bn": 8.594730620348075e-05,
-   "pressure_balance": 9.544001962279518e-05,
-   "sheet_current": 0.0001355397966135005,
-   "qa": 1.6022178892319093e-05,
-   "iota_axis": 0.4233858641077869,
-   "iota_edge": 0.41579220240523374,
-   "aspect": 5.999519355238276,
-   "volume_m3": 0.5646168976033609,
-   "lcfs_mm_vs_truth": 1.633,
+   "force_fsq": 2.387334916126532e-13,
+   "bn": 7.307701289935345e-05,
+   "pressure_balance": 5.364537663710465e-05,
+   "sheet_current": 9.098445337856049e-05,
+   "qa": 9.924725505901119e-06,
+   "iota_axis": 0.42296622547782775,
+   "iota_edge": 0.4157725519705835,
+   "aspect": 5.999519349041482,
+   "volume_m3": 0.5646169129394932,
+   "lcfs_mm_vs_truth": 1.631,
    "seconds": 526.2,
    "total_seconds": 629.1,
    "peak_gpu_gib": 4.19,
@@ -1765,7 +2055,16 @@
    "poincare_mm_max": 2.273,
    "poincare_mm_rms": 0.49,
    "poincare_lost": 0,
-   "lcfs_mm_vs_target": 1.633
+   "lcfs_mm_vs_target": 1.631,
+   "axis_mm": 0.105,
+   "coil_bn_max": 0.00019682685462072468,
+   "coil_bn_rms": 6.584231321088099e-05,
+   "resonant_bn": [
+    5,
+    2,
+    2.2521862526666318e-05,
+    0.0788
+   ]
   },
   {
    "method": "nestor",
@@ -1817,7 +2116,16 @@
      1.769
     ]
    },
-   "lcfs_mm_vs_target": 3.644
+   "lcfs_mm_vs_target": 3.644,
+   "axis_mm": 0.454,
+   "coil_bn_max": 0.0008622134302744738,
+   "coil_bn_rms": 0.00022174861075391832,
+   "resonant_bn": [
+    5,
+    2,
+    0.000109881567787143,
+    0.0774
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -1869,7 +2177,16 @@
      1.818
     ]
    },
-   "lcfs_mm_vs_target": 3.726
+   "lcfs_mm_vs_target": 3.726,
+   "axis_mm": 0.453,
+   "coil_bn_max": 0.0008702496585578795,
+   "coil_bn_rms": 0.0002234548898313736,
+   "resonant_bn": [
+    5,
+    2,
+    0.00011399010488427649,
+    0.0774
+   ]
   },
   {
    "method": "start",
@@ -1957,22 +2274,31 @@
    },
    "poincare_mm_max": 0.872,
    "poincare_mm_rms": 0.203,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.397,
+   "coil_bn_max": 9.287791648489801e-05,
+   "coil_bn_rms": 2.8883204274752354e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.4417244441057594e-05,
+    0.0791
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 10,
    "ns": 51,
-   "force_fsq": 2.3875011345828625e-13,
-   "bn": 0.0001257193040289105,
-   "pressure_balance": 0.0001689361449735141,
-   "sheet_current": 0.00021155110831951683,
-   "qa": 3.528554262934211e-05,
-   "iota_axis": 0.4234447726090701,
-   "iota_edge": 0.4158592150321594,
-   "aspect": 5.999817372189825,
-   "volume_m3": 0.5646730416531148,
-   "lcfs_mm_vs_truth": 1.634,
+   "force_fsq": 2.3875451530014203e-13,
+   "bn": 6.280774672988407e-05,
+   "pressure_balance": 2.997096973321582e-05,
+   "sheet_current": 6.985752106558574e-05,
+   "qa": 3.8074849664219023e-06,
+   "iota_axis": 0.4230104243614208,
+   "iota_edge": 0.41610764702625225,
+   "aspect": 5.999817813742711,
+   "volume_m3": 0.5646731216218798,
+   "lcfs_mm_vs_truth": 1.637,
    "seconds": 1280.2,
    "total_seconds": 1416.9,
    "peak_gpu_gib": 7.51,
@@ -1984,7 +2310,7 @@
     2.350822161590883e-06,
     7.575426670491281e-06
    ],
-   "lcfs_mm_vs_target": 1.634,
+   "lcfs_mm_vs_target": 1.637,
    "poincare_surfaces": {
     "0.1": [
      0.421,
@@ -2013,7 +2339,16 @@
    },
    "poincare_mm_max": 0.899,
    "poincare_mm_rms": 0.152,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.292,
+   "coil_bn_max": 0.00020788582650161966,
+   "coil_bn_rms": 6.081122945597175e-05,
+   "resonant_bn": [
+    5,
+    2,
+    9.74453336922439e-06,
+    0.0784
+   ]
   },
   {
    "method": "nestor",
@@ -2065,7 +2400,16 @@
      1.291
     ]
    },
-   "lcfs_mm_vs_target": 1.953
+   "lcfs_mm_vs_target": 1.953,
+   "axis_mm": 0.433,
+   "coil_bn_max": 0.0013480555912322454,
+   "coil_bn_rms": 0.0002365768067099002,
+   "resonant_bn": [
+    5,
+    2,
+    9.636289991887156e-05,
+    0.0789
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -2117,7 +2461,16 @@
      1.237
     ]
    },
-   "lcfs_mm_vs_target": 1.876
+   "lcfs_mm_vs_target": 1.876,
+   "axis_mm": 0.43,
+   "coil_bn_max": 0.001241383887088385,
+   "coil_bn_rms": 0.00023220919983887718,
+   "resonant_bn": [
+    5,
+    2,
+    9.247213383115305e-05,
+    0.0788
+   ]
   },
   {
    "method": "start",
@@ -2205,21 +2558,30 @@
    },
    "poincare_mm_max": 1.145,
    "poincare_mm_rms": 0.262,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.409,
+   "coil_bn_max": 8.561595158155485e-05,
+   "coil_bn_rms": 2.6251141789437094e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.644411064932813e-05,
+    0.0792
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 11,
    "ns": 51,
-   "force_fsq": 2.4142606560801777e-13,
-   "bn": 5.0370565505461754e-05,
-   "pressure_balance": 3.2888612230183536e-05,
-   "sheet_current": 6.139629794570066e-05,
-   "qa": 2.2632579109287026e-06,
-   "iota_axis": 0.423095363623368,
-   "iota_edge": 0.41585442996934796,
-   "aspect": 5.999831867830199,
-   "volume_m3": 0.5646697058342874,
+   "force_fsq": 2.32695780390266e-13,
+   "bn": 4.0727918190371586e-05,
+   "pressure_balance": 1.5847750802224214e-05,
+   "sheet_current": 4.531466558670596e-05,
+   "qa": 1.712198951577097e-06,
+   "iota_axis": 0.423124098840443,
+   "iota_edge": 0.4158494982577954,
+   "aspect": 5.999831864684585,
+   "volume_m3": 0.5646697161542367,
    "lcfs_mm_vs_truth": 1.604,
    "seconds": 1562.3,
    "total_seconds": 1816.8,
@@ -2261,7 +2623,16 @@
    },
    "poincare_mm_max": 0.82,
    "poincare_mm_rms": 0.177,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.171,
+   "coil_bn_max": 0.0001499840382719299,
+   "coil_bn_rms": 3.912049595085297e-05,
+   "resonant_bn": [
+    5,
+    2,
+    7.066391265008595e-06,
+    0.0788
+   ]
   },
   {
    "method": "nestor",
@@ -2313,7 +2684,16 @@
      1.105
     ]
    },
-   "lcfs_mm_vs_target": 2.165
+   "lcfs_mm_vs_target": 2.165,
+   "axis_mm": 0.43,
+   "coil_bn_max": 0.00040960560293936386,
+   "coil_bn_rms": 9.754708196673466e-05,
+   "resonant_bn": [
+    5,
+    2,
+    6.184215354560984e-05,
+    0.0772
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -2365,7 +2745,16 @@
      1.01
     ]
    },
-   "lcfs_mm_vs_target": 2.019
+   "lcfs_mm_vs_target": 2.019,
+   "axis_mm": 0.43,
+   "coil_bn_max": 0.00043983024296084474,
+   "coil_bn_rms": 0.00010046251724573355,
+   "resonant_bn": [
+    5,
+    2,
+    5.434681700928294e-05,
+    0.0771
+   ]
   },
   {
    "method": "start",
@@ -2453,7 +2842,16 @@
    },
    "poincare_mm_max": 0.878,
    "poincare_mm_rms": 0.183,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.402,
+   "coil_bn_max": 9.214691652589241e-05,
+   "coil_bn_rms": 2.433953386688745e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.1470986270087857e-05,
+    0.0792
+   ]
   },
   {
    "method": "vmec2000",
@@ -2474,22 +2872,60 @@
    "converged": true,
    "exit_code": 1,
    "free_fsq": 2.1608564566271072e-13,
-   "lcfs_mm_vs_target": 2.321
+   "lcfs_mm_vs_target": 2.321,
+   "poincare_surfaces": {
+    "0.1": [
+     1.182,
+     0.164
+    ],
+    "0.3": [
+     2.176,
+     0.398
+    ],
+    "0.5": [
+     3.522,
+     0.769
+    ],
+    "0.7": [
+     4.645,
+     1.079
+    ],
+    "0.9": [
+     5.27,
+     1.201
+    ],
+    "1": [
+     5.524,
+     1.188
+    ]
+   },
+   "poincare_mm_max": 5.524,
+   "poincare_mm_rms": 1.188,
+   "poincare_lost": 0,
+   "axis_mm": 0.435,
+   "coil_bn_max": 0.0003785631177668412,
+   "coil_bn_rms": 9.764858295396538e-05,
+   "resonant_bn": [
+    5,
+    2,
+    6.801702041957922e-05,
+    0.0772
+   ]
   },
   {
    "method": "desc_lm",
    "modes": 12,
    "ns": 51,
-   "force_fsq": 2.1303847360588467e-13,
-   "bn": 8.500826421564585e-05,
-   "pressure_balance": 0.00010666619946711432,
-   "sheet_current": 0.00013925259641447944,
-   "qa": 1.5273744503953415e-05,
-   "iota_axis": 0.4228362626493155,
-   "iota_edge": 0.4159111130176294,
-   "aspect": 5.99994741961792,
-   "volume_m3": 0.5646938735929977,
-   "lcfs_mm_vs_truth": 1.548,
+   "force_fsq": 2.430576574025551e-13,
+   "bn": 5.122208545226939e-05,
+   "pressure_balance": 1.681947416741415e-05,
+   "sheet_current": 5.4907784364771655e-05,
+   "qa": 1.0910653124501478e-06,
+   "iota_axis": 0.4228177733964017,
+   "iota_edge": 0.41588321428674385,
+   "aspect": 5.999947438108168,
+   "volume_m3": 0.5646938838583273,
+   "lcfs_mm_vs_truth": 1.544,
    "seconds": 1643.2,
    "total_seconds": 2026.6,
    "peak_gpu_gib": 19.04,
@@ -2501,7 +2937,7 @@
     1.20580075338481e-06,
     1.0988437016666547e-06
    ],
-   "lcfs_mm_vs_target": 1.548,
+   "lcfs_mm_vs_target": 1.544,
    "poincare_surfaces": {
     "0.1": [
      0.152,
@@ -2530,7 +2966,16 @@
    },
    "poincare_mm_max": 0.603,
    "poincare_mm_rms": 0.146,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.054,
+   "coil_bn_max": 0.00017018705761286926,
+   "coil_bn_rms": 4.7406615792024915e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.1731302340424069e-05,
+    0.0789
+   ]
   },
   {
    "method": "nestor",
@@ -2582,7 +3027,16 @@
      1.407
     ]
    },
-   "lcfs_mm_vs_target": 2.55
+   "lcfs_mm_vs_target": 2.55,
+   "axis_mm": 0.457,
+   "coil_bn_max": 0.0008809082376528449,
+   "coil_bn_rms": 0.00016474376465155265,
+   "resonant_bn": [
+    5,
+    2,
+    8.298111900040106e-05,
+    0.0777
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -2634,7 +3088,16 @@
      1.431
     ]
    },
-   "lcfs_mm_vs_target": 2.596
+   "lcfs_mm_vs_target": 2.596,
+   "axis_mm": 0.454,
+   "coil_bn_max": 0.0008011810666698508,
+   "coil_bn_rms": 0.000164398344836277,
+   "resonant_bn": [
+    5,
+    2,
+    8.503212392552565e-05,
+    0.0777
+   ]
   },
   {
    "method": "start",
@@ -2722,7 +3185,16 @@
    },
    "poincare_mm_max": 1.099,
    "poincare_mm_rms": 0.235,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.411,
+   "coil_bn_max": 7.14212553405726e-05,
+   "coil_bn_rms": 2.3579138284554366e-05,
+   "resonant_bn": [
+    5,
+    2,
+    1.4096607753081061e-05,
+    0.0792
+   ]
   },
   {
    "method": "nestor",
@@ -2774,7 +3246,16 @@
      0.821
     ]
    },
-   "lcfs_mm_vs_target": 1.642
+   "lcfs_mm_vs_target": 1.642,
+   "axis_mm": 0.427,
+   "coil_bn_max": 0.00023477699566322414,
+   "coil_bn_rms": 6.668136905518632e-05,
+   "resonant_bn": [
+    5,
+    2,
+    4.8108069415345726e-05,
+    0.0773
+   ]
   },
   {
    "method": "nestor_mgrid",
@@ -2826,7 +3307,16 @@
      0.824
     ]
    },
-   "lcfs_mm_vs_target": 1.64
+   "lcfs_mm_vs_target": 1.64,
+   "axis_mm": 0.424,
+   "coil_bn_max": 0.00023974466660931388,
+   "coil_bn_rms": 6.745635502667237e-05,
+   "resonant_bn": [
+    5,
+    2,
+    4.8610343594275885e-05,
+    0.0773
+   ]
   },
   {
    "method": "start",
@@ -2914,7 +3404,16 @@
    },
    "poincare_mm_max": 0.648,
    "poincare_mm_rms": 0.131,
-   "poincare_lost": 0
+   "poincare_lost": 0,
+   "axis_mm": 0.399,
+   "coil_bn_max": 9.270622850895407e-05,
+   "coil_bn_rms": 2.3664252098410817e-05,
+   "resonant_bn": [
+    5,
+    2,
+    8.398384992675799e-06,
+    0.0792
+   ]
   }
  ]
 }

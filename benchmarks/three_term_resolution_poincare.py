@@ -11,7 +11,11 @@ on each of a method's surfaces ``--s`` at phi = 0 (and the 12 x 12 target's, the
 dR/dphi = R B_R / B_phi, dZ/dphi = R B_Z / B_phi).  Their crossings of phi = 0 and of half a field period are
 compared with the surface they started on.  Each ``OUT/mM/<method>.json`` gains ``poincare_surfaces``
 ({s: [max, RMS]} distance of the crossings from that surface's curve, in mm), ``poincare_mm_max`` and
-``poincare_mm_rms`` (the LCFS's) and ``poincare_lost`` (lines that left the grid or stalled).  ``--only`` traces a
+``poincare_mm_rms`` (the LCFS's), ``poincare_lost`` (lines that left the grid or stalled), ``axis_mm`` (largest
+distance over a field period from the field's closed field line, found by Newton on the field-period map),
+``coil_bn_max`` and ``coil_bn_rms`` (B.n/|B| on the LCFS, the exact flux-surface condition in vacuum) and
+``resonant_bn`` ([m, n, amplitude, m iota - n] of its harmonic in straight-field-line angles that field lines amplify
+most, |b_mn| / |m iota - n|).  ``--only`` traces a
 subset (``truth`` and/or resolutions), so several processes can share the work; each saves
 ``OUT/poincare/<key>.npz``.  ``--plot`` collects them into ``OUT/poincare.json``, draws
 ``OUT/three_term_resolution_poincare.png`` (the distances against s at the ``--figure`` resolutions, and their mean
@@ -117,22 +121,68 @@ def main():
 
     @jax.jit
     def period(y, phi0):
-        """One field period from phi0; returns the state there and at half a period."""
+        """One field period from phi0: the state at its end and after every step."""
         def body(carry, k):
             y = rk4(carry, phi0 + k * h)
             return y, y
 
-        y_end, ys = jax.lax.scan(body, y, jnp.arange(a.steps))
-        return y_end, ys[half - 1]
+        return jax.lax.scan(body, y, jnp.arange(a.steps))
 
     def trace(R0, Z0):
         y = jnp.stack([jnp.asarray(R0), jnp.asarray(Z0)])
         at0, athalf = [], []
         for k in range(a.transits * nfp):
-            y, yh = period(y, k * 2 * np.pi / nfp)
+            y, ys = period(y, k * 2 * np.pi / nfp)
             at0.append(np.asarray(y))
-            athalf.append(np.asarray(yh))
+            athalf.append(np.asarray(ys[half - 1]))
         return np.stack(at0), np.stack(athalf)  # (crossings, 2, lines)
+
+    def magnetic_axis(R0, eps=1e-7):
+        """The field's closed field line: Newton on the field-period map from (R0, 0), and its (R, Z) at phi = k h."""
+        y = np.array([R0, 0.0])
+        for _ in range(20):
+            P = np.asarray(period(jnp.asarray(np.stack([y, y + [eps, 0], y + [0, eps]], 1)), 0.0)[0])
+            step = np.linalg.solve((P[:, 1:] - P[:, :1]) / eps - np.eye(2), y - P[:, 0])
+            y = y + step
+            if np.linalg.norm(step) < 1e-13:
+                break
+        ys = np.asarray(period(jnp.asarray(y[:, None]), 0.0)[1])[:, :, 0]
+        return np.concatenate([y[None], ys[:-1]])
+
+    phis = h * np.arange(a.steps)
+    true_axis = magnetic_axis(float(lcfs(surfaces(a.out / "truth.nc", [0.0])[0], [0.0], 0.0)[0][0, 0]))
+
+    def axis_distance(w):
+        """Largest distance (mm) over one field period between ``w``'s s = 0 curve and the field's axis."""
+        xm, xn, rmnc, zmns, _ = surfaces(w, [0.0])[0]
+        ang = -np.outer(phis, xn[xm == 0])
+        R, Z = np.cos(ang) @ rmnc[0][xm == 0], np.sin(ang) @ zmns[0][xm == 0]
+        return round(1e3 * float(np.max(np.hypot(R - true_axis[:, 0], Z - true_axis[:, 1]))), 3)
+
+    def coil_bn(w, ntheta=128, nzeta=64):
+        """The field's B.n/|B| on ``w``'s LCFS: max, RMS, and the harmonic (m, n) of largest |b_mn| / |m iota - n|
+        in straight-field-line angles (amplitude and detuning m iota - n, iota at the edge)."""
+        with netCDF4.Dataset(w) as nc:
+            lam, iota = np.asarray(nc["lmns"][:]), float(nc["iotaf"][:][-1])
+        xm, xn, rmnc, zmns, _ = surfaces(w, [1.0])[0]
+        th, ph = np.meshgrid(np.linspace(0, 2 * np.pi, ntheta, endpoint=False),
+                             np.linspace(0, 2 * np.pi / nfp, nzeta, endpoint=False), indexing="ij")
+        c, s_ = np.cos(th[..., None] * xm - ph[..., None] * xn), np.sin(th[..., None] * xm - ph[..., None] * xn)
+        R, Z = c @ rmnc[0], s_ @ zmns[0]
+        e_theta = np.stack([(-s_ * xm) @ rmnc[0], 0 * R, (c * xm) @ zmns[0]])  # (R, phi, Z) components
+        e_phi = np.stack([(s_ * xn) @ rmnc[0], R, (-c * xn) @ zmns[0]])
+        normal = np.cross(e_phi, e_theta, axis=0)
+        points = np.stack([R.ravel(), ph.ravel(), Z.ravel()])
+        B = np.concatenate([np.stack(b_cyl(*map(jnp.asarray, p))) for p in np.array_split(points, 16, axis=1)], 1)
+        B = B.reshape(3, *R.shape)
+        f = np.sum(B * normal, 0) / np.linalg.norm(B, axis=0) / np.linalg.norm(normal, axis=0)
+        lmns = 1.5 * lam[-1] - 0.5 * lam[-2]  # lambda at the LCFS, from the half mesh
+        ts, jac = th + s_ @ lmns, 1 + (c * xm) @ lmns
+        harmonics = [(2 * abs(np.mean(f * np.exp(-1j * (m * ts - n * ph)) * jac)), m, n)
+                     for m in range(1, 25) for n in range(-8 * nfp, 8 * nfp + 1, nfp)]
+        amp, m, n = max(harmonics, key=lambda x: x[0] / max(abs(x[1] * iota - x[2]), 1e-3))
+        return dict(coil_bn_max=float(np.abs(f).max()), coil_bn_rms=float(np.sqrt(np.mean(f ** 2))),
+                    resonant_bn=[m, n, float(amp), round(m * iota - n, 4)])
 
     theta0 = np.linspace(0, 2 * np.pi, a.lines, endpoint=False)
     theta_dense = np.linspace(0, 2 * np.pi, 1441)
@@ -165,7 +215,7 @@ def main():
             per_surface[f"{si:g}"] = [round(1e3 * float(dist.max()), 3), round(1e3 * float(rms), 3)]
         edge = per_surface.get("1", [None, None])
         row = dict(poincare_surfaces=per_surface, poincare_mm_max=edge[0], poincare_mm_rms=edge[1],
-                   poincare_lost=lost)
+                   poincare_lost=lost, axis_mm=axis_distance(w), **coil_bn(w))
         key = "truth" if mdir is None else f"{mdir.name}/{name}"
         print(key, row, flush=True)
         (a.out / "poincare").mkdir(exist_ok=True)

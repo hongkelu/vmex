@@ -34,7 +34,8 @@ holds the edge R B_phi at the coils' linked mu0 I / 2 pi, which fixes B0
 while the free PHIEDGE leaves the plasma size free. Pressure balance and the
 total and coil-only B.n are checked at the end on a 61 x 64 grid.
 ``--bootstrap`` (with ``--beta``) adds the free arm's self-consistent bootstrap
-current (Redl, or DKX for ``qi6-beta*``).
+current (Redl, or DKX for ``qi6-beta*``); with ``P.BOOTSTRAP_IN_SOLVE`` (Redl)
+the current is solved with every equilibrium instead (``_fixed_bootstrap.py``).
 
     python single_stage_optimization.py --steps 5 --output runs/fixed
 
@@ -70,6 +71,7 @@ NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32
+VC_GRID_BOOTSTRAP = 48             # P.BOOTSTRAP_IN_SOLVE: the three-term arm's virtual-casing grid (quadrature 4 nfp 48 x 96)
 
 
 def parse_args(argv=None):
@@ -89,6 +91,11 @@ def parse_args(argv=None):
                         help="reactor-like kinetic profiles and a self-consistent bootstrap current (P.BOOTSTRAP_MODEL)")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
                         "WOUT boundary (no seed calibration); pass the run's --beta/--bootstrap")
+    parser.add_argument("--chunk", type=int, default=8,
+                        help="Jacobian columns per batch of the bootstrap-current solve (P.BOOTSTRAP_IN_SOLVE)")
+    parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
+                        help="with P.BOOTSTRAP_IN_SOLVE: compare the gradients with central differences along N "
+                        "directions, then stop")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -135,6 +142,17 @@ def main(argv=None):
         inp, _ = finite_beta_input(inp, args.beta, args.device)
     phiedge = abs(float(inp.phiedge))
     inp.to_indata(out / "input.run")  # the deck as run: resolution, pressure and seed PHIEDGE
+    if redl is not None and P.BOOTSTRAP_IN_SOLVE and P.BOOTSTRAP_MODEL == "redl":
+        # The current solved with every equilibrium instead of designed (_fixed_bootstrap.py).
+        coils = resize_coils(Coils.from_json(str(args.coils)), P.COIL_ORDER, P.N_SEGMENTS)
+        if args.restart is None:
+            coils = scale_coil_currents(coils, P.B0 * float(inp.rbc[inp.ntor, 0]))
+        coils.to_json(str(out / "coils.initial.json"))
+        from _fixed_bootstrap import run
+        return run(args, inp, Coils.from_json(str(out / "coils.initial.json")), out, max_mode=MAX_MODE,
+                   ess_alpha=ESS_ALPHA, boundary_step=BOUNDARY_STEP, coil_step=COIL_STEP,
+                   normal_field_weight=NORMAL_FIELD_WEIGHT, optimizer_ftol=OPTIMIZER_FTOL, vc_digits=VC_DIGITS,
+                   nphi=VC_GRID_BOOTSTRAP, ntheta=VC_GRID_BOOTSTRAP, started=started)
     mismatch = None if redl is None else bootstrap_mismatch(inp, redl, args.device)
 
     qs = target_residual()

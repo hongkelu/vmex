@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""DESC arm of ``run_three_term_resolution.py``: the free boundary without a sheet current at L = 2M, M = N.
+"""DESC arm of ``run_three_term_resolution.py``: the free boundary without a sheet current at M = N (L = 2M or M).
 
-    python benchmarks/three_term_resolution_desc.py M OUT [--grid 32] [--cpu]
+    python benchmarks/three_term_resolution_desc.py M OUT [--grid 32] [--radial 2] [--cpu]
     python benchmarks/run_three_term_resolution.py score M OUT desc OUT/mM/desc/wout_desc.nc
 
 DESC (https://github.com/PlasmaControl/DESC, not a VMEX dependency) starts from
@@ -14,7 +14,9 @@ writes ``OUT/mM/desc/report.json``, holding the wall time and peak GPU memory of
 the free-boundary solve and of the whole run, with ``eq.h5`` and
 ``wout_desc.nc``.  ``--cpu`` runs on the host, for resolutions whose dense
 force Jacobian does not fit a GPU (over 30 GB at M = 10), and records the peak
-resident memory instead of the GPU's.
+resident memory instead of the GPU's.  ``--radial 1`` solves at L = M (output
+``OUT/mM/desc_lm``, scored as ``desc_lm``): a quarter of the dense Jacobian,
+which keeps M = 10-12 on one 32 GB GPU.
 """
 
 import argparse
@@ -34,11 +36,13 @@ p.add_argument("out", type=Path)
 p.add_argument("--grid", type=int, default=32)
 p.add_argument("--maxiter", type=int, default=100)
 p.add_argument("--cpu", action="store_true", help="run on the host (the dense Jacobian in RAM)")
+p.add_argument("--radial", type=int, choices=(1, 2), default=2, help="L = radial * M (1: a quarter of the Jacobian)")
 args = p.parse_args()
 if args.cpu:
     os.environ["JAX_PLATFORMS"] = "cpu"
 wout = args.out / f"m{args.M}" / "wout_start.nc"
-out = args.out / f"m{args.M}" / "desc"
+L = args.radial * args.M
+out = args.out / f"m{args.M}" / ("desc" if args.radial == 2 else "desc_lm")
 out.mkdir(parents=True, exist_ok=True)
 
 from desc import set_device  # noqa: E402
@@ -57,7 +61,7 @@ from desc.utils import rpz2xyz, xyz2rpz_vec  # noqa: E402
 from desc.vmec import VMECIO  # noqa: E402
 
 t0 = time.perf_counter()
-report = dict(L=2 * args.M, M=args.M, N=args.M, grid=args.grid, desc_version=desc.__version__,
+report = dict(L=L, M=args.M, N=args.M, grid=args.grid, desc_version=desc.__version__,
               device=str(jax.devices()[0]))
 
 
@@ -109,7 +113,7 @@ report["field_check_rel"] = float(np.max(np.abs(check - data["check_B"])) / np.m
 assert report["field_check_rel"] < 1e-10, report["field_check_rel"]
 
 # ---- start: the common initial boundary and the deck's profiles ----------------------------------------------------
-eq = VMECIO.load(str(wout), L=2 * args.M, M=args.M, N=args.M, profile="current")
+eq = VMECIO.load(str(wout), L=L, M=args.M, N=args.M, profile="current")
 with netCDF4.Dataset(wout) as nc:
     buco = np.asarray(nc["buco"][:], float)
 ns = buco.size
@@ -119,7 +123,7 @@ s = np.concatenate([[0.0], (np.arange(1, ns) - 0.5) / (ns - 1), [1.0]])
 current = -2 * np.pi / mu_0 * np.concatenate([[0.0], buco[1:], [1.5 * buco[-1] - 0.5 * buco[-2]]])
 coef = np.linalg.lstsq(np.stack([s**k for k in range(1, 9)], 1), current, rcond=None)[0]
 eq.current = PowerSeriesProfile(params=np.r_[0.0, coef], modes=2 * np.arange(9), name="current")
-report["current_fit_rel"] = float(np.max(np.abs(eq.current(np.sqrt(s)) - current)) / np.max(np.abs(current)))
+report["current_fit_rel"] = float(np.max(np.abs(eq.current(np.sqrt(s)) - current)) / max(np.max(np.abs(current)), 1e-300))
 eq, _ = eq.solve(objective="force", optimizer="lsq-exact", ftol=1e-10, xtol=1e-12, gtol=1e-12, maxiter=300, verbose=1)
 log("fixed-boundary start solved")
 

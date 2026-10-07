@@ -2,7 +2,8 @@
 """Three-term free boundary against VMEC + NESTOR and DESC at mpol = ntor = 4 ... 12.
 
 The case has a known answer.  The fixed-boundary QA equilibrium of
-``examples/data/input.LandremanPaul2021_QA_beta2p5_bootstrap`` at 12 x 12,
+``examples/data/input.LandremanPaul2021_QA_beta2p5_bootstrap`` (``--case beta``,
+the default; ``--case vacuum`` uses the vacuum ``input.LandremanPaul2021_QA_lowres``) at 12 x 12,
 ``ns`` 51 is the target.  Its external field is a winding-surface current at
 1.2 minor radii, fitted so that the coil field cancels the plasma's own normal
 field on the target (virtual casing) and carries the target's net poloidal
@@ -56,7 +57,11 @@ if str(REPO) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-DECK = REPO / "examples" / "data" / "input.LandremanPaul2021_QA_beta2p5_bootstrap"
+CASES = {  # --case: the deck whose 12 x 12 fixed-boundary equilibrium is the known answer
+    "beta": REPO / "examples" / "data" / "input.LandremanPaul2021_QA_beta2p5_bootstrap",  # beta 2.5%, bootstrap current
+    "vacuum": REPO / "examples" / "data" / "input.LandremanPaul2021_QA_lowres",  # precise QA, no pressure or current
+}
+DECK = CASES["beta"]
 NS = 51
 TRUTH_MODES = 12
 START_SCALE = 0.97
@@ -540,10 +545,19 @@ def main(argv=None):
                                      "score", "table"))
     p.add_argument("args", nargs="+", help="[M] OUT [NAME WOUT]")
     p.add_argument("--chunk", type=int, help="Jacobian columns per batch (default 8, 4 above 8 modes, 2 at 12)")
+    p.add_argument("--case", choices=tuple(CASES), help="the deck (set by the field step and kept in OUT/case.txt)")
     a = p.parse_args(argv)
     modes = None if a.step in ("field", "mgrid", "table") else int(a.args[0])
     out = Path(a.args[0 if modes is None else 1]).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    global DECK
+    saved = out / "case.txt"
+    case = saved.read_text().strip() if saved.exists() else (a.case or "beta")
+    if a.case and a.case != case:
+        raise SystemExit(f"{out} holds the {case} case, not {a.case}")
+    if a.step == "field":
+        saved.write_text(case + "\n")
+    DECK = CASES[case]
     if modes is not None:
         (out / f"m{modes}").mkdir(exist_ok=True)
     if a.step == "field":

@@ -16,7 +16,7 @@ revision it was measured at, and the pages that cite it.
 - Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block
   factors (`adjoint_factorization="structured"`, 15.4 to 7.8 GiB at 8x8, NS 51), reused for
   GMRES, root polishing and Newton-corrected trials, accepted by normwise backward error.
-- `solve_free_boundary(include_edge_in_convergence=True)` also converges the edge force;
+- `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
   `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`, `plot_optimization_movie(frame_labels=)`.
 - `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
   solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;

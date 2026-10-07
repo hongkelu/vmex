@@ -117,6 +117,12 @@ and composable with both gradient modes:
 - :func:`~vmex.core.optimize.mean_iota` /
   :func:`~vmex.core.optimize.edge_iota` — profile-average and boundary
   transform, for decks that genuinely want a target rather than a floor;
+- :func:`~vmex.core.optimize.axis_iota` — the transform on the magnetic axis,
+  extrapolated from :func:`~vmex.core.optimize.geometric_iota` (the half-mesh
+  iota without its enclosed-current part), because the enclosed current
+  vanishes on the axis.  With a bootstrap current (``I' ~ s^(1/4)``) the wout
+  ``iotaf[0]`` mostly extrapolates the current's steep part and drifts with
+  ``ns``; this value converges;
 - :func:`~vmex.core.optimize.mirror_ratio` — ``(Bmax - Bmin)/(Bmax +
   Bmin)`` on one half-mesh surface (outermost by default), the practical QI
   knob.  It is the ``|B|`` *modulation depth*, not :math:`R_m = B_{\max}/B_{\min}`

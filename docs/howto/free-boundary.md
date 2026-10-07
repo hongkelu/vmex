@@ -181,8 +181,23 @@ fit.boundary_residual, fit.equilibrium.wout          # the conditions, the free 
 moved = solve_free_boundary_three_term(inp, external_field=new_coil_field, previous=fit)
 ```
 
-For many fields and plasma parameters, as in a free-boundary single-stage
-optimization, {class}`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` gives the
+For a free-boundary single-stage optimization, pass
+`boundary_condition="three_term"` to `FreeBoundaryProblem.from_loss` (the same
+loss, parameter maps and quantities as with NESTOR): every trial is a
+three-term free boundary, warm-started from the last linearized one, and the
+design gradients follow from the implicit function theorem of the boundary fit
+({class}`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`).
+
+```python
+problem = opt.FreeBoundaryProblem.from_loss(
+    inp, loss, x0, field_from_parameters=coils_from_x, plasma_from_parameters=plasma_from_x,
+    quantities=(opt.major_radius,), boundary_condition="three_term",
+    three_term_options=dict(quadrature=(4 * inp.nfp * 48, 96)))
+result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_constraint(lower, upper)])
+```
+
+For other uses of many fields and plasma parameters,
+{class}`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` gives the
 pieces directly: `solve_boundary` (cold or warm), `linearize` (the interface
 Jacobian and the state responses to the boundary and any plasma parameters),
 and `pullback` (reverse-mode gradients of other functions of the equilibrium,

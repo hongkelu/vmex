@@ -7,9 +7,9 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
-- `boundary_condition="three_term"` (Python, CLI or deck `BOUNDARY_CONDITION`) solves the
-  free boundary with B.n, pressure balance and no sheet current; `ThreeTermFreeBoundaryModel`
-  gives its Jacobian for any field.
+- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
+  solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
+  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field.
 - `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)`
   optimizes the external field (and PHIEDGE or the current profile) from certified,
   accepted roots; `opt.minimize(method="SLSQP")` drives it.

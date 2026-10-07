@@ -131,7 +131,7 @@ UNTESTED_EXAMPLES = {
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
     "examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
     "examples/optimization/single_stage_optimization_coil_constraints.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
-    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "GPU benchmark; ThreeTermFreeBoundaryModel is covered by tests/test_freeboundary_vc.py",
+    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "GPU benchmark; ThreeTermFreeBoundaryProblem is covered by tests/test_freeboundary_vc.py",
 }
 
 

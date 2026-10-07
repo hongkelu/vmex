@@ -25,7 +25,10 @@ links to the module that documents it.
   :func:`~vmex.core.freeboundary_vc.boundary_residual` — free boundary from
   the three virtual-casing interface conditions (no sheet current);
   :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` — its residual,
-  Jacobian and gradients for any coils without recompiling (optimizers)
+  Jacobian and gradients for any coils without recompiling (optimizers);
+  :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`
+  (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``) —
+  single-stage optimization on it
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -249,6 +252,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.freeboundary_vc", "solve_free_boundary_three_term"),
     "boundary_residual": (".core.freeboundary_vc", "boundary_residual"),
     "ThreeTermFreeBoundaryModel": (".core.freeboundary_vc", "ThreeTermFreeBoundaryModel"),
+    "ThreeTermFreeBoundaryProblem": (".core.freeboundary_vc", "ThreeTermFreeBoundaryProblem"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),

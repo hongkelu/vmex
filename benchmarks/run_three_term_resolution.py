@@ -29,8 +29,8 @@ the three interface conditions (B.n, the pressure jump
 and a fixed singular quadrature (4 nfp 48 x 96).  Other scores are the force residual, the QA
 residual, iota on the axis and the edge, and the largest LCFS distance to the
 12 x 12 target and to the target at the same resolution.  DESC runs with
-``benchmarks/three_term_resolution_desc.py`` (DESC is not a VMEX dependency),
-and ``score`` scores its wout.  VMEC2000 reads the field from an mgrid table:
+its own scripts outside VMEX (DESC is not a VMEX dependency), and ``score``
+scores its wout, re-solved with all of its modes.  VMEC2000 reads the field from an mgrid table:
 301 x 301 points in (R, Z), about 4 mm apart, and 48 planes per field period.
 Its ``NZETA`` (16, 24 or 48, the smallest one at or above 2 ntor + 6) divides
 48, so the table is sampled on its own planes.  ``nestor_mgrid`` runs VMEX +
@@ -298,14 +298,14 @@ def lcfs_mm(wa, wb, nfp):
     return round(1e3 * worst, 3)
 
 
-def score(modes, out, name, eq, extra):
-    """Scores of a fixed-boundary equilibrium ``eq`` at ``modes`` (the boundary a method found)."""
+def score(modes, out, name, eq, extra, inp=None):
+    """Scores of a fixed-boundary equilibrium ``eq`` of ``inp`` (default ``deck(modes)``), the boundary a method found."""
     import vmex as vj
     from vmex import optimize as opt
     from vmex.core import virtual_casing as vc
     from vmex.core.freeboundary_vc import boundary_residual, summarize_boundary_residual
 
-    inp = deck(modes)
+    inp = deck(modes) if inp is None else inp
     w = eq.wout
     surface = vc.surface_field_data_from_state(inp, eq.solution, runtime=eq.solver_context, nphi=VC_GRID,
                                                ntheta=VC_GRID)
@@ -479,7 +479,11 @@ def run_score(modes, out, name, path):
     from vmex.core.restart import restart_state
 
     w = vj.read_wout(path)
-    inp = with_wout_boundary(deck(modes), w)
+    inp = deck(modes)
+    mpol = int(np.max(w.xm)) + 1  # DESC's M includes m = M: keep every mode, not VMEC's m < mpol = M
+    if mpol > inp.mpol:
+        inp = inp.change_resolution(mpol=mpol, ntor=inp.ntor, ntheta=2 * mpol + 6, nzeta=inp.nzeta)
+    inp = with_wout_boundary(inp, w)
     extra = {}
     report = Path(path).with_name("report.json")
     if report.exists():  # the other code's own time and memory
@@ -496,7 +500,7 @@ def run_score(modes, out, name, path):
     except vj.VmecError as error:
         no_equilibrium(modes, out, name, error, extra)
         return
-    score(modes, out, name, eq, extra)
+    score(modes, out, name, eq, extra, inp)
 
 
 def table(out):

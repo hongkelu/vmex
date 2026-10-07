@@ -8,8 +8,8 @@
 boundary (as the start) are re-solved at ``--modes``/``--ns`` with every interface condition (B.n, pressure balance,
 no sheet current). Writes ``<out>/wout_three_term.nc``, ``<out>/report.json`` (interface residuals, QA, iota, aspect,
 LCFS distance to the run's own boundary, time, memory) and ``<out>/coils.npz`` (filament points, tangents and
-currents of every coil, with the field at check points: the exact field for
-``three_term_desc_check.py``).
+currents of every coil, with the field at check points, for cross-checks with
+other codes).
 """
 
 import argparse

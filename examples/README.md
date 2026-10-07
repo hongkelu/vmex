@@ -169,7 +169,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   `single_stage_free_boundary_optimization_three_term.py`: GPU benchmarks of
   one single-stage QA/QH/QI coil design solved free-boundary
   (`FreeBoundaryProblem`), fixed-boundary, and on sheet-current-free free
-  boundaries (`ThreeTermFreeBoundaryModel`), with every physics and
+  boundaries (`FreeBoundaryProblem` with `boundary_condition="three_term"`), with every physics and
   coil-engineering limit a hard SLSQP inequality, from vacuum to finite beta
   with a self-consistent Redl or DKX bootstrap current. Each script is
   self-contained. `COIL_CASE` selects the case (`ellipse5`, `ellipse5-beta7`,

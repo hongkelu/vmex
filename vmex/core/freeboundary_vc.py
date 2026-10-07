@@ -36,6 +36,10 @@ Entry points, from the most to the least packaged:
   ``solve_free_boundary_multigrid(..., boundary_condition="three_term")``;
 - :func:`solve_free_boundary_three_term`: one solve with every control, and
   ``previous=`` to restart from an earlier result after the coils change;
+- ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
+  (:class:`ThreeTermFreeBoundaryProblem`): single-stage optimization, a loss
+  and constraint rows of coils and plasma parameters at their free boundary,
+  for :func:`vmex.core.optimize.minimize`;
 - :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state tangents and
   pullbacks for one deck and any external field or plasma parameters, without
   recompiling -- the pieces an optimizer needs;
@@ -55,7 +59,9 @@ import jax
 import jax.numpy as jnp
 
 from . import virtual_casing as vc
+from .errors import TrialRejected, VmecError
 from .input import VmecInput
+from .problem import FunctionProblem
 
 
 @dataclass(frozen=True)
@@ -636,6 +642,233 @@ class ThreeTermFreeBoundaryModel:
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
         self._radius = out["radius"]
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
+
+
+class ThreeTermFreeBoundaryProblem(FunctionProblem):
+    """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
+
+    Build with ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
+    (:meth:`~vmex.core.freeboundary_problem.FreeBoundaryProblem.from_loss`); pass it to
+    :func:`vmex.core.optimize.minimize`.  ``loss``, ``quantities``, ``parameter_quantities``,
+    ``field_from_parameters`` and ``plasma_from_parameters`` are as there.  Every trial is the K = 0 boundary
+    of the field and plasma parameters of ``x`` (:class:`ThreeTermFreeBoundaryModel`), warm-started from the
+    first-order prediction of the latest linearized solution; a trial without a certified solution raises
+    :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
+    implicit function theorem of the boundary least squares,
+
+        dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db,
+
+    with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
+    bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
+    row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  Nothing recompiles
+    when ``x`` changes.  ``model`` is the :class:`ThreeTermFreeBoundaryModel`; :meth:`boundary_residual` and
+    ``stats`` (counts of trials, failures, boundary evaluations and linearizations) report progress.
+    """
+
+    @classmethod
+    def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
+                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40, **model_options):
+        """Solve the seed design's free boundary.
+
+        ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
+        ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
+        relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
+        first polishes its trial with its own Jacobian.
+        """
+        functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
+        if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
+                                                           or callable(plasma_from_parameters)):
+            raise TypeError("loss, parameter maps and quantities must be callable")
+        if not jax.config.x64_enabled:
+            raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
+        model = ThreeTermFreeBoundaryModel(inp, **model_options)
+        return cls(model, loss, x0, field_from_parameters=field_from_parameters,
+                   plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
+                   quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
+                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev)
+
+    def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
+                 parameter_quantities, boundary_ftol, boundary_max_nfev):
+        im = model._im
+        self.model, self.field = model, field_from_parameters
+        self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
+        x0 = np.asarray(x0, dtype=float)
+        params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
+        self._params_at = jax.jit(lambda x: params_at(model.params0, x))
+
+        def rows(state, params, x):
+            runtime = im.runtime_from_params(params, model.cfg)
+            values = [loss(state, runtime, x), *(f(state, runtime) for f in quantities),
+                      *(f(state, runtime, x) for f in parameter_quantities)]
+            return jnp.concatenate([jnp.ravel(jnp.asarray(v)) for v in values])
+
+        self._rows = jax.jit(rows)
+        # The coordinates of x that move plasma parameters: their columns of the interface rows enter the gradient.
+        tangent = jax.jacfwd(lambda x: params_at(model.params0, x))(jnp.asarray(x0))
+        moved = sum(np.any(np.asarray(a).reshape(-1, x0.size) != 0, axis=0) for a in jax.tree.leaves(tangent))
+        self._plasma = np.flatnonzero(moved)
+        eye = jnp.eye(x0.size)[self._plasma]
+        self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
+            lambda z: params_at(params, z), (x,), (e,))[1])(eye))
+        self._pullback = jax.jit(lambda state, mask, params, cotangents, x: model.pullback(
+            rows, state, mask, params, cotangents, x))
+
+        @jax.jit
+        def coordinates(params, b, x, params_bar):
+            """``ImplicitParams`` cotangents onto the model coordinates ``b`` and onto ``x`` (plasma parameters)."""
+            _, b_vjp = jax.vjp(lambda z: model.with_boundary(params, z), b)
+            _, x_vjp = jax.vjp(lambda z: params_at(params, z), x)
+            return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
+
+        self._coordinates = coordinates
+        self._direct = jax.jit(jax.jacrev(rows, argnums=2))
+        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
+            lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
+            lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
+        self._cache, self._anchor = {}, {}
+        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
+        if self._solve(x0) is None:
+            raise VmecError("the seed design has no three-term free boundary")
+        self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
+        super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
+                         metadata={"holder": {"failed_trials": 0}})
+
+    def _solve(self, x):
+        """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``."""
+        key = np.asarray(x, dtype=float).tobytes()
+        if key in self._cache:
+            return self._cache[key]
+        self.stats["trials"] += 1
+        x = np.asarray(x, dtype=float)
+        params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
+        anchor, starts, J = self._anchor, [None], None
+        if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
+            dx = x - anchor["x"]
+            dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
+            starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
+        fit = None
+        for start in starts:
+            try:
+                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
+                                                max_nfev=self.boundary_max_nfev,
+                                                target_cost=4 * anchor["cost"] if anchor else None)
+                break
+            except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
+                continue
+        if fit is None:
+            self.stats["failed"] += 1
+            self._cache[key] = None
+            return None
+        self.stats["boundary_evaluations"] += fit["nfev"]
+        state, mask, params_b, _ = fit["aux"]
+        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b,
+                                values=np.asarray(self._rows(state, params_b, jnp.asarray(x))))
+        return self._cache[key]
+
+    def _record(self, x):
+        sol = self._solve(self._x(x))
+        if sol is None:
+            self.metadata["holder"]["failed_trials"] += 1
+            raise TrialRejected("no three-term free boundary at this design point")
+        return sol
+
+    def _linearize(self, x, sol):
+        """Every row's design gradient at ``sol`` (cached), re-solved tight and polished with its own Jacobian."""
+        if "gradients" in sol:
+            return sol["gradients"]
+        model, xj = self.model, jnp.asarray(x)
+        field, nb = self.field(xj), model.x0.size
+
+        def tight():
+            extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+            J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+            state, mask, params, _ = aux
+            sol.update(aux=aux, state=state, mask=mask, params=params,
+                       rows=np.asarray(model._rows(state, params, field)),
+                       values=np.asarray(self._rows(state, params, xj)))
+            self.stats["linearizations"] += 1
+            return J
+
+        J = tight()
+        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
+                                        max_nfev=20)
+        self.stats["boundary_evaluations"] += polished["nfev"]
+        if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
+            sol.update(x=polished["x"], aux=polished["aux"])
+            J = tight()
+        J_b, J_p = J[:, :nb], J[:, nb:]
+        state, params, n = sol["state"], sol["params"], sol["values"].size
+        params_bar = self._pullback(state, sol["mask"], params, jnp.eye(n), xj)
+        G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
+        Q, R = np.linalg.qr(J_b)
+        lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
+        gradients = np.asarray(self._direct(state, params, xj)) + G_x
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
+        gradients[:, self._plasma] -= lam.T @ J_p
+        self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
+                            params=params, cost=0.5 * sol["rows"] @ sol["rows"])
+        sol["gradients"] = gradients
+        return gradients
+
+    def _value(self, x):
+        return float(self._record(x)["values"][0])
+
+    def _value_gradient(self, x):
+        sol = self._record(x)
+        gradients = self._linearize(x, sol)
+        return float(sol["values"][0]), gradients[0].copy()
+
+    def constraint_values(self, x):
+        """The quantities' values, in their units."""
+        return self._record(x)["values"][1:].copy()
+
+    def constraint_jac(self, x):
+        """The quantities' design gradients."""
+        return self._linearize(x, self._record(x))[1:].copy()
+
+    def nonlinear_constraint(self, lower, upper, *, scales=1.0):
+        """Bound the quantities supplied to ``from_loss``, in their units."""
+        from .freeboundary_problem import _nonlinear_constraint
+
+        return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
+
+    def accept_x(self, x):
+        """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
+        key = np.asarray(self._x(x), dtype=float).tobytes()
+        if self._cache.get(key) is None:
+            raise ValueError("evaluate the candidate before accepting it")
+        self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
+        self._cache = {key: self._cache[key]}
+
+    def state(self, x):
+        """``(state, params)`` of ``x``'s free boundary (``params`` the ``ImplicitParams`` it was solved at)."""
+        sol = self._record(x)
+        return sol["state"], sol["params"]
+
+    def boundary_residual(self, x) -> BoundaryResidual:
+        """The three interface conditions at ``x``'s free boundary."""
+        sol = self._record(x)
+        return self.model.boundary_residual(sol["state"], sol["params"], self.field(jnp.asarray(x)))
+
+    def equilibrium_from_x(self, x):
+        """The free-boundary equilibrium of ``x`` as an ``Equilibrium`` (fixed-boundary solve on its boundary)."""
+        from .optimize import solve_equilibrium
+
+        sol = self._record(x)
+        return solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
+                                 initial_state=sol["state"])
+
+    def close(self):
+        """Drop the cached trials but the accepted one."""
+        key = self.accepted.parameters.tobytes()
+        self._cache = {k: v for k, v in self._cache.items() if k == key}
+
+
+@dataclass(frozen=True)
+class _AcceptedPoint:
+    parameters: np.ndarray
 
 
 def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):

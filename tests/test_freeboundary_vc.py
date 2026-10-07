@@ -207,6 +207,47 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     assert res.sheet_current < 1.5e-3
 
 
+def test_unknown_problem_boundary_condition_is_rejected():
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    with pytest.raises(ValueError, match="boundary_condition"):
+        FreeBoundaryProblem.from_loss(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), lambda s, r, x: 0.0,
+                                      np.zeros(1), field_from_parameters=lambda x: None, boundary_condition="sheet")
+
+
+@needs_vc
+@pytest.mark.full
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_three_term_problem_gradients_match_resolved_differences():
+    """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
+    differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[1])),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.major_radius,),
+        parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
+        boundary_condition="three_term",
+        three_term_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48), boundary_ftol=1e-10,
+                                boundary_max_nfev=80))
+    assert isinstance(problem, fvc.ThreeTermFreeBoundaryProblem)
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    jac = problem.constraint_jac(x0)
+    assert problem.boundary_residual(x0).sheet_current < 1e-2
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        fd = (values[0] - values[1]) / (2 * h)
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
+    problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
+    assert problem.accepted_step == 1
+
+
 def _lp_beta0p5_profiles(inp):
     """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""
     from vmex.core import bootstrap as bs

@@ -25,7 +25,8 @@ import numpy as np  # noqa: E402
 METHODS = {  # name: (label, colour, marker, line style)
     "target": ("fixed-boundary target (same field)", "k", "s", "-"),
     "three_term": ("three-term (VMEX, K = 0)", "tab:blue", "o", "-"),
-    "desc": ("DESC free boundary (K = 0)", "tab:green", "^", "-"),
+    "desc": ("DESC free boundary (K = 0), L = 2M", "tab:green", "^", "-"),
+    "desc_lm": ("DESC free boundary (K = 0), L = M", "tab:olive", "^", ":"),
     "nestor": ("VMEC + NESTOR (VMEX)", "tab:red", "v", "--"),
     "nestor_mgrid": ("VMEC + NESTOR (VMEX, mgrid)", "tab:orange", "<", "--"),
     "vmec2000": ("VMEC2000 + NESTOR (mgrid, CPU)", "tab:purple", "D", "--"),
@@ -95,10 +96,12 @@ def main():
         ax.set_xlabel("mpol = ntor  (ns = 51)", fontsize=8)
         ax.grid(alpha=0.3, which="both")
         ax.tick_params(labelsize=8)
-    axes[0, 0].legend(fontsize=8)
-    axes[0, 0].text(0.98, 0.98, "open markers: NESTOR not converged\n(iteration cap)", transform=axes[0, 0].transAxes,
+    axes[0, 0].legend(fontsize=7, loc="upper left")
+    axes[0, 0].text(0.98, 0.55, "open markers: NESTOR not converged\n(iteration cap)", transform=axes[0, 0].transAxes,
                     ha="right", va="top", fontsize=7, color="tab:red")
-    fig.suptitle("Free boundary of a known answer: precise-QA beta 2.5%; the coil field is fitted to cancel B.n on the "
+    case = (a.out / "case.txt").read_text().strip() if (a.out / "case.txt").exists() else "beta"
+    label = {"beta": "precise-QA beta 2.5%", "vacuum": "precise-QA vacuum"}.get(case, case)
+    fig.suptitle(f"Free boundary of a known answer: {label}; the coil field is fitted to cancel B.n on the "
                  "12 x 12 fixed-boundary target (so the target's B.n there is the fit residual, while its pressure jump "
                  "and sheet current\nshow the 48 x 48 virtual-casing evaluation's own error, ~2e-4); every method starts "
                  "from the same boundary (minor radius x 0.97)", fontsize=9)

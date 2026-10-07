@@ -2,7 +2,8 @@
 """Three-term free boundary against VMEC + NESTOR and DESC at mpol = ntor = 4 ... 12.
 
 The case has a known answer.  The fixed-boundary QA equilibrium of
-``examples/data/input.LandremanPaul2021_QA_beta2p5_bootstrap`` at 12 x 12,
+``examples/data/input.LandremanPaul2021_QA_beta2p5_bootstrap`` (``--case beta``,
+the default; ``--case vacuum`` uses the vacuum ``input.LandremanPaul2021_QA_lowres``) at 12 x 12,
 ``ns`` 51 is the target.  Its external field is a winding-surface current at
 1.2 minor radii, fitted so that the coil field cancels the plasma's own normal
 field on the target (virtual casing) and carries the target's net poloidal
@@ -28,8 +29,8 @@ the three interface conditions (B.n, the pressure jump
 and a fixed singular quadrature (4 nfp 48 x 96).  Other scores are the force residual, the QA
 residual, iota on the axis and the edge, and the largest LCFS distance to the
 12 x 12 target and to the target at the same resolution.  DESC runs with
-``benchmarks/three_term_resolution_desc.py`` (DESC is not a VMEX dependency),
-and ``score`` scores its wout.  VMEC2000 reads the field from an mgrid table:
+its own scripts outside VMEX (DESC is not a VMEX dependency), and ``score``
+scores its wout, re-solved with all of its modes.  VMEC2000 reads the field from an mgrid table:
 301 x 301 points in (R, Z), about 4 mm apart, and 48 planes per field period.
 Its ``NZETA`` (16, 24 or 48, the smallest one at or above 2 ntor + 6) divides
 48, so the table is sampled on its own planes.  ``nestor_mgrid`` runs VMEX +
@@ -56,7 +57,11 @@ if str(REPO) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-DECK = REPO / "examples" / "data" / "input.LandremanPaul2021_QA_beta2p5_bootstrap"
+CASES = {  # --case: the deck whose 12 x 12 fixed-boundary equilibrium is the known answer
+    "beta": REPO / "examples" / "data" / "input.LandremanPaul2021_QA_beta2p5_bootstrap",  # beta 2.5%, bootstrap current
+    "vacuum": REPO / "examples" / "data" / "input.LandremanPaul2021_QA_lowres",  # precise QA, no pressure or current
+}
+DECK = CASES["beta"]
 NS = 51
 TRUTH_MODES = 12
 START_SCALE = 0.97
@@ -293,14 +298,14 @@ def lcfs_mm(wa, wb, nfp):
     return round(1e3 * worst, 3)
 
 
-def score(modes, out, name, eq, extra):
-    """Scores of a fixed-boundary equilibrium ``eq`` at ``modes`` (the boundary a method found)."""
+def score(modes, out, name, eq, extra, inp=None):
+    """Scores of a fixed-boundary equilibrium ``eq`` of ``inp`` (default ``deck(modes)``), the boundary a method found."""
     import vmex as vj
     from vmex import optimize as opt
     from vmex.core import virtual_casing as vc
     from vmex.core.freeboundary_vc import boundary_residual, summarize_boundary_residual
 
-    inp = deck(modes)
+    inp = deck(modes) if inp is None else inp
     w = eq.wout
     surface = vc.surface_field_data_from_state(inp, eq.solution, runtime=eq.solver_context, nphi=VC_GRID,
                                                ntheta=VC_GRID)
@@ -474,7 +479,11 @@ def run_score(modes, out, name, path):
     from vmex.core.restart import restart_state
 
     w = vj.read_wout(path)
-    inp = with_wout_boundary(deck(modes), w)
+    inp = deck(modes)
+    mpol = int(np.max(w.xm)) + 1  # DESC's M includes m = M: keep every mode, not VMEC's m < mpol = M
+    if mpol > inp.mpol:
+        inp = inp.change_resolution(mpol=mpol, ntor=inp.ntor, ntheta=2 * mpol + 6, nzeta=inp.nzeta)
+    inp = with_wout_boundary(inp, w)
     extra = {}
     report = Path(path).with_name("report.json")
     if report.exists():  # the other code's own time and memory
@@ -491,7 +500,7 @@ def run_score(modes, out, name, path):
     except vj.VmecError as error:
         no_equilibrium(modes, out, name, error, extra)
         return
-    score(modes, out, name, eq, extra)
+    score(modes, out, name, eq, extra, inp)
 
 
 def table(out):
@@ -540,10 +549,19 @@ def main(argv=None):
                                      "score", "table"))
     p.add_argument("args", nargs="+", help="[M] OUT [NAME WOUT]")
     p.add_argument("--chunk", type=int, help="Jacobian columns per batch (default 8, 4 above 8 modes, 2 at 12)")
+    p.add_argument("--case", choices=tuple(CASES), help="the deck (set by the field step and kept in OUT/case.txt)")
     a = p.parse_args(argv)
     modes = None if a.step in ("field", "mgrid", "table") else int(a.args[0])
     out = Path(a.args[0 if modes is None else 1]).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    global DECK
+    saved = out / "case.txt"
+    case = saved.read_text().strip() if saved.exists() else (a.case or "beta")
+    if a.case and a.case != case:
+        raise SystemExit(f"{out} holds the {case} case, not {a.case}")
+    if a.step == "field":
+        saved.write_text(case + "\n")
+    DECK = CASES[case]
     if modes is not None:
         (out / f"m{modes}").mkdir(exist_ok=True)
     if a.step == "field":

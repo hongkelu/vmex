@@ -71,11 +71,11 @@ def run(args, inp, coils0, out, *, max_mode, ess_alpha, boundary_step, coil_step
 
     state0, _ = model.seed
     runtime0 = im.runtime_from_params(model.params0, model.cfg)
-    # A fixed singular quadrature (4 nfp nphi x ntheta, the K = 0 arm's choice): the planner's error estimate alone
-    # can exhaust a GPU on an optimized boundary.
+    # A fixed singular quadrature (4 nfp nphi x 2 ntheta, the three-term arm's default): the planner's error estimate
+    # alone can exhaust a GPU on an optimized boundary.
     precision = vc.plan_vc_precision(vc.surface_field_data_from_state(fixed, state0, runtime=runtime0, nphi=nphi,
                                                                       ntheta=ntheta), digits=vc_digits,
-                                     quad_nt=4 * int(fixed.nfp) * nphi, quad_np=ntheta)
+                                     quad_nt=4 * int(fixed.nfp) * nphi, quad_np=2 * ntheta)
     phi = np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
     loop = float(fixed.rbc[fixed.ntor, 0]) * np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1)
     b_phi = np.sum(np.asarray(coil_field(coils0)(jnp.asarray(loop))) * np.stack(

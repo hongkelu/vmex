@@ -308,16 +308,20 @@ def bootstrap_input(inp, beta, device):
     start at the Helios-like reactor's collisionality nu* ~ n R / T^2 and beta ~ n T / B^2 moved
     to this R0 and B0, and follow the beta calibration as n ~ p^(2/3), T ~ p^(1/3), which keeps
     nu*. A Picard loop then makes the current Redl's, and it is resampled onto
-    ``CURRENT_KNOTS`` spline knots. Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in
-    steps of at most that size, each step's pressure ramp carrying the previous step's
-    bootstrap current, so its transform holds the equilibrium together as beta rises;
-    with ``BOOTSTRAP_BETA_START`` the ramp first doubles beta from that value. With
+    ``CURRENT_KNOTS`` spline knots; with ``BOOTSTRAP_IN_SOLVE`` (Redl) it is instead solved
+    in the run's own representation, Redl's on every half-mesh surface
+    (``bootstrap.HalfMeshCurrent``), so the first step starts self-consistent.
+    Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in steps of at most that size, each step's
+    pressure ramp carrying the previous step's bootstrap current, so its transform holds the
+    equilibrium together as beta rises; with ``BOOTSTRAP_BETA_START`` the ramp first doubles
+    beta from that value. With
     ``OHMIC_CURRENT`` (a near-axisymmetric seed) beta is instead ramped at that prescribed
     current and the current then blended into Redl's.
     Returns the input, the equilibrium and the Redl mismatch.
     """
     from vmex import optimize as opt
     from vmex.core.bootstrap import self_consistent_bootstrap
+    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
 
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
@@ -366,7 +370,16 @@ def bootstrap_input(inp, beta, device):
                   f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
                   flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
-    inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
+    if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
+        model = ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+                                           fixed_boundary=True)
+        current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
+        state, _, params, _ = current["aux"]
+        print(f"Redl current on the {current['x'].size} half-mesh surfaces: max relative mismatch "
+              f"{model.bootstrap_residual(state, params):.1e}", flush=True)
+        inp = model.bootstrap.deck_with(model.fixed, current["x"])
+    else:
+        inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
     fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
     w = fixed.wout

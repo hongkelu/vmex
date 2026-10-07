@@ -340,7 +340,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
     model = fvc.ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
-    assert model.n_boundary == 0 and model.x0.size == 24
+    assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4

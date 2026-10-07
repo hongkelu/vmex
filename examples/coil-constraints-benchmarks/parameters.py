@@ -11,7 +11,7 @@ squared curvature, in 1/m^2.
 case            configuration and seed           --beta   model    iota          coils
 =============== ================================ ======== ======== ============= ======================
 ellipse5        QA, nfp 2, aspect 4.9-5.1, from  volume   Redl     >= 0.41       3 x order 16: 5 m,
-                ``input.rotating_ellipse``                                       5 /m, 5 /m^2, 0.15 m
+                ``input.rotating_ellipse_nfp2``                                  5 /m, 5 /m^2, 0.15 m
                                                                                  apart, 0.20 m clear
 ellipse5-beta7  as ellipse5                      on axis  Redl     >= 0.16       as ellipse5
 qa3             QA, nfp 3, aspect 5.9-6.1        volume   Redl     >= 0.41       3 x order 8: 3.5 m,
@@ -29,7 +29,7 @@ breaks into islands the nested-surface equilibrium cannot see: QH between
 iota = 1 and 8/7, QI above 1/2, qi6-beta in the Stellaris band below the 4/4
 islands. ``qa3``, ``qh``, ``qi``, ``qa4-beta`` and ``qi6-beta`` seed from a
 rotating ellipse (``SEED`` = (nfp, aspect, b / a_eff)) and use their own
-stage-two coils, ``coils.<case>.json`` (``fit_coils.py``). A ``-tok`` suffix
+stage-two coils, ``examples/data/ESSOS_coils_<case>.json`` (``fit_coils.py``). A ``-tok`` suffix
 (``qa4-beta-tok``, ``qi6-beta-tok``) seeds the same case from a circular
 tokamak with a 0.05 m helical ripple instead. For ``qa4-beta*`` and
 ``qi6-beta*`` the coil length, curvature and MSC limits are
@@ -41,15 +41,15 @@ import math
 import os
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+DATA = Path(__file__).resolve().parents[1] / "data"
 CASE = os.environ.get("COIL_CASE", "ellipse5")
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
 EDGE_FORCE_TOLERANCE = 1e-14         # free arm: VMEX fedge settles at ~2-5e-15 at 12x12 modes
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
-INPUT_FILE = HERE / "input.rotating_ellipse"
-COILS_FILE = HERE / "coils.initial.json"
+INPUT_FILE = DATA / "input.rotating_ellipse_nfp2"
+COILS_FILE = DATA / "ESSOS_coils_ellipse5.json"
 BETA_DEFINITION = "volume"         # --beta is <beta>; "axis": WOUT betaxis
 B0 = 1.0                           # T: coil currents give R B_phi = B0 R0; the seed PHIEDGE matches it
 FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE and currents)
@@ -105,7 +105,7 @@ if CASE == "ellipse5-beta7":
     IOTA_FLOOR = 0.16
     PICARD_ITERATIONS, PICARD_RELAX = 30, 0.5  # damped: the current dominates iota (bootstrap.self_consistent_bootstrap)
 elif CASE in ("qa3", "qh", "qi"):
-    COILS_FILE = HERE / f"coils.{CASE}.json"
+    COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_')}.json"
     N_COILS, COIL_ORDER = 3, 8
     LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 3.5, 8.0, 10.0
     COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
@@ -119,7 +119,7 @@ elif CASE in ("qa3", "qh", "qi"):
         IOTA_FLOOR = 0.51          # above the iota = 1/2 resonance
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA, DKX for the QI), 4 order-12 coils per half period.
-    COILS_FILE = HERE / f"coils.{CASE}.json"
+    COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_')}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail

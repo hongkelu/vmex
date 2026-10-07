@@ -137,8 +137,9 @@ def main(argv=None):
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap and not fold else None
-    scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
-                   P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
+    scales = P.DESIGN_STEP_SCALE * np.r_[
+        [PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
+        P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = coil_limits.CoilChart(coils0, current_dofs=(), scales=scales,
                                   phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
                                   plasma_current=current, plasma_current_spline=True)

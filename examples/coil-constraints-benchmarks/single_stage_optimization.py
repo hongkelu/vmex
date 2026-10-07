@@ -71,6 +71,7 @@ NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32
+VC_GRID_BOOTSTRAP = 48             # P.BOOTSTRAP_IN_SOLVE: the three-term arm's virtual-casing grid (quadrature 4 nfp 48 x 96)
 
 
 def parse_args(argv=None):
@@ -151,7 +152,7 @@ def main(argv=None):
         return run(args, inp, Coils.from_json(str(out / "coils.initial.json")), out, max_mode=MAX_MODE,
                    ess_alpha=ESS_ALPHA, boundary_step=BOUNDARY_STEP, coil_step=COIL_STEP,
                    normal_field_weight=NORMAL_FIELD_WEIGHT, optimizer_ftol=OPTIMIZER_FTOL, vc_digits=VC_DIGITS,
-                   nphi=NPHI, ntheta=NTHETA, started=started)
+                   nphi=VC_GRID_BOOTSTRAP, ntheta=VC_GRID_BOOTSTRAP, started=started)
     mismatch = None if redl is None else bootstrap_mismatch(inp, redl, args.device)
 
     qs = target_residual()

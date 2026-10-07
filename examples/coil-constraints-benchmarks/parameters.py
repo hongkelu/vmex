@@ -157,6 +157,10 @@ if CASE.endswith("-tok"):
     SEED = (SEED[0], SEED[1], 0.01)
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else 6.0e4
 REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
+# Three-term arm: SLSQP's first step has an identity Hessian, so it grows with the target residual, which starts
+# near 1 for a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as
+# the fixed arm scales its seeded boundary steps (0.1 -> 0.02).
+DESIGN_STEP_SCALE = 1.0 if TARGET_NAME == "QA" else 0.2
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius

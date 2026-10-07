@@ -661,10 +661,11 @@ def _configure_jax_environment() -> None:
 
         try:
             if "JAX_ENABLE_X64" in os.environ:
+                # JAX's own boolean spellings; anything else keeps the runtime.
                 value = os.environ["JAX_ENABLE_X64"].lower()
-                if value not in ("y", "yes", "t", "true", "on", "1", "n", "no", "f", "false", "off", "0"):
-                    raise ValueError("invalid JAX_ENABLE_X64 boolean")
-                jax.config.update("jax_enable_x64", value in ("y", "yes", "t", "true", "on", "1"))
+                truthy = ("y", "yes", "t", "true", "on", "1")
+                if value in truthy or value in ("n", "no", "f", "false", "off", "0"):
+                    jax.config.update("jax_enable_x64", value in truthy)
         except Exception:
             pass
         try:

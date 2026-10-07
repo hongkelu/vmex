@@ -761,8 +761,11 @@ def test_current_dof_packing_and_validation():
         opt._current_dof_setup(dataclasses.replace(inp, ncurr=0), 2)
     with pytest.raises(ValueError, match="positive int"):
         opt._current_dof_setup(inp, -1)
-    with pytest.raises(ValueError, match="line_segment"):
-        opt._current_dof_setup(dataclasses.replace(inp, pcurr_type="line_segment"), 2)
+    # knot values of a line-segment profile, as of a spline (a value on every half-mesh surface)
+    segments = dataclasses.replace(inp, pcurr_type="line_segment_ip", ac_aux_s=np.linspace(0.0, 1.0, 5),
+                                   ac_aux_f=np.array([1.0, 2.0, 3.0, 2.0, 0.5]))
+    assert opt._current_dof_setup(segments, 4) == (4, 3.0)
+    np.testing.assert_allclose(opt._pack_current(segments, 4, 3.0)[:4], [1 / 3, 2 / 3, 1.0, 2 / 3])
     with pytest.raises(ValueError, match="current-spline knot"):
         opt._current_dof_setup(
             dataclasses.replace(inp, pcurr_type="cubic_spline_ip"), 2)
@@ -927,3 +930,15 @@ def test_half_mesh_picard_makes_the_current_redls():
     s = np.asarray(hm.s_half)
     inner = (s > 0.1) & (s < 0.9)
     assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))
+
+
+def test_current_derivative_of_any_jdotb_is_redls_for_redl(eq):
+    """``current_derivative`` (any <J.B>, e.g. DKX's) inverts the same identity as ``redl_current_derivative``."""
+    profiles = _paper_profiles(1e20, 2e3)
+    s, redl = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
+    hm = bs._half_mesh_fields(eq.state, eq.runtime)
+    jr = bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA,
+                                                           refine_extrema=True), 0)[0]
+    s2, generic = bs.current_derivative(jr, eq.state, eq.runtime)
+    np.testing.assert_array_equal(np.asarray(s), np.asarray(s2))
+    np.testing.assert_allclose(np.asarray(generic), np.asarray(redl), rtol=1e-12, atol=1e-9 * np.max(np.abs(redl)))

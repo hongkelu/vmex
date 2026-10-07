@@ -65,6 +65,8 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 # self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
+# DKX: the current is a line segment through a value on every half-mesh surface (those values,
+# the axis one and CURTOR are design variables), its seed DKX's on the same surfaces.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
@@ -85,7 +87,7 @@ QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples/optimization/QI_optimization.py
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
-DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conserving Fokker-Planck
+DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -282,7 +284,8 @@ def bootstrap_input(inp, beta, device):
     start at the Helios-like reactor's collisionality nu* ~ n R / T^2 and beta ~ n T / B^2 moved
     to this R0 and B0, and follow the beta calibration as n ~ p^(2/3), T ~ p^(1/3), which keeps
     nu*. A Picard loop then makes the current Redl's, and it is resampled onto
-    ``CURRENT_KNOTS`` spline knots; with ``BOOTSTRAP_IN_SOLVE`` (Redl) it is instead solved
+    ``CURRENT_KNOTS`` spline knots (DKX: instead DKX's on every half-mesh
+    surface, ``dkx_current``); with ``BOOTSTRAP_IN_SOLVE`` (Redl) it is instead solved
     in the run's own representation, Redl's on every half-mesh surface
     (``bootstrap.HalfMeshCurrent``), so the first step starts self-consistent.
     Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in steps of at most that size, each step's
@@ -352,6 +355,8 @@ def bootstrap_input(inp, beta, device):
         print(f"Redl current on the {current['x'].size} half-mesh surfaces: max relative mismatch "
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
         inp = model.bootstrap.deck_with(model.fixed, current["x"])
+    elif BOOTSTRAP_MODEL == "dkx":
+        inp = dkx_current(inp, picard.equilibrium, device)
     else:
         inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
     fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
@@ -420,21 +425,67 @@ def bootstrap_mismatch(inp, redl, device):
     return mismatch
 
 
-def dkx_mismatch(inp):
-    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
+def dkx_kinetic(inp):
+    """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``)."""
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=DKX_SURFACES,
-                                       collision_operator=DKX_COLLISION_OPERATOR,
-                                       mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+    surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
+    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
+                                    mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 
-    def mismatch(state, runtime):
-        # DKX reads the radial grid on the host. Under jit it is a tracer, but it is
-        # always linspace(0, 1, ns), so hand DKX that concrete grid.
-        grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
-        return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
 
-    return mismatch
+def on_grid(runtime):
+    """``runtime`` with a concrete radial grid: DKX reads it on the host, and under jit it is a tracer
+    (always linspace(0, 1, ns))."""
+    grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
+    return replace(runtime, setup=replace(runtime.setup, s_full=grid))
+
+
+def dkx_mismatch(inp):
+    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
+    kinetic = dkx_kinetic(inp)
+    return lambda state, runtime: kinetic.total(state, on_grid(runtime))
+
+
+def dkx_current(inp, fixed, device):
+    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface.
+
+    Picard steps I' <- I'_DKX from the equilibrium ``fixed``: DKX's ``<j.B>`` on its rows,
+    interpolated onto every half-mesh surface and inverted for dI/ds there
+    (``bootstrap.current_derivative``), under-relaxed by ``PICARD_RELAX``. The profile is
+    ``line_segment_ip`` through those values, the axis and edge ones extrapolated linearly,
+    and CURTOR its integral: no spline fit.
+    """
+    import jax
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core.bootstrap import current_derivative
+    from vmex.core.profiles import current
+
+    kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
+    s = (np.arange(1, ns) - 0.5) / (ns - 1)
+    rows = kinetic.rows(ns)[1]
+    knots = np.r_[0.0, s, 1.0]
+    enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
+    v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
+    kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
+    kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+    derivative = jax.jit(current_derivative)
+    for iteration in range(PICARD_ITERATIONS):
+        values = np.r_[1.5 * v[0] - 0.5 * v[1], v, 1.5 * v[-1] - 0.5 * v[-2]]
+        inp = replace(inp, pcurr_type="line_segment_ip", ac_aux_s=knots, ac_aux_f=values,
+                      curtor=float(current("line_segment_ip", inp.ac, knots, values, 1.0)))
+        fixed = opt.solve_equilibrium(inp, initial_state=fixed.state, device=device, raise_on_max_iterations=True,
+                                      polish_force_balance=False)
+        jk = np.interp(s, rows, np.asarray(kinetic_j(fixed.state, fixed.runtime)))
+        target = np.asarray(derivative(jnp.asarray(jk), fixed.state, fixed.runtime)[1])
+        delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
+        print(f"DKX Picard {iteration}: CURTOR = {float(inp.curtor):.1f} A, max|I' - I'_DKX| / max|I'_DKX| = "
+              f"{delta:.2e}", flush=True)
+        if delta <= PICARD_TOLERANCE:
+            break
+        v = (1.0 - PICARD_RELAX) * v + PICARD_RELAX * target
+    return inp
 
 
 def boundary_from_wout(inp, wout):
@@ -910,7 +961,7 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[: CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap and not fold else None
+    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold else None
     scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]

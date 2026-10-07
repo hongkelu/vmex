@@ -68,7 +68,7 @@ REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m,
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
-DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conserving Fokker-Planck
+DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
 HELICITY = (1, 0)                  # quasisymmetry (M, N); None: the constructed QI residual
 TARGET_NAME = "QA"
@@ -222,7 +222,7 @@ def dkx_mismatch(inp):
     import numpy as np
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=DKX_SURFACES,
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES,
                                        collision_operator=DKX_COLLISION_OPERATOR,
                                        mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 

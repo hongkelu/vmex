@@ -764,9 +764,26 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
     hm = _half_mesh_fields(state, rt)
     geom = _geometry_from_half(hm, hm.s_half, n_lambda=n_lambda, refine_extrema=True)
     jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
+    return hm.s_half, _current_derivative(hm, jr)
+
+
+def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tuple[Array, Array]:
+    """``(s, dI/ds)`` on the half mesh that makes ``<J.B>`` equal ``j_dot_b`` [A T/m^2] there.
+
+    :func:`redl_current_derivative` for any bootstrap model, e.g. a kinetic ``<J.B>``
+    interpolated onto the half-mesh surfaces.  Traceable in ``(state, rt)``.
+    """
+    hm = _half_mesh_fields(state, rt)
+    return hm.s_half, _current_derivative(hm, jnp.asarray(j_dot_b))
+
+
+def _current_derivative(hm: _HalfMeshFields, j_dot_b: Array) -> Array:
+    """dI/ds [A] solving ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` on the half mesh (Boozer ``I``)."""
+    w = jnp.abs(hm.w)
+    fsa_B2 = jnp.mean(hm.bmag * hm.bmag * w, axis=(1, 2)) / jnp.mean(w, axis=(1, 2))
     hs = hm.s_half[1] - hm.s_half[0]
-    dI_boozer = (jr * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / geom.fsa_B2
-    return hm.s_half, dI_boozer * 2.0 * jnp.pi / (MU0 * hm.signgs)
+    dI_boozer = (j_dot_b * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / fsa_B2
+    return dI_boozer * 2.0 * jnp.pi / (MU0 * hm.signgs)
 
 
 class HalfMeshCurrent:

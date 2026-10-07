@@ -783,7 +783,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         def tight():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
-            J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+            try:
+                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+            except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
+                raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux
             sol.update(aux=aux, state=state, mask=mask, params=params,
                        rows=np.asarray(model._rows(state, params, field)),

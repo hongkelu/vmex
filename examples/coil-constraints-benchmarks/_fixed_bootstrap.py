@@ -99,13 +99,15 @@ def run(args, inp, coils0, out, *, max_mode, ess_alpha, boundary_step, coil_step
                                     s=jnp.asarray(runtime.setup.s_full), signgs=runtime.setup.signgs)
         return jnp.abs(currents.rbtor) / linked_rbtor
 
-    def quantities(state, params, x):
-        """``[QA residuals..., B.n rms, plasma rows...]`` (rows scaled so c >= 0 is feasible)."""
+    def normal_field(state, params, x):
+        return total_normal_field_rms(coils_from_x(x), state, im.runtime_from_params(params, model.cfg))[None]
+
+    def quantities(state, params, x, nf=None):
+        """``[QA residuals..., B.n rms, plasma rows...]`` (rows scaled so c >= 0 is feasible; ``nf`` fixes B.n)."""
         runtime = im.runtime_from_params(params, model.cfg)
-        coils = coils_from_x(x)
         iota, aspect, radius = (min_abs_iota(state, runtime), opt.aspect_ratio(state, runtime),
                                 opt.major_radius(state, runtime))
-        nf = total_normal_field_rms(coils, state, runtime)
+        nf = normal_field(state, params, x)[0] if nf is None else nf
         strength = rbtor_ratio(state, runtime) - 1.0
         rows = [(iota - P.IOTA_FLOOR - P.IOTA_MARGIN) / P.IOTA_FLOOR,
                 (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
@@ -122,8 +124,21 @@ def run(args, inp, coils0, out, *, max_mode, ess_alpha, boundary_step, coil_step
     nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size)
     nrows = 5 + bool(P.MIRROR_LIMIT) + bool(P.IOTA_CEILING) + 3
     quantities_jit = jax.jit(quantities)
-    quantity_pullback = jax.jit(lambda state, mask, params, cots, x: model.pullback(
-        quantities, state, mask, params, cots, x))
+
+    @jax.jit
+    def quantity_pullback(state, mask, params, cots, x):
+        """Per-row pullback of ``cots . quantities`` with B.n held fixed, and each row's weight on B.n.
+
+        B.n goes forward along the linearization's columns instead (``normal_field_columns``): the virtual
+        casing's reverse pass stores its whole target-by-source kernel (25 GiB at the 4 nfp 48 x 96 quadrature).
+        """
+        nf = normal_field(state, params, x)[0]
+        rest = model.pullback(lambda s, p, xx: quantities(s, p, xx, nf), state, mask, params, cots, x)
+        return rest, cots @ jax.jvp(lambda n: quantities(state, params, x, n), (nf,), (jnp.ones_like(nf),))[1]
+
+    normal_field_columns = jax.jit(lambda state, mask, params, dz, batch, x: model.push(
+        lambda s, p: normal_field(s, p, x), state, mask, params, dz, batch)[:, 0])
+
     direct_gradient = jax.jit(lambda state, params, x, cot: jax.vjp(lambda xx: quantities(state, params, xx), x)[1](
         cot)[0])
 
@@ -192,8 +207,9 @@ def run(args, inp, coils0, out, *, max_mode, ess_alpha, boundary_step, coil_step
         cots = np.zeros((1 + nrows, values.size))
         cots[0, :nq], cots[0, nq] = q, normal_field_weight * nf
         cots[1:, nq + 1:] = np.eye(nrows)
-        params_bar = quantity_pullback(state, mask, params_x, jnp.asarray(cots), xj)
+        params_bar, through = quantity_pullback(state, mask, params_x, jnp.asarray(cots), xj)
         G = np.asarray(to_coordinates(params_x, jnp.asarray(sol["x"]), xj, params_bar))
+        G = G + np.outer(through, np.asarray(normal_field_columns(state, mask, params_x, dz, batch, xj)))
         Q, R = np.linalg.qr(J_c)
         lam = Q @ np.linalg.solve(R.T, G[:, :nc].T)
         gradients = np.zeros((1 + nrows, x.size))

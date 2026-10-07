@@ -7,37 +7,39 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
-- `boundary_condition="three_term"` (Python, CLI, or the deck's `BOUNDARY_CONDITION`
-  directive) solves for a free boundary without a sheet current;
-  `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any field.
-- `FreeBoundaryProblem` optimizes the external field from an accepted root:
-  `from_loss(inp, loss, x0, field_from_parameters=..., plasma_from_parameters=...)`
-  keeps the coil chart with the caller (`_coil_constraints.py`), and `x` may set
-  PHIEDGE or the current profile. Trials are certified, and only accepted
-  iterates are promoted (a failed trial raises `TrialRejected`).
-- `opt.minimize(problem, method="SLSQP", ...)` runs SciPy SLSQP on a
-  `FunctionProblem` and reports `stop_reason` and `accepted_steps`.
-- `adjoint_solver="forward_dense_jax"` factors the active Jacobian for the
-  multi-RHS pullback; `FreeBoundaryProblem` can reuse that LU as a matrix-free
-  preconditioner (`enable_matrix_free`, `dense_derivatives=True` reseeds it at
-  every accepted step), polish roots (`enable_root_polishing`) and
-  Newton-correct predicted trials (`enable_newton_correction`). An invalid GPU
-  LU pivot buffer is refactored on CPU. Solves are accepted by normwise
-  backward error, `||r|| <= tol (||A|| ||x|| + ||b||)`.
-- `make_free_boundary_config(adjoint_factorization="structured")` uses
-  block-Thomas factors of the radial block tridiagonal plus NESTOR's low-rank
-  Woodbury coupling under GMRES: O(ns) instead of O(ns^2) memory (15.4 to
-  7.8 GiB at 8x8 modes, NS 51), enough for NS 101 and 12x12 modes on one GPU.
-  `adjoint_factor_dtype=jnp.float32` (off by default) factors in single
-  precision; `enable_matrix_free(rhs_batch_size=...)` allows up to 8 RHS.
-- `solve_free_boundary(include_edge_in_convergence=True,
-  edge_force_tolerance=...)` also converges the edge force (`SolveResult.fedge`).
-- `opt.major_radius` returns `Rmajor_p`; `plot_optimization_movie(frame_labels=)`.
-- `CoilParameters(phiedge=..., plasma_current=...)` makes PHIEDGE and the
-  prescribed current profile (AC or spline values, and CURTOR) free-boundary
-  design coordinates, e.g. to hold B0 or a self-consistent Redl current;
-  `VmecProblem.from_tuples(..., vary_phiedge=True)` adds PHIEDGE to fixed
-  boundary problems (implicit derivatives only).
+- `boundary_condition="three_term"` (Python, CLI or deck `BOUNDARY_CONDITION`) solves the
+  free boundary with B.n, pressure balance and no sheet current; `ThreeTermFreeBoundaryModel`
+  gives its Jacobian for any field.
+- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)`
+  optimizes the external field (and PHIEDGE or the current profile) from certified,
+  accepted roots; `opt.minimize(method="SLSQP")` drives it.
+- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block
+  factors (`adjoint_factorization="structured"`, 15.4 to 7.8 GiB at 8x8, NS 51), reused for
+  GMRES, root polishing and Newton-corrected trials, accepted by normwise backward error.
+- `solve_free_boundary(include_edge_in_convergence=True)` also converges the edge force;
+  `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`, `plot_optimization_movie(frame_labels=)`.
+- `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
+  solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;
+  `--nc-preset quick|default|full` sets the resolution, `--nc-profiles` takes
+  the n and T profiles (and draws VMEX's Redl `<j.B>` on them) and `--nc-er`
+  fixes `E_r`. The `neoclassical` extra now installs `dkx>=2.8.0`; an older
+  DKX runs without the profiles and says so.
+
+## 0.11.8 - 2026-10-06
+
+- **`vmex --trace` converges without a step to choose.** The default
+  integrator is per-particle error-controlled Dopri8 at tolerance `3e-7`
+  (ESSOS 0.20 adaptive stepping); `--trace-tolerance` sets it and
+  `--trace-timestep` becomes the first trial step. On twenty-one equilibria
+  the worst energy error is `1.7e-4`, against up to `0.27` for the earlier
+  fixed RK4 step, at about 2.6 times its cost (#554).
+- The default Boozer mode cut is `2e-4`, safe on twenty equilibria, and every
+  run reports its largest energy error and how to tighten it above `1e-3`
+  (#553). The trace guide gives the mode-cut, timestep, `K` and integrator
+  studies on the corrected tracer (#552).
+- The optimization Jacobian is cached persistently (#549). New examples:
+  low-bootstrap QA, a QI drift study and a DKX-bootstrap QI (#550).
+- Floor `essos>=0.20.0`.
 
 ## 0.11.7 - 2026-10-05
 

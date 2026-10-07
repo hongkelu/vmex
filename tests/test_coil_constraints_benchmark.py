@@ -1,6 +1,6 @@
-"""Coil chart and ESSOS-backed coil rows of examples/coil-constraints-benchmarks."""
+"""Coil chart and ESSOS-backed coil rows of the coil-constraint single-stage example."""
 
-import sys
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +11,11 @@ import numpy as np
 import pytest
 
 essos_coils = pytest.importorskip("essos.coils")
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "coil-constraints-benchmarks"))
-import _coil_constraints as cc  # noqa: E402
+EXAMPLE = (Path(__file__).resolve().parents[1] / "examples" / "optimization"
+           / "single_stage_free_boundary_optimization_coil_constraints.py")
+SPEC = importlib.util.spec_from_file_location("coil_constraints_example", EXAMPLE)
+cc = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(cc)
 
 
 @pytest.fixture
@@ -96,11 +99,11 @@ def test_field_derivatives_under_jit_and_nested_transforms(coils):
 
 def test_coil_metrics_of_a_circle_and_differentiable_rows():
     jax.config.update("jax_enable_x64", True)
-    radius, order = 0.3, cc.P.COIL_ORDER
-    raw = np.zeros((cc.P.N_COILS, 3, 2 * order + 1))
-    raw[:, 0, 0] = 1.0 + np.arange(cc.P.N_COILS)  # centres 1 m apart, no overlap
+    radius, order, n_coils = 0.3, cc.COIL_ORDER, 3
+    raw = np.zeros((n_coils, 3, 2 * order + 1))
+    raw[:, 0, 0] = 1.0 + np.arange(n_coils)  # centres 1 m apart, no overlap
     raw[:, 0, 2], raw[:, 2, 1] = radius, radius   # x = cos, z = sin: a circle of radius 0.3 m
-    coils = essos_coils.Coils(essos_coils.Curves(jnp.asarray(raw), 64, 1, False), jnp.ones(cc.P.N_COILS))
+    coils = essos_coils.Coils(essos_coils.Curves(jnp.asarray(raw), 64, 1, False), jnp.ones(n_coils))
     metrics = cc.coil_metrics(coils)
     np.testing.assert_allclose(metrics["length"], 2 * np.pi * radius, rtol=1e-13)
     np.testing.assert_allclose(metrics["peak"], 1 / radius, rtol=1e-12)
@@ -109,5 +112,5 @@ def test_coil_metrics_of_a_circle_and_differentiable_rows():
     # Nonadjacent segments of the polygon are at least one chord apart.
     np.testing.assert_allclose(metrics["self_distance"], 2 * radius * np.sin(np.pi / cc.DISTANCE_POINTS), rtol=1e-10)
     jacobian = jax.jacrev(lambda r: cc.coil_inequalities(
-        essos_coils.Coils(essos_coils.Curves(r, 64, 1, False), jnp.ones(cc.P.N_COILS))))(jnp.asarray(raw))
+        essos_coils.Coils(essos_coils.Curves(r, 64, 1, False), jnp.ones(n_coils))))(jnp.asarray(raw))
     assert np.all(np.isfinite(jacobian))

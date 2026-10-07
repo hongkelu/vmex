@@ -94,8 +94,8 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   self-contained: the scalarized loss, the L-BFGS-B call and the monitor wiring
   are in the file beside its physical targets, resolution and save names, so a
   reader never has to open a second file to follow one run.
-  The scalar lane trades objective progress per evaluation (roughly 3x higher
-  objective at a matched budget on the QA workflow) for a cheaper cold start and
+  The scalar lane trades objective progress per evaluation (measured: QA
+  final QS 2.7x above least squares with 40 mode-2 iterations, QI 17x) for a cheaper cold start and
   lower peak memory; `QA_optimization.py` remains the default.
   `single_stage_optimization.py` *(preview)* is the simplest joint
   plasma-and-coil script and the one to copy for a new problem: every
@@ -164,14 +164,28 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
-- `coil-constraints-benchmarks/`: GPU benchmarks of the same single-stage
-  QA/QH/QI coil design solved fixed-boundary and free-boundary
-  (`FreeBoundaryProblem`), with every physics and coil-engineering limit a
-  hard SLSQP inequality, from vacuum to finite beta with a self-consistent
-  Redl or DKX bootstrap current. `COIL_CASE` selects the case
-  (`parameters.py`), `postprocess.py` compares the arms on one dense
-  free-boundary solve, and `fit_coils.py` regenerates the stage-two coils.
-  See its `README.md`.
+- `optimization/single_stage_free_boundary_optimization_coil_constraints.py`,
+  `single_stage_optimization_coil_constraints.py` and
+  `single_stage_free_boundary_optimization_three_term.py`: GPU benchmarks of
+  one single-stage QA/QH/QI coil design solved free-boundary
+  (`FreeBoundaryProblem`), fixed-boundary, and on sheet-current-free free
+  boundaries (`ThreeTermFreeBoundaryModel`), with every physics and
+  coil-engineering limit a hard SLSQP inequality, from vacuum to finite beta
+  with a self-consistent Redl or DKX bootstrap current. Each script is
+  self-contained. `COIL_CASE` selects the case (`ellipse5`, `ellipse5-beta7`,
+  `qa3`, `qh`, `qi`, `qa4-beta[-tok]`, `qi6-beta[-tok]`, `qh4-beta`; the table
+  is in the free-boundary script's docstring), seeded from
+  `data/input.rotating_ellipse_nfp2` and `data/ESSOS_coils_<case>.json`
+  (`qh4-beta`: the `qh` coils). They
+  need `vmex[coils]` and a GPU, `vmex[freeb]` for `--beta` and `vmex[kinetic]`
+  for the DKX cases, e.g.
+  `COIL_CASE=qi python single_stage_free_boundary_optimization_coil_constraints.py --steps 5 --output runs/free-qi`.
+  In `../benchmarks/`, `coil_constraints_postprocess.py` compares the arms on
+  one dense free-boundary solve, `coil_constraints_fit_coils.py` regenerates
+  the stage-two coils, `coil_constraints_evolution_gifs.py` draws a run's
+  coils and LCFS, and `three_term_highres.py`, `three_term_desc_check.py` and
+  `three_term_postprocess.py` re-solve, cross-check with DESC and
+  post-process three-term runs.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

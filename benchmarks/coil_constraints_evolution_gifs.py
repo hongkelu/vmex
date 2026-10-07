@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 """3D and 2D GIFs of the coils and the LCFS over an optimization's saved steps.
 
-    JAX_PLATFORMS=cpu python evolution_gifs.py <label> <out prefix> <run dir>[:offset] ... [--stride N]
+    JAX_PLATFORMS=cpu python benchmarks/coil_constraints_evolution_gifs.py <label> <prefix> <run dir>[:offset] ...
 
-Each run dir holds ``wout.stepK.nc``, ``coils.stepK.json`` and ``metrics.jsonl`` (``--save-every 1``); a restart's
-dir follows with ``:offset``, the global step of its step 0 (which repeats the previous run's last step and is
-skipped). Writes ``<prefix>_3d.gif`` (the full LCFS and every coil) and ``<prefix>_2d.gif`` (LCFS cross-sections
+The runs are those of the coil-constraint single-stage examples
+(``examples/optimization/single_stage_*_coil_constraints.py`` and
+``single_stage_free_boundary_optimization_three_term.py``). Each run dir holds ``wout.stepK.nc``,
+``coils.stepK.json`` and ``metrics.jsonl`` (``--save-every 1``); a restart's dir follows with ``:offset``, the
+global step of its step 0 (which repeats the previous run's last step and is skipped). ``--stride N`` keeps every
+Nth step. Writes ``<prefix>_3d.gif`` (the full LCFS and every coil) and ``<prefix>_2d.gif`` (LCFS cross-sections
 at three toroidal angles with the coils crossing them, step 0 dashed, and the QA and sheet-current history).
 """
 

@@ -352,7 +352,7 @@ def bootstrap_input(inp, beta, device):
                                            fixed_boundary=True)
         current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
         state, _, params, _ = current["aux"]
-        print(f"Redl current on the {current['x'].size} half-mesh surfaces: max relative mismatch "
+        print(f"Redl current on its {current['x'].size} knots: max relative mismatch "
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
         inp = model.bootstrap.deck_with(model.fixed, current["x"])
     elif BOOTSTRAP_MODEL == "dkx":

@@ -274,7 +274,7 @@ def _lp_beta0p5_profiles(inp):
 
 
 def test_bootstrap_current_profile_layout():
-    """A knot per half-mesh surface, I'(0) = 0 with the s^(1/4) asymptote inside s_1, CURTOR its integral."""
+    """A knot per half-mesh surface, I'(0) = 0 and three unknown knots inside s_1, CURTOR its integral."""
     from vmex.core.profiles import current
 
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False)
@@ -287,7 +287,7 @@ def test_bootstrap_current_profile_layout():
     assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     np.testing.assert_allclose(block.deck.ac_aux_f, values)
-    np.testing.assert_allclose(values[1:4], block.x0[0] * np.array(block.SUB) ** 0.25)
+    assert block.x0.size == 3 + 24
     assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
     # the deck's own enclosed current away from the axis, where only the first cell differs
     deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
@@ -309,7 +309,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
     model = fit.model
     state, mask, params, _ = fit.aux
-    assert fit.x.size == model.n_boundary + 24
+    assert fit.x.size == model.n_boundary + 3 + 24
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
     # independently of the inversion: VMEC's <J.B> (finite-difference identity) is Redl's away from the ends

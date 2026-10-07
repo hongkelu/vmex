@@ -67,12 +67,15 @@ if CASE in ("qa3", "qh", "qi"):
     COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
     SEED, ASPECT_RANGE = {"qa3": ((3, 6.0, 0.5), (5.9, 6.1)), "qh": ((4, 6.0, 0.9), (5.9, 6.1)),
                           "qi": ((4, 8.0, 0.5), (7.9, 8.1))}[CASE]
-elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     if CASE.startswith("qa4-beta"):
         SEED, ASPECT_RANGE = (2, 4.0, 0.5), (3.5, 4.5)
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
+    elif CASE == "qh4-beta":
+        N_COILS, SEED, ASPECT_RANGE = 3, (4, 6.0, 0.9), (5.9, 6.1)
+        COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
     else:
         SEED, ASPECT_RANGE = (4, 6.0, 0.7), (5.9, 6.1)
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15

@@ -78,6 +78,7 @@ MIRROR_LIMIT = None                # upper limit on the edge mirror ratio
 IOTA_FLOOR = 0.41
 IOTA_CEILING = None                # upper limit on max |iota|
 IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
+IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 COIL_ORDER, N_SEGMENTS = 16, 256
@@ -96,11 +97,14 @@ elif CASE in ("qa3", "qh", "qi"):
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
         IOTA_FLOOR = 0.51
-elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COIL_ORDER = 12
     IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
-        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)
+        SEED, IOTA_FLOOR, ASPECT_RANGE, IOTA_S_MIN = (2, 4.0, 0.5), 0.27, (3.5, 4.5), 0.02
+    elif CASE == "qh4-beta":
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, IOTA_FLOOR = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1), 1.1
+        COIL_SURFACE_DISTANCE_LIMIT, IOTA_S_MIN = 0.15, 0.02
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
@@ -109,6 +113,7 @@ elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
     SEED = (SEED[0], SEED[1], 0.01)  # a circular tokamak with a 1% helical ripple
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5
@@ -176,7 +181,7 @@ def redl_profiles(inp):
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
-    return profiles, RedlBootstrapMismatch(profiles, 0, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
+    return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
 def abs_iota(state, runtime):
@@ -185,18 +190,28 @@ def abs_iota(state, runtime):
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
     ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
     ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
+    iota interpolated there, then the half-mesh surfaces beyond (and the edge
+    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
     """
     import jax.numpy as jnp
+    import numpy as np
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    if IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
+    if IOTA_S_MIN is not None:
+        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
+        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
+        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
+    elif IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, or with ``IOTA_AXIS`` including the axis."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
+    ``IOTA_S_MIN``."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -228,14 +243,18 @@ def dkx_mismatch(inp):
 
 
 def current_from_wout(inp, w):
-    """``inp`` with ``w``'s CURTOR and current-profile coefficients, when ``inp`` prescribes the current."""
+    """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
+    prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
     import numpy as np
 
     if int(inp.ncurr) == 1:
-        spline = "spline" in str(inp.pcurr_type)
-        field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)
-        inp = replace(inp, curtor=float(w.ctor),
-                      **{field_name: np.asarray(values, dtype=float)[: np.size(getattr(inp, field_name))]})
+        kind = str(w.pcurr_type).strip()
+        if "spline" in kind or "line_segment" in kind:  # VmecInput trims both to the knots before the -1 padding
+            inp = replace(inp, pcurr_type=kind, ac_aux_s=np.asarray(w.ac_aux_s, dtype=float),
+                          ac_aux_f=np.asarray(w.ac_aux_f, dtype=float), curtor=float(w.ctor))
+        else:
+            inp = replace(inp, pcurr_type=kind, ac=np.asarray(w.ac, dtype=float)[: np.size(inp.ac)],
+                          curtor=float(w.ctor))
     return inp
 
 

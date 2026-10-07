@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 """Re-solve a run's final coils at a higher resolution with the three-term free boundary, and export them for DESC.
 
-    COIL_CASE=qa4-beta python three_term_highres.py <run dir> <out dir> [--modes 12 12] [--ns 101]
+    COIL_CASE=qa4-beta python benchmarks/three_term_highres.py <run dir> <out dir> [--modes 12 12] [--ns 101]
 
-``<run dir>`` holds input.run, coils.json and wout.nc (a finished run). The deck's profiles and the run's final
+``<run dir>`` holds input.run, coils.json and wout.nc (a finished run of
+``examples/optimization/single_stage_free_boundary_optimization_three_term.py``). The deck's profiles and the run's final
 boundary (as the start) are re-solved at ``--modes``/``--ns`` with every interface condition (B.n, pressure balance,
 no sheet current). Writes ``<out>/wout_three_term.nc``, ``<out>/report.json`` (interface residuals, QA, iota, aspect,
 LCFS distance to the run's own boundary, time, memory) and ``<out>/coils.npz`` (filament points, tangents and
-currents of every coil, with the field at check points: the exact field for DESC).
+currents of every coil, with the field at check points: the exact field for
+``three_term_desc_check.py``).
 """
 
 import argparse
@@ -15,11 +17,11 @@ import json
 import os
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 os.environ["JAX_ENABLE_X64"] = "1"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 p = argparse.ArgumentParser()
 p.add_argument("run", type=Path)
 p.add_argument("out", type=Path)
@@ -33,12 +35,136 @@ args = p.parse_args()
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
-from essos.coils import Coils  # noqa: E402
+from essos.coils import Coils, Curves  # noqa: E402
 import vmex as vj  # noqa: E402
-import _coil_constraints as coil_limits  # noqa: E402
 from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel  # noqa: E402
 from vmex.core.optimize import solve_equilibrium, unpack_boundary  # noqa: E402
-from _common import min_abs_iota, restart_input, target_residual  # noqa: E402
+
+
+# The examples' COIL_CASE values this script reads: the target and the iota rows.
+CASE = os.environ.get("COIL_CASE", "ellipse5")
+if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa4-beta-tok", "qi6-beta", "qi6-beta-tok"):
+    raise ValueError(f"unknown COIL_CASE {CASE!r}")
+HELICITY = (1, -1) if CASE == "qh" else None if CASE.startswith("qi") else (1, 0)  # None: the constructed QI residual
+IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta")  # iota rows include the extrapolated axis and edge
+QA_SURFACES = tuple(i / 10 for i in range(1, 11))
+QI_SURFACES = tuple(i / 5 for i in range(1, 6))
+QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)
+
+
+def target_residual():
+    """Residual vector of the case's target: quasisymmetry of ``HELICITY``, or constructed QI."""
+    import numpy as np
+    from vmex import optimize as opt
+    from vmex.core.qi import ConstructedQIResidual
+
+    if HELICITY is None:
+        return ConstructedQIResidual(np.asarray(QI_SURFACES), **QI_OPTIONS)
+    return opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), *HELICITY)
+
+
+def abs_iota(state, runtime):
+    """|iota| bounded by the floor and ceiling rows.
+
+    The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
+    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
+    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
+    """
+    import jax.numpy as jnp
+    from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
+
+    half = _iotas_half(state, runtime)[1:]
+    if IOTA_AXIS:
+        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    return jnp.abs(half)
+
+
+def min_abs_iota(state, runtime):
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, or with ``IOTA_AXIS`` including the axis."""
+    import jax.numpy as jnp
+
+    return jnp.min(abs_iota(state, runtime))
+
+
+def boundary_from_wout(inp, wout):
+    """``inp`` with the boundary of ``wout``'s last surface, truncated to its resolution."""
+    import numpy as np
+
+    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
+    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
+                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
+        if m < inp.mpol and abs(n) <= inp.ntor:
+            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
+    return replace(inp, rbc=rbc, zbs=zbs)
+
+
+def restart_input(run):
+    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current (``--restart``)."""
+    import vmex as vj
+
+    inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
+    return current_from_wout(replace(boundary_from_wout(inp, w), phiedge=float(w.phi[-1]), lfreeb=False), w)
+
+
+def current_from_wout(inp, w):
+    """``inp`` with ``w``'s CURTOR and current-profile coefficients, when ``inp`` prescribes the current."""
+    import numpy as np
+
+    if int(inp.ncurr) == 1:
+        spline = "spline" in str(inp.pcurr_type)
+        field_name, values = ("ac_aux_f", w.ac_aux_f) if spline else ("ac", w.ac)
+        inp = replace(inp, curtor=float(w.ctor),
+                      **{field_name: np.asarray(values, dtype=float)[: np.size(getattr(inp, field_name))]})
+    return inp
+
+
+@dataclass(frozen=True, eq=False)
+class DirectCoilField:
+    """Biot-Savart field of filament coils, as a differentiable pytree.
+
+    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
+    static ``self``, so every new coil geometry recompiles and no derivative
+    flows back to the coil arrays. This pytree carries the arrays as leaves
+    instead: one compiled program serves every trial and JAX differentiates
+    the field with respect to the coil parameters. The field is the mean over
+    each coil's quadrature points of the filament Biot-Savart integrand.
+    ``gamma``/``gamma_dash`` are ESSOS' points and tangents, shape
+    ``(coils, points, 3)`` in metres; ``currents`` are in amperes.
+    """
+
+    gamma: Any
+    gamma_dash: Any
+    currents: Any
+
+    def b_cyl(self, r, phi, z):
+        """Evaluate the filament field in cylindrical coordinates, in tesla."""
+        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
+        cosine, sine = jnp.cos(pp), jnp.sin(pp)
+        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
+        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
+        radius2 = jnp.sum(displacement * displacement, axis=-1)
+        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
+        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
+        differential = differential * inv_radius3[..., None]
+        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
+        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
+        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
+        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
+        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
+        return br, bphi, bxyz[..., 2]
+
+
+jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
+
+
+def nominal_field(coils):
+    """The examples' ``CoilChart(coils, current_dofs=())`` field at its nominal point: the coils rebuilt from their
+    unscaled Fourier coefficients and currents, as a differentiable :class:`DirectCoilField`."""
+    raw = np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :]
+    curves = Curves(jnp.asarray(raw), int(coils.n_segments), int(coils.nfp), bool(coils.stellsym))
+    nominal = Coils(curves, jnp.asarray(np.asarray(coils.dofs_currents_raw, dtype=float)))
+    return DirectCoilField(jnp.asarray(nominal.gamma), jnp.asarray(nominal.gamma_dash), jnp.asarray(nominal.currents))
+
 
 args.out.mkdir(parents=True, exist_ok=True)
 t0 = time.perf_counter()
@@ -51,8 +177,7 @@ def log(msg):
 mpol, ntor = args.modes
 inp = restart_input(args.run).change_resolution(mpol=mpol, ntor=ntor, ntheta=2 * mpol + 6, nzeta=2 * ntor + 6)
 inp = replace(inp, ns_array=np.array([args.ns]), ftol_array=np.array([1e-13]), niter_array=np.array([100000]))
-chart = coil_limits.CoilChart(Coils.from_json(str(args.run / "coils.json")), current_dofs=())
-field = chart(jnp.asarray(chart.x0))
+field = nominal_field(Coils.from_json(str(args.run / "coils.json")))
 rng = np.random.default_rng(0)
 check = jnp.asarray(np.c_[1.0 + 0.3 * rng.uniform(-1, 1, 64), 0.3 * rng.uniform(-1, 1, 64), 0.3 * rng.uniform(-1, 1, 64)])
 from vmex.core import virtual_casing as vc  # noqa: E402

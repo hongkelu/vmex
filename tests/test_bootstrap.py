@@ -942,3 +942,27 @@ def test_current_derivative_of_any_jdotb_is_redls_for_redl(eq):
     s2, generic = bs.current_derivative(jr, eq.state, eq.runtime)
     np.testing.assert_array_equal(np.asarray(s), np.asarray(s2))
     np.testing.assert_allclose(np.asarray(generic), np.asarray(redl), rtol=1e-12, atol=1e-9 * np.max(np.abs(redl)))
+
+
+def test_near_axis_redl_ratio_is_banana_or_collisional():
+    """Inside s_1 Redl's current follows f_t ~ s^(1/4) at low collisionality, and decays faster where nu*_e
+    ~ eps^(-3/2) is large."""
+    geom = bs.RedlGeometry(
+        surfaces=jnp.array([0.01]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
+        R=jnp.array([6.0]), epsilon=jnp.array([0.02]), f_t=jnp.array([0.2]), fsa_B2=jnp.array([1.0]),
+        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.98]), Bmax=jnp.array([1.02]), psi_edge=jnp.asarray(-0.5),
+        nfp=2)
+    x = jnp.array([1 / 64, 1 / 16, 1 / 4, 1.0])
+
+    def ratio(n0, T0):
+        profiles = _paper_profiles(n0, T0)
+        jr = bs.j_dot_B_redl(profiles, geom, 0)[0]
+        nu = float(bs.j_dot_B_redl(profiles, geom, 0)[1]["nu_e_star"][0])
+        return np.asarray(bs.near_axis_redl_ratio(profiles, 0, geom, jr, x)), nu
+
+    banana, nu = ratio(1e18, 5e4)
+    assert nu < 1e-3
+    np.testing.assert_allclose(banana, np.asarray(x) ** 0.25, rtol=0.05)
+    collisional, nu = ratio(1e21, 1e3)
+    assert nu > 10 and collisional[-1] == pytest.approx(1.0)
+    assert np.all(np.diff(collisional) > 0) and np.all(collisional[:-1] < 0.5 * np.asarray(x[:-1]) ** 0.25)

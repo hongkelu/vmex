@@ -8,7 +8,9 @@ current, ``vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel``), not a VMEC +
 solve, which balances only |B| and leaves the tangential field jump free.  The
 design variables (coil shapes, PHIEDGE and, with ``--bootstrap``, the current
 spline values and CURTOR), the loss, the constraint rows and their bounds are
-that script's.
+that script's -- except with ``P.BOOTSTRAP_IN_SOLVE`` (Redl): then the current is
+solved with the boundary, Redl's on every half-grid surface, and neither its
+values nor the bootstrap-mismatch row enter the optimization.
 
 Each trial starts from the latest solved boundary, after a first-order prediction
 of the boundary change, and takes trust-region Gauss-Newton steps with its Jacobian;
@@ -119,6 +121,9 @@ def main(argv=None):
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
+    fold = args.bootstrap and P.BOOTSTRAP_IN_SOLVE and P.BOOTSTRAP_MODEL == "redl"
+    profiles = redl_profiles(inp)[0] if fold else None
+    redl = None if fold else redl
     if args.max_iterations:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
@@ -131,9 +136,10 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
-    scales = np.r_[[PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
-                   P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
+    current = np.r_[np.asarray(inp.ac_aux_f)[: P.CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap and not fold else None
+    scales = P.DESIGN_STEP_SCALE * np.r_[
+        [PHIEDGE_STEP] * P.FREE_PHIEDGE, [P.CURRENT_STEP] * (0 if current is None else current.size),
+        P.COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = coil_limits.CoilChart(coils0, current_dofs=(), scales=scales,
                                   phiedge=float(inp.phiedge) if P.FREE_PHIEDGE else None,
                                   plasma_current=current, plasma_current_spline=True)
@@ -143,8 +149,10 @@ def main(argv=None):
     # quad_nt: a multiple of nfp grid
     quadrature = args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid)
     model = ThreeTermFreeBoundaryModel(inp, nphi=args.vc_grid, ntheta=args.vc_grid, trial_ftol=args.trial_forward_ftol,
-                               chunk=args.chunk, quadrature=quadrature)
-    print(f"[model] {model.x0.size} boundary coordinates, {nplasma} plasma coordinates, "
+                                       chunk=args.chunk, quadrature=quadrature, bootstrap=profiles,
+                                       bootstrap_helicity=P.REDL_HELICITY)
+    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
+          f"{nplasma} plasma coordinates, "
           f"{chart.size - nplasma} coil coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
     # ---- rows of the run: loss residual, then the constraint quantities in the free arm's order --------------------
@@ -373,6 +381,7 @@ def main(argv=None):
                 break
         row = dict(step=state["step"], qa=float(q @ q), min_abs_iota=float(h[0]), major_radius_m=float(h[1]),
                    **({"redl_mismatch": float(h[2 + len(mirror) + len(ceiling)])} if nredl else {}),
+                   **({"redl_max_relative": model.bootstrap_residual(sol["state"], sol["params"])} if fold else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if P.FREE_PHIEDGE else 1.0,
@@ -388,6 +397,7 @@ def main(argv=None):
               f"R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
+              + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s", flush=True)
         print(f"[timing] trials {row['trials']} ({row['solve_seconds']:.0f} s, {row['lm_evaluations']} boundary "
               f"evaluations), linearizations {row['linearizations']} ({row['linearize_seconds']:.0f} s), "
@@ -461,6 +471,8 @@ def main(argv=None):
         rng = np.random.default_rng(0)
         for k in range(args.check_gradient):
             d = rng.normal(size=u.size)
+            if k == 0 and nplasma:  # first along the plasma coordinates only
+                d[nplasma:] = 0.0
             d /= np.linalg.norm(d)
             for h in (1e-2, 3e-3):
                 plus, minus = (solve((u + s * h * d) * u_scale) for s in (1, -1))

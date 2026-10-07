@@ -10,36 +10,34 @@ revision it was measured at, and the pages that cite it.
 - `boundary_condition="three_term"` (Python, CLI, or the deck's `BOUNDARY_CONDITION`
   directive) solves for a free boundary without a sheet current;
   `ThreeTermFreeBoundaryModel` gives its Jacobian and gradients for any field.
-- `FreeBoundaryProblem` and `CoilParameters` optimize coils from an accepted
-  free-boundary root. Trials start from a tangent prediction, are solved with
-  strict edge convergence and certified, and only accepted iterates are
-  promoted; a failed trial raises the new `TrialRejected`. `from_loss` takes
-  `event=` progress callbacks and a wall-time `deadline=`.
+- `FreeBoundaryProblem` optimizes the external field from an accepted root:
+  `from_loss(inp, loss, x0, field_from_parameters=..., plasma_from_parameters=...)`
+  keeps the coil chart with the caller (`_coil_constraints.py`), and `x` may set
+  PHIEDGE or the current profile. Trials are certified, and only accepted
+  iterates are promoted (a failed trial raises `TrialRejected`).
 - `opt.minimize(problem, method="SLSQP", ...)` runs SciPy SLSQP on a
-  `FunctionProblem` in its own units and reports `stop_reason` and
-  `accepted_steps`.
-- The new `adjoint_solver="forward_dense_jax"` factors the active Jacobian for
-  the multi-RHS pullback. `FreeBoundaryProblem` can reuse that LU as a
-  matrix-free preconditioner (`enable_matrix_free`, with
-  `dense_derivatives=True` to reseed it at every accepted step), polish roots
-  (`enable_root_polishing`) and Newton-correct predicted trials
-  (`enable_newton_correction`). An invalid GPU LU pivot buffer is refactored on
-  CPU. Its dense, matrix-free and tangent checks accept a solve by its normwise
-  backward error, `||r|| <= tol (||A|| ||x|| + ||b||)`, so a row whose `||b||` is
-  small against `||A|| ||x||` no longer fails at the rounding floor.
-- `make_free_boundary_config(adjoint_factorization="structured")` replaces the
-  dense active-space LU by block-Thomas factors of the radial block tridiagonal
-  plus NESTOR's low-rank Woodbury coupling, built at each root and used by
-  GMRES under the same backward-error gate: O(ns) instead of O(ns^2) memory
-  (15.4 to 7.8 GiB at 8x8 modes, NS 51), which opens NS 101 and 12x12 modes on
-  one GPU. `adjoint_factor_dtype=jnp.float32` (off by default) factors in
-  single precision. `enable_matrix_free(rhs_batch_size=...)` now allows up to
-  8 right-hand sides per GMRES batch.
+  `FunctionProblem` and reports `stop_reason` and `accepted_steps`.
+- `adjoint_solver="forward_dense_jax"` factors the active Jacobian for the
+  multi-RHS pullback; `FreeBoundaryProblem` can reuse that LU as a matrix-free
+  preconditioner (`enable_matrix_free`, `dense_derivatives=True` reseeds it at
+  every accepted step), polish roots (`enable_root_polishing`) and
+  Newton-correct predicted trials (`enable_newton_correction`). An invalid GPU
+  LU pivot buffer is refactored on CPU. Solves are accepted by normwise
+  backward error, `||r|| <= tol (||A|| ||x|| + ||b||)`.
+- `make_free_boundary_config(adjoint_factorization="structured")` uses
+  block-Thomas factors of the radial block tridiagonal plus NESTOR's low-rank
+  Woodbury coupling under GMRES: O(ns) instead of O(ns^2) memory (15.4 to
+  7.8 GiB at 8x8 modes, NS 51), enough for NS 101 and 12x12 modes on one GPU.
+  `adjoint_factor_dtype=jnp.float32` (off by default) factors in single
+  precision; `enable_matrix_free(rhs_batch_size=...)` allows up to 8 RHS.
 - `solve_free_boundary(include_edge_in_convergence=True,
-  edge_force_tolerance=...)` also requires the spectral edge force, reported as
-  `SolveResult.fedge`, to converge.
-- `opt.major_radius` returns the wout `Rmajor_p`, and
-  `plot_optimization_movie(frame_labels=)` titles each frame.
+  edge_force_tolerance=...)` also converges the edge force (`SolveResult.fedge`).
+- `opt.major_radius` returns `Rmajor_p`; `plot_optimization_movie(frame_labels=)`.
+- `CoilParameters(phiedge=..., plasma_current=...)` makes PHIEDGE and the
+  prescribed current profile (AC or spline values, and CURTOR) free-boundary
+  design coordinates, e.g. to hold B0 or a self-consistent Redl current;
+  `VmecProblem.from_tuples(..., vary_phiedge=True)` adds PHIEDGE to fixed
+  boundary problems (implicit derivatives only).
 
 ## 0.11.7 - 2026-10-05
 

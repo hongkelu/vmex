@@ -415,6 +415,40 @@ def test_schur_lanes_are_reusable_and_leak_nothing_per_gradient():
     np.testing.assert_allclose(forced, elimination, rtol=1.0e-6, atol=0.0)
 
 
+def test_plasma_from_parameters_sets_plasma_parameters_inside_the_residual():
+    """A design-dependent PHIEDGE enters the residual lane and its derivatives."""
+    inp = dataclasses.replace(
+        lasym_free_input(DATA).change_resolution(mpol=3, ntor=0, ntheta=10, nzeta=4),
+        ns_array=np.array([5]), ftol_array=np.array([1.0e-6]), niter_array=np.array([400]))
+    field, params = lasym_free_field(), im.params_from_input(inp)
+    current0 = jnp.asarray(field.extcur)
+
+    def configure(plasma_from_parameters=None):
+        return make_free_boundary_config(
+            inp, field, ns=5, ftol=1.0e-6, max_iterations=400,
+            field_from_parameters=lambda current: dataclasses.replace(field, extcur=current),
+            plasma_from_parameters=plasma_from_parameters, device="cpu")
+
+    cfg = configure()
+    _, saved = fbi._solve_status_fwd(params, current0, cfg)
+    _, _, state, mask, rcon, zcon = saved[:6]
+    scaled = configure(lambda p, current: dataclasses.replace(
+        p, phiedge=p.phiedge * jnp.sum(current) / jnp.sum(current0)))
+    residual = fbi._projected_residual(scaled, mask)
+
+    def flat(value, current, p=params):
+        return ravel_pytree(value(state, p, current, state, rcon, zcon))[0]
+
+    current = current0 * 1.02
+    moved = dataclasses.replace(params, phiedge=params.phiedge * 1.02)
+    np.testing.assert_allclose(flat(residual, current), flat(fbi._projected_residual(cfg, mask), current, moved),
+                               rtol=1e-12, atol=1e-14)
+    direction, step = current0 * 0.3, 1e-4
+    _, derivative = jax.jvp(lambda c: flat(residual, c), (current0,), (direction,))
+    difference = (flat(residual, current0 + step * direction) - flat(residual, current0 - step * direction)) / (2 * step)
+    np.testing.assert_allclose(derivative, difference, rtol=1e-5, atol=1e-8 * float(jnp.max(jnp.abs(derivative))))
+
+
 def test_traced_adjoint_linearizes_inside_an_outer_jit(monkeypatch):
     """Under an outer jax.jit the pullback is taken at the root, then staged GCROT."""
     def residual(z, p, field, *_args):

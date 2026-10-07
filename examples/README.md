@@ -164,6 +164,14 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
+- `coil-constraints-benchmarks/`: GPU benchmarks of the same single-stage
+  QA/QH/QI coil design solved fixed-boundary and free-boundary
+  (`FreeBoundaryProblem`), with every physics and coil-engineering limit a
+  hard SLSQP inequality, from vacuum to finite beta with a self-consistent
+  Redl or DKX bootstrap current. `COIL_CASE` selects the case
+  (`parameters.py`), `postprocess.py` compares the arms on one dense
+  free-boundary solve, and `fit_coils.py` regenerates the stage-two coils.
+  See its `README.md`.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

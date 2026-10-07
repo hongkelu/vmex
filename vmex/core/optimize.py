@@ -135,7 +135,6 @@ from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRe
 __all__ = [
     "report_targets",
     "FreeBoundaryProblem",  # noqa: F822
-    "CoilParameters",  # noqa: F822
     "TrialRejected",
     "VmecProblem",
     "FunctionProblem",
@@ -199,9 +198,6 @@ def __getattr__(name: str):  # PEP 562 lazy re-export
     if name == "FreeBoundaryProblem":
         from .freeboundary_problem import FreeBoundaryProblem
         return FreeBoundaryProblem
-    if name == "CoilParameters":
-        from .freeboundary_problem import CoilParameters
-        return CoilParameters
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":
@@ -1853,6 +1849,7 @@ def make_problem(
     vary_major_radius: bool = False,
     x0: np.ndarray | None = None,
     current_dofs: int | None = None,
+    vary_phiedge: bool = False,
     derivative_method: str = "implicit",
     fd_method: str = "3-point",
     fd_rel_step: float | None = None,
@@ -1967,6 +1964,8 @@ def make_problem(
         from .restart import restart_state
         source = restart_from.wout if isinstance(restart_from, Equilibrium) else restart_from
         initial_state = restart_state(source, inp)
+    if vary_phiedge and derivative_method != "implicit":
+        raise ValueError("vary_phiedge requires derivative_method='implicit'")
     if derivative_method == "finite_difference":
         problem = _make_finite_difference_problem(
             inp,
@@ -2025,6 +2024,8 @@ def make_problem(
     k_cur, _ = _current_dof_setup(inp, current_dofs)
     if scales is not None and k_cur:
         scales = np.concatenate([scales, np.ones(k_cur + 1)])
+    if scales is not None and vary_phiedge:
+        scales = np.concatenate([scales, [1.0]])
     problem = _run_with_progress(
         lambda: _least_squares_implicit(
             list(objective_terms or ()),
@@ -2033,6 +2034,7 @@ def make_problem(
             vary_major_radius=bool(vary_major_radius),
             x0=x0,
             current_dofs=current_dofs,
+            vary_phiedge=bool(vary_phiedge),
             evaluation_progress=evaluation_progress,
             jac_chunk_size=jacobian_batch_size,
             jac_solver=jac_solver,
@@ -2780,6 +2782,7 @@ def _least_squares_implicit(
     vary_major_radius: bool = False,
     x0: np.ndarray | None,
     current_dofs: int | None = None,
+    vary_phiedge: bool = False,
     evaluation_progress: bool = False,
     jac_chunk_size: int | str | None = "auto",
     jac_solver: str = "auto",
@@ -2885,7 +2888,11 @@ def _least_squares_implicit(
     # already traces both).
     k_cur, ac_scale = _current_dof_setup(inp, current_dofs)
     nboundary = nfam * nm + int(vary_major_radius)
-    ndof = nboundary + (k_cur + 1 if k_cur else 0)
+    # Optional trailing PHIEDGE dof, relative: PHIEDGE = PHIEDGE_0 (1 + x[jp]).
+    # Zero-current fixed-boundary physics depends on it only through beta, so
+    # it matters when a beta or field-strength row ties it to the boundary.
+    jp = nboundary + (k_cur + 1 if k_cur else 0)
+    ndof = jp + int(vary_phiedge)
     # multigrid=True routes the host solve through solve_multigrid so
     # NITER-exhausted trials are penalized instead of raising (same trial
     # policy as the finite-difference path). Public problem/minimize defaults
@@ -2933,6 +2940,8 @@ def _least_squares_implicit(
         x0 = pack_boundary(inp, max_mode, vary_major_radius=vary_major_radius)
         if k_cur:
             x0 = np.concatenate([x0, _pack_current(inp, k_cur, ac_scale)])
+        if vary_phiedge:
+            x0 = np.concatenate([x0, [0.0]])
     x0 = np.asarray(x0, dtype=float)
 
     # Content key of every degree of freedom the jitted closures below bake
@@ -2953,7 +2962,7 @@ def _least_squares_implicit(
         (None if scalar_objective is None
          else _problem_callable_token(scalar_objective)),
         int(max_mode), bool(vary_major_radius),
-        None if current_dofs is None else int(current_dofs),
+        None if current_dofs is None else int(current_dofs), bool(vary_phiedge),
         x0.shape, x0.tobytes(),
         (jac_chunk_size if jac_chunk_size is None
          or isinstance(jac_chunk_size, int) else str(jac_chunk_size)),
@@ -2979,6 +2988,8 @@ def _least_squares_implicit(
                 params = dataclasses.replace(
                     params, ac=params0.ac.at[:k_cur].set(values),
                     curtor=x[nboundary + k_cur] * _CURTOR_SCALE)
+        if vary_phiedge:
+            params = dataclasses.replace(params, phiedge=params0.phiedge * (1.0 + x[jp]))
         return params
 
     def term_rows(state, rt) -> jnp.ndarray:
@@ -3187,6 +3198,9 @@ def _least_squares_implicit(
     t_ac = np.zeros((ndof,) + np.shape(params0.ac))
     t_ac_aux_f = np.zeros((ndof,) + np.shape(params0.ac_aux_f))
     t_curtor = np.zeros((ndof,))
+    t_phiedge = np.zeros((ndof,))
+    if vary_phiedge:
+        t_phiedge[jp] = float(np.asarray(params0.phiedge))
     for j in range(nm):
         t_rbc[j, row_idx[j], col_idx[j]] = 1.0
         t_zbs[nm + j, row_idx[j], col_idx[j]] = 1.0
@@ -3203,11 +3217,11 @@ def _least_squares_implicit(
     zerop = jax.tree.map(lambda a: _place(np.zeros(a.shape)), params0)
     if lasym:
         tangent_stack = tuple(map(
-            _place, (t_rbc, t_zbs, t_rbs, t_zbc, t_ac, t_ac_aux_f, t_curtor)
+            _place, (t_rbc, t_zbs, t_rbs, t_zbc, t_ac, t_ac_aux_f, t_curtor, t_phiedge)
         ))
     else:
         tangent_stack = tuple(map(
-            _place, (t_rbc, t_zbs, t_ac, t_ac_aux_f, t_curtor)))
+            _place, (t_rbc, t_zbs, t_ac, t_ac_aux_f, t_curtor, t_phiedge)))
 
     # R17.1 memory knob: chunk_size None == one full-width batch, while an int
     # / "auto" caps peak Jacobian memory at that many dofs at a time.  Route
@@ -3256,10 +3270,10 @@ def _least_squares_implicit(
                 return dataclasses.replace(zerop, rbc=tp[0], zbs=tp[1],
                                            rbs=tp[2], zbc=tp[3],
                                            ac=tp[4], ac_aux_f=tp[5],
-                                           curtor=tp[6])
+                                           curtor=tp[6], phiedge=tp[7])
             return dataclasses.replace(zerop, rbc=tp[0], zbs=tp[1],
                                        ac=tp[2], ac_aux_f=tp[3],
-                                       curtor=tp[4])
+                                       curtor=tp[4], phiedge=tp[5])
 
         def rhs_of(tp):
             b = jax.jvp(lambda prm: F(z_star, prm), (params,), (tp,))[1]
@@ -3752,8 +3766,11 @@ def _least_squares_implicit(
             vary_major_radius=vary_major_radius)
         if k_cur:
             result_input = _apply_current(
-                result_input, np.asarray(x)[nboundary:], k_cur, ac_scale
+                result_input, np.asarray(x)[nboundary:jp], k_cur, ac_scale
             )
+        if vary_phiedge:
+            result_input = dataclasses.replace(
+                result_input, phiedge=float(inp.phiedge) * (1.0 + float(np.asarray(x)[jp])))
         return result_input
 
     def x_from_input(source: VmecInput) -> np.ndarray:
@@ -3761,6 +3778,8 @@ def _least_squares_implicit(
             source, max_mode, vary_major_radius=vary_major_radius)
         if k_cur:
             x = np.concatenate([x, _pack_current(source, k_cur, ac_scale)])
+        if vary_phiedge:
+            x = np.concatenate([x, [float(source.phiedge) / float(inp.phiedge) - 1.0]])
         return x
 
     def equilibrium_from_x(
@@ -3970,6 +3989,8 @@ def _least_squares_implicit(
             label = "AC_AUX_F" if _current_uses_spline(inp) else "AC"
             names.extend([f"{label}({j})/{ac_scale:.6g}" for j in range(k_cur)])
             names.append("CURTOR/1e6")
+        if vary_phiedge:
+            names.append("PHIEDGE/nominal")
         scales = (
             np.ones_like(np.asarray(x0, dtype=float))
             if problem_scales is None else np.asarray(problem_scales, dtype=float)
@@ -4016,6 +4037,7 @@ def _least_squares_implicit(
                 ),
                 "max_mode": max_mode,
                 "vary_major_radius": vary_major_radius,
+                "vary_phiedge": vary_phiedge,
                 "term_slices": term_slices,
                 "config": cfg,
                 "holder": holder,
@@ -4052,12 +4074,7 @@ def _least_squares_implicit(
         result.cost = float(result.fun)
         result.optimality = float(np.linalg.norm(result.jac, ord=np.inf))
         result.monitor = monitor
-    result.input = unpack_boundary(
-        inp, result.x[:nboundary], max_mode,
-        vary_major_radius=vary_major_radius)
-    if k_cur:
-        result.input = _apply_current(result.input, result.x[nboundary:],
-                                      k_cur, ac_scale)
+    result.input = input_from_x(result.x)
     stats = imp._SOLVE_STATS.get(cfg)
     result.solve_stats = None if stats is None else dict(stats)
     result.failed_trials = holder["failed_trials"]

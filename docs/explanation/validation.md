@@ -299,42 +299,74 @@ run, not gates that would fail if the physics regressed. Read them as such.
 known. A coil field (a winding-surface current at 1.2 minor radii) is fitted to
 cancel the plasma's normal field on the 12 x 12 fixed-boundary QA equilibrium
 of `input.LandremanPaul2021_QA_beta2p5_bootstrap` (beta 2.5%, ns 51), so that
-equilibrium is the free boundary without a sheet current. Every method starts
+equilibrium is the free boundary without a sheet current. `--case vacuum` does
+the same for the vacuum `input.LandremanPaul2021_QA_lowres`. Every method starts
 from the same boundary, the target's with its minor radius scaled by 0.97
 (11 mm away), and every result is scored the same way: the boundary is
 re-solved as a fixed-boundary equilibrium, and the three conditions are
-evaluated on a 48 x 48 virtual-casing grid. The record is
-`benchmarks/three_term_resolution.json`; `benchmarks/plot_three_term_resolution.py`
-draws it (boundary, interior surfaces and iota), and
-`benchmarks/three_term_resolution_desc.py` runs DESC. Columns are the largest
-LCFS distance to the target, the sheet current `mu0 |K| / |B|`, wall time with
-compilation, and peak GPU memory (one RTX 5090). NESTOR runs on the exact field
-and on the same field tabulated as an mgrid (301 x 301 x 48):
+evaluated on a 48 x 48 virtual-casing grid with the singular quadrature
+(4 nfp 48, 96). The records are `benchmarks/three_term_resolution.json` (beta)
+and `benchmarks/three_term_resolution_vacuum.json`;
+`benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
+surfaces and iota), `benchmarks/three_term_resolution_desc.py` runs DESC, and
+`benchmarks/three_term_resolution_poincare.py` traces the vacuum field lines.
+Columns are the largest LCFS distance to the target, the sheet current
+`mu0 |K| / |B|`, wall time with compilation, and peak GPU memory (one RTX 5090).
+NESTOR runs on the exact field and on the same field tabulated as an mgrid
+(301 x 301 x 48):
 
-| M = N | three-term: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | VMEX + NESTOR: mm / K / converged | NESTOR on the mgrid: mm |
-| --- | --- | --- | --- | --- |
-| 4 | 5.8 / 1.2e-03 / 546 / 2.0 | 12.6 / 5.2e-03 / 700 / 1.0 | 24.0 / 7.5e-03 / yes | 22.9 |
-| 5 | 5.5 / 6.2e-04 / 599 / 2.1 | 10.4 / 2.7e-03 / 771 / 1.1 | 12.4 / 3.0e-03 / yes | 8.1 |
-| 6 | 4.1 / 3.8e-04 / 612 / 2.2 | 4.3 / 2.1e-03 / 1002 / 1.6 | 6.9 / 2.7e-03 / yes | 21.3 |
-| 7 | 3.4 / 2.7e-04 / 603 / 2.3 | 3.9 / 1.2e-03 / 1421 / 3.7 | 13.6 / 1.8e-03 / no | 10.6 |
-| 8 | 3.5 / 2.3e-04 / 636 / 2.5 | 3.9 / 1.2e-03 / 2874 / 9.0 | 35.6 / 8.4e-03 / no | 31.2 |
-| 9 | 3.3 / 1.8e-04 / 704 / 3.5 | 4.3 / 1.2e-03 / 5673 / 17.4 | 20.9 / 4.2e-03 / no | 28.9 |
-| 10 | 2.3 / 1.4e-04 / 988 / 5.0 | | 17.3 / 2.6e-03 / yes | 19.6 |
-| 11 | 2.1 / 9.2e-05 / 1655 / 6.5 | | 34.8 / 6.8e-03 / no | |
-| 12 | 2.1 / 7.4e-05 / 2520 / 10.0 | | 22.6 / 4.4e-03 / no | 38.7 |
-| 13 | 2.1 / 6.9e-05 / 2041 / 5.6 | | 33.1 / 9.6e-03 / no | 30.1 |
+| M = N | three-term: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | DESC (L = M): mm / K | VMEX + NESTOR: mm / K / converged | NESTOR on the mgrid: mm |
+| --- | --- | --- | --- | --- | --- |
+| 4 | 5.8 / 1.2e-03 / 429 / 1.9 | 12.6 / 5.2e-03 / 700 / 1.0 | 10.2 / 5.7e-03 | 24.0 / 7.5e-03 / yes | 22.9 |
+| 5 | 5.4 / 6.1e-04 / 523 / 1.9 | 10.4 / 2.7e-03 / 771 / 1.1 | 9.2 / 3.5e-03 | 12.4 / 3.0e-03 / yes | 8.1 |
+| 6 | 3.9 / 3.7e-04 / 482 / 2.0 | 4.3 / 2.1e-03 / 1002 / 1.6 | 14.3 / 3.5e-03 | 6.9 / 2.6e-03 / yes | 21.3 |
+| 7 | 3.0 / 2.2e-04 / 543 / 2.1 | 3.9 / 1.2e-03 / 1421 / 3.7 | 7.9 / 1.7e-03 | 13.6 / 1.7e-03 / no | 10.6 |
+| 8 | 2.6 / 1.5e-04 / 689 / 2.3 | 3.9 / 1.2e-03 / 2874 / 9.0 | 4.7 / 1.2e-03 | 35.6 / 8.2e-03 / no | 31.2 |
+| 9 | 2.1 / 1.2e-04 / 803 / 2.0 | 4.3 / 1.1e-03 / 5673 / 17.4 | 5.5 / 1.3e-03 | 20.9 / 3.5e-03 / no | 28.9 |
+| 10 | 2.0 / 8.9e-05 / 1046 / 2.3 | | 5.8 / 9.6e-04 | 17.3 / 2.5e-03 / yes | 19.6 |
+| 11 | 2.1 / 5.2e-05 / 1538 / 3.0 | | 4.7 / 9.4e-04 | 34.8 / 5.9e-03 / no | 53.0 |
+| 12 | 2.0 / 3.7e-05 / 2279 / 4.1 | | 4.1 / 7.4e-04 | 22.6 / 3.4e-03 / no | 38.7 |
+| 13 | 2.0 / 3.7e-05 / 2544 / 5.6 | | | 33.1 / 5.4e-03 / no | 30.1 |
 
-NESTOR stops 7 to 39 mm away with a sheet current of 2e-3 to 1e-2, whether it
+NESTOR stops 7 to 53 mm away with a sheet current of 2e-3 to 1e-2, whether it
 converges or reaches its 40,000 iterations, on the exact field or the mgrid.
-VMEC2000 + NESTOR on the same mgrid agrees with VMEX + NESTOR at 4 x 4 (24.1 mm,
-sheet current 8.0e-3, converged). DESC's dense force Jacobian exceeds a 32 GB
-GPU from M = 10. The three-term boundary approaches the target as the resolution
-grows, and its interior surfaces and iota follow (iota within 2e-4 of the
-target's at 12 x 12). Its last 2 mm is the evaluation's own floor. The field
-cancels `B.n` on the target only, and there the pressure jump and the sheet
-current read 2.7e-4 and 2.8e-4, the 48 x 48 virtual-casing error. The three-term
-solution satisfies all three conditions together more closely than that, at
-5e-5 to 7e-5.
+VMEC2000 + NESTOR on the same mgrid agrees with VMEX + NESTOR (24.1, 20.9 and
+19.4 mm at 4, 6 and 10). DESC's dense force Jacobian exceeds a 32 GB GPU from
+M = 10 at L = 2M and at M = 13 at L = M. The three-term boundary settles 2 mm
+from the target with all three conditions at 2e-5 to 4e-5, below the target's
+own 4e-5, 1.3e-4 and 1.4e-4 (the field cancels `B.n` on the target only), so
+the last 2 mm is at least partly the target's error.
+
+In vacuum the coils make the whole field, so field lines are the ground truth.
+From 32 points on each of a method's surfaces s = 0.1, 0.3, ..., 0.9, 1 the
+lines are traced 30 transits (RK4, 128 steps per field period; halving the step
+or tracing 100 transits changes nothing). The second number below is the RMS
+distance of their crossings from the surface they started on, averaged over
+the six surfaces, in mm; the first is the LCFS distance to the target. The
+target itself scores 0.24 (its field cancels `B.n` to 1.2e-5):
+
+| M = N | three-term: mm / field lines / K | DESC (L = 2M) | DESC (L = M) | VMEX + NESTOR |
+| --- | --- | --- | --- | --- |
+| 4 | 1.7 / 0.23 / 2.4e-04 | 2.2 / 1.02 | 11.7 / 7.54 | 1.6 / 0.59 |
+| 5 | 1.6 / 0.09 / 4.7e-05 | 1.6 / 0.24 | 2.1 / 0.88 | 5.7 / 1.58 |
+| 6 | 1.6 / 0.16 / 2.8e-05 | 1.6 / 0.20 | 1.7 / 0.48 | 1.7 / 0.21 |
+| 7 | 1.6 / 0.18 / 3.5e-05 | 1.6 / 0.39 | 1.7 / 0.19 | 4.0 / 1.44 |
+| 8 | 1.6 / 0.20 / 2.2e-05 | 1.5 / 0.26 | 1.6 / 0.34 | 1.7 / 0.37 |
+| 9 | 1.6 / 0.16 / 2.3e-05 | | 1.6 / 0.28 | 3.6 / 1.08 |
+| 10 | 1.6 / 0.21 / 2.0e-05 | | | 2.0 / 0.64 |
+| 11 | 1.7 / 0.14 / 2.0e-05 | | | 2.2 / 0.76 |
+| 12 | 1.6 / 0.20 / 1.9e-05 | | | 2.5 / 0.88 |
+| 13 | 1.6 / 0.10 / 1.8e-05 | | | 1.6 / 0.54 |
+
+Every three-term solution holds its field lines at least as well as the target,
+so its LCFS 1.6 mm away is the field's flux surface more closely than the
+target is. Field-line quality follows the near-resonant `B.n` harmonic
+(m, n) = (5, 2) (5 iota - 2 = 0.08), not the RMS of `B.n`: NESTOR's swings
+between resolutions are swings of that harmonic. With the singular quadrature
+(4 nfp 48, 48) the tangential plasma field carried a 3e-4 error, the pressure
+jump and sheet current read 2.4e-4 on the exact vacuum target, and the fit
+absorbed it: (5, 2) grew to 5e-5 to 9e-5 and field lines left the LCFS by
+4 to 7 mm. Doubling `quad_np` removes it at the same memory.
 
 ## Mirror geometry: analytic limits
 

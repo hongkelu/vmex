@@ -160,7 +160,9 @@ if CASE.endswith("-tok"):
     # A circular tokamak with a 1% helical ripple b / a, as vmex examples/data/input.minimal_seed_nfp*.
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
     SEED = (SEED[0], SEED[1], 0.01)
-    OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else 6.0e4
+    # Same sign as the bootstrap current it hands over to (negative for the (1, -1) QH), so the blend
+    # never passes through zero current, where the seed has no transform.
+    OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else -6.0e4 if CASE.startswith("qh4-beta") else 6.0e4
 REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 # SLSQP's first step has an identity Hessian, so it grows with the target residual, which starts near 1 for
 # a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as the
@@ -799,6 +801,8 @@ def parse_args(argv=None):
                         help="virtual-casing singular quadrature (default 4 nfp grid x 2 grid: 384 x 96 for nfp 2; "
                         "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel)")
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
+    parser.add_argument("--design-step-scale", type=float, default=DESIGN_STEP_SCALE,
+                        help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
@@ -870,6 +874,8 @@ def main(argv=None):
     started = time.monotonic()
     mpol, ntor, ns = RESOLUTION
     inp, redl = seed_input(), None
+    if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
+        inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
@@ -897,7 +903,7 @@ def main(argv=None):
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current = np.r_[np.asarray(inp.ac_aux_f)[: CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap and not fold else None
-    scales = DESIGN_STEP_SCALE * np.r_[
+    scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = CoilChart(coils0, current_dofs=(), scales=scales,

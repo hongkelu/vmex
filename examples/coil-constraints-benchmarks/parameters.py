@@ -68,6 +68,10 @@ BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, 
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
+# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermFreeBoundaryModel
+# bootstrap=, both arms), Redl-self-consistent on every half-grid surface, with I'(0) = 0 (a quasisymmetric bootstrap
+# current density vanishes on the axis with the trapped fraction, f_t ~ eps^(1/2)).
+BOOTSTRAP_IN_SOLVE = False
 SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
 HELICITY = (1, 0)                  # quasisymmetry (M, N); None minimizes the constructed QI residual
 TARGET_NAME = "QA"
@@ -81,6 +85,7 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conse
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
 IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
+IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 
@@ -117,9 +122,10 @@ elif CASE in ("qa3", "qh", "qi"):
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
         IOTA_FLOOR = 0.51          # above the iota = 1/2 resonance
-elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
-    # Finite-beta, self-consistent bootstrap cases (Redl for the QA, DKX for the QI), 4 order-12 coils per half period.
-    COILS_FILE = HERE / f"coils.{CASE}.json"
+elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
+    # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
+    # half period (qh4-beta: the 3 QH coils).
+    COILS_FILE = HERE / f"coils.{CASE if CASE != 'qh4-beta' else 'qh'}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     N_COILS, COIL_ORDER, COIL_LIMIT_FACTORS = 4, 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
@@ -129,6 +135,15 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta"):
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
+        # A bootstrap current vanishes on the axis and its part of iota rises steeply off it (~ s^(1/4)), within
+        # the one or two innermost surfaces; from s = 0.02 (rho 0.14) on iota is converged in ns at ns >= 51.
+        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
+    elif CASE == "qh4-beta":
+        N_COILS = 3
+        SEED, HELICITY, TARGET_NAME, ASPECT_RANGE = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1)
+        IOTA_FLOOR = 1.1           # between the iota = 1 and 8/7 resonances, as qh
+        COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+        BOOTSTRAP_IN_SOLVE, IOTA_S_MIN = True, 0.02
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
@@ -141,6 +156,7 @@ if CASE.endswith("-tok"):
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
     SEED = (SEED[0], SEED[1], 0.01)
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else 6.0e4
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius

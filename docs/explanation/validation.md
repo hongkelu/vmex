@@ -352,15 +352,15 @@ target itself scores 0.24 (its field cancels `B.n` to 1.2e-5):
 | 6 | 1.6 / 0.16 / 2.8e-05 | 1.6 / 0.20 | 1.7 / 0.48 | 1.7 / 0.21 |
 | 7 | 1.6 / 0.18 / 3.5e-05 | 1.6 / 0.39 | 1.7 / 0.19 | 4.0 / 1.44 |
 | 8 | 1.6 / 0.20 / 2.2e-05 | 1.5 / 0.26 | 1.6 / 0.34 | 1.7 / 0.37 |
-| 9 | 1.6 / 0.16 / 2.3e-05 | | 1.6 / 0.28 | 3.6 / 1.08 |
-| 10 | 1.6 / 0.21 / 2.0e-05 | | | 2.0 / 0.64 |
-| 11 | 1.7 / 0.14 / 2.0e-05 | | | 2.2 / 0.76 |
-| 12 | 1.6 / 0.20 / 1.9e-05 | | | 2.5 / 0.88 |
+| 9 | 1.6 / 0.16 / 2.3e-05 | 1.6 / 0.17 | 1.6 / 0.28 | 3.6 / 1.08 |
+| 10 | 1.6 / 0.21 / 2.0e-05 | | 1.6 / 0.14 | 2.0 / 0.64 |
+| 11 | 1.7 / 0.14 / 2.0e-05 | | 1.6 / 0.12 | 2.2 / 0.76 |
+| 12 | 1.6 / 0.20 / 1.9e-05 | | 1.5 / 0.12 | 2.5 / 0.88 |
 | 13 | 1.6 / 0.10 / 1.8e-05 | | | 1.6 / 0.54 |
 
 Every three-term solution holds its field lines at least as well as the target,
 so its LCFS 1.6 mm away is the field's flux surface more closely than the
-target is. Field-line quality follows the near-resonant `B.n` harmonic
+target is. DESC does as well from 9 modes (0.12 to 0.17). Field-line quality follows the near-resonant `B.n` harmonic
 (m, n) = (5, 2) (5 iota - 2 = 0.08), not the RMS of `B.n`: NESTOR's swings
 between resolutions are swings of that harmonic. With the singular quadrature
 (4 nfp 48, 48) the tangential plasma field carried a 3e-4 error, the pressure

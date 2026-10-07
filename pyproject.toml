@@ -114,9 +114,10 @@ coils = [
 # Drift-kinetic bootstrap current (DKX, uwplasma's JAX SFINCS,
 # https://github.com/uwplasma/DKX) for the quasi-isodynamic coil-constraint
 # benchmark cases, where the Redl formula (quasisymmetry only) does not apply.
-# 2.7.0 provides dkx.bootstrap.KineticBootstrapMismatch, traced through VMEX.
+# dkx.bootstrap.KineticBootstrapMismatch (2.7.0) is traced through VMEX; the
+# floor is the neoclassical extra's, which needs 2.8.0.
 kinetic = [
-  "dkx>=2.7.0",
+  "dkx>=2.8.0",
 ]
 # Everything the examples and the documented workflows need, so a reader does
 # not have to assemble the list themselves.

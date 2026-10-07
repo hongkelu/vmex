@@ -19,7 +19,7 @@ from dataclasses import replace
 
 import parameters as P
 from _common import (FIELD_STRENGTH_TOLERANCE, NORMAL_FIELD_CONSTRAINT, boundary_diagnostics, coil_field,
-                     max_abs_iota, min_abs_iota, normal_field_rms, redl_profiles, target_residual, weighted_rms)
+                     max_abs_iota, min_abs_iota, redl_profiles, target_residual, weighted_rms)
 
 
 def run(args, inp, coils0, out, *, max_mode, ess_alpha, boundary_step, coil_step, normal_field_weight,

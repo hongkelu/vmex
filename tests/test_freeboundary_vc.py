@@ -215,6 +215,21 @@ def test_unknown_problem_boundary_condition_is_rejected():
                                       np.zeros(1), field_from_parameters=lambda x: None, boundary_condition="sheet")
 
 
+def test_problem_boundary_condition_dispatches_to_three_term(monkeypatch):
+    """``boundary_condition="three_term"`` hands the loss, maps, quantities and options to the three-term problem."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    calls = []
+    monkeypatch.setattr(fvc.ThreeTermFreeBoundaryProblem, "from_loss",
+                        classmethod(lambda cls, *args, **kwargs: calls.append((args, kwargs)) or "problem"))
+    inp, loss, field = _deck("input.LandremanPaul2021_QA_lowres", 3, 11), (lambda s, r, x: 0.0), (lambda x: None)
+    got = FreeBoundaryProblem.from_loss(inp, loss, np.zeros(1), field_from_parameters=field, quantities=(len,),
+                                        boundary_condition="three_term", three_term_options=dict(nphi=16))
+    (args, kwargs), = calls
+    assert got == "problem" and args[:2] == (inp, loss) and kwargs["field_from_parameters"] is field
+    assert kwargs["quantities"] == (len,) and kwargs["nphi"] == 16
+
+
 @needs_vc
 @pytest.mark.full
 @pytest.mark.usefixtures("_module_jit_enabled")

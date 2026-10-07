@@ -1,6 +1,6 @@
 """DESC free boundary without a sheet current for a VMEX run's final coils (the same filaments), vs the VMEX three-term solve.
 
-    python three_term_desc_check.py <wout> <coils.npz> <out dir> [--L 24 --M 12 --N 12 --grid 32] [--compare name=wout ...]
+    python benchmarks/three_term_desc_check.py <wout> <coils.npz> <out dir> [--L 24 --M 12 --N 12 --grid 32] [--compare name=wout ...]
 
 <wout>: the run's final VMEX equilibrium (start boundary, pressure, enclosed current). <coils.npz>: from
 three_term_highres.py, the filament points, tangents and currents with check values, B = 1e-7 sum_c I_c mean_p

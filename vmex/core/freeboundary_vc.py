@@ -453,6 +453,7 @@ class ThreeTermFreeBoundaryModel:
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
         self._tangents = jax.jit(tangents)
+        self.push = push
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps

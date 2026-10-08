@@ -11,7 +11,10 @@ that script's docstring), the design variables (coil shapes, PHIEDGE and, with
 constraint rows and their bounds, and the run directory are that script's --
 except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
 boundary, Redl's on every half-grid surface, and neither its values nor the
-bootstrap-mismatch row enter the optimization.
+bootstrap-mismatch row enter the optimization. The coil currents are design
+variables too (``FREE_COIL_CURRENTS``, no bounds), with a row holding the axis
+|B| at ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the
+vacuum |iota| of the plasma boundary (``vacuum_iota``).
 
 The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
 (:class:`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`): warm-started
@@ -57,8 +60,10 @@ QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 INPUT_FILE = DATA / "input.rotating_ellipse_nfp2"
 COILS_FILE = DATA / "ESSOS_coils_ellipse5.json"
 BETA_DEFINITION = "volume"         # --beta is <beta>; "axis": WOUT betaxis
-B0 = 1.0                           # T: coil currents give R B_phi = B0 R0; the seed PHIEDGE matches it
-FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE and currents)
+B0 = 1.0                           # T: |B| on the magnetic axis (opt.axis_field_strength), the seed's and a row
+FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE)
+FREE_COIL_CURRENTS = True          # every base-coil current is a design variable, with no bounds
+COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -92,9 +97,11 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface;
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
-IOTA_AXIS = False                  # True: floor and ceiling also bound the axis iota (opt.axis_iota) and edge iotaf
+IOTA_EDGE = False                  # True: floor and ceiling also bound the edge iotaf
+VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressure or current) of the plasma boundary
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
+B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row about B0
 
 # Coils and their hard engineering limits.
 COIL_ORDER, N_SEGMENTS = 16, 256
@@ -137,12 +144,13 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
-    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor, so the rows bound the axis too,
-    # with opt.axis_iota: a bootstrap current vanishes on the axis, and VMEC's extrapolated iotaf[0] carries its
-    # steep part of iota (~ s^(1/4)) onto it; R0 is held to 1 mm.
-    IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
+    # The total iota floor bounds the half-mesh surfaces and the edge; R0 is held to 1 mm.
+    IOTA_EDGE, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
-        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
+        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)
+        # The bootstrap current can carry the whole transform of an axisymmetric boundary, so its vacuum iota is
+        # floored too, at LBD22's optimized QA (0.23): the boundary keeps its stellarator shaping.
+        VACUUM_IOTA_FLOOR = 0.23
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
         BOOTSTRAP_IN_SOLVE = True
     elif CASE.startswith("qh4-beta"):
@@ -222,13 +230,12 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
 
     ``BETA_DEFINITION`` "volume": ``beta`` is <beta>; "axis": WOUT ``betaxis``.
     The pressure is ramped in with hot restarts, then three corrections rescale
-    PHIEDGE until the edge R B_phi (the coils' mu0 I / 2 pi) is ``B0`` R0, as in
-    upstream #426, and the pressure to ``beta``. Returns the input and the last
-    fixed-boundary solve.
+    PHIEDGE until the axis |B| (``opt.axis_field_strength``) is ``B0``, and the
+    pressure to ``beta``. Returns the input and the last fixed-boundary solve.
     """
     from vmex import optimize as opt
 
-    axis, r0 = BETA_DEFINITION == "axis", float(inp.rbc[inp.ntor, 0])
+    axis = BETA_DEFINITION == "axis"
     b0 = B0
     pressure = beta * b0**2 / (8e-7 * np.pi) if axis else beta / (4e-7 * np.pi)
     shape = np.zeros_like(np.asarray(inp.am, dtype=float))
@@ -242,14 +249,15 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
         else:
             # beta ~ p / PHIEDGE^2 at fixed shape, so a flux rescale carries its pressure along
             measured = float(fixed.wout.betaxis if axis else fixed.wout.betatotal)
-            flux = b0 * r0 / abs(float(fixed.wout.rbtor))
+            flux = b0 / float(opt.axis_field_strength(fixed.state, fixed.runtime))
             inp = replace(inp, phiedge=float(inp.phiedge) * flux,
                           pres_scale=inp.pres_scale * flux**2 * (beta / measured if beta > 0 else 1.0))
         fixed = opt.solve_equilibrium(inp, initial_state=None if fixed is None else fixed.state, device=device,
                                       raise_on_max_iterations=True, polish_force_balance=False)
     w = fixed.wout
     print(f"PRES_SCALE = {inp.pres_scale:.6e} Pa, PHIEDGE = {float(inp.phiedge):.6f} Wb: betaxis = "
-          f"{float(w.betaxis):.4%}, <beta> = {float(w.betatotal):.4%}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
+          f"{float(w.betaxis):.4%}, <beta> = {float(w.betatotal):.4%}, axis |B| = "
+          f"{float(opt.axis_field_strength(fixed.state, fixed.runtime)):.5f} T")
     return inp, fixed
 
 
@@ -374,24 +382,52 @@ def abs_iota(state, runtime):
     """|iota| bounded by the floor and ceiling rows.
 
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_AXIS`` also the axis and the edge: ``opt.axis_iota``, the iota
-    without its enclosed-current part extrapolated to the axis, where that
-    current vanishes (VMEC's iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] mostly
-    extrapolates the steep bootstrap part off the axis and drifts with ns),
-    and VMEC's iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
+    ``IOTA_EDGE`` also VMEC's edge iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
+    The axis is left out: there a bootstrap current's steep part of iota
+    (~ s^(1/4)) makes VMEC's extrapolated iotaf[0] drift with ns, and the
+    vacuum iota row bounds the shaping's share (``vacuum_iota``).
     """
     import jax.numpy as jnp
-    from vmex import optimize as opt
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    if IOTA_AXIS:
-        half = jnp.concatenate([opt.axis_iota(state, runtime)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    if IOTA_EDGE:
+        half = jnp.concatenate([half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
     return jnp.abs(half)
 
 
+def vacuum_iota(inp):
+    """(state, runtime) -> the vacuum |iota| of the state's plasma boundary: axis, half-mesh surfaces and edge.
+
+    The fixed-boundary equilibrium of that boundary without pressure or current
+    (``inp`` otherwise, hot-restarted), differentiable through its implicit
+    adjoint; the axis value is ``opt.axis_iota``, the edge VMEC's iotaf[-1].
+    """
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core import implicit as im
+    from vmex.core.statephysics import _iotas_half
+
+    vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
+                     ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
+    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True)
+    base = im.params_from_input(vacuum)
+
+    def iota(state, runtime):
+        rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
+        rows, cols = np.asarray(runtime.modes.n) + int(inp.ntor), np.asarray(runtime.modes.m)
+        params = replace(base, rbc=jnp.zeros_like(base.rbc).at[rows, cols].set(rmnc),
+                         zbs=jnp.zeros_like(base.zbs).at[rows, cols].set(zmns))
+        vstate = im.solve_implicit(params, cfg)
+        vrt = im.runtime_from_params(params, cfg)
+        half = _iotas_half(vstate, vrt)[1:]
+        return jnp.abs(jnp.concatenate([opt.axis_iota(vstate, vrt)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]]))
+
+    return iota
+
+
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis and edge."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_EDGE`` including the edge."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -864,6 +900,8 @@ def parse_args(argv=None):
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
+    parser.add_argument("--max-boundary-residual", type=float, default=0.05,
+                        help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
@@ -955,22 +993,25 @@ def main(argv=None):
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
-        rbtor = abs(float(fixed.wout.rbtor)) if args.beta > 0 else B0 * float(inp.rbc[inp.ntor, 0])
-        coils = scale_coil_currents(coils, rbtor)
+        coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
         if args.beta > 0 and not args.no_coil_fit:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold else None
+    current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
+        [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = CoilChart(coils0, current_dofs=(), scales=scales,
+    chart = CoilChart(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
+    vacuum = vacuum_iota(inp)
+    vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
 
     def boundary_surface(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
@@ -992,25 +1033,28 @@ def main(argv=None):
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
-        quantities=(min_abs_iota, opt.major_radius, *mirror, *ceiling,
+        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
         three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol))
+                                bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
+                                boundary_max_residual=args.max_boundary_residual))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
-    width = RADIUS_TOLERANCE - RADIUS_MARGIN
+    width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
     nredl = int(redl is not None)
     lower, upper, row_scales = zip(
         (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
+        (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
+        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
@@ -1030,11 +1074,15 @@ def main(argv=None):
         res = problem.boundary_residual(x)
         now = time.monotonic()
         state_x, params_x = problem.state(x)
-        axis = opt.axis_iota(state_x, im.runtime_from_params(params_x, model.cfg))
+        runtime_x = im.runtime_from_params(params_x, model.cfg)
+        vac = np.asarray(vacuum(state_x, runtime_x))
         row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[0]),
-                   iota_axis=float(abs(axis)),
-                   major_radius_m=float(h[1]),
-                   **({"redl_mismatch": float(h[2 + len(mirror) + len(ceiling)])} if nredl else {}),
+                   geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
+                   vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
+                   major_radius_m=float(h[1]), b_axis_t=float(h[2]),
+                   beta=float(opt.volume_average_beta(state_x, runtime_x)),
+                   coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
+                   **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling) + len(vacuum_floor)])} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
@@ -1046,7 +1094,8 @@ def main(argv=None):
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
-              f"R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} "
+              f"vacuum iota={row['vacuum_iota_min']:.4f} (axis {row['vacuum_iota_axis']:.4f}) "
+              f"B_axis={row['b_axis_t']:.5f} R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} "
               f"clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")

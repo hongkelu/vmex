@@ -456,6 +456,21 @@ def axis_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     return geometric_iota(state, rt)[0]
 
 
+def axis_field_strength(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Toroidally averaged ``|B|`` on the magnetic axis [T].
+
+    The angle-averaged half-mesh ``|B| = sqrt(2 (bsq - p))`` (``wint``
+    weights) on the first three surfaces, extrapolated to ``s = 0`` with the
+    weights of :func:`geometric_iota`.  The wout ``b0`` is instead ``R B_phi``
+    over the axis radius at one toroidal angle (``eqfor.f``).
+    """
+    _, _, _, fields, _ = _field_chain(state, rt)
+    b_squared = 2.0 * (jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None])
+    wint = jnp.asarray(rt.trig.wint)
+    mean = jnp.sum(jnp.sqrt(jnp.maximum(b_squared[1:4], 0.0)) * wint, axis=(1, 2)) / jnp.sum(wint)
+    return jnp.asarray(_AXIS_WEIGHTS) @ mean
+
+
 # ---------------------------------------------------------------------------
 # Magnetic-gradient scale length L_grad_B
 # ---------------------------------------------------------------------------

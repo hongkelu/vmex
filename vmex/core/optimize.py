@@ -7,8 +7,8 @@ Simsopt-style vocabulary for the QA/QH/QP/QI examples on the pure new core:
   wout-engine field tables of a converged core state (parity port of the
   legacy ``quasisymmetry_ratio_residual_from_wout``).
 - practical scalar targets — :func:`aspect_ratio`, :func:`mean_iota`,
-  :func:`edge_iota`, :func:`axis_iota`, :func:`mirror_ratio`, :func:`volume`,
-  :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
+  :func:`edge_iota`, :func:`axis_iota`, :func:`axis_field_strength`,
+  :func:`mirror_ratio`, :func:`volume`, :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
   ``(SpectralState, SolverRuntime)``.
 - :func:`quasi_isodynamic_residual` — a distilled Goodman-style QI residual
   keeping exactly the four terms the legacy minimal-seed QI examples
@@ -117,6 +117,7 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    axis_field_strength,
     axis_iota,
     edge_iota,
     elongation_profile,
@@ -156,6 +157,7 @@ __all__ = [
     "edge_iota",
     "iota_edge",
     "axis_iota",
+    "axis_field_strength",
     "geometric_iota",
     "mirror_ratio",
     "volume",

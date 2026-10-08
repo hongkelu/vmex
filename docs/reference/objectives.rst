@@ -123,6 +123,11 @@ and composable with both gradient modes:
   vanishes on the axis.  With a bootstrap current (``I' ~ s^(1/4)``) the wout
   ``iotaf[0]`` mostly extrapolates the current's steep part and drifts with
   ``ns``; this value converges;
+- :func:`~vmex.core.optimize.axis_field_strength` — the toroidally averaged
+  ``|B|`` on the magnetic axis, extrapolated from the first half-mesh
+  surfaces like :func:`~vmex.core.optimize.axis_iota`; it holds the field
+  strength where the plasma is (the wout ``b0`` is ``R B_phi`` over the axis
+  radius at one toroidal angle);
 - :func:`~vmex.core.optimize.mirror_ratio` — ``(Bmax - Bmin)/(Bmax +
   Bmin)`` on one half-mesh surface (outermost by default), the practical QI
   knob.  It is the ``|B|`` *modulation depth*, not :math:`R_m = B_{\max}/B_{\min}`

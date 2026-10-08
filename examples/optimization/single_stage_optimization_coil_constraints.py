@@ -75,6 +75,10 @@ import numpy as np
 # COIL_CASE selects the case. The values are ellipse5's; the blocks after them override them per case.
 DATA = Path(__file__).resolve().parents[1] / "data"
 CASE = os.environ.get("COIL_CASE", "ellipse5")
+# A "-merc" or "-jbs" suffix runs the case with a Mercier floor or a bootstrap-current term (MERCIER_FLOOR,
+# CURRENT_IOTA_WEIGHT below), e.g. qa4-beta-merc.
+VARIANT = next((v for v in ("-merc", "-jbs") if CASE.endswith(v)), "")
+CASE = CASE.removesuffix(VARIANT)
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
@@ -122,6 +126,8 @@ IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
 IOTA_EDGE = False                  # True: floor and ceiling also bound the edge iotaf
 VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressure or current) of the plasma boundary
+MERCIER_FLOOR = None               # set: floor on min DMerc of the interior surfaces (opt.d_merc_state[2:-1])
+CURRENT_IOTA_WEIGHT = 0.0          # > 0: the objective adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row about B0
@@ -193,6 +199,10 @@ if CASE.endswith("-tok"):
     # Same sign as the bootstrap current it hands over to (negative for the (1, -1) QH), so the blend
     # never passes through zero current, where the seed has no transform.
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else -6.0e4 if CASE.startswith("qh4-beta") else 6.0e4
+if VARIANT == "-merc":
+    MERCIER_FLOOR = 0.0
+elif VARIANT == "-jbs":
+    CURRENT_IOTA_WEIGHT = 1e-2     # w/2 iota_I^2 ~ 5e-4 at the seed's iota_I ~ 0.3, the size of the QA term late on
 REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
@@ -453,6 +463,34 @@ def vacuum_iota(inp):
         return jnp.abs(jnp.concatenate([opt.axis_iota(vstate, vrt)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]]))
 
     return iota
+
+
+def current_iota(state, runtime):
+    """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
+    plasma's major radius ``R0``, minor radius ``a = R0 / aspect`` and axis field -- the current's share of iota.
+
+    ``I`` is VMEX's ``ctor`` (``fields.surface_currents``), the bootstrap current where it is solved with the
+    equilibrium.
+    """
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core.fields import surface_currents
+    from vmex.core.statephysics import _field_chain  # private: the covariant fields behind ctor
+
+    fields = _field_chain(state, runtime)[3]
+    current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=runtime.trig,
+                               s=jnp.asarray(runtime.setup.s_full), signgs=runtime.setup.signgs).ctor
+    radius = opt.major_radius(state, runtime)
+    minor = radius / opt.aspect_ratio(state, runtime)
+    return 4e-7 * jnp.pi * jnp.abs(current) * radius / (2 * jnp.pi * minor**2 * opt.axis_field_strength(state, runtime))
+
+
+def min_d_merc(state, runtime):
+    """Smallest Mercier ``DMerc`` of the interior surfaces (``opt.d_merc_state[2:-1]``; positive is stable)."""
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+
+    return jnp.min(opt.d_merc_state(state, runtime)[2:-1])
 
 
 def min_abs_iota(state, runtime):
@@ -888,12 +926,19 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
             rows.append((IOTA_CEILING - IOTA_MARGIN - max_abs_iota(state, runtime)) / IOTA_FLOOR)
         if VACUUM_IOTA_FLOOR:
             rows.append((jnp.min(vacuum(state, runtime)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
+        if MERCIER_FLOOR is not None:
+            rows.append(min_d_merc(state, runtime) - MERCIER_FLOOR)
         rows += [1.0 - nf / NORMAL_FIELD_CONSTRAINT, (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
                  (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE]
-        return jnp.concatenate([qs.residuals_state(state, runtime), jnp.stack([nf] + rows)])
+        q = qs.residuals_state(state, runtime)
+        if CURRENT_IOTA_WEIGHT:  # the objective's 0.5 |q|^2 then carries w/2 iota_I^2
+            q = jnp.concatenate([q, jnp.sqrt(CURRENT_IOTA_WEIGHT) * current_iota(state, runtime)[None]])
+        return jnp.concatenate([q, jnp.stack([nf] + rows)])
 
-    nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size)
-    nrows = 7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + 3
+    nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size) + bool(CURRENT_IOTA_WEIGHT)
+    nrows = 7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + (MERCIER_FLOOR is not None) + 3
+    diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
+                                                 min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     quantities_jit = jax.jit(quantities)
 
     @jax.jit
@@ -1034,8 +1079,10 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         values = sol["values"]
         coils = coils_from_x(jnp.asarray(x))
         vac = np.asarray(vacuum(state, runtime))
+        iota_i, d_merc = map(float, diagnostics(state, params))
         now = time.monotonic()
-        row = dict(step=last["step"], qa=float(values[:nq] @ values[:nq]),
+        row = dict(step=last["step"], qa=float(values[:nq] @ values[:nq]) - CURRENT_IOTA_WEIGHT * iota_i**2,
+                   current_iota=iota_i, min_d_merc=d_merc,
                    objective=fun(np.asarray(u, dtype=float)), min_abs_iota=float(min_abs_iota(state, runtime)),
                    geometric_axis_iota=float(abs(opt.axis_iota(state, runtime))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
@@ -1056,7 +1103,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
               f"vacuum iota={row['vacuum_iota_min']:.4f} (axis {row['vacuum_iota_axis']:.4f}) "
-              f"B_axis={row['b_axis_t']:.5f} "
+              f"B_axis={row['b_axis_t']:.5f} iota_I={row['current_iota']:.4f} DMerc_min={row['min_d_merc']:.3f} "
               f"aspect={row['aspect']:.4f} R={row['major_radius_m']:.5f} B.n={row['total_normal_field_rms']:.2e} "
               f"RBphi={row['rbtor_ratio']:.5f} coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               f"plasma_slack={row['plasma_minimum_scaled_slack']:.4f} redl(max rel)={row['redl_max_relative']:.1e} "

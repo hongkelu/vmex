@@ -667,13 +667,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
+                  boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
         relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
-        first polishes its trial with its own Jacobian.
+        first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
+        any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
+        rejected.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -685,13 +688,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev)
+                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
+                   boundary_max_residual=boundary_max_residual)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev):
+                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
+        self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
@@ -754,9 +759,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
-                break
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
+            if self.boundary_max_residual is not None:
+                state, _, params_b, _ = fit["aux"]
+                residual = self.model.boundary_residual(state, params_b, field)
+                if max(residual.normal, residual.pressure, residual.sheet_current) > self.boundary_max_residual:
+                    self.stats["boundary_evaluations"] += fit["nfev"]
+                    fit = None  # the fit stalled away from the free boundary: try the next start
+                    continue
+            break
         if fit is None:
             self.stats["failed"] += 1
             self._cache[key] = None

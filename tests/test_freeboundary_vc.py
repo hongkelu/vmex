@@ -26,6 +26,7 @@ import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_vc as fvc  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
+from vmex.core.errors import TrialRejected  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
 needs_vc = pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax")
@@ -261,6 +262,9 @@ def test_three_term_problem_gradients_match_resolved_differences():
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
+    problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution
+    with pytest.raises(TrialRejected):
+        problem.fun(x0 + 1e-3 * np.eye(2)[0])
 
 
 def _lp_beta0p5_profiles(inp):

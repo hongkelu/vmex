@@ -1161,6 +1161,8 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
+    parser.add_argument("--current-iota-weight", type=float, help="w of the loss term w/2 iota_I^2 "
+                        "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
     parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
@@ -1189,8 +1191,10 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    global RESOLUTION
+    global RESOLUTION, CURRENT_IOTA_WEIGHT
     args = parse_args(argv)
+    if args.current_iota_weight is not None:
+        CURRENT_IOTA_WEIGHT = args.current_iota_weight
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

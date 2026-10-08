@@ -126,7 +126,9 @@ IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
 IOTA_EDGE = False                  # True: floor and ceiling also bound the edge iotaf
 VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressure or current) of the plasma boundary
-MERCIER_FLOOR = None               # set: floor on min DMerc of the interior surfaces (opt.d_merc_state[2:-1])
+MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >= MERCIER_S_MIN (edge excluded)
+# DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
+MERCIER_S_MIN = 0.2
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the objective adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -486,11 +488,13 @@ def current_iota(state, runtime):
 
 
 def min_d_merc(state, runtime):
-    """Smallest Mercier ``DMerc`` of the interior surfaces (``opt.d_merc_state[2:-1]``; positive is stable)."""
+    """Smallest Mercier ``DMerc`` (positive is stable) of the full-mesh surfaces ``MERCIER_S_MIN <= s < 1``."""
     import jax.numpy as jnp
     from vmex import optimize as opt
 
-    return jnp.min(opt.d_merc_state(state, runtime)[2:-1])
+    d_merc = opt.d_merc_state(state, runtime)
+    s = jnp.asarray(runtime.setup.s_full)
+    return jnp.min(jnp.where((s >= MERCIER_S_MIN) & (s < 1.0), d_merc, jnp.inf))
 
 
 def min_abs_iota(state, runtime):

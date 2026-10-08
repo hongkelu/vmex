@@ -921,6 +921,8 @@ def coil_constraint(coils_from_x):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
+    parser.add_argument("--current-iota-weight", type=float, help="w of the loss term w/2 iota_I^2 "
+                        "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
@@ -994,8 +996,10 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 
 def main(argv=None):
-    global RESOLUTION
+    global RESOLUTION, CURRENT_IOTA_WEIGHT
     args = parse_args(argv)
+    if args.current_iota_weight is not None:
+        CURRENT_IOTA_WEIGHT = args.current_iota_weight
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

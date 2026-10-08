@@ -469,8 +469,8 @@ def current_iota(state, runtime):
     """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
     plasma's major radius ``R0``, minor radius ``a = R0 / aspect`` and axis field -- the current's share of iota.
 
-    ``I`` is VMEX's ``ctor`` (``fields.surface_currents``), the bootstrap current where it is solved with the
-    equilibrium.
+    ``mu0 I`` is VMEX's ``ctor`` (``fields.surface_currents``, in T m), the bootstrap current where it is solved
+    with the equilibrium.
     """
     import jax.numpy as jnp
     from vmex import optimize as opt
@@ -478,11 +478,11 @@ def current_iota(state, runtime):
     from vmex.core.statephysics import _field_chain  # private: the covariant fields behind ctor
 
     fields = _field_chain(state, runtime)[3]
-    current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=runtime.trig,
+    mu0_current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=runtime.trig,
                                s=jnp.asarray(runtime.setup.s_full), signgs=runtime.setup.signgs).ctor
     radius = opt.major_radius(state, runtime)
     minor = radius / opt.aspect_ratio(state, runtime)
-    return 4e-7 * jnp.pi * jnp.abs(current) * radius / (2 * jnp.pi * minor**2 * opt.axis_field_strength(state, runtime))
+    return jnp.abs(mu0_current) * radius / (2 * jnp.pi * minor**2 * opt.axis_field_strength(state, runtime))
 
 
 def min_d_merc(state, runtime):

@@ -578,7 +578,8 @@ class ThreeTermFreeBoundaryModel:
             self._linearization = last[3]
             if extra_key is None and last[1] is not None:  # drop the extra columns
                 n = self.x0.size
-                J, dz, batch = J[:, :n], *(jax.tree.map(lambda a: a[:n], t) for t in (dz, batch))
+                J = J[:, :n]
+                dz, batch = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
             return J, dz, batch, aux
         if not tight:
             solved = self.solve(params_x, seed=state)

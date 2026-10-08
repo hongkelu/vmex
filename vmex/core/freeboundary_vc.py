@@ -50,6 +50,7 @@ Entry points, from the most to the least packaged:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import time
 from typing import Any
 
@@ -76,6 +77,14 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
+
+
+def _fingerprint(*trees) -> str:
+    """Hash of the concrete arrays of ``trees`` (cache keys of linearizations)."""
+    digest = hashlib.sha1()
+    for leaf in jax.tree.leaves(trees):
+        digest.update(np.asarray(leaf).tobytes())
+    return digest.hexdigest()
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):
@@ -491,6 +500,7 @@ class ThreeTermFreeBoundaryModel:
 
         self.pullback = pullback
         self._linearization = None
+        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
     def solve(self, params, seed=None, tight=True):
@@ -556,9 +566,20 @@ class ThreeTermFreeBoundaryModel:
 
         A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
         the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
-        they belong to.  The responses also seed the next trials (first-order predicted states).
+        they belong to.  The responses also seed the next trials (first-order predicted states).  A call at the
+        boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
+        when not asked for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
+        key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
+        last = self._last_linearize
+        if last is not None and last[0] == key and extra_key in (None, last[1]):
+            J, dz, batch, aux = last[2]
+            self._linearization = last[3]
+            if extra_key is None and last[1] is not None:  # drop the extra columns
+                n = self.x0.size
+                J, dz, batch = J[:, :n], *(jax.tree.map(lambda a: a[:n], t) for t in (dz, batch))
+            return J, dz, batch, aux
         if not tight:
             solved = self.solve(params_x, seed=state)
             if solved is None:
@@ -588,6 +609,7 @@ class ThreeTermFreeBoundaryModel:
         if extra is not None:
             dz = jax.tree.map(join, dz, parts[-1][0])
         batch = jax.tree.map(join, *[batch for _, batch in parts])
+        self._last_linearize = (key, extra_key, (columns, dz, batch, aux), self._linearization)
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,

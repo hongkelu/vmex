@@ -575,10 +575,14 @@ class ThreeTermFreeBoundaryModel:
         n_coordinates = len(groups)
         if extra is not None:
             groups.append(extra)
-        parts = [(self._tangents(params_x, state, mask, batch), batch) for batch in groups]
+        join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        # One tangent solve (one block factorization) for every group; the pushes stay per group.
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
+        parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
+                 for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
         columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
                              for dz, batch in parts])
-        join = lambda *a: jnp.concatenate(a)  # noqa: E731
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
         if extra is not None:

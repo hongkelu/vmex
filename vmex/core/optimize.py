@@ -7,8 +7,8 @@ Simsopt-style vocabulary for the QA/QH/QP/QI examples on the pure new core:
   wout-engine field tables of a converged core state (parity port of the
   legacy ``quasisymmetry_ratio_residual_from_wout``).
 - practical scalar targets — :func:`aspect_ratio`, :func:`mean_iota`,
-  :func:`edge_iota`, :func:`mirror_ratio`, :func:`volume`,
-  :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
+  :func:`edge_iota`, :func:`axis_iota`, :func:`axis_field_strength`,
+  :func:`mirror_ratio`, :func:`volume`, :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
   ``(SpectralState, SolverRuntime)``.
 - :func:`quasi_isodynamic_residual` — a distilled Goodman-style QI residual
   keeping exactly the four terms the legacy minimal-seed QI examples
@@ -117,8 +117,11 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    axis_field_strength,
+    axis_iota,
     edge_iota,
     elongation_profile,
+    geometric_iota,
     iota_edge,
     major_radius,
     max_elongation,
@@ -153,6 +156,9 @@ __all__ = [
     "soft_min_abs_iota",
     "edge_iota",
     "iota_edge",
+    "axis_iota",
+    "axis_field_strength",
+    "geometric_iota",
     "mirror_ratio",
     "volume",
     "volume_average_beta",
@@ -1432,7 +1438,9 @@ _CURTOR_SCALE = 1.0e6
 
 
 def _current_uses_spline(inp: VmecInput) -> bool:
-    return "spline" in str(inp.pcurr_type).strip().lower()
+    """Whether the current profile is given by knot values (``AC_AUX_F``: splines and line segments)."""
+    kind = str(inp.pcurr_type).strip().lower()
+    return "spline" in kind or "line_segment" in kind
 
 
 def _current_values(inp: VmecInput, k: int) -> np.ndarray:
@@ -1500,11 +1508,6 @@ def _current_dof_setup(inp: VmecInput, current_dofs: int | None) -> tuple[int, f
         raise ValueError(f"current_dofs must be a positive int, got {current_dofs!r}")
     if int(inp.ncurr) != 1:
         raise ValueError("current_dofs requires ncurr = 1 (prescribed current)")
-    kind = str(inp.pcurr_type).strip().lower()
-    if "line_segment" in kind:
-        raise ValueError(
-            "current_dofs supports AC coefficients or spline knot values, "
-            f"not pcurr_type={inp.pcurr_type!r}")
     source = inp.ac_aux_f if _current_uses_spline(inp) else inp.ac
     size = int(np.asarray([] if source is None else source).size)
     if k > size:
@@ -2123,7 +2126,7 @@ def least_squares(
 
     ``current_dofs = k`` additionally frees the current profile: the first
     ``k`` ``AC`` coefficients, or the first ``k`` ``AC_AUX_F`` values for a
-    spline profile, plus ``CURTOR``.  For an ``n``-knot spline, use
+    spline or line-segment profile, plus ``CURTOR``.  For an ``n``-knot spline, use
     ``current_dofs=n-1``: the remaining fixed ordinate removes the profile's
     overall-scale null direction because ``CURTOR`` already sets that scale.
     The values are scaled by their frozen

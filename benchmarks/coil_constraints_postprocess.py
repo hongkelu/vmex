@@ -68,7 +68,7 @@ REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m,
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
-DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conserving Fokker-Planck
+DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 SEED = None                        # (nfp, aspect, b / a_eff): rotating ellipse replacing the deck's boundary
 HELICITY = (1, 0)                  # quasisymmetry (M, N); None: the constructed QI residual
 TARGET_NAME = "QA"
@@ -77,8 +77,7 @@ QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples
 MIRROR_LIMIT = None                # upper limit on the edge mirror ratio
 IOTA_FLOOR = 0.41
 IOTA_CEILING = None                # upper limit on max |iota|
-IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
-IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
+IOTA_AXIS = False                  # True: floor and ceiling also bound the axis iota (opt.axis_iota) and edge iotaf
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 COIL_ORDER, N_SEGMENTS = 16, 256
@@ -101,10 +100,10 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COIL_ORDER = 12
     IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
-        SEED, IOTA_FLOOR, ASPECT_RANGE, IOTA_S_MIN = (2, 4.0, 0.5), 0.27, (3.5, 4.5), 0.02
+        SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)
     elif CASE.startswith("qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, IOTA_FLOOR = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1), 1.1
-        COIL_SURFACE_DISTANCE_LIMIT, IOTA_S_MIN = 0.15, 0.02
+        COIL_SURFACE_DISTANCE_LIMIT = 0.15
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
@@ -188,30 +187,24 @@ def abs_iota(state, runtime):
     """|iota| bounded by the floor and ceiling rows.
 
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
-    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
-    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
-    iota interpolated there, then the half-mesh surfaces beyond (and the edge
-    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
+    ``IOTA_AXIS`` also the axis and the edge: ``opt.axis_iota``, the iota
+    without its enclosed-current part extrapolated to the axis, where that
+    current vanishes (VMEC's iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] mostly
+    extrapolates the steep bootstrap part off the axis and drifts with ns),
+    and VMEC's iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
     """
     import jax.numpy as jnp
-    import numpy as np
+    from vmex import optimize as opt
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
-    if IOTA_S_MIN is not None:
-        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
-        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
-        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
-    elif IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
+    if IOTA_AXIS:
+        half = jnp.concatenate([opt.axis_iota(state, runtime)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
-    ``IOTA_S_MIN``."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis and edge."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -229,7 +222,7 @@ def dkx_mismatch(inp):
     import numpy as np
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=DKX_SURFACES,
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES,
                                        collision_operator=DKX_COLLISION_OPERATOR,
                                        mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 
@@ -525,6 +518,7 @@ def dense_solve(frame, args, rows, out):
         rt = prepare_runtime(inp, resolution)
         residuals = target_residual().residuals_state(result.state, rt)
         report.update(qa=float(np.vdot(residuals, residuals)), min_abs_iota=float(min_abs_iota(result.state, rt)),
+                      iota_axis=float(abs(opt.axis_iota(result.state, rt))),
                       aspect=float(opt.aspect_ratio(result.state, rt)), major_radius_m=float(opt.major_radius(result.state, rt)),
                       max_abs_iota=float(max_abs_iota(result.state, rt)))
         if MIRROR_LIMIT:

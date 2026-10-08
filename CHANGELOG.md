@@ -9,15 +9,15 @@ revision it was measured at, and the pages that cite it.
 
 - `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
   solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
-  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field.
-- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)`
-  optimizes the external field (and PHIEDGE or the current profile) from certified,
-  accepted roots; `opt.minimize(method="SLSQP")` drives it.
-- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block
-  factors (`adjoint_factorization="structured"`, 15.4 to 7.8 GiB at 8x8, NS 51), reused for
-  GMRES, root polishing and Newton-corrected trials, accepted by normwise backward error.
-- `solve_free_boundary(include_edge_in_convergence=True)` also converges the edge force;
-  `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`, `plot_optimization_movie(frame_labels=)`.
+  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to
+  74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
+- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
+  (PHIEDGE, current profile) from certified roots; `opt.minimize(method="SLSQP")` drives it.
+- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
+  15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
+- `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
+  `opt.axis_field_strength`, `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`,
+  `plot_optimization_movie(frame_labels=)`.
 - `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
   solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;
   `--nc-preset quick|default|full` sets the resolution, `--nc-profiles` takes

@@ -50,6 +50,7 @@ Entry points, from the most to the least packaged:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import time
 from typing import Any
 
@@ -76,6 +77,14 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
+
+
+def _fingerprint(*trees) -> str:
+    """Hash of the concrete arrays of ``trees`` (cache keys of linearizations)."""
+    digest = hashlib.sha1()
+    for leaf in jax.tree.leaves(trees):
+        digest.update(np.asarray(leaf).tobytes())
+    return digest.hexdigest()
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):
@@ -304,9 +313,9 @@ class ThreeTermFreeBoundaryModel:
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    values on every half-mesh surface after the boundary coordinates
-    (``n_boundary`` of them), and the rows gain one self-consistency row per
-    surface, scaled by ``bootstrap_weight`` (large by default: the current is
+    knot values (three inside the first surface, then one on every half-mesh
+    surface) after the boundary coordinates (``n_boundary`` of them), and the
+    rows gain one self-consistency row per knot, scaled by ``bootstrap_weight`` (large by default: the current is
     no interface condition to trade against the others, so its block is solved
     far below their floor; see
     :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
@@ -471,21 +480,27 @@ class ThreeTermFreeBoundaryModel:
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
-            parameter direction.
+            parameter direction.  ``fun`` may be a tuple of functions with ``cotangents`` a tuple of their rows'
+            cotangents: each row then runs only its own function's reverse pass, and the rows come out in order.
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
                                             probe_chunk_size=self.chunk)
-            _, vjp = jax.vjp(lambda s, p: fun(s, p, *args), frozen, params)
+            funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
+            parts = []
+            for f, c in zip(funs, blocks):
+                _, vjp = jax.vjp(lambda s, p, f=f: f(s, p, *args), frozen, params)
 
-            def row(c):
-                state_bar, params_bar = vjp(c)
-                return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
+                def row(c, vjp=vjp):
+                    state_bar, params_bar = vjp(c)
+                    return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-            return jax.lax.map(row, cotangents)
+                parts.append(jax.lax.map(row, c))
+            return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
         self._linearization = None
+        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
     def solve(self, params, seed=None, tight=True):
@@ -551,9 +566,21 @@ class ThreeTermFreeBoundaryModel:
 
         A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
         the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
-        they belong to.  The responses also seed the next trials (first-order predicted states).
+        they belong to.  The responses also seed the next trials (first-order predicted states).  A call at the
+        boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
+        when not asked for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
+        key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
+        last = self._last_linearize
+        if last is not None and last[0] == key and extra_key in (None, last[1]):
+            J, dz, batch, aux = last[2]
+            self._linearization = last[3]
+            if extra_key is None and last[1] is not None:  # drop the extra columns
+                n = self.x0.size
+                J = J[:, :n]
+                dz, batch = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
+            return J, dz, batch, aux
         if not tight:
             solved = self.solve(params_x, seed=state)
             if solved is None:
@@ -570,15 +597,20 @@ class ThreeTermFreeBoundaryModel:
         n_coordinates = len(groups)
         if extra is not None:
             groups.append(extra)
-        parts = [(self._tangents(params_x, state, mask, batch), batch) for batch in groups]
+        join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        # One tangent solve (one block factorization) for every group; the pushes stay per group.
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
+        parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
+                 for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
         columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
                              for dz, batch in parts])
-        join = lambda *a: jnp.concatenate(a)  # noqa: E731
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
         if extra is not None:
             dz = jax.tree.map(join, dz, parts[-1][0])
         batch = jax.tree.map(join, *[batch for _, batch in parts])
+        self._last_linearize = (key, extra_key, (columns, dz, batch, aux), self._linearization)
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
@@ -667,13 +699,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
+                  boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
         relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
-        first polishes its trial with its own Jacobian.
+        first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
+        any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
+        rejected.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -685,22 +720,30 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev)
+                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
+                   boundary_max_residual=boundary_max_residual)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev):
+                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
+        self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
 
+        def part(f, with_x):
+            def value(state, params, x):
+                runtime = im.runtime_from_params(params, model.cfg)
+                return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
+            return value
+
+        parts = (part(loss, True), *(part(f, False) for f in quantities),
+                 *(part(f, True) for f in parameter_quantities))
+
         def rows(state, params, x):
-            runtime = im.runtime_from_params(params, model.cfg)
-            values = [loss(state, runtime, x), *(f(state, runtime) for f in quantities),
-                      *(f(state, runtime, x) for f in parameter_quantities)]
-            return jnp.concatenate([jnp.ravel(jnp.asarray(v)) for v in values])
+            return jnp.concatenate([f(state, params, x) for f in parts])
 
         self._rows = jax.jit(rows)
         # The coordinates of x that move plasma parameters: their columns of the interface rows enter the gradient.
@@ -710,8 +753,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         eye = jnp.eye(x0.size)[self._plasma]
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
-        self._pullback = jax.jit(lambda state, mask, params, cotangents, x: model.pullback(
-            rows, state, mask, params, cotangents, x))
+        def pullback(state, mask, params, x):
+            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
+            sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+
+        self._pullback = jax.jit(pullback)
 
         @jax.jit
         def coordinates(params, b, x, params_bar):
@@ -754,9 +801,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
-                break
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
+            if self.boundary_max_residual is not None:
+                state, _, params_b, _ = fit["aux"]
+                residual = self.model.boundary_residual(state, params_b, field)
+                if max(residual.normal, residual.pressure, residual.sheet_current) > self.boundary_max_residual:
+                    self.stats["boundary_evaluations"] += fit["nfev"]
+                    fit = None  # the fit stalled away from the free boundary: try the next start
+                    continue
+            break
         if fit is None:
             self.stats["failed"] += 1
             self._cache[key] = None
@@ -802,8 +856,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             sol.update(x=polished["x"], aux=polished["aux"])
             J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
-        state, params, n = sol["state"], sol["params"], sol["values"].size
-        params_bar = self._pullback(state, sol["mask"], params, jnp.eye(n), xj)
+        state, params = sol["state"], sol["params"]
+        params_bar = self._pullback(state, sol["mask"], params, xj)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row

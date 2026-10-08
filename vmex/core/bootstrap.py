@@ -761,12 +761,55 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
     Traceable in ``(state, rt)``, with continuous derivatives (``|B|`` extrema of
     the angular interpolant, ``compute_trapped_fraction(refine_extrema=True)``).
     """
+    return _redl_current_derivative(profiles, helicity_n, state, rt, n_lambda=n_lambda)[:2]
+
+
+def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMBDA):
+    """:func:`redl_current_derivative`'s ``(s, dI/ds)``, with the Redl geometry and ``<J.B>`` behind them."""
     hm = _half_mesh_fields(state, rt)
     geom = _geometry_from_half(hm, hm.s_half, n_lambda=n_lambda, refine_extrema=True)
     jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
+    return hm.s_half, _current_derivative(hm, jr), geom, jr
+
+
+def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlGeometry, j_dot_b, x) -> Array:
+    """Redl's ``<J.B>`` at ``s = x s_1`` over its value at ``s_1`` (``x < 1``), inside the first surface.
+
+    The geometry is ``geom``'s at ``s_1`` (its first surface; ``j_dot_b`` Redl's ``<J.B>`` there) continued
+    to the axis: ``eps ~ s^(1/2)`` and ``f_t ~ s^(1/4)`` (``f_t ~ eps^(1/2)``), ``iota``, ``G``, ``R`` and the
+    flux-surface averages at their ``s_1`` values, while the kinetic profiles are evaluated at ``s``.  The
+    banana-regime current follows ``s^(1/4)`` until the electron collisionality ``nu*_e ~ eps^(-3/2)``
+    turns it into a collisional decay towards the axis.
+    """
+    x = jnp.asarray(x)
+
+    def first(a):
+        return jnp.broadcast_to(jnp.asarray(a)[0], x.shape)
+
+    near = dataclasses.replace(
+        geom, surfaces=first(geom.surfaces) * x, iota=first(geom.iota), G=first(geom.G), I=first(geom.I),
+        R=first(geom.R), epsilon=first(geom.epsilon) * jnp.sqrt(x), f_t=first(geom.f_t) * x**0.25,
+        fsa_B2=first(geom.fsa_B2), fsa_1overB=first(geom.fsa_1overB), Bmin=first(geom.Bmin), Bmax=first(geom.Bmax))
+    return j_dot_B_redl(profiles, near, helicity_n)[0] / jnp.asarray(j_dot_b)[0]
+
+
+def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tuple[Array, Array]:
+    """``(s, dI/ds)`` on the half mesh that makes ``<J.B>`` equal ``j_dot_b`` [A T/m^2] there.
+
+    :func:`redl_current_derivative` for any bootstrap model, e.g. a kinetic ``<J.B>``
+    interpolated onto the half-mesh surfaces.  Traceable in ``(state, rt)``.
+    """
+    hm = _half_mesh_fields(state, rt)
+    return hm.s_half, _current_derivative(hm, jnp.asarray(j_dot_b))
+
+
+def _current_derivative(hm: _HalfMeshFields, j_dot_b: Array) -> Array:
+    """dI/ds [A] solving ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` on the half mesh (Boozer ``I``)."""
+    w = jnp.abs(hm.w)
+    fsa_B2 = jnp.mean(hm.bmag * hm.bmag * w, axis=(1, 2)) / jnp.mean(w, axis=(1, 2))
     hs = hm.s_half[1] - hm.s_half[0]
-    dI_boozer = (jr * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / geom.fsa_B2
-    return hm.s_half, dI_boozer * 2.0 * jnp.pi / (MU0 * hm.signgs)
+    dI_boozer = (j_dot_b * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / fsa_B2
+    return dI_boozer * 2.0 * jnp.pi / (MU0 * hm.signgs)
 
 
 class HalfMeshCurrent:
@@ -781,10 +824,12 @@ class HalfMeshCurrent:
     ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
 
     ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped
-    fraction -- and inside ``s_1`` the profile follows its asymptote ``f_t ~ eps^(1/2) ~ s^(1/4)``: knots
-    at ``s_1 / 64, s_1 / 16, s_1 / 4`` carry ``I'(s_1) (s / s_1)^(1/4)``.  The edge knot continues the
-    last two linearly (it only enters CURTOR), and CURTOR is the profile's integral.  ``deck`` is the
-    input on this profile, starting from its own current's derivative.
+    fraction -- and inside ``s_1`` knots at ``s_1 / 64, s_1 / 16, s_1 / 4`` carry Redl's current on the
+    near-axis continuation of the ``s_1`` geometry, ``I'_Redl(s_1)`` times :func:`near_axis_redl_ratio`
+    (``s^(1/4)`` in the banana regime, decaying where the collisionality diverges): unknowns with a row
+    each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
+    CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
+    its own current's derivative.
     """
 
     SUB = (1 / 64, 1 / 16, 1 / 4)
@@ -805,10 +850,10 @@ class HalfMeshCurrent:
         enclosed = lambda s: current(deck.pcurr_type, deck.ac, deck.ac_aux_s, deck.ac_aux_f, s,  # noqa: E731
                                      bloat=deck.bloat)
         edge = float(enclosed(jnp.asarray(1.0)))
-        slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s_half)))
-        self.x0 = float(deck.curtor) / edge * slope if edge else np.zeros(ns - 1)  # the deck's current, in A
+        slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[1:-1])))
+        self.x0 = float(deck.curtor) / edge * slope if edge else np.zeros(slope.size)  # the deck's current, in A
         self.ref = float(np.max(np.abs(self.x0))) or 1e4
-        self.x_scale = np.full(ns - 1, self.ref)
+        self.x_scale = np.full(slope.size, self.ref)
         self.weight = float(weight) / np.sqrt(ns - 1)
         self.profiles, self.helicity_n = profiles, int(helicity_n)
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
@@ -816,26 +861,30 @@ class HalfMeshCurrent:
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
 
     def values(self, v):
-        """Every knot value from the half-mesh ones."""
+        """Every knot value from the unknowns ``v`` (the sub-axis knots', then the half-mesh ones)."""
         v = jnp.asarray(v)
-        return jnp.concatenate([jnp.zeros(1, v.dtype), v[0] * jnp.asarray(self.SUB) ** 0.25, v,
-                                (2 * v[-1] - v[-2])[None]])
+        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (2 * v[-1] - v[-2])[None]])
 
     def deck_with(self, deck, v):
-        """``deck`` with the half-mesh values ``v``."""
+        """``deck`` with the knot values ``v``."""
         values = self.values(v)
         return dataclasses.replace(deck, ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
 
     def apply(self, params, v):
-        """``ImplicitParams`` with the half-mesh values ``v`` and their CURTOR (traceable)."""
+        """``ImplicitParams`` with the knot values ``v`` and their CURTOR (traceable)."""
         values = self.values(v)
         return dataclasses.replace(params, ac_aux_f=values, curtor=self.current(values, 1.0))
 
+    def target(self, state, runtime):
+        """``I'_Redl`` at the sub-axis knots and the half-mesh surfaces (traceable)."""
+        _, target, geom, jr = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime)
+        ratio = near_axis_redl_ratio(self.profiles, self.helicity_n, geom, jr, jnp.asarray(self.SUB))
+        return jnp.concatenate([target[0] * ratio, target])
+
     def mismatch(self, state, runtime, params):
-        """``(I'(s_j) - I'_Redl(s_j), I'_Redl(s_j))`` on the half-mesh surfaces."""
-        _, target = redl_current_derivative(self.profiles, self.helicity_n, state, runtime)
-        first = 1 + len(self.SUB)
-        return params.ac_aux_f[first : first + target.size] - target, target
+        """``(I' - I'_Redl, I'_Redl)`` at the sub-axis knots and the half-mesh surfaces."""
+        target = self.target(state, runtime)
+        return params.ac_aux_f[1 : 1 + target.size] - target, target
 
     def rows(self, state, runtime, params):
         """The self-consistency rows ``weight (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (traceable)."""
@@ -1091,8 +1140,7 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
     for it in range(int(n_iter)):
         eq = opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {}))
         state = eq.state
-        _, target = redl_current_derivative(profiles, helicity_n, eq.solution, eq.solver_context)
-        target = np.asarray(target)
+        target = np.asarray(block.target(eq.solution, eq.solver_context))
         delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
         history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=float(mismatch.total(eq.wout))))
         if verbose:

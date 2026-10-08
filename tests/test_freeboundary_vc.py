@@ -26,6 +26,7 @@ import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_vc as fvc  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
+from vmex.core.errors import TrialRejected  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
 needs_vc = pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax")
@@ -261,6 +262,9 @@ def test_three_term_problem_gradients_match_resolved_differences():
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
+    problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution
+    with pytest.raises(TrialRejected):
+        problem.fun(x0 + 1e-3 * np.eye(2)[0])
 
 
 def _lp_beta0p5_profiles(inp):
@@ -274,7 +278,7 @@ def _lp_beta0p5_profiles(inp):
 
 
 def test_bootstrap_current_profile_layout():
-    """A knot per half-mesh surface, I'(0) = 0 with the s^(1/4) asymptote inside s_1, CURTOR its integral."""
+    """A knot per half-mesh surface, I'(0) = 0 and three unknown knots inside s_1, CURTOR its integral."""
     from vmex.core.profiles import current
 
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False)
@@ -287,7 +291,7 @@ def test_bootstrap_current_profile_layout():
     assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     np.testing.assert_allclose(block.deck.ac_aux_f, values)
-    np.testing.assert_allclose(values[1:4], block.x0[0] * np.array(block.SUB) ** 0.25)
+    assert block.x0.size == 3 + 24
     assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
     # the deck's own enclosed current away from the axis, where only the first cell differs
     deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
@@ -309,7 +313,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
     model = fit.model
     state, mask, params, _ = fit.aux
-    assert fit.x.size == model.n_boundary + 24
+    assert fit.x.size == model.n_boundary + 3 + 24
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
     # independently of the inversion: VMEC's <J.B> (finite-difference identity) is Redl's away from the ends
@@ -340,7 +344,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
     model = fvc.ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
-    assert model.n_boundary == 0 and model.x0.size == 24
+    assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4

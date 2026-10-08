@@ -54,9 +54,11 @@ nested-surface equilibrium cannot see: QH between iota = 1 and 8/7, QI above
 ``qi``, ``qa4-beta``, ``qi6-beta`` and ``qh4-beta`` seed from a rotating ellipse (``SEED`` =
 (nfp, aspect, b / a_eff)) and start from their own stage-two coils,
 ``examples/data/ESSOS_coils_<case>.json`` (``benchmarks/coil_constraints_fit_coils.py``;
-``qh4-beta`` from the ``qh`` coils). For ``qa4-beta*`` and ``qh4-beta`` the iota
-rows start at s = ``IOTA_S_MIN`` = 0.02: the bootstrap part of iota rises
-steeply off the axis, where the current vanishes.
+``qh4-beta`` from the ``qh`` coils). For ``qa4-beta*``, ``qi6-beta*`` and
+``qh4-beta`` the iota rows (``IOTA_AXIS``) bound every half-mesh surface, the
+edge and the axis, where the bootstrap current vanishes: there the iota without
+the current's part (``opt.axis_iota``), not VMEC's extrapolated ``iotaf[0]``,
+which carries the current's steep part of iota onto the axis.
 A ``-tok`` suffix (``qa4-beta-tok``, ``qi6-beta-tok``) seeds the same case from
 a circular tokamak with a 1% helical ripple, whose beta ramp starts at a
 prescribed Ohmic current (``OHMIC_CURRENT``) that is then blended into the
@@ -147,6 +149,8 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 # self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
+# DKX: the current is a line segment through a value on every half-mesh surface (those values,
+# the axis one and CURTOR are design variables), its seed DKX's on the same surfaces.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
@@ -163,13 +167,12 @@ QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples/optimization/QI_optimization.py
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
-DKX_SURFACES, DKX_COLLISION_OPERATOR = (0.25, 0.5, 0.75), 0  # 0: momentum-conserving Fokker-Planck
+DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
 IOTA_CEILING = None                # upper limit on max |iota|
-IOTA_AXIS = False                  # True: floor and ceiling also bound VMEC's extrapolated axis and edge iota (iotaf)
-IOTA_S_MIN = None                  # set: the rows start at this s instead (interpolated), not at the axis
+IOTA_AXIS = False                  # True: floor and ceiling also bound the axis iota (opt.axis_iota) and edge iotaf
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 
@@ -214,19 +217,17 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
     COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
-    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor; R0 is held to 1 mm.
+    # The half-mesh minimum at s = 0.01 left the axis iota 1-2.5% under the floor, so the rows bound the axis too,
+    # with opt.axis_iota: a bootstrap current vanishes on the axis, and VMEC's extrapolated iotaf[0] carries its
+    # steep part of iota (~ s^(1/4)) onto it; R0 is held to 1 mm.
     IOTA_AXIS, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
     if CASE.startswith("qa4-beta"):
         SEED, IOTA_FLOOR, ASPECT_RANGE = (2, 4.0, 0.5), 0.27, (3.5, 4.5)  # min |iota| sits on axis, near its vacuum value
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.10, 0.20
-        # A bootstrap current vanishes on the axis and its part of iota rises steeply off it (~ s^(1/4)), within
-        # the one or two innermost surfaces; from s = 0.02 (rho 0.14) on iota is converged in ns at ns >= 51.
-        IOTA_S_MIN = 0.02
     elif CASE.startswith("qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE = (4, 6.0, 0.9), (1, -1), "QH", (5.9, 6.1)
         IOTA_FLOOR = 1.1           # between the iota = 1 and 8/7 resonances, as qh
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
-        IOTA_S_MIN = 0.02
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
@@ -364,7 +365,8 @@ def bootstrap_input(inp, beta, device):
     start at the Helios-like reactor's collisionality nu* ~ n R / T^2 and beta ~ n T / B^2 moved
     to this R0 and B0, and follow the beta calibration as n ~ p^(2/3), T ~ p^(1/3), which keeps
     nu*. A Picard loop then makes the current Redl's, and it is resampled onto
-    ``CURRENT_KNOTS`` spline knots. Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in
+    ``CURRENT_KNOTS`` spline knots (DKX: instead DKX's on every half-mesh
+    surface, ``dkx_current``). Above ``BOOTSTRAP_BETA_STEP`` beta is ramped in
     steps of at most that size, each step's pressure ramp carrying the previous step's
     bootstrap current, so its transform holds the equilibrium together as beta rises;
     with ``BOOTSTRAP_BETA_START`` the ramp first doubles beta from that value. With
@@ -422,14 +424,18 @@ def bootstrap_input(inp, beta, device):
                   f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
                   flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
-    inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
+    if BOOTSTRAP_MODEL == "dkx":
+        inp = dkx_current(inp, picard.equilibrium, device)
+    else:
+        inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
     fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
     w = fixed.wout
     print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
           f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
-          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = {float(np.min(np.abs(w.iotaf))):.4f}"
-          f"..{float(np.max(np.abs(w.iotaf))):.4f}, edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
+          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = "
+          f"{float(min_abs_iota(fixed.state, fixed.runtime)):.4f}..{float(max_abs_iota(fixed.state, fixed.runtime)):.4f}"
+          f", edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed, redl
 
 
@@ -437,29 +443,24 @@ def abs_iota(state, runtime):
     """|iota| bounded by the floor and ceiling rows.
 
     The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_AXIS`` also VMEC's extrapolated axis and edge values (wout
-    ``iotaf``), iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] and likewise at the edge.
-    With ``IOTA_S_MIN`` the rows start at that ``s`` instead of the axis:
-    iota interpolated there, then the half-mesh surfaces beyond (and the edge
-    with ``IOTA_AXIS``), the same ``s`` at every ``ns``.
+    ``IOTA_AXIS`` also the axis and the edge: ``opt.axis_iota``, the iota
+    without its enclosed-current part extrapolated to the axis, where that
+    current vanishes (VMEC's iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2] mostly
+    extrapolates the steep bootstrap part off the axis and drifts with ns),
+    and VMEC's iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
     """
     import jax.numpy as jnp
+    from vmex import optimize as opt
     from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
 
     half = _iotas_half(state, runtime)[1:]
-    edge = 1.5 * half[-1:] - 0.5 * half[-2:-1]
-    if IOTA_S_MIN is not None:
-        s = (np.arange(1, half.shape[0] + 1) - 0.5) / half.shape[0]
-        inner = jnp.interp(IOTA_S_MIN, jnp.asarray(s), half)[None]
-        half = jnp.concatenate([inner, half[s > IOTA_S_MIN]] + ([edge] if IOTA_AXIS else []))
-    elif IOTA_AXIS:
-        half = jnp.concatenate([1.5 * half[:1] - 0.5 * half[1:2], half, edge])
+    if IOTA_AXIS:
+        half = jnp.concatenate([opt.axis_iota(state, runtime)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
     return jnp.abs(half)
 
 
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis, or from
-    ``IOTA_S_MIN``."""
+    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_AXIS`` including the axis and edge."""
     import jax.numpy as jnp
 
     return jnp.min(abs_iota(state, runtime))
@@ -493,21 +494,67 @@ def bootstrap_mismatch(inp, redl, device):
     return mismatch
 
 
-def dkx_mismatch(inp):
-    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
+def dkx_kinetic(inp):
+    """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``)."""
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=DKX_SURFACES,
-                                       collision_operator=DKX_COLLISION_OPERATOR,
-                                       mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+    surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
+    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
+                                    mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 
-    def mismatch(state, runtime):
-        # DKX reads the radial grid on the host. Under jit it is a tracer, but it is
-        # always linspace(0, 1, ns), so hand DKX that concrete grid.
-        grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
-        return kinetic.total(state, replace(runtime, setup=replace(runtime.setup, s_full=grid)))
 
-    return mismatch
+def on_grid(runtime):
+    """``runtime`` with a concrete radial grid: DKX reads it on the host, and under jit it is a tracer
+    (always linspace(0, 1, ns))."""
+    grid = np.linspace(0.0, 1.0, runtime.setup.s_full.shape[0])
+    return replace(runtime, setup=replace(runtime.setup, s_full=grid))
+
+
+def dkx_mismatch(inp):
+    """(state, runtime) -> DKX's bootstrap mismatch for ``inp``'s kinetic profiles (needs the ``dkx`` package)."""
+    kinetic = dkx_kinetic(inp)
+    return lambda state, runtime: kinetic.total(state, on_grid(runtime))
+
+
+def dkx_current(inp, fixed, device):
+    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface.
+
+    Picard steps I' <- I'_DKX from the equilibrium ``fixed``: DKX's ``<j.B>`` on its rows,
+    interpolated onto every half-mesh surface and inverted for dI/ds there
+    (``bootstrap.current_derivative``), under-relaxed by ``PICARD_RELAX``. The profile is
+    ``line_segment_ip`` through those values, the axis and edge ones extrapolated linearly,
+    and CURTOR its integral: no spline fit.
+    """
+    import jax
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core.bootstrap import current_derivative
+    from vmex.core.profiles import current
+
+    kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
+    s = (np.arange(1, ns) - 0.5) / (ns - 1)
+    rows = kinetic.rows(ns)[1]
+    knots = np.r_[0.0, s, 1.0]
+    enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
+    v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
+    kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
+    kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+    derivative = jax.jit(current_derivative)
+    for iteration in range(PICARD_ITERATIONS):
+        values = np.r_[1.5 * v[0] - 0.5 * v[1], v, 1.5 * v[-1] - 0.5 * v[-2]]
+        inp = replace(inp, pcurr_type="line_segment_ip", ac_aux_s=knots, ac_aux_f=values,
+                      curtor=float(current("line_segment_ip", inp.ac, knots, values, 1.0)))
+        fixed = opt.solve_equilibrium(inp, initial_state=fixed.state, device=device, raise_on_max_iterations=True,
+                                      polish_force_balance=False)
+        jk = np.interp(s, rows, np.asarray(kinetic_j(fixed.state, fixed.runtime)))
+        target = np.asarray(derivative(jnp.asarray(jk), fixed.state, fixed.runtime)[1])
+        delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
+        print(f"DKX Picard {iteration}: CURTOR = {float(inp.curtor):.1f} A, max|I' - I'_DKX| / max|I'_DKX| = "
+              f"{delta:.2e}", flush=True)
+        if delta <= PICARD_TOLERANCE:
+            break
+        v = (1.0 - PICARD_RELAX) * v + PICARD_RELAX * target
+    return inp
 
 
 def boundary_from_wout(inp, wout):
@@ -994,7 +1041,7 @@ def main(argv=None):
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     # --bootstrap: the spline values but the last, then CURTOR, follow PHIEDGE as design variables.
-    current = np.r_[np.asarray(inp.ac_aux_f)[: CURRENT_KNOTS - 1], inp.curtor] if args.bootstrap else None
+    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap else None
     scales = np.r_[[PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
                    COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = CoilChart(coils0, current_dofs=(), scales=scales,

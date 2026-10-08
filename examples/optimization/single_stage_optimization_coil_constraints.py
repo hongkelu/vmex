@@ -1148,6 +1148,12 @@ def main(argv=None):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"
+    # The vacuum-iota solve runs inside a jax.pure_callback; a GPU program XLA compiles there (its Krylov
+    # certification fallback) deadlocks in the autotuner, which waits on the device the callback holds.
+    # CUDA graphs hold device memory outside JAX's pool: with the DKX rows' Jacobian (qi6-beta) the kernels of a
+    # later executable no longer load at the 0.8 memory fraction.
+    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "")
+                               + " --xla_gpu_autotune_level=0 --xla_gpu_enable_command_buffer=").strip()
     if args.device == "cpu":
         # On a GPU host JAX_PLATFORMS would count as a user placement and disable VMEX's CPU implicit default.
         os.environ.setdefault("JAX_PLATFORMS", "cpu")

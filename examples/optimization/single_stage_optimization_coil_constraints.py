@@ -443,6 +443,7 @@ def vacuum_iota(inp):
 
     def iota(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
+        rmnc, zmns = jax.device_put((rmnc, zmns), device)  # a fixed-boundary state may live on the host
         rows, cols = np.asarray(runtime.modes.n) + int(inp.ntor), np.asarray(runtime.modes.m)
         params = replace(base, rbc=jnp.zeros_like(base.rbc).at[rows, cols].set(rmnc),
                          zbs=jnp.zeros_like(base.zbs).at[rows, cols].set(zmns))

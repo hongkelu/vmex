@@ -471,18 +471,23 @@ class ThreeTermFreeBoundaryModel:
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
-            parameter direction.
+            parameter direction.  ``fun`` may be a tuple of functions with ``cotangents`` a tuple of their rows'
+            cotangents: each row then runs only its own function's reverse pass, and the rows come out in order.
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
                                             probe_chunk_size=self.chunk)
-            _, vjp = jax.vjp(lambda s, p: fun(s, p, *args), frozen, params)
+            funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
+            parts = []
+            for f, c in zip(funs, blocks):
+                _, vjp = jax.vjp(lambda s, p, f=f: f(s, p, *args), frozen, params)
 
-            def row(c):
-                state_bar, params_bar = vjp(c)
-                return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
+                def row(c, vjp=vjp):
+                    state_bar, params_bar = vjp(c)
+                    return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-            return jax.lax.map(row, cotangents)
+                parts.append(jax.lax.map(row, c))
+            return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
         self._linearization = None
@@ -701,11 +706,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
 
+        def part(f, with_x):
+            def value(state, params, x):
+                runtime = im.runtime_from_params(params, model.cfg)
+                return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
+            return value
+
+        parts = (part(loss, True), *(part(f, False) for f in quantities),
+                 *(part(f, True) for f in parameter_quantities))
+
         def rows(state, params, x):
-            runtime = im.runtime_from_params(params, model.cfg)
-            values = [loss(state, runtime, x), *(f(state, runtime) for f in quantities),
-                      *(f(state, runtime, x) for f in parameter_quantities)]
-            return jnp.concatenate([jnp.ravel(jnp.asarray(v)) for v in values])
+            return jnp.concatenate([f(state, params, x) for f in parts])
 
         self._rows = jax.jit(rows)
         # The coordinates of x that move plasma parameters: their columns of the interface rows enter the gradient.
@@ -715,8 +726,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         eye = jnp.eye(x0.size)[self._plasma]
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
-        self._pullback = jax.jit(lambda state, mask, params, cotangents, x: model.pullback(
-            rows, state, mask, params, cotangents, x))
+        def pullback(state, mask, params, x):
+            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
+            sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+
+        self._pullback = jax.jit(pullback)
 
         @jax.jit
         def coordinates(params, b, x, params_bar):
@@ -814,8 +829,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             sol.update(x=polished["x"], aux=polished["aux"])
             J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
-        state, params, n = sol["state"], sol["params"], sol["values"].size
-        params_bar = self._pullback(state, sol["mask"], params, jnp.eye(n), xj)
+        state, params = sol["state"], sol["params"]
+        params_bar = self._pullback(state, sol["mask"], params, xj)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row

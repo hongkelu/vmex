@@ -437,6 +437,7 @@ def vacuum_iota(inp):
                      ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
     cfg = im.make_config(vacuum, multigrid=True, hot_restart=True)
     base = im.params_from_input(vacuum)
+    im.runtime_from_params(base, cfg)  # its setup, built here: run_setup cannot be traced inside a jit
 
     def iota(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state

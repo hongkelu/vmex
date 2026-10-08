@@ -962,6 +962,9 @@ def main(argv=None):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["JAX_ENABLE_X64"] = "1"
+    # The vacuum-iota solve runs inside a jax.pure_callback; a GPU program XLA compiles there (its Krylov
+    # certification fallback) deadlocks in the autotuner, which waits on the device the callback holds.
+    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_autotune_level=0").strip()
     os.environ.setdefault("JAX_PLATFORMS", "cuda,cpu")
 
     import jax

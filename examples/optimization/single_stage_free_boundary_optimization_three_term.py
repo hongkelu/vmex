@@ -403,6 +403,7 @@ def vacuum_iota(inp):
     (``inp`` otherwise, hot-restarted), differentiable through its implicit
     adjoint; the axis value is ``opt.axis_iota``, the edge VMEC's iotaf[-1].
     """
+    import jax
     import jax.numpy as jnp
     from vmex import optimize as opt
     from vmex.core import implicit as im
@@ -410,8 +411,9 @@ def vacuum_iota(inp):
 
     vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
                      ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
-    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True)
-    base = im.params_from_input(vacuum)
+    device = jax.devices()[0]  # as ThreeTermFreeBoundaryModel: unpinned, the certification runs on the host CPU
+    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
+    base = im.params_from_input(vacuum, device=device)
     im.runtime_from_params(base, cfg)  # its setup, built here: run_setup cannot be traced inside a jit
 
     def iota(state, runtime):

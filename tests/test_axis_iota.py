@@ -83,3 +83,12 @@ def test_axis_iota_jvp_matches_central_difference(bootstrap_like):
     fd = (opt.axis_iota(shifted[0], eq.runtime) - opt.axis_iota(shifted[1], eq.runtime)) / (2 * h)
     assert np.isfinite(float(value)) and abs(float(jvp)) > 0
     np.testing.assert_allclose(float(jvp), float(fd), rtol=1e-5, atol=1e-10)
+
+
+def test_axis_field_strength_is_the_axis_mode_of_b(bootstrap_like):
+    """The angle mean of |B| extrapolated to the axis: the wout (0, 0) |B| harmonic extrapolated the same way."""
+    eq = bootstrap_like
+    b00 = np.asarray(eq.wout.bmnc)[:, 0]  # half mesh; (m, n) = (0, 0) is the first Nyquist mode
+    value = float(opt.axis_field_strength(eq.state, eq.runtime))
+    assert value == pytest.approx(15 / 8 * b00[1] - 5 / 4 * b00[2] + 3 / 8 * b00[3], rel=1e-6)
+    assert value == pytest.approx(1.5 * b00[1] - 0.5 * b00[2], rel=2e-3)

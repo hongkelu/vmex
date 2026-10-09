@@ -1179,6 +1179,8 @@ def parse_args(argv=None):
                         help="poloidal and toroidal modes of the optimization solves (default: RESOLUTION)")
     parser.add_argument("--bootstrap", action="store_true",
                         help="reactor-like kinetic profiles and a self-consistent bootstrap current (BOOTSTRAP_MODEL)")
+    parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
+                        "(its calibrated deck and scaled coils), skipping the beta ramp and bootstrap current")
     parser.add_argument("--restart", type=Path, help="continue a finished run from its input.run, final coils and "
                         "WOUT boundary (no seed calibration); pass the run's --beta/--bootstrap")
     parser.add_argument("--chunk", type=int, default=8,
@@ -1233,6 +1235,10 @@ def main(argv=None):
     if args.restart is not None:
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
+    elif args.seed_run is not None:
+        inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+        redl = redl_profiles(inp)[1] if args.bootstrap else None
+        args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, args.device)
     else:  # also in vacuum: it sets PHIEDGE for B0
@@ -1242,7 +1248,7 @@ def main(argv=None):
     if redl is not None and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
         # The current solved with every equilibrium instead of designed (run_bootstrap_in_solve).
         coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
-        if args.restart is None:  # the seed's edge R B_phi, which the field-strength band holds
+        if args.restart is None and args.seed_run is None:  # the seed's edge R B_phi, which the field-strength band holds
             coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
         coils.to_json(str(out / "coils.initial.json"))
         return run_bootstrap_in_solve(args, inp, Coils.from_json(str(out / "coils.initial.json")), out,
@@ -1261,7 +1267,7 @@ def main(argv=None):
         vary_phiedge=vary_phiedge, current_dofs=np.size(inp.ac_aux_f) - 1 if redl is not None else None)
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
-    if args.restart is None:  # a restart keeps the run's own currents
+    if args.restart is None and args.seed_run is None:  # a restart or seed run keeps the run's own currents
         coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))

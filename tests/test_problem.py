@@ -1093,6 +1093,21 @@ def test_shared_minimize_offsets_linear_constraints(sparse):
         opt.minimize(p, forward_ftol=1e-11)
 
 
+def test_shared_minimize_open_bound_pairs_and_zero_step_budget():
+    """``None`` bound pairs are open; a stateful problem with no step budget returns its start."""
+    from vmex import optimize as opt
+
+    p = FunctionProblem.from_functions([3., 4.], scales=[.3, 2.], value_and_grad=lambda x: (float(x@x), 2*x))
+    result = opt.minimize(p, method="SLSQP", bounds=[(1., None), (None, None)], options=dict(ftol=1e-12))
+    assert result.success
+    np.testing.assert_allclose(result.x, [1., 0.], atol=1e-6)
+    p.accepted = SimpleNamespace(parameters=np.array([3., 4.]))
+    p.accept_x = lambda x: None
+    result = opt.minimize(p, method="SLSQP", options=dict(maxiter=0))
+    assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 0
+    np.testing.assert_array_equal(result.x, [3., 4.])
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

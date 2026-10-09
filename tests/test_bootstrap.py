@@ -971,3 +971,9 @@ def test_near_axis_redl_ratio_is_banana_or_collisional():
     collisional, nu = ratio(1e21, 1e3)
     assert nu > 10 and collisional[-1] == pytest.approx(1.0)
     assert np.all(np.diff(collisional) > 0) and np.all(collisional[:-1] < 0.5 * x[:-1] ** 0.25)
+
+
+def test_self_consistent_bootstrap_rejects_unknown_profile():
+    """An unknown current representation fails before any equilibrium is solved."""
+    with pytest.raises(ValueError, match="profile must be"):
+        bs.self_consistent_bootstrap(None, None, 0, profile="spline")

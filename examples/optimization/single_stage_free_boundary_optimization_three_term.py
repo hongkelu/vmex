@@ -57,6 +57,10 @@ CASE = os.environ.get("COIL_CASE", "ellipse5")
 # CURRENT_IOTA_WEIGHT below), e.g. qa4-beta-merc.
 VARIANT = next((v for v in ("-merc", "-jbs") if CASE.endswith(v)), "")
 CASE = CASE.removesuffix(VARIANT)
+# An "-A<aspect>" suffix (e.g. qi6-beta-A8) moves a seeded case to that aspect ratio: seed, aspect band +-0.1 and the
+# coil limits that follow it.
+ASPECT = float(CASE.rsplit("-A", 1)[1]) if "-A" in CASE else None
+CASE = CASE.rsplit("-A", 1)[0] if ASPECT else CASE
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
@@ -189,6 +193,8 @@ REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N
 # a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as the
 # fixed arm scales its seeded boundary steps (0.1 -> 0.02).
 DESIGN_STEP_SCALE = 1.0 if TARGET_NAME == "QA" else 0.2
+if ASPECT:
+    SEED, ASPECT_RANGE = (SEED[0], ASPECT, SEED[2]), (ASPECT - 0.1, ASPECT + 0.1)
 if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius

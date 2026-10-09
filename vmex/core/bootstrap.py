@@ -173,6 +173,7 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) ->
     F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
     kt = jnp.asarray(np.fft.fftfreq(nt, 1.0 / nt), dtype=modB.dtype)[:, None]
     kz = jnp.asarray(np.fft.fftfreq(nz, 1.0 / nz), dtype=modB.dtype)[None, :]
+    cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
 
     def value_grad_hess(Fs, t, z):
         terms = Fs * jnp.exp(1j * (kt * t + kz * z))
@@ -181,8 +182,6 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) ->
         h = -jnp.real(jnp.array([[jnp.sum(kt * kt * terms), jnp.sum(kt * kz * terms)],
                                  [jnp.sum(kt * kz * terms), jnp.sum(kz * kz * terms)]]))
         return b, g, h
-
-    cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
 
     def locate(Fs, Bs):
         idx = jnp.argmax(sign * Bs)
@@ -805,7 +804,7 @@ def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tupl
 
 def _current_derivative(hm: _HalfMeshFields, j_dot_b: Array) -> Array:
     """dI/ds [A] solving ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` on the half mesh (Boozer ``I``)."""
-    w = jnp.abs(hm.w)
+    w = jnp.abs(hm.w)  # |sqrt(g)|: the surface-average weight for either Jacobian sign (signgs)
     fsa_B2 = jnp.mean(hm.bmag * hm.bmag * w, axis=(1, 2)) / jnp.mean(w, axis=(1, 2))
     hs = hm.s_half[1] - hm.s_half[0]
     dI_boozer = (j_dot_b * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / fsa_B2
@@ -829,7 +828,7 @@ class HalfMeshCurrent:
     (``s^(1/4)`` in the banana regime, decaying where the collisionality diverges): unknowns with a row
     each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
     CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
-    its own current's derivative.
+    its own current's derivative.  ``weight`` is the model's ``bootstrap_weight``.
     """
 
     SUB = (1 / 64, 1 / 16, 1 / 4)
@@ -846,8 +845,8 @@ class HalfMeshCurrent:
                              f"ns <= {_NDFMAX - len(self.SUB) - 1}")
         s_half = (np.arange(1, ns) - 0.5) / (ns - 1)
         self.knots = np.r_[0.0, s_half[0] * np.asarray(self.SUB), s_half, 1.0]
-        self.current = lambda values, s: current("line_segment_ip", deck.ac, self.knots, values, s)  # noqa: E731
-        enclosed = lambda s: current(deck.pcurr_type, deck.ac, deck.ac_aux_s, deck.ac_aux_f, s,  # noqa: E731
+        self.current = functools.partial(current, "line_segment_ip", deck.ac, self.knots)  # (values, s) -> I(s)
+        enclosed = functools.partial(current, deck.pcurr_type, deck.ac, deck.ac_aux_s, deck.ac_aux_f,
                                      bloat=deck.bloat)
         edge = float(enclosed(jnp.asarray(1.0)))
         slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[1:-1])))
@@ -1138,7 +1137,7 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
     inp, v = block.deck, block.x0
     history, state, eq, converged = [], None, None, False
     for it in range(int(n_iter)):
-        eq = opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {}))
+        eq = opt.solve_equilibrium(inp, initial_state=state, **solve_kwargs)
         state = eq.state
         target = np.asarray(block.target(eq.solution, eq.solver_context))
         delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
@@ -1251,14 +1250,14 @@ def self_consistent_bootstrap(
     relax = float(relax)
     if not 0.0 < relax <= 1.0:
         raise ValueError(f"relax must be in (0, 1], got {relax}")
+    if profile not in ("power_series", "half_mesh"):
+        raise ValueError(f"profile must be 'power_series' or 'half_mesh', got {profile!r}")
 
     mismatch = RedlBootstrapMismatch(profiles, helicity_n,
                                      surfaces=np.clip(s_eval, 0.05, 0.95))
     if profile == "half_mesh":
         return _half_mesh_picard(inp, profiles, helicity_n, mismatch, n_iter=n_iter, tol=tol, relax=relax,
                                  solve_kwargs=solve_kwargs, verbose=verbose)
-    if profile != "power_series":
-        raise ValueError(f"profile must be 'power_series' or 'half_mesh', got {profile!r}")
     history: list[dict] = []
     state = None
     dIds_applied = None   # I'(s_full) currently driving the equilibrium

@@ -7,8 +7,10 @@ Simsopt-style vocabulary for the QA/QH/QP/QI examples on the pure new core:
   wout-engine field tables of a converged core state (parity port of the
   legacy ``quasisymmetry_ratio_residual_from_wout``).
 - practical scalar targets — :func:`aspect_ratio`, :func:`mean_iota`,
-  :func:`edge_iota`, :func:`axis_iota`, :func:`axis_field_strength`,
-  :func:`mirror_ratio`, :func:`volume`, :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
+  :func:`edge_iota`, :func:`mirror_ratio`, :func:`volume`,
+  :func:`major_radius`, :func:`axis_iota` (from the :func:`geometric_iota`
+  profile), :func:`axis_field_strength`,
+  :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
   ``(SpectralState, SolverRuntime)``.
 - :func:`quasi_isodynamic_residual` — a distilled Goodman-style QI residual
   keeping exactly the four terms the legacy minimal-seed QI examples
@@ -1501,6 +1503,8 @@ def _current_dof_setup(inp: VmecInput, current_dofs: int | None) -> tuple[int, f
     Zenodo/self_consistent_bootstrap decks, O(1) for shape-normalized decks —
     is the right trust-region unit; the
     spec's ``|curtor|`` is the fallback when the seed AC block is all zero).
+    A line-segment profile frees its ``AC_AUX_F`` values as a spline does
+    (:func:`_current_uses_spline`).
     """
     if not current_dofs:
         return 0, 1.0
@@ -1954,6 +1958,11 @@ def make_problem(
     implicit differentiation. The default preserves strict gradients;
     ``numpy.inf`` explicitly disables refinement for legacy comparisons.
 
+    ``vary_phiedge=True`` (implicit derivatives only) appends a relative
+    toroidal-flux dof, ``PHIEDGE = PHIEDGE_0 (1 + x[-1])``, after the
+    boundary and current dofs; it matters when a beta or field-strength row
+    ties the flux to the boundary.
+
     ``restart_from`` seeds the first equilibrium from a previous WOUT,
     :class:`Equilibrium`, or solver result.  This is useful when a continuation
     stage changes ``mpol``, ``ntor``, or radial resolution: trial hot restarts
@@ -2347,8 +2356,9 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     SciPy iterates on ``u = (x - x0) / problem.scales``; bounds, constraints,
     callbacks and the returned ``x``/``jac`` stay in the problem's units. A
     problem exposing ``accept_x`` (a
-    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`) must start
-    at its accepted point, and each SLSQP major iterate is promoted with
+    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
+    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`) must
+    start at its accepted point, and each SLSQP major iterate is promoted with
     ``accept_x`` when its Jacobian is requested.
 
     Parameters
@@ -2411,10 +2421,10 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
             bounds = Bounds(*bounds)
     if bounds is not None:
         if not isinstance(bounds, Bounds):
-            pairs = [(float('-inf') if lo is None else lo,
-                      float('inf') if hi is None else hi) for lo, hi in bounds]
+            pairs = [(float("-inf") if lo is None else lo,
+                      float("inf") if hi is None else hi) for lo, hi in bounds]
             bounds = Bounds(*np.asarray(pairs).T)
-        bounds = Bounds((np.asarray(bounds.lb)-start)/scales, (np.asarray(bounds.ub)-start)/scales,
+        bounds = Bounds((np.asarray(bounds.lb) - start) / scales, (np.asarray(bounds.ub) - start) / scales,
                         keep_feasible=bounds.keep_feasible)
     if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
         constraints = (constraints,)
@@ -2426,21 +2436,22 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         if isinstance(constraint, LinearConstraint):
             matrix = constraint.A.multiply(scales) if issparse(constraint.A) else constraint.A * scales
             scaled_constraints.append(LinearConstraint(
-                matrix, constraint.lb-constraint.A@start, constraint.ub-constraint.A@start))
+                matrix, constraint.lb - constraint.A @ start, constraint.ub - constraint.A @ start))
         elif isinstance(constraint, NonlinearConstraint):
             if not callable(constraint.jac):
                 raise ValueError("constraints require an analytic Jacobian")
+
             def values(u, c=constraint):
                 try:
-                    return c.fun(start+scales*u)
+                    return c.fun(start + scales * u)
                 except TrialRejected:
-                    # Values can reject a line-search probe; never fabricate its Jacobian.
                     lo, hi = np.broadcast_arrays(c.lb, c.ub)
                     offset = _REJECTED_CONSTRAINT_OFFSET
-                    return np.where(np.isfinite(lo), lo-offset, np.where(np.isfinite(hi), hi+offset, 0.))
+                    return np.where(np.isfinite(lo), lo - offset, np.where(np.isfinite(hi), hi + offset, 0.0))
+
             scaled_constraints.append(NonlinearConstraint(
                 values, constraint.lb, constraint.ub,
-                jac=lambda u, c=constraint: np.asarray(c.jac(start+scales*u))*scales))
+                jac=lambda u, c=constraint: np.asarray(c.jac(start + scales * u)) * scales))
         else:
             raise TypeError("use scipy LinearConstraint or NonlinearConstraint")
 
@@ -2450,16 +2461,18 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     accepted_steps = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
-        return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
-            status=99, message="accepted_step_budget_reached", stop_reason="accepted_step_budget_reached",
-            accepted_steps=0, nit=0, nfev=1, njev=1)
+        return OptimizeResult(
+            x=start, fun=value, jac=gradient, success=False, status=99, message="accepted_step_budget_reached",
+            stop_reason="accepted_step_budget_reached", accepted_steps=0, nit=0, nfev=1, njev=1)
 
     class _Stop(Exception):
         pass
 
+    wants_result = callback is not None and set(inspect.signature(callback).parameters) == {"intermediate_result"}
+
     def accept(u):
         nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
-        x = start + np.asarray(u)*scales
+        x = start + np.asarray(u) * scales
         if np.array_equal(x, accepted):
             return
         current_value, current_gradient = problem.value_and_grad(x)
@@ -2470,7 +2483,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         accepted_steps += 1
         if callback is not None:
             try:
-                if set(inspect.signature(callback).parameters) == {"intermediate_result"}:
+                if wants_result:
                     callback(intermediate_result=OptimizeResult(
                         x=accepted.copy(), fun=accepted_value, nit=accepted_steps))
                 else:
@@ -2484,7 +2497,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev
         nfev += 1
         try:
-            return problem.fun(start+scales*u)
+            return problem.fun(start + scales * u)
         except TrialRejected:
             return np.inf
 
@@ -2492,26 +2505,26 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev, njev
         nfev += 1
         njev += 1
-        _, gradient = problem.value_and_grad(start+scales*u)
-        gradient = np.asarray(gradient)*scales
+        _, gradient = problem.value_and_grad(start + scales * u)
+        gradient = np.asarray(gradient) * scales
         # SLSQP's major-iteration callback can precede backtracking. The next
         # Jacobian request identifies its accepted line-search point instead.
         accept(u)
         return gradient
 
     try:
-        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP",
-            bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
+        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP", bounds=bounds,
+                                constraints=scaled_constraints, options=options, tol=tol)
         if result.success:
             accept(result.x)
-        result.x = start + np.asarray(result.x)*scales
+        result.x = start + np.asarray(result.x) * scales
         if getattr(result, "jac", None) is not None:
-            result.jac = np.asarray(result.jac)/scales
+            result.jac = np.asarray(result.jac) / scales
         result.stop_reason = None
     except (_Stop, TrialRejected) as error:
         reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
-        result = OptimizeResult(success=False, status=99, message=str(error),
-            stop_reason=reason, nit=accepted_steps, nfev=nfev, njev=njev)
+        result = OptimizeResult(success=False, status=99, message=str(error), stop_reason=reason,
+                                nit=accepted_steps, nfev=nfev, njev=njev)
     if result.success or promote is not None or getattr(result, "stop_reason", None):
         result.x, result.fun, result.jac = accepted.copy(), accepted_value, accepted_gradient.copy()
     result.accepted_steps = accepted_steps
@@ -2539,7 +2552,7 @@ def minimize(
     forward_max_iterations: int | None = None,
     **scipy_kwargs,
 ):
-    """Minimize a FunctionProblem, or a scalarized VMEC residual definition.
+    """Minimize a FunctionProblem with SLSQP, or a scalarized residual norm with one adjoint per gradient.
 
     ``minimize(problem, method="SLSQP", x0=..., bounds=..., constraints=...,
     callback=..., options=..., tol=...)`` runs SciPy SLSQP on a
@@ -2548,7 +2561,8 @@ def minimize(
     bounds, constraints, callbacks and returned derivatives use the problem's
     units; ``problem.scales`` conditions SciPy internally. A problem exposing
     ``accept_x``, such as
-    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`, promotes
+    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
+    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`, promotes
     only accepted iterates and ``options["maxiter"]`` counts accepted steps.
     Besides SciPy's fields the result carries ``accepted_steps`` and
     ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,

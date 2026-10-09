@@ -1224,6 +1224,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                        help="aspect-ratio bounds (default: ASPECT_RANGE); the coil limits keep the case's")
     parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
@@ -1254,7 +1256,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE
     args = parse_args(argv)
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
@@ -1262,6 +1264,8 @@ def main(argv=None):
         VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
     if args.iota_ceiling is not None:
         IOTA_CEILING = args.iota_ceiling
+    if args.aspect_range is not None:
+        ASPECT_RANGE = tuple(args.aspect_range)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

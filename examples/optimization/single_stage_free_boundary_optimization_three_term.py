@@ -974,6 +974,9 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--current-iota-weight", type=float, help="w of the loss term w/2 iota_I^2 "
                         "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
+    parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
+                        "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
+    parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
@@ -1047,10 +1050,14 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING
     args = parse_args(argv)
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
+    if args.vacuum_iota_floor is not None:
+        VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
+    if args.iota_ceiling is not None:
+        IOTA_CEILING = args.iota_ceiling
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

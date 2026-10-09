@@ -696,6 +696,9 @@ def plasma_field_on_boundary(
     This is the ``internal`` virtual-casing branch (currents inside the LCFS =
     the plasma current), i.e. the SIMSOPT ``VirtualCasing.B_external_normal``
     convention: the coils must supply ``-B_plasma . n`` for ``B_out . n = 0``.
+
+    A package field with a prepared singular setup takes the single-pass
+    :func:`_internal_B_one_pass` instead (the same values to round-off).
     """
 
     _require_vcj()
@@ -730,10 +733,8 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
     The package evaluates the two single-layer gradients in two passes over the same source-target
     kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
     its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
-    round-off).  Otherwise the package's on-surface assembly, internal sign.
+    round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
     """
-    import math
-
     from virtual_casing_jax.integrals import curl_single_layer_gradient, laplace_fxd_u_eval_vec_singular
     from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
 
@@ -744,7 +745,7 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
         patch_dim0, patch_idx = vcj._get_patch_idx(setup, digits)
     nsrc, ntrg = setup.quad_nt * setup.quad_np, vcj.trg_nt * vcj.trg_np
     chunk_size, target_chunk_size = vcj._resolve_chunk_sizes("b", chunk_size, "auto", nsrc=nsrc, ntrg=ntrg)
-    dtheta = (math.pi * (1.0 / (vcj.nfp * vcj.trg_nt * 2) - 1.0 / (vcj.nfp * vcj.src_nt * 2))
+    dtheta = (np.pi * (1.0 / (vcj.nfp * vcj.trg_nt * 2) - 1.0 / (vcj.nfp * vcj.src_nt * 2))
               if vcj.half_period else 0.0)
     B0 = complete_vec_field(jnp.asarray(B0).reshape((3, vcj.src_nt, vcj.src_np)), False, vcj.half_period, vcj.nfp,
                             vcj.src_nt, vcj.src_np, dtheta)

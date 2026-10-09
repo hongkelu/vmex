@@ -15,10 +15,10 @@ field jump: a VMEC/NESTOR equilibrium may carry an edge sheet current.  Here
 the boundary is the unknown instead.  Every trial boundary is a fixed-boundary
 equilibrium, and a Gauss-Newton least-squares solve minimizes the stacked
 residual of all three conditions with exact implicit derivatives
-(:class:`ThreeTermFreeBoundaryModel`).  At an exact
-solution all three vanish together; at finite resolution they stop at a floor
-set mainly by ``mpol`` (about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where
-the relative ``weights`` decide the balance.
+(:class:`ThreeTermFreeBoundaryModel`).  At an exact solution all three vanish
+together; at finite resolution they stop at a floor set mainly by ``mpol``
+(about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where the relative
+``weights`` decide the balance.
 
 Condition (1) alone leaves one direction open: the flux of ``B_out`` through
 the closed surface vanishes identically, and a mismatch of the net poloidal
@@ -40,9 +40,9 @@ Entry points, from the most to the least packaged:
   (:class:`ThreeTermFreeBoundaryProblem`): single-stage optimization, a loss
   and constraint rows of coils and plasma parameters at their free boundary,
   for :func:`vmex.core.optimize.minimize`;
-- :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state tangents and
-  pullbacks for one deck and any external field or plasma parameters, without
-  recompiling -- the pieces an optimizer needs;
+- :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state
+  tangents and pullbacks for one deck and any external field or plasma
+  parameters, without recompiling -- the pieces an optimizer needs;
 - :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
   check a NESTOR result.
 """
@@ -60,7 +60,7 @@ import jax
 import jax.numpy as jnp
 
 from . import virtual_casing as vc
-from .errors import TrialRejected, VmecError
+from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
 from .problem import FunctionProblem
 
@@ -203,9 +203,10 @@ def solve_free_boundary_three_term(
     sheet current)`` times the rows of :func:`boundary_residual` on an
     ``nphi x ntheta`` grid over one field period (default 48 x 48), with the
     virtual-casing quadrature planned once on the initial boundary to
-    ``digits``.  The grid, not ``digits``, limits accuracy: for a current-free
-    state virtual casing returns ``|B_plasma| / |B|`` of about 2e-4 at 48 x 48
-    and 5e-5 at 64 x 64 (whose quadrature needs several times the memory).
+    ``digits``.  The grid, not ``digits``, limits the virtual-casing field:
+    for a current-free state it returns ``|B_plasma| / |B|`` of about 2e-4 at
+    48 x 48 and 5e-5 at 64 x 64 (whose quadrature needs several times the
+    memory), below the residual floor that ``mpol`` sets (module docstring).
     Rows of the boundary points' displacement along the surface in ``theta``,
     relative to the initial boundary and scaled by ``label_weight``, fix the
     boundary's poloidal labelling, which the interface conditions leave free.
@@ -214,28 +215,32 @@ def solve_free_boundary_three_term(
     circulation around the seed's magnetic axis), the direction the
     normal-field rows cannot see.
 
-    A trust region with exact implicit Jacobians (:class:`ThreeTermFreeBoundaryModel`)
-    runs to a relative cost change of ``jacobian_ftol``; Levenberg-Marquardt
-    steps with its last Jacobian then go on to ``ftol``, the floor set by the
-    resolution (``None``: the trust region runs to ``ftol``).  ``previous``, an
-    earlier result for the same deck (typically before a coil change), starts
-    from its boundary with those steps and its Jacobian, and from its model:
-    neither new coils nor a repeat solve compile anything.  ``quadrature``,
-    ``trial_ftol`` and ``chunk`` are :class:`ThreeTermFreeBoundaryModel`'s (fixed
-    singular quadrature, looser trial equilibria, Jacobian columns per batch).
+    A trust region with exact implicit Jacobians
+    (:class:`ThreeTermFreeBoundaryModel`) runs to a relative cost change of
+    ``jacobian_ftol``; Levenberg-Marquardt steps with its last Jacobian then go
+    on to ``ftol``, the floor set by the resolution (``None``: the trust region
+    runs to ``ftol``).  ``previous``, an earlier result for the same deck
+    (typically before a coil change), starts from its boundary with those steps
+    and its Jacobian, and from its model: neither new coils nor a repeat solve
+    compile anything.  ``quadrature``, ``trial_ftol`` and ``chunk`` are
+    :class:`ThreeTermFreeBoundaryModel`'s (fixed singular quadrature, looser
+    trial equilibria, Jacobian columns per batch).
     ``bootstrap`` (kinetic profiles), ``bootstrap_helicity`` and
     ``bootstrap_weight`` solve for a Redl-self-consistent current profile
     together with the boundary (:class:`ThreeTermFreeBoundaryModel`).
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
-    coordinates, then any bootstrap-current values), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
-    ``nfev``, ``njev``, ``input`` (the free boundary, and the current, as a fixed-boundary deck),
-    ``equilibrium``, ``model``, ``boundary_residual`` and
+    coordinates, then any bootstrap-current values), ``fun`` (the residual),
+    ``jac`` (its last Jacobian), ``cost``, ``nfev``, ``njev``, ``input`` (the
+    free boundary, and the current, as a fixed-boundary deck),
+    ``equilibrium``, ``model``, ``aux`` (``(state, mask, params, tight)`` of
+    the solution, for ``previous=``), ``boundary_residual`` and
     ``initial_boundary_residual`` (:class:`BoundaryResidual` at the start).
     """
     from scipy.optimize import OptimizeResult
 
     from .freeboundary import _external_field_from_input
+    from .implicit import input_with_params
     from .optimize import solve_equilibrium
 
     if bool(inp.lasym):
@@ -248,24 +253,24 @@ def solve_free_boundary_three_term(
         external_field = _external_field_from_input(inp, mgrid_path)
     if previous is not None:
         model, x0, jacobian = previous.model, previous.x, previous.jac
+        seed_state, seed_params = previous.aux[0], previous.aux[2]
     else:
         start = inp if initial_boundary is None else replace(
             inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
-        model = ThreeTermFreeBoundaryModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
-                                   digits=digits, weights=weights, net_current_weight=net_current_weight,
-                                   label_weight=label_weight, quadrature=quadrature, trial_ftol=trial_ftol,
-                                   chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
-                                   bootstrap_weight=bootstrap_weight)
+        model = ThreeTermFreeBoundaryModel(
+            start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
+            weights=weights, net_current_weight=net_current_weight, label_weight=label_weight,
+            quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
+            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
         x0 = jacobian = None
-    seed_state = model.seed[0] if previous is None else previous.aux[0]
-    seed_params = model.params0 if previous is None else previous.aux[2]
+        seed_state, seed_params = model.seed[0], model.params0
     initial = model.boundary_residual(seed_state, seed_params, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
                                max_nfev=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]
-    boundary = model._im.input_with_params(model.fixed, params)
+    boundary = input_with_params(model.fixed, params)
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
         njev=out["njev"], success=True, message=f"{out['accepted']} Levenberg-Marquardt steps after the trust region",
@@ -293,8 +298,9 @@ class ThreeTermFreeBoundaryModel:
 
     Methods: :meth:`solve_boundary` (the K = 0 boundary, cold or warm),
     :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
-    and the state responses), :meth:`pullback` (reverse-mode gradients of other
-    functions of the equilibrium), :meth:`boundary_residual` and
+    and the state responses), :meth:`push` (forward-mode columns of other
+    functions of the equilibrium), :meth:`pullback` (their reverse-mode
+    gradients), :meth:`boundary_residual`, :meth:`bootstrap_residual` and
     :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
     runtime, field)`` are the traceable rows themselves.
 
@@ -315,10 +321,10 @@ class ThreeTermFreeBoundaryModel:
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
     knot values (three inside the first surface, then one on every half-mesh
     surface) after the boundary coordinates (``n_boundary`` of them), and the
-    rows gain one self-consistency row per knot, scaled by ``bootstrap_weight`` (large by default: the current is
-    no interface condition to trade against the others, so its block is solved
-    far below their floor; see
-    :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
+    rows gain one self-consistency row per knot, scaled by
+    ``bootstrap_weight`` (large by default: the current is no interface
+    condition to trade against the others, so its block is solved far below
+    their floor; see :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
     ``ns <= 97``, a prescribed-current deck).  The current then follows the
     equilibrium instead of being an input, and :meth:`bootstrap_residual`
     reports how far it is from Redl's.  ``fixed_boundary=True`` (with
@@ -369,6 +375,9 @@ class ThreeTermFreeBoundaryModel:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
             self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         self.chunk = int(chunk)
+        self._linearization = None
+        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
+        self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
         def with_boundary(params, x):
             if not self.fixed_boundary:
@@ -379,7 +388,6 @@ class ThreeTermFreeBoundaryModel:
         self.with_boundary = with_boundary
         seed = self.solve(self.params0)
         if seed is None:
-            from .errors import VmecConvergenceError
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
         self.seed = (state, mask)
@@ -476,7 +484,7 @@ class ThreeTermFreeBoundaryModel:
         self._predict = jax.jit(predict)
 
         def pullback(fun, state, mask, params, cotangents, *args):
-            """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium, per i.
+            """``ImplicitParams`` gradients of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
@@ -499,9 +507,6 @@ class ThreeTermFreeBoundaryModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
-        self._linearization = None
-        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
-        self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -518,8 +523,6 @@ class ThreeTermFreeBoundaryModel:
             if int(status) != 0:
                 return None
         else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
-            from .errors import VmecError
-
             with im._device_context(cfg):
                 try:
                     state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)
@@ -529,12 +532,11 @@ class ThreeTermFreeBoundaryModel:
             fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
             if not (bool(result.converged) or fsq / cfg.ftol <= cfg.max_fsq_ratio):
                 return None
-        place = lambda tree: jax.device_put(jax.tree.map(jnp.asarray, tree), cfg.device)  # noqa: E731
-        return place(state), place(mask)
+        return jax.device_put(jax.tree.map(jnp.asarray, (state, mask)), cfg.device)
 
     def boundary_residual(self, state, params, field) -> BoundaryResidual:
         """:class:`BoundaryResidual` of a solved state."""
-        return summarize_boundary_residual(*map(np.asarray, self._terms(state, params, field)))
+        return summarize_boundary_residual(*self._terms(state, params, field))
 
     def bootstrap_residual(self, state, params) -> float:
         """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
@@ -543,8 +545,11 @@ class ThreeTermFreeBoundaryModel:
         return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
 
     def evaluate(self, x, params, field, seed=None, tight=False):
-        """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
-        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
+        """Rows at boundary ``x``, or ``None`` if the solve failed.
+
+        Returns ``(rows, (state, mask, params_x, tight))``; ``tight`` marks a state solved to the deck's
+        tolerance rather than the trial one.
+        """
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
@@ -562,13 +567,14 @@ class ThreeTermFreeBoundaryModel:
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
     def linearize(self, x, aux, field, extra=None):
-        """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).
+        """Columns of the rows along the model coordinates and the ``extra`` parameter tangents.
 
-        A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
-        the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
-        they belong to.  The responses also seed the next trials (first-order predicted states).  A call at the
-        boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
-        when not asked for): a polish that stalls asks again for the Jacobian it was given.
+        The model coordinates are the boundary, then the bootstrap current.  A trial state is first solved to
+        the deck's tolerance (from itself).  Returns ``(J, dz, params_batch, aux)``: the Jacobian, the projected
+        state responses and parameter tangents of its columns, and the (tight) state they belong to.  The
+        responses also seed the next trials (first-order predicted states).  A call at the boundary, plasma
+        parameters and field of the latest one returns its result (without ``extra``'s columns when not asked
+        for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
         key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
@@ -662,7 +668,7 @@ class ThreeTermFreeBoundaryModel:
             njev += 1
             J, _, _, memo["aux"] = self.linearize(z, memo["aux"], field)
             memo.update(jacobian=J, jkey=z.tobytes())
-            return memo["jacobian"]
+            return J
 
         fit = scipy.optimize.least_squares(fun, x, jac=jac, x_scale=self.x_scale, ftol=max(ftol, jacobian_ftol),
                                            xtol=1e-5, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
@@ -674,6 +680,13 @@ class ThreeTermFreeBoundaryModel:
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
         self._radius = out["radius"]
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
+
+
+@dataclass(frozen=True)
+class _AcceptedPoint:
+    """The design the optimizer last accepted (``ThreeTermFreeBoundaryProblem.accepted``)."""
+
+    parameters: np.ndarray
 
 
 class ThreeTermFreeBoundaryProblem(FunctionProblem):
@@ -711,8 +724,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         rejected.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
-        if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
-                                                           or callable(plasma_from_parameters)):
+        if plasma_from_parameters is not None:
+            functions += (plasma_from_parameters,)
+        if not all(map(callable, functions)):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
@@ -725,17 +739,22 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
-        im = model._im
+        from .implicit import runtime_from_params
+
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
-        self._params_at = jax.jit(lambda x: params_at(model.params0, x))
+
+        def seed_params_at(x):
+            return params_at(model.params0, x)
+
+        self._params_at = jax.jit(seed_params_at)
 
         def part(f, with_x):
             def value(state, params, x):
-                runtime = im.runtime_from_params(params, model.cfg)
+                runtime = runtime_from_params(params, model.cfg)
                 return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
             return value
 
@@ -747,12 +766,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         self._rows = jax.jit(rows)
         # The coordinates of x that move plasma parameters: their columns of the interface rows enter the gradient.
-        tangent = jax.jacfwd(lambda x: params_at(model.params0, x))(jnp.asarray(x0))
+        tangent = jax.jacfwd(seed_params_at)(jnp.asarray(x0))
         moved = sum(np.any(np.asarray(a).reshape(-1, x0.size) != 0, axis=0) for a in jax.tree.leaves(tangent))
         self._plasma = np.flatnonzero(moved)
         eye = jnp.eye(x0.size)[self._plasma]
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
+
         def pullback(state, mask, params, x):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
@@ -783,11 +803,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def _solve(self, x):
         """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``."""
-        key = np.asarray(x, dtype=float).tobytes()
+        x = np.asarray(x, dtype=float)
+        key = x.tobytes()
         if key in self._cache:
             return self._cache[key]
         self.stats["trials"] += 1
-        x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
         anchor, starts, J = self._anchor, [None], None
         if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
@@ -835,7 +855,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
 
-        def tight():
+        def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
@@ -848,13 +868,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             self.stats["linearizations"] += 1
             return J
 
-        J = tight()
+        J = relinearize()
         polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
                                         max_nfev=20)
         self.stats["boundary_evaluations"] += polished["nfev"]
         if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
             sol.update(x=polished["x"], aux=polished["aux"])
-            J = tight()
+            J = relinearize()
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -864,7 +884,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
-        self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
+        self._anchor = dict(x=self._x(x).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         sol["gradients"] = gradients
         return gradients
@@ -893,10 +913,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def accept_x(self, x):
         """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
-        key = np.asarray(self._x(x), dtype=float).tobytes()
+        x = self._x(x)
+        key = x.tobytes()
         if self._cache.get(key) is None:
             raise ValueError("evaluate the candidate before accepting it")
-        self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
+        self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
 
     def state(self, x):
@@ -911,21 +932,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def equilibrium_from_x(self, x):
         """The free-boundary equilibrium of ``x`` as an ``Equilibrium`` (fixed-boundary solve on its boundary)."""
+        from .implicit import input_with_params
         from .optimize import solve_equilibrium
 
         sol = self._record(x)
-        return solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
+        return solve_equilibrium(input_with_params(self.model.fixed, sol["params"]),
                                  initial_state=sol["state"])
 
     def close(self):
-        """Drop the cached trials but the accepted one."""
+        """Drop every cached trial except the accepted one."""
         key = self.accepted.parameters.tobytes()
         self._cache = {k: v for k, v in self._cache.items() if k == key}
-
-
-@dataclass(frozen=True)
-class _AcceptedPoint:
-    parameters: np.ndarray
 
 
 def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
@@ -944,7 +961,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     norms = np.linalg.norm(J, axis=0)
     norms[norms == 0.0] = 1.0
     U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-    nfev, accepted, converged, slow = 1, 0, False, 0
+    nfev, accepted, converged, slow = 1, 0, False, 0  # nfev counts the caller's evaluation at x
     started = time.perf_counter()
 
     def step(g, lam):

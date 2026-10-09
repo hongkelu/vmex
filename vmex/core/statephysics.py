@@ -14,9 +14,7 @@ One home for the small private helpers that :mod:`~vmex.core.optimize`,
   (``aspectratio.f`` boundary quadrature, equal to the wout
   ``aspect``/``Rmajor_p``/``volume_p`` scalars) and
   :func:`mean_iota` / :func:`edge_iota` (wout ``iotas``/``iotaf[-1]``
-  conventions), re-exported unchanged by :mod:`~vmex.core.optimize`;
-  :func:`axis_iota` (from :func:`geometric_iota`, the half-mesh iota without
-  its enclosed-current part) is the axis value free of the current;
+  conventions), re-exported unchanged by :mod:`~vmex.core.optimize`.
   :func:`elongation_profile` / :func:`max_elongation` evaluate the boundary
   cross-section elongation from the same physical edge coefficients;
   :mod:`~vmex.core.implicit` keeps its historical ``aspect_ratio`` /
@@ -25,6 +23,10 @@ One home for the small private helpers that :mod:`~vmex.core.optimize`,
   fields and the FD-cached gradient tables of ``tests/test_implicit_grad.py``
   pin those exact quadratures — the two families agree to quadrature
   resolution;
+- the axis values free of the enclosed current: :func:`geometric_iota` (the
+  half-mesh iota without its enclosed-current part), :func:`axis_iota` (its
+  axis value) and :func:`axis_field_strength` (the averaged ``|B|`` on the
+  axis), each axis value extrapolated to ``s = 0`` with :data:`_AXIS_WEIGHTS`;
 - the half-mesh radial sampling primitives :func:`_half_grid` /
   :func:`_interp_half_grid` and the wout-table utilities :func:`_as_1d` /
   :func:`_mode_matrix`;
@@ -152,7 +154,7 @@ def _iotas_half(state: SpectralState, rt: SolverRuntime) -> jnp.ndarray:
 _AXIS_WEIGHTS = (15 / 8, -5 / 4, 3 / 8)
 
 
-@jax.jit
+@jax.jit  # eager calls (diagnostics, reports) would otherwise run the field chain op by op
 def geometric_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     """Half-mesh iota without its enclosed-current part, and its axis value.
 
@@ -460,9 +462,10 @@ def axis_field_strength(state: SpectralState, rt: SolverRuntime) -> Array:
     """Toroidally averaged ``|B|`` on the magnetic axis [T].
 
     The angle-averaged half-mesh ``|B| = sqrt(2 (bsq - p))`` (``wint``
-    weights) on the first three surfaces, extrapolated to ``s = 0`` with the
-    weights of :func:`geometric_iota`.  The wout ``b0`` is instead ``R B_phi``
-    over the axis radius at one toroidal angle (``eqfor.f``).
+    weights) on the first three surfaces, extrapolated to ``s = 0`` with
+    :data:`_AXIS_WEIGHTS` (as :func:`geometric_iota`).  The wout ``b0`` is
+    instead ``R B_phi`` over the axis radius at one toroidal angle
+    (``eqfor.f``).
     """
     _, _, _, fields, _ = _field_chain(state, rt)
     b_squared = 2.0 * (jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None])

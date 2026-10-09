@@ -133,6 +133,7 @@ VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressur
 MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >= MERCIER_S_MIN (edge excluded)
 # DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
 MERCIER_S_MIN = 0.2
+MERCIER_MARGIN = 0.02             # SLSQP holds a row only to its tolerance: DMerc stays strictly positive
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the objective adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -984,7 +985,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         if VACUUM_IOTA_FLOOR:
             rows.append((jnp.min(vacuum(state, runtime)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
         if MERCIER_FLOOR is not None:
-            rows.append(min_d_merc(state, runtime) - MERCIER_FLOOR)
+            rows.append(min_d_merc(state, runtime) - MERCIER_FLOOR - MERCIER_MARGIN)
         rows += [1.0 - nf / NORMAL_FIELD_CONSTRAINT, (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
                  (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE]
         q = qs.residuals_state(state, runtime)

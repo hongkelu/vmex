@@ -869,12 +869,11 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
     def normal_field(state, params, x):
         return total_normal_field_rms(coils_from_x(x), state, im.runtime_from_params(params, model.cfg))[None]
 
-    def quantities(state, params, x, nf=None):
-        """``[QA residuals..., B.n rms, plasma rows...]`` (rows scaled so c >= 0 is feasible; ``nf`` fixes B.n)."""
+    def constraint_rows(state, params, x, nf, with_vacuum=True):
+        """The plasma rows (scaled so c >= 0 is feasible), the vacuum-iota row only ``with_vacuum``."""
         runtime = im.runtime_from_params(params, model.cfg)
         iota, aspect, radius = (min_abs_iota(state, runtime), opt.aspect_ratio(state, runtime),
                                 opt.major_radius(state, runtime))
-        nf = normal_field(state, params, x)[0] if nf is None else nf
         strength = rbtor_ratio(state, runtime, coils_from_x(x)) - 1.0
         b_axis = opt.axis_field_strength(state, runtime)
         rows = [(iota - IOTA_FLOOR - IOTA_MARGIN) / IOTA_FLOOR,
@@ -886,25 +885,49 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
             rows.append((MIRROR_LIMIT - MIRROR_MARGIN - opt.mirror_ratio(state, runtime)) / MIRROR_LIMIT)
         if IOTA_CEILING:
             rows.append((IOTA_CEILING - IOTA_MARGIN - max_abs_iota(state, runtime)) / IOTA_FLOOR)
-        if VACUUM_IOTA_FLOOR:
-            rows.append((jnp.min(vacuum(state, runtime)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
+        if VACUUM_IOTA_FLOOR and with_vacuum:
+            rows.append(vacuum_row(state, params))
         rows += [1.0 - nf / NORMAL_FIELD_CONSTRAINT, (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
                  (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE]
-        return jnp.concatenate([qs.residuals_state(state, runtime), jnp.stack([nf] + rows)])
+        return rows
+
+    def vacuum_row(state, params):
+        runtime = im.runtime_from_params(params, model.cfg)
+        return (jnp.min(vacuum(state, runtime)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR
+
+    def quantities(state, params, x, nf=None):
+        """``[QA residuals..., B.n rms, plasma rows...]`` (``nf`` fixes B.n)."""
+        runtime = im.runtime_from_params(params, model.cfg)
+        nf = normal_field(state, params, x)[0] if nf is None else nf
+        return jnp.concatenate([qs.residuals_state(state, runtime), jnp.stack([nf] + constraint_rows(state, params, x, nf))])
 
     nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size)
     nrows = 7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + 3
+    vacuum_index = 7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING)  # the vacuum-iota row among the plasma rows
     quantities_jit = jax.jit(quantities)
+    # The objective's row and every plasma row (a unit cotangent each), in the order of quantity_pullback's parts.
+    others = [j for j in range(nrows) if not (VACUUM_IOTA_FLOOR and j == vacuum_index)]
+    order = np.argsort(np.r_[0, 1 + np.asarray(others), [1 + vacuum_index] * bool(VACUUM_IOTA_FLOOR)])
 
     @jax.jit
-    def quantity_pullback(state, mask, params, cots, x):
-        """Per-row pullback of ``cots . quantities`` with B.n held fixed, and each row's weight on B.n.
+    def quantity_pullback(state, mask, params, objective, x):
+        """Each row's pullback (the objective's cotangent ``objective``, then a unit one per plasma row) with B.n
+        held fixed, and each row's weight on B.n.
 
-        B.n goes forward along the linearization's columns instead (``normal_field_columns``): the virtual
-        casing's reverse pass stores its whole target-by-source kernel (25 GiB at the 4 nfp 48 x 96 quadrature).
+        Every row runs only its own part's reverse pass: the quasisymmetry residuals for the objective, the
+        vacuum-iota solve for its row, the other plasma rows together.  B.n goes forward along the linearization's
+        columns instead (``normal_field_columns``): the virtual casing's reverse pass stores its whole
+        target-by-source kernel (25 GiB at the 4 nfp 48 x 96 quadrature).
         """
         nf = normal_field(state, params, x)[0]
-        rest = model.pullback(lambda s, p, xx: quantities(s, p, xx, nf), state, mask, params, cots, x)
+        parts = [lambda s, p, xx: qs.residuals_state(s, im.runtime_from_params(p, model.cfg)),
+                 lambda s, p, xx: jnp.stack(constraint_rows(s, p, xx, nf, with_vacuum=False))]
+        blocks = [objective[None, :nq], jnp.eye(len(others))]
+        if VACUUM_IOTA_FLOOR:
+            parts.append(lambda s, p, xx: vacuum_row(s, p)[None])
+            blocks.append(jnp.ones((1, 1)))
+        rest = jax.tree.map(lambda a: a[order], model.pullback(tuple(parts), state, mask, params, tuple(blocks), x))
+        cots = jnp.concatenate([objective[None], jnp.eye(nrows, nq + 1 + nrows, nq + 1)])
         return rest, cots @ jax.jvp(lambda n: quantities(state, params, x, n), (nf,), (jnp.ones_like(nf),))[1]
 
     normal_field_columns = jax.jit(lambda state, mask, params, dz, batch, x: model.push(
@@ -978,7 +1001,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         cots = np.zeros((1 + nrows, values.size))
         cots[0, :nq], cots[0, nq] = q, normal_field_weight * nf
         cots[1:, nq + 1:] = np.eye(nrows)
-        params_bar, through = quantity_pullback(state, mask, params_x, jnp.asarray(cots), xj)
+        params_bar, through = quantity_pullback(state, mask, params_x, jnp.asarray(cots[0]), xj)
         G = np.asarray(to_coordinates(params_x, jnp.asarray(sol["x"]), xj, params_bar))
         G = G + np.outer(through, np.asarray(normal_field_columns(state, mask, params_x, dz, batch, xj)))
         Q, R = np.linalg.qr(J_c)
@@ -1281,8 +1304,7 @@ def main(argv=None):
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
 
-    def plasma_rows(state, ctx, coils):
-        """Rows that need the equilibrium, scaled so c >= 0 is feasible."""
+    def shape_rows(state, ctx, coils):
         iota, aspect, radius = min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
         rows = [(iota - IOTA_FLOOR - IOTA_MARGIN) / IOTA_FLOOR,
                 (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
@@ -1292,27 +1314,39 @@ def main(argv=None):
             rows.append((MIRROR_LIMIT - MIRROR_MARGIN - opt.mirror_ratio(state, ctx)) / MIRROR_LIMIT)
         if IOTA_CEILING:
             rows.append((IOTA_CEILING - IOTA_MARGIN - max_abs_iota(state, ctx)) / IOTA_FLOOR)
-        if VACUUM_IOTA_FLOOR:
-            rows.append((jnp.min(vacuum(state, ctx)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
-        if args.beta > 0:
-            strength = rbtor_ratio(state, ctx, coils) - 1.0
-            b_axis = opt.axis_field_strength(state, ctx)
-            rows += [1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT,
-                     (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
-                     (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE,
-                     (b_axis - B0 + b_width) / B_AXIS_TOLERANCE, (B0 + b_width - b_axis) / B_AXIS_TOLERANCE]
-        if redl is not None:
-            rows.append(1.0 - mismatch(state, ctx) / REDL_TOLERANCE)
         return jnp.stack(rows)
 
-    n_plasma = (5 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + 5 * (args.beta > 0)
-                + int(redl is not None))
+    def field_rows(state, ctx, coils):
+        strength = rbtor_ratio(state, ctx, coils) - 1.0
+        b_axis = opt.axis_field_strength(state, ctx)
+        return jnp.stack([(FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
+                          (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE,
+                          (b_axis - B0 + b_width) / B_AXIS_TOLERANCE, (B0 + b_width - b_axis) / B_AXIS_TOLERANCE])
 
-    def plasma_constraint(u):
+    # Rows that need the equilibrium (scaled so c >= 0 is feasible), in groups: a row's gradient differentiates
+    # only its group, so the vacuum-iota solve, the virtual casing and the bootstrap mismatch each run one
+    # reverse pass, not one per row.
+    plasma_groups, group_sizes = [shape_rows], [5 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING)]
+    if VACUUM_IOTA_FLOOR:
+        plasma_groups.append(lambda state, ctx, coils: (
+            (jnp.min(vacuum(state, ctx)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)[None])
+        group_sizes.append(1)
+    if args.beta > 0:
+        plasma_groups += [lambda state, ctx, coils: (
+            1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT)[None], field_rows]
+        group_sizes += [1, 4]
+    if redl is not None:
+        plasma_groups.append(lambda state, ctx, coils: (1.0 - mismatch(state, ctx) / REDL_TOLERANCE)[None])
+        group_sizes.append(1)
+
+    def plasma_rows(state, ctx, coils):
+        return jnp.concatenate([group(state, ctx, coils) for group in plasma_groups])
+
+    def plasma_constraint(u, groups=None):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         coils = objects_from_x(x)[3]
-        rows, _ = plasma_problem.jax_quantity_from_state(
-            x[:n_boundary], lambda state, ctx: plasma_rows(state, ctx, coils))
+        rows, _ = plasma_problem.jax_quantity_from_state(x[:n_boundary], lambda state, ctx: jnp.concatenate(
+            [group(state, ctx, coils) for group in (plasma_groups if groups is None else groups)]))
         return rows
 
     def coil_rows(u):
@@ -1330,7 +1364,8 @@ def main(argv=None):
     coil_rows_jit = jax.jit(coil_rows)
     plasma_rows_jit = jax.jit(plasma_constraint)
     # One adjoint per plasma row: the gradient of w . rows at a unit w, the forward solve reused.
-    plasma_row_grad = jax.jit(jax.grad(lambda u, w: jnp.vdot(w, plasma_constraint(u))))
+    group_grads = [jax.jit(jax.grad(lambda u, w, g=g: jnp.vdot(w, plasma_constraint(u, (g,)))))
+                   for g in plasma_groups]
     coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
     cache = {}
     def half_qa(u):
@@ -1366,7 +1401,8 @@ def main(argv=None):
 
     def plasma_jacobian(u):
         u = jnp.asarray(np.asarray(u, dtype=float))
-        jac = np.stack([np.asarray(plasma_row_grad(u, jnp.eye(n_plasma)[i])) for i in range(n_plasma)])
+        jac = np.stack([np.asarray(grad(u, jnp.eye(size)[i])) for grad, size in zip(group_grads, group_sizes)
+                        for i in range(size)])
         return np.where(np.isfinite(jac), jac, 0.0)
 
     last = dict(time=time.monotonic(), step=0)

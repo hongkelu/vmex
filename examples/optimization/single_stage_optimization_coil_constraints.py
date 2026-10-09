@@ -1042,6 +1042,9 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
     last = dict(time=time.monotonic(), step=0, u=np.zeros_like(x0))
 
     def save(tag, x):
+        # The gradient first (cached for SLSQP, which asks for it next): it solves the state tight, so the
+        # WOUT re-solve starts converged instead of iterating from the trial tolerance (1000-2000 iterations).
+        linearize(x)
         sol = solve(x)
         coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         deck = im.input_with_params(fixed, sol["params"])

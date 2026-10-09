@@ -110,6 +110,7 @@ VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressur
 MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >= MERCIER_S_MIN (edge excluded)
 # DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
 MERCIER_S_MIN = 0.2
+MERCIER_MARGIN = 0.02             # SLSQP holds a row only to its tolerance: DMerc stays strictly positive
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -1171,7 +1172,7 @@ def main(argv=None):
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
-        *([(MERCIER_FLOOR, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
+        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))

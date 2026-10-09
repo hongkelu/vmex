@@ -1336,38 +1336,42 @@ def main(argv=None):
     aspect_scale = 0.5 * (aspect_upper - aspect_lower)
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
 
-    def plasma_rows(state, ctx, coils):
-        """Rows that need the equilibrium, scaled so c >= 0 is feasible."""
-        iota, aspect, radius = min_abs_iota(state, ctx), opt.aspect_ratio(state, ctx), opt.major_radius(state, ctx)
-        rows = [(iota - IOTA_FLOOR - IOTA_MARGIN) / IOTA_FLOOR,
-                (aspect - aspect_lower) / aspect_scale, (aspect_upper - aspect) / aspect_scale,
-                (radius - RADIUS_TARGET + width) / RADIUS_TOLERANCE,
-                (RADIUS_TARGET + width - radius) / RADIUS_TOLERANCE]
+    # The function each plasma row comes from: a row's gradient runs only its own function's reverse pass (a zero
+    # weight still ran the virtual casing and the kinetic current backward for every row).
+    row_parts = (["geometry"] * (5 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR))
+                 + (["normal"] + ["geometry"] * 4) * (args.beta > 0) + ["kinetic"] * int(redl is not None))
+    n_plasma = len(row_parts)
+
+    def plasma_rows(state, ctx, coils, part=None):
+        """Rows that need the equilibrium, scaled so c >= 0 is feasible; ``part`` keeps one function's rows."""
+        rows = [lambda: (min_abs_iota(state, ctx) - IOTA_FLOOR - IOTA_MARGIN) / IOTA_FLOOR,
+                lambda: (opt.aspect_ratio(state, ctx) - aspect_lower) / aspect_scale,
+                lambda: (aspect_upper - opt.aspect_ratio(state, ctx)) / aspect_scale,
+                lambda: (opt.major_radius(state, ctx) - RADIUS_TARGET + width) / RADIUS_TOLERANCE,
+                lambda: (RADIUS_TARGET + width - opt.major_radius(state, ctx)) / RADIUS_TOLERANCE]
         if MIRROR_LIMIT:
-            rows.append((MIRROR_LIMIT - MIRROR_MARGIN - opt.mirror_ratio(state, ctx)) / MIRROR_LIMIT)
+            rows.append(lambda: (MIRROR_LIMIT - MIRROR_MARGIN - opt.mirror_ratio(state, ctx)) / MIRROR_LIMIT)
         if IOTA_CEILING:
-            rows.append((IOTA_CEILING - IOTA_MARGIN - max_abs_iota(state, ctx)) / IOTA_FLOOR)
+            rows.append(lambda: (IOTA_CEILING - IOTA_MARGIN - max_abs_iota(state, ctx)) / IOTA_FLOOR)
         if VACUUM_IOTA_FLOOR:
-            rows.append((jnp.min(vacuum(state, ctx)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
+            rows.append(lambda: (jnp.min(vacuum(state, ctx)) - VACUUM_IOTA_FLOOR - IOTA_MARGIN) / VACUUM_IOTA_FLOOR)
         if args.beta > 0:
-            strength = rbtor_ratio(state, ctx, coils) - 1.0
-            b_axis = opt.axis_field_strength(state, ctx)
-            rows += [1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT,
-                     (FIELD_STRENGTH_TOLERANCE - strength) / FIELD_STRENGTH_TOLERANCE,
-                     (FIELD_STRENGTH_TOLERANCE + strength) / FIELD_STRENGTH_TOLERANCE,
-                     (b_axis - B0 + b_width) / B_AXIS_TOLERANCE, (B0 + b_width - b_axis) / B_AXIS_TOLERANCE]
+            strength = lambda: rbtor_ratio(state, ctx, coils) - 1.0  # noqa: E731
+            b_axis = lambda: opt.axis_field_strength(state, ctx)  # noqa: E731
+            rows += [lambda: 1.0 - total_normal_field_rms(coils, state, ctx) / NORMAL_FIELD_CONSTRAINT,
+                     lambda: (FIELD_STRENGTH_TOLERANCE - strength()) / FIELD_STRENGTH_TOLERANCE,
+                     lambda: (FIELD_STRENGTH_TOLERANCE + strength()) / FIELD_STRENGTH_TOLERANCE,
+                     lambda: (b_axis() - B0 + b_width) / B_AXIS_TOLERANCE,
+                     lambda: (B0 + b_width - b_axis()) / B_AXIS_TOLERANCE]
         if redl is not None:
-            rows.append(1.0 - mismatch(state, ctx) / REDL_TOLERANCE)
-        return jnp.stack(rows)
+            rows.append(lambda: 1.0 - mismatch(state, ctx) / REDL_TOLERANCE)
+        return jnp.stack([row() for row, kind in zip(rows, row_parts) if part in (None, kind)])
 
-    n_plasma = (5 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + 5 * (args.beta > 0)
-                + int(redl is not None))
-
-    def plasma_constraint(u):
+    def plasma_constraint(u, part=None):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         coils = objects_from_x(x)[3]
         rows, _ = plasma_problem.jax_quantity_from_state(
-            x[:n_boundary], lambda state, ctx: plasma_rows(state, ctx, coils))
+            x[:n_boundary], lambda state, ctx: plasma_rows(state, ctx, coils, part))
         return rows
 
     def coil_rows(u):
@@ -1384,8 +1388,9 @@ def main(argv=None):
 
     coil_rows_jit = jax.jit(coil_rows)
     plasma_rows_jit = jax.jit(plasma_constraint)
-    # One adjoint per plasma row: the gradient of w . rows at a unit w, the forward solve reused.
-    plasma_row_grad = jax.jit(jax.grad(lambda u, w: jnp.vdot(w, plasma_constraint(u))))
+    # One adjoint per plasma row: the gradient of w . rows at a unit w over that row's function, the solve reused.
+    plasma_part_grad = {part: jax.jit(jax.grad(lambda u, w, part=part: jnp.vdot(w, plasma_constraint(u, part))))
+                        for part in set(row_parts)}
     coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
     cache = {}
     def half_qa(u):
@@ -1421,7 +1426,11 @@ def main(argv=None):
 
     def plasma_jacobian(u):
         u = jnp.asarray(np.asarray(u, dtype=float))
-        jac = np.stack([np.asarray(plasma_row_grad(u, jnp.eye(n_plasma)[i])) for i in range(n_plasma)])
+        jac = np.zeros((n_plasma, u.size))
+        for part, grad in plasma_part_grad.items():
+            rows = [i for i, kind in enumerate(row_parts) if kind == part]
+            for k, i in enumerate(rows):
+                jac[i] = np.asarray(grad(u, jnp.eye(len(rows))[k]))
         return np.where(np.isfinite(jac), jac, 0.0)
 
     last = dict(time=time.monotonic(), step=0)

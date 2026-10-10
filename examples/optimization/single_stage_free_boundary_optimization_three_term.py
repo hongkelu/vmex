@@ -131,6 +131,12 @@ COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
 COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m, to the current plasma boundary
 # Interior margins of the sampled constraints; endpoint checks use the limits.
 CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5, 0.001
+# Coil force: max |dF/dl| on each base coil (N/m, full coil current), mutual Biot-Savart from every other coil plus the
+# regularized self-field of a circular conductor (Hurwitz, Landreman & Antonsen 2023), as SIMSOPT's coil_force and
+# Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
+FORCE_LIMIT, FORCE_MARGIN = None, 0.0
+CONDUCTOR_RADIUS = 0.15 / 10.1266
+FORCE_POINTS = 128
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -866,6 +872,30 @@ def separations(points):
     return jnp.min(inter), jnp.min(own)
 
 
+def coil_forces(coils):
+    """Max force per unit length (N/m) on each base coil, symmetry copies included in the mutual field."""
+    import jax
+    import jax.numpy as jnp
+    from essos.fields import BiotSavart_from_gamma
+    from essos.objective_functions import B_regularized_pure, regularization_circ
+
+    full = resampled(coils, FORCE_POINTS)
+    g, gd, gdd = full.gamma, full.gamma_dash, full.gamma_dashdash
+    currents = jnp.asarray(coils.currents)
+    n_total, n_base = g.shape[0], int(np.asarray(coils.dofs_curves).shape[0])
+    others = jnp.asarray([[j for j in range(n_total) if j != i] for i in range(n_base)], dtype=jnp.int32)
+    quad = full.quadpoints
+    reg = regularization_circ(CONDUCTOR_RADIUS)
+
+    def one(i, other):
+        mutual = BiotSavart_from_gamma(g[other], gd[other], gdd[other], currents[other])
+        b = jax.vmap(mutual.B)(g[i]) + B_regularized_pure(g[i], gd[i], gdd[i], quad, currents[i], reg)
+        tangent = gd[i] / jnp.linalg.norm(gd[i], axis=1)[:, None]
+        return jnp.max(jnp.linalg.norm(jnp.cross(currents[i] * tangent, b), axis=1))
+
+    return jax.vmap(one)(jnp.arange(n_base), others)
+
+
 def coil_metrics(coils):
     """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks."""
     import jax.numpy as jnp
@@ -874,9 +904,12 @@ def coil_metrics(coils):
     speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
     curvature = base.curvature
     cc, own = separations(resampled(coils, DISTANCE_POINTS).gamma)
-    return dict(length=base.length, peak=jnp.max(curvature, axis=1),
-                msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
-                coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
+    m = dict(length=base.length, peak=jnp.max(curvature, axis=1),
+             msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
+             coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
+    if FORCE_LIMIT is not None:
+        m["max_force"] = coil_forces(coils)
+    return m
 
 
 def coil_inequalities(coils):
@@ -894,7 +927,8 @@ def coil_inequalities(coils):
                             jnp.atleast_1d((m["coil_distance"] - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN)
                                            / COIL_DISTANCE_LIMIT),
                             jnp.atleast_1d((m["self_distance"] - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT),
-                            (m["min_speed"] - 1e-4) / LENGTH_LIMIT))
+                            (m["min_speed"] - 1e-4) / LENGTH_LIMIT)
+                           + (((FORCE_LIMIT - FORCE_MARGIN - m["max_force"]) / FORCE_LIMIT,) if FORCE_LIMIT is not None else ()))
 
 
 def surface_distance(coils, surface):

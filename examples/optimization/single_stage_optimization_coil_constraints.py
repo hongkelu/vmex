@@ -189,6 +189,20 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
+# COIL_CASE_OVERRIDES: JSON dict of case constants to override, e.g. '{"VACUUM_IOTA_FLOOR": 0.29,
+# "ASPECT_RANGE": [5.9, 6.1], "SEED": [2, 6.0, 0.5]}' (lists become tuples). Applied before the derived values.
+_overrides = os.environ.get("COIL_CASE_OVERRIDES")
+if _overrides:
+    import json as _json
+    _deferred = {}
+    for _key, _value in _json.loads(_overrides).items():
+        if _key not in globals():
+            _deferred[_key] = _value  # constants defined further down (NORMAL_FIELD_WEIGHT, OPTIMIZER_FTOL, ...)
+            continue
+        globals()[_key] = tuple(_value) if isinstance(_value, list) else _value
+    print(f"COIL_CASE_OVERRIDES applied: {_overrides}")
+else:
+    _deferred = {}
 if CASE.endswith("-tok"):
     # A circular tokamak with a 1% helical ripple b / a, as vmex examples/data/input.minimal_seed_nfp*.
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
@@ -220,6 +234,10 @@ OPTIMIZER_FTOL = 1e-10
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32              # toroidal x poloidal points of the B.n and clearance surfaces
 VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-term arm's virtual-casing grid
+for _key, _value in _deferred.items():  # second pass of COIL_CASE_OVERRIDES for the constants above
+    if _key not in globals():
+        raise ValueError(f"unknown case constant {_key!r} in COIL_CASE_OVERRIDES")
+    globals()[_key] = tuple(_value) if isinstance(_value, list) else _value
                                    # (quadrature 4 nfp 48 x 96)
 
 # ---- seeds, targets and restarts -------------------------------------------------------------------------------------

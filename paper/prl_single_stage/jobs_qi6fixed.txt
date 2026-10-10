@@ -1,0 +1,1 @@
+qi6-fixed|F|qi6-beta|-|--beta 0.025 --bootstrap --device gpu|-

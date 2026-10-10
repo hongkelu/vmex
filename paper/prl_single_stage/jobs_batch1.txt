@@ -1,0 +1,23 @@
+# name|driver|COIL_CASE|overrides|extra args|restart source
+# --- Fig. 3: LP QA vacuum benchmark (single stage, Gil's thresholds) ---
+vac-L18|T|lpqa-L18|-|-|runs/ss_vac/lpqa-L18-c1
+vac-L18-wech|T|lpqa-L18-wech|-|-|runs/ss_vac/lpqa-L18-wech-c1
+vac-3coil|T|lpqa-3coil|-|-|runs/ss_vac/lpqa-3coil-c1
+vac-L24|T|lpqa-L24|-|--design-step-scale 0.2|-
+vac-L24-wech|T|lpqa-L24-wech|-|--design-step-scale 0.2|-
+vac-L20|T|lpqa-L20|-|--design-step-scale 0.5|-
+# --- Figs. 1, 2, 4: finite beta, self-consistent bootstrap, A 4 QA (free arm floors; fixed arm) ---
+qa4-free-vac027|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.27}|--beta 0.025 --bootstrap|-
+qa4-free-vac029|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.29}|--beta 0.025 --bootstrap|-
+qa4-free-vac031|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.31}|--beta 0.025 --bootstrap|-
+qa4-fixed|F|qa4-beta|-|--beta 0.025 --bootstrap --device gpu|-
+qa4-free-beta04|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.27}|--beta 0.04 --bootstrap|-
+# --- Table I: finite-beta QA at A 6 (matches the vacuum benchmark aspect ratio) ---
+qa6-free|T|qa4-beta|{"SEED": [2, 6.0, 0.5], "ASPECT_RANGE": [5.9, 6.1]}|--beta 0.025 --bootstrap|-
+#qa6-fixed (13 min/step, parked)|F|qa4-beta|{"SEED": [2, 6.0, 0.5], "ASPECT_RANGE": [5.9, 6.1]}|--beta 0.025 --bootstrap --device gpu|-
+# --- QI proof of concept (DKX bootstrap) ---
+qi6-free|T|qi6-beta|-|--beta 0.025 --bootstrap|-
+qi6-free-scale1|T|qi6-beta|-|--beta 0.025 --bootstrap --design-step-scale 1.0|-
+qi6-fixed|F|qi6-beta|-|--beta 0.025 --bootstrap --device gpu|-
+# --- L24 row: fresh start from Gil L24 with a gentler first step (tests whether the early overshoot is avoidable) ---
+vac-L24-s005|T|lpqa-L24|-|--design-step-scale 0.05|-

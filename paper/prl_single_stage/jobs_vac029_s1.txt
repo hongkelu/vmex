@@ -1,0 +1,1 @@
+qa4-free-vac029-s1|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.29}|--beta 0.025 --bootstrap --design-step-scale 1.0|runs/batch/qa4-free-vac029-c1

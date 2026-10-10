@@ -3841,7 +3841,12 @@ def _least_squares_implicit(
                 "decision vector did not produce a usable VMEC equilibrium"
             )
         result_input = input_from_x(x)
-        result = dataclasses.replace(hit[1], state=refined[1])
+        # The host refinement can leave the state on the CPU while the runtime below is built on the
+        # default device (qi6-beta's DKX path); evaluate_forces needs both on one device.
+        _device = jax.devices()[0]
+        _state = jax.tree_util.tree_map(
+            lambda a: jax.device_put(a, _device) if isinstance(a, jax.Array) else a, refined[1])
+        result = dataclasses.replace(hit[1], state=_state)
         ns = int(np.shape(result.state.R_cos)[0])
         runtime = prepare_runtime(
             result_input,

@@ -72,6 +72,7 @@ FREE_COIL_CURRENTS = True          # every base-coil current is a design variabl
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 PHIEDGE_STEP = 0.05                # coordinate scale of the relative PHIEDGE change
 OPTIMIZER_FTOL = 1e-10             # SLSQP ftol
+OBJECTIVE_SCALE = 1.0              # multiplies the SLSQP objective (its ftol and step tests are absolute): ~1e6 for targets ~1e-6
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -116,9 +117,11 @@ B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row 
 COIL_ORDER, N_SEGMENTS = 16, 256
 COIL_STEP = 0.05                   # coordinate scale of the coil Fourier modes
 LENGTH_LIMIT = 5.0                 # m, each independent coil
+TOTAL_LENGTH_LIMIT = None          # m, set: the SUM of the base-coil lengths (Gil et al.'s budget) replaces the per-coil rows
 # Set: the limits follow the widest plasma allowed, a = R / aspect_min, and the clearance d:
 # LENGTH_LIMIT = c_L 2 pi (a + d), CURVATURE_LIMIT = c_k / (a + d), MSC_LIMIT = c_m / (a + d)^2.
 COIL_LIMIT_FACTORS = None          # (c_L, c_k, c_m)
+SEED_NITER = None                  # set: iteration cap of the seed's single NS stage (default: the deck's)
 COIL_FIT_MAXITER = 200             # L-BFGS-B iterations of the finite-beta seed coil refit
 # Finite-beta seed coil refit: B.n/|B| unit and penalty weight of the scaled coil rows.
 COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
@@ -175,6 +178,28 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+elif CASE.startswith("lpqa-"):
+    # Vacuum benchmark on the Landreman-Paul precise QA (nfp 2, A 6): the coil thresholds of Gil et al. (2026)
+    # and Wechsung et al. (2022) at reactor scale (R0 = 10.1266 m) brought to R0 = 1 m: length per half period
+    # 182.2 / 203 / 243 m, curvature 0.5 /m, MSC 0.05 /m^2, coil-coil 1.0 m (1.5 m for 3 coils), coil-surface 1.5 m.
+    # lpqa-L18 / -L20 / -L24 start from Gil's coils of that length, lpqa-L18-wech etc. from Wechsung's,
+    # lpqa-3coil from Gil's 3-coil set (paper/coils, converted by paper/convert_coilsets.py).
+    _scale = 10.1266
+    _tag = CASE.removeprefix("lpqa-")
+    _start = "wechsung" if _tag.endswith("-wech") else "gil"
+    _tag = _tag.removesuffix("-wech")
+    _ncoils = 3 if _tag == "3coil" else 4
+    _length = {"L18": 182.2, "L20": 203.0, "L24": 243.0, "3coil": 182.2}[_tag]
+    INPUT_FILE = DATA / "input.LandremanPaul2021_QA_lowres"
+    COILS_FILE = Path("/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/coils") / (
+        "lpqa_gil_3coil_L18.json" if _tag == "3coil" else f"lpqa_{_start}_{_tag}.json")
+    COIL_ORDER = 16
+    LENGTH_LIMIT = _length / _scale / _ncoils
+    CURVATURE_LIMIT, MSC_LIMIT = 0.5 * _scale, 0.05 * _scale**2
+    COIL_DISTANCE_LIMIT = (1.5 if _tag == "3coil" else 1.0) / _scale
+    COIL_SURFACE_DISTANCE_LIMIT = 1.5 / _scale
+    IOTA_FLOOR, ASPECT_RANGE = 0.41, (5.9, 6.1)
+    SEED_NITER = 20000             # the deck's NITER_ARRAY (600) is too short for one NS = 51 stage at ftol 1e-15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
@@ -184,6 +209,16 @@ if CASE.endswith("-tok"):
     # Same sign as the bootstrap current it hands over to (negative for the (1, -1) QH), so the blend
     # never passes through zero current, where the seed has no transform.
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else -6.0e4 if CASE.startswith("qh4-beta") else 6.0e4
+# COIL_CASE_OVERRIDES: JSON dict of case constants to override, e.g. '{"VACUUM_IOTA_FLOOR": 0.29,
+# "ASPECT_RANGE": [5.9, 6.1], "SEED": [2, 6.0, 0.5]}' (lists become tuples). Applied before the derived values.
+_overrides = os.environ.get("COIL_CASE_OVERRIDES")
+if _overrides:
+    import json as _json
+    for _key, _value in _json.loads(_overrides).items():
+        if _key not in globals():
+            raise ValueError(f"unknown case constant {_key!r} in COIL_CASE_OVERRIDES")
+        globals()[_key] = tuple(_value) if isinstance(_value, list) else _value
+    print(f"COIL_CASE_OVERRIDES applied: {_overrides}")
 REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 # SLSQP's first step has an identity Hessian, so it grows with the target residual, which starts near 1 for
 # a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as the
@@ -223,6 +258,8 @@ def seed_input():
         rbc[ntor, 1] = zbs[ntor, 1] = minor * np.sqrt(1.0 + ratio**2)
         rbc[ntor - 1, 1], zbs[ntor - 1, 1] = -ratio * minor, ratio * minor
         inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=np.pi * minor**2)
+    if SEED_NITER is not None:
+        inp = replace(inp, niter_array=np.array([SEED_NITER]))
     return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]), lfreeb=False)
 
 
@@ -847,7 +884,11 @@ def coil_inequalities(coils):
     import jax.numpy as jnp
 
     m = coil_metrics(coils)
-    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - m["length"]) / LENGTH_LIMIT,
+    if TOTAL_LENGTH_LIMIT is not None:
+        length_rows = jnp.atleast_1d((TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(m["length"])) / TOTAL_LENGTH_LIMIT)
+    else:
+        length_rows = (LENGTH_LIMIT - LENGTH_MARGIN - m["length"]) / LENGTH_LIMIT
+    return jnp.concatenate((length_rows,
                             (CURVATURE_LIMIT - CURVATURE_MARGIN - m["peak"]) / CURVATURE_LIMIT,
                             (MSC_LIMIT - MSC_MARGIN - m["msc"]) / MSC_LIMIT,
                             jnp.atleast_1d((m["coil_distance"] - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN)
@@ -1033,7 +1074,7 @@ def main(argv=None):
 
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
-        return 0.5 * jnp.vdot(residuals, residuals)
+        return OBJECTIVE_SCALE * 0.5 * jnp.vdot(residuals, residuals)
 
     def clearance(state, runtime, x):
         return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
@@ -1089,7 +1130,7 @@ def main(argv=None):
         vac = np.asarray(vacuum(state_x, runtime_x))
         redl_row = 3 + len(mirror) + len(ceiling) + len(vacuum_floor)
         # "qa" holds the target residual of every case (QA, QH or QI), kept for compatibility
-        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[0]),
+        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x) / OBJECTIVE_SCALE, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),

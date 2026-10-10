@@ -26,7 +26,7 @@ sleep 2
 ( for p in runs/published/*; do grep -q '^done' $p.gilscore.log 2>/dev/null || $SR bash score_run_gil.sh $p < /dev/null > $p.gilscore.log 2>&1; done
   for r in vac-L18-exact vac-L20-exact vac-3coil-exact vac-L18-c2 vac-L20-c3 vac-3coil-c2 vac-L24-wech-hires12-feas vac-L24-wech-feas2 vac-L24-feas2; do
     d=$(latest_dir $r); [ -z "$d" ] && continue
-    grep -q "own LCFS (v2)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
+    grep -q "own LCFS (v3)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
     $SR bash score_run_gil.sh $d < /dev/null > $d.gilscore.log 2>&1; done ) &
 sleep 2
 ( d=$(latest_dir qa4-fixed); COIL_CASE=qa4-beta $SR $PY eval_steps_freeboundary.py $d runs/fig2/$(basename $d) --every 10 < /dev/null > runs/fig2/$(basename $d).log 2>&1 ) &

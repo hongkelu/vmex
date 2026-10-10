@@ -14,7 +14,7 @@ latest_dir() { ls -d runs/batch/$1/ runs/batch/$1-c*/ 2>/dev/null | sed 's:/$::'
 sleep 2
 ( for r in vac-L18-fair vac-3coil-fair vac-L20-fair vac-L24-wech-fair vac-L18-exact vac-L20-exact vac-3coil-exact vac-L18-c2 vac-L20-c3 vac-3coil-c2 vac-L24-wech-feas2 vac-L24-feas2; do
     d=$(latest_dir $r); [ -z "$d" ] && continue
-    grep -q "own LCFS (v2)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
+    grep -q "own LCFS (v3)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
     $SR bash score_run_gil.sh $d < /dev/null > $d.gilscore.log 2>&1; done ) &
 sleep 2
 ( while timeout 30 sacct -j $J -n -o JobID,State 2>/dev/null | grep RUNNING | awk '{print $1}' | sed 's/.*\.//' | awk '$1 ~ /^[0-9]+$/ && $1>=12' | grep -q .; do sleep 60; done

@@ -26,7 +26,7 @@ sleep 2
 ( for p in runs/published/*; do grep -q '^done' $p.gilscore.log 2>/dev/null || $SR bash score_run_gil.sh $p < /dev/null > $p.gilscore.log 2>&1; done
   for r in vac-L18-fair vac-3coil-fair vac-L20-fair vac-L24-wech-fair vac-L18-exact vac-L20-exact vac-3coil-exact vac-L18-c2 vac-L20-c3 vac-3coil-c2 vac-L24-wech-feas2 vac-L24-feas2; do
     d=$(latest_dir $r); [ -z "$d" ] && continue
-    grep -q "own LCFS (v2)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
+    grep -q "own LCFS (v3)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
     $SR bash score_run_gil.sh $d < /dev/null > $d.gilscore.log 2>&1; done ) &
 sleep 2
 wait; echo "$(date): stage_two_batch6 done"

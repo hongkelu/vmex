@@ -135,7 +135,7 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # regularized self-field of a circular conductor (Hurwitz, Landreman & Antonsen 2023), as SIMSOPT's coil_force and
 # Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
-CONDUCTOR_RADIUS = 0.15 / 10.1266
+CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
 FORCE_POINTS = 128
 
 if CASE == "ellipse5-beta7":

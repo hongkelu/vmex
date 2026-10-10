@@ -20,7 +20,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("coils")
 ap.add_argument("out")
 ap.add_argument("--scale", type=float, default=10.1266)
-ap.add_argument("--b-target", type=float, default=5.865)
+ap.add_argument("--b-target", type=float, default=5.865, help="provisional field scale; superseded by --b-surface")
+ap.add_argument("--b-surface", type=float, default=5.39, help="rescale currents so the mean |B| on the reactor-scale LP QA target surface is this (Gil archive: 5.39 T); 0 disables")
 ap.add_argument("--nquad", type=int, default=256)
 args = ap.parse_args()
 
@@ -38,6 +39,16 @@ for b, I in zip(dofs, currents):
     base_curves.append(c)
     base_currents.append(Current(float(I) * args.scale * args.b_target))
 coils = coils_via_symmetries(base_curves, base_currents, nfp, stellsym)
+if args.b_surface > 0:
+    from simsopt.field import BiotSavart
+    from simsopt.geo import SurfaceRZFourier
+    _s = SurfaceRZFourier.from_vmec_input("/pscratch/sd/h/hongkelu/freeboundary-single-stage/vmex/examples/data/input.LandremanPaul2021_QA_reactorScale_lowres",
+                                          range="full torus", quadpoints_phi=np.linspace(0, 1, 128, endpoint=False), quadpoints_theta=np.linspace(0, 1, 64, endpoint=False))
+    _bs = BiotSavart(coils); _bs.set_points(_s.gamma().reshape(-1, 3))
+    _f = args.b_surface / float(np.mean(np.linalg.norm(_bs.B(), axis=1)))
+    for c in base_currents:
+        c.x = c.x * _f
+    print(f"currents rescaled by {_f:.4f} so that mean |B| on the target surface = {args.b_surface} T")
 bs = BiotSavart(coils)
 bs.save(args.out)
 print(f"wrote {args.out}: {len(coils)} coils, order {order}, base currents {np.round([c.get_value() for c in base_currents], 0)} A")

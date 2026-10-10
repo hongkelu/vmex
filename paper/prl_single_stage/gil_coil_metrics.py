@@ -26,8 +26,8 @@ ap.add_argument("coils")
 ap.add_argument("out")
 ap.add_argument("--surface-wout", default=None)
 ap.add_argument("--surface-scale", type=float, default=10.1266)
-ap.add_argument("--a", type=float, default=0.15)
-ap.add_argument("--turns", type=float, default=200.0)
+ap.add_argument("--a", type=float, default=0.3)
+ap.add_argument("--turns", type=float, default=None, help="default: 200 for 4 base coils, 800/3 for 3 (Gil et al.)")
 args = ap.parse_args()
 
 bs = load(args.coils)
@@ -54,6 +54,8 @@ kappa = [float(np.max(np.abs(np.asarray(c.curve.kappa())))) for c in base]
 msc = [MeanSquaredCurvature(c.curve).J() for c in base]
 cc = CurveCurveDistance(curves, 10.0).shortest_distance()
 cs = CurveSurfaceDistance([c.curve for c in base], s, 10.0).shortest_distance()
+if args.turns is None:
+    args.turns = 200.0 if len(base) == 4 else 800.0 / len(base)
 forces = [float(np.max(np.linalg.norm(np.asarray(c.force(coils)), axis=1))) for c in base]
 rec = dict(coils=args.coils, surface=args.surface_wout or INPUT, nbase=nbase, ncoils=len(coils),
            length_per_hfp=float(sum(lengths)), lengths=[float(x) for x in lengths],

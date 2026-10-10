@@ -83,7 +83,7 @@ def main():
         rec.update(surface_wout=args.surface_wout, BdotN_own=float(np.mean(np.abs(Bn))),
                    BdotN_over_B_own=float(np.mean(np.abs(Bn)) / np.mean(modB)),
                    max_BdotN_over_B_own=float(np.max(np.abs(Bn.reshape(-1)) / modB.reshape(-1))))
-        print("B.n stats on the run's own LCFS (v2):", {k: rec[k] for k in ("BdotN_own", "BdotN_over_B_own", "max_BdotN_over_B_own")}, flush=True)
+        print("B.n stats on the run's own LCFS (v3):", {k: rec[k] for k in ("BdotN_own", "BdotN_over_B_own", "max_BdotN_over_B_own")}, flush=True)
 
     t0 = time.time()
     qfm_surf, qfm_obj = qfm_generator(s, coils)

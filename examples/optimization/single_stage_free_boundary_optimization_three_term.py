@@ -112,6 +112,15 @@ VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressur
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row about B0
+# Ideal-MHD stability rows (None: off).  MERCIER_FLOOR: the smooth minimum over s in [STABILITY_MIN_S, 1) of
+# PHIEDGE^2 DMerc (> 0 stable) is held above it; BALLOONING_LIMIT: the maximum over the sampled field lines of the
+# infinite-n ideal-ballooning eigenvalue lambda (> 0 unstable; vmex.core.stability, the COBRA analogue) is held below it.
+MERCIER_FLOOR, MERCIER_MARGIN, STABILITY_MIN_S = None, 0.0, 0.1
+STABILITY_TEMPERATURE = 0.01       # smooth-min temperature of the Mercier row (PHIEDGE^2 DMerc units)
+BALLOONING_LIMIT, BALLOONING_MARGIN = None, 0.0
+BALLOONING_S = (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)
+BALLOONING_ZETA0 = 5               # ballooning parameters scanned uniformly over [-pi/2, pi/2]
+BALLOONING_LINES = dict(npoints=97, nturns=3.0)
 
 # Coils and their hard engineering limits.
 COIL_ORDER, N_SEGMENTS = 16, 256
@@ -1098,6 +1107,25 @@ def main(argv=None):
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
     vacuum = vacuum_iota(inp)
     vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
+    # stability rows: smooth minimum of PHIEDGE^2 DMerc over the window, hard maximum of the ballooning eigenvalue
+    phiedge2 = float(inp.phiedge) ** 2
+    s_full = np.linspace(0.0, 1.0, int(RESOLUTION[2]))
+    mercier_window = (s_full >= STABILITY_MIN_S) & (s_full < 1.0)
+
+    def mercier_min(state, runtime):
+        from jax.nn import logsumexp
+        d = phiedge2 * opt.d_merc_state(state, runtime)[mercier_window]
+        return -STABILITY_TEMPERATURE * logsumexp(-d / STABILITY_TEMPERATURE)
+
+    ballooning_js = [min(max(int(round(s * (RESOLUTION[2] - 1))), 2), RESOLUTION[2] - 2) for s in BALLOONING_S]
+
+    def ballooning_max(state, runtime):
+        from vmex.core.stability import ballooning_growth_rate
+        return ballooning_growth_rate(state, runtime, s_indices=ballooning_js, reduction="max",
+                                      zeta0s=np.linspace(-np.pi / 2, np.pi / 2, BALLOONING_ZETA0), **BALLOONING_LINES)
+
+    mercier = (mercier_min,) if MERCIER_FLOOR is not None else ()
+    ballooning = (ballooning_max,) if BALLOONING_LIMIT is not None else ()
 
     def boundary_surface(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
@@ -1120,6 +1148,7 @@ def main(argv=None):
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
+                    *mercier, *ballooning,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
         three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
@@ -1141,6 +1170,8 @@ def main(argv=None):
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
+        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, max(abs(MERCIER_FLOOR), STABILITY_TEMPERATURE))] if mercier else []),
+        *([(-np.inf, BALLOONING_LIMIT - BALLOONING_MARGIN, 1e-3)] if ballooning else []),
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
@@ -1162,7 +1193,8 @@ def main(argv=None):
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         vac = np.asarray(vacuum(state_x, runtime_x))
-        redl_row = 3 + len(mirror) + len(ceiling) + len(vacuum_floor)
+        stability_row = 3 + len(mirror) + len(ceiling) + len(vacuum_floor)
+        redl_row = stability_row + len(mercier) + len(ballooning)
         # "qa" holds the target residual of every case (QA, QH or QI), kept for compatibility
         row = dict(step=problem.accepted_step, qa=2 * problem.fun(x) / OBJECTIVE_SCALE, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
@@ -1170,6 +1202,8 @@ def main(argv=None):
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
+                   **({"mercier_min": float(h[stability_row])} if mercier else {}),
+                   **({"ballooning_max": float(h[stability_row + len(mercier)])} if ballooning else {}),
                    **({"redl_mismatch": float(h[redl_row])} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
@@ -1186,6 +1220,8 @@ def main(argv=None):
               f"B_axis={row['b_axis_t']:.5f} R={row['major_radius_m']:.5f} aspect={row['aspect']:.4f} "
               f"clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
+              + (f"DMerc_min={row['mercier_min']:+.3e} " if mercier else "")
+              + (f"balloon_max={row['ballooning_max']:+.2e} " if ballooning else "")
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if current_in_solve else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "

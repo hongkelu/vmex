@@ -1,0 +1,3 @@
+# Showcase v2: A4 QA at <beta> 2.5 % (Redl bootstrap) with Mercier + infinite-n ballooning as hard rows, continued from the
+# free arm's best step (qa4-free-vac029-s1-c5 step 63, QS 2.4e-4, Mercier/ballooning unstable at the start).
+qa4-free-stable|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.29, "MERCIER_FLOOR": 0.0, "MERCIER_MARGIN": 0.002, "BALLOONING_LIMIT": 0.0, "BALLOONING_MARGIN": 0.0002}|--beta 0.025 --bootstrap --design-step-scale 0.2|runs/batch/restart_qa4-free-stable_59651566

@@ -105,7 +105,8 @@ if xs:
         ax.plot(x, y, "D", color=OURS, ms=6, mfc=OURS if k == "eval" else "white", mew=1.4, zorder=4)
 q3, k3 = ours("vac-3coil-fair2")  # 3-coil point with the force row, started from the published 3-coil set
 if q3 is None:
-    q3, k3 = ours("vac-3coil-fair")
+    q3, k3 = ours("vac-3coil-fair")   # no force row: its coils exceed the force limit -> always hollow
+    k3 = "standin" if q3 is not None else None
 if q3 is not None:
     ax.plot(182.2, q3, "^", color=OURS, ms=7, mfc=OURS if k3 == "eval" else "white", mew=1.4, zorder=4)
 t = json.load(open(EV / "target.json" if (EV / "target.json").exists() else EV8 / "target.json"))["qa_total"]
@@ -123,7 +124,7 @@ handles = [Line2D([], [], marker="D", color=OURS, ls="-", ms=6, label="this work
            Line2D([], [], marker="s", color=WECH, ls="", ms=3.5, mfc="none", label="Wechsung et al. 2022, other random starts"),
            Line2D([], [], marker="^", color="0.3", ls="", ms=7, label="3 coils per half period"),
            Line2D([], [], marker="o", color="0.3", ls="", ms=7, mfc="white", mew=1.4, label="hollow: outside the fixed thresholds")]
-ax.legend(handles=handles, loc="lower left", frameon=True, framealpha=0.95, edgecolor="0.85", fontsize=6.5)
+ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, frameon=False, fontsize=6.5, columnspacing=1.2, handletextpad=0.5)
 ax.set_title("LP QA, 4 coils/hfp, $\\kappa\\leq$0.5, MSC$\\leq$0.05, cc$\\geq$1.0 m, cs$\\geq$1.5 m, F$\\leq$0.72 MN/m", fontsize=6.5, loc="left")
 fig.savefig(out, bbox_inches="tight"); fig.savefig(out.replace(".pdf", ".png"), bbox_inches="tight")
 print("wrote", out); print("\n".join("  " + n for n in notes))

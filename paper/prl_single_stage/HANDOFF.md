@@ -80,6 +80,15 @@ Driver patches (in `vmex/examples/optimization/`): `lpqa-*` COIL_CASE, `TOTAL_LE
 - **Fig 4 draft done**: `analysis/fig4_pub.py` → `analysis/fig4.{pdf,png}` (CPU, `JAX_PLATFORMS=cpu`, ~10 s; `--run`, `--step`, `--alpha` args). Panels: (a) coils + LCFS |B| 3D, (b) |B| in Boozer coordinates at s = 0.5 (booz_xform_jax, mboz 24 / nboz 12), (c) Boozer spectrum vs s, (d) ι and ⟨J·B⟩. Non-symmetric Boozer rms/B00: 1.4e-3 (s 0.25), 6.5e-4 (s 0.5), 2.0e-3 (s 0.98). Re-run on the final free-arm step before submission.
 - Hurwitz `output.zip`: 9.6 of 17 GB at 19:07 (~2.5 MB/s → done ~20:00).
 
+## 7c. Session 2026-10-10 19:20–19:55: the showcase must be MHD-stable (user decision)
+
+- Finding: the A4 showcase (`qa4-free-vac029-s1-c5`) is Mercier-unstable on 96 % of surfaces (DMerc −7 → −0.5) and infinite-n ballooning-unstable on s = 0.5–0.9 (λ up to +6e-3); the fixed arm, the pure stage one and even the rotating-ellipse seed are unstable too — **neither paper driver had any stability row**. Certificate script: `analysis/stability_certificate.py <run> [--step N]` (fixed-boundary re-solve of the step, DMerc + ballooning; writes `<run>/stability.stepN.json`). No finite-n code exists in vmex.
+- User decision: Fig 4 / Table I showcase = our own A4-like configuration with coil constraints AND Mercier + ballooning stability (not a comparison with other coil papers; the Pareto benchmark stays vacuum QS-vs-length).
+- Driver patch (T driver): optional hard rows `MERCIER_FLOOR` (+`MERCIER_MARGIN`, `STABILITY_MIN_S`, smooth min of PHIEDGE²·DMerc, `STABILITY_TEMPERATURE`) and `BALLOONING_LIMIT` (+`BALLOONING_MARGIN`, `BALLOONING_S`, `BALLOONING_ZETA0`, `BALLOONING_LINES`; hard max of λ via `vmex.core.stability.ballooning_growth_rate`); logged as `mercier_min` / `ballooning_max` in metrics.jsonl. Off by default. Tested under jit + grad on the step-59 equilibrium (CPU) before launch.
+- Run **`qa4-free-stable`** (launched 19:53 in alloc 7, on the batch-8 list): restart of the free arm step 63 with `MERCIER_FLOOR 0 + margin 0.002`, `BALLOONING_LIMIT 0 − margin 2e-4`, VACUUM_IOTA_FLOOR 0.29, 8×8 modes, step scale 0.2 (`jobs_qa4_stable.txt`). Watch the first steps: the start violates both rows (feasibility restoration). Plan B if it thrashes: fixed-boundary driver with the same rows first (needs the same patch in the F driver — not done yet), then the free arm from that boundary. Then refine at 10×10 modes.
+- Alpha losses, free arm step 59: s = 0.25 0/1000, **s = 0.5 13/1000 (1.3 %)**, 0.2 s (`runs/alpha/qa4-free-s05`).
+- Coil-shape comparison figure: `analysis/fig_coils_compare.py` (ours vs Gil vs Wechsung at 18/20/24 m; shapes nearly identical, ours sit on the κ/MSC/cc limits).
+
 ## 8. Next steps
 
 1. After batch 8 starts (~21:00): confirm 11 chain launches + extras (`runs/extras_batch8.log`, `runs/launch_pareto_extra.log`). Check `vac-3coil-fair-c2` — it sat at step 3 for over an hour in allocation 7 (force row binding hard; inspect its log).

@@ -41,6 +41,7 @@ def latest_run(prefix):
 plt.rcParams.update({"font.size": 8, "axes.labelsize": 8.5, "legend.fontsize": 7, "xtick.labelsize": 7.5, "ytick.labelsize": 7.5,
                      "lines.linewidth": 1.5, "axes.linewidth": 0.8, "font.family": "sans-serif", "mathtext.fontset": "dejavusans"})
 fig, ax = plt.subplots(figsize=(3.6, 2.9), dpi=300)
+handles_ours = []
 front = {("hurfront_" + p["uuid"][:8]) for p in json.load(open(P.parent / "references/hurwitz2024/gil_filter_front.json"))}
 for name, m in M.items():
     q = qs_of(name)
@@ -55,7 +56,13 @@ for name, m in M.items():
         ax.plot(x, q, "o", color=HUR, ms=4, zorder=3)
     else:
         ax.plot(x, q, ".", color="0.7", ms=4, zorder=2)
-for tag, mfc, lab in (("A", OURS, "pinned"), ("B", "white", "aspect free")):
+FAMILIES = (("A", OURS, "D", "-", "this work, strict box ($\\kappa\\leq$5, MSC$\\leq$5, cc$\\geq$0.1, 25 m), plasma pinned"),
+            ("B", OURS, "D", "--", "this work, strict box, aspect ratio free"),
+            ("SA", "C2", "s", "-", "this work, scan constraints, start's own length, plasma pinned"),
+            ("SB", "C2", "s", "--", "this work, scan constraints, aspect ratio free"),
+            ("C", "C3", "^", "-", "this work, $\\langle\\beta\\rangle$ = 2.5 % (LBD profiles), strict box"),
+            ("SC", "C3", "^", "--", "this work, $\\langle\\beta\\rangle$ = 2.5 %, scan constraints"))
+for tag, color, marker, ls, lab in FAMILIES:
     xs, ys, hollow = [], [], []
     for thr in (7, 8, 9, 10, 11, 12, 13, 14, 16, 18):
         name = f"ff25{tag}-F{thr}"
@@ -75,18 +82,19 @@ for tag, mfc, lab in (("A", OURS, "pinned"), ("B", "white", "aspect free")):
         xs.append(x / 1e3); ys.append(q); hollow.append(kind != "eval")
     if xs:
         order = sorted(range(len(xs)), key=lambda i: xs[i])
-        ax.plot([xs[i] for i in order], [ys[i] for i in order], "-", color=OURS, lw=1.4, ls="-" if tag == "A" else "--", zorder=4)
+        ax.plot([xs[i] for i in order], [ys[i] for i in order], color=color, lw=1.4, ls=ls, zorder=4)
         for x, y, h in zip(xs, ys, hollow):
-            ax.plot(x, y, "D", color=OURS, ms=6, mfc="white" if (h or tag == "B") else OURS, mew=1.4, zorder=5)
+            ax.plot(x, y, marker, color=color, ms=6, mfc="white" if (h or ls == "--") else color, mew=1.4, zorder=5)
+        handles_ours.append(Line2D([], [], marker=marker, color=color, ls=ls, ms=6, mfc="white" if ls == "--" else color, mew=1.4, label=lab))
+ax.set_xlim(6.5, 17.5)
 ax.set_yscale("log"); ax.set_xlabel("max coil force (kN/m, $\\langle B\\rangle$ = 0.227 T, $R_0$ = 1 m)")
 ax.set_ylabel("QS error of the equilibrium the coils make")
 ax.grid(axis="y", color="0.9", lw=0.6); ax.set_axisbelow(True)
-handles = [Line2D([], [], marker="D", color=OURS, ls="-", ms=6, label="this work, plasma pinned ($R_0$, A, $\\iota$)"),
-           Line2D([], [], marker="D", color=OURS, ls="--", ms=6, mfc="white", mew=1.4, label="this work, aspect ratio free"),
+handles = handles_ours + [
            Line2D([], [], marker="*", color=GIL, ls="", ms=9, label="Gil et al. 2026, augmented Lagrangian"),
            Line2D([], [], marker="o", color=HUR, ls="", ms=4, label="Hurwitz et al. 2024 scan, Pareto front"),
            Line2D([], [], marker=".", color="0.7", ls="", ms=4, label="Hurwitz et al. 2024 scan, other sets")]
 ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, frameon=False, fontsize=6.5, columnspacing=1.2)
-ax.set_title("LP QA, 25 m per half period, 5 coils, $\\kappa\\leq$5, MSC$\\leq$5, cc$\\geq$0.1 m, cs$\\geq$0.15 m", fontsize=6.5, loc="left")
+ax.set_title("LP QA, 5 coils per half period, ~25 m; scan constraints: $\\kappa\\leq$12, MSC$\\leq$6, cc$\\geq$0.083 m, cs$\\geq$0.166 m", fontsize=6.5, loc="left")
 fig.savefig(out, bbox_inches="tight"); fig.savefig(out.replace(".pdf", ".png"), bbox_inches="tight")
 print("wrote", out); print("\n".join("  " + n for n in notes))

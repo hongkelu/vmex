@@ -27,9 +27,9 @@ ev() { [ -s $OUT/$1/row.json ] && return; echo "$(date +%H:%M) eval $1"; $SR $PY
 ( for L in 20 24; do for k in 0 1 2 3 4 5 6 7; do ev wech_cloud_L${L}_ig$k; done; done ) &
 sleep 5
 # 3. Gil-pipeline scoring (v3 convention) of published sets, fair twins and the Pareto points' latest coils
-( for p in runs/published/*; do grep -q "own LCFS (v3)" $p.gilscore.log 2>/dev/null && grep -q "^done" $p.gilscore.log 2>/dev/null && continue
+( for p in runs/published/*/; do p=${p%/}; grep -q "own LCFS (v3)" $p.gilscore.log 2>/dev/null && grep -q "^done" $p.gilscore.log 2>/dev/null && continue
     $SR bash score_run_gil.sh $p < /dev/null > $p.gilscore.log 2>&1; done
-  for r in vac-L18-fair vac-L20-fair vac-L24-wech-fair vac-3coil-fair pareto-L16 pareto-L17 pareto-L18 pareto-L19 pareto-L20 pareto-L21 pareto-L22 pareto-L24; do
+  for r in vac-L18-fair vac-L20-fair vac-L24-wech-fair vac-3coil-fair2 pareto-L16 pareto-L17 pareto-L18 pareto-L19 pareto-L20 pareto-L21 pareto-L22 pareto-L24; do
     d=$(latest_dir $r); [ -z "$d" ] && continue
     grep -q "own LCFS (v3)" $d.gilscore.log 2>/dev/null && grep -q "^done" $d.gilscore.log 2>/dev/null && continue
     $SR bash score_run_gil.sh $d < /dev/null > $d.gilscore.log 2>&1; done ) &

@@ -71,6 +71,15 @@ Finite β (A4 QA, 2.5 %, bootstrap): free arm actual 2.5e-4 (scored ≈ actual, 
 
 Driver patches (in `vmex/examples/optimization/`): `lpqa-*` COIL_CASE, `TOTAL_LENGTH_LIMIT`, `COIL_CASE_OVERRIDES` env (two-pass in the fixed-boundary driver), force row (`coil_forces`, `FORCE_LIMIT`, `CONDUCTOR_RADIUS`), `SEED_NITER`; `vmex/core/optimize.py` device fix.
 
+## 7b. Session 2026-10-10 19:00–19:10 (changes since the 18:45 snapshot)
+
+- `vac-3coil-fair-c2` was stuck at step 3 for 90 min (coil slack −0.48: its c1 coils were optimized without the force row and violate 110 MN/m by ~30 %, SLSQP never restored feasibility). Cancelled step `59651566.41`; launched **`vac-3coil-fair2`** at 19:01 (same overrides, 12×12, force row, fresh start = Gil's published 3-coil coils, which sit at the force limit → feasible start). `jobs_batch7.txt` line swapped to `vac-3coil-fair2|…|-` so the batch-8 chain continues it; `jobs_3coil_fair2.txt`, `runs/launch_3coil_fair2.log`.
+- `extras_batch8.sh`: Gil-scoring loop globbed `runs/published/*` (picked up the `.gilscore.log` files → `X.gilscore.log.gilscore.log` junk); now `runs/published/*/`; scores `vac-3coil-fair2` instead of `vac-3coil-fair`. The armed helper (pid 1045957) was left running — it was still in its top `until` loop and the edit only changed later lines, so it reads the fixed block when it fires.
+- `eval_sweep_batch4.sh`: added the Pareto points (`ours_pareto-L16…L24`, `L20.09`, `L23.66`) and `ours_vac-3coil-fair2` (latest continuation, always re-evaluated) — run it after batch 8 for the filled Fig 3 markers.
+- `analysis/fig_pareto.py`: 3-coil point from `vac-3coil-fair2` (falls back to `vac-3coil-fair`); force threshold 0.72 MN/m (Gil convention) in THR and title.
+- **Fig 4 draft done**: `analysis/fig4_pub.py` → `analysis/fig4.{pdf,png}` (CPU, `JAX_PLATFORMS=cpu`, ~10 s; `--run`, `--step`, `--alpha` args). Panels: (a) coils + LCFS |B| 3D, (b) |B| in Boozer coordinates at s = 0.5 (booz_xform_jax, mboz 24 / nboz 12), (c) Boozer spectrum vs s, (d) ι and ⟨J·B⟩. Non-symmetric Boozer rms/B00: 1.4e-3 (s 0.25), 6.5e-4 (s 0.5), 2.0e-3 (s 0.98). Re-run on the final free-arm step before submission.
+- Hurwitz `output.zip`: 9.6 of 17 GB at 19:07 (~2.5 MB/s → done ~20:00).
+
 ## 8. Next steps
 
 1. After batch 8 starts (~21:00): confirm 11 chain launches + extras (`runs/extras_batch8.log`, `runs/launch_pareto_extra.log`). Check `vac-3coil-fair-c2` — it sat at step 3 for over an hour in allocation 7 (force row binding hard; inspect its log).

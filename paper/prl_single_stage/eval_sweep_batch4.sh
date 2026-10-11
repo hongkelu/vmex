@@ -16,5 +16,7 @@ ev() { local name=$1 coils=$2; [ -z "$coils" ] && { echo "no coils for $name"; r
   for r in vac-L18-c2 vac-L18-wech-c2 vac-L20-c3 vac-3coil-c2 vac-L24-wech-c1 vac-L24-c2; do ev ours_$r "$(latest runs/batch/$r)"; done
   for r in vac-L18-exact vac-L20-exact vac-3coil-exact vac-L24-feas2 vac-L24-wech-feas2 vac-L24-wech-o24-feas vac-L24-wech-hires12-feas-c3; do ev ours_$r "$(latest runs/batch/$r)"; done
   # fair twins (plasma pinned to the target): latest continuation, re-evaluated whenever the sweep is re-run
-  for r in vac-L18-fair vac-3coil-fair vac-L20-fair vac-L24-wech-fair; do d=$(ls -d runs/batch/$r/ runs/batch/$r-c*/ 2>/dev/null | sed 's:/$::' | awk '{n=0; if (match($0,/-c[0-9]+$/)) n=substr($0,RSTART+2); print n, $0}' | sort -n | tail -1 | cut -d' ' -f2); rm -rf $OUT/ours_$r; ev ours_$r "$(latest $d)"; done ) &
+  for r in vac-L18-fair vac-3coil-fair vac-L20-fair vac-L24-wech-fair; do d=$(ls -d runs/batch/$r/ runs/batch/$r-c*/ 2>/dev/null | sed 's:/$::' | awk '{n=0; if (match($0,/-c[0-9]+$/)) n=substr($0,RSTART+2); print n, $0}' | sort -n | tail -1 | cut -d' ' -f2); rm -rf $OUT/ours_$r; ev ours_$r "$(latest $d)"; done
+  # Pareto scan (force row, plasma pinned) + the 3-coil point started from the published set: latest continuation, always re-evaluated
+  for r in pareto-L16 pareto-L17 pareto-L18 pareto-L19 pareto-L20 pareto-L20.09 pareto-L21 pareto-L22 pareto-L23.66 pareto-L24 vac-3coil-fair2; do d=$(ls -d runs/batch/$r/ runs/batch/$r-c*/ 2>/dev/null | sed 's:/$::' | awk '{n=0; if (match($0,/-c[0-9]+$/)) n=substr($0,RSTART+2); print n, $0}' | sort -n | tail -1 | cut -d' ' -f2); [ -z "$d" ] && continue; rm -rf $OUT/ours_$r; ev ours_$r "$(latest $d)"; done ) &
 wait; echo "$(date): eval sweep $TAG done"

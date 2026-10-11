@@ -4,7 +4,7 @@
 
 Fixed for every point: LP QA target (nfp 2, A 6, vacuum) with the plasma pinned (R0, A, min iota), 4 coils per half
 period of Fourier order 16 (3-coil sets drawn as triangles), curvature <= 0.5/m, MSC <= 0.05/m^2, coil-coil >= 1.0 m,
-coil-surface >= 1.5 m, max force <= 0.90 MN/m per turn, same free-boundary evaluator at one resolution.
+coil-surface >= 1.5 m, max force <= 0.72 MN/m per turn (Gil's convention), same free-boundary evaluator at one resolution.
 Ours: runs/batch/pareto-L<L>* (latest continuation; the 12x12 evaluator row ours_pareto-L<L> when present, otherwise the
 run's own value, listed on stdout).  Before the scan exists, the 18/20/24 m fair twins stand in (hollow markers).
 Published: Gil 2026 (circles) and Wechsung 2022 (squares); a marker is hollow when that set violates one of the fixed
@@ -28,7 +28,7 @@ EV, EV8 = P / f"runs/lpqa_vacuum_eval_{tag}", P / "runs/lpqa_vacuum_eval"
 SCALE = 10.1266
 OURS, GIL, WECH, TGT = "C0", "C1", "C2", "0.45"
 # fixed thresholds at reactor scale
-THR = dict(max_kappa=0.5, max_msc=0.05, min_cc=1.0, min_cs=1.5, max_force_MN_per_m_per_turn=0.90)
+THR = dict(max_kappa=0.5, max_msc=0.05, min_cc=1.0, min_cs=1.5, max_force_MN_per_m_per_turn=0.72)  # force: Gil's convention (a = 0.3 m, 200 turns)
 notes = []
 
 
@@ -103,7 +103,9 @@ if xs:
     ax.plot(xs, ys, "-", color=OURS, lw=1.6, zorder=2)
     for x, y, k in zip(xs, ys, kinds):
         ax.plot(x, y, "D", color=OURS, ms=6, mfc=OURS if k == "eval" else "white", mew=1.4, zorder=4)
-q3, k3 = ours("vac-3coil-fair")
+q3, k3 = ours("vac-3coil-fair2")  # 3-coil point with the force row, started from the published 3-coil set
+if q3 is None:
+    q3, k3 = ours("vac-3coil-fair")
 if q3 is not None:
     ax.plot(182.2, q3, "^", color=OURS, ms=7, mfc=OURS if k3 == "eval" else "white", mew=1.4, zorder=4)
 t = json.load(open(EV / "target.json" if (EV / "target.json").exists() else EV8 / "target.json"))["qa_total"]
@@ -122,6 +124,6 @@ handles = [Line2D([], [], marker="D", color=OURS, ls="-", ms=6, label="this work
            Line2D([], [], marker="^", color="0.3", ls="", ms=7, label="3 coils per half period"),
            Line2D([], [], marker="o", color="0.3", ls="", ms=7, mfc="white", mew=1.4, label="hollow: outside the fixed thresholds")]
 ax.legend(handles=handles, loc="lower left", frameon=True, framealpha=0.95, edgecolor="0.85", fontsize=6.5)
-ax.set_title("LP QA, 4 coils/hfp, $\\kappa\\leq$0.5, MSC$\\leq$0.05, cc$\\geq$1.0 m, cs$\\geq$1.5 m, F$\\leq$0.9 MN/m", fontsize=6.5, loc="left")
+ax.set_title("LP QA, 4 coils/hfp, $\\kappa\\leq$0.5, MSC$\\leq$0.05, cc$\\geq$1.0 m, cs$\\geq$1.5 m, F$\\leq$0.72 MN/m", fontsize=6.5, loc="left")
 fig.savefig(out, bbox_inches="tight"); fig.savefig(out.replace(".pdf", ".png"), bbox_inches="tight")
 print("wrote", out); print("\n".join("  " + n for n in notes))

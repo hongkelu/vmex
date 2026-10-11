@@ -194,6 +194,19 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+elif CASE == "lbd6-beta":
+    # Finite-beta force front (user, 2026-10-10): the Landreman-Buller-Drevlak 2022 A6 QA deck scaled to R0 = 1 m
+    # (paper/decks) with ITS pressure shape (p ~ 1 - s, the finite_beta_input default) at <beta> = --beta and its own
+    # bootstrap current profile (no Redl row); plasma free except R0 (the deck's 0.9942 m), the vacuum iota floor at
+    # LBD22's 0.23 and A <= 6.01; no Mercier rows.  Coil rows and the start coils come from the job line (Gil Fig-1 set).
+    INPUT_FILE = Path("/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/decks/input.lbd_qa6_R1_8x8")
+    COIL_ORDER = 16
+    IOTA_FLOOR, IOTA_MARGIN = 0.05, 0.0
+    VACUUM_IOTA_FLOOR = 0.23
+    ASPECT_RANGE = (2.0, 6.01)
+    RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 0.99417, 1e-3, 1e-4
+    COIL_FIT_MAXITER = 3000
+    SEED_NITER = 20000
 elif CASE.startswith("lpqa-"):
     # Vacuum benchmark on the Landreman-Paul precise QA (nfp 2, A 6): the coil thresholds of Gil et al. (2026)
     # and Wechsung et al. (2022) at reactor scale (R0 = 10.1266 m) brought to R0 = 1 m: length per half period

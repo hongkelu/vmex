@@ -43,7 +43,7 @@ A WOUT whose spectrum looks truncated (`spectral_truncation > 3e-3`) triggers a 
 | `--mbooz M`, `--nbooz N` | 32, 32 | Boozer resolution of the traced field | small |
 | `--trace-seed K` | 42 | births and collision noise | none |
 | `--trace-times K` | 1000 | samples of the loss-fraction curve | none |
-| `--trace-mode-cut C` | `2e-4` | drop modes below `C` times the largest cosine/sine amplitude | about `1 / C` in modes |
+| `--trace-mode-cut C` | `2e-4` | drop modes below `C` times the largest cosine/sine amplitude | grows with the modes up to 48, then flat (ESSOS sums them once onto an angle table) |
 
 The wall time is `particles × tmax / timestep` times a per-step cost. For
 example, going from the default to 5000 alphas over 0.1 s costs 50 times the

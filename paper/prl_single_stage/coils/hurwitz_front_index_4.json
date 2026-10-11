@@ -1,5 +1,30 @@
 [
  {
+  "max_kappa": 4.392997269954623,
+  "max_msc": 4.161284901414156,
+  "min_cc": 0.11373392860156825,
+  "min_cs": 0.24611514502980192,
+  "total_length": 25.6375493281395,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.921720028495394e-05,
+  "max_force_archive": 11368.156475731153,
+  "force_threshold": 11363.910510533355,
+  "success": true,
+  "UUID": "00310436333b457d829385396acac90e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/00310436333b457d829385396acac90e",
+  "feasible": true,
+  "name": "hurfront_00310436",
+  "currents": [
+   235420.74392009954,
+   241680.7337215685,
+   256510.2323123965,
+   283910.0724080159,
+   319537.2062046616
+  ]
+ },
+ {
   "max_kappa": 5.2229420107644415,
   "max_msc": 4.930940958116935,
   "min_cc": 0.11668222022874945,
@@ -50,6 +75,31 @@
   ]
  },
  {
+  "max_kappa": 4.222613819326612,
+  "max_msc": 4.190416794489383,
+  "min_cc": 0.11370954083799248,
+  "min_cs": 0.24703408252644746,
+  "total_length": 25.57703669642482,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.084529397965281e-05,
+  "max_force_archive": 11446.01858974752,
+  "force_threshold": 11442.837330131984,
+  "success": true,
+  "UUID": "0116dfb5bc7e4d1dbc916c4c4338414b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/0116dfb5bc7e4d1dbc916c4c4338414b",
+  "feasible": true,
+  "name": "hurfront_0116dfb5",
+  "currents": [
+   235753.3539296802,
+   242056.6841111772,
+   256892.99545652184,
+   284400.0980843666,
+   317955.85698499595
+  ]
+ },
+ {
   "max_kappa": 5.92641589477938,
   "max_msc": 5.931360027972758,
   "min_cc": 0.10441498510779317,
@@ -72,6 +122,31 @@
    344080.10893959814,
    263004.58275822457,
    242963.1049881566
+  ]
+ },
+ {
+  "max_kappa": 4.7248860322973645,
+  "max_msc": 4.297420361211453,
+  "min_cc": 0.11503166557193496,
+  "min_cs": 0.2441005568011124,
+  "total_length": 25.53502455549518,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.629485187334937e-05,
+  "max_force_archive": 11251.357965626861,
+  "force_threshold": 11246.37928541203,
+  "success": true,
+  "UUID": "020262ea4a0a4a1c85ae5000e4c3d0a1",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/020262ea4a0a4a1c85ae5000e4c3d0a1",
+  "feasible": true,
+  "name": "hurfront_020262ea",
+  "currents": [
+   235957.82728540336,
+   242027.88477940837,
+   256345.51286991694,
+   283934.69658115244,
+   318793.0670508615
   ]
  },
  {
@@ -125,6 +200,31 @@
   ]
  },
  {
+  "max_kappa": 4.861891578699936,
+  "max_msc": 4.355352017542093,
+  "min_cc": 0.1005222432376581,
+  "min_cs": 0.22459574515889208,
+  "total_length": 24.94232671665644,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00015975019643306668,
+  "max_force_archive": 10417.598035601934,
+  "force_threshold": 10407.88305055239,
+  "success": true,
+  "UUID": "027a9a4c53b74a2d86767ed4a4392112",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/027a9a4c53b74a2d86767ed4a4392112",
+  "feasible": true,
+  "name": "hurfront_027a9a4c",
+  "currents": [
+   234873.82392504354,
+   239494.73924168982,
+   250463.67173919277,
+   277867.5024897592,
+   334359.25117030053
+  ]
+ },
+ {
   "max_kappa": 5.050059239958357,
   "max_msc": 5.7655907387342396,
   "min_cc": 0.10637854508269141,
@@ -172,6 +272,31 @@
    253715.6600069879,
    279256.73038669163,
    327592.479945416
+  ]
+ },
+ {
+  "max_kappa": 4.927363152803334,
+  "max_msc": 4.2841136055913545,
+  "min_cc": 0.12642038988218723,
+  "min_cs": 0.23007692213674807,
+  "total_length": 24.900614494714468,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001310236287685085,
+  "max_force_archive": 10669.07846655874,
+  "force_threshold": 10665.942659143204,
+  "success": false,
+  "UUID": "03b3722e77c24d1daff9a06fb525130c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/03b3722e77c24d1daff9a06fb525130c",
+  "feasible": true,
+  "name": "hurfront_03b3722e",
+  "currents": [
+   238192.43805090807,
+   242560.81108769402,
+   254357.77394009364,
+   279007.85576375894,
+   322940.1097240817
   ]
  },
  {
@@ -250,6 +375,31 @@
   ]
  },
  {
+  "max_kappa": 4.516478315446722,
+  "max_msc": 4.381539478818831,
+  "min_cc": 0.10153948965485196,
+  "min_cs": 0.2636647689872824,
+  "total_length": 25.653351473248662,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.4714360756786476e-05,
+  "max_force_archive": 12546.932259318539,
+  "force_threshold": 12545.995499647455,
+  "success": true,
+  "UUID": "068b40f52d384ec79c38e180ee43cb08",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/068b40f52d384ec79c38e180ee43cb08",
+  "feasible": true,
+  "name": "hurfront_068b40f5",
+  "currents": [
+   236427.65968069297,
+   249334.0645578025,
+   270580.7288917462,
+   273467.4938185116,
+   307249.0416179879
+  ]
+ },
+ {
   "max_kappa": 5.005538204814153,
   "max_msc": 5.697845728731607,
   "min_cc": 0.10795438383808606,
@@ -297,6 +447,56 @@
    262639.12373743736,
    278931.82085928903,
    314695.7093503746
+  ]
+ },
+ {
+  "max_kappa": 4.520210538267684,
+  "max_msc": 4.773812062678039,
+  "min_cc": 0.10834500773852587,
+  "min_cs": 0.2557264393882002,
+  "total_length": 25.585807768662196,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.227445425284698e-05,
+  "max_force_archive": 12034.945976806304,
+  "force_threshold": 12034.919912986374,
+  "success": true,
+  "UUID": "083e5ae9bd49412fb4a188e3febacdae",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/083e5ae9bd49412fb4a188e3febacdae",
+  "feasible": true,
+  "name": "hurfront_083e5ae9",
+  "currents": [
+   238530.56426697611,
+   247621.76127763832,
+   268817.982259503,
+   276147.9608897229,
+   305940.71987290075
+  ]
+ },
+ {
+  "max_kappa": 4.750532644322127,
+  "max_msc": 4.825870583735566,
+  "min_cc": 0.1057226286651135,
+  "min_cs": 0.25923535995924796,
+  "total_length": 25.69053711232308,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.798245919891282e-05,
+  "max_force_archive": 12260.18172551765,
+  "force_threshold": 12291.010253629616,
+  "success": true,
+  "UUID": "084e757b131549a8a83f7ae94e4d8b0a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/084e757b131549a8a83f7ae94e4d8b0a",
+  "feasible": true,
+  "name": "hurfront_084e757b",
+  "currents": [
+   238332.1105279583,
+   247300.06995393938,
+   269740.3554139714,
+   275594.0294842339,
+   306092.42318663804
   ]
  },
  {
@@ -350,6 +550,56 @@
   ]
  },
  {
+  "max_kappa": 4.829305138480602,
+  "max_msc": 4.22337740527275,
+  "min_cc": 0.12199176147686686,
+  "min_cs": 0.23406630441149054,
+  "total_length": 25.26477091164825,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010581660253184346,
+  "max_force_archive": 10790.434374986602,
+  "force_threshold": 10788.124431170361,
+  "success": true,
+  "UUID": "09a6da570490432ca2ee36f8179718de",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/09a6da570490432ca2ee36f8179718de",
+  "feasible": true,
+  "name": "hurfront_09a6da57",
+  "currents": [
+   235564.10966954334,
+   240313.73406009006,
+   252979.7283271113,
+   281389.83707990247,
+   326811.57943006326
+  ]
+ },
+ {
+  "max_kappa": 4.750529127219314,
+  "max_msc": 4.825867398439606,
+  "min_cc": 0.1057225727682626,
+  "min_cs": 0.2592349598369458,
+  "total_length": 25.69053743855458,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.7980304617770425e-05,
+  "max_force_archive": 12260.23001333124,
+  "force_threshold": 12315.737050795933,
+  "success": true,
+  "UUID": "09bd3f173c3a4ba3ae03f26db9b44155",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/09bd3f173c3a4ba3ae03f26db9b44155",
+  "feasible": true,
+  "name": "hurfront_09bd3f17",
+  "currents": [
+   238332.11508508772,
+   247300.07091501766,
+   269740.35935953405,
+   275594.0271234354,
+   306092.4160836663
+  ]
+ },
+ {
   "max_kappa": 4.710259299695916,
   "max_msc": 4.703082727225146,
   "min_cc": 0.0960995170903707,
@@ -397,6 +647,31 @@
    231198.0879410808,
    187763.65541745813,
    375942.58704799844
+  ]
+ },
+ {
+  "max_kappa": 4.747140867758674,
+  "max_msc": 4.813900797914961,
+  "min_cc": 0.1039183864661652,
+  "min_cs": 0.26273617889432876,
+  "total_length": 25.661752833255296,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.466737888441665e-05,
+  "max_force_archive": 12608.842488411448,
+  "force_threshold": 12608.870954920832,
+  "success": true,
+  "UUID": "0a7ff45f9ef446b6ba0bb34e5c27856b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/0a7ff45f9ef446b6ba0bb34e5c27856b",
+  "feasible": true,
+  "name": "hurfront_0a7ff45f",
+  "currents": [
+   239293.92153667728,
+   251029.60866704732,
+   272696.1931873967,
+   274583.292365448,
+   299455.9728101718
   ]
  },
  {
@@ -475,6 +750,31 @@
   ]
  },
  {
+  "max_kappa": 4.655728955936855,
+  "max_msc": 4.874958363512507,
+  "min_cc": 0.10526814109709748,
+  "min_cs": 0.2615194188598607,
+  "total_length": 25.70948325907343,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.477643215940134e-05,
+  "max_force_archive": 12532.79548396051,
+  "force_threshold": 12532.76583838636,
+  "success": true,
+  "UUID": "0ba479271585451a9023bc2471628305",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/0ba479271585451a9023bc2471628305",
+  "feasible": true,
+  "name": "hurfront_0ba47927",
+  "currents": [
+   239092.16265739163,
+   250463.79306227787,
+   272399.6523271232,
+   274640.2664026957,
+   300463.1141172527
+  ]
+ },
+ {
   "max_kappa": 6.454233006936863,
   "max_msc": 6.043257020093051,
   "min_cc": 0.09858639900422352,
@@ -497,6 +797,31 @@
    232738.97685488543,
    213910.3402965248,
    383397.366268394
+  ]
+ },
+ {
+  "max_kappa": 4.3499492636147945,
+  "max_msc": 4.149654776667765,
+  "min_cc": 0.11393555224355004,
+  "min_cs": 0.24567900418698152,
+  "total_length": 25.58137216506425,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.279850120553884e-05,
+  "max_force_archive": 11328.534763235379,
+  "force_threshold": 11324.236721863123,
+  "success": true,
+  "UUID": "0bfe2fc2fa344bae95da0ab4dbe03e61",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/0bfe2fc2fa344bae95da0ab4dbe03e61",
+  "feasible": true,
+  "name": "hurfront_0bfe2fc2",
+  "currents": [
+   235800.22935601845,
+   242222.58833067253,
+   256626.14543431453,
+   284500.19910785847,
+   317909.8263378777
   ]
  },
  {
@@ -675,6 +1000,31 @@
   ]
  },
  {
+  "max_kappa": 4.403572024797089,
+  "max_msc": 4.185428317766306,
+  "min_cc": 0.11458702895049849,
+  "min_cs": 0.24497159645012304,
+  "total_length": 25.560750540816098,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.378273915213863e-05,
+  "max_force_archive": 11305.914748404337,
+  "force_threshold": 11302.349895873307,
+  "success": true,
+  "UUID": "0fd79b4eab2d40d699a1b77966cec6ea",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/0fd79b4eab2d40d699a1b77966cec6ea",
+  "feasible": true,
+  "name": "hurfront_0fd79b4e",
+  "currents": [
+   235861.51943727816,
+   242232.017471655,
+   256707.7843357729,
+   284467.0376207906,
+   317790.6297012452
+  ]
+ },
+ {
   "max_kappa": 4.520823724794153,
   "max_msc": 4.386211781542465,
   "min_cc": 0.10187489875470901,
@@ -697,6 +1047,31 @@
    270523.61337653553,
    273407.61926482245,
    307470.5545554432
+  ]
+ },
+ {
+  "max_kappa": 4.511790784952628,
+  "max_msc": 4.375703906092502,
+  "min_cc": 0.10156256253714044,
+  "min_cs": 0.26355145171386934,
+  "total_length": 25.65568853743202,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.493727434845184e-05,
+  "max_force_archive": 12523.216655271051,
+  "force_threshold": 12521.168807910008,
+  "success": true,
+  "UUID": "1058ceae260c4d628b984214cd443de4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1058ceae260c4d628b984214cd443de4",
+  "feasible": true,
+  "name": "hurfront_1058ceae",
+  "currents": [
+   236413.87488238944,
+   249313.2750833089,
+   270557.9202715362,
+   273435.85460083233,
+   307338.0637286743
   ]
  },
  {
@@ -875,6 +1250,31 @@
   ]
  },
  {
+  "max_kappa": 4.476837735941262,
+  "max_msc": 4.20650683040968,
+  "min_cc": 0.11664735868391331,
+  "min_cs": 0.24307383654899367,
+  "total_length": 25.432903528321738,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.119053203488694e-05,
+  "max_force_archive": 11244.176141855425,
+  "force_threshold": 11238.745640321351,
+  "success": true,
+  "UUID": "15d7303295504a68bcc1ea7d5afe9ba4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/15d7303295504a68bcc1ea7d5afe9ba4",
+  "feasible": true,
+  "name": "hurfront_15d73032",
+  "currents": [
+   236906.94180239883,
+   243054.6318779305,
+   257174.8027679919,
+   284864.1309225122,
+   315058.4811959108
+  ]
+ },
+ {
   "max_kappa": 6.709463830051967,
   "max_msc": 5.899085290307207,
   "min_cc": 0.10322363547219612,
@@ -900,6 +1300,156 @@
   ]
  },
  {
+  "max_kappa": 4.264275750426487,
+  "max_msc": 4.1569875390881945,
+  "min_cc": 0.10649407438261985,
+  "min_cs": 0.2578099225063032,
+  "total_length": 25.572414391050522,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.058362834509223e-05,
+  "max_force_archive": 12172.335094215605,
+  "force_threshold": 12170.425713780944,
+  "success": true,
+  "UUID": "16b16f38ae1040c193101ee157fd32aa",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/16b16f38ae1040c193101ee157fd32aa",
+  "feasible": true,
+  "name": "hurfront_16b16f38",
+  "currents": [
+   238452.1995535738,
+   247795.54400989463,
+   269749.5714922504,
+   273520.9024900661,
+   307540.7710209562
+  ]
+ },
+ {
+  "max_kappa": 4.580622546749297,
+  "max_msc": 4.283232617393895,
+  "min_cc": 0.1192783914006797,
+  "min_cs": 0.23920835469271756,
+  "total_length": 25.234348357256202,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.224500630648135e-05,
+  "max_force_archive": 11041.412918672488,
+  "force_threshold": 11039.332150911507,
+  "success": true,
+  "UUID": "1703f6dcf8ce4fe283f5fc086f479207",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1703f6dcf8ce4fe283f5fc086f479207",
+  "feasible": true,
+  "name": "hurfront_1703f6dc",
+  "currents": [
+   237580.99696329224,
+   242984.71435854636,
+   256651.67162473893,
+   282008.89670039096,
+   317832.7089197602
+  ]
+ },
+ {
+  "max_kappa": 4.942213695674367,
+  "max_msc": 4.6920143267733465,
+  "min_cc": 0.11798631571506539,
+  "min_cs": 0.23978653018437093,
+  "total_length": 25.355270321624097,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.10329697261519e-05,
+  "max_force_archive": 11038.290437226231,
+  "force_threshold": 11036.473786767268,
+  "success": true,
+  "UUID": "1716db2e10804128be11a7bce2db7d4b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1716db2e10804128be11a7bce2db7d4b",
+  "feasible": true,
+  "name": "hurfront_1716db2e",
+  "currents": [
+   236014.67022241597,
+   241120.00492382966,
+   255724.13969601277,
+   283890.4710588086,
+   320309.7026656897
+  ]
+ },
+ {
+  "max_kappa": 4.707320960637686,
+  "max_msc": 4.296049125236349,
+  "min_cc": 0.11496050445635773,
+  "min_cs": 0.24402296475337656,
+  "total_length": 25.5394034622571,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.58499419066953e-05,
+  "max_force_archive": 11252.988929788382,
+  "force_threshold": 11248.036892012013,
+  "success": true,
+  "UUID": "178aba0514e44dd58b297ef076c6f41c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/178aba0514e44dd58b297ef076c6f41c",
+  "feasible": true,
+  "name": "hurfront_178aba05",
+  "currents": [
+   235949.08351107556,
+   241987.79983315538,
+   256313.61141993394,
+   283887.7181659174,
+   318920.77563666017
+  ]
+ },
+ {
+  "max_kappa": 4.508892740252879,
+  "max_msc": 4.3745214053559325,
+  "min_cc": 0.10153988286600481,
+  "min_cs": 0.2636178671833502,
+  "total_length": 25.63312926115578,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.543688045725054e-05,
+  "max_force_archive": 12540.212521486907,
+  "force_threshold": 12539.151874849513,
+  "success": true,
+  "UUID": "17d137b4a9534fc6a936a9e3380821c2",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/17d137b4a9534fc6a936a9e3380821c2",
+  "feasible": true,
+  "name": "hurfront_17d137b4",
+  "currents": [
+   236500.15435699766,
+   249441.94980346123,
+   270692.55398125853,
+   273653.7645870835,
+   306770.56583794026
+  ]
+ },
+ {
+  "max_kappa": 4.6780099911195725,
+  "max_msc": 4.908587492509218,
+  "min_cc": 0.10367592430500518,
+  "min_cs": 0.262929559290102,
+  "total_length": 25.74349069471138,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.357561214412028e-05,
+  "max_force_archive": 12585.380068190943,
+  "force_threshold": 12585.361929082654,
+  "success": true,
+  "UUID": "1823cf5c79d848a4b1a2836408be30dd",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1823cf5c79d848a4b1a2836408be30dd",
+  "feasible": true,
+  "name": "hurfront_1823cf5c",
+  "currents": [
+   238986.34720523193,
+   250376.69304348266,
+   272750.9410495186,
+   274571.63689092797,
+   300373.37037758005
+  ]
+ },
+ {
   "max_kappa": 6.96507642599758,
   "max_msc": 6.046876346598833,
   "min_cc": 0.08969387464280343,
@@ -922,6 +1472,31 @@
    248568.2440822641,
    270574.9178690734,
    343681.1156993844
+  ]
+ },
+ {
+  "max_kappa": 4.387162858230444,
+  "max_msc": 4.173747400549803,
+  "min_cc": 0.11416161140427651,
+  "min_cs": 0.24540784196216847,
+  "total_length": 25.53737326671562,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.365234566494439e-05,
+  "max_force_archive": 11324.174274845636,
+  "force_threshold": 11319.769616264894,
+  "success": true,
+  "UUID": "18ef7d05c8424b2786aee03288155661",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/18ef7d05c8424b2786aee03288155661",
+  "feasible": true,
+  "name": "hurfront_18ef7d05",
+  "currents": [
+   236063.55419130085,
+   242365.34871390046,
+   256859.69195937607,
+   284699.36996536294,
+   317071.0237368017
   ]
  },
  {
@@ -1050,6 +1625,181 @@
   ]
  },
  {
+  "max_kappa": 4.845981125418023,
+  "max_msc": 4.251216325329073,
+  "min_cc": 0.12361510718845219,
+  "min_cs": 0.2322166307316471,
+  "total_length": 25.187509450324793,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011335124140292825,
+  "max_force_archive": 10725.352416507938,
+  "force_threshold": 10722.770707582467,
+  "success": true,
+  "UUID": "1c29e0f768ee413a96cc0a183eb6e5c0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1c29e0f768ee413a96cc0a183eb6e5c0",
+  "feasible": true,
+  "name": "hurfront_1c29e0f7",
+  "currents": [
+   236161.61512002902,
+   240742.5676931097,
+   252963.2935335119,
+   281245.4579524169,
+   325946.0542676012
+  ]
+ },
+ {
+  "max_kappa": 4.654498467764499,
+  "max_msc": 4.296947825937243,
+  "min_cc": 0.11922932158007535,
+  "min_cs": 0.23897832256206292,
+  "total_length": 25.28887755986683,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.075223215578897e-05,
+  "max_force_archive": 11020.909508829194,
+  "force_threshold": 11019.284123588775,
+  "success": true,
+  "UUID": "1c718e61e1b04f97a3c3260d809f2022",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1c718e61e1b04f97a3c3260d809f2022",
+  "feasible": true,
+  "name": "hurfront_1c718e61",
+  "currents": [
+   237219.48919662577,
+   242629.5045750452,
+   256199.30200329126,
+   281630.0738662284,
+   319380.6189255377
+  ]
+ },
+ {
+  "max_kappa": 4.747820902498963,
+  "max_msc": 4.81038381837495,
+  "min_cc": 0.10489699574461332,
+  "min_cs": 0.26173878137330725,
+  "total_length": 25.65607191226568,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.548932901844443e-05,
+  "max_force_archive": 12529.491934525011,
+  "force_threshold": 12535.224018383204,
+  "success": true,
+  "UUID": "1d322ea380f24dd9bd33d33713bef58b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1d322ea380f24dd9bd33d33713bef58b",
+  "feasible": true,
+  "name": "hurfront_1d322ea3",
+  "currents": [
+   239311.85605182097,
+   251031.9469401834,
+   272706.04951421934,
+   274577.1571480869,
+   299431.9789124306
+  ]
+ },
+ {
+  "max_kappa": 4.633082961311075,
+  "max_msc": 4.151620453851906,
+  "min_cc": 0.11817393104845698,
+  "min_cs": 0.2398007385700886,
+  "total_length": 25.21627315484441,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.222738981736854e-05,
+  "max_force_archive": 11026.460571848222,
+  "force_threshold": 11025.018119195343,
+  "success": true,
+  "UUID": "1d381a1e134b404eafcbb2db999b3176",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1d381a1e134b404eafcbb2db999b3176",
+  "feasible": true,
+  "name": "hurfront_1d381a1e",
+  "currents": [
+   236594.20465768568,
+   241842.87741655303,
+   254587.04467332514,
+   282000.6134166097,
+   322034.24840255885
+  ]
+ },
+ {
+  "max_kappa": 4.496069698433142,
+  "max_msc": 4.174545513663749,
+  "min_cc": 0.11584499391855164,
+  "min_cs": 0.24348868881566138,
+  "total_length": 25.57662947715734,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.628237859329941e-05,
+  "max_force_archive": 11243.209487497279,
+  "force_threshold": 11238.113544789661,
+  "success": true,
+  "UUID": "1e1772656dd94b669d59ad2068a620e3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1e1772656dd94b669d59ad2068a620e3",
+  "feasible": true,
+  "name": "hurfront_1e177265",
+  "currents": [
+   235911.0079216972,
+   242253.2811601513,
+   256570.188734097,
+   284427.20727654727,
+   317897.3034742502
+  ]
+ },
+ {
+  "max_kappa": 4.624453558513167,
+  "max_msc": 4.198629336017148,
+  "min_cc": 0.11364993204685178,
+  "min_cs": 0.24512388074781055,
+  "total_length": 25.648996951548483,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.158218266003611e-05,
+  "max_force_archive": 11290.040671494971,
+  "force_threshold": 11285.467578445283,
+  "success": true,
+  "UUID": "1f3c0db0b9284ce092d5011f7e2877a4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/1f3c0db0b9284ce092d5011f7e2877a4",
+  "feasible": true,
+  "name": "hurfront_1f3c0db0",
+  "currents": [
+   235598.4251957167,
+   241417.37632183143,
+   255816.6476210958,
+   283872.93698190653,
+   320353.6024461915
+  ]
+ },
+ {
+  "max_kappa": 4.3503137166563235,
+  "max_msc": 4.577732271305378,
+  "min_cc": 0.10711474344817785,
+  "min_cs": 0.2548146007572194,
+  "total_length": 24.840851353062586,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.858998629847791e-05,
+  "max_force_archive": 11869.005097646339,
+  "force_threshold": 11868.916886790068,
+  "success": true,
+  "UUID": "200700edb5ac41aaa59d56c352d3f73a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/200700edb5ac41aaa59d56c352d3f73a",
+  "feasible": true,
+  "name": "hurfront_200700ed",
+  "currents": [
+   237841.7347981786,
+   244468.80383370465,
+   262621.32935015764,
+   282762.0019519683,
+   309365.1186327319
+  ]
+ },
+ {
   "max_kappa": 6.893256753143972,
   "max_msc": 6.071921610741481,
   "min_cc": 0.10673162740465342,
@@ -1072,6 +1822,31 @@
    252740.40811813532,
    281448.7757979364,
    328895.1558150297
+  ]
+ },
+ {
+  "max_kappa": 4.835227188487127,
+  "max_msc": 4.991450759926518,
+  "min_cc": 0.10900212120752417,
+  "min_cs": 0.2537045950974269,
+  "total_length": 25.739240569775667,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.380194178095011e-05,
+  "max_force_archive": 11859.48453586264,
+  "force_threshold": 11859.443645370155,
+  "success": true,
+  "UUID": "213302fcb63e4c7baf597616f157bfca",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/213302fcb63e4c7baf597616f157bfca",
+  "feasible": true,
+  "name": "hurfront_213302fc",
+  "currents": [
+   237142.09748292604,
+   246699.68117405023,
+   266399.1156433799,
+   276106.73978562106,
+   310711.35448076366
   ]
  },
  {
@@ -1125,6 +1900,56 @@
   ]
  },
  {
+  "max_kappa": 4.756729868721799,
+  "max_msc": 4.552619085676707,
+  "min_cc": 0.11855558286208506,
+  "min_cs": 0.24083760517158045,
+  "total_length": 25.28238621839681,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.918838325476497e-05,
+  "max_force_archive": 11148.973303099447,
+  "force_threshold": 11147.250892729768,
+  "success": true,
+  "UUID": "21df193072744dc1b2094acafda48cd7",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/21df193072744dc1b2094acafda48cd7",
+  "feasible": true,
+  "name": "hurfront_21df1930",
+  "currents": [
+   235562.46754763433,
+   241152.6644452872,
+   255586.98413895955,
+   283762.57934459153,
+   320994.2930902779
+  ]
+ },
+ {
+  "max_kappa": 4.732172234514691,
+  "max_msc": 4.805612965015068,
+  "min_cc": 0.10607373820392596,
+  "min_cs": 0.2605213663358842,
+  "total_length": 25.653052138904286,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.623092682865118e-05,
+  "max_force_archive": 12455.043008945337,
+  "force_threshold": 12455.016993672982,
+  "success": true,
+  "UUID": "21e8b9ccf4f24a7bb1bc2eb5d3adaa5f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/21e8b9ccf4f24a7bb1bc2eb5d3adaa5f",
+  "feasible": true,
+  "name": "hurfront_21e8b9cc",
+  "currents": [
+   239312.02474313704,
+   250997.57641992872,
+   272649.77961107856,
+   274589.64896257827,
+   299509.9588300185
+  ]
+ },
+ {
   "max_kappa": 6.919631930825957,
   "max_msc": 5.981662531222937,
   "min_cc": 0.08792156645121497,
@@ -1150,6 +1975,31 @@
   ]
  },
  {
+  "max_kappa": 4.926956019487006,
+  "max_msc": 4.723370942006313,
+  "min_cc": 0.11804973744182344,
+  "min_cs": 0.23988306108182,
+  "total_length": 25.31035158601897,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.228077246046974e-05,
+  "max_force_archive": 11050.377737021166,
+  "force_threshold": 11047.94419162926,
+  "success": true,
+  "UUID": "22f523fab91742c0b14dad8dc96deed8",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/22f523fab91742c0b14dad8dc96deed8",
+  "feasible": true,
+  "name": "hurfront_22f523fa",
+  "currents": [
+   236401.231820101,
+   241625.45840366004,
+   256186.6588011346,
+   284164.2774518831,
+   318681.36208997795
+  ]
+ },
+ {
   "max_kappa": 7.056737601337325,
   "max_msc": 6.0975203209958115,
   "min_cc": 0.10681095751055025,
@@ -1172,6 +2022,131 @@
    253881.31149765008,
    284835.5358083762,
    327462.3670720947
+  ]
+ },
+ {
+  "max_kappa": 4.798373659620593,
+  "max_msc": 4.221897042116171,
+  "min_cc": 0.11958598645216424,
+  "min_cs": 0.23805533042790616,
+  "total_length": 25.19220956354639,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.712527458101097e-05,
+  "max_force_archive": 10958.893087972414,
+  "force_threshold": 10957.314751679998,
+  "success": true,
+  "UUID": "23f1c58ba8ad4b41b7caae61118df7ff",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/23f1c58ba8ad4b41b7caae61118df7ff",
+  "feasible": true,
+  "name": "hurfront_23f1c58b",
+  "currents": [
+   236859.31827913504,
+   242008.0655428573,
+   254695.40828973855,
+   282100.70770047774,
+   321395.48875451606
+  ]
+ },
+ {
+  "max_kappa": 4.7355615679848135,
+  "max_msc": 4.7890003858874675,
+  "min_cc": 0.1074056613338301,
+  "min_cs": 0.25672825626647755,
+  "total_length": 25.684152682626795,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.039955492895269e-05,
+  "max_force_archive": 12098.71452871988,
+  "force_threshold": 12098.677673303804,
+  "success": true,
+  "UUID": "25295c9363cf424ba957fe05e246736c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/25295c9363cf424ba957fe05e246736c",
+  "feasible": true,
+  "name": "hurfront_25295c93",
+  "currents": [
+   238293.7799640022,
+   247220.22271135246,
+   269578.536149655,
+   275603.05312008166,
+   306363.3966216496
+  ]
+ },
+ {
+  "max_kappa": 4.828214788351679,
+  "max_msc": 4.238664525037052,
+  "min_cc": 0.12074420425154021,
+  "min_cs": 0.23656804983689148,
+  "total_length": 25.22814923925307,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.912747388933298e-05,
+  "max_force_archive": 10899.964059331907,
+  "force_threshold": 10897.498133610596,
+  "success": true,
+  "UUID": "25bace18a8a44d4b8551d24ba0c45478",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/25bace18a8a44d4b8551d24ba0c45478",
+  "feasible": true,
+  "name": "hurfront_25bace18",
+  "currents": [
+   236665.2298722084,
+   241733.07023098058,
+   254410.83859523546,
+   281728.5585332028,
+   322521.2913350878
+  ]
+ },
+ {
+  "max_kappa": 4.820202911021702,
+  "max_msc": 4.2260800032931405,
+  "min_cc": 0.12099721076300075,
+  "min_cs": 0.2362650587835021,
+  "total_length": 25.21477835308198,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010012629498653698,
+  "max_force_archive": 10893.746917008508,
+  "force_threshold": 10891.170341970188,
+  "success": true,
+  "UUID": "25eacbc8f24746fcb62f8e48c9e4210d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/25eacbc8f24746fcb62f8e48c9e4210d",
+  "feasible": true,
+  "name": "hurfront_25eacbc8",
+  "currents": [
+   236768.07761492164,
+   241835.3799966234,
+   254435.73661878466,
+   281811.59649371775,
+   322208.1978426645
+  ]
+ },
+ {
+  "max_kappa": 4.997249255638851,
+  "max_msc": 4.674319125950627,
+  "min_cc": 0.11812059358236467,
+  "min_cs": 0.23911765463274098,
+  "total_length": 25.362108170871707,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.232844456456279e-05,
+  "max_force_archive": 10991.8111217522,
+  "force_threshold": 10989.350599072202,
+  "success": true,
+  "UUID": "260cad45434c4aca85d391cc6d1165a8",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/260cad45434c4aca85d391cc6d1165a8",
+  "feasible": true,
+  "name": "hurfront_260cad45",
+  "currents": [
+   235136.8961311893,
+   240631.83077327273,
+   254851.819650542,
+   282875.88024351705,
+   323562.56176823756
   ]
  },
  {
@@ -1225,6 +2200,31 @@
   ]
  },
  {
+  "max_kappa": 4.66716963927045,
+  "max_msc": 4.315928050045045,
+  "min_cc": 0.11352565893624715,
+  "min_cs": 0.24583955785634787,
+  "total_length": 25.550670953955866,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.33110147691782e-05,
+  "max_force_archive": 11317.258272753763,
+  "force_threshold": 11312.24489954839,
+  "success": true,
+  "UUID": "2770842c5f834558829b0faca80d0f53",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2770842c5f834558829b0faca80d0f53",
+  "feasible": true,
+  "name": "hurfront_2770842c",
+  "currents": [
+   235745.43293516317,
+   241935.82829365783,
+   256400.91705173792,
+   284036.84154926194,
+   318939.9687369209
+  ]
+ },
+ {
   "max_kappa": 4.683508489895287,
   "max_msc": 4.874591421756618,
   "min_cc": 0.10347564287990703,
@@ -1247,6 +2247,56 @@
    272829.1101532855,
    274567.21725066146,
    300341.90847668314
+  ]
+ },
+ {
+  "max_kappa": 4.935455734434956,
+  "max_msc": 4.27914391898366,
+  "min_cc": 0.12138774678838563,
+  "min_cs": 0.23589385105396019,
+  "total_length": 25.177173244256096,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001045444092975636,
+  "max_force_archive": 10857.32057580314,
+  "force_threshold": 10855.31714815855,
+  "success": true,
+  "UUID": "28839df4c9d542e2b3e4b32d74494a09",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/28839df4c9d542e2b3e4b32d74494a09",
+  "feasible": true,
+  "name": "hurfront_28839df4",
+  "currents": [
+   236924.65151865524,
+   242121.89365294707,
+   253955.3853408108,
+   279847.4368847685,
+   324209.6211695394
+  ]
+ },
+ {
+  "max_kappa": 4.153922472117291,
+  "max_msc": 4.125403907737669,
+  "min_cc": 0.10777207463834002,
+  "min_cs": 0.2562386595612706,
+  "total_length": 25.450514434038283,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.453069021832906e-05,
+  "max_force_archive": 12066.899128570967,
+  "force_threshold": 12064.344400699101,
+  "success": true,
+  "UUID": "2907625a297c423c8dfd968242977005",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2907625a297c423c8dfd968242977005",
+  "feasible": true,
+  "name": "hurfront_2907625a",
+  "currents": [
+   238910.27513403533,
+   248330.05290243842,
+   269302.21943904617,
+   274434.51095813076,
+   306081.93013309053
   ]
  },
  {
@@ -1300,6 +2350,31 @@
   ]
  },
  {
+  "max_kappa": 4.487429482534316,
+  "max_msc": 4.367448138341738,
+  "min_cc": 0.10091786964085016,
+  "min_cs": 0.2644703525951097,
+  "total_length": 25.655946594769496,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.379447771644733e-05,
+  "max_force_archive": 12640.956606345959,
+  "force_threshold": 12639.752928448528,
+  "success": true,
+  "UUID": "2abada088c5d476bac2110eec6c83c50",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2abada088c5d476bac2110eec6c83c50",
+  "feasible": true,
+  "name": "hurfront_2abada08",
+  "currents": [
+   236411.54544477141,
+   249350.42912566348,
+   270609.7381275374,
+   273518.30416215205,
+   307168.9717066168
+  ]
+ },
+ {
   "max_kappa": 5.14680337940919,
   "max_msc": 4.592062544169171,
   "min_cc": 0.11688755495571228,
@@ -1325,6 +2400,81 @@
   ]
  },
  {
+  "max_kappa": 4.9840994457126,
+  "max_msc": 4.594812861422836,
+  "min_cc": 0.11677949286258282,
+  "min_cs": 0.24100694693580046,
+  "total_length": 25.314041764901052,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.788632146493732e-05,
+  "max_force_archive": 11078.334637573833,
+  "force_threshold": 11074.657684897815,
+  "success": true,
+  "UUID": "2c8c17b4cc0c4bbb8ca36422ef2a0fd4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2c8c17b4cc0c4bbb8ca36422ef2a0fd4",
+  "feasible": true,
+  "name": "hurfront_2c8c17b4",
+  "currents": [
+   235584.0373519858,
+   241113.8144293334,
+   254447.3729374363,
+   280989.004591657,
+   324924.75925633055
+  ]
+ },
+ {
+  "max_kappa": 4.744809905976888,
+  "max_msc": 4.285369876306056,
+  "min_cc": 0.11574265922144683,
+  "min_cs": 0.24320196951843526,
+  "total_length": 25.508069067795414,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.838399866482724e-05,
+  "max_force_archive": 11223.910320245557,
+  "force_threshold": 11217.931888653982,
+  "success": true,
+  "UUID": "2cac0219e1f542e8834612870860db5c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2cac0219e1f542e8834612870860db5c",
+  "feasible": true,
+  "name": "hurfront_2cac0219",
+  "currents": [
+   236080.77922110507,
+   242189.3897112909,
+   256528.69724897353,
+   284106.2659223726,
+   318153.8564630012
+  ]
+ },
+ {
+  "max_kappa": 4.752180388297444,
+  "max_msc": 4.807312202157777,
+  "min_cc": 0.1065258208654854,
+  "min_cs": 0.2579844510692932,
+  "total_length": 25.68731701948756,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.9094529160971945e-05,
+  "max_force_archive": 12173.096648600133,
+  "force_threshold": 12173.060780658081,
+  "success": true,
+  "UUID": "2dfcbeeeb0af4fa3af258919877cc332",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2dfcbeeeb0af4fa3af258919877cc332",
+  "feasible": true,
+  "name": "hurfront_2dfcbeee",
+  "currents": [
+   238306.4355792055,
+   247262.68976024387,
+   269677.15756159,
+   275596.37114735536,
+   306216.33451834647
+  ]
+ },
+ {
   "max_kappa": 5.65848348340815,
   "max_msc": 5.137263715984742,
   "min_cc": 0.1216801182216375,
@@ -1347,6 +2497,56 @@
    252982.4233996452,
    280519.53799699526,
    329061.562038311
+  ]
+ },
+ {
+  "max_kappa": 4.573402732348079,
+  "max_msc": 4.525480500694553,
+  "min_cc": 0.11953215591684875,
+  "min_cs": 0.238995956729379,
+  "total_length": 24.72502312884466,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010592876695326516,
+  "max_force_archive": 11026.46140943351,
+  "force_threshold": 11023.00801548809,
+  "success": false,
+  "UUID": "2e939ac9a6944a9a939ac77a42dfb70f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2e939ac9a6944a9a939ac77a42dfb70f",
+  "feasible": true,
+  "name": "hurfront_2e939ac9",
+  "currents": [
+   238334.10734062636,
+   243220.4882775666,
+   257237.29799076272,
+   284083.27660494257,
+   314183.8183528416
+  ]
+ },
+ {
+  "max_kappa": 4.6446967433507576,
+  "max_msc": 4.187712056278599,
+  "min_cc": 0.11525251388682024,
+  "min_cs": 0.24402242311991668,
+  "total_length": 25.475452610785897,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.632022309685478e-05,
+  "max_force_archive": 11226.75260408693,
+  "force_threshold": 11225.643301169754,
+  "success": true,
+  "UUID": "2ebbb61cb1b24c1396b2f7f648b212cb",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2ebbb61cb1b24c1396b2f7f648b212cb",
+  "feasible": true,
+  "name": "hurfront_2ebbb61c",
+  "currents": [
+   235862.34212195175,
+   241250.62260659962,
+   254567.77245634512,
+   281755.21440458926,
+   323623.0369772525
   ]
  },
  {
@@ -1397,6 +2597,56 @@
    253332.0480158003,
    285015.4943752151,
    325264.6258213039
+  ]
+ },
+ {
+  "max_kappa": 4.691737254702581,
+  "max_msc": 4.907697503850879,
+  "min_cc": 0.10373890019372395,
+  "min_cs": 0.26281814001268977,
+  "total_length": 25.751143762776888,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.344100343294628e-05,
+  "max_force_archive": 12578.399645554617,
+  "force_threshold": 12578.379570798124,
+  "success": true,
+  "UUID": "2fad12bf35ba4ba4b1869998554b0a90",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/2fad12bf35ba4ba4b1869998554b0a90",
+  "feasible": true,
+  "name": "hurfront_2fad12bf",
+  "currents": [
+   238955.7915656959,
+   250355.56014215096,
+   272822.0344495659,
+   274569.40762959875,
+   300356.1947797298
+  ]
+ },
+ {
+  "max_kappa": 4.973889850961607,
+  "max_msc": 4.685904283396736,
+  "min_cc": 0.11900723968633302,
+  "min_cs": 0.2392804167156682,
+  "total_length": 25.03607624890784,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.685398938694927e-05,
+  "max_force_archive": 11026.94464188561,
+  "force_threshold": 11024.477493384626,
+  "success": false,
+  "UUID": "30a478d10fd247468bf54108c43e6569",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/30a478d10fd247468bf54108c43e6569",
+  "feasible": true,
+  "name": "hurfront_30a478d1",
+  "currents": [
+   237257.8063224656,
+   242778.9587916454,
+   256333.64078891315,
+   283019.6524027775,
+   317668.9302609475
   ]
  },
  {
@@ -1475,6 +2725,31 @@
   ]
  },
  {
+  "max_kappa": 4.8231034087098665,
+  "max_msc": 4.231560744861304,
+  "min_cc": 0.12310621146831856,
+  "min_cs": 0.23393767107273195,
+  "total_length": 25.14194050969732,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001093219400297896,
+  "max_force_archive": 10816.726403607829,
+  "force_threshold": 10813.829391263427,
+  "success": true,
+  "UUID": "330a1cfb213a4a999bfb06a692ca78bf",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/330a1cfb213a4a999bfb06a692ca78bf",
+  "feasible": true,
+  "name": "hurfront_330a1cfb",
+  "currents": [
+   237645.48552050296,
+   242332.9969015454,
+   254739.8539393173,
+   281680.3663168706,
+   320660.2858884414
+  ]
+ },
+ {
   "max_kappa": 5.046074482346396,
   "max_msc": 5.764509049099714,
   "min_cc": 0.10624647550581695,
@@ -1525,6 +2800,81 @@
   ]
  },
  {
+  "max_kappa": 4.615285674185298,
+  "max_msc": 4.17163506140879,
+  "min_cc": 0.11498794970846304,
+  "min_cs": 0.24339816087712754,
+  "total_length": 25.63276067899845,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.603990422936481e-05,
+  "max_force_archive": 11206.90627000408,
+  "force_threshold": 11203.088181571049,
+  "success": true,
+  "UUID": "354b6e6a38eb4d23881a97b77bf778e0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/354b6e6a38eb4d23881a97b77bf778e0",
+  "feasible": true,
+  "name": "hurfront_354b6e6a",
+  "currents": [
+   236198.41271521157,
+   241182.23407655823,
+   255254.49462664797,
+   283066.083740349,
+   321357.763407975
+  ]
+ },
+ {
+  "max_kappa": 4.077299458061906,
+  "max_msc": 4.173440644894165,
+  "min_cc": 0.11399178058507785,
+  "min_cs": 0.24759781810528203,
+  "total_length": 25.551397992746768,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.218185068487567e-05,
+  "max_force_archive": 11544.057155310156,
+  "force_threshold": 11537.576673321868,
+  "success": true,
+  "UUID": "3578c192974146c1a80b38d95f7cb23d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3578c192974146c1a80b38d95f7cb23d",
+  "feasible": true,
+  "name": "hurfront_3578c192",
+  "currents": [
+   235882.24512026948,
+   242173.4730631374,
+   256970.56541849452,
+   284586.015425293,
+   317446.68953954737
+  ]
+ },
+ {
+  "max_kappa": 4.982749033027372,
+  "max_msc": 4.695404146718901,
+  "min_cc": 0.1180873330715615,
+  "min_cs": 0.23959061672567836,
+  "total_length": 25.128280827100344,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.041879280932111e-05,
+  "max_force_archive": 11051.260641927394,
+  "force_threshold": 11048.67518473884,
+  "success": true,
+  "UUID": "37cfc9615b6b456d93720aa6f1564af2",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/37cfc9615b6b456d93720aa6f1564af2",
+  "feasible": true,
+  "name": "hurfront_37cfc961",
+  "currents": [
+   235830.78116987261,
+   241228.7031452034,
+   255253.05883222577,
+   283519.8616560783,
+   321226.5837633667
+  ]
+ },
+ {
   "max_kappa": 6.934853854174138,
   "max_msc": 5.971035692485534,
   "min_cc": 0.08755690306032611,
@@ -1547,6 +2897,31 @@
    250214.8372911282,
    276527.69036746095,
    339121.402884629
+  ]
+ },
+ {
+  "max_kappa": 4.215471738330721,
+  "max_msc": 4.240848665636603,
+  "min_cc": 0.11119053922938713,
+  "min_cs": 0.2504529589820024,
+  "total_length": 25.08223248719799,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.069667249702423e-05,
+  "max_force_archive": 11624.625891996306,
+  "force_threshold": 11623.573503936272,
+  "success": true,
+  "UUID": "3874baa0fe7a42a9ba37e4c3af63ecc7",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3874baa0fe7a42a9ba37e4c3af63ecc7",
+  "feasible": true,
+  "name": "hurfront_3874baa0",
+  "currents": [
+   236680.32288391885,
+   243606.67168008542,
+   260513.72191071796,
+   283860.8356871712,
+   312397.43640484754
   ]
  },
  {
@@ -1575,6 +2950,106 @@
   ]
  },
  {
+  "max_kappa": 4.52025878887061,
+  "max_msc": 4.3910499441371815,
+  "min_cc": 0.10191501276268891,
+  "min_cs": 0.26350928139835467,
+  "total_length": 25.66316788565346,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.3998767951789895e-05,
+  "max_force_archive": 12584.3646340056,
+  "force_threshold": 12583.035831033372,
+  "success": true,
+  "UUID": "397c9d539ff542d68323bf3fb6942fc1",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/397c9d539ff542d68323bf3fb6942fc1",
+  "feasible": true,
+  "name": "hurfront_397c9d53",
+  "currents": [
+   236390.47010198983,
+   249289.54281485625,
+   270530.5500689462,
+   273405.4821234052,
+   307442.94345754385
+  ]
+ },
+ {
+  "max_kappa": 4.938630074078417,
+  "max_msc": 4.683242684616221,
+  "min_cc": 0.11862925455313127,
+  "min_cs": 0.23870333195965648,
+  "total_length": 25.308748101290224,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.570318777549948e-05,
+  "max_force_archive": 10987.063579055657,
+  "force_threshold": 10984.382302274566,
+  "success": true,
+  "UUID": "3b2fe8d61ba842c6a670c6e7ae69ef42",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3b2fe8d61ba842c6a670c6e7ae69ef42",
+  "feasible": true,
+  "name": "hurfront_3b2fe8d6",
+  "currents": [
+   235606.2171899071,
+   240978.45039189755,
+   255097.55121749977,
+   283181.5329210389,
+   322195.2368464176
+  ]
+ },
+ {
+  "max_kappa": 4.94076110076755,
+  "max_msc": 4.255376333657379,
+  "min_cc": 0.12256951172140869,
+  "min_cs": 0.2345272244873367,
+  "total_length": 25.16780669221103,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001079596213152612,
+  "max_force_archive": 10819.103896342658,
+  "force_threshold": 10816.8092248968,
+  "success": true,
+  "UUID": "3b4f952f957d40f2bf2bd48db404c68c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3b4f952f957d40f2bf2bd48db404c68c",
+  "feasible": true,
+  "name": "hurfront_3b4f952f",
+  "currents": [
+   237004.3042029987,
+   242202.88250129452,
+   253954.68547917897,
+   279813.6873514991,
+   324083.42903173686
+  ]
+ },
+ {
+  "max_kappa": 4.501337121879704,
+  "max_msc": 4.200102832621645,
+  "min_cc": 0.11623903335402481,
+  "min_cs": 0.24436213637159265,
+  "total_length": 25.621543452863712,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.186401339460025e-05,
+  "max_force_archive": 11390.570112271747,
+  "force_threshold": 11664.16562778222,
+  "success": true,
+  "UUID": "3be2f4dfa2d143d1b9f5dded685f8116",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3be2f4dfa2d143d1b9f5dded685f8116",
+  "feasible": true,
+  "name": "hurfront_3be2f4df",
+  "currents": [
+   235588.25634420948,
+   241755.08287787743,
+   256492.782330328,
+   283915.07760529354,
+   319307.78940903407
+  ]
+ },
+ {
   "max_kappa": 7.012426384651028,
   "max_msc": 6.121242623552604,
   "min_cc": 0.09116538076412183,
@@ -1597,6 +3072,56 @@
    249630.80825452504,
    272980.93722079624,
    340317.17776896106
+  ]
+ },
+ {
+  "max_kappa": 4.712946094755528,
+  "max_msc": 4.14120781330203,
+  "min_cc": 0.1166845341320579,
+  "min_cs": 0.24150120424283011,
+  "total_length": 25.601860632467403,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.977473622695592e-05,
+  "max_force_archive": 11132.967050043117,
+  "force_threshold": 11125.952146220538,
+  "success": true,
+  "UUID": "3bfd9b27c51a440d93ebca8532384e2c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3bfd9b27c51a440d93ebca8532384e2c",
+  "feasible": true,
+  "name": "hurfront_3bfd9b27",
+  "currents": [
+   235927.18303808584,
+   241339.09458801863,
+   254999.41153746773,
+   282800.97219669085,
+   321992.3272064816
+  ]
+ },
+ {
+  "max_kappa": 4.753979703524345,
+  "max_msc": 4.829683176062468,
+  "min_cc": 0.10592354079251967,
+  "min_cs": 0.25875802327854264,
+  "total_length": 25.68941288492538,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.851570948398657e-05,
+  "max_force_archive": 12221.0092018902,
+  "force_threshold": 12220.984591901008,
+  "success": true,
+  "UUID": "3c26ba07d2f947eeaa8136384865b9ca",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/3c26ba07d2f947eeaa8136384865b9ca",
+  "feasible": true,
+  "name": "hurfront_3c26ba07",
+  "currents": [
+   238322.88430182965,
+   247287.90866377062,
+   269725.33075552987,
+   275597.0969495041,
+   306125.7678961067
   ]
  },
  {
@@ -1875,6 +3400,81 @@
   ]
  },
  {
+  "max_kappa": 4.461561271112324,
+  "max_msc": 4.404760547662968,
+  "min_cc": 0.10077801167318226,
+  "min_cs": 0.26463947979910646,
+  "total_length": 25.590939170968554,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.491027814793962e-05,
+  "max_force_archive": 12591.933747870726,
+  "force_threshold": 12591.036495831819,
+  "success": true,
+  "UUID": "45bcbe46b1c2499f8e90663d30d93f55",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/45bcbe46b1c2499f8e90663d30d93f55",
+  "feasible": true,
+  "name": "hurfront_45bcbe46",
+  "currents": [
+   236690.26987373907,
+   249722.36453216962,
+   270616.45121211046,
+   274128.65610606625,
+   305901.2468426558
+  ]
+ },
+ {
+  "max_kappa": 4.844593511647512,
+  "max_msc": 4.2361188127882885,
+  "min_cc": 0.1183233242663094,
+  "min_cs": 0.23914870793942966,
+  "total_length": 25.57267247301592,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.586895245637654e-05,
+  "max_force_archive": 11041.835075415398,
+  "force_threshold": 11035.447896678466,
+  "success": true,
+  "UUID": "462636b9fae04263b988f208fe3ba864",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/462636b9fae04263b988f208fe3ba864",
+  "feasible": true,
+  "name": "hurfront_462636b9",
+  "currents": [
+   236481.0828134641,
+   241447.85505575713,
+   255010.58096258756,
+   282561.9164807786,
+   321557.5532541621
+  ]
+ },
+ {
+  "max_kappa": 4.959946757293308,
+  "max_msc": 4.322405524829523,
+  "min_cc": 0.11769419052842822,
+  "min_cs": 0.22082172364248995,
+  "total_length": 24.80219150859067,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00018047659965675204,
+  "max_force_archive": 10336.152309036033,
+  "force_threshold": 10330.134863594058,
+  "success": false,
+  "UUID": "465b0af903f14b9aab0f96f8ee1cc927",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/465b0af903f14b9aab0f96f8ee1cc927",
+  "feasible": true,
+  "name": "hurfront_465b0af9",
+  "currents": [
+   236472.58995449686,
+   239800.70916115592,
+   251101.19120612773,
+   280195.38371167105,
+   329489.1145303643
+  ]
+ },
+ {
   "max_kappa": 4.820176860967966,
   "max_msc": 4.203932916589112,
   "min_cc": 0.11829458365746538,
@@ -1897,6 +3497,31 @@
    254902.30666823173,
    281963.21225995675,
    322098.66903847374
+  ]
+ },
+ {
+  "max_kappa": 4.239404091383445,
+  "max_msc": 4.075412955132312,
+  "min_cc": 0.10513722444451806,
+  "min_cs": 0.2594092197950943,
+  "total_length": 25.571024718892787,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.041359180504685e-05,
+  "max_force_archive": 12261.981104115892,
+  "force_threshold": 12259.825789022489,
+  "success": true,
+  "UUID": "46ed47c39a624534ab25aa214933d21c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/46ed47c39a624534ab25aa214933d21c",
+  "feasible": true,
+  "name": "hurfront_46ed47c3",
+  "currents": [
+   238455.9839477823,
+   247825.94579121022,
+   269790.98603996827,
+   273527.34329352074,
+   307458.7294942596
   ]
  },
  {
@@ -1947,6 +3572,31 @@
    262580.1937918914,
    279065.27418953826,
    314972.6072987485
+  ]
+ },
+ {
+  "max_kappa": 4.846417476608165,
+  "max_msc": 4.371820008331147,
+  "min_cc": 0.10117269935316762,
+  "min_cs": 0.22423525855375642,
+  "total_length": 24.8586274876476,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001636513626365654,
+  "max_force_archive": 10419.353912060706,
+  "force_threshold": 10410.92675332397,
+  "success": true,
+  "UUID": "4923688179ac44feb82eb08f517901bc",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/4923688179ac44feb82eb08f517901bc",
+  "feasible": true,
+  "name": "hurfront_49236881",
+  "currents": [
+   235565.51360183783,
+   240015.3924064153,
+   251372.20818990748,
+   278801.3242121186,
+   331304.5501555564
   ]
  },
  {
@@ -2025,6 +3675,31 @@
   ]
  },
  {
+  "max_kappa": 4.8702832153665,
+  "max_msc": 4.262656349029143,
+  "min_cc": 0.12048677802397192,
+  "min_cs": 0.23677269241940505,
+  "total_length": 25.275077996446793,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.711005801882093e-05,
+  "max_force_archive": 10898.159504722966,
+  "force_threshold": 10896.26775819455,
+  "success": true,
+  "UUID": "49ee3ecbb7294874847c68e2bc0599ce",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/49ee3ecbb7294874847c68e2bc0599ce",
+  "feasible": true,
+  "name": "hurfront_49ee3ecb",
+  "currents": [
+   236264.63405065853,
+   241335.9207348509,
+   254198.32011203226,
+   281357.78705516947,
+   323902.32661400666
+  ]
+ },
+ {
   "max_kappa": 5.732136071532129,
   "max_msc": 4.8621332627633596,
   "min_cc": 0.09940035321724447,
@@ -2047,6 +3722,81 @@
    253373.4557718514,
    284528.0158798905,
    325705.059382706
+  ]
+ },
+ {
+  "max_kappa": 4.421960369579741,
+  "max_msc": 4.283190143771537,
+  "min_cc": 0.1018222861543528,
+  "min_cs": 0.26401845997183904,
+  "total_length": 25.661784272226896,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.4043072792178946e-05,
+  "max_force_archive": 12700.9817673544,
+  "force_threshold": 12699.535224240653,
+  "success": true,
+  "UUID": "4a42a0e5054b477093bfd8c760998e50",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/4a42a0e5054b477093bfd8c760998e50",
+  "feasible": true,
+  "name": "hurfront_4a42a0e5",
+  "currents": [
+   236364.38394345247,
+   249295.77609784377,
+   270544.355211288,
+   273426.1622825722,
+   307428.31103158486
+  ]
+ },
+ {
+  "max_kappa": 4.7805442128163085,
+  "max_msc": 4.1410530040529,
+  "min_cc": 0.1226816898082123,
+  "min_cs": 0.2340893993404671,
+  "total_length": 25.26418565082195,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010443931351577491,
+  "max_force_archive": 10810.949067238611,
+  "force_threshold": 10808.073215988177,
+  "success": true,
+  "UUID": "4a7df8c5be414e9d948fe697d1004b69",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/4a7df8c5be414e9d948fe697d1004b69",
+  "feasible": true,
+  "name": "hurfront_4a7df8c5",
+  "currents": [
+   236514.3219898183,
+   241281.79038667673,
+   253494.64022778615,
+   280496.35961751116,
+   325271.87634489377
+  ]
+ },
+ {
+  "max_kappa": 4.784536218223266,
+  "max_msc": 4.660475446124969,
+  "min_cc": 0.11469651447891137,
+  "min_cs": 0.24444163059083182,
+  "total_length": 25.37927404451993,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.121752083000809e-05,
+  "max_force_archive": 11243.757132187533,
+  "force_threshold": 11242.220948155638,
+  "success": true,
+  "UUID": "4ae073642a6244d5aa3869f02ed353e6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/4ae073642a6244d5aa3869f02ed353e6",
+  "feasible": true,
+  "name": "hurfront_4ae07364",
+  "currents": [
+   234868.49741437114,
+   240727.7023612392,
+   255218.58934737399,
+   283260.11982538213,
+   322984.07961837744
   ]
  },
  {
@@ -2150,6 +3900,31 @@
   ]
  },
  {
+  "max_kappa": 4.652549135846007,
+  "max_msc": 4.600650045706209,
+  "min_cc": 0.11706838190952538,
+  "min_cs": 0.24206809432601217,
+  "total_length": 25.222350532320107,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.737899039065762e-05,
+  "max_force_archive": 11186.335652827333,
+  "force_threshold": 11183.803934432251,
+  "success": true,
+  "UUID": "4f855a0169904bf3ae36a4cb50f83a8d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/4f855a0169904bf3ae36a4cb50f83a8d",
+  "feasible": true,
+  "name": "hurfront_4f855a01",
+  "currents": [
+   236350.9367146601,
+   241721.86137425408,
+   257130.74903523596,
+   285266.41338411515,
+   316589.0280584832
+  ]
+ },
+ {
   "max_kappa": 6.007160506313696,
   "max_msc": 5.976969558595343,
   "min_cc": 0.10983163735879103,
@@ -2250,6 +4025,31 @@
   ]
  },
  {
+  "max_kappa": 4.989221564775452,
+  "max_msc": 4.681166607461948,
+  "min_cc": 0.11660140832174194,
+  "min_cs": 0.24139989751831745,
+  "total_length": 25.19817206719153,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.437346717731329e-05,
+  "max_force_archive": 11111.908802377187,
+  "force_threshold": 11109.908797363996,
+  "success": true,
+  "UUID": "50a9660fe5ba4ac7999fa2254d41d472",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/50a9660fe5ba4ac7999fa2254d41d472",
+  "feasible": true,
+  "name": "hurfront_50a9660f",
+  "currents": [
+   235375.34335520052,
+   240951.33084176708,
+   254954.0235891377,
+   283108.0974694409,
+   322670.1933111977
+  ]
+ },
+ {
   "max_kappa": 5.22592186562513,
   "max_msc": 4.692522720863064,
   "min_cc": 0.09967492139113213,
@@ -2275,6 +4075,31 @@
   ]
  },
  {
+  "max_kappa": 4.409433039508251,
+  "max_msc": 4.153565837423294,
+  "min_cc": 0.11483701728535149,
+  "min_cs": 0.24464394303213363,
+  "total_length": 25.567616684067485,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.465489534433461e-05,
+  "max_force_archive": 11290.091264816789,
+  "force_threshold": 11285.307445097204,
+  "success": true,
+  "UUID": "515a925d7fb54df999082f971af62569",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/515a925d7fb54df999082f971af62569",
+  "feasible": true,
+  "name": "hurfront_515a925d",
+  "currents": [
+   235920.0202776613,
+   242315.62151220444,
+   256675.75607542862,
+   284541.42210688,
+   317606.16859456786
+  ]
+ },
+ {
   "max_kappa": 4.509727475559391,
   "max_msc": 4.3751241556535145,
   "min_cc": 0.1013310444305975,
@@ -2297,6 +4122,56 @@
    270604.5625131976,
    273568.6908225819,
    307093.743682781
+  ]
+ },
+ {
+  "max_kappa": 4.262673215982329,
+  "max_msc": 4.125023279729259,
+  "min_cc": 0.10562432094248209,
+  "min_cs": 0.25929694177962037,
+  "total_length": 25.574883787219935,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.9376187122280307e-05,
+  "max_force_archive": 12292.918320552255,
+  "force_threshold": 12291.718423915143,
+  "success": true,
+  "UUID": "5204a07643864fc6bf3fab6c01afc71e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5204a07643864fc6bf3fab6c01afc71e",
+  "feasible": true,
+  "name": "hurfront_5204a076",
+  "currents": [
+   238463.894332741,
+   247821.18679868692,
+   269793.9003868555,
+   273515.9221799947,
+   307464.08486846293
+  ]
+ },
+ {
+  "max_kappa": 4.345425285831656,
+  "max_msc": 4.181002483488663,
+  "min_cc": 0.11296100059658737,
+  "min_cs": 0.2468042966220141,
+  "total_length": 25.5654552230789,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.191439517277912e-05,
+  "max_force_archive": 11373.299827680983,
+  "force_threshold": 11370.839885002004,
+  "success": true,
+  "UUID": "526b2089d23a412f8043626e095045ee",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/526b2089d23a412f8043626e095045ee",
+  "feasible": true,
+  "name": "hurfront_526b2089",
+  "currents": [
+   235799.33099607765,
+   242206.94369922715,
+   256722.04587654385,
+   284486.88132584275,
+   317843.78666905005
   ]
  },
  {
@@ -2400,6 +4275,56 @@
   ]
  },
  {
+  "max_kappa": 4.452714606605905,
+  "max_msc": 4.50139366012552,
+  "min_cc": 0.11412008942457139,
+  "min_cs": 0.24689470553114268,
+  "total_length": 24.782245501965512,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.154580491098397e-05,
+  "max_force_archive": 11490.325509058384,
+  "force_threshold": 11490.07012808689,
+  "success": true,
+  "UUID": "546c2298da7e40bebe9d721c11c4af91",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/546c2298da7e40bebe9d721c11c4af91",
+  "feasible": true,
+  "name": "hurfront_546c2298",
+  "currents": [
+   237993.099454267,
+   244311.59477681346,
+   261698.32112977776,
+   281789.8690793903,
+   311266.10412649374
+  ]
+ },
+ {
+  "max_kappa": 4.83708359432461,
+  "max_msc": 4.231932001740979,
+  "min_cc": 0.12106201010749686,
+  "min_cs": 0.23623793061967974,
+  "total_length": 25.201677876867056,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010086002194590364,
+  "max_force_archive": 10894.828025519557,
+  "force_threshold": 10892.184309135193,
+  "success": true,
+  "UUID": "547333bbc2ca4186a6f4b4673518f646",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/547333bbc2ca4186a6f4b4673518f646",
+  "feasible": true,
+  "name": "hurfront_547333bb",
+  "currents": [
+   236845.17742660048,
+   241959.70951942116,
+   254490.35336081957,
+   281933.35350095015,
+   321830.3947589198
+  ]
+ },
+ {
   "max_kappa": 4.6807080535616485,
   "max_msc": 5.362595260434814,
   "min_cc": 0.0974020951648793,
@@ -2475,6 +4400,31 @@
   ]
  },
  {
+  "max_kappa": 4.916852520979669,
+  "max_msc": 4.959263069048212,
+  "min_cc": 0.11615917660456125,
+  "min_cs": 0.24272734292653939,
+  "total_length": 25.254933720799162,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.320459263977495e-05,
+  "max_force_archive": 11172.650233390072,
+  "force_threshold": 11172.601580823006,
+  "success": true,
+  "UUID": "56aa74c864e743079d484977b1206c08",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/56aa74c864e743079d484977b1206c08",
+  "feasible": true,
+  "name": "hurfront_56aa74c8",
+  "currents": [
+   237236.53617319302,
+   243534.56759946598,
+   257184.28746278156,
+   281840.8452150592,
+   317262.75211623765
+  ]
+ },
+ {
   "max_kappa": 7.021832599250567,
   "max_msc": 6.128453631661139,
   "min_cc": 0.09139905479340277,
@@ -2497,6 +4447,56 @@
    249659.09719037995,
    273038.2006173448,
    340145.52457563585
+  ]
+ },
+ {
+  "max_kappa": 4.613530070725462,
+  "max_msc": 4.18368782723222,
+  "min_cc": 0.11601091974841553,
+  "min_cs": 0.2427247458489289,
+  "total_length": 25.565352990975285,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.805604464481451e-05,
+  "max_force_archive": 11198.154336634501,
+  "force_threshold": 11193.151066307832,
+  "success": true,
+  "UUID": "589d34f3a41e483f87fadcc392bf6ead",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/589d34f3a41e483f87fadcc392bf6ead",
+  "feasible": true,
+  "name": "hurfront_589d34f3",
+  "currents": [
+   236497.96749956286,
+   242015.7953466325,
+   256099.87814061344,
+   284030.74586819805,
+   318414.6017117365
+  ]
+ },
+ {
+  "max_kappa": 4.713961161852283,
+  "max_msc": 4.196570265170471,
+  "min_cc": 0.11645031262354778,
+  "min_cs": 0.24229610892999892,
+  "total_length": 25.43473895434619,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.008767452474698e-05,
+  "max_force_archive": 11142.129774460698,
+  "force_threshold": 11140.785634485539,
+  "success": true,
+  "UUID": "594b3c301a80421b95e82e19ec0c7e22",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/594b3c301a80421b95e82e19ec0c7e22",
+  "feasible": true,
+  "name": "hurfront_594b3c30",
+  "currents": [
+   236130.27584229934,
+   241551.54027458534,
+   254954.09476553707,
+   282138.8229813695,
+   322284.25470294483
   ]
  },
  {
@@ -2550,6 +4550,81 @@
   ]
  },
  {
+  "max_kappa": 4.65244314283556,
+  "max_msc": 4.8854755443959546,
+  "min_cc": 0.10299304056500282,
+  "min_cs": 0.26406420128476066,
+  "total_length": 25.701533844923475,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.282428549449784e-05,
+  "max_force_archive": 12683.570119072932,
+  "force_threshold": 12683.550350810106,
+  "success": true,
+  "UUID": "5ab8e6b9b3f7438fbce63b9929fbdd47",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5ab8e6b9b3f7438fbce63b9929fbdd47",
+  "feasible": true,
+  "name": "hurfront_5ab8e6b9",
+  "currents": [
+   239083.6577882046,
+   250605.59877644954,
+   272059.4307487678,
+   274705.85259372316,
+   300604.448659596
+  ]
+ },
+ {
+  "max_kappa": 4.601431263823364,
+  "max_msc": 4.735847516396846,
+  "min_cc": 0.10065643577210706,
+  "min_cs": 0.2663978733171482,
+  "total_length": 25.67816911010114,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.287814684613378e-05,
+  "max_force_archive": 12822.16920961006,
+  "force_threshold": 12822.161821302978,
+  "success": true,
+  "UUID": "5b88337419c84f639ffb6aa0b823f8fa",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5b88337419c84f639ffb6aa0b823f8fa",
+  "feasible": true,
+  "name": "hurfront_5b883374",
+  "currents": [
+   239212.49206585376,
+   251030.031611033,
+   272724.9693031167,
+   274600.136802832,
+   299491.35878390574
+  ]
+ },
+ {
+  "max_kappa": 4.426613072934856,
+  "max_msc": 4.186391772549665,
+  "min_cc": 0.11241333212220171,
+  "min_cs": 0.24718562351981635,
+  "total_length": 25.642565332577774,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.871596871283377e-05,
+  "max_force_archive": 11382.310755310118,
+  "force_threshold": 11378.535079249641,
+  "success": true,
+  "UUID": "5bdfe1839836410ba3d5cf1a6fb453b3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5bdfe1839836410ba3d5cf1a6fb453b3",
+  "feasible": true,
+  "name": "hurfront_5bdfe183",
+  "currents": [
+   235380.5894745889,
+   241607.34988587222,
+   256455.46544273122,
+   283924.7806324374,
+   319690.8031311118
+  ]
+ },
+ {
   "max_kappa": 5.85921789289343,
   "max_msc": 5.831785735984627,
   "min_cc": 0.10033906387333909,
@@ -2572,6 +4647,31 @@
    270102.14791121165,
    255015.1864878061,
    224749.40940475938
+  ]
+ },
+ {
+  "max_kappa": 4.077333980349883,
+  "max_msc": 4.245605573899532,
+  "min_cc": 0.11496752029651933,
+  "min_cs": 0.2467624025996214,
+  "total_length": 25.453603753282053,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.104099754982676e-05,
+  "max_force_archive": 11519.640652783422,
+  "force_threshold": 11516.059309269964,
+  "success": true,
+  "UUID": "5ca4e541c0d04260b2c491a37a639f8f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5ca4e541c0d04260b2c491a37a639f8f",
+  "feasible": true,
+  "name": "hurfront_5ca4e541",
+  "currents": [
+   236282.81862036497,
+   242578.62458676158,
+   257573.80576683732,
+   285395.86881706765,
+   315227.8707757105
   ]
  },
  {
@@ -2625,6 +4725,31 @@
   ]
  },
  {
+  "max_kappa": 4.357240210641161,
+  "max_msc": 4.178041912213851,
+  "min_cc": 0.11360754416840832,
+  "min_cs": 0.24591458354864124,
+  "total_length": 25.529094857413206,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.313935295235562e-05,
+  "max_force_archive": 11345.173382092435,
+  "force_threshold": 11341.006218538274,
+  "success": true,
+  "UUID": "5d97cc6cef2c402a9d08f0b5f64087a1",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5d97cc6cef2c402a9d08f0b5f64087a1",
+  "feasible": true,
+  "name": "hurfront_5d97cc6c",
+  "currents": [
+   236147.18665567858,
+   242410.52503755857,
+   256964.97417967845,
+   284959.83164682175,
+   316576.47104700434
+  ]
+ },
+ {
   "max_kappa": 6.616658980513968,
   "max_msc": 5.966921900244756,
   "min_cc": 0.09485606018248302,
@@ -2675,6 +4800,31 @@
   ]
  },
  {
+  "max_kappa": 4.931661311589643,
+  "max_msc": 4.668375520628088,
+  "min_cc": 0.1194520164769763,
+  "min_cs": 0.23830327873390808,
+  "total_length": 25.216988539214007,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.756889169854383e-05,
+  "max_force_archive": 10995.967159344207,
+  "force_threshold": 10992.338830906581,
+  "success": true,
+  "UUID": "5edda964318f491a81ef5331dd5a6896",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5edda964318f491a81ef5331dd5a6896",
+  "feasible": true,
+  "name": "hurfront_5edda964",
+  "currents": [
+   236743.08985299902,
+   242305.3196637911,
+   256117.37251070252,
+   283735.9704716201,
+   318157.23606765084
+  ]
+ },
+ {
   "max_kappa": 5.941576404190485,
   "max_msc": 5.9747685667563175,
   "min_cc": 0.11641049166278475,
@@ -2700,6 +4850,56 @@
   ]
  },
  {
+  "max_kappa": 3.968988456629404,
+  "max_msc": 4.1441530292503606,
+  "min_cc": 0.11786256246284872,
+  "min_cs": 0.24495175062946237,
+  "total_length": 25.546996772765976,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.970771809596113e-05,
+  "max_force_archive": 11579.26101955017,
+  "force_threshold": 11574.73996207187,
+  "success": true,
+  "UUID": "5f7f52dd127c4e6da57b6167972c5a36",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5f7f52dd127c4e6da57b6167972c5a36",
+  "feasible": true,
+  "name": "hurfront_5f7f52dd",
+  "currents": [
+   235992.84368100562,
+   242250.0912388458,
+   257251.63761471832,
+   284936.82404559676,
+   316627.5919865765
+  ]
+ },
+ {
+  "max_kappa": 4.969774281016036,
+  "max_msc": 4.665427409475513,
+  "min_cc": 0.11832479688405302,
+  "min_cs": 0.23901943505830958,
+  "total_length": 25.32162171513238,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.459893538399536e-05,
+  "max_force_archive": 10993.956773501453,
+  "force_threshold": 10991.343693093493,
+  "success": true,
+  "UUID": "5fe9ac6c09834d8d894e3b3b1d1ba83c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/5fe9ac6c09834d8d894e3b3b1d1ba83c",
+  "feasible": true,
+  "name": "hurfront_5fe9ac6c",
+  "currents": [
+   235502.43199579726,
+   240896.96678130073,
+   255058.89449658192,
+   283112.67396259744,
+   322488.0213304815
+  ]
+ },
+ {
   "max_kappa": 4.727701186442154,
   "max_msc": 4.7101477014270206,
   "min_cc": 0.0970111340073121,
@@ -2722,6 +4922,31 @@
    266539.5122250644,
    268964.77742101334,
    288274.415923756
+  ]
+ },
+ {
+  "max_kappa": 4.924117379382191,
+  "max_msc": 4.705864899643884,
+  "min_cc": 0.11827666427996074,
+  "min_cs": 0.23946102768627045,
+  "total_length": 25.338929841276382,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.217398758484013e-05,
+  "max_force_archive": 11031.274729313986,
+  "force_threshold": 11029.55328818528,
+  "success": true,
+  "UUID": "614560c03d644f039540283509005d1f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/614560c03d644f039540283509005d1f",
+  "feasible": true,
+  "name": "hurfront_614560c0",
+  "currents": [
+   236129.93544867178,
+   241216.67986456494,
+   255793.4148840871,
+   283973.3585933264,
+   319945.5997761084
   ]
  },
  {
@@ -2775,6 +5000,31 @@
   ]
  },
  {
+  "max_kappa": 4.508587528929234,
+  "max_msc": 4.250415778347964,
+  "min_cc": 0.11826660376542548,
+  "min_cs": 0.24050281789198868,
+  "total_length": 25.246639549578777,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.894352593318159e-05,
+  "max_force_archive": 11088.616356543547,
+  "force_threshold": 11087.397118062458,
+  "success": true,
+  "UUID": "626b04dc4d4743838a26e9cebb28a734",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/626b04dc4d4743838a26e9cebb28a734",
+  "feasible": true,
+  "name": "hurfront_626b04dc",
+  "currents": [
+   237382.72096995276,
+   242927.6090286108,
+   256638.3388302293,
+   282111.14442397276,
+   317999.17531396775
+  ]
+ },
+ {
   "max_kappa": 6.300592810526411,
   "max_msc": 6.334868426478381,
   "min_cc": 0.09638335606769313,
@@ -2800,6 +5050,31 @@
   ]
  },
  {
+  "max_kappa": 4.466790989440395,
+  "max_msc": 4.123592949670812,
+  "min_cc": 0.115064025340291,
+  "min_cs": 0.2443783064882281,
+  "total_length": 25.552321494229023,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.572817251182251e-05,
+  "max_force_archive": 11268.163567680049,
+  "force_threshold": 11263.79941501089,
+  "success": true,
+  "UUID": "62ffb7eadf144586bbe07524b267e252",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/62ffb7eadf144586bbe07524b267e252",
+  "feasible": true,
+  "name": "hurfront_62ffb7ea",
+  "currents": [
+   235845.58393524974,
+   242088.43617429218,
+   256219.2199887153,
+   283880.62292512757,
+   319025.1255433576
+  ]
+ },
+ {
   "max_kappa": 6.959273533979816,
   "max_msc": 5.954353510395236,
   "min_cc": 0.08997920118509238,
@@ -2822,6 +5097,31 @@
    250140.36606251617,
    277707.7055399422,
    337971.5935884242
+  ]
+ },
+ {
+  "max_kappa": 4.835937994773954,
+  "max_msc": 4.250305511152026,
+  "min_cc": 0.11963097678436742,
+  "min_cs": 0.23815194597789982,
+  "total_length": 25.305583989469078,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.394965509869193e-05,
+  "max_force_archive": 10973.217237500661,
+  "force_threshold": 10971.144462523156,
+  "success": true,
+  "UUID": "63c17ade0aac422097d5909d0ba01a63",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/63c17ade0aac422097d5909d0ba01a63",
+  "feasible": true,
+  "name": "hurfront_63c17ade",
+  "currents": [
+   237237.47053156886,
+   242638.7560340121,
+   255441.64038603503,
+   281336.7263622227,
+   320404.39525288536
   ]
  },
  {
@@ -2900,6 +5200,31 @@
   ]
  },
  {
+  "max_kappa": 4.8370209541233935,
+  "max_msc": 4.9505598405758375,
+  "min_cc": 0.1186284416481316,
+  "min_cs": 0.23992333564472498,
+  "total_length": 25.20816073899378,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.01142718418179e-05,
+  "max_force_archive": 11072.864881747335,
+  "force_threshold": 11072.80655478757,
+  "success": true,
+  "UUID": "64a6e22cf8174f39a19bf4db6a49ff9d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/64a6e22cf8174f39a19bf4db6a49ff9d",
+  "feasible": true,
+  "name": "hurfront_64a6e22c",
+  "currents": [
+   237655.70720966096,
+   243913.44491847587,
+   257232.20067532462,
+   281851.845589061,
+   316405.79017421015
+  ]
+ },
+ {
   "max_kappa": 6.580860924720732,
   "max_msc": 5.777966383863166,
   "min_cc": 0.09991118077458055,
@@ -2972,6 +5297,31 @@
    229041.14410380844,
    213289.56180298122,
    378581.0154886701
+  ]
+ },
+ {
+  "max_kappa": 4.682906963610962,
+  "max_msc": 4.762133734616813,
+  "min_cc": 0.10628753062267046,
+  "min_cs": 0.2586488057378,
+  "total_length": 25.66376741546504,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.897680409523417e-05,
+  "max_force_archive": 12222.79451530063,
+  "force_threshold": 12222.774822526491,
+  "success": true,
+  "UUID": "66b6c012b73d406b93061a9e84284d03",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/66b6c012b73d406b93061a9e84284d03",
+  "feasible": true,
+  "name": "hurfront_66b6c012",
+  "currents": [
+   238401.16890344353,
+   247385.32467053388,
+   269627.2126854473,
+   275691.35044283746,
+   305953.9318644788
   ]
  },
  {
@@ -3050,6 +5400,56 @@
   ]
  },
  {
+  "max_kappa": 4.989080956414193,
+  "max_msc": 4.409083399296094,
+  "min_cc": 0.10069982528148694,
+  "min_cs": 0.22221462067446587,
+  "total_length": 24.96852502352355,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00016958571919747985,
+  "max_force_archive": 10337.083833722678,
+  "force_threshold": 10326.281937690606,
+  "success": true,
+  "UUID": "6970035b0d1c40759fff1462a8d89868",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6970035b0d1c40759fff1462a8d89868",
+  "feasible": true,
+  "name": "hurfront_6970035b",
+  "currents": [
+   234978.91576840644,
+   239410.2575118986,
+   250284.59041470586,
+   277772.5746784015,
+   334612.65019154054
+  ]
+ },
+ {
+  "max_kappa": 4.597927620372432,
+  "max_msc": 4.160891069698163,
+  "min_cc": 0.11663289422795343,
+  "min_cs": 0.2424094696416069,
+  "total_length": 25.548727738570108,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.875152269301709e-05,
+  "max_force_archive": 11196.898520630533,
+  "force_threshold": 11190.856298191437,
+  "success": true,
+  "UUID": "69eebdfea72941e5b05eda63dec0214d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/69eebdfea72941e5b05eda63dec0214d",
+  "feasible": true,
+  "name": "hurfront_69eebdfe",
+  "currents": [
+   235915.92042926705,
+   242105.60936394025,
+   256190.93627852915,
+   283844.0682715105,
+   319002.45422349696
+  ]
+ },
+ {
   "max_kappa": 4.65774105498528,
   "max_msc": 5.29697068965999,
   "min_cc": 0.09645310436418972,
@@ -3100,6 +5500,31 @@
   ]
  },
  {
+  "max_kappa": 4.861893833253054,
+  "max_msc": 4.2146866011238195,
+  "min_cc": 0.1250342478394095,
+  "min_cs": 0.2314090354589535,
+  "total_length": 25.063133644348543,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00012186470285881276,
+  "max_force_archive": 10724.492406442974,
+  "force_threshold": 10721.861034072626,
+  "success": false,
+  "UUID": "6b25551308d9470f8579fd6d5adc949c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6b25551308d9470f8579fd6d5adc949c",
+  "feasible": true,
+  "name": "hurfront_6b255513",
+  "currents": [
+   238083.81846474702,
+   242349.16406517458,
+   254333.75442719215,
+   279653.05197542155,
+   322639.199634069
+  ]
+ },
+ {
   "max_kappa": 4.868424717636446,
   "max_msc": 4.979797363072819,
   "min_cc": 0.09753948757302965,
@@ -3147,6 +5572,81 @@
    252651.04832322546,
    281233.9817719831,
    327991.01853415964
+  ]
+ },
+ {
+  "max_kappa": 4.622320754278601,
+  "max_msc": 4.236530205998147,
+  "min_cc": 0.12138024493977496,
+  "min_cs": 0.23650922365123658,
+  "total_length": 25.18051672620465,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010201039252621583,
+  "max_force_archive": 10929.814998066942,
+  "force_threshold": 10926.963377487416,
+  "success": true,
+  "UUID": "6d14e9fa7f944802957a51a5e98cbf28",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6d14e9fa7f944802957a51a5e98cbf28",
+  "feasible": true,
+  "name": "hurfront_6d14e9fa",
+  "currents": [
+   238313.5399188909,
+   243636.1907473897,
+   256129.3430948797,
+   281537.03564817196,
+   317442.8791573794
+  ]
+ },
+ {
+  "max_kappa": 4.2709460369252845,
+  "max_msc": 4.11529377667888,
+  "min_cc": 0.10876402348835809,
+  "min_cs": 0.2551588533056136,
+  "total_length": 25.560198578791862,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.3645507718413846e-05,
+  "max_force_archive": 12026.395350235169,
+  "force_threshold": 12024.63094114956,
+  "success": true,
+  "UUID": "6d26a9a858b047c1bd395f7d0d99136e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6d26a9a858b047c1bd395f7d0d99136e",
+  "feasible": true,
+  "name": "hurfront_6d26a9a8",
+  "currents": [
+   238437.29574976498,
+   247723.28968680574,
+   269657.5416475705,
+   273532.2246340687,
+   307708.6368485313
+  ]
+ },
+ {
+  "max_kappa": 4.612440142608491,
+  "max_msc": 4.734196379796892,
+  "min_cc": 0.11448917971396154,
+  "min_cs": 0.24603600992476454,
+  "total_length": 24.67403116754535,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.701872447196418e-05,
+  "max_force_archive": 11410.10802514338,
+  "force_threshold": 11408.01389188303,
+  "success": true,
+  "UUID": "6d8e6ac6986449f4b8d3978694b0a48b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6d8e6ac6986449f4b8d3978694b0a48b",
+  "feasible": true,
+  "name": "hurfront_6d8e6ac6",
+  "currents": [
+   237772.52727989494,
+   242535.82462394045,
+   259233.38319360188,
+   288427.43093492044,
+   309089.82253438345
   ]
  },
  {
@@ -3250,6 +5750,56 @@
   ]
  },
  {
+  "max_kappa": 4.87875226928623,
+  "max_msc": 4.285371722177827,
+  "min_cc": 0.12283490092873961,
+  "min_cs": 0.23394998250190627,
+  "total_length": 25.120247179832727,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011019268469861893,
+  "max_force_archive": 10795.50467447169,
+  "force_threshold": 10792.422707235906,
+  "success": false,
+  "UUID": "6eb0bb46c978417396e29e16dc1a37da",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6eb0bb46c978417396e29e16dc1a37da",
+  "feasible": true,
+  "name": "hurfront_6eb0bb46",
+  "currents": [
+   237016.92859832256,
+   241722.5414322106,
+   254062.438299822,
+   280890.50322821335,
+   323366.5770081192
+  ]
+ },
+ {
+  "max_kappa": 4.328740972351477,
+  "max_msc": 4.404432135153784,
+  "min_cc": 0.1070963962132561,
+  "min_cs": 0.2576103976386308,
+  "total_length": 25.324225995387124,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.500380466110467e-05,
+  "max_force_archive": 12126.312826645684,
+  "force_threshold": 12123.548504501101,
+  "success": true,
+  "UUID": "6f1dc8df1cbc4275975784200a8a394f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/6f1dc8df1cbc4275975784200a8a394f",
+  "feasible": true,
+  "name": "hurfront_6f1dc8df",
+  "currents": [
+   237720.47208979476,
+   249913.21245254218,
+   269657.78971789085,
+   274651.84248121566,
+   305115.67182529764
+  ]
+ },
+ {
   "max_kappa": 6.7934866809635155,
   "max_msc": 6.051497686026829,
   "min_cc": 0.10325233351719162,
@@ -3297,6 +5847,131 @@
    249911.81841440476,
    278637.4316359613,
    341137.00662004086
+  ]
+ },
+ {
+  "max_kappa": 4.754737065703056,
+  "max_msc": 4.999711364839892,
+  "min_cc": 0.11508091882304548,
+  "min_cs": 0.2434674739827806,
+  "total_length": 25.164211739046998,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.903992605698385e-05,
+  "max_force_archive": 11189.645529834936,
+  "force_threshold": 11189.531645999552,
+  "success": true,
+  "UUID": "71a986df26b742c9a4bfc0a970c582b4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/71a986df26b742c9a4bfc0a970c582b4",
+  "feasible": true,
+  "name": "hurfront_71a986df",
+  "currents": [
+   236701.95007978455,
+   242006.53923779263,
+   256148.1766332646,
+   282842.00343678135,
+   319360.31917911774
+  ]
+ },
+ {
+  "max_kappa": 4.51198287096167,
+  "max_msc": 4.153598530669857,
+  "min_cc": 0.11830450734747795,
+  "min_cs": 0.24020174937565686,
+  "total_length": 25.294362139480107,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.858877445201555e-05,
+  "max_force_archive": 11080.219461456096,
+  "force_threshold": 11078.845253546295,
+  "success": true,
+  "UUID": "729a2728775a40438ce07e92072e138d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/729a2728775a40438ce07e92072e138d",
+  "feasible": true,
+  "name": "hurfront_729a2728",
+  "currents": [
+   237344.26104386483,
+   242769.0659550553,
+   256301.87894621104,
+   283124.6839502625,
+   317519.0986713377
+  ]
+ },
+ {
+  "max_kappa": 4.8549944572540396,
+  "max_msc": 4.716873765709223,
+  "min_cc": 0.11583691936947758,
+  "min_cs": 0.24259562741578117,
+  "total_length": 25.374012278058963,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.54261253896562e-05,
+  "max_force_archive": 11142.14309726328,
+  "force_threshold": 11140.750623375461,
+  "success": true,
+  "UUID": "73df30461b444b6ea82fead2a9e9e0b5",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/73df30461b444b6ea82fead2a9e9e0b5",
+  "feasible": true,
+  "name": "hurfront_73df3046",
+  "currents": [
+   235827.77237386967,
+   241051.42535360053,
+   255817.11192869677,
+   283889.1533768552,
+   320473.5255337253
+  ]
+ },
+ {
+  "max_kappa": 4.266132184135208,
+  "max_msc": 4.456786041660452,
+  "min_cc": 0.1134466027722436,
+  "min_cs": 0.246602621564313,
+  "total_length": 25.381364445292682,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.208928336504856e-05,
+  "max_force_archive": 11458.029899432875,
+  "force_threshold": 11456.536394002209,
+  "success": true,
+  "UUID": "749a72169745442eb67c6a9180c75b2f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/749a72169745442eb67c6a9180c75b2f",
+  "feasible": true,
+  "name": "hurfront_749a7216",
+  "currents": [
+   235632.2119978042,
+   242651.2801370086,
+   259583.3288756127,
+   282898.09159864363,
+   316294.075957671
+  ]
+ },
+ {
+  "max_kappa": 4.700145004626011,
+  "max_msc": 4.780257445161121,
+  "min_cc": 0.10407791355686859,
+  "min_cs": 0.2627140821211481,
+  "total_length": 25.659091648514053,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.4855789178652315e-05,
+  "max_force_archive": 12594.362408583365,
+  "force_threshold": 12594.346540015256,
+  "success": true,
+  "UUID": "74a97265e0e64cb3abdeb0fb8fb8c81a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/74a97265e0e64cb3abdeb0fb8fb8c81a",
+  "feasible": true,
+  "name": "hurfront_74a97265",
+  "currents": [
+   239296.39125219316,
+   251029.74014874536,
+   272695.3699238366,
+   274586.2107685475,
+   299451.2764734186
   ]
  },
  {
@@ -3350,6 +6025,31 @@
   ]
  },
  {
+  "max_kappa": 4.547858007160598,
+  "max_msc": 4.3026980174125935,
+  "min_cc": 0.11719649217006907,
+  "min_cs": 0.24151051288423886,
+  "total_length": 25.284861468565268,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.578917250112416e-05,
+  "max_force_archive": 11115.282888831864,
+  "force_threshold": 11114.35242693377,
+  "success": true,
+  "UUID": "75e4825c48524998a4fb3ca8480fe0d4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/75e4825c48524998a4fb3ca8480fe0d4",
+  "feasible": true,
+  "name": "hurfront_75e4825c",
+  "currents": [
+   237066.20482410418,
+   242634.3867609355,
+   256456.05614825577,
+   281866.0851229027,
+   319036.2557105375
+  ]
+ },
+ {
   "max_kappa": 4.640913179825243,
   "max_msc": 4.8578697470294365,
   "min_cc": 0.10598317196869164,
@@ -3372,6 +6072,56 @@
    272690.57066111855,
    274588.4021261529,
    300564.403236888
+  ]
+ },
+ {
+  "max_kappa": 4.3101707737478385,
+  "max_msc": 4.1678816154621385,
+  "min_cc": 0.11610551415898993,
+  "min_cs": 0.24608264868887006,
+  "total_length": 25.56794856310313,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.017660892098654e-05,
+  "max_force_archive": 11587.86980691797,
+  "force_threshold": 11584.305702975,
+  "success": true,
+  "UUID": "76e78fd6ba6a48648d7da3239089a5a5",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/76e78fd6ba6a48648d7da3239089a5a5",
+  "feasible": true,
+  "name": "hurfront_76e78fd6",
+  "currents": [
+   235856.47977517647,
+   242220.97143246167,
+   256702.4063533432,
+   284484.698467559,
+   317794.43253820145
+  ]
+ },
+ {
+  "max_kappa": 4.820142459442103,
+  "max_msc": 4.216842652092732,
+  "min_cc": 0.12306421052646253,
+  "min_cs": 0.23285631129442175,
+  "total_length": 25.245593300848984,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010920783397188,
+  "max_force_archive": 10753.416459482098,
+  "force_threshold": 10751.138167699657,
+  "success": true,
+  "UUID": "7730da158d1f4620bfea3223ac9a8316",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7730da158d1f4620bfea3223ac9a8316",
+  "feasible": true,
+  "name": "hurfront_7730da15",
+  "currents": [
+   235875.1139973936,
+   240345.99651565557,
+   252927.18408139644,
+   281458.89510215126,
+   326451.79887008964
   ]
  },
  {
@@ -3450,6 +6200,31 @@
   ]
  },
  {
+  "max_kappa": 4.43869027758114,
+  "max_msc": 4.277335894996541,
+  "min_cc": 0.1109359883765113,
+  "min_cs": 0.2489990589712988,
+  "total_length": 25.5877229670806,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.682430333644884e-05,
+  "max_force_archive": 11472.360497737192,
+  "force_threshold": 11469.447692457012,
+  "success": true,
+  "UUID": "795e46acfb144258bab70b4e61ad7f79",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/795e46acfb144258bab70b4e61ad7f79",
+  "feasible": true,
+  "name": "hurfront_795e46ac",
+  "currents": [
+   235261.66391679135,
+   241735.3023066984,
+   256729.12436588568,
+   284287.09261505824,
+   319045.8053623079
+  ]
+ },
+ {
   "max_kappa": 6.4501627770371375,
   "max_msc": 6.150643055008337,
   "min_cc": 0.0948202507643992,
@@ -3500,6 +6275,56 @@
   ]
  },
  {
+  "max_kappa": 4.619129907361853,
+  "max_msc": 4.268653279067774,
+  "min_cc": 0.11480002484270463,
+  "min_cs": 0.24448853439661095,
+  "total_length": 25.502603032329958,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.64043820733942e-05,
+  "max_force_archive": 11280.613115561406,
+  "force_threshold": 11275.471874465047,
+  "success": true,
+  "UUID": "7a89815c2c17457ba60d14c1cbf57242",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7a89815c2c17457ba60d14c1cbf57242",
+  "feasible": true,
+  "name": "hurfront_7a89815c",
+  "currents": [
+   236055.44707610348,
+   242235.92940541107,
+   256613.51751306772,
+   284220.01737446495,
+   317934.0771976951
+  ]
+ },
+ {
+  "max_kappa": 4.890813462539148,
+  "max_msc": 4.983835684357956,
+  "min_cc": 0.11844091075097178,
+  "min_cs": 0.2401410106437167,
+  "total_length": 25.23278843482222,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.888747715548616e-05,
+  "max_force_archive": 11075.55859690551,
+  "force_threshold": 11075.47225239362,
+  "success": true,
+  "UUID": "7acade2f754b485986dc9dea49509be7",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7acade2f754b485986dc9dea49509be7",
+  "feasible": true,
+  "name": "hurfront_7acade2f",
+  "currents": [
+   237525.36964432892,
+   243794.4514286979,
+   257134.41646974458,
+   281746.1617164955,
+   316858.5893074666
+  ]
+ },
+ {
   "max_kappa": 4.535807616437958,
   "max_msc": 4.208396363860551,
   "min_cc": 0.11323376524622426,
@@ -3522,6 +6347,56 @@
    256340.93043448756,
    284092.0127565237,
    319332.77178707375
+  ]
+ },
+ {
+  "max_kappa": 4.926397676380332,
+  "max_msc": 4.680763877378047,
+  "min_cc": 0.11716027519334443,
+  "min_cs": 0.24080327014505495,
+  "total_length": 25.14039168440098,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.736556866582435e-05,
+  "max_force_archive": 11100.214929977119,
+  "force_threshold": 11098.04926930499,
+  "success": true,
+  "UUID": "7cd593ed9e7249eb8edcde34b3b5c56a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7cd593ed9e7249eb8edcde34b3b5c56a",
+  "feasible": true,
+  "name": "hurfront_7cd593ed",
+  "currents": [
+   235732.87442068494,
+   241179.61867597298,
+   255221.44328197034,
+   283497.58963974356,
+   321427.4625483732
+  ]
+ },
+ {
+  "max_kappa": 4.489479057292528,
+  "max_msc": 4.140331041710615,
+  "min_cc": 0.11497311510016378,
+  "min_cs": 0.24401892968383884,
+  "total_length": 25.540569570909234,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.643018646989317e-05,
+  "max_force_archive": 11254.855117323898,
+  "force_threshold": 11249.303964584387,
+  "success": true,
+  "UUID": "7cf5f9296c144c27b359acf9785bf36a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7cf5f9296c144c27b359acf9785bf36a",
+  "feasible": true,
+  "name": "hurfront_7cf5f929",
+  "currents": [
+   236637.22556162774,
+   242241.52909914352,
+   256329.2013090625,
+   284470.983588973,
+   317380.04900793557
   ]
  },
  {
@@ -3550,6 +6425,31 @@
   ]
  },
  {
+  "max_kappa": 4.071298966821014,
+  "max_msc": 4.131217284398961,
+  "min_cc": 0.11196505836263697,
+  "min_cs": 0.24846942726050103,
+  "total_length": 25.543716047848616,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.696407409181549e-05,
+  "max_force_archive": 11497.878286279278,
+  "force_threshold": 11494.218438850125,
+  "success": true,
+  "UUID": "7e26612153da452b8e1292a68d80d3a0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7e26612153da452b8e1292a68d80d3a0",
+  "feasible": true,
+  "name": "hurfront_7e266121",
+  "currents": [
+   236115.4296258537,
+   242930.5532301586,
+   257812.66255291383,
+   287154.3627582496,
+   313045.98039956565
+  ]
+ },
+ {
   "max_kappa": 6.001618271605892,
   "max_msc": 5.988350491775667,
   "min_cc": 0.10922224598176787,
@@ -3572,6 +6472,31 @@
    338864.5718553576,
    264688.9036146962,
    243803.04261246274
+  ]
+ },
+ {
+  "max_kappa": 4.77198725292882,
+  "max_msc": 4.877655449446151,
+  "min_cc": 0.11012463781026573,
+  "min_cs": 0.24933156588580355,
+  "total_length": 25.46954566128799,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.755860314766523e-05,
+  "max_force_archive": 11447.044350247244,
+  "force_threshold": 11446.98677526143,
+  "success": true,
+  "UUID": "7f3d64f738e1472ca593fe4ece86b5ff",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/7f3d64f738e1472ca593fe4ece86b5ff",
+  "feasible": true,
+  "name": "hurfront_7f3d64f7",
+  "currents": [
+   234190.40887765537,
+   240293.2732383375,
+   254744.7633219672,
+   282221.0002671823,
+   325609.54286159854
   ]
  },
  {
@@ -3600,6 +6525,31 @@
   ]
  },
  {
+  "max_kappa": 4.496274474106823,
+  "max_msc": 4.192498852345396,
+  "min_cc": 0.11321261462505769,
+  "min_cs": 0.2460712856832216,
+  "total_length": 25.64251173230497,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.011194186645566e-05,
+  "max_force_archive": 11335.866882670953,
+  "force_threshold": 11330.826649352533,
+  "success": true,
+  "UUID": "814a119083f34829bf159cc2a8a2e23b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/814a119083f34829bf159cc2a8a2e23b",
+  "feasible": true,
+  "name": "hurfront_814a1190",
+  "currents": [
+   235466.32391417507,
+   241616.03190998104,
+   256292.99533123075,
+   283875.7260990443,
+   319807.91131231067
+  ]
+ },
+ {
   "max_kappa": 4.713505240871244,
   "max_msc": 4.7029724959129595,
   "min_cc": 0.09707121818372519,
@@ -3622,6 +6572,31 @@
    266543.74302250164,
    268960.43885038723,
    288273.479070678
+  ]
+ },
+ {
+  "max_kappa": 4.467991669106358,
+  "max_msc": 4.196726708133226,
+  "min_cc": 0.11872850459088502,
+  "min_cs": 0.2402955479569543,
+  "total_length": 25.167638198064196,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.171183089717354e-05,
+  "max_force_archive": 11096.40652007454,
+  "force_threshold": 11094.77165050593,
+  "success": true,
+  "UUID": "82803dd4b86046f1be47f42df2955cbd",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/82803dd4b86046f1be47f42df2955cbd",
+  "feasible": true,
+  "name": "hurfront_82803dd4",
+  "currents": [
+   238029.28523621766,
+   243731.5009727366,
+   257372.77712225847,
+   283037.30140511587,
+   314888.1238304031
   ]
  },
  {
@@ -3672,6 +6647,31 @@
    253174.55804400702,
    283890.2275288018,
    327797.50825150777
+  ]
+ },
+ {
+  "max_kappa": 4.969899709081817,
+  "max_msc": 4.955713752335342,
+  "min_cc": 0.1212545965630898,
+  "min_cs": 0.23679095428661695,
+  "total_length": 25.220819386823436,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.754391423283603e-05,
+  "max_force_archive": 10950.572659009093,
+  "force_threshold": 10950.430899497931,
+  "success": true,
+  "UUID": "86358104cce34b9296dac67b3b8b93e8",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/86358104cce34b9296dac67b3b8b93e8",
+  "feasible": true,
+  "name": "hurfront_86358104",
+  "currents": [
+   237725.93544853915,
+   243849.94151429323,
+   256973.11562363768,
+   281673.4438981431,
+   316836.5520821089
   ]
  },
  {
@@ -3775,6 +6775,81 @@
   ]
  },
  {
+  "max_kappa": 4.340238023324073,
+  "max_msc": 4.150925851104894,
+  "min_cc": 0.11355074471145322,
+  "min_cs": 0.24583734574885593,
+  "total_length": 25.51423810187088,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.293813428184325e-05,
+  "max_force_archive": 11349.081925399572,
+  "force_threshold": 11344.629334248017,
+  "success": true,
+  "UUID": "8831a8dff0d0470fadcd58e3f7f808c6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/8831a8dff0d0470fadcd58e3f7f808c6",
+  "feasible": true,
+  "name": "hurfront_8831a8df",
+  "currents": [
+   236072.87894895978,
+   242413.42819723528,
+   256956.62419017364,
+   285335.7515238606,
+   316280.30570651265
+  ]
+ },
+ {
+  "max_kappa": 4.797438898102745,
+  "max_msc": 4.211826438033901,
+  "min_cc": 0.1190054563852299,
+  "min_cs": 0.23916620336909883,
+  "total_length": 25.42963856845062,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.073755392334763e-05,
+  "max_force_archive": 11050.569360896397,
+  "force_threshold": 11042.720935529731,
+  "success": true,
+  "UUID": "887514086d6249fcb62b0e5407479c3d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/887514086d6249fcb62b0e5407479c3d",
+  "feasible": true,
+  "name": "hurfront_88751408",
+  "currents": [
+   237406.2544301512,
+   242610.24169613104,
+   255926.20816267165,
+   282992.35833767557,
+   318123.9259401198
+  ]
+ },
+ {
+  "max_kappa": 4.814581811155439,
+  "max_msc": 4.960812532151442,
+  "min_cc": 0.11902691181584875,
+  "min_cs": 0.23967279479717618,
+  "total_length": 25.19561028627542,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.091323421697779e-05,
+  "max_force_archive": 11055.88292337729,
+  "force_threshold": 11055.825655719304,
+  "success": true,
+  "UUID": "88efa9586c6a4aa3943f4005efe41c1e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/88efa9586c6a4aa3943f4005efe41c1e",
+  "feasible": true,
+  "name": "hurfront_88efa958",
+  "currents": [
+   237958.1687069864,
+   243992.66138211018,
+   257276.53421107735,
+   282058.4567506948,
+   315773.1675158649
+  ]
+ },
+ {
   "max_kappa": 4.7142330100599965,
   "max_msc": 4.175097598056379,
   "min_cc": 0.11658815619784088,
@@ -3797,6 +6872,56 @@
    254928.71175663415,
    282066.68655410025,
    322234.2967975742
+  ]
+ },
+ {
+  "max_kappa": 4.931501434994694,
+  "max_msc": 4.776687406073343,
+  "min_cc": 0.12409366858954425,
+  "min_cs": 0.23195417003622767,
+  "total_length": 25.18508882817853,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011818565541843276,
+  "max_force_archive": 10742.928330907276,
+  "force_threshold": 10738.122143129696,
+  "success": true,
+  "UUID": "8944d0d841d54586972871a2d7f1c479",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/8944d0d841d54586972871a2d7f1c479",
+  "feasible": true,
+  "name": "hurfront_8944d0d8",
+  "currents": [
+   237176.5324780257,
+   241864.21541469733,
+   254696.9178453529,
+   282497.8300740682,
+   320823.4927547295
+  ]
+ },
+ {
+  "max_kappa": 4.745004536491464,
+  "max_msc": 4.249461459303994,
+  "min_cc": 0.12049958385773911,
+  "min_cs": 0.23149999808830285,
+  "total_length": 25.098484188862372,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011869607964904634,
+  "max_force_archive": 10680.049980981215,
+  "force_threshold": 10677.77726694497,
+  "success": false,
+  "UUID": "8960a1017d7445c9be77562b21ef907a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/8960a1017d7445c9be77562b21ef907a",
+  "feasible": true,
+  "name": "hurfront_8960a101",
+  "currents": [
+   235096.39369229277,
+   239517.75203286237,
+   252531.22518438494,
+   280692.51227181894,
+   329221.1053853104
   ]
  },
  {
@@ -3875,6 +7000,31 @@
   ]
  },
  {
+  "max_kappa": 4.966348768024006,
+  "max_msc": 4.701610262424881,
+  "min_cc": 0.11923315437879044,
+  "min_cs": 0.23834702642880462,
+  "total_length": 25.325103716053032,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.478434651002366e-05,
+  "max_force_archive": 10994.17317390032,
+  "force_threshold": 10992.043142833267,
+  "success": true,
+  "UUID": "8bd277c3732d4562a03adfd2089457b4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/8bd277c3732d4562a03adfd2089457b4",
+  "feasible": true,
+  "name": "hurfront_8bd277c3",
+  "currents": [
+   236263.6683087958,
+   241301.48349339352,
+   255814.7861933829,
+   284007.1520964825,
+   319671.8984747104
+  ]
+ },
+ {
   "max_kappa": 5.5442784492221024,
   "max_msc": 5.009814107565867,
   "min_cc": 0.12007696958141363,
@@ -3922,6 +7072,31 @@
    253160.21950999583,
    281748.95743982145,
    328013.8137922963
+  ]
+ },
+ {
+  "max_kappa": 4.429677835603874,
+  "max_msc": 4.152070352740074,
+  "min_cc": 0.11354350693158073,
+  "min_cs": 0.24603900832715586,
+  "total_length": 25.619248082316133,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.143540472108177e-05,
+  "max_force_archive": 11355.71581027297,
+  "force_threshold": 11351.78247090637,
+  "success": true,
+  "UUID": "8d8af92ab62d40a1b75e0b7b54ede702",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/8d8af92ab62d40a1b75e0b7b54ede702",
+  "feasible": true,
+  "name": "hurfront_8d8af92a",
+  "currents": [
+   235564.05638649056,
+   241751.02582209048,
+   256503.82366871266,
+   283914.7671246146,
+   319325.3155648334
   ]
  },
  {
@@ -4025,6 +7200,31 @@
   ]
  },
  {
+  "max_kappa": 4.747118089629475,
+  "max_msc": 4.8311985980253676,
+  "min_cc": 0.1060053142322886,
+  "min_cs": 0.26059025153314963,
+  "total_length": 25.65471972725378,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.607783381900573e-05,
+  "max_force_archive": 12456.43587699602,
+  "force_threshold": 12456.42240572836,
+  "success": true,
+  "UUID": "9051fa5a131645c18c6d209ae7388087",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9051fa5a131645c18c6d209ae7388087",
+  "feasible": true,
+  "name": "hurfront_9051fa5a",
+  "currents": [
+   239311.91242306147,
+   250992.5525222182,
+   272642.26601560845,
+   274590.09083972796,
+   299522.16676612484
+  ]
+ },
+ {
   "max_kappa": 6.403210619637294,
   "max_msc": 6.004047975752745,
   "min_cc": 0.09869755483556586,
@@ -4125,6 +7325,31 @@
   ]
  },
  {
+  "max_kappa": 4.2663629402883965,
+  "max_msc": 4.154333749465635,
+  "min_cc": 0.1066820978155416,
+  "min_cs": 0.2575596487932846,
+  "total_length": 25.571518809589993,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.082407830656249e-05,
+  "max_force_archive": 12159.939944631853,
+  "force_threshold": 12157.808404526108,
+  "success": true,
+  "UUID": "9299b5fc055f4397877272cb9430c65d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9299b5fc055f4397877272cb9430c65d",
+  "feasible": true,
+  "name": "hurfront_9299b5fc",
+  "currents": [
+   238454.8959432636,
+   247790.3430590629,
+   269744.9914857484,
+   273521.5707558454,
+   307547.18732282077
+  ]
+ },
+ {
   "max_kappa": 5.033438213168143,
   "max_msc": 5.6673648803679875,
   "min_cc": 0.10798769992068082,
@@ -4147,6 +7372,31 @@
    262765.2651547814,
    278961.17131200735,
    314624.4018832668
+  ]
+ },
+ {
+  "max_kappa": 4.8870870121300145,
+  "max_msc": 4.963477150088305,
+  "min_cc": 0.11953690304975169,
+  "min_cs": 0.23892459393812313,
+  "total_length": 25.23219618857805,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.175769637976857e-05,
+  "max_force_archive": 11026.456406599567,
+  "force_threshold": 11026.374165930978,
+  "success": true,
+  "UUID": "92c7a67282db4fc3aed6f8c2707b85e3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/92c7a67282db4fc3aed6f8c2707b85e3",
+  "feasible": true,
+  "name": "hurfront_92c7a672",
+  "currents": [
+   237609.45068120843,
+   243782.4007164422,
+   257002.19415733288,
+   281695.80971332476,
+   316969.13329842256
   ]
  },
  {
@@ -4200,6 +7450,56 @@
   ]
  },
  {
+  "max_kappa": 4.69215674824385,
+  "max_msc": 4.297193925747904,
+  "min_cc": 0.11562674265740287,
+  "min_cs": 0.2429289889947894,
+  "total_length": 25.491303414341488,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.954346823100122e-05,
+  "max_force_archive": 11200.147224677068,
+  "force_threshold": 11194.393677039929,
+  "success": true,
+  "UUID": "95a3ea2d21894c498c0fc6b728f23760",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/95a3ea2d21894c498c0fc6b728f23760",
+  "feasible": true,
+  "name": "hurfront_95a3ea2d",
+  "currents": [
+   236714.14506247145,
+   242268.53288969237,
+   256214.2414913501,
+   283640.3463687698,
+   318221.72275445896
+  ]
+ },
+ {
+  "max_kappa": 4.46922489633184,
+  "max_msc": 4.313277375222578,
+  "min_cc": 0.10160069708927545,
+  "min_cs": 0.26347494119620607,
+  "total_length": 25.657106406913336,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.526916262395368e-05,
+  "max_force_archive": 12515.99068289674,
+  "force_threshold": 12514.846355476975,
+  "success": true,
+  "UUID": "961a06ad60cc43aa9894869469f6d113",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/961a06ad60cc43aa9894869469f6d113",
+  "feasible": true,
+  "name": "hurfront_961a06ad",
+  "currents": [
+   236381.76390252102,
+   249286.37054800193,
+   270530.87535398995,
+   273420.63761833333,
+   307439.341143895
+  ]
+ },
+ {
   "max_kappa": 6.3929124567361075,
   "max_msc": 5.973383035673074,
   "min_cc": 0.09693550064264116,
@@ -4247,6 +7547,81 @@
    252857.4737243314,
    283384.4846185736,
    331247.64410073665
+  ]
+ },
+ {
+  "max_kappa": 4.932636765504304,
+  "max_msc": 4.4517009121419,
+  "min_cc": 0.11805601628346672,
+  "min_cs": 0.24235475768972276,
+  "total_length": 25.24779139871912,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.877346439683313e-05,
+  "max_force_archive": 11266.686153310897,
+  "force_threshold": 11263.029250998296,
+  "success": true,
+  "UUID": "96f57e38b0444663b76511db70481e9f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/96f57e38b0444663b76511db70481e9f",
+  "feasible": true,
+  "name": "hurfront_96f57e38",
+  "currents": [
+   236362.57568310542,
+   241335.3908773094,
+   254241.18426215695,
+   280791.715953102,
+   324328.12179106905
+  ]
+ },
+ {
+  "max_kappa": 4.636810708291022,
+  "max_msc": 4.178695558668054,
+  "min_cc": 0.1203896202247337,
+  "min_cs": 0.23756616256435215,
+  "total_length": 25.115181277027776,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010029460821491737,
+  "max_force_archive": 10964.893006660357,
+  "force_threshold": 10962.510415775536,
+  "success": true,
+  "UUID": "972bd12e167c43d69d1b2a2dfec6150d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/972bd12e167c43d69d1b2a2dfec6150d",
+  "feasible": true,
+  "name": "hurfront_972bd12e",
+  "currents": [
+   237428.60120225395,
+   242593.06872832813,
+   255627.96186822906,
+   282773.43268544425,
+   318635.92408246535
+  ]
+ },
+ {
+  "max_kappa": 4.807263401194178,
+  "max_msc": 4.209940832897968,
+  "min_cc": 0.12172427237246816,
+  "min_cs": 0.2344043741485619,
+  "total_length": 25.259775144936764,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010520083346855854,
+  "max_force_archive": 10803.901261705094,
+  "force_threshold": 10801.32827617386,
+  "success": true,
+  "UUID": "976805b1fab1471fbe8fa6aa2d683071",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/976805b1fab1471fbe8fa6aa2d683071",
+  "feasible": true,
+  "name": "hurfront_976805b1",
+  "currents": [
+   235589.54040284563,
+   240331.4284015491,
+   253018.17939336126,
+   281430.98329966975,
+   326688.85706928844
   ]
  },
  {
@@ -4400,6 +7775,31 @@
   ]
  },
  {
+  "max_kappa": 4.520762065007991,
+  "max_msc": 4.158212689412998,
+  "min_cc": 0.11589828365799906,
+  "min_cs": 0.24296114478446817,
+  "total_length": 25.493584910819358,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.971423198935975e-05,
+  "max_force_archive": 11213.063037193971,
+  "force_threshold": 11207.299567446933,
+  "success": true,
+  "UUID": "9983caa51545462581fdca3fe0884431",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9983caa51545462581fdca3fe0884431",
+  "feasible": true,
+  "name": "hurfront_9983caa5",
+  "currents": [
+   237081.90389370348,
+   242556.96213145586,
+   256528.86913800656,
+   284379.0538613239,
+   316512.1995422535
+  ]
+ },
+ {
   "max_kappa": 5.2296521236503075,
   "max_msc": 4.6173605758238825,
   "min_cc": 0.11989552208382266,
@@ -4450,6 +7850,31 @@
   ]
  },
  {
+  "max_kappa": 4.43313139777851,
+  "max_msc": 4.149114169728216,
+  "min_cc": 0.11635731647222253,
+  "min_cs": 0.24290881831509506,
+  "total_length": 25.553837186498964,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.660763871386422e-05,
+  "max_force_archive": 11246.558296727619,
+  "force_threshold": 11238.780150302788,
+  "success": true,
+  "UUID": "9b4e8fdcff304d879bc7cf0c75f63293",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9b4e8fdcff304d879bc7cf0c75f63293",
+  "feasible": true,
+  "name": "hurfront_9b4e8fdc",
+  "currents": [
+   235893.37176229287,
+   242269.33891653796,
+   256726.26282992278,
+   284455.9913331345,
+   317714.0237248553
+  ]
+ },
+ {
   "max_kappa": 6.746419591708592,
   "max_msc": 6.1335112528833955,
   "min_cc": 0.10011578542043476,
@@ -4472,6 +7897,31 @@
    253278.63971471152,
    283847.0412645947,
    327030.0018560828
+  ]
+ },
+ {
+  "max_kappa": 4.962385534940402,
+  "max_msc": 4.506456623466012,
+  "min_cc": 0.11838912521153931,
+  "min_cs": 0.23728905456135177,
+  "total_length": 25.104879913275163,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.966922424058298e-05,
+  "max_force_archive": 10889.14258717712,
+  "force_threshold": 10886.638525450418,
+  "success": true,
+  "UUID": "9c4e8c6ddd3140f58b826c123add98c9",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9c4e8c6ddd3140f58b826c123add98c9",
+  "feasible": true,
+  "name": "hurfront_9c4e8c6d",
+  "currents": [
+   233647.4874326541,
+   239395.77583379627,
+   253637.80392875808,
+   284486.18757541105,
+   325891.73379612435
   ]
  },
  {
@@ -4522,6 +7972,56 @@
    252878.14073848547,
    281042.0093646757,
    328461.06182233174
+  ]
+ },
+ {
+  "max_kappa": 4.75559982320809,
+  "max_msc": 4.576455179281368,
+  "min_cc": 0.11289569060486185,
+  "min_cs": 0.24634514996068163,
+  "total_length": 25.499209069122465,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.166466973982633e-05,
+  "max_force_archive": 11366.738846190166,
+  "force_threshold": 11363.151382404205,
+  "success": false,
+  "UUID": "9e263917be0442a6b790eed9458a2819",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9e263917be0442a6b790eed9458a2819",
+  "feasible": true,
+  "name": "hurfront_9e263917",
+  "currents": [
+   235390.52688254393,
+   242428.97807679346,
+   257039.03737437163,
+   284761.1598854612,
+   317439.28634757194
+  ]
+ },
+ {
+  "max_kappa": 4.9057439884722145,
+  "max_msc": 4.993373202198363,
+  "min_cc": 0.11759340628993217,
+  "min_cs": 0.24109192258295858,
+  "total_length": 25.241058844836957,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.697965771370247e-05,
+  "max_force_archive": 11105.509004649859,
+  "force_threshold": 11105.441327831812,
+  "success": true,
+  "UUID": "9eed499dfbb34e848caf8dc02f1316d3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/9eed499dfbb34e848caf8dc02f1316d3",
+  "feasible": true,
+  "name": "hurfront_9eed499d",
+  "currents": [
+   237455.4662236426,
+   243717.97492119067,
+   257103.70114164057,
+   281746.5481988413,
+   317035.2980814204
   ]
  },
  {
@@ -4600,6 +8100,81 @@
   ]
  },
  {
+  "max_kappa": 4.261010886093303,
+  "max_msc": 4.430222240069255,
+  "min_cc": 0.11121054875172029,
+  "min_cs": 0.2496788522476148,
+  "total_length": 25.471624117692834,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.257222135918479e-05,
+  "max_force_archive": 11555.07195836913,
+  "force_threshold": 11554.635657683039,
+  "success": true,
+  "UUID": "a17416c99dd44c8f85d926aa662503b6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a17416c99dd44c8f85d926aa662503b6",
+  "feasible": true,
+  "name": "hurfront_a17416c9",
+  "currents": [
+   235152.84988756324,
+   242186.42630948842,
+   259179.67489551794,
+   282341.04481195303,
+   318198.9926622184
+  ]
+ },
+ {
+  "max_kappa": 4.478859754882442,
+  "max_msc": 4.170564972769184,
+  "min_cc": 0.11424140450004631,
+  "min_cs": 0.24509474784361523,
+  "total_length": 25.620280638845113,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.23571732881693e-05,
+  "max_force_archive": 11303.54293049419,
+  "force_threshold": 11298.799161615674,
+  "success": true,
+  "UUID": "a1ada02a204b42178d6dd86c50816e54",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a1ada02a204b42178d6dd86c50816e54",
+  "feasible": true,
+  "name": "hurfront_a1ada02a",
+  "currents": [
+   235781.8182011069,
+   241864.1145626909,
+   256098.26440440404,
+   284234.7493258387,
+   319080.0420727018
+  ]
+ },
+ {
+  "max_kappa": 4.5580487468737445,
+  "max_msc": 4.791419077842179,
+  "min_cc": 0.10564442133906013,
+  "min_cs": 0.2595268232505949,
+  "total_length": 25.61391478113812,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.9114697732708196e-05,
+  "max_force_archive": 12288.285810182606,
+  "force_threshold": 12288.266160004789,
+  "success": true,
+  "UUID": "a20e485d84514486ae55b5fd2edab1f3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a20e485d84514486ae55b5fd2edab1f3",
+  "feasible": true,
+  "name": "hurfront_a20e485d",
+  "currents": [
+   238588.15640762853,
+   247639.78791375103,
+   269380.1498086564,
+   275947.0870952196,
+   305503.80734148563
+  ]
+ },
+ {
   "max_kappa": 4.644046966537918,
   "max_msc": 4.860667332293636,
   "min_cc": 0.106875557958571,
@@ -4622,6 +8197,106 @@
    272667.0269373456,
    274578.321918101,
    300593.7893076247
+  ]
+ },
+ {
+  "max_kappa": 4.485821796422283,
+  "max_msc": 4.176167512830348,
+  "min_cc": 0.11552522104409918,
+  "min_cs": 0.24364757609652396,
+  "total_length": 25.554189058390236,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.588939269760098e-05,
+  "max_force_archive": 11250.809173883783,
+  "force_threshold": 11244.889735715802,
+  "success": true,
+  "UUID": "a3754781211a4e6eb6e96133d3b70b74",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a3754781211a4e6eb6e96133d3b70b74",
+  "feasible": true,
+  "name": "hurfront_a3754781",
+  "currents": [
+   236008.12560033443,
+   242225.24407764454,
+   256620.05514939025,
+   284378.2016339695,
+   317827.3621054037
+  ]
+ },
+ {
+  "max_kappa": 4.978595439199242,
+  "max_msc": 4.641512994460047,
+  "min_cc": 0.1210061866190264,
+  "min_cs": 0.23523342898335192,
+  "total_length": 25.335918647640792,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010168210126143864,
+  "max_force_archive": 10836.292747119025,
+  "force_threshold": 10832.234950694894,
+  "success": true,
+  "UUID": "a3df373297dc419ebc0a738478dafc40",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a3df373297dc419ebc0a738478dafc40",
+  "feasible": true,
+  "name": "hurfront_a3df3732",
+  "currents": [
+   235515.7086751086,
+   240172.7824928138,
+   253450.89119734743,
+   281709.9287385343,
+   326209.67746297154
+  ]
+ },
+ {
+  "max_kappa": 4.891719494652874,
+  "max_msc": 4.685442846218281,
+  "min_cc": 0.11742845824616852,
+  "min_cs": 0.24051944551250456,
+  "total_length": 25.343470133362292,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.016798798791315e-05,
+  "max_force_archive": 11067.120055518246,
+  "force_threshold": 11065.331918976439,
+  "success": true,
+  "UUID": "a455191f26164e449e390603a6f5ecb5",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a455191f26164e449e390603a6f5ecb5",
+  "feasible": true,
+  "name": "hurfront_a455191f",
+  "currents": [
+   236092.2190508214,
+   241194.5516371926,
+   255802.0144747435,
+   283972.9805492428,
+   319997.22285475343
+  ]
+ },
+ {
+  "max_kappa": 4.496964600009335,
+  "max_msc": 4.216221005880291,
+  "min_cc": 0.11302298635816944,
+  "min_cs": 0.24641449539210358,
+  "total_length": 25.61228368136699,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.075354122553465e-05,
+  "max_force_archive": 11352.42953317119,
+  "force_threshold": 11347.135395445732,
+  "success": true,
+  "UUID": "a4c23f52ea604ee7ac65ac9ee197addc",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a4c23f52ea604ee7ac65ac9ee197addc",
+  "feasible": true,
+  "name": "hurfront_a4c23f52",
+  "currents": [
+   235651.20980892127,
+   241834.35655256498,
+   256551.93803915242,
+   284208.55815384205,
+   318812.9260122611
   ]
  },
  {
@@ -4672,6 +8347,56 @@
    254941.44484838203,
    283271.41495244834,
    323529.18480154686
+  ]
+ },
+ {
+  "max_kappa": 4.2561164972499235,
+  "max_msc": 4.1564005475959425,
+  "min_cc": 0.10527472847330968,
+  "min_cs": 0.2593561353698212,
+  "total_length": 25.576058203124685,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.931067459981872e-05,
+  "max_force_archive": 12269.67432467513,
+  "force_threshold": 12268.463131919882,
+  "success": true,
+  "UUID": "a5c234ff9bbf434794e9bedb441c9df0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a5c234ff9bbf434794e9bedb441c9df0",
+  "feasible": true,
+  "name": "hurfront_a5c234ff",
+  "currents": [
+   238459.75793575932,
+   247824.26513266005,
+   269790.3043460819,
+   273512.8705704141,
+   307471.79058182583
+  ]
+ },
+ {
+  "max_kappa": 3.879601288824639,
+  "max_msc": 4.034754030046449,
+  "min_cc": 0.11855627966616963,
+  "min_cs": 0.2445459540826741,
+  "total_length": 25.50181175824517,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.062060281848801e-05,
+  "max_force_archive": 11591.251502369101,
+  "force_threshold": 11587.901492252935,
+  "success": true,
+  "UUID": "a5c97ddc5f7e48e0ab3f0d6ca04c1c24",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/a5c97ddc5f7e48e0ab3f0d6ca04c1c24",
+  "feasible": true,
+  "name": "hurfront_a5c97ddc",
+  "currents": [
+   236200.83010414726,
+   242620.88946979275,
+   257340.55550741783,
+   285349.94831283257,
+   315546.76517255267
   ]
  },
  {
@@ -4800,6 +8525,31 @@
   ]
  },
  {
+  "max_kappa": 4.256649221752044,
+  "max_msc": 4.521107033544066,
+  "min_cc": 0.11106044069040918,
+  "min_cs": 0.2507156989668377,
+  "total_length": 24.786036560753736,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.314573110768771e-05,
+  "max_force_archive": 11678.651011349542,
+  "force_threshold": 11678.532211109217,
+  "success": true,
+  "UUID": "ab10294e806c4810abc239b23a5c0702",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ab10294e806c4810abc239b23a5c0702",
+  "feasible": true,
+  "name": "hurfront_ab10294e",
+  "currents": [
+   237902.03367948052,
+   245037.16597819273,
+   262558.6672288413,
+   283051.604646725,
+   308509.5170335019
+  ]
+ },
+ {
   "max_kappa": 5.819250852355201,
   "max_msc": 5.939376421779881,
   "min_cc": 0.11047146120740203,
@@ -4825,6 +8575,31 @@
   ]
  },
  {
+  "max_kappa": 4.389400977741285,
+  "max_msc": 4.172796880307776,
+  "min_cc": 0.11426940364499695,
+  "min_cs": 0.24516018921871935,
+  "total_length": 25.55989478479995,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.370835366969007e-05,
+  "max_force_archive": 11311.509341283338,
+  "force_threshold": 11307.43295938174,
+  "success": true,
+  "UUID": "abd4e89aa91744af8f370eb924f6d23b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/abd4e89aa91744af8f370eb924f6d23b",
+  "feasible": true,
+  "name": "hurfront_abd4e89a",
+  "currents": [
+   235861.9073731629,
+   242232.63417327154,
+   256711.75976869746,
+   284469.55104744656,
+   317783.13620416354
+  ]
+ },
+ {
   "max_kappa": 4.50605521948202,
   "max_msc": 4.1755939686305075,
   "min_cc": 0.11537050391012382,
@@ -4847,6 +8622,31 @@
    256315.8612754536,
    284242.365776442,
    318457.45826849074
+  ]
+ },
+ {
+  "max_kappa": 4.454830045389824,
+  "max_msc": 4.112380579969869,
+  "min_cc": 0.11598814036662633,
+  "min_cs": 0.24311498332185763,
+  "total_length": 25.484673481679863,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.964738583442371e-05,
+  "max_force_archive": 11228.584657308085,
+  "force_threshold": 11223.270453730453,
+  "success": true,
+  "UUID": "ad45e6ce9b424c5eb1e94dd7541e8c37",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ad45e6ce9b424c5eb1e94dd7541e8c37",
+  "feasible": true,
+  "name": "hurfront_ad45e6ce",
+  "currents": [
+   236595.1691557698,
+   242496.78976017484,
+   256566.28661621467,
+   284217.8908930854,
+   317182.85214149894
   ]
  },
  {
@@ -4950,6 +8750,81 @@
   ]
  },
  {
+  "max_kappa": 4.572922737445,
+  "max_msc": 4.7966697914342005,
+  "min_cc": 0.10713374767177562,
+  "min_cs": 0.25796088351760044,
+  "total_length": 25.465742266678795,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.2506473488216986e-05,
+  "max_force_archive": 12202.168325094575,
+  "force_threshold": 12202.120659093574,
+  "success": true,
+  "UUID": "b02855e38afa4501b5ab471455c4c5b3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b02855e38afa4501b5ab471455c4c5b3",
+  "feasible": true,
+  "name": "hurfront_b02855e3",
+  "currents": [
+   238894.61497136488,
+   247755.26362119048,
+   269095.65836897003,
+   276364.89087064133,
+   304948.5607345745
+  ]
+ },
+ {
+  "max_kappa": 4.498430359994696,
+  "max_msc": 4.356411554485102,
+  "min_cc": 0.10105793407767431,
+  "min_cs": 0.2639804457089215,
+  "total_length": 25.639931282444252,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.472892312146979e-05,
+  "max_force_archive": 12552.227573578231,
+  "force_threshold": 12550.808926724818,
+  "success": true,
+  "UUID": "b0b0b8eee6784d60b736c14398792b46",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b0b0b8eee6784d60b736c14398792b46",
+  "feasible": true,
+  "name": "hurfront_b0b0b8ee",
+  "currents": [
+   236467.4523188805,
+   249417.92282074643,
+   270669.0871344626,
+   273651.77799993125,
+   306852.74829272047
+  ]
+ },
+ {
+  "max_kappa": 4.9175834633167135,
+  "max_msc": 4.2363361871090985,
+  "min_cc": 0.1185315319199369,
+  "min_cs": 0.23913426057599468,
+  "total_length": 25.60392933374232,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.555476115964547e-05,
+  "max_force_archive": 11022.680700813442,
+  "force_threshold": 11016.033497493945,
+  "success": true,
+  "UUID": "b11e4b156afa49828844128b8580f01c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b11e4b156afa49828844128b8580f01c",
+  "feasible": true,
+  "name": "hurfront_b11e4b15",
+  "currents": [
+   236458.97324772962,
+   241384.43820275794,
+   254645.19494270592,
+   282151.06487204914,
+   322419.31730150414
+  ]
+ },
+ {
   "max_kappa": 7.049638133107368,
   "max_msc": 6.145779645597829,
   "min_cc": 0.09115016959018614,
@@ -4972,6 +8847,31 @@
    249577.31672204906,
    273300.2648959558,
    340482.3774934956
+  ]
+ },
+ {
+  "max_kappa": 4.988419891964908,
+  "max_msc": 4.9287182843383475,
+  "min_cc": 0.11350820392129513,
+  "min_cs": 0.24438354912567686,
+  "total_length": 25.331860979243853,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.814500715896941e-05,
+  "max_force_archive": 11206.087235026182,
+  "force_threshold": 11189.62452675654,
+  "success": false,
+  "UUID": "b5dcd26297ac41c2a5a133da8a925e87",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b5dcd26297ac41c2a5a133da8a925e87",
+  "feasible": true,
+  "name": "hurfront_b5dcd262",
+  "currents": [
+   233712.62860304015,
+   239473.83754232406,
+   255772.6220012747,
+   283702.7746148685,
+   324397.1258052357
   ]
  },
  {
@@ -5000,6 +8900,56 @@
   ]
  },
  {
+  "max_kappa": 4.131145197989132,
+  "max_msc": 4.003183305063675,
+  "min_cc": 0.11339626598185866,
+  "min_cs": 0.24691150351028396,
+  "total_length": 25.570827642406087,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.019185033224641e-05,
+  "max_force_archive": 11410.521374883887,
+  "force_threshold": 11406.53439642456,
+  "success": true,
+  "UUID": "b671adc6c8864fbf8244565f9c0bfa9f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b671adc6c8864fbf8244565f9c0bfa9f",
+  "feasible": true,
+  "name": "hurfront_b671adc6",
+  "currents": [
+   235555.20362436632,
+   241960.29863754724,
+   256378.54197968316,
+   283867.5863474193,
+   319297.35797772574
+  ]
+ },
+ {
+  "max_kappa": 4.262331907575083,
+  "max_msc": 4.1707390823840385,
+  "min_cc": 0.10652267888619595,
+  "min_cs": 0.25777128319540604,
+  "total_length": 25.573136724638786,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.056107518485092e-05,
+  "max_force_archive": 12168.811822386244,
+  "force_threshold": 12166.937133945972,
+  "success": true,
+  "UUID": "b704fe56d1e44635b3a3eb1a5a59c587",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b704fe56d1e44635b3a3eb1a5a59c587",
+  "feasible": true,
+  "name": "hurfront_b704fe56",
+  "currents": [
+   238445.58353796476,
+   247790.03598320074,
+   269742.22756464535,
+   273522.3312383034,
+   307558.81024262693
+  ]
+ },
+ {
   "max_kappa": 4.794322824927856,
   "max_msc": 5.656605151226204,
   "min_cc": 0.1136691900684415,
@@ -5025,6 +8975,106 @@
   ]
  },
  {
+  "max_kappa": 4.240012343489014,
+  "max_msc": 4.4052477301225155,
+  "min_cc": 0.11125520374542497,
+  "min_cs": 0.24962301515123037,
+  "total_length": 25.468868141388867,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.27701823602347e-05,
+  "max_force_archive": 11552.105783429386,
+  "force_threshold": 11551.538477909658,
+  "success": true,
+  "UUID": "b75e1d796f3740b1993e98be92e493a6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b75e1d796f3740b1993e98be92e493a6",
+  "feasible": true,
+  "name": "hurfront_b75e1d79",
+  "currents": [
+   235166.46719733407,
+   242200.85991282188,
+   259185.98987070282,
+   282348.33474301815,
+   318157.33684286394
+  ]
+ },
+ {
+  "max_kappa": 4.587647506151443,
+  "max_msc": 4.163621100013415,
+  "min_cc": 0.1142114850691608,
+  "min_cs": 0.24459210937796805,
+  "total_length": 25.57140732016837,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.474394525349249e-05,
+  "max_force_archive": 11270.929569754651,
+  "force_threshold": 11267.038413970928,
+  "success": true,
+  "UUID": "b77ef916abfb4bd2a2c7a9d1c801fa52",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b77ef916abfb4bd2a2c7a9d1c801fa52",
+  "feasible": true,
+  "name": "hurfront_b77ef916",
+  "currents": [
+   235889.6457724816,
+   241670.95596507742,
+   255775.020190121,
+   284225.1275705144,
+   319498.23906854785
+  ]
+ },
+ {
+  "max_kappa": 4.984185018066648,
+  "max_msc": 4.682895743184649,
+  "min_cc": 0.11936579417375051,
+  "min_cs": 0.237699279456759,
+  "total_length": 25.294254965651138,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.823501421555317e-05,
+  "max_force_archive": 10949.95294994992,
+  "force_threshold": 10946.91537932809,
+  "success": true,
+  "UUID": "b7910719ccbb4f1e81da4eecdb66881f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b7910719ccbb4f1e81da4eecdb66881f",
+  "feasible": true,
+  "name": "hurfront_b7910719",
+  "currents": [
+   235818.45525808507,
+   241120.88361510992,
+   255227.05746132616,
+   283271.35383006325,
+   321621.2384021843
+  ]
+ },
+ {
+  "max_kappa": 4.6620678338435155,
+  "max_msc": 4.888406400237792,
+  "min_cc": 0.10376109029537477,
+  "min_cs": 0.26333330605794947,
+  "total_length": 25.72916685302063,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.2909023093532714e-05,
+  "max_force_archive": 12679.916978356241,
+  "force_threshold": 12679.894212184654,
+  "success": true,
+  "UUID": "b8c1d424e8774930a11c914394f6cdf3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/b8c1d424e8774930a11c914394f6cdf3",
+  "feasible": true,
+  "name": "hurfront_b8c1d424",
+  "currents": [
+   239027.8387113543,
+   250453.53311461458,
+   272560.1724704197,
+   274620.90893055964,
+   300396.5353397929
+  ]
+ },
+ {
   "max_kappa": 5.965125922233886,
   "max_msc": 6.026680038368429,
   "min_cc": 0.11150189042930662,
@@ -5047,6 +9097,31 @@
    344433.5533068343,
    263809.01465154125,
    242769.64951505637
+  ]
+ },
+ {
+  "max_kappa": 4.978689183529841,
+  "max_msc": 4.694255075515854,
+  "min_cc": 0.11718633382988212,
+  "min_cs": 0.2408567355927204,
+  "total_length": 25.126088186602637,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.833218583065803e-05,
+  "max_force_archive": 11092.511225810045,
+  "force_threshold": 11090.106725005666,
+  "success": true,
+  "UUID": "ba045980f8e540fd9d75f8039be2f9da",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ba045980f8e540fd9d75f8039be2f9da",
+  "feasible": true,
+  "name": "hurfront_ba045980",
+  "currents": [
+   235992.77472194124,
+   241389.6049757678,
+   255443.11598374334,
+   283545.2922602617,
+   320688.2006250309
   ]
  },
  {
@@ -5100,6 +9175,81 @@
   ]
  },
  {
+  "max_kappa": 4.981870768212486,
+  "max_msc": 4.693580120661385,
+  "min_cc": 0.11963471851164187,
+  "min_cs": 0.23720799624990982,
+  "total_length": 25.37157390019418,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.538150784825897e-05,
+  "max_force_archive": 10921.610869584747,
+  "force_threshold": 10917.703149197878,
+  "success": true,
+  "UUID": "ba369821a90e49c2953cb3d42c020499",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ba369821a90e49c2953cb3d42c020499",
+  "feasible": true,
+  "name": "hurfront_ba369821",
+  "currents": [
+   235220.42286478318,
+   240558.97190192362,
+   254484.2585449222,
+   282632.9072871495,
+   324162.4279679934
+  ]
+ },
+ {
+  "max_kappa": 4.842030677074278,
+  "max_msc": 4.245403453626176,
+  "min_cc": 0.12377625648400631,
+  "min_cs": 0.2324070222118254,
+  "total_length": 25.121750745765958,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011513704735475608,
+  "max_force_archive": 10737.353654397304,
+  "force_threshold": 10734.231094696637,
+  "success": true,
+  "UUID": "bb3f5cfbff0340938318441452ccceea",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/bb3f5cfbff0340938318441452ccceea",
+  "feasible": true,
+  "name": "hurfront_bb3f5cfb",
+  "currents": [
+   236573.8571384751,
+   241037.8834561305,
+   253493.56535531124,
+   281122.06130820967,
+   324831.6213085418
+  ]
+ },
+ {
+  "max_kappa": 4.595176374886231,
+  "max_msc": 4.240659034026467,
+  "min_cc": 0.11744145861229448,
+  "min_cs": 0.24109622136981704,
+  "total_length": 25.343171389595756,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.500939511905902e-05,
+  "max_force_archive": 11096.038444042359,
+  "force_threshold": 11094.508963234013,
+  "success": true,
+  "UUID": "bbb4f2dd3b55449e83643374b2a9f570",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/bbb4f2dd3b55449e83643374b2a9f570",
+  "feasible": true,
+  "name": "hurfront_bbb4f2dd",
+  "currents": [
+   236577.9774147589,
+   242443.6221443719,
+   255888.9555462473,
+   281770.72371882177,
+   320377.7097425346
+  ]
+ },
+ {
   "max_kappa": 5.522175997155985,
   "max_msc": 5.118286188259966,
   "min_cc": 0.11846748966653531,
@@ -5125,6 +9275,56 @@
   ]
  },
  {
+  "max_kappa": 4.9628278998327175,
+  "max_msc": 4.6774717100857135,
+  "min_cc": 0.11924102143051693,
+  "min_cs": 0.23824150798866792,
+  "total_length": 25.35148782115096,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.365605742780498e-05,
+  "max_force_archive": 10985.202170509625,
+  "force_threshold": 10982.881242989271,
+  "success": true,
+  "UUID": "be1fe52a04a84edea824edabdb52b1fe",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/be1fe52a04a84edea824edabdb52b1fe",
+  "feasible": true,
+  "name": "hurfront_be1fe52a",
+  "currents": [
+   236075.4310250687,
+   241125.27349961796,
+   255618.6878978225,
+   283794.4600494,
+   320445.136094857
+  ]
+ },
+ {
+  "max_kappa": 4.721030766852399,
+  "max_msc": 4.798896212764534,
+  "min_cc": 0.10642552932369354,
+  "min_cs": 0.25819041942564647,
+  "total_length": 25.67547434398953,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.903525797905593e-05,
+  "max_force_archive": 12189.617059024753,
+  "force_threshold": 12189.588537246782,
+  "success": true,
+  "UUID": "be6b9c8aac284cf9b651e77aa0f749c3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/be6b9c8aac284cf9b651e77aa0f749c3",
+  "feasible": true,
+  "name": "hurfront_be6b9c8a",
+  "currents": [
+   238346.52412387947,
+   247326.35684959902,
+   269635.5459579287,
+   275651.15955681755,
+   306099.4020785165
+  ]
+ },
+ {
   "max_kappa": 4.262307365055733,
   "max_msc": 4.436026608526352,
   "min_cc": 0.11070297586847432,
@@ -5147,6 +9347,81 @@
    259121.81256153682,
    282259.7745643317,
    318510.25021146063
+  ]
+ },
+ {
+  "max_kappa": 4.507102180626686,
+  "max_msc": 4.142437292496267,
+  "min_cc": 0.11662474305019384,
+  "min_cs": 0.2429932236537213,
+  "total_length": 25.549927013776557,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.658480578424438e-05,
+  "max_force_archive": 11290.369196576274,
+  "force_threshold": 11295.131055827567,
+  "success": true,
+  "UUID": "be8c72edc9c84e2b97fb54019f17d589",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/be8c72edc9c84e2b97fb54019f17d589",
+  "feasible": true,
+  "name": "hurfront_be8c72ed",
+  "currents": [
+   235864.08402284756,
+   242111.69026783755,
+   256235.86609785847,
+   283894.3330426748,
+   318953.0151355252
+  ]
+ },
+ {
+  "max_kappa": 4.86053049832917,
+  "max_msc": 4.297477019380221,
+  "min_cc": 0.12266165758802261,
+  "min_cs": 0.2335620935791438,
+  "total_length": 25.172157269707085,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010928503890175169,
+  "max_force_archive": 10777.95374432453,
+  "force_threshold": 10775.37250123165,
+  "success": true,
+  "UUID": "bf27a435ebda4bcf8ddb3dfc228ac027",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/bf27a435ebda4bcf8ddb3dfc228ac027",
+  "feasible": true,
+  "name": "hurfront_bf27a435",
+  "currents": [
+   236136.34581769616,
+   240873.4391717872,
+   253514.67453975187,
+   281537.05753461574,
+   324997.4715028383
+  ]
+ },
+ {
+  "max_kappa": 4.243895831247272,
+  "max_msc": 4.148100657708739,
+  "min_cc": 0.10470931492415397,
+  "min_cs": 0.2597516799431227,
+  "total_length": 25.549068666168772,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.005242438696881e-05,
+  "max_force_archive": 12274.022825415352,
+  "force_threshold": 12272.311704468862,
+  "success": true,
+  "UUID": "bfb84410872f440ca4bae2932f942a26",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/bfb84410872f440ca4bae2932f942a26",
+  "feasible": true,
+  "name": "hurfront_bfb84410",
+  "currents": [
+   238562.77145323736,
+   247987.1640544072,
+   269930.09863410774,
+   273801.69641958305,
+   306777.2580054058
   ]
  },
  {
@@ -5197,6 +9472,31 @@
    251993.2943240807,
    279930.1137761183,
    332018.4817080139
+  ]
+ },
+ {
+  "max_kappa": 4.28630355649026,
+  "max_msc": 4.1024408388390965,
+  "min_cc": 0.11360633095657897,
+  "min_cs": 0.2461419569277302,
+  "total_length": 25.577353458799333,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.190629373688571e-05,
+  "max_force_archive": 11353.500151271726,
+  "force_threshold": 11348.888829271236,
+  "success": true,
+  "UUID": "c2e8fb555709421f9f88ba3fecb6c5e6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c2e8fb555709421f9f88ba3fecb6c5e6",
+  "feasible": true,
+  "name": "hurfront_c2e8fb55",
+  "currents": [
+   235819.6365580581,
+   242216.00092151255,
+   256656.25164447396,
+   284560.72563068534,
+   317806.37381201197
   ]
  },
  {
@@ -5275,6 +9575,56 @@
   ]
  },
  {
+  "max_kappa": 4.938133650172939,
+  "max_msc": 4.493865440734733,
+  "min_cc": 0.1189350047066477,
+  "min_cs": 0.2401622021555626,
+  "total_length": 25.03069440926717,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.850356437250907e-05,
+  "max_force_archive": 11072.366733606223,
+  "force_threshold": 11066.127902732851,
+  "success": false,
+  "UUID": "c5642fe3b3c14fdebf6c9d3e16a0a490",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c5642fe3b3c14fdebf6c9d3e16a0a490",
+  "feasible": true,
+  "name": "hurfront_c5642fe3",
+  "currents": [
+   238383.86892032588,
+   244099.64654476513,
+   257976.79944969714,
+   284311.74839183514,
+   312286.92526012677
+  ]
+ },
+ {
+  "max_kappa": 4.8253942680923805,
+  "max_msc": 4.76819119289219,
+  "min_cc": 0.11702268690849861,
+  "min_cs": 0.24123458948730403,
+  "total_length": 25.269851197301698,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.990284659217472e-05,
+  "max_force_archive": 11111.52162004638,
+  "force_threshold": 11109.075315983871,
+  "success": true,
+  "UUID": "c57b3b4545104bc3a87c920a2e6fa836",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c57b3b4545104bc3a87c920a2e6fa836",
+  "feasible": true,
+  "name": "hurfront_c57b3b45",
+  "currents": [
+   236533.06861444493,
+   241963.92279409658,
+   256610.4818003776,
+   284651.32753423916,
+   317300.1878235928
+  ]
+ },
+ {
   "max_kappa": 4.960590729271143,
   "max_msc": 5.61296705539837,
   "min_cc": 0.10193098009740081,
@@ -5350,6 +9700,56 @@
   ]
  },
  {
+  "max_kappa": 4.252835860439399,
+  "max_msc": 4.249609467946859,
+  "min_cc": 0.11575743735968752,
+  "min_cs": 0.24421621893565323,
+  "total_length": 25.202727364147613,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.198627506952723e-05,
+  "max_force_archive": 11298.528578193622,
+  "force_threshold": 11292.820148419089,
+  "success": false,
+  "UUID": "c6ab8aafdc0b48298a4629919de33942",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c6ab8aafdc0b48298a4629919de33942",
+  "feasible": true,
+  "name": "hurfront_c6ab8aaf",
+  "currents": [
+   237917.329540556,
+   244095.6626540701,
+   258076.16413471242,
+   286484.38801338343,
+   310485.4442240219
+  ]
+ },
+ {
+  "max_kappa": 4.974416524057908,
+  "max_msc": 4.6679355596476695,
+  "min_cc": 0.11933316719847305,
+  "min_cs": 0.23773628975510397,
+  "total_length": 25.322089293226586,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.6943764997249e-05,
+  "max_force_archive": 10948.737480158537,
+  "force_threshold": 10945.646268756662,
+  "success": true,
+  "UUID": "c714dc057cc54c1a93cf0f4770157d2a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c714dc057cc54c1a93cf0f4770157d2a",
+  "feasible": true,
+  "name": "hurfront_c714dc05",
+  "currents": [
+   235512.8831542153,
+   240871.88664504557,
+   254995.73487763017,
+   283042.78957340843,
+   322635.6943164687
+  ]
+ },
+ {
   "max_kappa": 5.571417769122574,
   "max_msc": 5.016309730355175,
   "min_cc": 0.11941075407435374,
@@ -5372,6 +9772,56 @@
    252998.47977457964,
    279938.1082261043,
    328751.88601094694
+  ]
+ },
+ {
+  "max_kappa": 4.798885142063051,
+  "max_msc": 4.3291500449963385,
+  "min_cc": 0.10108224534430804,
+  "min_cs": 0.2241558157956206,
+  "total_length": 24.899130500387116,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00016244925433784904,
+  "max_force_archive": 10417.470534371789,
+  "force_threshold": 10407.248818951528,
+  "success": true,
+  "UUID": "c73decb912a14c4096a6b53077a26dcc",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c73decb912a14c4096a6b53077a26dcc",
+  "feasible": true,
+  "name": "hurfront_c73decb9",
+  "currents": [
+   235231.514064154,
+   239689.46110247864,
+   250764.64636484382,
+   278272.99313400453,
+   333100.37390032876
+  ]
+ },
+ {
+  "max_kappa": 4.9728637845494745,
+  "max_msc": 4.376535761305786,
+  "min_cc": 0.12142504225192857,
+  "min_cs": 0.23674255652962056,
+  "total_length": 25.219693086186027,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010535641472529576,
+  "max_force_archive": 10935.509929482616,
+  "force_threshold": 10926.40043608077,
+  "success": true,
+  "UUID": "c7835169dd404f31bb9ca975eef7b0a5",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c7835169dd404f31bb9ca975eef7b0a5",
+  "feasible": true,
+  "name": "hurfront_c7835169",
+  "currents": [
+   238385.04228598397,
+   243797.06544061904,
+   257091.41615397,
+   282270.8347132514,
+   315514.62997293595
   ]
  },
  {
@@ -5425,6 +9875,31 @@
   ]
  },
  {
+  "max_kappa": 4.9001300870320765,
+  "max_msc": 4.989045122743675,
+  "min_cc": 0.11763621414913339,
+  "min_cs": 0.24106642813767232,
+  "total_length": 25.237884155071473,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.714977688406899e-05,
+  "max_force_archive": 11104.154862687938,
+  "force_threshold": 11104.094174692726,
+  "success": true,
+  "UUID": "c9026850d87c4f26b4084876660cd8dc",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/c9026850d87c4f26b4084876660cd8dc",
+  "feasible": true,
+  "name": "hurfront_c9026850",
+  "currents": [
+   237481.30424752878,
+   243743.19802205457,
+   257115.71504179915,
+   281745.23019687034,
+   316973.54105848254
+  ]
+ },
+ {
   "max_kappa": 4.888355038189482,
   "max_msc": 5.473161309707553,
   "min_cc": 0.0981100800668995,
@@ -5475,6 +9950,131 @@
   ]
  },
  {
+  "max_kappa": 4.670760683828834,
+  "max_msc": 4.879115440512547,
+  "min_cc": 0.10438853131686977,
+  "min_cs": 0.2626784470313328,
+  "total_length": 25.710628309656435,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.4774317622677334e-05,
+  "max_force_archive": 12652.446514628396,
+  "force_threshold": 12695.494231557457,
+  "success": true,
+  "UUID": "ca56b5729a28430186b0ecc6c3df55b0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ca56b5729a28430186b0ecc6c3df55b0",
+  "feasible": true,
+  "name": "hurfront_ca56b572",
+  "currents": [
+   239086.69927293836,
+   250483.5971418117,
+   272456.0186733539,
+   274621.6678319647,
+   300411.00564667257
+  ]
+ },
+ {
+  "max_kappa": 4.59451163624517,
+  "max_msc": 4.285157686655334,
+  "min_cc": 0.11425466835863386,
+  "min_cs": 0.24515125780758978,
+  "total_length": 25.507019476682757,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.533133469511803e-05,
+  "max_force_archive": 11306.08882851501,
+  "force_threshold": 11302.319705016373,
+  "success": true,
+  "UUID": "ca6b92653b554b8383d249671fe31c55",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ca6b92653b554b8383d249671fe31c55",
+  "feasible": true,
+  "name": "hurfront_ca6b9265",
+  "currents": [
+   236013.61909083556,
+   242209.44605996812,
+   256620.18700984708,
+   284248.4581370669,
+   317967.27826902433
+  ]
+ },
+ {
+  "max_kappa": 4.614626020367162,
+  "max_msc": 4.204366860305422,
+  "min_cc": 0.11377262810390217,
+  "min_cs": 0.24500828250674359,
+  "total_length": 25.639305462932715,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.205408928932681e-05,
+  "max_force_archive": 11285.23046350568,
+  "force_threshold": 11280.347488729782,
+  "success": true,
+  "UUID": "ca92021f124b45d8ab8190ddd75bdec3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ca92021f124b45d8ab8190ddd75bdec3",
+  "feasible": true,
+  "name": "hurfront_ca92021f",
+  "currents": [
+   235710.45676223573,
+   241490.71617693832,
+   255875.1709546245,
+   283883.015519859,
+   320099.6291530845
+  ]
+ },
+ {
+  "max_kappa": 4.661692100536075,
+  "max_msc": 4.197404651155497,
+  "min_cc": 0.12090593682624079,
+  "min_cs": 0.2363623762839596,
+  "total_length": 25.13224066721159,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010301889485507574,
+  "max_force_archive": 10907.351514497428,
+  "force_threshold": 10905.4457005754,
+  "success": true,
+  "UUID": "caee61f0349d446383e2d25cea8e20a1",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/caee61f0349d446383e2d25cea8e20a1",
+  "feasible": true,
+  "name": "hurfront_caee61f0",
+  "currents": [
+   236332.81377832458,
+   241331.31662902734,
+   254801.20195592163,
+   283160.0046491066,
+   321433.6515543387
+  ]
+ },
+ {
+  "max_kappa": 4.69242318446867,
+  "max_msc": 4.882980583011694,
+  "min_cc": 0.10419705848795781,
+  "min_cs": 0.2623622752455181,
+  "total_length": 25.749518160588213,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.367527006205693e-05,
+  "max_force_archive": 12558.461938482389,
+  "force_threshold": 12558.447227217755,
+  "success": true,
+  "UUID": "cb060e5702d0460da87d60af34821f59",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/cb060e5702d0460da87d60af34821f59",
+  "feasible": true,
+  "name": "hurfront_cb060e57",
+  "currents": [
+   238955.42783235927,
+   250339.21801029533,
+   272807.05652022985,
+   274576.3679801932,
+   300380.91822366347
+  ]
+ },
+ {
   "max_kappa": 4.739858254406926,
   "max_msc": 5.319617752639137,
   "min_cc": 0.09541783087305646,
@@ -5497,6 +10097,31 @@
    261946.00149307377,
    257638.77233861847,
    236440.2928498748
+  ]
+ },
+ {
+  "max_kappa": 4.695157964030134,
+  "max_msc": 4.5396608160528675,
+  "min_cc": 0.11446452651815357,
+  "min_cs": 0.24438391955846306,
+  "total_length": 25.18121532308688,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.95310245722413e-05,
+  "max_force_archive": 11244.313773643105,
+  "force_threshold": 11242.6359097866,
+  "success": true,
+  "UUID": "cd06477a4bfe496987ddeb2682a3d17c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/cd06477a4bfe496987ddeb2682a3d17c",
+  "feasible": true,
+  "name": "hurfront_cd06477a",
+  "currents": [
+   235317.87328481465,
+   241118.5779001493,
+   255327.05634689497,
+   283553.83135768684,
+   321741.64967719634
   ]
  },
  {
@@ -5525,6 +10150,56 @@
   ]
  },
  {
+  "max_kappa": 4.668626434412957,
+  "max_msc": 4.900946178596213,
+  "min_cc": 0.10368527365697448,
+  "min_cs": 0.2634069906889988,
+  "total_length": 25.72026403173049,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.301353040551862e-05,
+  "max_force_archive": 12688.613984324656,
+  "force_threshold": 12688.597467555262,
+  "success": true,
+  "UUID": "ce8cff08a54d442a96c207eb5416a5e6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ce8cff08a54d442a96c207eb5416a5e6",
+  "feasible": true,
+  "name": "hurfront_ce8cff08",
+  "currents": [
+   239057.69655821484,
+   250492.4680752862,
+   272442.9857344964,
+   274643.00939089793,
+   300422.8288078458
+  ]
+ },
+ {
+  "max_kappa": 4.631452326028301,
+  "max_msc": 4.30978015469948,
+  "min_cc": 0.11805818285760042,
+  "min_cs": 0.24031673714365387,
+  "total_length": 25.327229042998287,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.704529448106562e-05,
+  "max_force_archive": 11066.624288473662,
+  "force_threshold": 11065.033558154702,
+  "success": true,
+  "UUID": "ce96ab9e681f48599eb690bdb7a181f6",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ce96ab9e681f48599eb690bdb7a181f6",
+  "feasible": true,
+  "name": "hurfront_ce96ab9e",
+  "currents": [
+   236720.93481600474,
+   242506.21400912316,
+   256006.280438088,
+   281663.28742495115,
+   320162.2718785657
+  ]
+ },
+ {
   "max_kappa": 6.662296471229717,
   "max_msc": 5.857145842391121,
   "min_cc": 0.0848617891557923,
@@ -5550,6 +10225,56 @@
   ]
  },
  {
+  "max_kappa": 4.724629703517995,
+  "max_msc": 4.819909676157438,
+  "min_cc": 0.10818888120540433,
+  "min_cs": 0.25576242629545165,
+  "total_length": 25.681481192005464,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.1423117634457004e-05,
+  "max_force_archive": 12040.977595297314,
+  "force_threshold": 12040.94353494117,
+  "success": true,
+  "UUID": "ceb9f471032748df986acaed35c29e55",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ceb9f471032748df986acaed35c29e55",
+  "feasible": true,
+  "name": "hurfront_ceb9f471",
+  "currents": [
+   238307.9306124322,
+   247192.70950173438,
+   269528.13673185994,
+   275606.1688870929,
+   306424.04283362156
+  ]
+ },
+ {
+  "max_kappa": 4.8227034242436755,
+  "max_msc": 4.197541548414968,
+  "min_cc": 0.12317460105507794,
+  "min_cs": 0.23277580272617798,
+  "total_length": 25.23568916856555,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00011009084192413888,
+  "max_force_archive": 10759.03454635156,
+  "force_threshold": 10756.410384448956,
+  "success": true,
+  "UUID": "cf0fc9b0253e44e38231f148d2c34065",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/cf0fc9b0253e44e38231f148d2c34065",
+  "feasible": true,
+  "name": "hurfront_cf0fc9b0",
+  "currents": [
+   235853.99257553014,
+   240485.50979519196,
+   253096.8315548578,
+   281538.9994032805,
+   326083.65523782745
+  ]
+ },
+ {
   "max_kappa": 4.796930400846779,
   "max_msc": 4.244206308891722,
   "min_cc": 0.12028357075260605,
@@ -5572,6 +10297,31 @@
    253678.3543739089,
    282228.2444375566,
    325560.43835850357
+  ]
+ },
+ {
+  "max_kappa": 4.908493532570747,
+  "max_msc": 4.263993808911803,
+  "min_cc": 0.12156773283629785,
+  "min_cs": 0.23563157591194675,
+  "total_length": 25.195009363112003,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.00010421269827333439,
+  "max_force_archive": 10849.169401649759,
+  "force_threshold": 10847.048635489573,
+  "success": true,
+  "UUID": "cfc48a6132584e1dbadd38ac028741bb",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/cfc48a6132584e1dbadd38ac028741bb",
+  "feasible": true,
+  "name": "hurfront_cfc48a61",
+  "currents": [
+   236806.8463202444,
+   241940.3075481106,
+   253836.2083283898,
+   279837.45377126004,
+   324638.1725987133
   ]
  },
  {
@@ -5650,6 +10400,31 @@
   ]
  },
  {
+  "max_kappa": 4.9593052213245485,
+  "max_msc": 4.615374969423851,
+  "min_cc": 0.11836699853962449,
+  "min_cs": 0.23942775052281604,
+  "total_length": 25.122130491820993,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.746416023449007e-05,
+  "max_force_archive": 11038.334618087874,
+  "force_threshold": 11034.704044587443,
+  "success": true,
+  "UUID": "d1e4211490024bd9ae70ec14d589f4c2",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d1e4211490024bd9ae70ec14d589f4c2",
+  "feasible": true,
+  "name": "hurfront_d1e42114",
+  "currents": [
+   236702.34411252366,
+   242084.5026747151,
+   256021.2699250691,
+   284137.1973127026,
+   318113.6745417463
+  ]
+ },
+ {
   "max_kappa": 6.179983209458019,
   "max_msc": 6.072598424455317,
   "min_cc": 0.11232279159892838,
@@ -5722,6 +10497,31 @@
    250404.8355931565,
    276509.5663060369,
    337181.4686837004
+  ]
+ },
+ {
+  "max_kappa": 4.879799674696195,
+  "max_msc": 4.984121985453544,
+  "min_cc": 0.11826135211766048,
+  "min_cs": 0.2403471437112484,
+  "total_length": 25.239154535286264,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.843757069326865e-05,
+  "max_force_archive": 11078.699503120724,
+  "force_threshold": 11078.632907807732,
+  "success": true,
+  "UUID": "d48abe0756e64217a66bb65c8a7b0e2e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d48abe0756e64217a66bb65c8a7b0e2e",
+  "feasible": true,
+  "name": "hurfront_d48abe07",
+  "currents": [
+   237484.41014056397,
+   243734.36579515162,
+   257080.15854511992,
+   281738.94034457766,
+   317021.1137413208
   ]
  },
  {
@@ -5800,6 +10600,106 @@
   ]
  },
  {
+  "max_kappa": 4.958493727541084,
+  "max_msc": 4.681935840391457,
+  "min_cc": 0.11926564830042147,
+  "min_cs": 0.23784792549889566,
+  "total_length": 25.301733822053336,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.760107797043798e-05,
+  "max_force_archive": 10954.672270894245,
+  "force_threshold": 10951.873086166936,
+  "success": true,
+  "UUID": "d79c4d849c534f86b0f2bc43aa92c7aa",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d79c4d849c534f86b0f2bc43aa92c7aa",
+  "feasible": true,
+  "name": "hurfront_d79c4d84",
+  "currents": [
+   235756.47480868106,
+   241063.87175539834,
+   255189.0161648828,
+   283244.69188094436,
+   321804.93395686074
+  ]
+ },
+ {
+  "max_kappa": 4.510405680095498,
+  "max_msc": 4.4035142642593925,
+  "min_cc": 0.10060757282458099,
+  "min_cs": 0.2645216450917334,
+  "total_length": 25.63919302354757,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.4292382914868117e-05,
+  "max_force_archive": 12620.782249978582,
+  "force_threshold": 12619.48377963245,
+  "success": true,
+  "UUID": "d7f770360e464a36bed28a9183dad509",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d7f770360e464a36bed28a9183dad509",
+  "feasible": true,
+  "name": "hurfront_d7f77036",
+  "currents": [
+   236491.94984193685,
+   249445.5897261685,
+   270713.4077526886,
+   273681.1533429523,
+   306726.88790299476
+  ]
+ },
+ {
+  "max_kappa": 4.8133620498498715,
+  "max_msc": 4.311346889818691,
+  "min_cc": 0.10633379934521961,
+  "min_cs": 0.22063101519621872,
+  "total_length": 24.773543105539922,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001859469178608688,
+  "max_force_archive": 10337.616555571683,
+  "force_threshold": 10325.919195488868,
+  "success": true,
+  "UUID": "d8a28ed371ee4ffabcf92bb25e0beb33",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d8a28ed371ee4ffabcf92bb25e0beb33",
+  "feasible": true,
+  "name": "hurfront_d8a28ed3",
+  "currents": [
+   236541.24143833035,
+   240362.81543601543,
+   251231.00058812927,
+   278535.2143799617,
+   330388.71672070515
+  ]
+ },
+ {
+  "max_kappa": 4.963620989636624,
+  "max_msc": 4.662403647258002,
+  "min_cc": 0.11812383958149765,
+  "min_cs": 0.23968448633379627,
+  "total_length": 25.099827266739297,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.0001004102847807953,
+  "max_force_archive": 11035.229934798996,
+  "force_threshold": 11031.936578750645,
+  "success": true,
+  "UUID": "d9d9f0700be2437fa91797555ebaa5e8",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/d9d9f0700be2437fa91797555ebaa5e8",
+  "feasible": true,
+  "name": "hurfront_d9d9f070",
+  "currents": [
+   236454.89253657835,
+   242141.67717694657,
+   256056.78531402975,
+   284247.3190026317,
+   318158.314536569
+  ]
+ },
+ {
   "max_kappa": 6.727206162857448,
   "max_msc": 5.891422235071329,
   "min_cc": 0.10426390157012483,
@@ -5825,6 +10725,31 @@
   ]
  },
  {
+  "max_kappa": 4.656789216792999,
+  "max_msc": 4.188316208352726,
+  "min_cc": 0.1154923477609684,
+  "min_cs": 0.24307986164095854,
+  "total_length": 25.571806461151866,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.718502022101253e-05,
+  "max_force_archive": 11206.25770031331,
+  "force_threshold": 11201.635142471805,
+  "success": true,
+  "UUID": "dae7101d932943c5900f384b36910d4e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/dae7101d932943c5900f384b36910d4e",
+  "feasible": true,
+  "name": "hurfront_dae7101d",
+  "currents": [
+   236359.02127975618,
+   241746.42540910497,
+   255835.91264156616,
+   283685.6336345764,
+   319431.99560173857
+  ]
+ },
+ {
   "max_kappa": 5.046745564599251,
   "max_msc": 5.757739117746884,
   "min_cc": 0.10724303718701944,
@@ -5847,6 +10772,31 @@
    262736.15234273224,
    279235.14102969907,
    314691.8432798486
+  ]
+ },
+ {
+  "max_kappa": 4.829096926111276,
+  "max_msc": 4.2339112079361705,
+  "min_cc": 0.12043875486454657,
+  "min_cs": 0.23701676687834217,
+  "total_length": 25.178119939947152,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 0.000100167340224516,
+  "max_force_archive": 10923.504280970357,
+  "force_threshold": 10920.945318360771,
+  "success": true,
+  "UUID": "dcb173b51ac64233a83b8bbdb23663c4",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/dcb173b51ac64233a83b8bbdb23663c4",
+  "feasible": true,
+  "name": "hurfront_dcb173b5",
+  "currents": [
+   237015.89337491634,
+   242145.0402118268,
+   254700.83393424592,
+   282126.2864429836,
+   321070.9346027453
   ]
  },
  {
@@ -5900,6 +10850,131 @@
   ]
  },
  {
+  "max_kappa": 4.62861693171801,
+  "max_msc": 4.841452421569639,
+  "min_cc": 0.10485983387895259,
+  "min_cs": 0.2619222517316846,
+  "total_length": 25.635957312596616,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.541093714980536e-05,
+  "max_force_archive": 12551.743733177804,
+  "force_threshold": 12551.725222391717,
+  "success": true,
+  "UUID": "dde5826758a047b79831bfeeb3db2b21",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/dde5826758a047b79831bfeeb3db2b21",
+  "feasible": true,
+  "name": "hurfront_dde58267",
+  "currents": [
+   239380.4480356156,
+   251116.379088518,
+   272433.86163853086,
+   274625.1468639961,
+   299503.15294008044
+  ]
+ },
+ {
+  "max_kappa": 4.75051003965034,
+  "max_msc": 4.817468211826425,
+  "min_cc": 0.10560561473203248,
+  "min_cs": 0.2609295002802176,
+  "total_length": 25.655008285064376,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.5885758151855944e-05,
+  "max_force_archive": 12480.645009898102,
+  "force_threshold": 12480.617893496921,
+  "success": true,
+  "UUID": "de1e9afadf5d47fd9c2a28ad6dd16a66",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/de1e9afadf5d47fd9c2a28ad6dd16a66",
+  "feasible": true,
+  "name": "hurfront_de1e9afa",
+  "currents": [
+   239309.23162773458,
+   251008.41313779415,
+   272672.6056378448,
+   274583.4814870253,
+   299485.2566763424
+  ]
+ },
+ {
+  "max_kappa": 4.715950710305903,
+  "max_msc": 4.978464339294693,
+  "min_cc": 0.10637934219270959,
+  "min_cs": 0.26030569497988015,
+  "total_length": 25.608899581438838,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.644047259566017e-05,
+  "max_force_archive": 12464.827629053307,
+  "force_threshold": 12464.805718399512,
+  "success": true,
+  "UUID": "df8c2cacc1f245a4823d436e32157276",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/df8c2cacc1f245a4823d436e32157276",
+  "feasible": true,
+  "name": "hurfront_df8c2cac",
+  "currents": [
+   239336.48353209966,
+   250404.13985196213,
+   271635.4012029472,
+   274872.89142447396,
+   300810.0725552582
+  ]
+ },
+ {
+  "max_kappa": 4.517233496078704,
+  "max_msc": 4.380370588525508,
+  "min_cc": 0.10168596913197046,
+  "min_cs": 0.2636046739785523,
+  "total_length": 25.661780189700735,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.437727330762476e-05,
+  "max_force_archive": 12548.120467632689,
+  "force_threshold": 12545.73746791429,
+  "success": true,
+  "UUID": "dfdc6b5645944ca3a2ac264fb0f7e6a5",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/dfdc6b5645944ca3a2ac264fb0f7e6a5",
+  "feasible": true,
+  "name": "hurfront_dfdc6b56",
+  "currents": [
+   236396.73329957906,
+   249290.8112293998,
+   270530.31141525315,
+   273404.5291475819,
+   307436.60347492737
+  ]
+ },
+ {
+  "max_kappa": 4.518769645760861,
+  "max_msc": 4.383681495949271,
+  "min_cc": 0.10200628370411133,
+  "min_cs": 0.26356890707091757,
+  "total_length": 25.630186599557263,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.529606260899533e-05,
+  "max_force_archive": 12639.708442425923,
+  "force_threshold": 12680.140197831384,
+  "success": true,
+  "UUID": "e05b19a8f3bf428db43fde8711e1f753",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e05b19a8f3bf428db43fde8711e1f753",
+  "feasible": true,
+  "name": "hurfront_e05b19a8",
+  "currents": [
+   236522.03047263663,
+   249468.23422002234,
+   270726.43317974795,
+   273679.679093299,
+   306662.61160103534
+  ]
+ },
+ {
   "max_kappa": 6.555952671206007,
   "max_msc": 6.026374187578784,
   "min_cc": 0.09542983149148551,
@@ -5947,6 +11022,31 @@
    249771.36163779767,
    284653.04746371123,
    336848.2555829005
+  ]
+ },
+ {
+  "max_kappa": 4.7283195391695605,
+  "max_msc": 4.8044199415514575,
+  "min_cc": 0.1045790525317806,
+  "min_cs": 0.26206268567026164,
+  "total_length": 25.65719570371375,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.511913698513362e-05,
+  "max_force_archive": 12559.162293398518,
+  "force_threshold": 12559.133470737606,
+  "success": true,
+  "UUID": "e0c37e7990dd4aa89e85fbb33ad06035",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e0c37e7990dd4aa89e85fbb33ad06035",
+  "feasible": true,
+  "name": "hurfront_e0c37e79",
+  "currents": [
+   239306.3584017487,
+   251031.47134349056,
+   272703.1223521234,
+   274579.9065748875,
+   299438.1298944911
   ]
  },
  {
@@ -6100,6 +11200,81 @@
   ]
  },
  {
+  "max_kappa": 4.4407748731583965,
+  "max_msc": 4.159828474162001,
+  "min_cc": 0.11548987031897373,
+  "min_cs": 0.24371616916696098,
+  "total_length": 25.548480582380044,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.596806673105563e-05,
+  "max_force_archive": 11260.133959333054,
+  "force_threshold": 11255.367246930546,
+  "success": true,
+  "UUID": "e4e64d0cd78d4ff9a5870891071a289e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e4e64d0cd78d4ff9a5870891071a289e",
+  "feasible": true,
+  "name": "hurfront_e4e64d0c",
+  "currents": [
+   235978.80727551298,
+   242299.6432797495,
+   256730.72304491373,
+   284476.9646455945,
+   317572.85032097163
+  ]
+ },
+ {
+  "max_kappa": 4.262548155998309,
+  "max_msc": 4.102424970117572,
+  "min_cc": 0.1068056706360423,
+  "min_cs": 0.2574695789197758,
+  "total_length": 25.56861153075957,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.153398914715549e-05,
+  "max_force_archive": 12151.088838512855,
+  "force_threshold": 12149.667939045441,
+  "success": true,
+  "UUID": "e556bf4197f44803b0d9a3d7f65ba487",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e556bf4197f44803b0d9a3d7f65ba487",
+  "feasible": true,
+  "name": "hurfront_e556bf41",
+  "currents": [
+   238445.37545475268,
+   247781.87585424777,
+   269736.4551822125,
+   273534.0084519052,
+   307561.27362362295
+  ]
+ },
+ {
+  "max_kappa": 4.870494507849193,
+  "max_msc": 4.955608974862248,
+  "min_cc": 0.11642534264197998,
+  "min_cs": 0.24250343413567702,
+  "total_length": 25.22399850800649,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.457455540313675e-05,
+  "max_force_archive": 11163.97092548688,
+  "force_threshold": 11163.91575966749,
+  "success": true,
+  "UUID": "e5cbf0000e494e5a8a7d414bb09f0f2b",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e5cbf0000e494e5a8a7d414bb09f0f2b",
+  "feasible": true,
+  "name": "hurfront_e5cbf000",
+  "currents": [
+   237480.65807255614,
+   243730.16670479716,
+   257309.4955548317,
+   281992.90501597873,
+   316545.7632185735
+  ]
+ },
+ {
   "max_kappa": 6.576512764995355,
   "max_msc": 5.905951627400832,
   "min_cc": 0.09075050292413216,
@@ -6125,6 +11300,81 @@
   ]
  },
  {
+  "max_kappa": 4.750529127226121,
+  "max_msc": 4.825867398437842,
+  "min_cc": 0.10572257276822386,
+  "min_cs": 0.25923495983673306,
+  "total_length": 25.69053743855479,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.798030461677402e-05,
+  "max_force_archive": 12260.230013369164,
+  "force_threshold": 12363.10754018573,
+  "success": true,
+  "UUID": "e727b2b638ca4819ae71881be7b568a0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e727b2b638ca4819ae71881be7b568a0",
+  "feasible": true,
+  "name": "hurfront_e727b2b6",
+  "currents": [
+   238332.11508508958,
+   247300.07091501835,
+   269740.3593595364,
+   275594.027123434,
+   306092.41608366277
+  ]
+ },
+ {
+  "max_kappa": 4.25832799154811,
+  "max_msc": 4.134781226457968,
+  "min_cc": 0.1056030620005472,
+  "min_cs": 0.2587658060748842,
+  "total_length": 25.56621282617711,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.039057150428858e-05,
+  "max_force_archive": 12222.12614683335,
+  "force_threshold": 12219.785565927137,
+  "success": true,
+  "UUID": "e74c498b884e4e0d92309438d0013bcb",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e74c498b884e4e0d92309438d0013bcb",
+  "feasible": true,
+  "name": "hurfront_e74c498b",
+  "currents": [
+   238485.53839242758,
+   247854.52802887995,
+   269827.7912488108,
+   273567.0750351684,
+   307324.0558614542
+  ]
+ },
+ {
+  "max_kappa": 4.309095492915446,
+  "max_msc": 4.114745205931218,
+  "min_cc": 0.11589465494077991,
+  "min_cs": 0.24327513809244494,
+  "total_length": 25.441329744011426,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.043900854257684e-05,
+  "max_force_archive": 11240.679107038728,
+  "force_threshold": 11234.9266868556,
+  "success": true,
+  "UUID": "e9143f275bd84e83bb8a8026eeae2d3f",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e9143f275bd84e83bb8a8026eeae2d3f",
+  "feasible": true,
+  "name": "hurfront_e9143f27",
+  "currents": [
+   237564.6415242572,
+   243120.86728254345,
+   257226.9500023041,
+   284965.4306357892,
+   314181.0991218487
+  ]
+ },
+ {
   "max_kappa": 4.651072541644293,
   "max_msc": 4.974182258557,
   "min_cc": 0.10849376690771476,
@@ -6147,6 +11397,31 @@
    272499.5376213925,
    274565.5497825357,
    300883.3024409951
+  ]
+ },
+ {
+  "max_kappa": 4.751895496957743,
+  "max_msc": 4.820638677389239,
+  "min_cc": 0.10577808110672991,
+  "min_cs": 0.258932128878891,
+  "total_length": 25.689448519307078,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.837504719354005e-05,
+  "max_force_archive": 12230.338860372509,
+  "force_threshold": 12230.306503439322,
+  "success": true,
+  "UUID": "e9bda9148c5f4869b91567e78325a568",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/e9bda9148c5f4869b91567e78325a568",
+  "feasible": true,
+  "name": "hurfront_e9bda914",
+  "currents": [
+   238324.99821568682,
+   247294.47432755056,
+   269733.27768433763,
+   275595.9491521495,
+   306110.2891870167
   ]
  },
  {
@@ -6200,6 +11475,56 @@
   ]
  },
  {
+  "max_kappa": 4.642443879329248,
+  "max_msc": 4.812767048247241,
+  "min_cc": 0.1035289945952398,
+  "min_cs": 0.26330837544596536,
+  "total_length": 25.747269191954427,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.3531900131391563e-05,
+  "max_force_archive": 12631.290688156854,
+  "force_threshold": 12801.799420866511,
+  "success": true,
+  "UUID": "ea94974fe7b148e4aecf5bdae9c32caf",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ea94974fe7b148e4aecf5bdae9c32caf",
+  "feasible": true,
+  "name": "hurfront_ea94974f",
+  "currents": [
+   238960.86905676124,
+   250367.18325559222,
+   272837.3599744646,
+   274572.1861642122,
+   300321.39011571096
+  ]
+ },
+ {
+  "max_kappa": 4.669858312140816,
+  "max_msc": 4.8442210235514,
+  "min_cc": 0.10641117756429602,
+  "min_cs": 0.26012966395271936,
+  "total_length": 25.637735595913533,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.664031765971298e-05,
+  "max_force_archive": 12432.245179159687,
+  "force_threshold": 12432.219806381174,
+  "success": true,
+  "UUID": "ea9c8c1ebaac4f5498fb5aa0519d4fe3",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ea9c8c1ebaac4f5498fb5aa0519d4fe3",
+  "feasible": true,
+  "name": "hurfront_ea9c8c1e",
+  "currents": [
+   239368.68492304816,
+   251041.46602029077,
+   272470.1928913939,
+   274616.497979423,
+   299562.1467525852
+  ]
+ },
+ {
   "max_kappa": 6.419969681448638,
   "max_msc": 6.02178296515833,
   "min_cc": 0.09512627896867396,
@@ -6222,6 +11547,31 @@
    228474.51326049064,
    205334.17932158493,
    386892.4710636246
+  ]
+ },
+ {
+  "max_kappa": 4.447934455249032,
+  "max_msc": 4.157916907115348,
+  "min_cc": 0.1133855519459582,
+  "min_cs": 0.24589262240725016,
+  "total_length": 25.62869224852856,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.081118419532968e-05,
+  "max_force_archive": 11329.147424093862,
+  "force_threshold": 11325.067558701716,
+  "success": true,
+  "UUID": "eaaf567cef094003aae66abc059e7a7a",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/eaaf567cef094003aae66abc059e7a7a",
+  "feasible": true,
+  "name": "hurfront_eaaf567c",
+  "currents": [
+   235584.9777868899,
+   241799.41722802073,
+   256124.51541030925,
+   284338.68078137975,
+   319211.39736014203
   ]
  },
  {
@@ -6250,6 +11600,56 @@
   ]
  },
  {
+  "max_kappa": 4.954022555540173,
+  "max_msc": 4.693531276229099,
+  "min_cc": 0.1180609284734627,
+  "min_cs": 0.23964969671636208,
+  "total_length": 25.12886551436111,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.014312691254046e-05,
+  "max_force_archive": 11057.662044375622,
+  "force_threshold": 11055.419873999075,
+  "success": true,
+  "UUID": "ec5b8f3d212b4de2b22e8007e4d80cb9",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ec5b8f3d212b4de2b22e8007e4d80cb9",
+  "feasible": true,
+  "name": "hurfront_ec5b8f3d",
+  "currents": [
+   235804.9529733268,
+   241218.58889463096,
+   255254.0973690639,
+   283532.41666766803,
+   321248.9326620566
+  ]
+ },
+ {
+  "max_kappa": 4.443590884731621,
+  "max_msc": 4.058386041860095,
+  "min_cc": 0.12130302692903532,
+  "min_cs": 0.2378903303417514,
+  "total_length": 25.277346973025274,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.957612382434582e-05,
+  "max_force_archive": 11075.376113424833,
+  "force_threshold": 11073.793671587155,
+  "success": true,
+  "UUID": "ecdf612363c1495aba1aa715ff7cca5c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ecdf612363c1495aba1aa715ff7cca5c",
+  "feasible": true,
+  "name": "hurfront_ecdf6123",
+  "currents": [
+   235159.55262589868,
+   240186.97070442946,
+   253263.5505077176,
+   281701.22698467574,
+   326747.6877440077
+  ]
+ },
+ {
   "max_kappa": 4.676518866218465,
   "max_msc": 4.9159266628659015,
   "min_cc": 0.10490601570384409,
@@ -6272,6 +11672,31 @@
    272543.82494001806,
    274629.777331338,
    300522.4486335812
+  ]
+ },
+ {
+  "max_kappa": 4.491203138872412,
+  "max_msc": 4.189503149783889,
+  "min_cc": 0.11323786093955049,
+  "min_cs": 0.24584518075858686,
+  "total_length": 25.655175132865182,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.97977524485189e-05,
+  "max_force_archive": 11334.96263465223,
+  "force_threshold": 11328.718686255854,
+  "success": true,
+  "UUID": "ed206814aff44b4ebfe5cc77d26b98ec",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ed206814aff44b4ebfe5cc77d26b98ec",
+  "feasible": true,
+  "name": "hurfront_ed206814",
+  "currents": [
+   235423.27097589968,
+   241536.5926193897,
+   256159.9438647621,
+   283834.2213376594,
+   320104.95976903103
   ]
  },
  {
@@ -6325,6 +11750,31 @@
   ]
  },
  {
+  "max_kappa": 4.7679558066307495,
+  "max_msc": 4.84026939856161,
+  "min_cc": 0.1059702662471949,
+  "min_cs": 0.2588142972862344,
+  "total_length": 25.692103848518475,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.816177656851835e-05,
+  "max_force_archive": 12227.478795825175,
+  "force_threshold": 12227.444816468545,
+  "success": true,
+  "UUID": "ee6c2cf78a654bb9a48b53bee9b1dd58",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ee6c2cf78a654bb9a48b53bee9b1dd58",
+  "feasible": true,
+  "name": "hurfront_ee6c2cf7",
+  "currents": [
+   238285.05200389496,
+   247274.4466587048,
+   269703.27728185273,
+   275595.189105838,
+   306201.0235164507
+  ]
+ },
+ {
   "max_kappa": 5.094720583722228,
   "max_msc": 4.709513072489287,
   "min_cc": 0.1185899497435525,
@@ -6375,6 +11825,56 @@
   ]
  },
  {
+  "max_kappa": 4.48817326938812,
+  "max_msc": 4.171193211287092,
+  "min_cc": 0.11451451932199104,
+  "min_cs": 0.2445390783723381,
+  "total_length": 25.558996623325815,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.496065087614123e-05,
+  "max_force_archive": 11276.788224758353,
+  "force_threshold": 11271.605143006458,
+  "success": true,
+  "UUID": "ef245690ff6d4e83af99bebf9dbbc9c0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ef245690ff6d4e83af99bebf9dbbc9c0",
+  "feasible": true,
+  "name": "hurfront_ef245690",
+  "currents": [
+   236375.84576212015,
+   242187.32757004915,
+   256387.4964290766,
+   284560.7197038223,
+   317547.5991016738
+  ]
+ },
+ {
+  "max_kappa": 4.7506392562400235,
+  "max_msc": 4.825872430580724,
+  "min_cc": 0.10572042259688552,
+  "min_cs": 0.25923909693481406,
+  "total_length": 25.690533023616762,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.799244530835553e-05,
+  "max_force_archive": 12259.639965468014,
+  "force_threshold": 12259.60706195463,
+  "success": true,
+  "UUID": "ef60f79c4cd442e49ef23687f2513558",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ef60f79c4cd442e49ef23687f2513558",
+  "feasible": true,
+  "name": "hurfront_ef60f79c",
+  "currents": [
+   238331.84176883433,
+   247299.91418328547,
+   269740.16282964137,
+   275594.0096078395,
+   306093.06017714046
+  ]
+ },
+ {
   "max_kappa": 6.723338611696437,
   "max_msc": 5.979136589262659,
   "min_cc": 0.10275664610863483,
@@ -6400,6 +11900,31 @@
   ]
  },
  {
+  "max_kappa": 4.2624515524675255,
+  "max_msc": 4.104850591306474,
+  "min_cc": 0.11263858819080966,
+  "min_cs": 0.2471167053744868,
+  "total_length": 25.55038891891924,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.210422332009461e-05,
+  "max_force_archive": 11413.684584500726,
+  "force_threshold": 11410.468542721674,
+  "success": true,
+  "UUID": "ef7a2c6f73e44958b812e595b0e97ff8",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ef7a2c6f73e44958b812e595b0e97ff8",
+  "feasible": true,
+  "name": "hurfront_ef7a2c6f",
+  "currents": [
+   235865.52007501555,
+   242276.24458993503,
+   256791.47942928353,
+   284556.0204123418,
+   317569.7240601655
+  ]
+ },
+ {
   "max_kappa": 5.659386374118505,
   "max_msc": 6.305593951524394,
   "min_cc": 0.09591492689299691,
@@ -6422,6 +11947,31 @@
    251523.12396613,
    288868.01105215924,
    329847.91482875065
+  ]
+ },
+ {
+  "max_kappa": 4.6700008804282565,
+  "max_msc": 4.888638646684359,
+  "min_cc": 0.10567177664013741,
+  "min_cs": 0.26118146072828874,
+  "total_length": 25.708492755772003,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.5264985619845294e-05,
+  "max_force_archive": 12518.033552044904,
+  "force_threshold": 12517.994782365975,
+  "success": true,
+  "UUID": "f1e4ca0720bb40cf91df2d9b0c6b2c04",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/f1e4ca0720bb40cf91df2d9b0c6b2c04",
+  "feasible": true,
+  "name": "hurfront_f1e4ca07",
+  "currents": [
+   239094.06209132352,
+   250457.79862484068,
+   272407.40338458563,
+   274633.0458330939,
+   300466.67863289715
   ]
  },
  {
@@ -6600,6 +12150,56 @@
   ]
  },
  {
+  "max_kappa": 4.991690400330074,
+  "max_msc": 4.693883958075988,
+  "min_cc": 0.12010111938174163,
+  "min_cs": 0.23675467980476458,
+  "total_length": 25.330443404148014,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.843046203843252e-05,
+  "max_force_archive": 10912.677510275991,
+  "force_threshold": 10909.665015312325,
+  "success": true,
+  "UUID": "f5451124ae9e4f188cf888fc209de446",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/f5451124ae9e4f188cf888fc209de446",
+  "feasible": true,
+  "name": "hurfront_f5451124",
+  "currents": [
+   235497.00006886915,
+   240822.62671505136,
+   254906.04554869662,
+   282974.3786573873,
+   322858.937576773
+  ]
+ },
+ {
+  "max_kappa": 4.5926168966203615,
+  "max_msc": 4.178856961526075,
+  "min_cc": 0.11609253090500289,
+  "min_cs": 0.24302954690874382,
+  "total_length": 25.546692749446958,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.787067271984794e-05,
+  "max_force_archive": 11216.257136676742,
+  "force_threshold": 11210.546338785793,
+  "success": true,
+  "UUID": "f5da4a8605cc433e95072b63287adf10",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/f5da4a8605cc433e95072b63287adf10",
+  "feasible": true,
+  "name": "hurfront_f5da4a86",
+  "currents": [
+   235921.29793000387,
+   242133.12086836688,
+   256228.49516264102,
+   283888.5351606865,
+   318887.5394450451
+  ]
+ },
+ {
   "max_kappa": 4.875727630849254,
   "max_msc": 5.448555644127655,
   "min_cc": 0.09833409312543244,
@@ -6675,6 +12275,56 @@
   ]
  },
  {
+  "max_kappa": 4.773573558050931,
+  "max_msc": 4.2206080154043155,
+  "min_cc": 0.11794816643052221,
+  "min_cs": 0.2402092407584934,
+  "total_length": 25.567382706147548,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 8.349046628402837e-05,
+  "max_force_archive": 11088.012291097799,
+  "force_threshold": 11082.468754317968,
+  "success": true,
+  "UUID": "f8e3dc5977ee4fb085454911b0a167d2",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/f8e3dc5977ee4fb085454911b0a167d2",
+  "feasible": true,
+  "name": "hurfront_f8e3dc59",
+  "currents": [
+   236720.36047072208,
+   241834.1837952999,
+   255627.30422588962,
+   283441.6587328076,
+   319435.48134202784
+  ]
+ },
+ {
+  "max_kappa": 4.911356323394605,
+  "max_msc": 4.948215521305839,
+  "min_cc": 0.11940103772555745,
+  "min_cs": 0.2389840318981247,
+  "total_length": 25.241622805797093,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.13298347555028e-05,
+  "max_force_archive": 11022.430628709457,
+  "force_threshold": 11022.356962621963,
+  "success": true,
+  "UUID": "f9cee10f9ae6406ba18a43faf2da2ed0",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/f9cee10f9ae6406ba18a43faf2da2ed0",
+  "feasible": true,
+  "name": "hurfront_f9cee10f",
+  "currents": [
+   237642.4766180078,
+   243690.75989493617,
+   256823.59933217752,
+   281575.1850926605,
+   317326.96762894944
+  ]
+ },
+ {
   "max_kappa": 4.474825369982762,
   "max_msc": 4.153996360571735,
   "min_cc": 0.11421995801342374,
@@ -6697,6 +12347,56 @@
    256120.37912777055,
    284062.23513515986,
    319279.655548796
+  ]
+ },
+ {
+  "max_kappa": 4.201761636740726,
+  "max_msc": 4.0302158803442145,
+  "min_cc": 0.10753785972160501,
+  "min_cs": 0.25561011869157774,
+  "total_length": 25.599794269710905,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.3360756555496986e-05,
+  "max_force_archive": 12008.035176990037,
+  "force_threshold": 12005.7096698785,
+  "success": true,
+  "UUID": "fafdd80d70d34d6bb9608882679ca00c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fafdd80d70d34d6bb9608882679ca00c",
+  "feasible": true,
+  "name": "hurfront_fafdd80d",
+  "currents": [
+   237670.47610041633,
+   247320.07871047445,
+   268222.4963825098,
+   273972.9058842219,
+   309873.0314891187
+  ]
+ },
+ {
+  "max_kappa": 4.736745129570211,
+  "max_msc": 4.224244745828773,
+  "min_cc": 0.11533954418694516,
+  "min_cs": 0.24302809330460745,
+  "total_length": 25.5481185735235,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.876112385816414e-05,
+  "max_force_archive": 11193.363669303764,
+  "force_threshold": 11188.735804171,
+  "success": true,
+  "UUID": "fbd06ea52a054b7a96662a55943841a2",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fbd06ea52a054b7a96662a55943841a2",
+  "feasible": true,
+  "name": "hurfront_fbd06ea5",
+  "currents": [
+   236231.72196112134,
+   241713.9025959597,
+   255575.86127105364,
+   283519.6559589773,
+   320017.84677963087
   ]
  },
  {
@@ -6775,6 +12475,81 @@
   ]
  },
  {
+  "max_kappa": 4.804302945371569,
+  "max_msc": 4.956229461604913,
+  "min_cc": 0.1102465727442562,
+  "min_cs": 0.24908740802290122,
+  "total_length": 25.500410481860868,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 6.645371515957824e-05,
+  "max_force_archive": 11448.351187358337,
+  "force_threshold": 11448.297976172933,
+  "success": true,
+  "UUID": "fdd6f766464245659d7f44f1b17389df",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fdd6f766464245659d7f44f1b17389df",
+  "feasible": true,
+  "name": "hurfront_fdd6f766",
+  "currents": [
+   233897.91390143542,
+   240176.7292541281,
+   254873.93251441713,
+   282304.4078649314,
+   325806.0050318289
+  ]
+ },
+ {
+  "max_kappa": 4.964828347353959,
+  "max_msc": 4.675654690746983,
+  "min_cc": 0.11809634287473769,
+  "min_cs": 0.23961875446099987,
+  "total_length": 25.135383985145854,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 9.006403645158277e-05,
+  "max_force_archive": 11050.770957748346,
+  "force_threshold": 11048.202718258291,
+  "success": true,
+  "UUID": "fde6f709e29a4946b95a84ecfbcfd8c1",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fde6f709e29a4946b95a84ecfbcfd8c1",
+  "feasible": true,
+  "name": "hurfront_fde6f709",
+  "currents": [
+   235794.9374039839,
+   241179.49924017733,
+   255201.11367816638,
+   283455.9291901791,
+   321427.50905424
+  ]
+ },
+ {
+  "max_kappa": 4.325572674474768,
+  "max_msc": 4.207098908908383,
+  "min_cc": 0.11538011098611757,
+  "min_cs": 0.24461672359216727,
+  "total_length": 25.4947297830475,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.665172504906732e-05,
+  "max_force_archive": 11307.711308514557,
+  "force_threshold": 11303.098765852817,
+  "success": true,
+  "UUID": "fde8c0fcc93c4b8386c3d75b80b06225",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fde8c0fcc93c4b8386c3d75b80b06225",
+  "feasible": true,
+  "name": "hurfront_fde8c0fc",
+  "currents": [
+   236213.7702865838,
+   242498.34610169742,
+   256691.32962312794,
+   284476.67124653654,
+   317178.8713087971
+  ]
+ },
+ {
   "max_kappa": 4.9112000723448235,
   "max_msc": 5.67489521458888,
   "min_cc": 0.10830557108735343,
@@ -6825,6 +12600,56 @@
   ]
  },
  {
+  "max_kappa": 4.260344105813657,
+  "max_msc": 4.1538175376733575,
+  "min_cc": 0.10583137141740015,
+  "min_cs": 0.25929562154019165,
+  "total_length": 25.563605106085447,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 4.9528330821589555e-05,
+  "max_force_archive": 12345.0139797195,
+  "force_threshold": 12344.020850798739,
+  "success": true,
+  "UUID": "fe6673c3b8344c8ab1ffeaf6f251882d",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fe6673c3b8344c8ab1ffeaf6f251882d",
+  "feasible": true,
+  "name": "hurfront_fe6673c3",
+  "currents": [
+   238522.4017515647,
+   247896.74095627802,
+   269872.13009885635,
+   273621.53996324807,
+   307146.175796794
+  ]
+ },
+ {
+  "max_kappa": 4.49314298336006,
+  "max_msc": 4.727695890032434,
+  "min_cc": 0.10444224288170122,
+  "min_cs": 0.25973370844470783,
+  "total_length": 25.218264786716514,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 5.7018709038477544e-05,
+  "max_force_archive": 12300.272622511875,
+  "force_threshold": 12300.2072259499,
+  "success": true,
+  "UUID": "fec1e0f112824d9ba9bdbb216a93d41c",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/fec1e0f112824d9ba9bdbb216a93d41c",
+  "feasible": true,
+  "name": "hurfront_fec1e0f1",
+  "currents": [
+   237281.8160896878,
+   245619.57371420122,
+   264010.80020196276,
+   280217.87794042187,
+   309928.92062046763
+  ]
+ },
+ {
   "max_kappa": 5.471944403892994,
   "max_msc": 5.462836615646989,
   "min_cc": 0.10519000277155786,
@@ -6847,6 +12672,31 @@
    231080.195555225,
    188498.83743903038,
    374104.3839401277
+  ]
+ },
+ {
+  "max_kappa": 4.140758348345182,
+  "max_msc": 4.152696377557537,
+  "min_cc": 0.11430443040399765,
+  "min_cs": 0.24630742843869557,
+  "total_length": 25.495750556434444,
+  "ncoils": 5,
+  "order": 16,
+  "nfp": 2,
+  "normalized_BdotN": 7.377738653100384e-05,
+  "max_force_archive": 11401.852482070057,
+  "force_threshold": 11397.05913725109,
+  "success": true,
+  "UUID": "ffad42315d184e91ac559e385540c47e",
+  "path": "../references/hurwitz2024/output/QA/with-force-penalty/4/optimizations/ffad42315d184e91ac559e385540c47e",
+  "feasible": true,
+  "name": "hurfront_ffad4231",
+  "currents": [
+   236347.05908797684,
+   242791.69193046764,
+   257440.3060366579,
+   285505.6720951509,
+   314974.2594164886
   ]
  },
  {

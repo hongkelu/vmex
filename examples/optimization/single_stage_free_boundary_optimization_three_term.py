@@ -882,7 +882,7 @@ def coil_forces(coils):
     full = resampled(coils, FORCE_POINTS)
     g, gd, gdd = full.gamma, full.gamma_dash, full.gamma_dashdash
     currents = jnp.asarray(coils.currents)
-    n_total, n_base = g.shape[0], int(np.asarray(coils.dofs_curves).shape[0])
+    n_total, n_base = g.shape[0], coils.dofs_curves.shape[0]  # shapes are static under jit
     others = jnp.asarray([[j for j in range(n_total) if j != i] for i in range(n_base)], dtype=jnp.int32)
     quad = full.quadpoints
     reg = regularization_circ(CONDUCTOR_RADIUS)

@@ -5,8 +5,8 @@ envelope, Gil's 25 m points, and our single-stage fronts — all solved with the
     python analysis/fig_force_qs.py analysis/fig_force_qs.pdf [--scan]
 
 Default = Gil's PRE thresholds as bounds (kappa <= 5, MSC <= 5, cc >= 0.1 m, cs >= 0.15 m; 3570 archive sets); --scan = Gil's
-a-posteriori filter (kappa < 12, l < 6.5 m, cc > 0.083, cs > 0.166).  Ours: BA/BB (box, start's own length), A/B (box + 25 m),
-SA/SB (scan constraints); latest saved step, re-solved row when present (filled) else the run value (hollow, listed).
+a-posteriori filter (kappa < 12, l < 6.5 m, cc > 0.083, cs > 0.166).  Ours: box mode A/B (box + 25 m); scan mode
+25GA/30GA (Gil-matched families: scan filter + 25 / 30 m, plasma pinned); latest saved step, re-solved row when present (filled) else the run value (hollow, listed).
 """
 import json
 import re
@@ -79,17 +79,20 @@ ax.plot([p[0] for p in env], [p[1] for p in env], "o", color="0.25", ms=3.5, zor
 for n, m in M.items():
     if n.startswith("gilpar_L25") and qs_of(n) is not None:
         ax.plot(m["max_force"] / 1e3, qs_of(n), "*", color=GIL, ms=9, zorder=4)
+    if mode == "scan" and n.startswith("gilpar_L30") and qs_of(n) is not None:
+        ax.plot(m["max_force"] / 1e3, qs_of(n), "*", color=GIL, ms=9, mfc="white", mew=1.0, zorder=4)
 FAM = {"box": (("BA", "C0", "D", "-", "this work, box, plasma pinned ($R_0$, A, $\\iota$)"),
                ("BB", "C0", "D", "--", "this work, box, aspect ratio free"),
                ("A", "C2", "s", "-", "this work, box + 25 m, plasma pinned"),
                ("B", "C2", "s", "--", "this work, box + 25 m, aspect ratio free")),
-       "scan": (("SA", "C0", "D", "-", "this work, scan constraints, plasma pinned"),
-                ("SB", "C0", "D", "--", "this work, scan constraints, aspect ratio free"))}[mode]
+       "scan": (("25GA", "C0", "D", "-", "this work, same constraints + 25 m, plasma pinned ($R_0$, A, $\\iota$)"),
+                ("25GBf", "C0", "D", "--", "this work, same constraints + 25 m, aspect ratio free ($R_0$, $\\iota$ pinned)"),
+                ("30GA", "C2", "s", "-", "this work, same constraints + 30 m, plasma pinned"))}[mode]
 notes, handles = [], []
 for tag, color, marker, ls, lab in FAM:
     xs, ys, hollow = [], [], []
-    for thr in (7, 8, 9, 10, 11, 12, 13, 14, 16, 18):
-        name = f"ff25{tag}-F{thr}"; d = latest_run(name); m = M.get("ours_" + name)
+    for thr in (7, 8, 9, 10, 10.5, 11, 12, 13, 14, 16, 18):
+        name = f"ff{tag}-F{thr}" if tag[0].isdigit() else f"ff25{tag}-F{thr}"; d = latest_run(name); m = M.get("ours_" + name)
         if d is None or m is None:
             continue
         q = qs_of("ours_" + name); h = q is None
@@ -115,7 +118,8 @@ ttl = ("$\\kappa\\leq$5, MSC$\\leq$0.05 (5 /m$^2$), cc$\\geq$0.1 m, cs$\\geq$0.1
 ax.set_title(f"LP QA, 5 coils/hfp, {ttl}; {len(pts)} archive sets re-solved", fontsize=6.3, loc="left")
 handles = [Line2D([], [], marker=".", color="0.72", ls="", ms=6, label="Hurwitz et al. 2024 scan, inside the constraint set (re-solved)"),
            Line2D([], [], marker="o", color="0.25", ls="-", ms=3.5, label="its lower envelope"),
-           Line2D([], [], marker="*", color=GIL, ls="", ms=9, label="Gil et al. 2026, 25 m (outside the box)")] + handles
+           Line2D([], [], marker="*", color=GIL, ls="", ms=9, label="Gil et al. 2026, 25 m" + (" (outside the box)" if mode == "box" else ""))]\
+          + ([Line2D([], [], marker="*", color=GIL, ls="", ms=9, mfc="white", mew=1.0, label="Gil et al. 2026, 30 m")] if mode == "scan" else []) + handles
 ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=1, frameon=False, fontsize=6.3)
 fig.savefig(out, bbox_inches="tight"); fig.savefig(out.replace(".pdf", ".png"), bbox_inches="tight")
 print("wrote", out, f"| re-solved inside set: {len(pts)}, envelope {len(env)}, invalid solves (bn >= bn_initial): {len(invalid)}")

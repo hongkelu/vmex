@@ -84,10 +84,16 @@ for name, L, color, marker in (("gil_L18", 182.2, GIL, "o"), ("gil_L20", 203.4, 
         continue
     ok = published_feasible(name)
     ax.plot(L, q, marker, color=color, ms=7, mfc=color if ok else "white", mew=1.4, zorder=3)
+# Wechsung et al. 2022: all 8 random starts at each of 18/20/22/24 m (their archive), small hollow squares
+cloud = json.load(open(P / "coils/wech_cloud_index.json")) if (P / "coils/wech_cloud_index.json").exists() else []
+for c in cloud:
+    f = EV / c["name"] / "row.json"
+    if f.exists():
+        ax.plot(c["total_length"] * SCALE, json.load(open(f))["qa_total"], "s", color=WECH, ms=3.5, mfc="none", mew=0.8, alpha=0.8, zorder=2)
 # our front
 xs, ys, kinds = [], [], []
-for L in (16, 17, 18, 19, 20, 21, 22, 24):
-    q, kind = ours(f"pareto-L{L}")
+for L in (16, 17, 18, 19, 20, 20.09, 21, 22, 23.66, 24):
+    q, kind = ours(f"pareto-L{L:g}")
     if q is None and L in (18, 20, 24):  # stand-ins until the scan exists
         q, kind = ours({18: "vac-L18-fair", 20: "vac-L20-fair", 24: "vac-L24-wech-fair"}[L])
         kind = "standin" if q is not None else None
@@ -111,7 +117,8 @@ ax.set_ylabel("QS error of the equilibrium the coils make")
 ax.grid(axis="y", color="0.9", lw=0.6); ax.set_axisbelow(True)
 handles = [Line2D([], [], marker="D", color=OURS, ls="-", ms=6, label="this work, free-boundary single stage"),
            Line2D([], [], marker="o", color=GIL, ls="", ms=7, label="Gil et al. 2026, stage two"),
-           Line2D([], [], marker="s", color=WECH, ls="", ms=7, label="Wechsung et al. 2022, stage two"),
+           Line2D([], [], marker="s", color=WECH, ls="", ms=7, label="Wechsung et al. 2022, stage two (best start)"),
+           Line2D([], [], marker="s", color=WECH, ls="", ms=3.5, mfc="none", label="Wechsung et al. 2022, other random starts"),
            Line2D([], [], marker="^", color="0.3", ls="", ms=7, label="3 coils per half period"),
            Line2D([], [], marker="o", color="0.3", ls="", ms=7, mfc="white", mew=1.4, label="hollow: outside the fixed thresholds")]
 ax.legend(handles=handles, loc="lower left", frameon=True, framealpha=0.95, edgecolor="0.85", fontsize=6.5)

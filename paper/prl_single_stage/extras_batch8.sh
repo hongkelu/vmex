@@ -23,8 +23,11 @@ sleep 10
 # 2. Wechsung cloud at 12x12 (skips rows already done)
 OUT=runs/lpqa_vacuum_eval_12x12
 ev() { [ -s $OUT/$1/row.json ] && return; echo "$(date +%H:%M) eval $1"; $SR $PY eval_coilsets_vacuum.py coils/$1.json $OUT/$1 --modes 12 12 --vc-grid 64 < /dev/null > $OUT/$1.log 2>&1; }
-( for L in 18 22; do for k in 0 1 2 3 4 5 6 7; do ev wech_cloud_L${L}_ig$k; done; done ) &
-( for L in 20 24; do for k in 0 1 2 3 4 5 6 7; do ev wech_cloud_L${L}_ig$k; done; done ) &
+HUR=($(ls coils/hurwitz_*.json 2>/dev/null | sed 's:.*/::; s:\.json$::'))   # Hurwitz 2024 lower envelope (5 coils/hfp), after the Wechsung cloud
+( for L in 18 22; do for k in 0 1 2 3 4 5 6 7; do ev wech_cloud_L${L}_ig$k; done; done
+  for ((i = 0; i < ${#HUR[@]}; i += 2)); do ev ${HUR[$i]}; done ) &
+( for L in 20 24; do for k in 0 1 2 3 4 5 6 7; do ev wech_cloud_L${L}_ig$k; done; done
+  for ((i = 1; i < ${#HUR[@]}; i += 2)); do ev ${HUR[$i]}; done ) &
 sleep 5
 # 3. Gil-pipeline scoring (v3 convention) of published sets, fair twins and the Pareto points' latest coils
 ( for p in runs/published/*/; do p=${p%/}; grep -q "own LCFS (v3)" $p.gilscore.log 2>/dev/null && grep -q "^done" $p.gilscore.log 2>/dev/null && continue

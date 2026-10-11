@@ -31,6 +31,8 @@ ap.add_argument("root")
 ap.add_argument("--all", action="store_true")
 ap.add_argument("--limit", type=int, default=0)
 ap.add_argument("--tol", type=float, default=1.0, help="threshold tolerance factor (1.02 = 2 %% slack)")
+ap.add_argument("--index", default="hurwitz_cloud_index.json", help="index file written under coils/")
+ap.add_argument("--prefix", default="hurwitz", help="coil file prefix: coils/<prefix>_<uuid8>.json")
 args = ap.parse_args()
 
 results = sorted(Path(args.root).rglob("results.json"))
@@ -67,7 +69,7 @@ for rf in results:
         g, dg = fourier_gamma(b, order, NSEG)
         coils += symmetric_copies(g, dg, I, m["nfp"], True)
     factor = RBTOR / linked_rbphi(coils)
-    name = f"hurwitz_{m['UUID'][:8]}"
+    name = f"{args.prefix}_{m['UUID'][:8]}"
     json.dump(dict(nfp=m["nfp"], stellsym=True, order=order, n_segments=NSEG, dofs_curves_raw=base.tolist(), scaling_type=2,
                    scaling_factor=0.0, scale_fixed=1.0, dofs_currents_raw=(rel * factor).tolist(), currents_scale=None),
               open(OUT / f"{name}.json", "w"), indent=1)
@@ -77,5 +79,5 @@ for rf in results:
           f"Bn {m['normalized_BdotN']:.1e}  {'feasible' if ok else 'outside'}")
     if args.limit and kept >= args.limit:
         break
-json.dump(rows, open(OUT / "hurwitz_cloud_index.json", "w"), indent=1)
-print(f"kept {kept} sets ({sum(r['feasible'] for r in rows)} inside the fixed thresholds), {bad_parse} parse failures; index -> coils/hurwitz_cloud_index.json")
+json.dump(rows, open(OUT / args.index, "w"), indent=1)
+print(f"kept {kept} sets ({sum(r['feasible'] for r in rows)} inside the fixed thresholds), {bad_parse} parse failures; index -> coils/{args.index}")

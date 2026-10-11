@@ -90,6 +90,12 @@ for c in cloud:
     f = EV / c["name"] / "row.json"
     if f.exists():
         ax.plot(c["total_length"] * SCALE, json.load(open(f))["qa_total"], "s", color=WECH, ms=3.5, mfc="none", mew=0.8, alpha=0.8, zorder=2)
+# Hurwitz, Landreman & Kaptanoglu 2024 scan: 5 coils per half period, lower envelope of the sets inside our thresholds
+hur = json.load(open(P / "coils/hurwitz_cloud_index.json")) if (P / "coils/hurwitz_cloud_index.json").exists() else []
+for c in hur:
+    f = EV / c["name"] / "row.json"
+    if f.exists():
+        ax.plot(c["total_length"] * SCALE, json.load(open(f))["qa_total"], "+", color="0.4", ms=5, mew=0.9, alpha=0.9, zorder=2)
 # our front
 xs, ys, kinds = [], [], []
 for L in (16, 17, 18, 19, 20, 20.09, 21, 22, 23.66, 24):
@@ -123,6 +129,7 @@ handles = [Line2D([], [], marker="D", color=OURS, ls="-", ms=6, label="this work
            Line2D([], [], marker="s", color=WECH, ls="", ms=7, label="Wechsung et al. 2022, stage two (best start)"),
            Line2D([], [], marker="s", color=WECH, ls="", ms=3.5, mfc="none", label="Wechsung et al. 2022, other random starts"),
            Line2D([], [], marker="^", color="0.3", ls="", ms=7, label="3 coils per half period"),
+           Line2D([], [], marker="+", color="0.4", ls="", ms=5, label="Hurwitz et al. 2024 scan, 5 coils per half period"),
            Line2D([], [], marker="o", color="0.3", ls="", ms=7, mfc="white", mew=1.4, label="hollow: outside the fixed thresholds")]
 ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, frameon=False, fontsize=6.5, columnspacing=1.2, handletextpad=0.5)
 ax.set_title("LP QA, 4 coils/hfp, $\\kappa\\leq$0.5, MSC$\\leq$0.05, cc$\\geq$1.0 m, cs$\\geq$1.5 m, F$\\leq$0.72 MN/m", fontsize=6.5, loc="left")

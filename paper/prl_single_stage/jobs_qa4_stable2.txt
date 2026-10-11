@@ -1,0 +1,4 @@
+# Showcase v2, homotopy start: same clean start as qa4-free-stable (free arm step 63: DMerc_min -0.123, lambda_max +5.2e-3)
+# but the stability bounds begin just inside the start (violation ~1 row unit) and are tightened every allocation:
+#   MERCIER_FLOOR -0.11 -> -0.07 -> -0.03 -> 0 ; BALLOONING_LIMIT 0.0045 -> 0.003 -> 0.0015 -> 0   (edit the previous jobs list before each turnover)
+qa4-free-stable2|T|qa4-beta|{"VACUUM_IOTA_FLOOR": 0.29, "MERCIER_FLOOR": -0.11, "MERCIER_MARGIN": 0.002, "STABILITY_MIN_S": 0.2, "BALLOONING_LIMIT": 0.0045, "BALLOONING_MARGIN": 0.0002}|--beta 0.025 --bootstrap --design-step-scale 0.2|runs/batch/restart_qa4-free-stable_59651566

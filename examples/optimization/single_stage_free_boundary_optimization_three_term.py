@@ -115,7 +115,8 @@ B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row 
 # Ideal-MHD stability rows (None: off).  MERCIER_FLOOR: the smooth minimum over s in [STABILITY_MIN_S, 1) of
 # PHIEDGE^2 DMerc (> 0 stable) is held above it; BALLOONING_LIMIT: the maximum over the sampled field lines of the
 # infinite-n ideal-ballooning eigenvalue lambda (> 0 unstable; vmex.core.stability, the COBRA analogue) is held below it.
-MERCIER_FLOOR, MERCIER_MARGIN, STABILITY_MIN_S = None, 0.0, 0.1
+MERCIER_FLOOR, MERCIER_MARGIN, STABILITY_MIN_S = None, 0.0, 0.2  # window as QA_optimization_finite_beta.py: the
+# finite-difference DMerc is a cancellation of large terms near the axis (VMEC2000 drops its first surfaces)
 STABILITY_TEMPERATURE = 0.01       # smooth-min temperature of the Mercier row (PHIEDGE^2 DMerc units)
 BALLOONING_LIMIT, BALLOONING_MARGIN = None, 0.0
 BALLOONING_S = (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)

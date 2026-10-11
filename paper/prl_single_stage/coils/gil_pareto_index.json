@@ -1,0 +1,252 @@
+[
+ {
+  "name": "gilpar_L25_F10",
+  "L_target": 25,
+  "force_threshold_kNm": 10.0,
+  "source": "qa_pareto_25_comparison/LP_QA_total_length_force_threshold10kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 25.000105223056018,
+  "max_kappa": 186.93282554258903,
+  "max_msc": 8.0015093101384,
+  "currents": [
+   227456.85340320214,
+   235297.93978297178,
+   250374.5477461214,
+   279014.9882533029,
+   344914.65938247007
+  ],
+  "archive_currents": [
+   51035.18738095434,
+   52794.51582797382,
+   56177.30030316649,
+   62603.44322252732,
+   77389.55326537805
+  ]
+ },
+ {
+  "name": "gilpar_L25_F10.5",
+  "L_target": 25,
+  "force_threshold_kNm": 10.5,
+  "source": "qa_pareto_25_comparison/LP_QA_total_length_force_threshold10p5kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 25.000036105282707,
+  "max_kappa": 8.365327907878557,
+  "max_msc": 6.000038128794497,
+  "currents": [
+   225289.1087583125,
+   232723.77594853062,
+   249090.40207783066,
+   279550.6316401643,
+   350405.0701417843
+  ],
+  "archive_currents": [
+   50548.803908755945,
+   52216.942843640565,
+   55889.17262615278,
+   62723.62716169758,
+   78621.45345975313
+  ]
+ },
+ {
+  "name": "gilpar_L25_F12",
+  "L_target": 25,
+  "force_threshold_kNm": 12.0,
+  "source": "qa_pareto_25_comparison/LP_QA_total_length_force_threshold12kNm/biot_savart_total_length.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 25.000071096901458,
+  "max_kappa": 9.701603474513426,
+  "max_msc": 6.000040046545182,
+  "currents": [
+   238123.8822100939,
+   248238.74348690535,
+   264992.8084687631,
+   270378.7661946067,
+   315324.78820636915
+  ],
+  "archive_currents": [
+   53428.58114256074,
+   55698.083392641885,
+   59457.244011235976,
+   60665.70776008309,
+   70750.3836934783
+  ]
+ },
+ {
+  "name": "gilpar_L25_F9",
+  "L_target": 25,
+  "force_threshold_kNm": 9.0,
+  "source": "qa_pareto_25_comparison/LP_QA_total_length_force_threshold9kNm/biot_savart_total_length.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 24.99876830656501,
+  "max_kappa": 18.27630970066089,
+  "max_msc": 6.088233413878647,
+  "currents": [
+   225824.797790998,
+   233192.10862987643,
+   243698.88686368498,
+   275737.8530021837,
+   358605.3483594513
+  ],
+  "archive_currents": [
+   50668.99785916057,
+   52322.02383670793,
+   54679.46167809251,
+   61868.14211780117,
+   80461.37450823782
+  ]
+ },
+ {
+  "name": "gilpar_L30_F10",
+  "L_target": 30,
+  "force_threshold_kNm": 10.0,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold10kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 28.006098764077034,
+  "max_kappa": 8.52860949435435,
+  "max_msc": 6.000286951811393,
+  "currents": [
+   225953.4640147667,
+   231099.37896281312,
+   242198.02435511825,
+   284315.3744154163,
+   353492.74684865115
+  ],
+  "archive_currents": [
+   50697.86732115014,
+   51852.471940377975,
+   54342.70883051393,
+   63792.70701746751,
+   79314.24489049046
+  ]
+ },
+ {
+  "name": "gilpar_L30_F11",
+  "L_target": 30,
+  "force_threshold_kNm": 11.0,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold11kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 26.779579207564474,
+  "max_kappa": 6.978147846154169,
+  "max_msc": 6.000020348697725,
+  "currents": [
+   228229.15100220212,
+   234951.29803894303,
+   253616.4895730281,
+   279418.5414942046,
+   340843.50845830253
+  ],
+  "archive_currents": [
+   51208.470146899606,
+   52716.738763517715,
+   56904.704670862026,
+   62693.98969309642,
+   76476.09672562423
+  ]
+ },
+ {
+  "name": "gilpar_L30_F12",
+  "L_target": 30,
+  "force_threshold_kNm": 12.0,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold12kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 27.78495464138358,
+  "max_kappa": 7.03202121308157,
+  "max_msc": 5.999999456285351,
+  "currents": [
+   227904.56404264123,
+   238335.19852707483,
+   262001.261243243,
+   274342.3127036018,
+   334475.65205001435
+  ],
+  "archive_currents": [
+   51135.64158159654,
+   53475.994828602335,
+   58786.0214434056,
+   61555.020769364135,
+   75047.32137703139
+  ]
+ },
+ {
+  "name": "gilpar_L30_F14",
+  "L_target": 30,
+  "force_threshold_kNm": 14.0,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold14kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 29.243241321364145,
+  "max_kappa": 8.793056189448277,
+  "max_msc": 6.014436851467206,
+  "currents": [
+   246582.64225283172,
+   257048.68321889298,
+   264584.74878896994,
+   267418.0076995916,
+   301424.9066064552
+  ],
+  "archive_currents": [
+   55326.49891172467,
+   57674.79641891551,
+   59365.68641730411,
+   60001.39335353856,
+   67631.62489851713
+  ]
+ },
+ {
+  "name": "gilpar_L30_F9.5",
+  "L_target": 30,
+  "force_threshold_kNm": 9.5,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold9.5kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 30.00025621155541,
+  "max_kappa": 1281.7840370056515,
+  "max_msc": 36.754235113767834,
+  "currents": [
+   231568.28479677075,
+   236905.57915655634,
+   248515.18576996902,
+   289872.5977616406,
+   330197.3411664909
+  ],
+  "archive_currents": [
+   51957.6817692239,
+   53155.22677024936,
+   55760.10958662882,
+   65039.598152810584,
+   74087.38372108733
+  ]
+ },
+ {
+  "name": "gilpar_L30_F9",
+  "L_target": 30,
+  "force_threshold_kNm": 9.0,
+  "source": "qa_pareto_30_comparison/LP_QA_total_length_30_force_threshold9kNm/biot_savart_same_setup.json",
+  "ncoils": 5,
+  "order": 16,
+  "total_length": 27.94902667257917,
+  "max_kappa": 68.47256286921507,
+  "max_msc": 6.567390839061339,
+  "currents": [
+   241732.60255960538,
+   238609.69927573428,
+   241598.1356686597,
+   264847.1615712334,
+   350271.3964028682
+  ],
+  "archive_currents": [
+   54238.28044472356,
+   53537.585121383454,
+   54208.10969876536,
+   59424.56446580286,
+   78591.46026932477
+  ]
+ }
+]

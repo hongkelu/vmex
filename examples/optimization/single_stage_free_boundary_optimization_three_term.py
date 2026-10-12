@@ -909,6 +909,9 @@ def parse_args(argv=None):
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
+    parser.add_argument("--boundary-xtol", type=float,
+                        help="stop each boundary fit on its Gauss-Newton step, below this times the ESS scales, not "
+                        "on the cost change (--trial-ftol), so a design's boundary does not depend on the fit's start")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
                         help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
@@ -1054,6 +1057,7 @@ def main(argv=None):
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
+                                boundary_xtol=args.boundary_xtol,
                                 boundary_max_residual=args.max_boundary_residual))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "

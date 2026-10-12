@@ -1250,7 +1250,10 @@ def main(argv=None):
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                               callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL,
+                                           # SLSQP_IPRINT=2: per-iteration SLSQP printout (debug only; default off)
+                                           **({"iprint": int(os.environ["SLSQP_IPRINT"]), "disp": True}
+                                              if os.environ.get("SLSQP_IPRINT") else {})))
         if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                 or problem.accepted_step >= args.steps):
             break

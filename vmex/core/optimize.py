@@ -2349,9 +2349,205 @@ def least_squares(
 _REJECTED_CONSTRAINT_OFFSET = 1e6
 
 
+def _phr(v, multipliers, penalty, equality):
+    """Powell-Hestenes-Rockafellar terms of rows ``v`` (``v <= 0``, or ``v = 0`` where ``equality``) and their slopes.
+
+    The slope ``max(lambda + rho v, 0)`` (``lambda + rho v`` for an equality) is also the next multiplier.
+    """
+    slope = multipliers + penalty * v
+    slope = np.where(equality, slope, np.maximum(slope, 0.0))
+    terms = np.where(equality, multipliers * v + 0.5 * penalty * v * v,
+                     (slope * slope - multipliers * multipliers) / (2.0 * penalty))
+    return terms, slope
+
+
+def _augmented_lagrangian_step(B, gradient, A, v, multipliers, penalty, equality, radius, free):
+    """Step ``d`` with ``|d| <= radius`` minimizing the augmented Lagrangian model, and the model's decrease.
+
+    The model is ``g.d + d.B.d/2`` plus the PHR terms of the linearized rows ``v + A d``: piecewise quadratic and
+    convex. For a damping ``sigma`` an active-set iteration minimizes it plus ``sigma |d|^2 / 2`` (the penalty
+    curvature ``rho A_a^T A_a`` of the active rows is exact); ``sigma`` is bisected onto the trust radius.
+    """
+    def model(d):
+        return gradient @ d + 0.5 * d @ B @ d + _phr(v + A @ d, multipliers, penalty, equality)[0].sum()
+
+    factors = {}  # active set -> eigenpairs of the model Hessian on the free coordinates, and the model gradient
+
+    def solve(sigma):
+        active, best = equality | (multipliers + penalty * v > 0), None
+        for _ in range(20):
+            key = active.tobytes()
+            if key not in factors:
+                rows = A[active]
+                w, V = np.linalg.eigh((B + penalty * rows.T @ rows)[np.ix_(free, free)])
+                factors[key] = (w, V, (gradient + rows.T @ (multipliers[active] + penalty * v[active]))[free])
+            w, V, rhs = factors[key]
+            d = np.zeros_like(gradient)
+            d[free] = -V @ ((V.T @ rhs) / (w + sigma))
+            value = model(d) + 0.5 * sigma * d @ d
+            if best is None or value < best[0]:
+                best = (value, d)
+            changed = equality | (multipliers + penalty * (v + A @ d) > 0)
+            if np.array_equal(changed, active):
+                break
+            active = changed
+        return best[1]
+
+    d = solve(0.0)
+    if np.linalg.norm(d) > radius:
+        low, high = 0.0, 1.0
+        while np.linalg.norm(solve(high)) > radius:
+            low, high = high, 10.0 * high
+        for _ in range(60):
+            middle = 0.5 * (low + high) if low == 0.0 else np.sqrt(low * high)
+            trial = solve(middle)
+            if np.linalg.norm(trial) > radius:
+                low = middle
+            else:
+                high, d = middle, trial
+                if np.linalg.norm(trial) > 0.9 * radius:
+                    break
+        else:
+            d = solve(high)
+    return d, model(np.zeros_like(d)) - model(d)
+
+
+def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lower, row_upper, options, report):
+    """PHR augmented Lagrangian (Conn-Gould-Toint; Birgin-Martinez) on rows ``row_lower <= c(u) <= row_upper``.
+
+    Each outer iteration approximately minimizes ``F(u) + sum_k psi(v_k(u))``, ``F`` the objective over its start
+    value (that scale clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or
+    ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
+    ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
+    violation-complementarity measure fell to half. The inner solver is a trust-region quasi-Newton method on the
+    problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (grad f, dc/du)`` only at
+    accepted ones (as SLSQP), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
+    penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
+    shrinks the radius. ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers,
+    penalty and violation of the latest one. Returns ``(success, stop_reason, message)``.
+
+    ``options``: ``maxiter`` (accepted steps, default 100), ``ctol`` (largest violation, default 1e-6), ``gtol``
+    (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
+    multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 1), ``max_radius`` (default
+    100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of
+    ``report["multipliers"]``; default: Birgin-Martinez's penalty and zero multipliers).
+    """
+    unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
+                              "penalty", "multipliers", "verbose"}
+    if unknown:
+        raise ValueError(f"unknown AUGLAG options {sorted(unknown)}")
+    budget = int(options.get("maxiter", 100))
+    ctol, gtol = float(options.get("ctol", 1e-6)), float(options.get("gtol", 1e-6))
+    inner_budget, verbose = int(options.get("inner_maxiter", 10)), bool(options.get("verbose", False))
+    radius, max_radius = float(options.get("initial_radius", 1.0)), float(options.get("max_radius", 100.0))
+    min_radius = 1e-8 * radius  # shorter steps only resolve the evaluations' noise
+    # rows as v <= 0 (equalities v = 0): v = sign * c[index] - offset
+    equal = np.isfinite(row_lower) & (row_lower == row_upper)
+    low, high = np.isfinite(row_lower) & ~equal, np.isfinite(row_upper) & ~equal
+    index = np.r_[np.flatnonzero(equal), np.flatnonzero(low), np.flatnonzero(high)].astype(int)
+    sign = np.r_[np.ones(equal.sum()), -np.ones(low.sum()), np.ones(high.sum())]
+    offset = np.r_[row_lower[equal], -row_lower[low], row_upper[high]]
+    equality = np.r_[np.ones(equal.sum(), bool), np.zeros(low.sum() + high.sum(), bool)]
+
+    def violation(v):
+        return float(np.max(np.where(equality, np.abs(v), np.maximum(v, 0.0)), initial=0.0))
+
+    f, c = evaluate(u)
+    gf, J = linearize(u)
+    scale = 1.0 if f == 0.0 else float(np.clip(1.0 / abs(f), 1e-12, 1e12))  # F(start) = 1
+    F, gF, v, A = scale * f, scale * gf, sign * c[index] - offset, sign[:, None] * J[index]
+    if "multipliers" in options:
+        multipliers = np.asarray(options["multipliers"], dtype=float).copy()
+        if multipliers.shape != v.shape:
+            raise ValueError(f"multipliers must have {v.size} entries")
+    else:  # zero, not least squares: many nearly parallel active rows (a limit at every point) inflate that fit
+        multipliers = np.zeros(v.size)
+    penalty = float(options.get("penalty", np.clip(
+        10.0 * max(1.0, abs(F)) / max(1.0, 0.5 * np.sum(np.where(equality, v, np.maximum(v, 0.0)) ** 2)),
+        1e-8, 1e8)))
+    B, scaled_B = np.eye(u.size), False
+    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
+    tolerance = None
+
+    def note(**extra):
+        report.update(multipliers=multipliers.copy(), penalty=penalty, max_violation=violation(v),
+                      outer_iterations=outer, trust_radius=radius, **extra)
+
+    note()
+    while True:
+        terms, slope = _phr(v, multipliers, penalty, equality)
+        gradient = gF + A.T @ slope
+        projected = np.max(np.abs(u - np.clip(u - gradient, lower, upper)), initial=0.0)
+        if tolerance is None:
+            tolerance = max(0.1 * projected, gtol)
+        if projected <= tolerance or inner >= inner_budget or radius < min_radius:
+            measure = float(np.max(np.abs(np.where(equality, v, np.maximum(v, -multipliers / penalty))),
+                                   initial=0.0))
+            if measure <= ctol and projected <= gtol:
+                note()
+                return True, None, "Optimization terminated successfully (KKT point)"
+            stalls = stalls + 1 if inner == 0 else 0
+            if stalls >= 3:
+                note()
+                return False, "trust_region_collapsed", "no decrease of the augmented Lagrangian in three multiplier updates"
+            if inner > 0 and measure > 0.5 * previous:  # a stalled inner loop says nothing about feasibility
+                penalty = min(10.0 * penalty, 1e12)
+            multipliers = np.clip(slope, -1e12, 1e12)
+            previous, tolerance, inner, outer = measure, max(0.1 * tolerance, gtol), 0, outer + 1
+            radius = max(radius, 1e3 * min_radius)
+            note()
+            continue
+        free = ~(((u <= lower) & (gradient > 0)) | ((u >= upper) & (gradient < 0)))
+        d, _ = _augmented_lagrangian_step(B, gF, A, v, multipliers, penalty, equality, radius, free)
+        d = np.clip(u + d, lower, upper) - u
+        predicted = (gF @ d + 0.5 * d @ B @ d + _phr(v + A @ d, multipliers, penalty, equality)[0].sum()
+                     - terms.sum())
+        size = float(np.linalg.norm(d))
+        if not (np.isfinite(predicted) and predicted < 0.0) or size == 0.0:
+            radius = 0.25 * min(radius, size) if size > 0 else 0.25 * radius
+            continue
+        try:
+            f1, c1 = evaluate(u + d)
+            v1 = sign * c1[index] - offset
+            terms1, slope1 = _phr(v1, multipliers, penalty, equality)
+            ratio = (F + terms.sum() - scale * f1 - terms1.sum()) / -predicted
+            if verbose:
+                print(f"[auglag] radius {radius:.2e} step {size:.2e} objective {F:.9e} -> {scale * f1:.9e} "
+                      f"penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} predicted {-predicted:.3e} "
+                      f"ratio {ratio:.3f}", flush=True)
+            if not (np.isfinite(ratio) and ratio > 1e-4):
+                raise TrialRejected("no decrease of the augmented Lagrangian")
+            gf1, J1 = linearize(u + d)
+        except TrialRejected:
+            radius, rejected = 0.25 * size, rejected + 1
+            continue
+        A1 = sign[:, None] * J1[index]
+        y = scale * gf1 + A1.T @ slope1 - (gF + A.T @ slope1)  # Lagrangian gradient change, multipliers fixed
+        if not scaled_B and d @ y > 0:
+            B, scaled_B = (y @ y) / (d @ y) * np.eye(u.size), True
+        Bd = B @ d
+        dBd, dy = d @ Bd, d @ y
+        if dy < 0.2 * dBd:  # Powell damping keeps B positive definite
+            theta = 0.8 * dBd / (dBd - dy)
+            y, dy = theta * y + (1.0 - theta) * Bd, 0.2 * dBd
+        B += np.outer(y, y) / dy - np.outer(Bd, Bd) / dBd
+        u, f, gf, c = u + d, f1, gf1, c1
+        F, gF, v, A = scale * f, scale * gf, v1, A1
+        steps, inner = steps + 1, inner + 1
+        if ratio > 0.75 and size > 0.8 * radius:  # the radius bisection stops anywhere in (0.9, 1] radius
+            radius = min(2.0 * radius, max_radius)
+        elif ratio < 0.25:
+            radius = 0.5 * size
+        note()
+        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), ratio=ratio, rejected_trials=rejected))
+        rejected = 0
+        if steps >= budget:
+            return False, "accepted_step_budget_reached", "accepted_step_budget_reached"
+
+
 def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                       constraints=(), callback=None, options=None, tol=None):
-    """Run SciPy SLSQP on a :class:`FunctionProblem` in scaled coordinates.
+    """Run SciPy SLSQP or the augmented Lagrangian on a :class:`FunctionProblem` in scaled coordinates.
 
     SciPy iterates on ``u = (x - x0) / problem.scales``; bounds, constraints,
     callbacks and the returned ``x``/``jac`` stay in the problem's units. A
@@ -2361,6 +2557,12 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     start at its accepted point, and each SLSQP major iterate is promoted with
     ``accept_x`` when its Jacobian is requested.
 
+    ``method="AUGLAG"`` minimizes a PHR augmented Lagrangian of the same
+    constraints instead (:func:`_augmented_lagrangian`): it may cross infeasible
+    designs, stops on first-order optimality and feasibility rather than on a
+    small objective change, and a rejected trial shrinks its trust region
+    instead of ending the call. Each accepted point is promoted as for SLSQP.
+
     Parameters
     ----------
     problem:
@@ -2368,7 +2570,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     x0:
         Start point (default ``problem.x0``).
     method:
-        Must be ``"SLSQP"``.
+        ``"SLSQP"`` or ``"AUGLAG"``.
     bounds, constraints, tol:
         As for :func:`scipy.optimize.minimize`; constraints are
         :class:`~scipy.optimize.LinearConstraint` or
@@ -2380,8 +2582,9 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         :class:`~scipy.optimize.OptimizeResult` if its only parameter is
         named ``intermediate_result``; ``StopIteration`` stops the run.
     options:
-        SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
-        accepted steps for a stateful problem.
+        SciPy SLSQP options, or those of :func:`_augmented_lagrangian`;
+        ``maxiter`` (default 100) is the budget of accepted steps for a
+        stateful problem (for AUGLAG, for any problem).
 
     Returns
     -------
@@ -2391,14 +2594,16 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         ``stop_reason``: ``None`` when SciPy stopped on its own,
         ``"accepted_step_budget_reached"``, ``"callback_stopped"`` or
         ``"equilibrium_trial_rejected"``. The last three set
-        ``success=False`` and ``status=99``.
+        ``success=False`` and ``status=99``. AUGLAG adds ``multipliers``,
+        ``penalty``, ``max_violation`` (largest scaled row violation) and
+        ``outer_iterations``, and may stop with ``"trust_region_collapsed"``.
     """
     from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint, OptimizeResult
     from scipy.optimize import minimize as scipy_minimize
     from scipy.sparse import issparse
 
-    if method != "SLSQP":
-        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
+    if method not in ("SLSQP", "AUGLAG"):
+        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP' or method='AUGLAG'")
     start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
     scales = np.asarray(problem.scales, dtype=float)
     if (start.shape != scales.shape or start.ndim != 1 or not np.all(np.isfinite(start))
@@ -2411,7 +2616,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     budget = int(options.get("maxiter", 100))
     if budget < 0:
         raise ValueError("maxiter must be nonnegative")
-    if promote is not None:
+    if promote is not None and method == "SLSQP":
         # The step budget is enforced by accept(); one spare SLSQP iteration
         # lets the last accepted step request its Jacobian.
         options["maxiter"] = budget + 1
@@ -2428,7 +2633,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                         keep_feasible=bounds.keep_feasible)
     if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
         constraints = (constraints,)
-    scaled_constraints = []
+    scaled_constraints, blocks = [], []  # blocks: (values, Jacobian, lower, upper) in u, raising TrialRejected
     for constraint in tuple(constraints):
         if isinstance(constraint, (LinearConstraint, NonlinearConstraint)) and (
                 np.all(np.isneginf(constraint.lb)) and np.all(np.isposinf(constraint.ub))):
@@ -2437,6 +2642,9 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
             matrix = constraint.A.multiply(scales) if issparse(constraint.A) else constraint.A * scales
             scaled_constraints.append(LinearConstraint(
                 matrix, constraint.lb - constraint.A @ start, constraint.ub - constraint.A @ start))
+            dense = matrix.toarray() if issparse(matrix) else np.asarray(matrix)
+            blocks.append((lambda u, a=dense: a @ u, lambda u, a=dense: a,
+                           scaled_constraints[-1].lb, scaled_constraints[-1].ub))
         elif isinstance(constraint, NonlinearConstraint):
             if not callable(constraint.jac):
                 raise ValueError("constraints require an analytic Jacobian")
@@ -2452,6 +2660,8 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
             scaled_constraints.append(NonlinearConstraint(
                 values, constraint.lb, constraint.ub,
                 jac=lambda u, c=constraint: np.asarray(c.jac(start + scales * u)) * scales))
+            blocks.append((lambda u, c=constraint: c.fun(start + scales * u), scaled_constraints[-1].jac,
+                           constraint.lb, constraint.ub))
         else:
             raise TypeError("use scipy LinearConstraint or NonlinearConstraint")
 
@@ -2470,7 +2680,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
 
     wants_result = callback is not None and set(inspect.signature(callback).parameters) == {"intermediate_result"}
 
-    def accept(u):
+    def accept(u, info=None):
         nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
         x = start + np.asarray(u) * scales
         if np.array_equal(x, accepted):
@@ -2485,7 +2695,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
             try:
                 if wants_result:
                     callback(intermediate_result=OptimizeResult(
-                        x=accepted.copy(), fun=accepted_value, nit=accepted_steps))
+                        x=accepted.copy(), fun=accepted_value, nit=accepted_steps, **(info or {})))
                 else:
                     callback(accepted.copy())
             except StopIteration as error:
@@ -2512,6 +2722,44 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         accept(u)
         return gradient
 
+    if method == "AUGLAG":
+        def evaluate(u):
+            nonlocal nfev
+            nfev += 1
+            value = problem.fun(start + scales * u)
+            rows = [np.atleast_1d(np.asarray(f(u), dtype=float)) for f, *_ in blocks]
+            rows = np.concatenate(rows) if rows else np.zeros(0)
+            if not (np.isfinite(value) and np.all(np.isfinite(rows))):
+                raise TrialRejected("nonfinite objective or constraint")
+            return float(value), rows
+
+        def linearize(u):
+            nonlocal njev
+            njev += 1
+            _, gradient = problem.value_and_grad(start + scales * u)
+            rows = [np.atleast_2d(np.asarray(jacobian(u), dtype=float)) for _, jacobian, *_ in blocks]
+            return np.asarray(gradient, dtype=float) * scales, (np.vstack(rows) if rows else np.zeros((0, start.size)))
+
+        sizes = [np.size(f(np.zeros_like(start))) for f, *_ in blocks]
+        row_lower, row_upper = (np.concatenate([np.broadcast_to(np.asarray(b[k], dtype=float), (n,))
+                                                for b, n in zip(blocks, sizes)] or [np.zeros(0)]) for k in (2, 3))
+        lower = np.broadcast_to(-np.inf if bounds is None else np.asarray(bounds.lb, dtype=float), start.shape)
+        upper = np.broadcast_to(np.inf if bounds is None else np.asarray(bounds.ub, dtype=float), start.shape)
+        report = {}
+        try:
+            success, reason, message = _augmented_lagrangian(
+                evaluate, linearize, accept, np.zeros_like(start), lower, upper, row_lower, row_upper,
+                dict(options, maxiter=budget), report)
+            result = OptimizeResult(success=success, status=0 if success else 99, message=message,
+                                    stop_reason=reason, nit=accepted_steps, nfev=nfev, njev=njev)
+        except (_Stop, TrialRejected) as error:
+            reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
+            result = OptimizeResult(success=False, status=99, message=str(error), stop_reason=reason,
+                                    nit=accepted_steps, nfev=nfev, njev=njev)
+        result.x, result.fun, result.jac = accepted.copy(), accepted_value, accepted_gradient.copy()
+        result.accepted_steps = accepted_steps
+        result.update(report)
+        return result
     try:
         result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP", bounds=bounds,
                                 constraints=scaled_constraints, options=options, tol=tol)

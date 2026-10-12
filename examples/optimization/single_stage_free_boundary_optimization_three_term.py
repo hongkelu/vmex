@@ -72,6 +72,7 @@ FREE_COIL_CURRENTS = True          # every base-coil current is a design variabl
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 PHIEDGE_STEP = 0.05                # coordinate scale of the relative PHIEDGE change
 OPTIMIZER_FTOL = 1e-10             # SLSQP ftol
+AUGLAG_OPTIONS = {}                # --optimizer auglag: opt.minimize(method="AUGLAG") options (ctol, gtol, inner_maxiter, ...)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -885,7 +886,9 @@ def parse_args(argv=None):
     """Command-line options; ``--restart`` and ``--seed-run`` replace ``--coils`` by their run's coils."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
+    parser.add_argument("--steps", type=int, default=100, help="accepted optimizer steps")
+    parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
+                        help="SLSQP, or the augmented Lagrangian of the same loss and rows (AUGLAG_OPTIONS)")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial coils (default: the case's COILS_FILE)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1, help="save coils and WOUT every this many steps")
@@ -1079,7 +1082,7 @@ def main(argv=None):
 
     last = dict(time=time.monotonic())
 
-    def log_step():
+    def log_step(intermediate_result=None):
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
         res = problem.boundary_residual(x)
@@ -1103,6 +1106,9 @@ def main(argv=None):
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
+        if intermediate_result is not None:  # augmented Lagrangian state (the max violation is in scaled row units)
+            row.update({key: float(intermediate_result[key]) for key in
+                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials")})
         last.update(time=now)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
@@ -1113,6 +1119,8 @@ def main(argv=None):
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if current_in_solve else "")
+              + (f"penalty={row['penalty']:.1e} violation={row['max_violation']:.1e} "
+                 if intermediate_result is not None else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
@@ -1120,7 +1128,11 @@ def main(argv=None):
             save(f".step{row['step']}")
 
     log_step()
-    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+    if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
+        result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
+                              callback=lambda intermediate_result: log_step(intermediate_result),
+                              options=dict(AUGLAG_OPTIONS, maxiter=args.steps))
+    while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                               callback=lambda x: log_step(),
@@ -1132,7 +1144,9 @@ def main(argv=None):
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=result.stop_reason,
                    failed_trials=problem.metadata["holder"]["failed_trials"],
-                   elapsed_seconds=time.monotonic() - started)
+                   elapsed_seconds=time.monotonic() - started,
+                   **({key: np.asarray(result[key]).tolist() for key in ("multipliers", "penalty", "max_violation")}
+                      if args.optimizer == "auglag" else {}))
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))
 

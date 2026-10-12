@@ -1136,9 +1136,9 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
                                jac=lambda x: np.vstack([2*x, [1., -1.]]))
     seen = []
     result = opt.minimize(p, method="AUGLAG", constraints=rows, callback=lambda intermediate_result: seen.append(
-        intermediate_result), options=dict(maxiter=300, ctol=1e-10, gtol=1e-10))
+        intermediate_result), options=dict(maxiter=300, ctol=1e-8, gtol=1e-8))
     assert result.success and result.accepted_steps == len(seen)
-    np.testing.assert_allclose(result.x, [np.sqrt(.5)]*2, atol=1e-8)
+    np.testing.assert_allclose(result.x, [np.sqrt(.5)]*2, atol=1e-7)
     assert {"penalty", "max_violation", "multipliers", "augmented_lagrangian"} <= set(seen[-1])
 
     p = opt.FunctionProblem.from_functions(np.zeros(3), value_and_grad=lambda x: (

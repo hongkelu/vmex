@@ -2418,19 +2418,19 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     Each outer iteration approximately minimizes ``F(u) + sum_k psi(v_k(u))``, ``F`` the objective over its start
     value (that scale clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
-    ``max(lambda + rho v, 0)`` and the penalty grows tenfold unless the violation-complementarity measure fell to
-    half. The inner solver is a trust-region quasi-Newton
-    method on the problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (grad f,
-    dc/du)`` only at accepted ones (as SLSQP), a damped BFGS matrix of the Lagrangian Hessian kept across outer
-    iterations, and the penalty curvature of the active rows taken exactly. A trial that raises
-    :class:`~vmex.core.errors.TrialRejected` shrinks the radius. ``accept(u, info)`` is told each accepted point.
-    ``report`` (a dict) holds the multipliers, penalty and violation of the latest accepted point.
+    ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
+    violation-complementarity measure fell to half. The inner solver is a trust-region quasi-Newton method on the
+    problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (grad f, dc/du)`` only at
+    accepted ones (as SLSQP), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
+    penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
+    shrinks the radius. ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers,
+    penalty and violation of the latest one. Returns ``(success, stop_reason, message)``.
 
     ``options``: ``maxiter`` (accepted steps, default 100), ``ctol`` (largest violation, default 1e-6), ``gtol``
     (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
     multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 1), ``max_radius`` (default
-    100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of ``report["multipliers"]``; default:
-    Birgin-Martinez's penalty and zero multipliers).
+    100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of
+    ``report["multipliers"]``; default: Birgin-Martinez's penalty and zero multipliers).
     """
     unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
                               "penalty", "multipliers", "verbose"}
@@ -2440,6 +2440,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     ctol, gtol = float(options.get("ctol", 1e-6)), float(options.get("gtol", 1e-6))
     inner_budget, verbose = int(options.get("inner_maxiter", 10)), bool(options.get("verbose", False))
     radius, max_radius = float(options.get("initial_radius", 1.0)), float(options.get("max_radius", 100.0))
+    min_radius = 1e-8 * radius  # shorter steps only resolve the evaluations' noise
     # rows as v <= 0 (equalities v = 0): v = sign * c[index] - offset
     equal = np.isfinite(row_lower) & (row_lower == row_upper)
     low, high = np.isfinite(row_lower) & ~equal, np.isfinite(row_upper) & ~equal
@@ -2465,7 +2466,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         10.0 * max(1.0, abs(F)) / max(1.0, 0.5 * np.sum(np.where(equality, v, np.maximum(v, 0.0)) ** 2)),
         1e-8, 1e8)))
     B, scaled_B = np.eye(u.size), False
-    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf
+    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
     tolerance = None
 
     def note(**extra):
@@ -2479,23 +2480,23 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         projected = np.max(np.abs(u - np.clip(u - gradient, lower, upper)), initial=0.0)
         if tolerance is None:
             tolerance = max(0.1 * projected, gtol)
-        if projected <= tolerance or inner >= inner_budget or radius < 1e-12:
+        if projected <= tolerance or inner >= inner_budget or radius < min_radius:
             measure = float(np.max(np.abs(np.where(equality, v, np.maximum(v, -multipliers / penalty))),
                                    initial=0.0))
             if measure <= ctol and projected <= gtol:
                 note()
-                return dict(x=u, fun=f, jac=gf, success=True, stop_reason=None, steps=steps,
-                            message="Optimization terminated successfully (KKT point)")
+                return True, None, "Optimization terminated successfully (KKT point)"
             stalls = stalls + 1 if inner == 0 else 0
-            if stalls >= 3:
+            if stalls >= 3:  # stationary to the evaluations' precision: a result if feasible
                 note()
-                return dict(x=u, fun=f, jac=gf, success=False, stop_reason="trust_region_collapsed", steps=steps,
-                            message="no decrease of the augmented Lagrangian in three multiplier updates")
-            if measure > 0.5 * previous:
+                feasible = measure <= ctol
+                return (feasible, None if feasible else "trust_region_collapsed",
+                        "no decrease of the augmented Lagrangian in three multiplier updates")
+            if inner > 0 and measure > 0.5 * previous:  # a stalled inner loop says nothing about feasibility
                 penalty = min(10.0 * penalty, 1e12)
             multipliers = np.clip(slope, -1e12, 1e12)
             previous, tolerance, inner, outer = measure, max(0.1 * tolerance, gtol), 0, outer + 1
-            radius = max(radius, 1e-3 * float(options.get("initial_radius", 1.0)))
+            radius = max(radius, 1e3 * min_radius)
             note()
             continue
         free = ~(((u <= lower) & (gradient > 0)) | ((u >= upper) & (gradient < 0)))
@@ -2513,12 +2514,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             terms1, slope1 = _phr(v1, multipliers, penalty, equality)
             ratio = (F + terms.sum() - scale * f1 - terms1.sum()) / -predicted
             if verbose:
-                error = np.abs(v1 - v - A @ d)  # each row's linearization error; the worst one, with its row
-                worst = int(np.argmax(error)) if error.size else -1
                 print(f"[auglag] radius {radius:.2e} step {size:.2e} objective {F:.9e} -> {scale * f1:.9e} "
-                      f"(linear {F + gF @ d:.9e}) penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} "
-                      f"predicted {-predicted:.3e} ratio {ratio:.3f} worst row {index[worst] if worst >= 0 else -1} "
-                      f"v {v[worst]:+.3e} -> {v1[worst]:+.3e} (linear {v[worst] + A[worst] @ d:+.3e})", flush=True)
+                      f"penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} predicted {-predicted:.3e} "
+                      f"ratio {ratio:.3f}", flush=True)
             if not (np.isfinite(ratio) and ratio > 1e-4):
                 raise TrialRejected("no decrease of the augmented Lagrangian")
             gf1, J1 = linearize(u + d)
@@ -2543,12 +2541,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         elif ratio < 0.25:
             radius = 0.5 * size
         note()
-        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), trial_fun=f, ratio=ratio,
-                       predicted_decrease=-predicted, rejected_trials=rejected))
+        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), ratio=ratio, rejected_trials=rejected))
         rejected = 0
         if steps >= budget:
-            return dict(x=u, fun=f, jac=gf, success=False, stop_reason="accepted_step_budget_reached", steps=steps,
-                        message="accepted_step_budget_reached")
+            return False, "accepted_step_budget_reached", "accepted_step_budget_reached"
 
 
 def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
@@ -2753,11 +2749,11 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         upper = np.broadcast_to(np.inf if bounds is None else np.asarray(bounds.ub, dtype=float), start.shape)
         report = {}
         try:
-            found = _augmented_lagrangian(evaluate, linearize, accept, np.zeros_like(start), lower, upper,
-                                          row_lower, row_upper, dict(options, maxiter=budget), report)
-            result = OptimizeResult(success=found["success"], status=0 if found["success"] else 99,
-                                    message=found["message"], stop_reason=found["stop_reason"],
-                                    nit=accepted_steps, nfev=nfev, njev=njev)
+            success, reason, message = _augmented_lagrangian(
+                evaluate, linearize, accept, np.zeros_like(start), lower, upper, row_lower, row_upper,
+                dict(options, maxiter=budget), report)
+            result = OptimizeResult(success=success, status=0 if success else 99, message=message,
+                                    stop_reason=reason, nit=accepted_steps, nfev=nfev, njev=njev)
         except (_Stop, TrialRejected) as error:
             reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
             result = OptimizeResult(success=False, status=99, message=str(error), stop_reason=reason,

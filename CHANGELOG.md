@@ -13,6 +13,10 @@ revision it was measured at, and the pages that cite it.
   74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
 - `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
   (PHIEDGE, current profile) from certified roots; `opt.minimize(method="SLSQP")` drives it.
+- `opt.minimize(problem, method="AUGLAG")`: a PHR augmented Lagrangian of the same rows, with a trust-region
+  quasi-Newton inner solver that evaluates trials and differentiates only accepted points, as SLSQP does; a rejected
+  trial shrinks its radius instead of ending the call. The three-term single stage takes `--optimizer auglag`. From
+  a start 1.2 % over its coil-force limit (8x8, VC 48) it was feasible after 15 steps; SLSQP after 2 steps was not.
 - Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
   15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
 - `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,

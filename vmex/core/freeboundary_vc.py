@@ -620,15 +620,16 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0, xtol=None):
+                       target_cost=None, verbose=0, xtol=None, fresh=True):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
-        With ``xtol`` the steps finish instead where the Gauss-Newton step of a fresh Jacobian is below ``xtol``
-        times ``x_scale`` in every coordinate: with a stale one they stop where ``J0^T r = 0``, which the rows'
-        discretization floor moves off the boundary's own ``J^T r = 0`` by an amount that depends on ``J0``.
+        With ``xtol`` the steps finish instead where the Gauss-Newton step is below ``xtol`` times ``x_scale`` in
+        every coordinate, and with ``fresh`` that of a fresh Jacobian: a reused ``J0`` stops where ``J0^T r = 0``,
+        which the rows' discretization floor moves off the boundary's own ``J^T r = 0`` (a smooth, ``J0``-dependent
+        offset).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -660,7 +661,7 @@ class ThreeTermFreeBoundaryModel:
                                        radius=self._radius, **lm)
             self._radius = out["radius"]
             if xtol is not None:
-                out, J = refine(out)
+                out, J = refine(out) if fresh else (out, jacobian)
                 if target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost:
                     return dict(out, jacobian=J, njev=njev)
                 x, nfev = out["x"], out["nfev"]
@@ -749,8 +750,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` fits stop on the Gauss-Newton step instead of the cost change
-        (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`), so a design's boundary, and every row, no longer
-        depends on where its fit started; each gradient's polish then keeps any boundary it improves.
+        (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`): a trial reuses the accepted point's Jacobian, and each
+        gradient's polish refines its boundary with fresh Jacobians, so that it is that Jacobian's fixed point and
+        the trials around it are one smooth function of the design, whatever the fits' starts.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -849,7 +851,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for start in starts:
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev, xtol=self.boundary_xtol,
+                                                max_nfev=self.boundary_max_nfev, xtol=self.boundary_xtol, fresh=False,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue

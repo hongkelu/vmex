@@ -620,7 +620,7 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0, xtol=None, fresh=True):
+                       target_cost=None, verbose=0, xtol=None, fresh=True, extra=None):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
@@ -629,7 +629,7 @@ class ThreeTermFreeBoundaryModel:
         With ``xtol`` the steps finish instead where the Gauss-Newton step is below ``xtol`` times ``x_scale`` in
         every coordinate, and with ``fresh`` that of a fresh Jacobian: a reused ``J0`` stops where ``J0^T r = 0``,
         which the rows' discretization floor moves off the boundary's own ``J^T r = 0`` (a smooth, ``J0``-dependent
-        offset).
+        offset); those fresh Jacobians carry ``extra``'s columns too, so a caller's linearization there is cached.
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -643,7 +643,8 @@ class ThreeTermFreeBoundaryModel:
             """``xtol``: steps with fresh Jacobians until their Gauss-Newton step is below it (eight at most)."""
             nonlocal njev
             for _ in range(8):
-                J, _, _, aux = self.linearize(out["x"], out["aux"], field)
+                J, _, _, aux = self.linearize(out["x"], out["aux"], field, extra=extra)
+                J = J[:, :self.x0.size]
                 njev += 1
                 rows = np.asarray(self._rows(aux[0], aux[2], field))
                 if np.all(np.abs(np.linalg.lstsq(J, -rows, rcond=None)[0]) <= lm["xtol"]):
@@ -888,9 +889,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         field, nb = self.field(xj), model.x0.size
 
         def relinearize():
-            extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+            extra[0] = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
-                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra[0])
             except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
                 raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux
@@ -900,9 +901,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             self.stats["linearizations"] += 1
             return J
 
+        extra = [None]  # the plasma-parameter tangents, also given to the polish: its last Jacobian is reused
         J = relinearize()
         polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                        max_nfev=20, xtol=self.boundary_xtol)
+                                        max_nfev=20, xtol=self.boundary_xtol, extra=extra[0])
         self.stats["boundary_evaluations"] += polished["nfev"]
         gain = 1.0 if self.boundary_xtol is not None else 0.9  # converging on the step: keep any improvement
         if polished["rows"] @ polished["rows"] < gain * sol["rows"] @ sol["rows"]:

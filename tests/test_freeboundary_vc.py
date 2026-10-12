@@ -222,7 +222,7 @@ def test_boundary_xtol_reaches_the_least_squares_minimizer_from_a_stale_jacobian
     model = fvc.ThreeTermFreeBoundaryModel.__new__(fvc.ThreeTermFreeBoundaryModel)
     model.x0, model.x_scale, model._radius = np.zeros(2), np.ones(2), None
     model.evaluate = lambda z, params, field: (rows(z), (z, None, None, True))
-    model.linearize = lambda z, aux, field: (jac(z), None, None, (z, None, None, True))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
     model._rows = lambda state, params, field: rows(state)
     best = scipy.optimize.least_squares(rows, np.ones(2), jac=jac, xtol=1e-15, ftol=1e-15, gtol=1e-15).x
     start, stale = best + np.array([0.05, -0.03]), jac(best + np.array([0.4, 0.4]))

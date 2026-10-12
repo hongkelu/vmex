@@ -150,6 +150,10 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
 CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
+# "max": one row per base coil, its peak force; "points": one row per quadrature point (the same feasible set). A
+# coil optimized against the limit holds several equal peaks, where the max row is not differentiable and neither
+# SLSQP nor AUGLAG can lower all of them through its linearization (2026-10-12, P25A-F10 start).
+FORCE_ROWS = "max"
 FORCE_POINTS = 1024   # converged: 128 under-resolves the peak self-force by 2-4 % (checked vs SIMSOPT, 2026-10-11)
 DISTANCE_POINTS_MIN = 1024  # segment distances: 256 is ~1 % optimistic on the coil-coil row; 1024 like force and curvature
 
@@ -917,6 +921,18 @@ def coil_forces(coils):
     return coil_rows_local.coil_forces_local(g, gd, gdd, currents, quad, n_base, reg)
 
 
+def coil_point_forces(coils):
+    """Force per unit length (N/m) at every quadrature point of each base coil (FORCE_ROWS = "points")."""
+    import jax.numpy as jnp
+    from essos.objective_functions import regularization_circ
+    import coil_rows_local
+
+    full = resampled(coils, FORCE_POINTS)
+    return coil_rows_local.coil_forces_points(full.gamma, full.gamma_dash, full.gamma_dashdash,
+                                              jnp.asarray(coils.currents), full.quadpoints,
+                                              coils.dofs_curves.shape[0], regularization_circ(CONDUCTOR_RADIUS))
+
+
 def coil_metrics(coils):
     """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks."""
     import jax.numpy as jnp
@@ -929,7 +945,7 @@ def coil_metrics(coils):
              msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
              coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
     if FORCE_LIMIT is not None:
-        m["max_force"] = coil_forces(coils)
+        m["max_force"] = coil_forces(coils) if FORCE_ROWS == "max" else coil_point_forces(coils).ravel()
     return m
 
 
@@ -973,7 +989,11 @@ def coil_constraint(coils_from_x):
     from scipy.optimize import NonlinearConstraint
 
     fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    jac = jax.jit(jax.jacrev(fun))
+    if FORCE_LIMIT is not None and FORCE_ROWS == "points":  # thousands of rows: forward mode, 8 directions at a time
+        jac = jax.jit(lambda x: jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size),
+                                            batch_size=8).T)
+    else:
+        jac = jax.jit(jax.jacrev(fun))
     return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                jac=lambda x: np.asarray(jac(jnp.asarray(x))))
 

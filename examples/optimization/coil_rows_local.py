@@ -118,3 +118,21 @@ def coil_forces_local(g, gd, gdd, currents, quad, n_base, reg):
     f_all = jax.lax.map(lambda a: force_at(a[0], a[1], all_idx, sg, sgd, sgdd, sI), (jnp.arange(n_base), others))
     top = jnp.argsort(-f_all, axis=1)[:, :TOPK_FORCE]
     return jax.vmap(lambda i, o, idx: jnp.max(force_at(i, o, idx, g, gd, gdd, currents)))(jnp.arange(n_base), others, top)
+
+
+def coil_forces_points(g, gd, gdd, currents, quad, n_base, reg):
+    """|I t x B| (N/m) at every quadrature point of each base coil, (n_base, N): smooth rows whose maximum is
+    ``coil_forces_local``. A max over equal peaks is not differentiable; a point row is."""
+    n_total = g.shape[0]
+    others = jnp.asarray([[j for j in range(n_total) if j != i] for i in range(n_base)], dtype=jnp.int32)
+    from essos.fields import BiotSavart_from_gamma
+
+    all_idx = jnp.arange(g.shape[1])
+
+    def force_at(i, other):
+        mutual = BiotSavart_from_gamma(g[other], gd[other], gdd[other], currents[other])
+        b = jax.vmap(mutual.B)(g[i]) + b_reg_self_at(g[i], gd[i], gdd[i], quad, currents[i], reg, all_idx)
+        t = gd[i] / jnp.linalg.norm(gd[i], axis=1)[:, None]
+        return jnp.linalg.norm(jnp.cross(currents[i] * t, b), axis=1)
+
+    return jax.lax.map(lambda a: force_at(*a), (jnp.arange(n_base), others))

@@ -10,7 +10,7 @@ FAM = re.compile(sys.argv[sys.argv.index("--fam") + 1] if "--fam" in sys.argv el
 fams = {}
 for d in (P / "runs/batch").glob("ff*"):
     if d.is_dir() and not d.name.startswith("restart_"):
-        fams.setdefault(re.sub(r"-c\d+$", "", d.name), []).append(d)
+        fams.setdefault(re.sub(r"[wg]$", "", re.sub(r"-c\d+$", "", d.name)), []).append(d)   # F9w (warm start) / F9g (Gil start) join family F9
 names = []
 for fam, dirs in sorted(fams.items()):
     if not FAM.match(fam):
@@ -27,10 +27,12 @@ for fam, dirs in sorted(fams.items()):
             r = json.loads(l); f = d / f"coils.step{r['step']}.json"
             if f.exists() and (r["step"] > 0 or feasible_start):
                 cn = int(m.group(1)) if (m := re.search(r"-c(\d+)$", d.name)) else 0
-                cands.append((r["qa"], cn, r["step"], f))
+                slack = r.get("coil_minimum_scaled_slack", 0.0)
+                cands.append((r["qa"], cn, r["step"], f, slack))
     if not cands:
         continue
-    best = max(cands, key=lambda c: (c[1], c[2])) if latest else min(cands, key=lambda c: c[0])
+    feas = [c for c in cands if c[4] >= -0.005] or cands   # prefer steps whose coil rows are satisfied to 0.5 %
+    best = max(cands, key=lambda c: (c[1], c[2])) if latest else min(feas, key=lambda c: c[0])
     link = P / "coils" / f"ours_{fam}.json"
     if link.is_symlink() or link.exists():
         link.unlink()

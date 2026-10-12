@@ -10,7 +10,7 @@ J=$(grep -m1 "^allocation" $LOG | awk '{print $2}'); echo "$(date): $LANES lanes
 source env.sh; export JAX_PLATFORMS=cuda,cpu
 SR="srun --jobid=$J --exact -N1 -n1 -c4 --gpus-per-task=1 --mem=0"
 RES=${RES:-12x12}; LIST=${LIST:-runs/front_eval_list.txt}
-case $RES in 8x8) EVARGS="--modes 8 8 --vc-grid 48";; *) EVARGS="--modes 12 12 --vc-grid 64";; esac
+case $RES in 8x8) EVARGS="--modes 8 8 --vc-grid 48";; 16x16) EVARGS="--modes 16 16 --vc-grid 96";; 12x12ns) EVARGS="--modes 12 12 --vc-grid 64 --ns 99";; *) EVARGS="--modes 12 12 --vc-grid 64";; esac
 OUT=runs/lpqa_vacuum_eval_$RES; mkdir -p $OUT
 ev() { [ -s $OUT/$1/row.json ] && return; [ -e $OUT/$1.lock ] && return; touch $OUT/$1.lock; echo "$(date +%H:%M) eval $1 ($RES)"
       $SR $PY eval_coilsets_vacuum.py coils/$1.json $OUT/$1 $EVARGS < /dev/null > $OUT/$1.log 2>&1; rm -f $OUT/$1.lock; }

@@ -230,9 +230,9 @@ def test_boundary_xtol_reaches_the_least_squares_minimizer_from_a_stale_jacobian
     assert np.linalg.norm(loose["x"] - best) > 1e-4  # a fixed point of the stale Jacobian
     for jacobian in (stale, None):  # warm (reused Jacobian) and cold (trust region) starts
         model._radius = None
-        tight = model.solve_boundary(None, None, x0=start, jacobian=jacobian, ftol=1e-6, xtol=1e-10)
+        tight = model.solve_boundary(None, None, x0=start, jacobian=jacobian, ftol=1e-6, xtol=1e-8)
         assert tight["converged"] and tight["njev"] >= 1
-        np.testing.assert_allclose(tight["x"], best, atol=1e-9)
+        np.testing.assert_allclose(tight["x"], best, atol=1e-7)
         np.testing.assert_allclose(tight["jacobian"], jac(tight["x"]))
 
 

@@ -2429,16 +2429,16 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     ``options``: ``maxiter`` (accepted steps, default 100), ``ctol`` (largest violation, default 1e-6), ``gtol``
     (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
     multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 1), ``max_radius`` (default
-    100), ``penalty`` and ``multipliers`` (starting values, in the row order of ``report["multipliers"]``; default:
+    100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of ``report["multipliers"]``; default:
     Birgin-Martinez's penalty and zero multipliers).
     """
     unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
-                              "penalty", "multipliers"}
+                              "penalty", "multipliers", "verbose"}
     if unknown:
         raise ValueError(f"unknown AUGLAG options {sorted(unknown)}")
     budget = int(options.get("maxiter", 100))
     ctol, gtol = float(options.get("ctol", 1e-6)), float(options.get("gtol", 1e-6))
-    inner_budget = int(options.get("inner_maxiter", 10))
+    inner_budget, verbose = int(options.get("inner_maxiter", 10)), bool(options.get("verbose", False))
     radius, max_radius = float(options.get("initial_radius", 1.0)), float(options.get("max_radius", 100.0))
     # rows as v <= 0 (equalities v = 0): v = sign * c[index] - offset
     equal = np.isfinite(row_lower) & (row_lower == row_upper)
@@ -2512,6 +2512,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             v1 = sign * c1[index] - offset
             terms1, slope1 = _phr(v1, multipliers, penalty, equality)
             ratio = (F + terms.sum() - scale * f1 - terms1.sum()) / -predicted
+            if verbose:
+                print(f"[auglag] radius {radius:.2e} step {size:.2e} objective {F:.9e} -> {scale * f1:.9e} "
+                      f"penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} predicted {-predicted:.3e} "
+                      f"ratio {ratio:.3f}", flush=True)
             if not (np.isfinite(ratio) and ratio > 1e-4):
                 raise TrialRejected("no decrease of the augmented Lagrangian")
             gf1, J1 = linearize(u + d)
@@ -2531,7 +2535,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         u, f, gf, c = u + d, f1, gf1, c1
         F, gF, v, A = scale * f, scale * gf, v1, A1
         steps, inner = steps + 1, inner + 1
-        if ratio > 0.75 and size > 0.99 * radius:
+        if ratio > 0.75 and size > 0.8 * radius:  # the radius bisection stops anywhere in (0.9, 1] radius
             radius = min(2.0 * radius, max_radius)
         elif ratio < 0.25:
             radius = 0.5 * size

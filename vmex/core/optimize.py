@@ -2420,8 +2420,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
     ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
     violation-complementarity measure fell to half. The inner solver is a trust-region quasi-Newton method on the
-    problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (grad f, dc/du)`` only at
-    accepted ones (as SLSQP), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
+    problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (f, c, grad f, dc/du)`` only
+    at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
     penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
     shrinks the radius. ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers,
     penalty and violation of the latest one. Returns ``(success, stop_reason, message)``.
@@ -2452,8 +2452,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     def violation(v):
         return float(np.max(np.where(equality, np.abs(v), np.maximum(v, 0.0)), initial=0.0))
 
-    f, c = evaluate(u)
-    gf, J = linearize(u)
+    f, c, gf, J = linearize(u)
     scale = 1.0 if f == 0.0 else float(np.clip(1.0 / abs(f), 1e-12, 1e12))  # F(start) = 1
     F, gF, v, A = scale * f, scale * gf, sign * c[index] - offset, sign[:, None] * J[index]
     if "multipliers" in options:
@@ -2517,10 +2516,12 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
                       f"ratio {ratio:.3f}", flush=True)
             if not (np.isfinite(ratio) and ratio > 1e-4):
                 raise TrialRejected("no decrease of the augmented Lagrangian")
-            gf1, J1 = linearize(u + d)
+            f1, c1, gf1, J1 = linearize(u + d)
         except TrialRejected:
             radius, rejected = 0.25 * size, rejected + 1
             continue
+        v1 = sign * c1[index] - offset
+        terms1, slope1 = _phr(v1, multipliers, penalty, equality)
         A1 = sign[:, None] * J1[index]
         y = scale * gf1 + A1.T @ slope1 - (gF + A.T @ slope1)  # Lagrangian gradient change, multipliers fixed
         if not scaled_B and d @ y > 0:
@@ -2736,9 +2737,10 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         def linearize(u):
             nonlocal njev
             njev += 1
-            _, gradient = problem.value_and_grad(start + scales * u)
+            _, gradient = problem.value_and_grad(start + scales * u)  # then evaluate reads the polished point
             rows = [np.atleast_2d(np.asarray(jacobian(u), dtype=float)) for _, jacobian, *_ in blocks]
-            return np.asarray(gradient, dtype=float) * scales, (np.vstack(rows) if rows else np.zeros((0, start.size)))
+            return (*evaluate(u), np.asarray(gradient, dtype=float) * scales,
+                    np.vstack(rows) if rows else np.zeros((0, start.size)))
 
         sizes = [np.size(f(np.zeros_like(start))) for f, *_ in blocks]
         row_lower, row_upper = (np.concatenate([np.broadcast_to(np.asarray(b[k], dtype=float), (n,))

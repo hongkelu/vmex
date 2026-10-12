@@ -1301,6 +1301,25 @@ def main(argv=None):
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
+    if os.environ.get("GRAD_CHECK"):  # diagnostic: implicit gradient vs finite differences along -grad, then exit
+        x = np.asarray(problem.accepted.parameters, dtype=float)
+        v, g = problem.value_and_grad(x)
+        v, g = float(v), np.asarray(g, dtype=float)
+        d = -g / np.linalg.norm(g)
+        print(f"[grad check] f {v:.9e} |g| {np.linalg.norm(g):.3e} (objective = QS/2 x OBJECTIVE_SCALE)", flush=True)
+        for tag, bftol, bnfev in (("production boundary tol", problem.boundary_ftol, problem.boundary_max_nfev),
+                                  ("tight boundary tol 1e-8/200", 1e-8, 200)):
+            problem.boundary_ftol, problem.boundary_max_nfev = bftol, bnfev
+            for r in (1e-2, 3e-3, 1e-3, 3e-4, 1e-4):
+                h = r * v / np.linalg.norm(g)
+                for sgn in (+1, -1):
+                    try:
+                        f1 = float(problem.fun(x + sgn * h * d))
+                    except Exception as error:  # a rejected trial
+                        print(f"[grad check] {tag} r {r:.0e} {sgn:+d}: {type(error).__name__}", flush=True); continue
+                    print(f"[grad check] {tag} predicted rel change {-sgn * r:+.1e} actual {(f1 - v) / v:+.4e} "
+                          f"ratio {((f1 - v) / v) / (-sgn * r):+.3f}", flush=True)
+        return
     staged = hasattr(coil_rows, "force_state")
     if staged:  # start just above the start coils' force (feasible), then tighten stage by stage
         f0 = coil_rows.force_at(problem.accepted.parameters)
@@ -1319,6 +1338,11 @@ def main(argv=None):
                                            **({"iprint": int(os.environ["SLSQP_IPRINT"]), "disp": True}
                                               if os.environ.get("SLSQP_IPRINT") else {})))
         if tightening and problem.accepted_step < args.steps:
+            f_now = coil_rows.force_at(problem.accepted.parameters)
+            if f_now > coil_rows.force_state["limit"] * (1 + 1e-4):  # not yet feasible at this stage: stay
+                print(f"[force continuation] step {problem.accepted_step}: force {f_now:.1f} above limit "
+                      f"{coil_rows.force_state['limit']:.1f}: staying at this stage", flush=True)
+                continue
             new = max(float(FORCE_TARGET), coil_rows.force_state["limit"] * FORCE_STAGE_FACTOR)
             print(f"[force continuation] step {problem.accepted_step}: force "
                   f"{coil_rows.force_at(problem.accepted.parameters):.1f}, limit {coil_rows.force_state['limit']:.1f}"

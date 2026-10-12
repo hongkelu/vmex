@@ -12,6 +12,7 @@ for d in (P / "runs/batch").glob("ff*"):
     if d.is_dir() and not d.name.startswith("restart_"):
         fams.setdefault(re.sub(r"[wg]$", "", re.sub(r"-c\d+$", "", d.name)), []).append(d)   # F9w (warm start) / F9g (Gil start) join family F9
 names = []
+QA = {}
 for fam, dirs in sorted(fams.items()):
     if not FAM.match(fam):
         continue
@@ -25,7 +26,7 @@ for fam, dirs in sorted(fams.items()):
             if not l.strip():
                 continue
             r = json.loads(l); f = d / f"coils.step{r['step']}.json"
-            if f.exists() and (r["step"] > 0 or feasible_start):
+            if f.exists() and (r["step"] > 0 or feasible_start) and not str(d).endswith(("GR-F9","GR-F10.5","GR-F12","GR-F10","GR-F11","GR-F14")):
                 cn = int(m.group(1)) if (m := re.search(r"-c(\d+)$", d.name)) else 0
                 slack = r.get("coil_minimum_scaled_slack", 0.0)
                 cands.append((r["qa"], cn, r["step"], f, slack))
@@ -40,6 +41,7 @@ for fam, dirs in sorted(fams.items()):
     old = P / "runs/lpqa_vacuum_eval_12x12" / f"ours_{fam}"
     if old.exists():
         import shutil; shutil.rmtree(old)   # always re-solve the chosen step
-    names.append(f"ours_{fam}"); print(f"ours_{fam:16s} qa={best[0]:.3e} {best[3].parent.name} step {best[2]}")
+    names.append(f"ours_{fam}"); QA[f"ours_{fam}"] = dict(qa=best[0], coils=str(best[3])); print(f"ours_{fam:16s} qa={best[0]:.3e} {best[3].parent.name} step {best[2]}")
+json.dump(QA, open(P / "runs/ours_best_qa.json", "w"), indent=1)
 names.sort(key=lambda n: (0 if re.match(r"ours_ff(25|30)G", n) else 1, n))
 (P / "runs/ours_eval_list.txt").write_text("\n".join(names) + "\n"); print(len(names), "sets")

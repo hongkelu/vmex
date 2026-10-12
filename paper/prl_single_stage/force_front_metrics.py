@@ -18,6 +18,8 @@ from simsopt.geo import (CurveCurveDistance, CurveLength, CurveSurfaceDistance, 
 P = Path(__file__).resolve().parent
 INPUT = P.parent / "vmex/examples/data/input.LandremanPaul2021_QA_lowres"
 B_REF = 0.2271
+import os
+NQ = int(os.environ.get("FFM_NQ", "1024"))   # quadrature points per coil: 1024 converged (128/256 under-resolve force and distance)
 out_path = Path(sys.argv[1])
 res = json.load(open(out_path)) if out_path.exists() else {}
 s = SurfaceRZFourier.from_vmec_input(str(INPUT), range="half period", nphi=32, ntheta=32)
@@ -31,7 +33,7 @@ for arg in sys.argv[2:]:
     order, nfp, nb = int(d["order"]), int(d["nfp"]), len(dofs)
     curves = []
     for b in dofs:
-        c = CurveXYZFourier(256, order); c.x = b.reshape(-1); curves.append(c)
+        c = CurveXYZFourier(NQ, order); c.x = b.reshape(-1); curves.append(c)
     coils = coils_via_symmetries(curves, [Current(float(i)) for i in cur], nfp, bool(d["stellsym"]))
     bs = BiotSavart(coils); bs.set_points(pts)
     scale = B_REF / float(np.mean(bs.AbsB()))

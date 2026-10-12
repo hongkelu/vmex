@@ -177,6 +177,7 @@ def solve_free_boundary_three_term(
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
     xtol: float = 1e-5,
+    deterministic: bool = False,
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
     chunk: int = 8,
@@ -263,7 +264,7 @@ def solve_free_boundary_three_term(
             start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             weights=weights, net_current_weight=net_current_weight, label_weight=label_weight,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
+            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight, deterministic=deterministic)
         x0 = jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
     initial = model.boundary_residual(seed_state, seed_params, external_field)
@@ -338,7 +339,7 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False):
+                 fixed_boundary=False, deterministic=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -354,7 +355,12 @@ class ThreeTermFreeBoundaryModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
-        cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
+        # deterministic: every forward solve cold (no hot restart, no predicted seed, no carried refinement
+        # correction), so the rows are a single-valued function of the boundary.  Seeded solves converge (fsq
+        # 1e-17) to states that differ by ~1e-3 at the same boundary, and the three-term rows see that.
+        self.deterministic = bool(deterministic)
+        hot = not self.deterministic
+        cfg = im.make_config(fixed, multigrid=True, hot_restart=hot)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
         # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
@@ -362,7 +368,7 @@ class ThreeTermFreeBoundaryModel:
         if trial_ftol is not None:
             ftols = np.array(fixed.ftol_array, dtype=float)
             ftols[-1] = max(float(trial_ftol), ftols[-1])
-            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
+            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=hot)
             self.cfg_trial = im._canonical_config(replace(loose, device=device))
             im._template_runtime(self.cfg_trial)
         self.params0 = im.params_from_input(fixed, device=device)
@@ -516,6 +522,9 @@ class ThreeTermFreeBoundaryModel:
         differentiation (:meth:`linearize` re-solves tight first).
         """
         im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
+        if self.deterministic:
+            seed = None
+            im._LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
@@ -552,7 +561,7 @@ class ThreeTermFreeBoundaryModel:
         tolerance rather than the trial one.
         """
         params_x = self.with_boundary(params, jnp.asarray(x))
-        if seed is None and self._linearization is not None:
+        if seed is None and self._linearization is not None and not self.deterministic:
             x_ref, state_ref, mask_ref, dz = self._linearization
             seed = self._predict(state_ref, mask_ref, dz, jnp.asarray(np.asarray(x) - x_ref), params_x)
         tight = tight or self.cfg_trial is self.cfg

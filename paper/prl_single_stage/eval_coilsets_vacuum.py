@@ -99,6 +99,9 @@ def main():
     ap.add_argument("--modes", type=int, nargs=2, default=(8, 8), metavar=("MPOL", "NTOR"))
     ap.add_argument("--ns", type=int, default=None, help="extra final NS rung above the deck's 50")
     ap.add_argument("--vc-grid", type=int, default=48)
+    ap.add_argument("--bftol", type=float, default=1e-4, help="free-boundary solve ftol (cost); 1e-4 = historical default")
+    ap.add_argument("--bjftol", type=float, default=1e-2, help="free-boundary trust-region ftol before Jacobian reuse")
+    ap.add_argument("--bnfev", type=int, default=60, help="free-boundary max evaluations")
     args = ap.parse_args()
     global MODES, NS_FINAL, VC_GRID
     MODES, NS_FINAL, VC_GRID = tuple(args.modes), args.ns, args.vc_grid
@@ -131,7 +134,7 @@ def main():
     inp = replace(deck(), lfreeb=True, mgrid_file="field(direct)")
     nfp = int(inp.nfp)
     t0 = time.time()
-    fit = solve_free_boundary_three_term(inp, external_field=field, nphi=VC_GRID, ntheta=VC_GRID, max_nfev=60,
+    fit = solve_free_boundary_three_term(inp, external_field=field, nphi=VC_GRID, ntheta=VC_GRID, max_nfev=args.bnfev, ftol=args.bftol, jacobian_ftol=args.bjftol,
                                          trial_ftol=1e-11, chunk=8, quadrature=(4 * nfp * VC_GRID, 2 * VC_GRID),
                                          verbose=1)
     seconds = time.time() - t0

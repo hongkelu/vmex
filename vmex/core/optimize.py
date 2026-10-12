@@ -2465,7 +2465,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         10.0 * max(1.0, abs(F)) / max(1.0, 0.5 * np.sum(np.where(equality, v, np.maximum(v, 0.0)) ** 2)),
         1e-8, 1e8)))
     B, scaled_B = np.eye(u.size), False
-    steps, inner, outer, stalls, previous = 0, 0, 0, 0, np.inf
+    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf
     tolerance = None
 
     def note(**extra):
@@ -2516,7 +2516,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
                 raise TrialRejected("no decrease of the augmented Lagrangian")
             gf1, J1 = linearize(u + d)
         except TrialRejected:
-            radius = 0.25 * size
+            radius, rejected = 0.25 * size, rejected + 1
             continue
         A1 = sign[:, None] * J1[index]
         y = scale * gf1 + A1.T @ slope1 - (gF + A.T @ slope1)  # Lagrangian gradient change, multipliers fixed
@@ -2536,7 +2536,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         elif ratio < 0.25:
             radius = 0.5 * size
         note()
-        accept(u, dict(report, augmented_lagrangian=F + terms1.sum()))
+        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), trial_fun=f, ratio=ratio,
+                       predicted_decrease=-predicted, rejected_trials=rejected))
+        rejected = 0
         if steps >= budget:
             return dict(x=u, fun=f, jac=gf, success=False, stop_reason="accepted_step_budget_reached", steps=steps,
                         message="accepted_step_budget_reached")

@@ -208,6 +208,34 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     assert res.sheet_current < 1.5e-3
 
 
+def test_boundary_xtol_reaches_the_least_squares_minimizer_from_a_stale_jacobian():
+    """Rows with a residual floor: reusing a stale Jacobian, the cost test stops where ``J0^T r = 0``, off the
+    minimizer and by an amount set by ``J0``; ``xtol`` finishes with fresh Jacobians on the minimizer itself."""
+    import scipy.optimize
+
+    def rows(x):
+        return np.array([x[0] - 1.0, x[1] - 2.0, 0.3 * x[0] * x[1] + 0.2, 0.5 * x[0] ** 2 - x[1]])
+
+    def jac(x):
+        return np.array([[1.0, 0.0], [0.0, 1.0], [0.3 * x[1], 0.3 * x[0]], [x[0], -1.0]])
+
+    model = fvc.ThreeTermFreeBoundaryModel.__new__(fvc.ThreeTermFreeBoundaryModel)
+    model.x0, model.x_scale, model._radius = np.zeros(2), np.ones(2), None
+    model.evaluate = lambda z, params, field: (rows(z), (z, None, None, True))
+    model.linearize = lambda z, aux, field: (jac(z), None, None, (z, None, None, True))
+    model._rows = lambda state, params, field: rows(state)
+    best = scipy.optimize.least_squares(rows, np.ones(2), jac=jac, xtol=1e-15, ftol=1e-15, gtol=1e-15).x
+    start, stale = best + np.array([0.05, -0.03]), jac(best + np.array([0.4, 0.4]))
+    loose = model.solve_boundary(None, None, x0=start, jacobian=stale, ftol=1e-6)
+    assert np.linalg.norm(loose["x"] - best) > 1e-4  # a fixed point of the stale Jacobian
+    for jacobian in (stale, None):  # warm (reused Jacobian) and cold (trust region) starts
+        model._radius = None
+        tight = model.solve_boundary(None, None, x0=start, jacobian=jacobian, ftol=1e-6, xtol=1e-10)
+        assert tight["converged"] and tight["njev"] >= 1
+        np.testing.assert_allclose(tight["x"], best, atol=1e-9)
+        np.testing.assert_allclose(tight["jacobian"], jac(tight["x"]))
+
+
 def test_unknown_problem_boundary_condition_is_rejected():
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 

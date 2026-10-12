@@ -2513,9 +2513,12 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             terms1, slope1 = _phr(v1, multipliers, penalty, equality)
             ratio = (F + terms.sum() - scale * f1 - terms1.sum()) / -predicted
             if verbose:
+                error = np.abs(v1 - v - A @ d)  # each row's linearization error; the worst one, with its row
+                worst = int(np.argmax(error)) if error.size else -1
                 print(f"[auglag] radius {radius:.2e} step {size:.2e} objective {F:.9e} -> {scale * f1:.9e} "
-                      f"penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} predicted {-predicted:.3e} "
-                      f"ratio {ratio:.3f}", flush=True)
+                      f"(linear {F + gF @ d:.9e}) penalty terms {terms.sum():.9e} -> {terms1.sum():.9e} "
+                      f"predicted {-predicted:.3e} ratio {ratio:.3f} worst row {index[worst] if worst >= 0 else -1} "
+                      f"v {v[worst]:+.3e} -> {v1[worst]:+.3e} (linear {v[worst] + A[worst] @ d:+.3e})", flush=True)
             if not (np.isfinite(ratio) and ratio > 1e-4):
                 raise TrialRejected("no decrease of the augmented Lagrangian")
             gf1, J1 = linearize(u + d)

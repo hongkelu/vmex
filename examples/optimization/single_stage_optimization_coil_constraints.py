@@ -231,6 +231,7 @@ ESS_ALPHA = 1.2
 BOUNDARY_STEP = 0.1 if SEED is None else 0.02
 NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
+AUGLAG_OPTIONS = {}                # --optimizer auglag: opt.minimize(method="AUGLAG") options (ctol, gtol, inner_maxiter, ...)
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32              # toroidal x poloidal points of the B.n and clearance surfaces
 VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-term arm's virtual-casing grid
@@ -1190,7 +1191,9 @@ def parse_args(argv=None):
     """The command-line arguments; ``--restart`` takes its coils from the run."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
+    parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations (AUGLAG: accepted steps)")
+    parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
+                        help="SLSQP, or the augmented Lagrangian of the same objective and rows (AUGLAG_OPTIONS)")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu", help="device of the equilibrium solves")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial ESSOS coils (default: the case's)")
     parser.add_argument("--beta", type=float, default=0.0,
@@ -1532,8 +1535,16 @@ def main(argv=None):
     constraints = [dict(type="ineq", fun=plasma_values, jac=plasma_jacobian),
                    dict(type="ineq", fun=lambda u: np.asarray(coil_rows_jit(jnp.asarray(u))),
                         jac=lambda u: np.asarray(coil_rows_jac(jnp.asarray(u))))]
-    result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
-                      constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
+    if args.optimizer == "auglag":  # the same objective and rows through opt.minimize's augmented Lagrangian
+        from scipy.optimize import NonlinearConstraint
+
+        rows = [NonlinearConstraint(c["fun"], 0.0, np.inf, jac=c["jac"]) for c in constraints]
+        result = opt.minimize(opt.FunctionProblem.from_functions(u0, value_and_grad=objective), method="AUGLAG",
+                              constraints=rows, callback=lambda intermediate_result: checkpoint(intermediate_result.x),
+                              options=dict(AUGLAG_OPTIONS, maxiter=args.steps))
+    else:
+        result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
+                          constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
     x = x0 + scales * result.x
     coils = objects_from_x(jnp.asarray(x))[3]
     coils.to_json(str(out / "coils.json"))

@@ -639,9 +639,9 @@ class ThreeTermFreeBoundaryModel:
         lm = dict(ftol=ftol, max_nfev=max_nfev, verbose=verbose, xtol=None if xtol is None else xtol * self.x_scale)
 
         def refine(out):
-            """``xtol``: steps with fresh Jacobians until their Gauss-Newton step is below it (four at most)."""
+            """``xtol``: steps with fresh Jacobians until their Gauss-Newton step is below it (eight at most)."""
             nonlocal njev
-            for _ in range(4):
+            for _ in range(8):
                 J, _, _, aux = self.linearize(out["x"], out["aux"], field)
                 njev += 1
                 rows = np.asarray(self._rows(aux[0], aux[2], field))

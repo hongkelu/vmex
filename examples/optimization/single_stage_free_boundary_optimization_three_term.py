@@ -942,7 +942,9 @@ def coil_inequalities(coils):
 
     m = coil_metrics(coils)
     if TOTAL_LENGTH_LIMIT is not None:
-        length_rows = jnp.atleast_1d((TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(m["length"])) / TOTAL_LENGTH_LIMIT)
+        # total budget AND the per-coil cap (Gil/Hurwitz filter: each coil < 6.5 m); set LENGTH_LIMIT >= the total to disable
+        length_rows = jnp.concatenate((jnp.atleast_1d((TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(m["length"])) / TOTAL_LENGTH_LIMIT),
+                                       (LENGTH_LIMIT - LENGTH_MARGIN - m["length"]) / LENGTH_LIMIT))
     else:
         length_rows = (LENGTH_LIMIT - LENGTH_MARGIN - m["length"]) / LENGTH_LIMIT
     return jnp.concatenate((length_rows,

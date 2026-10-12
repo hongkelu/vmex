@@ -1323,7 +1323,9 @@ def main(argv=None):
     staged = hasattr(coil_rows, "force_state")
     if staged:  # start just above the start coils' force (feasible), then tighten stage by stage
         f0 = coil_rows.force_at(problem.accepted.parameters)
-        coil_rows.force_state["limit"] = max(float(FORCE_TARGET), f0 * 1.0005)
+        # already at or under the target: hold the target exactly; otherwise start just above the start force
+        coil_rows.force_state["limit"] = (float(FORCE_TARGET) if f0 <= float(FORCE_TARGET) * (1 + 1e-4)
+                                          else max(float(FORCE_TARGET), f0 * 1.0005))
         print(f"[force continuation] start force {f0:.1f}, limit {coil_rows.force_state['limit']:.1f} -> target "
               f"{FORCE_TARGET:.1f} (x{FORCE_STAGE_FACTOR} every {FORCE_STAGE_STEPS} steps)", flush=True)
     log_step()

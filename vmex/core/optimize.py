@@ -2371,14 +2371,19 @@ def _augmented_lagrangian_step(B, gradient, A, v, multipliers, penalty, equality
     def model(d):
         return gradient @ d + 0.5 * d @ B @ d + _phr(v + A @ d, multipliers, penalty, equality)[0].sum()
 
+    factors = {}  # active set -> eigenpairs of the model Hessian on the free coordinates, and the model gradient
+
     def solve(sigma):
         active, best = equality | (multipliers + penalty * v > 0), None
         for _ in range(20):
-            rows = A[active]
-            H = (B + penalty * rows.T @ rows)[np.ix_(free, free)] + sigma * np.eye(int(free.sum()))
-            rhs = gradient + rows.T @ (multipliers[active] + penalty * v[active])
+            key = active.tobytes()
+            if key not in factors:
+                rows = A[active]
+                w, V = np.linalg.eigh((B + penalty * rows.T @ rows)[np.ix_(free, free)])
+                factors[key] = (w, V, (gradient + rows.T @ (multipliers[active] + penalty * v[active]))[free])
+            w, V, rhs = factors[key]
             d = np.zeros_like(gradient)
-            d[free] = -np.linalg.solve(H, rhs[free])
+            d[free] = -V @ ((V.T @ rhs) / (w + sigma))
             value = model(d) + 0.5 * sigma * d @ d
             if best is None or value < best[0]:
                 best = (value, d)

@@ -620,12 +620,14 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0):
+                       target_cost=None, verbose=0, xtol=None):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
+        With ``xtol`` the reuse steps finish instead where the Gauss-Newton step is below ``xtol`` times
+        ``x_scale`` in every coordinate, and a stalled reuse returns only once that holds.
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -633,20 +635,21 @@ class ThreeTermFreeBoundaryModel:
 
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
+        lm = dict(ftol=ftol, max_nfev=max_nfev, verbose=verbose, xtol=None if xtol is None else xtol * self.x_scale)
         if jacobian is not None:
             first = self.evaluate(x, params, field)
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                       radius=self._radius, **lm)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
-            if (out["accepted"] or out["converged"]) and close:
+            if (out["converged"] or (xtol is None and out["accepted"])) and close:
                 return dict(out, jacobian=jacobian, njev=0)
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         radius=self._radius, **lm)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -677,7 +680,7 @@ class ThreeTermFreeBoundaryModel:
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                   radius=self._radius, **lm)
         self._radius = out["radius"]
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
@@ -713,7 +716,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -721,7 +724,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
         first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.
+        rejected.  With ``boundary_xtol`` fits stop on the Gauss-Newton step instead of the cost change
+        (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`), so a design's boundary, and every row, no longer
+        depends on where its fit started; each gradient's polish then keeps any boundary it improves.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -735,15 +740,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
+                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None, boundary_xtol=None):
         from .implicit import runtime_from_params
 
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
+        self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
 
@@ -819,7 +825,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for start in starts:
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev,
+                                                max_nfev=self.boundary_max_nfev, xtol=self.boundary_xtol,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
@@ -870,9 +876,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         J = relinearize()
         polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                        max_nfev=20)
+                                        max_nfev=20, xtol=self.boundary_xtol)
         self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
+        gain = 1.0 if self.boundary_xtol is not None else 0.9  # converging on the step: keep any improvement
+        if polished["rows"] @ polished["rows"] < gain * sol["rows"] @ sol["rows"]:
             sol.update(x=polished["x"], aux=polished["aux"])
             J = relinearize()
         J_b, J_p = J[:, :nb], J[:, nb:]
@@ -945,7 +952,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._cache = {k: v for k, v in self._cache.items() if k == key}
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, xtol=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -955,13 +962,15 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     last solve's radius over (at least 1/20 of the first Gauss-Newton step; default: that step's length).
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
-    Gauss-Newton step.
+    Gauss-Newton step.  With ``xtol`` (per coordinate) it stops instead when the Gauss-Newton step is below it
+    in every coordinate, or after three steps in a row that each shortened that step by under 5%: a cost test
+    stops early where the rows keep a discretization floor, short of the boundary they determine.
     """
     J = np.asarray(J)
     norms = np.linalg.norm(J, axis=0)
     norms[norms == 0.0] = 1.0
     U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-    nfev, accepted, converged, slow = 1, 0, False, 0  # nfev counts the caller's evaluation at x
+    nfev, accepted, converged, slow, previous = 1, 0, False, 0, np.inf  # nfev counts the caller's evaluation at x
     started = time.perf_counter()
 
     def step(g, lam):
@@ -970,10 +979,17 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     while nfev < max_nfev:
         g = U.T @ r
         cost = 0.5 * r @ r
-        if 0.5 * g @ g <= ftol * cost:  # the Gauss-Newton step's predicted gain
+        if xtol is None and 0.5 * g @ g <= ftol * cost:  # the Gauss-Newton step's predicted gain
             converged = True
             break
         full = np.linalg.norm(step(g, 0.0))
+        if xtol is not None:
+            if np.all(np.abs(Vt.T @ step(g, 0.0) / norms) <= xtol):
+                converged = True
+                break
+            slow, previous = (slow + 1 if full > 0.95 * previous else 0), full
+            if slow == 3:  # the step no longer shortens: the Jacobian no longer describes the rows here
+                break
         if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
             radius = full if radius is None else max(radius, 0.05 * full)
         if radius < 1e-4 * full:
@@ -1001,10 +1017,11 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        slow = slow + 1 if cost_new > 0.95 * cost else 0
+        if xtol is None:
+            slow = slow + 1 if cost_new > 0.95 * cost else 0
         if cost_new < cost:
             x, (r, aux), accepted = x_new, got, accepted + 1
-            if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
+            if xtol is None and cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the model foresaw
                 converged = True
                 break
         if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here

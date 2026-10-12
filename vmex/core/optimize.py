@@ -2419,7 +2419,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     value (that scale clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
     ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
-    violation-complementarity measure fell to half. The inner solver is a trust-region quasi-Newton method on the
+    violation-complementarity measure fell to half; an inner loop ends early once its violation doubles. The inner solver is a trust-region quasi-Newton method on the
     problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (f, c, grad f, dc/du)`` only
     at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
     penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
@@ -2428,9 +2428,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
 
     ``options``: ``maxiter`` (accepted steps, default 100), ``ctol`` (largest violation, default 1e-6), ``gtol``
     (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
-    multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 1), ``max_radius`` (default
+    multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 0.1), ``max_radius`` (default
     100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of
-    ``report["multipliers"]``; default: Birgin-Martinez's penalty and zero multipliers).
+    ``report["multipliers"]``; default 10, a violation of one row unit costing five starting objectives, and zero).
     """
     unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
                               "penalty", "multipliers", "verbose"}
@@ -2439,7 +2439,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     budget = int(options.get("maxiter", 100))
     ctol, gtol = float(options.get("ctol", 1e-6)), float(options.get("gtol", 1e-6))
     inner_budget, verbose = int(options.get("inner_maxiter", 10)), bool(options.get("verbose", False))
-    radius, max_radius = float(options.get("initial_radius", 1.0)), float(options.get("max_radius", 100.0))
+    radius, max_radius = float(options.get("initial_radius", 0.1)), float(options.get("max_radius", 100.0))
     min_radius = 1e-8 * radius  # shorter steps only resolve the evaluations' noise
     # rows as v <= 0 (equalities v = 0): v = sign * c[index] - offset
     equal = np.isfinite(row_lower) & (row_lower == row_upper)
@@ -2461,11 +2461,12 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             raise ValueError(f"multipliers must have {v.size} entries")
     else:  # zero, not least squares: many nearly parallel active rows (a limit at every point) inflate that fit
         multipliers = np.zeros(v.size)
-    penalty = float(options.get("penalty", np.clip(
-        10.0 * max(1.0, abs(F)) / max(1.0, 0.5 * np.sum(np.where(equality, v, np.maximum(v, 0.0)) ** 2)),
-        1e-8, 1e8)))
+    # not Birgin-Martinez's 10 / max(1, |v|^2 / 2): a start far outside its rows (a seed's bootstrap mismatch) made
+    # it ~1e-2, and the violation grew while the objective fell
+    penalty = float(options.get("penalty", 10.0))
     B, scaled_B = np.eye(u.size), False
     steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
+    entry = violation(v)  # the violation at the start of the inner loop
     tolerance = None
 
     def note(**extra):
@@ -2479,7 +2480,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         projected = np.max(np.abs(u - np.clip(u - gradient, lower, upper)), initial=0.0)
         if tolerance is None:
             tolerance = max(0.1 * projected, gtol)
-        if projected <= tolerance or inner >= inner_budget or radius < min_radius:
+        if (projected <= tolerance or inner >= inner_budget or radius < min_radius
+                or (inner > 0 and violation(v) > 2.0 * max(entry, ctol))):
             measure = float(np.max(np.abs(np.where(equality, v, np.maximum(v, -multipliers / penalty))),
                                    initial=0.0))
             if measure <= ctol and projected <= gtol:
@@ -2493,6 +2495,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
                 penalty = min(10.0 * penalty, 1e12)
             multipliers = np.clip(slope, -1e12, 1e12)
             previous, tolerance, inner, outer = measure, max(0.1 * tolerance, gtol), 0, outer + 1
+            entry = violation(v)
             radius = max(radius, 1e3 * min_radius)
             note()
             continue

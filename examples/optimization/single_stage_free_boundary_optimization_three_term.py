@@ -41,6 +41,9 @@ the saved steps.
 """
 
 import argparse
+import sys as _sys
+from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent))
 from dataclasses import dataclass, replace
 import json
 import math
@@ -887,13 +890,9 @@ def separations(points):
     import jax
     import jax.numpy as jnp
 
-    pairs = jnp.asarray([(i, j) for i in range(len(points)) for j in range(i + 1, len(points))])
-    inter = jax.lax.map(lambda ij: jnp.min(segment_distances(points[ij[0]], points[ij[1]])), pairs)
-    n = points.shape[1]
-    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
-    nonadjacent = jnp.minimum(diff, n - diff) > 1
-    own = jax.lax.map(lambda p: jnp.min(jnp.where(nonadjacent, segment_distances(p, p), jnp.inf)), points)
-    return jnp.min(inter), jnp.min(own)
+    # exact values and gradients, reverse-mode memory O(TOPK * WINDOW^2) instead of O(pairs * N^2): coil_rows_local.py
+    import coil_rows_local
+    return coil_rows_local.separations_local(points)
 
 
 def coil_forces(coils):
@@ -911,13 +910,10 @@ def coil_forces(coils):
     quad = full.quadpoints
     reg = regularization_circ(CONDUCTOR_RADIUS)
 
-    def one(i, other):
-        mutual = BiotSavart_from_gamma(g[other], gd[other], gdd[other], currents[other])
-        b = jax.vmap(mutual.B)(g[i]) + B_regularized_pure(g[i], gd[i], gdd[i], quad, currents[i], reg)
-        tangent = gd[i] / jnp.linalg.norm(gd[i], axis=1)[:, None]
-        return jnp.max(jnp.linalg.norm(jnp.cross(currents[i] * tangent, b), axis=1))
-
-    return jax.vmap(one)(jnp.arange(n_base), others)
+    # peak point located without gradient, force differentiated only near it (exact; coil_rows_local.py)
+    import coil_rows_local
+    del others, B_regularized_pure, BiotSavart_from_gamma
+    return coil_rows_local.coil_forces_local(g, gd, gdd, currents, quad, n_base, reg)
 
 
 def coil_metrics(coils):

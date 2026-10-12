@@ -1108,6 +1108,59 @@ def test_shared_minimize_open_bound_pairs_and_zero_step_budget():
     np.testing.assert_array_equal(result.x, [3., 4.])
 
 
+def test_augmented_lagrangian_reaches_the_constrained_minima():
+    """AUGLAG finds SLSQP's KKT points: an active inequality, two-sided rows from an infeasible start, and an
+    equality with a bound; a region whose trials are rejected only shrinks its trust region."""
+    from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint
+    from vmex import optimize as opt
+    from vmex.core.errors import TrialRejected
+
+    def rosenbrock(x):
+        return (float((1-x[0])**2 + 100*(x[1]-x[0]**2)**2),
+                np.array([-2*(1-x[0]) - 400*x[0]*(x[1]-x[0]**2), 200*(x[1]-x[0]**2)]))
+
+    disk = NonlinearConstraint(lambda x: np.array([x@x]), -np.inf, 1.5, jac=lambda x: 2*x[None])
+    found = {}
+    for method in ("SLSQP", "AUGLAG"):
+        p = opt.FunctionProblem.from_functions(np.array([-1.2, 1.]), scales=np.array([.5, 2.]), value_and_grad=rosenbrock)
+        found[method] = opt.minimize(p, method=method, constraints=disk,
+                                     options=dict(maxiter=300, **({"ftol": 1e-14} if method == "SLSQP" else
+                                                                  {"ctol": 1e-10, "gtol": 1e-10})))
+    result = found["AUGLAG"]
+    assert result.success and result.stop_reason is None and result.max_violation <= 1e-10
+    np.testing.assert_allclose(result.x, found["SLSQP"].x, atol=1e-6)
+    np.testing.assert_allclose(result.jac, rosenbrock(result.x)[1])
+
+    p = opt.FunctionProblem.from_functions(np.array([2., -1.]), value_and_grad=lambda x: (float(-x.sum()), -np.ones(2)))
+    rows = NonlinearConstraint(lambda x: np.array([x@x, x[0]-x[1]]), [0., -.1], [1., .1],
+                               jac=lambda x: np.vstack([2*x, [1., -1.]]))
+    seen = []
+    result = opt.minimize(p, method="AUGLAG", constraints=rows, callback=lambda intermediate_result: seen.append(
+        intermediate_result), options=dict(maxiter=300, ctol=1e-10, gtol=1e-10))
+    assert result.success and result.accepted_steps == len(seen)
+    np.testing.assert_allclose(result.x, [np.sqrt(.5)]*2, atol=1e-8)
+    assert {"penalty", "max_violation", "multipliers", "augmented_lagrangian"} <= set(seen[-1])
+
+    p = opt.FunctionProblem.from_functions(np.zeros(3), value_and_grad=lambda x: (
+        float(x[0]**2 + 2*x[1]**2 + x[2]), np.array([2*x[0], 4*x[1], 1.])))
+    result = opt.minimize(p, method="AUGLAG", bounds=Bounds([-np.inf, -np.inf, .5], [np.inf, np.inf, 3.]),
+                          constraints=LinearConstraint([[1., 1., 0.]], 1., 1.), options=dict(ctol=1e-10, gtol=1e-10))
+    np.testing.assert_allclose(result.x, [2/3, 1/3, .5], atol=1e-8)
+
+    def guarded(x):
+        if x[0] > .6:
+            raise TrialRejected("outside the solvable region")
+        return float(np.sum((x-2)**2)), 2*(x-2)
+
+    p = opt.FunctionProblem.from_functions(np.array([.2, .2]), value_and_grad=guarded)
+    result = opt.minimize(p, method="AUGLAG", options=dict(initial_radius=50., ctol=1e-10, gtol=1e-10),
+                          constraints=NonlinearConstraint(lambda x: np.array([x.sum()]), -np.inf, 1.,
+                                                          jac=lambda x: np.ones((1, 2))))
+    np.testing.assert_allclose(result.x, [.5, .5], atol=1e-8)
+    with pytest.raises(ValueError, match="unknown AUGLAG options"):
+        opt.minimize(p, method="AUGLAG", options=dict(ftol=1e-12))
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

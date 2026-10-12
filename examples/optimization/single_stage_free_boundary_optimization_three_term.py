@@ -149,6 +149,15 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
 CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
+# Exact Gil/Hurwitz force metric (force_front_metrics.py): currents rescaled so that mean |B| of the coils on the LP QA
+# target (half period, 32x32; FORCE_NORMALIZE_POINTS = .npy of those points) is FORCE_B_REF, i.e. force x (B_ref/<|B|>)^2.
+# None: forces at the coils' own currents (driver units, which drift ~1 % from the metric as the coil shapes change).
+FORCE_NORMALIZE_POINTS, FORCE_B_REF = None, 0.2271
+# Force continuation (opt-in): FORCE_TARGET (N/m, same units as FORCE_LIMIT) is reached in stages.  The run starts with the
+# limit just above the start coils' force; after every FORCE_STAGE_STEPS accepted steps the limit is multiplied by
+# FORCE_STAGE_FACTOR (never below the target).  The coil row is rescaled in Python, (L - F)/L, so nothing recompiles; each
+# stage is a fresh SLSQP call.  A one-shot cut of a few % makes SLSQP's restoration step wreck QS (2026-10-12).
+FORCE_TARGET, FORCE_STAGE_FACTOR, FORCE_STAGE_STEPS = None, 0.99, 8
 FORCE_POINTS = 1024   # converged: 128 under-resolves the peak self-force by 2-4 % (checked vs SIMSOPT, 2026-10-11)
 DISTANCE_POINTS_MIN = 1024  # segment distances: 256 is ~1 % optimistic on the coil-coil row; 1024 like force and curvature
 
@@ -912,8 +921,21 @@ def coil_forces(coils):
 
     # peak point located without gradient, force differentiated only near it (exact; coil_rows_local.py)
     import coil_rows_local
-    del others, B_regularized_pure, BiotSavart_from_gamma
-    return coil_rows_local.coil_forces_local(g, gd, gdd, currents, quad, n_base, reg)
+    del others, B_regularized_pure
+    forces = coil_rows_local.coil_forces_local(g, gd, gdd, currents, quad, n_base, reg)
+    if FORCE_NORMALIZE_POINTS is None:
+        return forces
+    import numpy as np
+    points = jnp.asarray(np.load(FORCE_NORMALIZE_POINTS))
+    chunks = points.reshape(-1, 64, 3) if points.shape[0] % 64 == 0 else points[None]
+
+    @jax.checkpoint  # recompute in the reverse pass: the dense point x segment residuals would cost ~0.5 GB per row
+    def chunk_sum(p, g, gd, gdd, currents):
+        field = BiotSavart_from_gamma(g, gd, gdd, currents)
+        return jnp.sum(jnp.linalg.norm(jax.vmap(field.B)(p), axis=1))
+
+    mean_b = jnp.sum(jax.lax.map(lambda p: chunk_sum(p, g, gd, gdd, currents), chunks)) / points.shape[0]
+    return forces * (FORCE_B_REF / mean_b) ** 2
 
 
 def coil_metrics(coils):
@@ -973,8 +995,37 @@ def coil_constraint(coils_from_x):
 
     fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
     jac = jax.jit(jax.jacrev(fun))
-    return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
-                               jac=lambda x: np.asarray(jac(jnp.asarray(x))))
+    if FORCE_LIMIT is None or FORCE_TARGET is None:
+        return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
+                                   jac=lambda x: np.asarray(jac(jnp.asarray(x))))
+    # continuation: the compiled force row is r0 = (L0 - m - F)/L0 with L0 = FORCE_LIMIT; at the current limit L it is
+    # (L - m - F)/L = (L - L0 + L0 r0)/L, Jacobian row x L0/L.  state["limit"] is moved by the optimization loop.
+    # one force row per base coil, the last rows of coil_inequalities
+    state = dict(limit=float(FORCE_LIMIT), n=None)
+    L0 = float(FORCE_LIMIT)
+
+    def nforce(x):
+        if state["n"] is None:
+            state["n"] = int(coils_from_x(jnp.asarray(x)).dofs_curves.shape[0])
+        return state["n"]
+
+    def values(x):
+        r, n = np.array(fun(jnp.asarray(x))), nforce(x)
+        r[-n:] = (state["limit"] - L0 + L0 * r[-n:]) / state["limit"]
+        return r
+
+    def jacobian(x):
+        J, n = np.array(jac(jnp.asarray(x))), nforce(x)
+        J[-n:] *= L0 / state["limit"]
+        return J
+
+    def force(x):
+        n = nforce(x)
+        return float(np.max(L0 - FORCE_MARGIN - L0 * np.asarray(fun(jnp.asarray(x)))[-n:]))
+
+    constraint = NonlinearConstraint(values, 0, np.inf, jac=jacobian)
+    constraint.force_state, constraint.force_at = state, force
+    return constraint
 
 
 # ---- the optimization ------------------------------------------------------------------------------------------------
@@ -1007,6 +1058,9 @@ def parse_args(argv=None):
                         help="evaluations cap of each step's free-boundary solve (with --trial-ftol)")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
                         help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="cold forward solves: the free boundary and QS become single-valued in the design "
+                             "(seeded solves land on states that differ ~1e-3 at one boundary); ~2x per solve")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
@@ -1170,7 +1224,7 @@ def main(argv=None):
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol, boundary_max_nfev=args.boundary_max_nfev,
-                                boundary_max_residual=args.max_boundary_residual))
+                                boundary_max_residual=args.max_boundary_residual, deterministic=args.deterministic))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
@@ -1223,6 +1277,8 @@ def main(argv=None):
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
+                   **({"force_limit": coil_rows.force_state["limit"], "force": coil_rows.force_at(x)}
+                      if hasattr(coil_rows, "force_state") else {}),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
@@ -1245,15 +1301,30 @@ def main(argv=None):
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
+    staged = hasattr(coil_rows, "force_state")
+    if staged:  # start just above the start coils' force (feasible), then tighten stage by stage
+        f0 = coil_rows.force_at(problem.accepted.parameters)
+        coil_rows.force_state["limit"] = max(float(FORCE_TARGET), f0 * 1.0005)
+        print(f"[force continuation] start force {f0:.1f}, limit {coil_rows.force_state['limit']:.1f} -> target "
+              f"{FORCE_TARGET:.1f} (x{FORCE_STAGE_FACTOR} every {FORCE_STAGE_STEPS} steps)", flush=True)
     log_step()
     while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
+        tightening = staged and coil_rows.force_state["limit"] > FORCE_TARGET * (1 + 1e-9)
+        budget = args.steps - before if not tightening else min(FORCE_STAGE_STEPS, args.steps - before)
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                               callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL,
+                              options=dict(maxiter=budget, ftol=OPTIMIZER_FTOL,
                                            # SLSQP_IPRINT=2: per-iteration SLSQP printout (debug only; default off)
                                            **({"iprint": int(os.environ["SLSQP_IPRINT"]), "disp": True}
                                               if os.environ.get("SLSQP_IPRINT") else {})))
+        if tightening and problem.accepted_step < args.steps:
+            new = max(float(FORCE_TARGET), coil_rows.force_state["limit"] * FORCE_STAGE_FACTOR)
+            print(f"[force continuation] step {problem.accepted_step}: force "
+                  f"{coil_rows.force_at(problem.accepted.parameters):.1f}, limit {coil_rows.force_state['limit']:.1f}"
+                  f" -> {new:.1f}", flush=True)
+            coil_rows.force_state["limit"] = new
+            continue
         if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                 or problem.accepted_step >= args.steps):
             break

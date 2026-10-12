@@ -2430,10 +2430,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
     multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 1), ``max_radius`` (default
     100), ``penalty`` and ``multipliers`` (starting values, in the row order of ``report["multipliers"]``; default:
-    least-squares multipliers of the nearly active rows, and Birgin-Martinez's penalty).
+    Birgin-Martinez's penalty and zero multipliers).
     """
-    from scipy.optimize import lsq_linear
-
     unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
                               "penalty", "multipliers"}
     if unknown:
@@ -2461,11 +2459,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         multipliers = np.asarray(options["multipliers"], dtype=float).copy()
         if multipliers.shape != v.shape:
             raise ValueError(f"multipliers must have {v.size} entries")
-    else:
-        multipliers, near = np.zeros(v.size), equality | (v > -1e-2)
-        if near.any():
-            fit = lsq_linear(A[near].T, -gF, bounds=(np.where(equality[near], -np.inf, 0.0), np.inf))
-            multipliers[near] = fit.x
+    else:  # zero, not least squares: many nearly parallel active rows (a limit at every point) inflate that fit
+        multipliers = np.zeros(v.size)
     penalty = float(options.get("penalty", np.clip(
         10.0 * max(1.0, abs(F)) / max(1.0, 0.5 * np.sum(np.where(equality, v, np.maximum(v, 0.0)) ** 2)),
         1e-8, 1e8)))

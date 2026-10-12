@@ -176,6 +176,7 @@ def solve_free_boundary_three_term(
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
+    xtol: float = 1e-5,
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
     chunk: int = 8,
@@ -268,7 +269,7 @@ def solve_free_boundary_three_term(
     initial = model.boundary_residual(seed_state, seed_params, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
-                               max_nfev=max_nfev, verbose=verbose)
+                               max_nfev=max_nfev, xtol=xtol, verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
     return OptimizeResult(
@@ -620,14 +621,15 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0):
+                       target_cost=None, xtol=1e-5, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
-        ``njev``, ``accepted`` and ``converged``.
+        ``njev``, ``accepted`` and ``converged``.  ``xtol``: the trust region's relative step tolerance (in the
+        ESS-scaled coordinates); the K = 0 valley is shallow, so a tight solve needs ``xtol`` well below 1e-5.
         """
         import scipy.optimize
 
@@ -671,7 +673,7 @@ class ThreeTermFreeBoundaryModel:
             return J
 
         fit = scipy.optimize.least_squares(fun, x, jac=jac, x_scale=self.x_scale, ftol=max(ftol, jacobian_ftol),
-                                           xtol=1e-5, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
+                                           xtol=xtol, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
         nfev += int(fit.nfev)
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)

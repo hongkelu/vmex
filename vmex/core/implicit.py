@@ -415,6 +415,8 @@ def make_config(
     if not np.isfinite(max_fsq_ratio) or max_fsq_ratio <= 0.0:
         raise ValueError("max_fsq_ratio must be finite and positive")
     refine_tol = float(refine_tol)
+    if refine_tol == 1.0e-10 and os.environ.get("VMEX_REFINE_TOL"):  # opt-in global override of the default
+        refine_tol = float(os.environ["VMEX_REFINE_TOL"])
     if not refine_tol > 0.0:
         raise ValueError("refine_tol must be positive or numpy.inf")
     return _canonical_config(ImplicitConfig(

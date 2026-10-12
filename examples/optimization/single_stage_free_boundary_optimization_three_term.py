@@ -1153,6 +1153,10 @@ def main(argv=None):
     redl = None if current_in_solve else redl
     if args.max_iterations:  # again: a seed-run or restart deck replaced inp
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
+    if args.ns and int(np.asarray(inp.ns_array)[-1]) != int(args.ns):  # --ns also re-grids a restart/seed-run deck
+        inp = replace(inp, ns_array=np.array([int(args.ns)]), ftol_array=np.array([float(np.asarray(inp.ftol_array)[-1])]),
+                      niter_array=np.array([max(int(np.asarray(inp.niter_array)[-1]), 20000)]))
+        print(f"[grid] restart deck re-gridded to NS = {int(args.ns)}", flush=True)
     inp.to_indata(out / "input.run")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)

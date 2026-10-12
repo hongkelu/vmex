@@ -147,7 +147,7 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
 CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
 FORCE_POINTS = 1024   # converged: 128 under-resolves the peak self-force by 2-4 % (checked vs SIMSOPT, 2026-10-11)
-DISTANCE_POINTS_MIN = 512   # segment distances: 256 is ~1 % optimistic on the coil-coil row, 512 converged
+DISTANCE_POINTS_MIN = 1024  # segment distances: 256 is ~1 % optimistic on the coil-coil row; 1024 like force and curvature
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.

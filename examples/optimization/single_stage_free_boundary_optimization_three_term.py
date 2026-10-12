@@ -146,7 +146,8 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
 CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
-FORCE_POINTS = 128
+FORCE_POINTS = 1024   # converged: 128 under-resolves the peak self-force by 2-4 % (checked vs SIMSOPT, 2026-10-11)
+DISTANCE_POINTS_MIN = 512   # segment distances: 256 is ~1 % optimistic on the coil-coil row, 512 converged
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -258,7 +259,7 @@ if COIL_LIMIT_FACTORS is not None:
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
 CURVATURE_POINTS = max(512, 64 * COIL_ORDER)  # quadrature points per coil of the length and curvature rows
-DISTANCE_POINTS = max(128, 16 * COIL_ORDER)   # quadrature points per coil of the distance rows
+DISTANCE_POINTS = max(DISTANCE_POINTS_MIN, 16 * COIL_ORDER)   # quadrature points per coil of the distance rows
 SURFACE_GRID = (61, 64)                       # (nphi, ntheta) of the plasma surface in the clearance row
 SELF_CLEARANCE = 1e-6                         # m: numerical nonintersection guard
 

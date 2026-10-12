@@ -2411,7 +2411,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     """PHR augmented Lagrangian (Conn-Gould-Toint; Birgin-Martinez) on rows ``row_lower <= c(u) <= row_upper``.
 
     Each outer iteration approximately minimizes ``F(u) + sum_k psi(v_k(u))``, ``F`` the objective over its start
-    value, ``v`` the violated-side rows (``lower - c``, ``c - upper``, or ``c - target`` for an equality), at fixed
+    value (clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or ``c - target`` for an equality), at fixed
     multipliers and penalty; then the multipliers become ``max(lambda + rho v, 0)`` and the penalty grows tenfold
     unless the violation-complementarity measure fell to half. The inner solver is a trust-region quasi-Newton
     method on the problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (grad f,
@@ -2449,7 +2449,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
 
     f, c = evaluate(u)
     gf, J = linearize(u)
-    scale = 1.0 / max(abs(f), np.finfo(float).tiny)
+    scale = 1.0 if f == 0.0 else float(np.clip(1.0 / abs(f), 1e-12, 1e12))  # F(start) = 1
     F, gF, v, A = scale * f, scale * gf, sign * c[index] - offset, sign[:, None] * J[index]
     if "multipliers" in options:
         multipliers = np.asarray(options["multipliers"], dtype=float).copy()

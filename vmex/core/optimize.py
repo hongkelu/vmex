@@ -2487,11 +2487,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
                 note()
                 return True, None, "Optimization terminated successfully (KKT point)"
             stalls = stalls + 1 if inner == 0 else 0
-            if stalls >= 3:  # stationary to the evaluations' precision: a result if feasible
+            if stalls >= 3:
                 note()
-                feasible = measure <= ctol
-                return (feasible, None if feasible else "trust_region_collapsed",
-                        "no decrease of the augmented Lagrangian in three multiplier updates")
+                return False, "trust_region_collapsed", "no decrease of the augmented Lagrangian in three multiplier updates"
             if inner > 0 and measure > 0.5 * previous:  # a stalled inner loop says nothing about feasibility
                 penalty = min(10.0 * penalty, 1e12)
             multipliers = np.clip(slope, -1e12, 1e12)

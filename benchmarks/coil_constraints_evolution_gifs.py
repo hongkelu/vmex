@@ -5,7 +5,7 @@
 
 The runs are those of the coil-constraint single-stage examples
 (``examples/optimization/single_stage_*_coil_constraints.py`` and
-``single_stage_free_boundary_optimization_three_term.py``). Each run dir holds ``wout.stepK.nc``,
+``single_stage_free_boundary_optimization_three_terms.py``). Each run dir holds ``wout.stepK.nc``,
 ``coils.stepK.json`` and ``metrics.jsonl`` (``--save-every 1``); a restart's dir follows with ``:offset``, the
 global step of its step 0 (which repeats the previous run's last step and is skipped). ``--stride N`` keeps every
 Nth step. Writes ``<prefix>_3d.gif`` (the full LCFS and every coil) and ``<prefix>_2d.gif`` (LCFS cross-sections

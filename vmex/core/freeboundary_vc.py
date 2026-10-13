@@ -15,7 +15,7 @@ field jump: a VMEC/NESTOR equilibrium may carry an edge sheet current.  Here
 the boundary is the unknown instead.  Every trial boundary is a fixed-boundary
 equilibrium, and a Gauss-Newton least-squares solve minimizes the stacked
 residual of all three conditions with exact implicit derivatives
-(:class:`ThreeTermFreeBoundaryModel`).  At an exact solution all three vanish
+(:class:`ThreeTermsFreeBoundaryModel`).  At an exact solution all three vanish
 together; at finite resolution they stop at a floor set mainly by ``mpol``
 (about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where the relative
 ``weights`` decide the balance.
@@ -30,17 +30,17 @@ rejected.
 
 Entry points, from the most to the least packaged:
 
-- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = THREE_TERM``
+- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = THREE_TERMS``
   (``vmex input.case``, :func:`~vmex.core.multigrid.solve_file`), the CLI flag
-  ``--boundary-condition three-term``, or
-  ``solve_free_boundary_multigrid(..., boundary_condition="three_term")``;
-- :func:`solve_free_boundary_three_term`: one solve with every control, and
+  ``--boundary-condition three-terms``, or
+  ``solve_free_boundary_multigrid(..., boundary_condition="three_terms")``;
+- :func:`solve_free_boundary_three_terms`: one solve with every control, and
   ``previous=`` to restart from an earlier result after the coils change;
-- ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
-  (:class:`ThreeTermFreeBoundaryProblem`): single-stage optimization, a loss
+- ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
+  (:class:`ThreeTermsFreeBoundaryProblem`): single-stage optimization, a loss
   and constraint rows of coils and plasma parameters at their free boundary,
   for :func:`vmex.core.optimize.minimize`;
-- :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state
+- :class:`ThreeTermsFreeBoundaryModel`: the residual, its Jacobian, state
   tangents and pullbacks for one deck and any external field or plasma
   parameters, without recompiling -- the pieces an optimizer needs;
 - :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
@@ -160,7 +160,12 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
-def solve_free_boundary_three_term(
+import os as _os
+_LABEL_MODE = _os.environ.get("VMEX_LABEL_MODE", "canonical")  # TEMP for testing
+_CANON_WEIGHT = float(_os.environ.get("VMEX_CANON_WEIGHT", "1.0"))
+
+
+def solve_free_boundary_three_terms(
     inp: VmecInput,
     *,
     external_field: Any = None,
@@ -216,18 +221,18 @@ def solve_free_boundary_three_term(
     normal-field rows cannot see.
 
     A trust region with exact implicit Jacobians
-    (:class:`ThreeTermFreeBoundaryModel`) runs to a relative cost change of
+    (:class:`ThreeTermsFreeBoundaryModel`) runs to a relative cost change of
     ``jacobian_ftol``; Levenberg-Marquardt steps with its last Jacobian then go
     on to ``ftol``, the floor set by the resolution (``None``: the trust region
     runs to ``ftol``).  ``previous``, an earlier result for the same deck
     (typically before a coil change), starts from its boundary with those steps
     and its Jacobian, and from its model: neither new coils nor a repeat solve
     compile anything.  ``quadrature``, ``trial_ftol`` and ``chunk`` are
-    :class:`ThreeTermFreeBoundaryModel`'s (fixed singular quadrature, looser
+    :class:`ThreeTermsFreeBoundaryModel`'s (fixed singular quadrature, looser
     trial equilibria, Jacobian columns per batch).
     ``bootstrap`` (kinetic profiles), ``bootstrap_helicity`` and
     ``bootstrap_weight`` solve for a Redl-self-consistent current profile
-    together with the boundary (:class:`ThreeTermFreeBoundaryModel`).
+    together with the boundary (:class:`ThreeTermsFreeBoundaryModel`).
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates, then any bootstrap-current values), ``fun`` (the residual),
@@ -258,7 +263,7 @@ def solve_free_boundary_three_term(
         start = inp if initial_boundary is None else replace(
             inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
-        model = ThreeTermFreeBoundaryModel(
+        model = ThreeTermsFreeBoundaryModel(
             start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             weights=weights, net_current_weight=net_current_weight, label_weight=label_weight,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
@@ -278,7 +283,7 @@ def solve_free_boundary_three_term(
         boundary_residual=model.boundary_residual(state, params, external_field), initial_boundary_residual=initial)
 
 
-class ThreeTermFreeBoundaryModel:
+class ThreeTermsFreeBoundaryModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
     The fixed-boundary equilibria and their derivatives come from
@@ -292,7 +297,7 @@ class ThreeTermFreeBoundaryModel:
     ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
     deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
     (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
-    replaces.  The rows are those of :func:`solve_free_boundary_three_term`,
+    replaces.  The rows are those of :func:`solve_free_boundary_three_terms`,
     with the quadrature plan and the labelling reference fixed on the deck's
     boundary (``seed``: its ``(state, mask)``).
 
@@ -353,6 +358,9 @@ class ThreeTermFreeBoundaryModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
+        # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
+        # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
+        # the derivative of the re-solve map.
         cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
@@ -414,11 +422,18 @@ class ThreeTermFreeBoundaryModel:
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
 
+        pos, neg = im._m1_pair_columns(cfg) if int(cfg.resolution.ntor) > 0 else (np.zeros(0, int), np.zeros(0, int))
+
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
-            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
-            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            if _LABEL_MODE == "seed":   # legacy: labelling tied to the seed boundary (start dependent)
+                label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
+                interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            else:   # canonical labelling: zcs_int(edge) = 0 (VMEC's polar gauge), the same for every start
+                interface = (jnp.sqrt(area)[None] * (scale * values)).ravel()
+                zb = runtime.setup.boundary_Z_sin
+                interface = jnp.concatenate([interface, _CANON_WEIGHT * 0.5 * (zb[pos] - zb[neg])])
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))
@@ -625,7 +640,7 @@ class ThreeTermFreeBoundaryModel:
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
+        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -684,19 +699,19 @@ class ThreeTermFreeBoundaryModel:
 
 @dataclass(frozen=True)
 class _AcceptedPoint:
-    """The design the optimizer last accepted (``ThreeTermFreeBoundaryProblem.accepted``)."""
+    """The design the optimizer last accepted (``ThreeTermsFreeBoundaryProblem.accepted``)."""
 
     parameters: np.ndarray
 
 
-class ThreeTermFreeBoundaryProblem(FunctionProblem):
-    """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
+class ThreeTermsFreeBoundaryProblem(FunctionProblem):
+    """A scalar loss and constraint rows of a design ``x`` at its three-terms free boundary, for SLSQP.
 
-    Build with ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
+    Build with ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
     (:meth:`~vmex.core.freeboundary_problem.FreeBoundaryProblem.from_loss`); pass it to
     :func:`vmex.core.optimize.minimize`.  ``loss``, ``quantities``, ``parameter_quantities``,
     ``field_from_parameters`` and ``plasma_from_parameters`` are as there.  Every trial is the K = 0 boundary
-    of the field and plasma parameters of ``x`` (:class:`ThreeTermFreeBoundaryModel`), warm-started from the
+    of the field and plasma parameters of ``x`` (:class:`ThreeTermsFreeBoundaryModel`), warm-started from the
     first-order prediction of the latest linearized solution; a trial without a certified solution raises
     :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
     implicit function theorem of the boundary least squares,
@@ -706,7 +721,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
     bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
     row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  Nothing recompiles
-    when ``x`` changes.  ``model`` is the :class:`ThreeTermFreeBoundaryModel`; :meth:`boundary_residual` and
+    when ``x`` changes.  ``model`` is the :class:`ThreeTermsFreeBoundaryModel`; :meth:`boundary_residual` and
     ``stats`` (counts of trials, failures, boundary evaluations and linearizations) report progress.
     """
 
@@ -716,7 +731,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                   boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary.
 
-        ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
+        ``model_options`` are :class:`ThreeTermsFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
         relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
         first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
@@ -730,7 +745,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
-        model = ThreeTermFreeBoundaryModel(inp, **model_options)
+        model = ThreeTermsFreeBoundaryModel(inp, **model_options)
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
@@ -796,7 +811,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._cache, self._anchor = {}, {}
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
         if self._solve(x0) is None:
-            raise VmecError("the seed design has no three-term free boundary")
+            raise VmecError("the seed design has no three-terms free boundary")
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
@@ -845,7 +860,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol = self._solve(self._x(x))
         if sol is None:
             self.metadata["holder"]["failed_trials"] += 1
-            raise TrialRejected("no three-term free boundary at this design point")
+            raise TrialRejected("no three-terms free boundary at this design point")
         return sol
 
     def _linearize(self, x, sol):

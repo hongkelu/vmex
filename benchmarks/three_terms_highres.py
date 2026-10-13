@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Re-solve a run's final coils at a higher resolution with the three-term free boundary, and export them for DESC.
+"""Re-solve a run's final coils at a higher resolution with the three-terms free boundary, and export them for DESC.
 
-    COIL_CASE=qa4-beta python benchmarks/three_term_highres.py <run dir> <out dir> [--modes 12 12] [--ns 101]
+    COIL_CASE=qa4-beta python benchmarks/three_terms_highres.py <run dir> <out dir> [--modes 12 12] [--ns 101]
 
 ``<run dir>`` holds input.run, coils.json and wout.nc (a finished run of
-``examples/optimization/single_stage_free_boundary_optimization_three_term.py``). The deck's profiles and the run's final
+``examples/optimization/single_stage_free_boundary_optimization_three_terms.py``). The deck's profiles and the run's final
 boundary (as the start) are re-solved at ``--modes``/``--ns`` with every interface condition (B.n, pressure balance,
-no sheet current). Writes ``<out>/wout_three_term.nc``, ``<out>/report.json`` (interface residuals, QA, iota, aspect,
+no sheet current). Writes ``<out>/wout_three_terms.nc``, ``<out>/report.json`` (interface residuals, QA, iota, aspect,
 LCFS distance to the run's own boundary, time, memory) and ``<out>/coils.npz`` (filament points, tangents and
 currents of every coil, with the field at check points, for cross-checks with
 other codes).
@@ -37,7 +37,7 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from essos.coils import Coils, Curves  # noqa: E402
 import vmex as vj  # noqa: E402
-from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel  # noqa: E402
+from vmex.core.freeboundary_vc import ThreeTermsFreeBoundaryModel  # noqa: E402
 from vmex.core.optimize import axis_iota, solve_equilibrium, unpack_boundary  # noqa: E402
 
 
@@ -198,7 +198,7 @@ log(f"deck {mpol}x{ntor} ns {args.ns}; {np.asarray(field.gamma).shape[0]} coils 
 if args.export_only:
     sys.exit(0)
 
-model = ThreeTermFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 96),
+model = ThreeTermsFreeBoundaryModel(inp, chunk=args.chunk, quadrature=args.quadrature or (4 * int(inp.nfp) * 48, 96),
                            trial_ftol=1e-11)
 log(f"model: {model.x0.size} boundary coordinates")
 out = model.solve_boundary(model.params0, field, verbose=2, max_nfev=80)
@@ -207,7 +207,7 @@ state, _, params, _ = out["aux"]
 deck = unpack_boundary(model.fixed, out["x"], model.max_mode, vary_major_radius=True)
 eq = solve_equilibrium(deck, initial_state=state)
 w = eq.wout
-vj.write_wout(str(args.out / "wout_three_term.nc"), w)
+vj.write_wout(str(args.out / "wout_three_terms.nc"), w)
 res = model.boundary_residual(eq.solution, model.with_boundary(model.params0, jnp.asarray(out["x"])), field)
 q = np.asarray(target_residual().residuals_state(eq.solution, eq.solver_context))
 th, planes = np.linspace(0, 2 * np.pi, 721), np.linspace(0, np.pi / int(inp.nfp), 4)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""WOUT figures and alpha losses of a three-term single-stage run's final equilibrium.
+"""WOUT figures and alpha losses of a three-terms single-stage run's final equilibrium.
 
-    COIL_CASE=qa4-beta python benchmarks/three_term_postprocess.py <run dir> [--ns 201] [--bootstrap] [--trace-args "..."]
+    COIL_CASE=qa4-beta python benchmarks/three_terms_postprocess.py <run dir> [--ns 201] [--bootstrap] [--trace-args "..."]
 
-A run of ``examples/optimization/single_stage_free_boundary_optimization_three_term.py``. Its final boundary is the
+A run of ``examples/optimization/single_stage_free_boundary_optimization_three_terms.py``. Its final boundary is the
 sheet-current-free free boundary of its final coils; this re-solves it as a fixed boundary at ``--ns`` (the campaign's
 dense radial resolution) with the run's PHIEDGE, pressure and current -- not with VMEC + NESTOR, which would leave that
 branch. Writes into ``<run>/postprocess``: ``wout_dense.nc``, ``dense.json`` (QA, min/max |iota|, aspect, major radius,
@@ -181,7 +181,7 @@ report = dict(ns=args.ns, fsq=float(w.fsqr + w.fsqz + w.fsql), qa=float(q @ q),
               major_radius_m=float(w.Rmajor_p), betatotal=float(w.betatotal))
 if args.bootstrap:
     report["redl_mismatch"] = float(redl_profiles(deck)[1].total_state(eq.solution, eq.solver_context))
-report["figures"] = [str(f) for f in vmex.plot_wout(str(path), out, name="three_term").values()]
+report["figures"] = [str(f) for f in vmex.plot_wout(str(path), out, name="three_terms").values()]
 (out / "dense.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report), flush=True)
 if not args.no_trace:

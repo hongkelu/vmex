@@ -304,9 +304,9 @@ Rung 5 is tier 5 evidence: those CSVs, and
 that **no test asserts on**. They are provenance for a campaign that was
 run, not gates that would fail if the physics regressed. Read them as such.
 
-### Three-term free boundary against VMEC + NESTOR and DESC
+### Three-terms free boundary against VMEC + NESTOR and DESC
 
-`benchmarks/run_three_term_resolution.py` builds a free boundary whose answer is
+`benchmarks/run_three_terms_resolution.py` builds a free boundary whose answer is
 known. A coil field (a winding-surface current at 1.2 minor radii) is fitted to
 cancel the plasma's normal field on the 12 x 12 fixed-boundary QA equilibrium
 of `input.LandremanPaul2021_QA_beta2p5_bootstrap` (beta 2.5%, ns 51), so that
@@ -316,10 +316,10 @@ from the same boundary, the target's with its minor radius scaled by 0.97
 (11 mm away), and every result is scored the same way: the boundary is
 re-solved as a fixed-boundary equilibrium, and the three conditions are
 evaluated on a 48 x 48 virtual-casing grid with the singular quadrature
-(4 nfp 48, 96). The records are `benchmarks/three_term_resolution.json` (beta)
-and `benchmarks/three_term_resolution_vacuum.json`;
-`benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
-surfaces and iota), and `benchmarks/three_term_resolution_poincare.py` traces
+(4 nfp 48, 96). The records are `benchmarks/three_terms_resolution.json` (beta)
+and `benchmarks/three_terms_resolution_vacuum.json`;
+`benchmarks/plot_three_terms_resolution.py` draws them (boundary, interior
+surfaces and iota), and `benchmarks/three_terms_resolution_poincare.py` traces
 the vacuum field lines. DESC (`FixSheetCurrent`, not a VMEX dependency) was run
 outside VMEX and its wouts scored the same way, re-solved with all of their
 modes (DESC's M includes m = M).
@@ -328,7 +328,7 @@ Columns are the largest LCFS distance to the target, the sheet current
 NESTOR runs on the exact field and on the same field tabulated as an mgrid
 (301 x 301 x 48):
 
-| M = N | three-term: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | DESC (L = M): mm / K | VMEX + NESTOR: mm / K / converged | NESTOR on the mgrid: mm |
+| M = N | three-terms: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | DESC (L = M): mm / K | VMEX + NESTOR: mm / K / converged | NESTOR on the mgrid: mm |
 | --- | --- | --- | --- | --- | --- |
 | 4 | 5.8 / 1.2e-03 / 429 / 1.9 | 16.1 / 3.8e-03 / 700 / 1.0 | 7.9 / 3.4e-03 | 24.0 / 7.5e-03 / yes | 22.9 |
 | 5 | 5.4 / 6.1e-04 / 523 / 1.9 | 10.1 / 2.1e-03 / 771 / 1.1 | 8.5 / 2.7e-03 | 12.4 / 3.0e-03 / yes | 8.1 |
@@ -346,7 +346,7 @@ converges or reaches its 40,000 iterations, on the exact field or the mgrid.
 VMEC2000 + NESTOR on the same mgrid agrees with VMEX + NESTOR (24.1, 20.9 and
 19.4 mm at 4, 6 and 10). DESC stops 4.0 to 16 mm away with a sheet current of
 6e-4 to 4e-3; its dense force Jacobian exceeds a 32 GB GPU from M = 10 at
-L = 2M and at M = 13 at L = M. The three-term boundary settles 2 mm
+L = 2M and at M = 13 at L = M. The three-terms boundary settles 2 mm
 from the target with all three conditions at 2e-5 to 4e-5, below the target's
 own 4e-5, 1.3e-4 and 1.4e-4 (the field cancels `B.n` on the target only), so
 the last 2 mm is at least partly the target's error.
@@ -363,7 +363,7 @@ The target itself scores 0.24 (its field cancels `B.n` to 1.2e-5) and 0.42:
 VMEC's axis error at ns 51, which halves with each doubling of ns, while
 DESC's polynomial basis reaches 0.02 to 0.05 mm:
 
-| M = N | three-term: mm / field lines / axis / K | DESC (L = 2M) | DESC (L = M) | VMEX + NESTOR |
+| M = N | three-terms: mm / field lines / axis / K | DESC (L = 2M) | DESC (L = M) | VMEX + NESTOR |
 | --- | --- | --- | --- | --- |
 | 4 | 1.7 / 0.23 / 0.35 / 2.4e-04 | 1.6 / 1.02 / 2.67 | 12.3 / 7.54 / 11.66 | 1.6 / 0.59 / 0.37 |
 | 5 | 1.6 / 0.09 / 0.39 / 4.7e-05 | 1.6 / 0.24 / 0.03 | 1.9 / 0.88 / 0.69 | 5.7 / 1.58 / 0.89 |
@@ -376,7 +376,7 @@ DESC's polynomial basis reaches 0.02 to 0.05 mm:
 | 12 | 1.6 / 0.20 / 0.41 / 1.9e-05 | | 1.5 / 0.12 / 0.05 | 2.5 / 0.88 / 0.46 |
 | 13 | 1.6 / 0.10 / 0.40 / 1.8e-05 | | | 1.6 / 0.54 / 0.43 |
 
-Every three-term solution holds its field lines at least as well as the target,
+Every three-terms solution holds its field lines at least as well as the target,
 so its LCFS 1.6 mm away is the field's flux surface more closely than the
 target is. DESC does as well from 9 modes (0.12 to 0.17). Field-line quality
 follows the near-resonant `B.n` harmonic (m, n) = (5, 2) (5 iota - 2 = 0.08),

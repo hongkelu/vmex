@@ -2361,6 +2361,20 @@ def _phr(v, multipliers, penalty, equality):
     return terms, slope
 
 
+def _damped_bfgs(H, d, y):
+    """BFGS update of ``H`` by the secant pair ``(d, y)``, Powell-damped to stay positive definite; and whether
+    it was damped."""
+    Hd = H @ d
+    dHd, dy = d @ Hd, d @ y
+    if dHd <= 0.0:  # a zero matrix along d: start from the pair's own curvature
+        return (np.outer(y, y) / dy, False) if dy > 0.0 else (H, False)
+    damped = dy < 0.2 * dHd
+    if damped:
+        theta = 0.8 * dHd / (dHd - dy)
+        y, dy = theta * y + (1.0 - theta) * Hd, 0.2 * dHd
+    return H + np.outer(y, y) / dy - np.outer(Hd, Hd) / dHd, damped
+
+
 def _augmented_lagrangian_step(B, gradient, A, v, multipliers, penalty, equality, radius, free):
     """Step ``d`` with ``|d| <= radius`` minimizing the augmented Lagrangian model, and the model's decrease.
 
@@ -2419,15 +2433,18 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     value (that scale clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
     ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
-    violation-complementarity measure fell to half; an inner loop ends early once its violation doubles past one
+    violation fell to half (or below 1e-6 row units); an inner loop ends early once its violation doubles past one
     row unit (a run-away, not the small excursion of a nearly feasible start). The inner solver is a trust-region
     quasi-Newton method on the problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) ->
     (f, c, grad f, dc/du)`` only at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a
-    damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the penalty curvature of the
+    Lagrangian Hessian ``B_f + sum_k lambda_k B_k`` from damped BFGS matrices of the objective and of each row
+    that has had a multiplier (the curvature of a row is its own, so a multiplier change rescales it at once),
+    after every step the multipliers of the model's step (the linearized rows' ``max(lambda + rho (v + A d), 0)``),
+    and the penalty curvature of the
     active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected` shrinks the radius; a
     radius that collapses without a step updates the multipliers and restarts the radius and the BFGS matrix. The run
     ends at its accepted-step budget, or where it cannot move: three restarts in a row without a step (success if
-    feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point (with the step norm, its model and actual decreases and whether the BFGS update was damped); ``report`` (a dict) holds the multipliers, penalty
+    feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point (with the step norm, its model and actual decreases and whether the objective's BFGS update was damped); ``report`` (a dict) holds the multipliers, penalty
     and violation of the latest one. Returns ``(success, stop_reason, message)``.
 
     The only option is ``maxiter`` (accepted steps, default 100). The rest is fixed: penalty 10 (with the objective
@@ -2459,7 +2476,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     # not Birgin-Martinez's 10 / max(1, |v|^2 / 2): a start far outside its rows (a seed's bootstrap mismatch) made
     # it ~1e-2, and the violation grew while the objective fell
     penalty = 10.0
-    B, scaled_B = np.eye(u.size), False
+    B, B_f, B_rows = np.eye(u.size), None, {}  # B_f, B_rows: the objective's and the rows' curvature
     steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
     solved = False  # since the last step a trial was solved, or the model foresaw no decrease (not all trials failed)
     entry = violation(v)  # the violation at the start of the inner loop
@@ -2478,9 +2495,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             tolerance = 0.1 * projected
         if (projected <= tolerance or inner >= inner_budget or radius < min_radius
                 or (inner > 0 and violation(v) > max(2.0 * entry, 1.0))):
-            measure = float(np.max(np.abs(np.where(equality, v, np.maximum(v, -multipliers / penalty))),
-                                   initial=0.0))
-            if inner > 0 and measure > 0.5 * previous:  # a stalled inner loop says nothing about feasibility
+            measure = violation(v)
+            # not the violation-complementarity measure: with ten inner steps it seldom halves, and the penalty ran
+            # to 1e12 at feasible points (steps ~1e-5)
+            if inner > 0 and measure > max(0.5 * previous, 1e-6):
                 penalty = min(10.0 * penalty, 1e12)
             multipliers = np.clip(slope, -1e12, 1e12)
             stalls = stalls + 1 if inner == 0 and radius < min_radius else 0
@@ -2491,7 +2509,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             previous, tolerance, inner, outer = measure, 0.1 * tolerance, 0, outer + 1
             entry = violation(v)
             if radius < min_radius:  # collapsed: start the radius and the curvature model over
-                radius, B, scaled_B = initial_radius, np.eye(u.size), False
+                radius, B, B_f, B_rows = initial_radius, np.eye(u.size), None, {}
             note()
             continue
         free = ~(((u <= lower) & (gradient > 0)) | ((u >= upper) & (gradient < 0)))
@@ -2519,16 +2537,19 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         v1 = sign * c1[index] - offset
         terms1, slope1 = _phr(v1, multipliers, penalty, equality)
         A1 = sign[:, None] * J1[index]
-        y = scale * gf1 + A1.T @ slope1 - (gF + A.T @ slope1)  # Lagrangian gradient change, multipliers fixed
-        if not scaled_B and d @ y > 0:
-            B, scaled_B = (y @ y) / (d @ y) * np.eye(u.size), True
-        Bd = B @ d
-        dBd, dy = d @ Bd, d @ y
-        damped = dy < 0.2 * dBd
-        if damped:  # Powell damping keeps B positive definite
-            theta = 0.8 * dBd / (dBd - dy)
-            y, dy = theta * y + (1.0 - theta) * Bd, 0.2 * dBd
-        B += np.outer(y, y) / dy - np.outer(Bd, Bd) / dBd
+        step_multipliers = np.clip(_phr(v + A @ d, multipliers, penalty, equality)[1], -1e12, 1e12)
+        y_f = scale * gf1 - gF
+        if B_f is None:  # scaled to the objective's mean curvature along the first step
+            B_f = max(d @ y_f / (d @ d), 1e-8) * np.eye(u.size) if d @ y_f > 0 else np.eye(u.size)
+        B_f, damped = _damped_bfgs(B_f, d, y_f)
+        for k in np.flatnonzero(step_multipliers != 0.0):
+            B_rows.setdefault(k, np.zeros((u.size, u.size)))  # a row's curvature, from its first multiplier on
+        for k, B_k in B_rows.items():
+            y_k = A1[k] - A[k]
+            if d @ y_k > 0:  # a row's convex curvature only: B stays positive definite
+                B_rows[k] = _damped_bfgs(B_k, d, y_k)[0]
+        B = B_f + sum(max(step_multipliers[k], 0.0) * B_k for k, B_k in B_rows.items())
+        multipliers = step_multipliers
         u, f, gf, c, F_old = u + d, f1, gf1, c1, F
         F, gF, v, A = scale * f, scale * gf, v1, A1
         steps, inner = steps + 1, inner + 1

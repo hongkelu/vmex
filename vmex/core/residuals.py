@@ -67,6 +67,7 @@ __all__ = [
     "m1_residue_rotation",
     "zero_m1_z_force",
     "m1_zero_condition",
+    "pin_m1_gauge",
     "edge_force_condition",
     "scalxc_scale_force",
     "force_residuals",
@@ -630,3 +631,36 @@ def preconditioned_residuals(
         fsqz1=fnorm1 * sum_sq(_Z_BLOCKS, slice(0, ns)),
         fsql1=jnp.asarray(delta_s) * sum_sq(_LAMBDA_BLOCKS, slice(1, ns)),
     )
+
+
+def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable) -> Array:
+    """Put the constrained m=1 combination on its initial-guess profile.
+
+    With ``lconm1`` the evolved m=1 pair ``zcs_int = (rss - zcs)/2`` (the
+    antisymmetric ``Z_sin(m=1, +/-n)`` columns of the signed packing) is an
+    angle gauge: VMEC2000 zeroes its force once ``fsqz < 1e-6``
+    (``residue.f90``), so a converged state keeps whatever value the solver's
+    path left there, and two solves of one boundary from different starts
+    converge (fsq 1e-17) to states up to 1e-3 (vacuum) or 1e-1 (finite beta,
+    in lambda) apart.  VMEX fixes the gauge instead (``RunSetup.freeze_m1``,
+    the default): the force stays zeroed from the first iteration and the
+    combination is held at ``sqrt(s) * edge`` -- the ``profil3d.f`` interior
+    guess -- so every solve of one boundary lands on one state.  Returns
+    ``Z_sin`` with that profile; other columns, and every other array, are
+    untouched.  Stellarator-symmetric 3-D runs only (no pairs otherwise).
+    """
+    m = np.asarray(modes.m, dtype=int)
+    n = np.asarray(modes.n, dtype=int)
+    index = {(int(mm), int(nn)): k for k, (mm, nn) in enumerate(zip(m, n))}
+    ntor = int(np.max(np.abs(n))) if n.size else 0
+    if ntor == 0:
+        return Z_sin
+    pos = np.asarray([index[(1, j)] for j in range(1, ntor + 1)], dtype=int)
+    neg = np.asarray([index[(1, -j)] for j in range(1, ntor + 1)], dtype=int)
+    Z_sin = jnp.asarray(Z_sin)
+    edge = jnp.asarray(edge_Z_sin)
+    ns = int(Z_sin.shape[0])
+    profile = jnp.sqrt(jnp.linspace(0.0, 1.0, ns, dtype=Z_sin.dtype))[:, None]
+    target = profile * (0.5 * (edge[pos] - edge[neg]))[None, :]
+    shift = target - 0.5 * (Z_sin[:, pos] - Z_sin[:, neg])
+    return Z_sin.at[:, pos].add(shift).at[:, neg].add(-shift)

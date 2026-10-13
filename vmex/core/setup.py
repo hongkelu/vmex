@@ -225,11 +225,14 @@ class RunSetup:
     lthreed: bool
     lconm1: bool
     ncurr: int
+    #: Hold the constrained m=1 combination at its initial-guess profile for the
+    #: whole solve (see :func:`vmex.core.residuals.pin_m1_gauge`).
+    freeze_m1: bool = True
 
 
 _register(RadialGrids)
 _register(ProcessedBoundary, meta=("signgs", "lflip"))
-_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr"))
+_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr", "freeze_m1"))
 
 
 def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:

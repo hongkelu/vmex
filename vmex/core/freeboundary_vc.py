@@ -354,9 +354,9 @@ class ThreeTermFreeBoundaryModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
-        # Hot-restarted solves are exact: the Newton anchor solves for the m=1 combination VMEC freezes
-        # (implicit.ImplicitConfig.release_m1), so the state is a single-valued function of the boundary whatever
-        # the seed, and the implicit Jacobian is the derivative of the re-solve map.
+        # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
+        # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
+        # the derivative of the re-solve map.
         cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less

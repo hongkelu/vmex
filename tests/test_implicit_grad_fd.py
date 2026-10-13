@@ -123,7 +123,7 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
 
 
 def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
-    """Mean iota with ``release_m1=False`` (VMEC's convention): the gap to a re-solve FD.
+    """Mean iota with ``freeze_m1=False`` (VMEC2000 rule): the gap to a re-solve FD.
 
     The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
     2.8% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
@@ -141,7 +141,7 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     """
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
-    cfg = im.make_config(inp, **CASES[name], release_m1=False)  # VMEC's frozen convention
+    cfg = im.make_config(inp, **CASES[name], freeze_m1=False)  # VMEC2000 rule
     p0 = im.params_from_input(inp)
     ntor = int(inp.ntor)
     assert int(inp.ncurr) == 1
@@ -273,19 +273,19 @@ def test_multigrid_gradient_vs_frozen_path_fd():
     assert rel <= 1e-6
 
 
-def test_li383_released_m1_makes_resolve_fd_exact():
-    """``release_m1=True``: the anchored state is single-valued in the boundary.
+def test_li383_fixed_m1_gauge_makes_resolve_fd_exact():
+    """``freeze_m1=True``: the anchored state is single-valued in the boundary.
 
-    The constrained m=1 Z force stays active in the Newton anchor and the
-    linearization, so the combination VMEC freezes wherever its path left it
-    is solved for.  The implicit derivative of mean iota is then the
-    derivative of the cold re-solve map itself (the gap of the test above,
-    1.0% / 2.8%, closes to solver accuracy), and a solve seeded from a state
-    shifted along that combination lands on the cold state.
+    The host solves hold the constrained m=1 combination at ``sqrt(s) * edge``
+    from the first iteration instead of leaving it wherever VMEC2000's path
+    froze it.  The implicit derivative of mean iota is then the derivative of
+    the cold re-solve map itself (the gap of the test above, 1.0% / 2.8%,
+    closes to solver accuracy), and a solve seeded from a state shifted along
+    that combination, with lambda and R perturbed too, lands on the cold state.
     """
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
-    cfg = im.make_config(inp, **CASES[name], release_m1=True)
+    cfg = im.make_config(inp, **CASES[name], freeze_m1=True)
     p0 = im.params_from_input(inp)
     ntor = int(inp.ntor)
 
@@ -303,13 +303,13 @@ def test_li383_released_m1_makes_resolve_fd_exact():
                        for s in (1.0, -1.0))
         resolve = (plus - minus) / (2 * h)
         rel = abs(implicit / resolve - 1.0)
-        print(f"\n[{name}, released m=1] d(mean iota)/d({field.upper()}({n},1)): "
+        print(f"\n[{name}, fixed m=1 gauge] d(mean iota)/d({field.upper()}({n},1)): "
               f"implicit {implicit:+.9e}  re-solve FD {resolve:+.9e}  rel {rel:.2e}")
         assert rel <= 1e-5
 
     # Seed independence: a hot solve from a state shifted along the gauge returns the cold anchored state.
     x0, mask = im.solve_implicit_with_aux(p0, cfg)
-    hot = im.make_config(inp, **CASES[name], release_m1=True, hot_restart=True)
+    hot = im.make_config(inp, **CASES[name], freeze_m1=True, hot_restart=True)
     pos, neg = im._m1_pair_columns(hot)
     ns = int(hot.resolution.ns)
     s = np.linspace(0.0, 1.0, ns)[:, None]
@@ -317,7 +317,9 @@ def test_li383_released_m1_makes_resolve_fd_exact():
     z_sin = np.array(x0.Z_sin)
     z_sin[:, pos] += shift
     z_sin[:, neg] -= shift
-    im._HOT_CACHE[hot] = dataclasses.replace(jax.tree.map(np.asarray, x0), Z_sin=z_sin)
+    seed = jax.tree.map(np.asarray, x0)
+    im._HOT_CACHE[hot] = dataclasses.replace(seed, Z_sin=z_sin, L_sin=1.05 * seed.L_sin,
+                                             R_cos=(1.0 + 1e-3) * seed.R_cos)
     x1, _ = im.solve_implicit_with_aux(p0, hot)
     for field in ("R_cos", "Z_sin", "L_sin"):
         a, b = np.asarray(getattr(x0, field)), np.asarray(getattr(x1, field))

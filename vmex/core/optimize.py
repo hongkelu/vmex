@@ -2419,7 +2419,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     value (that scale clipped to 1e-12..1e12), ``v`` the violated-side rows (``lower - c``, ``c - upper``, or
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
     ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
-    violation-complementarity measure fell to half; an inner loop ends early once its violation doubles. The inner solver is a trust-region quasi-Newton method on the
+    violation-complementarity measure fell to half; an inner loop ends early once its violation doubles past one
+    row unit (a run-away, not the small excursion of a nearly feasible start). The inner solver is a trust-region quasi-Newton method on the
     problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (f, c, grad f, dc/du)`` only
     at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
     penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
@@ -2481,7 +2482,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         if tolerance is None:
             tolerance = max(0.1 * projected, gtol)
         if (projected <= tolerance or inner >= inner_budget or radius < min_radius
-                or (inner > 0 and violation(v) > 2.0 * max(entry, ctol))):
+                or (inner > 0 and violation(v) > max(2.0 * entry, 1.0))):
             measure = float(np.max(np.abs(np.where(equality, v, np.maximum(v, -multipliers / penalty))),
                                    initial=0.0))
             if measure <= ctol and projected <= gtol:

@@ -235,6 +235,67 @@ convergence: on this deck VMEX iota at ρ = 0.1 is 0.188, 0.176 and 0.166 for ns
 
 ![VMEX and MRX on the 2.5% beta QA deck](../_static/figures/readme_vmex_mrx_comparison.webp)
 
+## The m=1 angle gauge: one equilibrium per boundary
+
+With `lconm1`, VMEC2000 evolves the m=1 pair `zcs_int = (rss - zcs)/2` (the
+antisymmetric `Z_sin(m=1, ±n)` columns; for `lasym` also `zcc_int` and
+`Z_cos(m=1, n=0)`). This combination is an angle gauge. `residue.f90` releases
+its force until `fsqz < 1e-6` and zeroes it afterwards, so the converged state
+keeps whatever value the solver's path left there.
+
+**What goes wrong under VMEC2000's rule.** Two solves of one boundary from
+different starts converge (fsq ~1e-17) to different states.
+- Vacuum: 1e-4 to 1e-3 apart.
+- Finite beta: up to 6 % apart in lambda.
+- The implicit linearization holds the combination fixed, so it is not the
+  derivative of the map a re-solve follows.
+
+**What VMEX does instead.** Fixed-boundary solves fix the gauge (`freeze_m1`,
+the default). The force stays zeroed from the first iteration. At every stage
+start (cold start, seed, hot restart, multigrid interpolation) the combination
+is put on `sqrt(s) * edge`, the `profil3d.f` interior guess
+(`residuals.pin_m1_gauge`). `implicit._assemble` carries that profile's
+boundary dependence. `freeze_m1=False` reproduces VMEC2000 bit for bit.
+VMEX + NESTOR free boundary keeps VMEC2000's rule (see below).
+
+**The test.** Each deck below is solved at 6 modes with its own multigrid
+ladder. One solve starts cold. The other starts from a seed perturbed along
+every frozen combination, with lambda ×1.05 and R ×1.001; the seed column is
+the largest relative difference between the two converged states. The gradient
+column is the largest relative difference between the implicit derivative of a
+state functional and a central finite difference of cold re-solves, over two
+boundary directions.
+
+| Deck | Gauge | Seed difference | Gradient error | Iterations (cold / seeded) |
+| --- | --- | --- | --- | --- |
+| LP QA vacuum | VMEC2000 rule | 5.5e-2 | 2.5e-1 | 1364 / 1157 |
+| LP QA vacuum | fixed | 5.5e-13 | 1.6e-8 | 1378 / 1165 |
+| LP QA beta 2.5 % | VMEC2000 rule | 6.3e-2 | 2.7e-1 | 1337 / 1324 |
+| LP QA beta 2.5 % | fixed | 1.6e-13 | 2.9e-8 | 1319 / 1338 |
+| LP QA beta 0.5 % | fixed | 3.9e-13 | 7.1e-8 | 1390 / 818 |
+| li383 | VMEC2000 rule | 5.7e-2 | 4.1e-1 | 659 / 690 |
+| li383 | fixed | 6.8e-14 | 8.7e-9 | 663 / 417 |
+| nfp4 QH, finite beta | fixed | 3.8e-13 | 1.2e-9 | 2348 / 2348 |
+| nfp4 QI, finite beta | fixed | 2.9e-13 | 8.0e-9 | 4609 / 1888 |
+| nfp1 QI | fixed | 3.8e-12 | 4.8e-8 | 10306 / 3132 |
+| Nuhrenberg-Zille QHS | fixed | 3.9e-12 | 1.0e-8 | 5813 / 5812 |
+| CTH-like | fixed | 4.6e-14 | 1.4e-8 | 475 / 392 |
+| DSHAPE | fixed | 3.0e-14 | 1.4e-10 | 1328 / 1328 |
+| up-down asymmetric tokamak (lasym) | fixed | 1.2e-12 | 1.9e-9 | 2956 / 1685 |
+| non-stellarator-symmetric 3-D (lasym) | fixed | 2.5e-12 | 3.0e-8 | 1774 / 1659 |
+
+On a 12 x 12, ns 51 vacuum single-stage case, the three-terms rows at one
+boundary from a seeded and a cold solve agree:
+- cost to 2.7e-9 (67 % apart under VMEC2000's rule);
+- state to 5e-12 (1.3e-3).
+
+**VMEX + NESTOR keeps VMEC2000's rule.** Its two-start spread on the same
+coils is 0.11-0.12 mm (QS 0.02-0.06 %) under either rule. That spread is 12 x
+12 truncation of different labellings, far below NESTOR's own error: its
+surface sits 4-5 mm from the coils' flux surface, with B.n/|B| = 1.2e-4
+against 1.6e-5 for the three-terms surface. Forcing a canonical edge gauge
+there is not a pure relabelling: it moved the surface 0.26 mm.
+
 ## Derivative certificates
 
 Implicit gradients describe a converged discrete equilibrium. Their validity

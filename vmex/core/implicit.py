@@ -43,11 +43,17 @@ inherits the preconditioning for free.  The raw-force formulation
 (``formulation="raw"``) is kept for the informational with/without-
 preconditioner comparison in the tests.
 
-The m=1 constrained Z force is evaluated in its converged branch (zeroed —
-``residue.f90`` zeroes ``gcz(m=1)`` once ``fsqz < 1e-6``, which always holds
-at the fixed point), so the corresponding constrained combinations are *not*
-degrees of freedom: they are frozen at their converged values, exactly
-mirroring the forward solver's behavior near convergence.
+The constrained m=1 combination (``zcs_int``, the antisymmetric ``Z_sin(m=1,
++/-n)`` pair) is an angle gauge: ``residue.f90`` zeroes its force, so it is not
+a degree of freedom.  VMEC2000 releases that force until ``fsqz < 1e-6`` and
+then freezes the combination wherever the path left it, which makes the
+converged state depend on the start (1e-4..1e-3 in vacuum, ~1e-1 in lambda at
+finite beta).  VMEX fixes the gauge instead (:attr:`ImplicitConfig.freeze_m1`,
+``RunSetup.freeze_m1``, :func:`~vmex.core.residuals.pin_m1_gauge`): the host
+solves hold the combination at ``sqrt(s) * edge`` from the first iteration, so
+the state is a single-valued function of the parameters whatever the seed, and
+:func:`_assemble` carries the profile's boundary dependence, so the implicit
+derivative is the derivative of the re-solve map.
 
 Anchoring the fixed point
 -------------------------
@@ -87,9 +93,9 @@ naive re-solve FD is *not* a valid reference — it can sign-flip; use
 :func:`frozen_path_directional_fd`, which reproduces the adjoint to solver
 accuracy (full rationale on that function; ``tests/test_implicit_grad.py``).
 
-At a tight ``ftol``, with the state anchored as above, the difference that
-remains between the adjoint and a cold re-solve FD is the released m=1
-``Z_sin`` pair combination alone.  The linearization holds it at its
+With ``freeze_m1=False`` (VMEC2000's rule), at a tight ``ftol`` and the state
+anchored as above, the difference that remains between the adjoint and a cold
+re-solve FD is the frozen m=1 ``Z_sin`` pair combination alone.  The linearization holds it at its
 converged value.  Each cold solve instead freezes it wherever its own path
 left it, which moves it by about 0.5 per unit boundary change on
 ``li383_low_res``.  In the continuum this coordinate is an angle gauge, so
@@ -180,8 +186,8 @@ from .geometry import (
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .residuals import (
-    m1_physical_to_constrained, m1_residue_rotation, scalxc_scale_force,
-    zero_m1_z_force,
+    m1_physical_to_constrained, m1_residue_rotation, pin_m1_gauge,
+    scalxc_scale_force, zero_m1_z_force,
 )
 from .setup import RadialGrids, flux_profiles, interior_guess
 from .solver import (
@@ -350,6 +356,15 @@ class ImplicitConfig:
     #: 5e-07 against the frozen-path FD, for 14-26% of a forward solve and
     #: 9-14% of a value-and-gradient across the gradient decks.
     refine_tol: float = 1.0e-10
+    #: Fix the angle gauge of the constrained m=1 combination (default; see
+    #: :func:`vmex.core.residuals.pin_m1_gauge` and ``RunSetup.freeze_m1``):
+    #: the host solves hold it at ``sqrt(s) * edge`` from the first iteration,
+    #: so every solve of one boundary lands on one state whatever its seed,
+    #: and :func:`_assemble` carries that profile's boundary dependence, so
+    #: the implicit derivative is the derivative of the re-solve map.
+    #: ``False`` is VMEC2000's rule (the combination frozen wherever the
+    #: host's path left it): seeded and cold solves then differ along it.
+    freeze_m1: bool = True
     #: Largest ``(fsqr + fsqz + fsql) / ftol`` accepted for implicit
     #: differentiation when a trial exhausts its iteration budget.  The
     #: adjoint assumes ``F = 0``, so this is the same strict ``1e2`` bar as
@@ -393,6 +408,7 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
+    freeze_m1: bool = True,
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
 
@@ -430,6 +446,7 @@ def make_config(
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
         hot_restart=bool(hot_restart), device=device,
+        freeze_m1=bool(freeze_m1),
     ))
 
 
@@ -568,7 +585,7 @@ def _template_runtime(cfg: ImplicitConfig) -> SolverRuntime:
         return _device_pin(cfg, prepare_runtime(
             cfg.inp, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, lconm1=cfg.lconm1,
-            use_fft=False,
+            freeze_m1=cfg.freeze_m1, use_fft=False,
         ))
 
 
@@ -977,7 +994,8 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
               P: Callable, edge_mask: SpectralState) -> SpectralState:
-    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``.
+    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``, with the
+    fixed m=1 gauge (``RunSetup.freeze_m1``) set from ``boundary(p)``.
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
@@ -994,6 +1012,14 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
+    if setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym):
+        # the fixed gauge follows the boundary (it equals ``frozen`` at the solved parameters)
+        if setup.lasym:
+            out["Z_sin"], out["Z_cos"] = pin_m1_gauge(
+                out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes,
+                Z_cos=out["Z_cos"], edge_Z_cos=boundary["Z_cos"])
+        else:
+            out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
     return SpectralState(**out)
 
 
@@ -1427,14 +1453,14 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
         # (VMEC2000 behaves the same way).
         run = lambda init: solve_multigrid(  # noqa: E731
             inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
-            lconm1=cfg.lconm1, raise_on_max_iterations=False,
+            lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
             initial_state=init, use_fft=False,
                 device=solver_device)
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, mode=cfg.mode,
-            lconm1=cfg.lconm1, initial_state=init, use_fft=False,
+            lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, initial_state=init, use_fft=False,
                 device=solver_device)
     # Seed ladder: perturbation prediction -> plain hot restart -> cold.
     # A bad warm seed must not fail the trial (only the initial guess is at

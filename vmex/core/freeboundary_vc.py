@@ -160,6 +160,11 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+import os as _os
+_LABEL_MODE = _os.environ.get("VMEX_LABEL_MODE", "canonical")  # TEMP for testing
+_CANON_WEIGHT = float(_os.environ.get("VMEX_CANON_WEIGHT", "1.0"))
+
+
 def solve_free_boundary_three_term(
     inp: VmecInput,
     *,
@@ -176,6 +181,7 @@ def solve_free_boundary_three_term(
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
+    xtol: float = 1e-5,
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
     chunk: int = 8,
@@ -268,7 +274,7 @@ def solve_free_boundary_three_term(
     initial = model.boundary_residual(seed_state, seed_params, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
-                               max_nfev=max_nfev, verbose=verbose)
+                               max_nfev=max_nfev, ls_xtol=xtol, verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
     return OptimizeResult(
@@ -353,6 +359,9 @@ class ThreeTermFreeBoundaryModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
+        # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
+        # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
+        # the derivative of the re-solve map.
         cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
@@ -414,11 +423,18 @@ class ThreeTermFreeBoundaryModel:
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
 
+        pos, neg = im._m1_pair_columns(cfg) if int(cfg.resolution.ntor) > 0 else (np.zeros(0, int), np.zeros(0, int))
+
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
-            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
-            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            if _LABEL_MODE == "seed":   # legacy: labelling tied to the seed boundary (start dependent)
+                label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
+                interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            else:   # canonical labelling: zcs_int(edge) = 0 (VMEC's polar gauge), the same for every start
+                interface = (jnp.sqrt(area)[None] * (scale * values)).ravel()
+                zb = runtime.setup.boundary_Z_sin
+                interface = jnp.concatenate([interface, _CANON_WEIGHT * 0.5 * (zb[pos] - zb[neg])])
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))
@@ -620,7 +636,7 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0, xtol=None, fresh=True):
+                       target_cost=None, verbose=0, xtol=None, fresh=True, ls_xtol=1e-5):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
@@ -631,7 +647,8 @@ class ThreeTermFreeBoundaryModel:
         reused ``J0`` stops where ``J0^T r = 0``, which the rows' discretization floor moves off the boundary's own
         ``J^T r = 0`` (a smooth, ``J0``-dependent offset).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
-        ``njev``, ``accepted`` and ``converged``.
+        ``njev``, ``accepted`` and ``converged``.  ``ls_xtol``: the trust region's relative step tolerance (in the
+        ESS-scaled coordinates); the K = 0 valley is shallow, so a tight solve needs ``ls_xtol`` well below 1e-5.
         """
         import scipy.optimize
 
@@ -697,7 +714,7 @@ class ThreeTermFreeBoundaryModel:
             return J
 
         fit = scipy.optimize.least_squares(fun, x, jac=jac, x_scale=self.x_scale, ftol=max(ftol, jacobian_ftol),
-                                           xtol=1e-5, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
+                                           xtol=ls_xtol, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
         nfev += int(fit.nfev)
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)

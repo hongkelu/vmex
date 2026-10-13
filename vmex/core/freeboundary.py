@@ -81,7 +81,7 @@ from .solver import (
     SolveResult, SolverRuntime, SpectralState, VacuumOutput,
     _LANE_EXECUTABLES, _USED_LANE_KEYS,
     _due_rows_pending,
-    _finalize, _geometry, _initial_carry, _initial_state, _leaf_signature,
+    _finalize, _gauge_fixed, _geometry, _initial_carry, _initial_state, _leaf_signature,
     _loop_driver_config, _make_body,
     _result_from_carry, _trajectory_rows, _zero_cache, prepare_runtime, resolution_from_input,
     reguess_initial_axis, runtime_with_baselines,
@@ -1250,7 +1250,7 @@ def _call_lane(tag: Any, lane: Any, args: tuple,
 def _prefetch_stage_lane_set(
     inp: VmecInput, *, external_field: Any, ns: int, ftol: float | None,
     max_iterations: int | None, time_step: float | None, tcon0: float | None,
-    gamma: float | None, nstep: int | None, lconm1: bool,
+    gamma: float | None, nstep: int | None, lconm1: bool, freeze_m1: bool,
     precon_type: str | None, prec2d_threshold: float | None, prec2d: Any,
     use_fft: bool, device: Any, lmove_axis: bool | None,
     vacuum_on: bool | None, entry_lanes: bool, cancel: threading.Event,
@@ -1273,7 +1273,7 @@ def _prefetch_stage_lane_set(
         rt = prepare_runtime(
             inp, resolution, ftol=ftol, max_iterations=max_iterations,
             tcon0=tcon0, gamma=gamma,
-            lconm1=lconm1, precon_type=precon_type,
+            lconm1=lconm1, freeze_m1=freeze_m1, precon_type=precon_type,
             prec2d_threshold=prec2d_threshold, prec2d=prec2d, use_fft=use_fft,
         )
         if lmove_axis is not None and bool(rt.lmove_axis) != bool(lmove_axis):
@@ -1370,7 +1370,7 @@ def _prefetch_stage_lane_set(
 def _launch_free_lane_prefetch(
     inp: VmecInput, *, external_field: Any, ns: int, ftol: float | None,
     max_iterations: int | None, time_step: float | None, tcon0: float | None,
-    gamma: float | None, nstep: int | None, lconm1: bool,
+    gamma: float | None, nstep: int | None, lconm1: bool, freeze_m1: bool,
     precon_type: str | None, prec2d_threshold: float | None, prec2d: Any,
     use_fft: bool, device: Any, lmove_axis: bool | None,
     vacuum_on: bool | None, entry_lanes: bool,
@@ -1388,7 +1388,7 @@ def _launch_free_lane_prefetch(
         int(ns), None if ftol is None else float(ftol),
         None if max_iterations is None else int(max_iterations),
         bool(use_fft), int(inp.mpol), int(inp.ntor), int(inp.nfp),
-        bool(inp.lasym), bool(lconm1), time_step, tcon0, gamma, nstep,
+        bool(inp.lasym), bool(lconm1), bool(freeze_m1), time_step, tcon0, gamma, nstep,
         precon_type, prec2d_threshold, prec2d is None, str(device),
         lmove_axis, vacuum_on, bool(entry_lanes),
     )
@@ -1402,7 +1402,7 @@ def _launch_free_lane_prefetch(
             _prefetch_stage_lane_set(
                 inp, external_field=external_field, ns=ns, ftol=ftol,
                 max_iterations=max_iterations, time_step=time_step,
-                tcon0=tcon0, gamma=gamma, nstep=nstep, lconm1=lconm1,
+                tcon0=tcon0, gamma=gamma, nstep=nstep, lconm1=lconm1, freeze_m1=freeze_m1,
                 precon_type=precon_type, prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d, use_fft=use_fft, device=device,
                 lmove_axis=lmove_axis, vacuum_on=vacuum_on,
@@ -1619,6 +1619,7 @@ def _solve_free_boundary_stage(
     gamma: float | None = None,
     nstep: int | None = None,
     lconm1: bool = True,
+    freeze_m1: bool = False,  # NESTOR keeps VMEC2000's rule (see solver.prepare_runtime)
     precon_type: str | None = None,
     prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
@@ -1690,7 +1691,7 @@ def _solve_free_boundary_stage(
     rt = prepare_runtime(
         inp, resolution, ftol=ftol, max_iterations=max_iterations,
         tcon0=tcon0, gamma=gamma,
-        lconm1=lconm1, precon_type=precon_type,
+        lconm1=lconm1, freeze_m1=freeze_m1, precon_type=precon_type,
         prec2d_threshold=prec2d_threshold, prec2d=prec2d,
         use_fft=use_fft,
     )
@@ -1718,7 +1719,7 @@ def _solve_free_boundary_stage(
                 f"expected {expected}; interpolate with "
                 "vmex.core.multigrid.interpolate_state first"
             )
-        _init_state = initial_state
+        _init_state = _gauge_fixed(rt, initial_state)
         # Unlike fixed boundary, do not replace the edge row: it is an evolved
         # unknown.  On a reset-style start (IVAC=-1), funct3d.f seeds the
         # constraint baseline from this state at iter2==iter1.  Across an
@@ -1854,7 +1855,7 @@ def _solve_free_boundary_stage(
             inp, external_field=external_field, ns=ns, ftol=float(rt.ftol),
             max_iterations=int(rt.max_iterations),
             time_step=time_step0, tcon0=float(rt.tcon0),
-            gamma=float(rt.gamma), nstep=nstep_cadence, lconm1=lconm1,
+            gamma=float(rt.gamma), nstep=nstep_cadence, lconm1=lconm1, freeze_m1=freeze_m1,
             precon_type=precon_type, prec2d_threshold=prec2d_threshold,
             prec2d=prec2d, use_fft=use_fft, device=prefetch_device,
             lmove_axis=bool(rt.lmove_axis), vacuum_on=bool(vacuum_active),
@@ -2211,7 +2212,7 @@ def _solve_free_boundary_stage(
                 tcon0=tcon0,
                 gamma=gamma,
                 nstep=nstep,
-                lconm1=lconm1,
+                lconm1=lconm1, freeze_m1=freeze_m1,
                 precon_type=precon_type,
                 prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d,
@@ -2283,6 +2284,7 @@ def solve_free_boundary(
     gamma: float | None = None,
     nstep: int | None = None,
     lconm1: bool = True,
+    freeze_m1: bool = False,  # NESTOR keeps VMEC2000's rule (see solver.prepare_runtime)
     precon_type: str | None = None,
     prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
@@ -2333,7 +2335,7 @@ def solve_free_boundary(
             error_on_no_convergence=error_on_no_convergence,
             initial_state=initial_state, vacuum_continuation=None,
             time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep,
-            lconm1=lconm1,
+            lconm1=lconm1, freeze_m1=freeze_m1,
             precon_type=precon_type, prec2d_threshold=prec2d_threshold,
             prec2d=prec2d,
             jacobian_retries=jacobian_retries,

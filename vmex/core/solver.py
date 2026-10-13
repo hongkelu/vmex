@@ -150,7 +150,7 @@ from .residuals import (
     ForceResiduals, PreconditionedResiduals, apply_lambda_preconditioner,
     apply_radial_preconditioner, edge_force_condition, force_residuals,
     m1_constrained_to_physical, m1_residue_rotation, m1_zero_condition,
-    preconditioned_residuals, scale_m1_preconditioner_rhs, scalxc_scale_force,
+    pin_m1_gauge, preconditioned_residuals, scale_m1_preconditioner_rhs, scalxc_scale_force,
     zero_m1_z_force,
 )
 from .setup import GUESS_AXIS_GRID_POINTS, RunSetup, guess_axis, interior_guess, run_setup
@@ -689,6 +689,7 @@ def prepare_runtime(
     tcon0: float | None = None,
     gamma: float | None = None,
     lconm1: bool = True, lforbal: bool | None = None,
+    freeze_m1: bool = True,
     setup: RunSetup | None = None,
     precon_type: str | None = None, prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
@@ -705,6 +706,15 @@ def prepare_runtime(
     (``funct3d.f``) are computed once here from the initial state — the edge
     spectral row never evolves in fixed-boundary mode, so they are constants
     of the run.
+
+    ``freeze_m1`` (default) fixes the angle gauge of the constrained m=1
+    combination: its force stays zeroed from the first iteration and every
+    stage starts with it on the ``profil3d.f`` profile
+    (:func:`~vmex.core.residuals.pin_m1_gauge`), so the converged state is a
+    single-valued function of the input whatever the starting state.
+    ``freeze_m1=False`` is VMEC2000's rule (force released until
+    ``fsqz < 1e-6``, then zeroed): bit-compatible with VMEC2000, but solves of
+    one input from different starts differ along that combination.
 
     ``lforbal`` overrides the input's non-variational ``(m=1,n=0)`` force
     replacement when supplied (a prebuilt :class:`RunSetup` defaults it to
@@ -746,6 +756,8 @@ def prepare_runtime(
     # still performs its first evolve/funct3d pass before ``iter2 >= niter``
     # terminates the stage, so the effective trajectory capacity is one.
     effective_iterations = max(1, requested_iterations)
+    if bool(setup.freeze_m1) != bool(freeze_m1):
+        setup = replace(setup, freeze_m1=bool(freeze_m1))
     rt = SolverRuntime(
         resolution=resolution, setup=setup,
         gamma=float(defaults["gamma"] if gamma is None else gamma),
@@ -1045,7 +1057,8 @@ def _force_pipeline(
 
     # -- residue.f90 chain ---------------------------------------------------
     rotated = m1_residue_rotation(spectral, lconm1=setup.lconm1)
-    zero_gate = m1_zero_condition(fsqz_previous=fsqz_previous, iterations_since_restart=iteration)
+    zero_gate = (jnp.asarray(True) if setup.freeze_m1 else
+                 m1_zero_condition(fsqz_previous=fsqz_previous, iterations_since_restart=iteration))
     released = zero_m1_z_force(rotated, zero_gate)
     spectral_finite = (
         _all_finite((spectral, rotated, released)) if collect_health else passing
@@ -2472,6 +2485,21 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
     return carry
 
 
+def _gauge_fixed(rt: SolverRuntime, state: SpectralState | None) -> SpectralState | None:
+    """``state`` with the constrained m=1 combination on its fixed-gauge profile
+    (``RunSetup.freeze_m1``; a cold start is already on it)."""
+    setup = rt.setup
+    if state is None or not (setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym)):
+        return state
+    # the state's own edge row: the boundary's labelling sets the profile
+    z_sin = jnp.asarray(state.Z_sin)
+    if not setup.lasym:
+        return replace(state, Z_sin=pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes))
+    z_cos = jnp.asarray(state.Z_cos)
+    z_sin, z_cos = pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes, Z_cos=z_cos, edge_Z_cos=z_cos[-1])
+    return replace(state, Z_sin=z_sin, Z_cos=z_cos)
+
+
 def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
                  mode: str, verbose: bool, emit,
                  time_step0: float, nstep: int,
@@ -2500,6 +2528,7 @@ def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
     """
     if int(jacobian_retries) < 0:
         raise ValueError("jacobian_retries must be non-negative")
+    state0 = _gauge_fixed(rt, state0)
 
     def run_attempt(
         attempt_rt: SolverRuntime,
@@ -2615,7 +2644,7 @@ def _solve_stage_traced(rt: SolverRuntime, state0: SpectralState | None, *,
     host: they change the static ``lmove_axis``, so a traced solve returns
     that flag instead.
     """
-    state0 = _initial_state(rt.setup) if state0 is None else state0
+    state0 = _initial_state(rt.setup) if state0 is None else _gauge_fixed(rt, state0)
     zeros = jax.tree.map(jnp.zeros_like, state0)
     one = jnp.ones((), dtype=rt.setup.s_full.dtype)
     start = jax.tree.map(jnp.array, _initial_carry(state0, rt, ijacob=0, time_step0=time_step0))
@@ -2772,6 +2801,7 @@ def solve(
     time_step: float | None = None, tcon0: float | None = None,
     gamma: float | None = None, nstep: int | None = None,
     lconm1: bool = True, verbose: bool = False, emit=emit_flushed,
+    freeze_m1: bool = True,
     initial_state: SpectralState | None = None,
     restart_from: Any = None,
     device: Any = AUTO,
@@ -2895,7 +2925,7 @@ def solve(
         rt = prepare_runtime(
             source, resolution, ftol=ftol, max_iterations=max_iterations,
             tcon0=tcon0, gamma=gamma,
-            lconm1=lconm1, precon_type=precon_type,
+            lconm1=lconm1, freeze_m1=freeze_m1, precon_type=precon_type,
             prec2d_threshold=prec2d_threshold, prec2d=prec2d,
             use_fft=use_fft_resolved,
         )

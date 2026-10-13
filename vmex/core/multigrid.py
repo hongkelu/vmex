@@ -216,7 +216,7 @@ _PREFETCH_ATTEMPTED: set = set()
 
 def _launch_lane_prefetch(
     inp: VmecInput, *, ns_next: int, ftol_next: float, niter_next: int,
-    lconm1: bool, time_step, tcon0, gamma, nstep, precon_type,
+    lconm1: bool, freeze_m1: bool, time_step, tcon0, gamma, nstep, precon_type,
     prec2d_threshold, prec2d, use_fft, device,
 ) -> threading.Thread:
     """Start compiling the NEXT rung's block-lane executable in the background.
@@ -238,7 +238,7 @@ def _launch_lane_prefetch(
             with device_context(device, resolution):
                 rt = prepare_runtime(
                     inp, resolution, ftol=float(ftol_next),
-                    max_iterations=int(niter_next), lconm1=lconm1,
+                    max_iterations=int(niter_next), lconm1=lconm1, freeze_m1=freeze_m1,
                     tcon0=tcon0, gamma=gamma,
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
@@ -264,6 +264,7 @@ def solve_multigrid(
     *,
     mode: str = "cli",
     lconm1: bool = True,
+    freeze_m1: bool = True,
     verbose: bool = False,
     emit=emit_flushed,
     initial_state: SpectralState | None = None,
@@ -438,7 +439,7 @@ def solve_multigrid(
         with device_context(device, resolution):
             rt = prepare_runtime(
                 inp, resolution, ftol=float(ftol_arr[igrid]),
-                max_iterations=int(niter_arr[igrid]), lconm1=lconm1,
+                max_iterations=int(niter_arr[igrid]), lconm1=lconm1, freeze_m1=freeze_m1,
                 tcon0=tcon0, gamma=gamma,
                 precon_type=precon_type, prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d, use_fft=stage_use_fft,
@@ -482,7 +483,7 @@ def solve_multigrid(
             attempt_key = (
                 ns_next, float(ftol_arr[igrid + 1]), int(niter_arr[igrid + 1]),
                 bool(use_fft_next), int(inp.mpol), int(inp.ntor),
-                int(inp.nfp), bool(inp.lasym), bool(lconm1), time_step, tcon0,
+                int(inp.nfp), bool(inp.lasym), bool(lconm1), bool(freeze_m1), time_step, tcon0,
                 gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
                 str(device),
             )
@@ -492,7 +493,7 @@ def solve_multigrid(
                     inp, ns_next=ns_next,
                     ftol_next=float(ftol_arr[igrid + 1]),
                     niter_next=int(niter_arr[igrid + 1]),
-                    lconm1=lconm1, time_step=time_step, tcon0=tcon0,
+                    lconm1=lconm1, freeze_m1=freeze_m1, time_step=time_step, tcon0=tcon0,
                     gamma=gamma, nstep=nstep, precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft_next,
@@ -541,7 +542,7 @@ def solve_multigrid(
                     [np.asarray([niter_arr[0]], dtype=niter_arr.dtype), niter_arr]
                 ),
                 mode=mode,
-                lconm1=lconm1,
+                lconm1=lconm1, freeze_m1=freeze_m1,
                 verbose=verbose,
                 emit=emit,
                 initial_state=initial_state,
@@ -631,6 +632,7 @@ def solve_free_boundary_multigrid(
     gamma: float | None = None,
     nstep: int | None = None,
     lconm1: bool = True,
+    freeze_m1: bool = False,  # NESTOR keeps VMEC2000's rule
     precon_type: str | None = None,
     prec2d_threshold: float | None = None,
     prec2d: Prec2DConfig | None = None,
@@ -842,7 +844,7 @@ def solve_free_boundary_multigrid(
                 ftol=float(ftol_arr[igrid + 1]),
                 max_iterations=int(niter_arr[igrid + 1]),
                 time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep,
-                lconm1=lconm1, precon_type=precon_type,
+                lconm1=lconm1, freeze_m1=freeze_m1, precon_type=precon_type,
                 prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                 use_fft=_resolve_use_fft(
                     use_fft, device,
@@ -911,7 +913,7 @@ def solve_free_boundary_multigrid(
                     initial_state=state,
                     vacuum_continuation=vacuum_continuation,
                     time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep,
-                    lconm1=lconm1,
+                    lconm1=lconm1, freeze_m1=freeze_m1,
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     jacobian_retries=jacobian_retries,
@@ -965,7 +967,7 @@ def solve_free_boundary_multigrid(
                     tcon0=tcon0,
                     gamma=gamma,
                     nstep=nstep,
-                    lconm1=lconm1,
+                    lconm1=lconm1, freeze_m1=freeze_m1,
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold,
                     prec2d=prec2d,

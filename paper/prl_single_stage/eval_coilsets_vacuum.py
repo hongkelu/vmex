@@ -52,6 +52,7 @@ class DirectCoilField:
 
 
 MODES, NS_FINAL = (8, 8), None
+FTOL_FINAL, NITER_FINAL = None, 100000
 
 
 def deck():
@@ -60,6 +61,10 @@ def deck():
     inp = vj.VmecInput.from_file(DECK)
     mpol, ntor = MODES
     inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=max(64, 4 * mpol + 8), nzeta=max(64, 4 * ntor + 8))
+    if FTOL_FINAL is not None:   # tighter force residual on the final radial rung (and more iterations for it)
+        ft = np.asarray(inp.ftol_array, dtype=float).copy(); ft[-1] = FTOL_FINAL
+        it = np.asarray(inp.niter_array).copy(); it[-1] = max(int(it[-1]), NITER_FINAL)
+        inp = replace(inp, ftol_array=ft, niter_array=it)
     if NS_FINAL and NS_FINAL > int(np.max(inp.ns_array)):  # one more multigrid rung at the requested NS
         inp = replace(inp, ns_array=np.r_[np.asarray(inp.ns_array), NS_FINAL],
                       ftol_array=np.r_[np.asarray(inp.ftol_array), np.asarray(inp.ftol_array)[-1]],
@@ -74,7 +79,8 @@ def scores(eq, qs):
     return dict(qa_total=float(q @ q), qa_profile=prof.tolist(), qa_surfaces=list(QA_SURFACES),
                 iota_axis=float(np.asarray(w.iotaf)[0]), iota_edge=float(np.asarray(w.iotaf)[-1]),
                 iota_min=float(np.min(np.abs(np.asarray(w.iotaf)[1:]))), aspect=float(w.aspect),
-                volume_m3=float(w.volume_p), rmajor=float(w.Rmajor_p), b0=float(w.b0), volavgB=float(w.volavgB))
+                volume_m3=float(w.volume_p), rmajor=float(w.Rmajor_p), b0=float(w.b0), volavgB=float(w.volavgB),
+                fsqr=float(w.fsqr), fsqz=float(w.fsqz), fsql=float(w.fsql), ns=int(np.asarray(w.ns)))
 
 
 def check_coils(coils, path):
@@ -99,12 +105,16 @@ def main():
     ap.add_argument("--modes", type=int, nargs=2, default=(8, 8), metavar=("MPOL", "NTOR"))
     ap.add_argument("--ns", type=int, default=None, help="extra final NS rung above the deck's 50")
     ap.add_argument("--vc-grid", type=int, default=48)
+    ap.add_argument("--ftol-final", type=float, default=None, help="force-residual target of the final radial rung (deck: 1e-13)")
+    ap.add_argument("--niter-final", type=int, default=100000)
     ap.add_argument("--bftol", type=float, default=1e-4, help="free-boundary solve ftol (cost); 1e-4 = historical default")
     ap.add_argument("--bjftol", type=float, default=1e-2, help="free-boundary trust-region ftol before Jacobian reuse")
     ap.add_argument("--bnfev", type=int, default=60, help="free-boundary max evaluations")
     args = ap.parse_args()
     global MODES, NS_FINAL, VC_GRID
+    global FTOL_FINAL, NITER_FINAL
     MODES, NS_FINAL, VC_GRID = tuple(args.modes), args.ns, args.vc_grid
+    FTOL_FINAL, NITER_FINAL = args.ftol_final, args.niter_final
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
 

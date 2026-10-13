@@ -1156,6 +1156,13 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
                           constraints=NonlinearConstraint(lambda x: np.array([x.sum()]), -np.inf, 1.,
                                                           jac=lambda x: np.ones((1, 2))))
     np.testing.assert_allclose(result.x, [.5, .5], atol=1e-8)
+    nonfinite = opt.FunctionProblem.from_functions(np.array([.2, .2]), value_and_grad=lambda x: (
+        float(np.sum((x-2)**2)) if x[0] <= .6 else float("nan"), 2*(x-2)))
+    result = opt.minimize(nonfinite, method="AUGLAG", constraints=NonlinearConstraint(
+        lambda x: np.array([x.sum()]), -np.inf, 1., jac=lambda x: np.ones((1, 2))))
+    np.testing.assert_allclose(result.x, [.5, .5], atol=1e-8)  # a nonfinite trial is a rejected one
+    result = opt.minimize(p, method="AUGLAG", options=dict(maxiter=2))
+    assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 2
     with pytest.raises(ValueError, match="AUGLAG takes only maxiter"):
         opt.minimize(p, method="AUGLAG", options=dict(ftol=1e-12))
 

@@ -1125,10 +1125,6 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                    beta=float(opt.volume_average_beta(state, ctx)), **counters,
                    step_seconds=now - last["time"], elapsed_seconds=now - started,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        if info is not None:
-            row.update({key: float(info[key]) for key in
-                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
-                         "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
         for k in counters:
             counters[k] = 0
         with open(out / "metrics.jsonl", "a") as stream:

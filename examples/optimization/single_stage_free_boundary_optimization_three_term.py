@@ -989,6 +989,44 @@ def coil_inequalities(coils):
                            + (((FORCE_LIMIT - FORCE_MARGIN - m["max_force"]) / FORCE_LIMIT,) if FORCE_LIMIT is not None else ()))
 
 
+def coil_point_rows(coils):
+    """``coil_inequalities`` with the peak curvature and the coil-coil and self distances as rows at every point.
+
+    The same feasible set, but smooth rows: a max or min over points switches its active point between steps,
+    which a quadratic model cannot follow (an augmented Lagrangian's trust region then collapses at an active
+    peak).  Distances are those of the base coils' segments; their symmetry copies repeat them.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed, curvature = jnp.linalg.norm(base.gamma_dash, axis=-1), base.curvature
+    points = resampled(coils, DISTANCE_POINTS).gamma
+    nbase, n = curvature.shape[0], points.shape[1]
+    others = jnp.arange(points.shape[0])
+    inter = jnp.concatenate([jnp.min(jnp.where(
+        (others == b)[:, None], jnp.inf,
+        jax.lax.map(lambda q, b=b: jnp.min(segment_distances(points[b], q), axis=1), points)), axis=0)
+        for b in range(nbase)])
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+    own = jnp.concatenate([jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+                           for b in range(nbase)])
+    length_rows = (LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT
+    if TOTAL_LENGTH_LIMIT is not None:
+        length_rows = jnp.concatenate((jnp.atleast_1d((TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(base.length))
+                                                      / TOTAL_LENGTH_LIMIT), length_rows))
+    forces = (() if FORCE_LIMIT is None else
+              ((FORCE_LIMIT - FORCE_MARGIN - coil_point_forces(coils).ravel()) / FORCE_LIMIT,))
+    return jnp.concatenate((length_rows,
+                            ((CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT).ravel(),
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (inter - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (own - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT) + forces)
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -1007,12 +1045,9 @@ def coil_constraint(coils_from_x):
     import jax.numpy as jnp
     from scipy.optimize import NonlinearConstraint
 
-    fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    if FORCE_LIMIT is not None:  # thousands of point rows: forward mode, 8 directions at a time
-        jac = jax.jit(lambda x: jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size),
-                                            batch_size=8).T)
-    else:
-        jac = jax.jit(jax.jacrev(fun))
+    fun = jax.jit(lambda x: coil_point_rows(coils_from_x(x)))
+    # thousands of point rows: forward mode, 8 directions at a time
+    jac = jax.jit(lambda x: jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size), batch_size=8).T)
     if FORCE_LIMIT is None or FORCE_TARGET is None:
         return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                    jac=lambda x: np.asarray(jac(jnp.asarray(x))))

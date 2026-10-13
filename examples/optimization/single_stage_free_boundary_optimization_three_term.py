@@ -1113,7 +1113,8 @@ def main(argv=None):
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if intermediate_result is not None:  # augmented Lagrangian state (the max violation is in scaled row units)
             row.update({key: float(intermediate_result[key]) for key in
-                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials")})
+                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
+                         "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
         last.update(time=now)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")

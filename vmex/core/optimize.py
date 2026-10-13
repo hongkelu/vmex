@@ -2427,7 +2427,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected` shrinks the radius; a
     radius that collapses without a step updates the multipliers and restarts the radius and the BFGS matrix. The run
     ends at its accepted-step budget, or where it cannot move: three restarts in a row without a step (success if
-    feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers, penalty
+    feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point (with the step norm, its model and actual decreases and whether the BFGS update was damped); ``report`` (a dict) holds the multipliers, penalty
     and violation of the latest one. Returns ``(success, stop_reason, message)``.
 
     The only option is ``maxiter`` (accepted steps, default 100). The rest is fixed: penalty 10 (with the objective
@@ -2524,11 +2524,12 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             B, scaled_B = (y @ y) / (d @ y) * np.eye(u.size), True
         Bd = B @ d
         dBd, dy = d @ Bd, d @ y
-        if dy < 0.2 * dBd:  # Powell damping keeps B positive definite
+        damped = dy < 0.2 * dBd
+        if damped:  # Powell damping keeps B positive definite
             theta = 0.8 * dBd / (dBd - dy)
             y, dy = theta * y + (1.0 - theta) * Bd, 0.2 * dBd
         B += np.outer(y, y) / dy - np.outer(Bd, Bd) / dBd
-        u, f, gf, c = u + d, f1, gf1, c1
+        u, f, gf, c, F_old = u + d, f1, gf1, c1, F
         F, gF, v, A = scale * f, scale * gf, v1, A1
         steps, inner = steps + 1, inner + 1
         if ratio > 0.75 and size > 0.8 * radius:  # the radius bisection stops anywhere in (0.9, 1] radius
@@ -2536,7 +2537,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         elif ratio < 0.25:
             radius = 0.5 * size
         note()
-        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), ratio=ratio, rejected_trials=rejected))
+        accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), ratio=ratio, rejected_trials=rejected,
+                       step_norm=size, predicted_decrease=-predicted, objective_decrease=F_old - F,
+                       penalty_decrease=terms.sum() - terms1.sum(), damped=damped))
         rejected, solved = 0, False
         if steps >= budget:
             return False, "accepted_step_budget_reached", "accepted_step_budget_reached"

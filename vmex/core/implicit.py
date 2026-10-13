@@ -43,11 +43,16 @@ inherits the preconditioning for free.  The raw-force formulation
 (``formulation="raw"``) is kept for the informational with/without-
 preconditioner comparison in the tests.
 
-The m=1 constrained Z force is evaluated in its converged branch (zeroed —
-``residue.f90`` zeroes ``gcz(m=1)`` once ``fsqz < 1e-6``, which always holds
-at the fixed point), so the corresponding constrained combinations are *not*
-degrees of freedom: they are frozen at their converged values, exactly
-mirroring the forward solver's behavior near convergence.
+The m=1 constrained Z force stays active at the fixed point
+(:attr:`ImplicitConfig.release_m1`).  The host solver follows VMEC, which
+zeroes ``gcz(m=1)`` once ``fsqz < 1e-6`` and so leaves the constrained
+combination wherever its path put it; the Newton anchor then solves for that
+combination too (its force is ~1e-8 there), so the anchored state is a
+single-valued function of the parameters whatever the seed, and the implicit
+derivative is the derivative of the re-solve map.  With ``release_m1=False``
+(VMEC's convention) the combination is frozen at the host's value instead:
+seeded and cold solves of one boundary then differ by 1e-4..1e-3 and a re-solve
+FD differs from the adjoint (see below).
 
 Anchoring the fixed point
 -------------------------
@@ -87,9 +92,9 @@ naive re-solve FD is *not* a valid reference — it can sign-flip; use
 :func:`frozen_path_directional_fd`, which reproduces the adjoint to solver
 accuracy (full rationale on that function; ``tests/test_implicit_grad.py``).
 
-At a tight ``ftol``, with the state anchored as above, the difference that
-remains between the adjoint and a cold re-solve FD is the released m=1
-``Z_sin`` pair combination alone.  The linearization holds it at its
+With ``release_m1=False``, at a tight ``ftol`` and the state anchored as
+above, the difference that remains between the adjoint and a cold re-solve FD
+is the frozen m=1 ``Z_sin`` pair combination alone.  The linearization holds it at its
 converged value.  Each cold solve instead freezes it wherever its own path
 left it, which moves it by about 0.5 per unit boundary change on
 ``li383_low_res``.  In the continuum this coordinate is an angle gauge, so
@@ -350,6 +355,20 @@ class ImplicitConfig:
     #: 5e-07 against the frozen-path FD, for 14-26% of a forward solve and
     #: 9-14% of a value-and-gradient across the gradient decks.
     refine_tol: float = 1.0e-10
+    #: Keep the constrained m=1 Z force (``residue.f90`` ``gcz``) active at the
+    #: fixed point instead of zeroing it (default; ``False`` reproduces VMEC's
+    #: convention and is kept for the test that documents it).  VMEC zeroes it once ``fsqz < 1e-6``
+    #: and the combination it drives (the antisymmetric ``Z_sin(m=1, +/-n)``
+    #: pair, ``zcs_int = (rss - zcs)/2``) then stays wherever the solver's path
+    #: left it: seeded and cold solves of one boundary converge (fsq 1e-17) to
+    #: states 1e-4..1e-3 apart along it, with lambda m=0 compensating, and the
+    #: implicit Jacobian (which holds it fixed) is not the derivative of the
+    #: re-solve map.  Released, the combination is an evolved dof determined
+    #: by its own force (1.6e-8 at a converged 12x12 NS51 state), the Newton
+    #: anchor lands on the unique root, and value, Jacobian and every re-solve
+    #: agree.  The host solve is unchanged (VMEC's schedule); only the anchor
+    #: and the linearization see the released force.
+    release_m1: bool = True
     #: Largest ``(fsqr + fsqz + fsql) / ftol`` accepted for implicit
     #: differentiation when a trial exhausts its iteration budget.  The
     #: adjoint assumes ``F = 0``, so this is the same strict ``1e2`` bar as
@@ -393,6 +412,7 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
+    release_m1: bool = True,
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
 
@@ -415,8 +435,6 @@ def make_config(
     if not np.isfinite(max_fsq_ratio) or max_fsq_ratio <= 0.0:
         raise ValueError("max_fsq_ratio must be finite and positive")
     refine_tol = float(refine_tol)
-    if refine_tol == 1.0e-10 and os.environ.get("VMEX_REFINE_TOL"):  # opt-in global override of the default
-        refine_tol = float(os.environ["VMEX_REFINE_TOL"])
     if not refine_tol > 0.0:
         raise ValueError("refine_tol must be positive or numpy.inf")
     return _canonical_config(ImplicitConfig(
@@ -432,6 +450,7 @@ def make_config(
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
         hot_restart=bool(hot_restart), device=device,
+        release_m1=bool(release_m1),
     ))
 
 
@@ -929,7 +948,7 @@ def _fixed_boundary_dof_mask(cfg: ImplicitConfig) -> SpectralState:
     # In the converged lconm1 branch force_Z_cc(m=1,n=0) is released.  The
     # 3-D +/-n combinations are handled by the symmetric projector below;
     # their individual support remains active.
-    if cfg.lconm1 and not symmetric:
+    if cfg.lconm1 and not cfg.release_m1 and not symmetric:
         z_cos &= ~((m == 1) & (n == 0))
     asymmetric = nonconstant if not symmetric else np.zeros_like(all_modes)
     return SpectralState(
@@ -955,7 +974,7 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
     the gather is ``(cc +/- ss)/2``).  The mask is pre-equalized on the pair
     columns (see :func:`_dof_mask`), so ``P`` is symmetric and idempotent.
     """
-    lconm1 = bool(cfg.lconm1)
+    lconm1 = bool(cfg.lconm1) and not bool(cfg.release_m1)
     lthreed = int(cfg.resolution.ntor) > 0
     lasym = bool(cfg.resolution.lasym)
     pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed)
@@ -975,6 +994,17 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
         return SpectralState(**out)
 
     return P
+
+
+def _m1_force_kwargs(cfg: ImplicitConfig) -> dict:
+    """``evaluate_forces`` arguments selecting the m=1 Z-force branch.
+
+    The default (``iteration=1``) is ``residue.f90``'s converged branch: the
+    constrained Z force zeroed.  ``release_m1`` evaluates past the start-up
+    iterations with ``fsqz_previous = 1`` so ``m1_zero_condition`` keeps it
+    (cache refresh is forced either way: ``cache=None``).
+    """
+    return dict(iteration=10, iter_last_reset=10, fsqz_previous=1.0) if cfg.release_m1 else {}
 
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
@@ -1016,6 +1046,7 @@ def _raw_force_state(
     ns_total: int | None = None,
     axis_closure: bool = True,
     include_edge: bool = False,
+    release_m1: bool = False,
 ) -> SpectralState:
     """Raw force for a full grid or radial segment, optionally keeping the edge."""
     setup = rt.setup
@@ -1088,7 +1119,7 @@ def _raw_force_state(
     )
     released = zero_m1_z_force(
         m1_residue_rotation(spectral, lconm1=setup.lconm1),
-        jnp.asarray(True),
+        jnp.asarray(not release_m1),
     )
     return _force_to_state(
         scalxc_scale_force(released, s=s, scaling=scalxc), rt
@@ -1102,6 +1133,7 @@ def _raw_residual_segment(
     *,
     axis_closure: bool = False,
     include_edge: bool = False,
+    release_m1: bool = False,
 ) -> SpectralState:
     """Evaluate the nonlinear raw-force chain on exactly three surfaces.
 
@@ -1119,7 +1151,7 @@ def _raw_residual_segment(
         rcon0=take(rt.rcon0), zcon0=take(rt.zcon0),
         lamscale=setup.lamscale, scalxc=take(setup.scalxc),
         ns_total=rt.resolution.ns, axis_closure=axis_closure,
-        include_edge=include_edge,
+        include_edge=include_edge, release_m1=release_m1,
     )
 
 
@@ -1153,7 +1185,7 @@ def residual_fn(cfg: ImplicitConfig, frozen: SpectralState,
     def F_raw(z: SpectralState, params: ImplicitParams) -> SpectralState:
         rt_p = runtime_from_params(params, cfg)
         x = _assemble(z, rt_p, frozen, P, edge_mask)
-        return P(_raw_force_state(x, rt_p))
+        return P(_raw_force_state(x, rt_p, release_m1=cfg.release_m1))
 
     return F_raw
 
@@ -1176,7 +1208,7 @@ def _preconditioned_residual_lane(z: SpectralState, params: ImplicitParams,
     P = _dof_projector(cfg, dof_mask)
     rt_p = runtime_from_params(params, cfg)
     x = _assemble(z, rt_p, frozen, P, edge_mask)
-    gc, _, _ = evaluate_forces(x, rt_p)
+    gc, _, _ = evaluate_forces(x, rt_p, **_m1_force_kwargs(cfg))
     return P(gc)
 
 
@@ -1857,7 +1889,7 @@ def _mask_cache_key(cfg: ImplicitConfig) -> tuple:
     ns``); ``lconm1`` drives the m=1 pair equalization; ``ncurr`` is carried as
     a conservative safety margin for the current-constrained force branch.
     """
-    return (cfg.resolution, bool(cfg.lconm1), int(cfg.inp.ncurr))
+    return (cfg.resolution, bool(cfg.lconm1), int(cfg.inp.ncurr), bool(cfg.release_m1))
 
 
 def _host_solve_and_mask(cfg: ImplicitConfig, params_np, *,
@@ -2825,7 +2857,7 @@ def _raw_block_system(
             trial = jax.tree.map(jnp.add, base, tangent)
             force = _raw_residual_segment(
                 trial, rt, start, axis_closure=axis_closure,
-                include_edge=include_edge,
+                include_edge=include_edge, release_m1=cfg.release_m1,
             )
             # Inactive columns receive an identity equation so every radial
             # block remains nonsingular; projected callers never excite them.

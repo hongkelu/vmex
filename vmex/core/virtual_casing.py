@@ -344,16 +344,10 @@ def _assemble_surface_field_data(
 
     # -- boundary total field (edge-extrapolated half-mesh contravariant B) --
     if j in (ns - 1, -1 % ns):
-        # Half-mesh B^theta, B^zeta at s = 1 - (k - 1/2) h extrapolated to the edge.  Linear (default) is O(h^2);
-        # VMEX_EDGE_EXTRAP=2 uses the quadratic through the outer three half-mesh surfaces, O(h^3): the edge field
-        # (hence every interface row) then depends far less on the interior labelling of a converged state.
-        w = ((15.0 / 8.0, -10.0 / 8.0, 3.0 / 8.0) if _EDGE_EXTRAP_ORDER == 2 and np.shape(bsupu)[0] >= 4
-             else (1.5, -0.5, 0.0))
-
-        def edge(b):
-            return None if b is None else w[0] * b[-1] + w[1] * b[-2] + (w[2] * b[-3] if w[2] else 0.0)
-
-        bu_edge, bv_edge, bu_edge_s, bv_edge_s = edge(bsupu), edge(bsupv), edge(bsupu_s), edge(bsupv_s)
+        bu_edge = 1.5 * bsupu[-1] - 0.5 * bsupu[-2]
+        bv_edge = 1.5 * bsupv[-1] - 0.5 * bsupv[-2]
+        bu_edge_s = None if bsupu_s is None else (1.5 * bsupu_s[-1] - 0.5 * bsupu_s[-2])
+        bv_edge_s = None if bsupv_s is None else (1.5 * bsupv_s[-1] - 0.5 * bsupv_s[-2])
     else:  # interior full-mesh surface: half-mesh average
         bu_edge = 0.5 * (bsupu[j] + bsupu[j + 1])
         bv_edge = 0.5 * (bsupv[j] + bsupv[j + 1])
@@ -522,9 +516,6 @@ def _state_field_spectra(inp, state, runtime=None):
         lmns=lmns, phipf=jnp.asarray(prof["phipf"]),
         chipf=_half_to_full_profile(fields.chips),
         lasym=lasym, signgs=signgs)
-
-
-_EDGE_EXTRAP_ORDER = int(__import__("os").environ.get("VMEX_EDGE_EXTRAP", "1"))
 
 
 def surface_field_data_from_state(

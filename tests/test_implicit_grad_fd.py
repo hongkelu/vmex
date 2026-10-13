@@ -123,7 +123,7 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
 
 
 def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
-    """Mean iota: the implicit derivative against an independent re-solve FD.
+    """Mean iota with ``release_m1=False`` (VMEC's convention): the gap to a re-solve FD.
 
     The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
     2.8% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
@@ -141,7 +141,7 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     """
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
-    cfg = im.make_config(inp, **CASES[name])
+    cfg = im.make_config(inp, **CASES[name], release_m1=False)  # VMEC's frozen convention
     p0 = im.params_from_input(inp)
     ntor = int(inp.ntor)
     assert int(inp.ncurr) == 1
@@ -271,3 +271,54 @@ def test_multigrid_gradient_vs_frozen_path_fd():
           f"(Newton res {res:.0e})")
     assert res < 1e-8, f"frozen solve not converged (res {res:.1e})"
     assert rel <= 1e-6
+
+
+def test_li383_released_m1_makes_resolve_fd_exact():
+    """``release_m1=True``: the anchored state is single-valued in the boundary.
+
+    The constrained m=1 Z force stays active in the Newton anchor and the
+    linearization, so the combination VMEC freezes wherever its path left it
+    is solved for.  The implicit derivative of mean iota is then the
+    derivative of the cold re-solve map itself (the gap of the test above,
+    1.0% / 2.8%, closes to solver accuracy), and a solve seeded from a state
+    shifted along that combination lands on the cold state.
+    """
+    name = "li383_low_res"
+    inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
+    cfg = im.make_config(inp, **CASES[name], release_m1=True)
+    p0 = im.params_from_input(inp)
+    ntor = int(inp.ntor)
+
+    def metric(p):
+        return mean_iota(im.solve_implicit(p, cfg), im.runtime_from_params(p, cfg))
+
+    grad = jax.grad(metric)(p0)
+    h = 5e-4
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    for field, n in (("rbc", 1), ("zbs", -1)):
+        tangent = dataclasses.replace(zero, **{field: getattr(zero, field).at[ntor + n, 1].set(1.0)})
+        implicit = float(sum(jnp.vdot(a, b) for a, b in zip(
+            jax.tree.leaves(grad), jax.tree.leaves(tangent))))
+        plus, minus = (float(metric(jax.tree.map(lambda a, d, s=s: a + s * h * d, p0, tangent)))
+                       for s in (1.0, -1.0))
+        resolve = (plus - minus) / (2 * h)
+        rel = abs(implicit / resolve - 1.0)
+        print(f"\n[{name}, released m=1] d(mean iota)/d({field.upper()}({n},1)): "
+              f"implicit {implicit:+.9e}  re-solve FD {resolve:+.9e}  rel {rel:.2e}")
+        assert rel <= 1e-5
+
+    # Seed independence: a hot solve from a state shifted along the gauge returns the cold anchored state.
+    x0, mask = im.solve_implicit_with_aux(p0, cfg)
+    hot = im.make_config(inp, **CASES[name], release_m1=True, hot_restart=True)
+    pos, neg = im._m1_pair_columns(hot)
+    ns = int(hot.resolution.ns)
+    s = np.linspace(0.0, 1.0, ns)[:, None]
+    shift = 1e-3 * np.sqrt(s) * np.sin(np.pi * s)
+    z_sin = np.array(x0.Z_sin)
+    z_sin[:, pos] += shift
+    z_sin[:, neg] -= shift
+    im._HOT_CACHE[hot] = dataclasses.replace(jax.tree.map(np.asarray, x0), Z_sin=z_sin)
+    x1, _ = im.solve_implicit_with_aux(p0, hot)
+    for field in ("R_cos", "Z_sin", "L_sin"):
+        a, b = np.asarray(getattr(x0, field)), np.asarray(getattr(x1, field))
+        assert np.linalg.norm(a - b) <= 1e-9 * np.linalg.norm(a), field

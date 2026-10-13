@@ -84,6 +84,38 @@ In `benchmarks/run_three_term_resolution.py` and `docs/explanation/validation.md
 
 The 6 % QS spread only matters when QS is ~1e-6 and is the quantity being optimized.
 
+## Status (2026-10-12 evening)
+
+**Root cause.**
+- `residue.f90` zeroes the constrained m=1 Z force (`gcz`) once fsqz < 1e-6.
+- The combination it drives, `zcs_int = (rss − zcs)/2` (the antisymmetric `Z_sin(m=1, ±n)` pair), then stays wherever the solver's path left it.
+- The implicit linearization also holds it frozen, so the Jacobian is not the derivative of the re-solve map. The boundary Gauss–Newton then stalls.
+
+**Rejected fixes.**
+
+| Fix | Result |
+|---|---|
+| Tighter Newton refinement | no effect |
+| Quadratic edge extrapolation | no effect |
+| NS 99 | no effect |
+| Pinning `zcs_int` to √s × edge | the pinned profile leaves \|F\| = 9e-3; the anchor stalls |
+
+**Fix in progress: `ImplicitConfig.release_m1` (default on).** The m=1 force stays active in the Newton anchor and the linearization.
+
+Vacuum results:
+
+| Test | Before | After |
+|---|---|---|
+| Seeded vs cold at one boundary, real coils (12×12, NS 51) | cost 67 % apart, state 1.3e-3 apart | cost 2.7e-9, state 5e-12 |
+| Implicit gradient vs cold re-solve FD | 0.7–28 % off | 1e-8 |
+| li383 mean ι, implicit vs re-solve FD | 1.0 % / 2.8 % off | 1e-6 / 3e-6 |
+
+**Finite β (LP QA β = 2.5 % bootstrap deck, 5×5, NS 25): not fixed yet.**
+- The gradient now matches the re-solve FD (1e-7 – 2e-6, against 1–35 % before).
+- A host solve seeded 1e-3 along the combination still converges, under VMEC's convention, to a state 7 % away in λ.
+- On the released system, plain Newton from there diverges. The released Jacobian is (nearly) singular along that direction at finite β.
+- The fix needs a genuine gauge condition, or a regularized (Levenberg) anchor, rather than the force alone.
+
 ## Proposed fixes, in order
 
 1. ~~Tighter Newton refinement~~ (tested at 1e-13: no effect).

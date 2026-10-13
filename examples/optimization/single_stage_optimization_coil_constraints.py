@@ -782,6 +782,38 @@ def coil_inequalities(coils):
                             (m['min_speed'] - MIN_SPEED) / LENGTH_LIMIT))
 
 
+def coil_point_rows(coils):
+    """``coil_inequalities`` with the peak curvature and the coil-coil and self distances as rows at every point.
+
+    The same feasible set, but smooth rows: a max or min over points switches its active point between steps,
+    which a quadratic model cannot follow (an augmented Lagrangian's trust region then collapses at an active
+    peak).  Distances are those of the base coils' segments; their symmetry copies repeat them.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed, curvature = jnp.linalg.norm(base.gamma_dash, axis=-1), base.curvature
+    points = resampled(coils, DISTANCE_POINTS).gamma
+    nbase, n = curvature.shape[0], points.shape[1]
+    others = jnp.arange(points.shape[0])
+    inter = jnp.concatenate([jnp.min(jnp.where(
+        (others == b)[:, None], jnp.inf,
+        jax.lax.map(lambda q, b=b: jnp.min(segment_distances(points[b], q), axis=1), points)), axis=0)
+        for b in range(nbase)])
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+    own = jnp.concatenate([jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+                           for b in range(nbase)])
+    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+                            ((CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT).ravel(),
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (inter - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (own - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - MIN_SPEED) / LENGTH_LIMIT))
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -971,10 +1003,10 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         """``coil_inequalities`` and the scaled coil-to-plasma clearance of the design vector ``x``."""
         coils, surface = coils_from_x(x), surface_from_x(x)
         clearance = surface_distance(coils, surface)
-        return jnp.concatenate([coil_inequalities(coils), jnp.atleast_1d(
+        return jnp.concatenate([coil_point_rows(coils), jnp.atleast_1d(
             (clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_SURFACE_DISTANCE_LIMIT)])
 
-    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(jax.jacrev(coil_rows))
+    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(jax.jacfwd(coil_rows))  # point rows: forward
 
     cache, anchor = {}, {}
     counters = dict(trials=0, failed=0, evaluations=0, linearizations=0)
@@ -1405,7 +1437,7 @@ def main(argv=None):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         _, _, surface, coils = objects_from_x(x)
         clearance = surface_distance(coils, surface)
-        rows = [coil_inequalities(coils),
+        rows = [coil_point_rows(coils),
                 jnp.atleast_1d((clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
                                / COIL_SURFACE_DISTANCE_LIMIT),
                 # At finite beta the normal-field limit is on the total field: plasma_groups.
@@ -1418,7 +1450,7 @@ def main(argv=None):
     # One adjoint per plasma row: the gradient of w . rows at a unit w, the forward solve reused.
     group_grads = [jax.jit(jax.grad(lambda u, w, g=g: jnp.vdot(w, plasma_constraint(u, (g,)))))
                    for g in plasma_groups]
-    coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
+    coil_rows_jac = jax.jit(jax.jacfwd(coil_rows))  # point rows: forward
 
     def half_target(u):
         """(1/2) |r|^2 of the target residual at the scaled coordinates ``u``."""

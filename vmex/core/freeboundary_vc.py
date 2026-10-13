@@ -627,9 +627,9 @@ class ThreeTermFreeBoundaryModel:
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
         With ``xtol`` the steps finish instead where the Gauss-Newton step is below ``xtol`` times ``x_scale`` in
-        every coordinate, and with ``fresh`` that of a fresh Jacobian: a reused ``J0`` stops where ``J0^T r = 0``,
-        which the rows' discretization floor moves off the boundary's own ``J^T r = 0`` (a smooth, ``J0``-dependent
-        offset).
+        every coordinate, and with ``fresh`` (or when reused steps do not get there) that of a fresh Jacobian: a
+        reused ``J0`` stops where ``J0^T r = 0``, which the rows' discretization floor moves off the boundary's own
+        ``J^T r = 0`` (a smooth, ``J0``-dependent offset).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -661,7 +661,7 @@ class ThreeTermFreeBoundaryModel:
                                        radius=self._radius, **lm)
             self._radius = out["radius"]
             if xtol is not None:
-                out, J = refine(out) if fresh else (out, jacobian)
+                out, J = refine(out) if fresh or not out["converged"] else (out, jacobian)
                 if target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost:
                     return dict(out, jacobian=J, njev=njev)
                 x, nfev = out["x"], out["nfev"]
@@ -705,7 +705,7 @@ class ThreeTermFreeBoundaryModel:
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
                                    radius=self._radius, **lm)
         self._radius = out["radius"]
-        if xtol is not None and fresh:
+        if xtol is not None and (fresh or not out["converged"]):
             out, J = refine(out)
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
@@ -910,13 +910,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         polished = model.solve_boundary(params_x, field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
                                         max_nfev=self.boundary_max_nfev, xtol=_BOUNDARY_XTOL, fresh=False)
         self.stats["boundary_evaluations"] += polished["nfev"]
-        tight = model.evaluate(polished["x"], params_x, field, tight=True)
-        if tight is None:
-            raise TrialRejected("the polished boundary has no certified equilibrium")
-        rows, aux = tight
-        state, mask, params, _ = aux
-        sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
-                   values=np.asarray(self._rows(state, params, xj)))
+        if polished["njev"]:  # J's own steps stalled and fresh ones finished: the anchor is relinearized there
+            sol.update(x=polished["x"], aux=polished["aux"])
+            J = relinearize()
+        else:
+            tight = model.evaluate(polished["x"], params_x, field, tight=True)
+            if tight is None:
+                raise TrialRejected("the polished boundary has no certified equilibrium")
+            rows, aux = tight
+            state, mask, params, _ = aux
+            sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
+                       values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)

@@ -4088,10 +4088,12 @@ def _least_squares_implicit(
                 "decision vector did not produce a usable VMEC equilibrium"
             )
         result_input = input_from_x(x)
-        # host copy: the refinement may run on the implicit device (CPU under
-        # the AUTO policy) while ``runtime`` below lives on the default device
-        result = dataclasses.replace(
-            hit[1], state=jax.tree.map(np.asarray, refined[1]))
+        # the refinement may run on the implicit device (CPU under the AUTO
+        # policy); ``runtime`` below and the caller's arrays live on the default
+        state, home = refined[1], jax.config.jax_default_device or jax.devices()[0]
+        if any(isinstance(a, jax.Array) and a.devices() != {home} for a in jax.tree.leaves(state)):
+            state = jax.device_put(state, home)
+        result = dataclasses.replace(hit[1], state=state)
         ns = int(np.shape(result.state.R_cos)[0])
         runtime = prepare_runtime(
             result_input,

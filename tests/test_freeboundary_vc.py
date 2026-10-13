@@ -72,13 +72,13 @@ def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
     with pytest.raises(ValueError, match="edge pressure"):
-        fvc.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
+        fvc.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
 
 
 def test_asymmetric_boundary_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), lasym=True)
     with pytest.raises(NotImplementedError, match="lasym"):
-        fvc.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
+        fvc.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
 
 
 def test_unknown_boundary_condition_is_rejected():
@@ -168,7 +168,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fvc._coil_net_current(field, nestor.wout)), abs(float(nestor.wout.rbtor)),
                                rtol=1e-3)
-    fits = [fvc.solve_free_boundary_three_term(inp, external_field=field, initial_boundary=start)
+    fits = [fvc.solve_free_boundary_three_terms(inp, external_field=field, initial_boundary=start)
             for start in (None, nestor_deck)]
     for fit in fits:
         after = _residual(inp, fit.equilibrium, field)
@@ -187,7 +187,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
-    again = fvc.solve_free_boundary_three_term(inp, external_field=field, previous=fit)
+    again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
     assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
@@ -200,7 +200,7 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field)
-    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term")
+    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_terms")
     assert result.converged and result.vacuum is None
     res = result.boundary_residual
     for name in ("normal", "pressure", "sheet_current"):
@@ -219,7 +219,7 @@ def test_boundary_xtol_reaches_the_least_squares_minimizer_from_a_stale_jacobian
     def jac(x):
         return np.array([[1.0, 0.0], [0.0, 1.0], [3.0 * x[1], 3.0 * x[0]], [x[0], -1.0]])
 
-    model = fvc.ThreeTermFreeBoundaryModel.__new__(fvc.ThreeTermFreeBoundaryModel)
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
     model.x0, model.x_scale, model._radius = np.zeros(2), np.ones(2), None
     model.evaluate = lambda z, params, field: (rows(z), (z, None, None, True))
     model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
@@ -248,16 +248,16 @@ def test_unknown_problem_boundary_condition_is_rejected():
                                       np.zeros(1), field_from_parameters=lambda x: None, boundary_condition="sheet")
 
 
-def test_problem_boundary_condition_dispatches_to_three_term(monkeypatch):
-    """``boundary_condition="three_term"`` hands the loss, maps, quantities and options to the three-term problem."""
+def test_problem_boundary_condition_dispatches_to_three_terms(monkeypatch):
+    """``boundary_condition="three_terms"`` hands the loss, maps, quantities and options to the three-terms problem."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
     calls = []
-    monkeypatch.setattr(fvc.ThreeTermFreeBoundaryProblem, "from_loss",
+    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryProblem, "from_loss",
                         classmethod(lambda cls, *args, **kwargs: calls.append((args, kwargs)) or "problem"))
     inp, loss, field = _deck("input.LandremanPaul2021_QA_lowres", 3, 11), (lambda s, r, x: 0.0), (lambda x: None)
     got = FreeBoundaryProblem.from_loss(inp, loss, np.zeros(1), field_from_parameters=field, quantities=(len,),
-                                        boundary_condition="three_term", three_term_options=dict(nphi=16))
+                                        boundary_condition="three_terms", three_terms_options=dict(nphi=16))
     (args, kwargs), = calls
     assert got == "problem" and args[:2] == (inp, loss) and kwargs["field_from_parameters"] is field
     assert kwargs["quantities"] == (len,) and kwargs["nphi"] == 16
@@ -266,7 +266,7 @@ def test_problem_boundary_condition_dispatches_to_three_term(monkeypatch):
 @needs_vc
 @pytest.mark.full
 @pytest.mark.usefixtures("_module_jit_enabled")
-def test_three_term_problem_gradients_match_resolved_differences():
+def test_three_terms_problem_gradients_match_resolved_differences():
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
@@ -279,10 +279,10 @@ def test_three_term_problem_gradients_match_resolved_differences():
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.major_radius,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
-        boundary_condition="three_term",
-        three_term_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48), boundary_ftol=1e-10,
+        boundary_condition="three_terms",
+        three_terms_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48), boundary_ftol=1e-10,
                                 boundary_max_nfev=80))
-    assert isinstance(problem, fvc.ThreeTermFreeBoundaryProblem)
+    assert isinstance(problem, fvc.ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)
@@ -342,7 +342,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
     model = fit.model
     state, mask, params, _ = fit.aux
     assert fit.x.size == model.n_boundary + 3 + 24
@@ -375,7 +375,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
-    model = fvc.ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
     assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
     state, _, params, _ = out["aux"]

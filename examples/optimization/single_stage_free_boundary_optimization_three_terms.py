@@ -20,21 +20,21 @@ with a row holding the axis |B| at ``B0``, and where the case sets
 ``VACUUM_IOTA_FLOOR`` a row floors the vacuum |iota| of the plasma boundary
 (``vacuum_iota``).
 
-The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
-(:class:`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`): warm-started
+The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
+(:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`): warm-started
 trial boundaries and design gradients by the implicit function theorem of the
 boundary fit, without recompiling when the coils or plasma parameters change.
 
-    COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_term.py --beta 0.025 --bootstrap \
-        --modes 8 8 --ns 51 --output runs/three-term-qa4
+    COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_terms.py --beta 0.025 --bootstrap \
+        --modes 8 8 --ns 51 --output runs/three-terms-qa4
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
 ``metrics.jsonl`` adds the three interface residuals (``bn``,
 ``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
 counts and the peak GPU memory.
 
-After a run, ``benchmarks/three_term_highres.py`` re-solves the final coils at
-another resolution and exports them, ``benchmarks/three_term_postprocess.py``
+After a run, ``benchmarks/three_terms_highres.py`` re-solves the final coils at
+another resolution and exports them, ``benchmarks/three_terms_postprocess.py``
 re-solves the final boundary densely for the WOUT figures and alpha losses, and
 ``benchmarks/coil_constraints_evolution_gifs.py`` draws the coils and LCFS of
 the saved steps.
@@ -90,7 +90,7 @@ BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, 
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
-# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermFreeBoundaryModel
+# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermsFreeBoundaryModel
 # bootstrap=), Redl-self-consistent on every half-grid surface, with I'(0) = 0 (a quasisymmetric bootstrap
 # current density vanishes on the axis with the trapped fraction, f_t ~ eps^(1/2)).
 BOOTSTRAP_IN_SOLVE = False
@@ -317,7 +317,7 @@ def bootstrap_input(inp, beta, device):
     """
     from vmex import optimize as opt
     from vmex.core.bootstrap import self_consistent_bootstrap
-    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+    from vmex.core.freeboundary_vc import ThreeTermsFreeBoundaryModel
 
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
@@ -367,7 +367,7 @@ def bootstrap_input(inp, beta, device):
                   flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
-        model = ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+        model = ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
                                            fixed_boundary=True)
         current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
         state, _, params, _ = current["aux"]
@@ -902,7 +902,7 @@ def parse_args(argv=None):
     parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
     parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
                         help="virtual-casing singular quadrature (default 4 nfp grid x 2 grid: 384 x 96 for nfp 2; "
-                        "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel)")
+                        "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermsFreeBoundaryModel)")
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
     parser.add_argument("--design-step-scale", type=float, default=DESIGN_STEP_SCALE,
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
@@ -962,7 +962,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 
 def main(argv=None):
-    """Build the seed, the coils and the three-term problem, then run SLSQP and save the run."""
+    """Build the seed, the coils and the three-terms problem, then run SLSQP and save the run."""
     global RESOLUTION
     args = parse_args(argv)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
@@ -1050,8 +1050,8 @@ def main(argv=None):
         scales=chart.scales, names=chart.dof_names,
         quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
-        parameter_quantities=(clearance, aspect), boundary_condition="three_term",
-        three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+        parameter_quantities=(clearance, aspect), boundary_condition="three_terms",
+        three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,

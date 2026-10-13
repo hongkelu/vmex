@@ -2420,28 +2420,33 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     ``c - target`` for an equality), at fixed multipliers and penalty; then the multipliers become
     ``max(lambda + rho v, 0)`` and, after an inner loop that moved, the penalty grows tenfold unless the
     violation-complementarity measure fell to half; an inner loop ends early once its violation doubles past one
-    row unit (a run-away, not the small excursion of a nearly feasible start). The inner solver is a trust-region quasi-Newton method on the
-    problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) -> (f, c, grad f, dc/du)`` only
-    at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the
-    penalty curvature of the active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected`
-    shrinks the radius. ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers,
-    penalty and violation of the latest one. Returns ``(success, stop_reason, message)``.
+    row unit (a run-away, not the small excursion of a nearly feasible start). The inner solver is a trust-region
+    quasi-Newton method on the problem's evaluations: ``evaluate(u) -> (f, c)`` at trial points, ``linearize(u) ->
+    (f, c, grad f, dc/du)`` only at accepted ones (as SLSQP; its values, of a polished point, replace the trial's), a
+    damped BFGS matrix of the Lagrangian Hessian kept across outer iterations, and the penalty curvature of the
+    active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected` shrinks the radius; a
+    radius that collapses without a step updates the multipliers and restarts the radius and the BFGS matrix. There
+    is no early stop: the run ends at its accepted-step budget, or at a KKT point only when ``ctol`` and ``gtol`` are
+    given. ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers, penalty and
+    violation of the latest one. Returns ``(success, stop_reason, message)``.
 
-    ``options``: ``maxiter`` (accepted steps, default 100), ``ctol`` (largest violation, default 1e-6), ``gtol``
-    (projected gradient of the normalized augmented Lagrangian, default 1e-6), ``inner_maxiter`` (accepted steps per
+    ``options``: ``maxiter`` (accepted steps, default 100), ``max_trials`` (evaluations, default unlimited), ``ctol``
+    (largest violation) and ``gtol`` (projected gradient of the normalized augmented Lagrangian) of a KKT stop
+    (default 0: none), ``inner_maxiter`` (accepted steps per
     multiplier update, default 10), ``initial_radius`` (scaled coordinates, default 0.1), ``max_radius`` (default
     100), ``verbose`` (print each trial), ``penalty`` and ``multipliers`` (starting values, in the row order of
     ``report["multipliers"]``; default 10, a violation of one row unit costing five starting objectives, and zero).
     """
-    unknown = set(options) - {"maxiter", "ctol", "gtol", "inner_maxiter", "initial_radius", "max_radius",
-                              "penalty", "multipliers", "verbose"}
+    unknown = set(options) - {"maxiter", "max_trials", "ctol", "gtol", "inner_maxiter", "initial_radius",
+                              "max_radius", "penalty", "multipliers", "verbose"}
     if unknown:
         raise ValueError(f"unknown AUGLAG options {sorted(unknown)}")
     budget = int(options.get("maxiter", 100))
-    ctol, gtol = float(options.get("ctol", 1e-6)), float(options.get("gtol", 1e-6))
+    ctol, gtol = float(options.get("ctol", 0.0)), float(options.get("gtol", 0.0))
+    max_trials = options.get("max_trials")
     inner_budget, verbose = int(options.get("inner_maxiter", 10)), bool(options.get("verbose", False))
-    radius, max_radius = float(options.get("initial_radius", 0.1)), float(options.get("max_radius", 100.0))
-    min_radius = 1e-8 * radius  # shorter steps only resolve the evaluations' noise
+    initial_radius, max_radius = float(options.get("initial_radius", 0.1)), float(options.get("max_radius", 100.0))
+    radius, min_radius = initial_radius, 1e-8 * initial_radius  # shorter steps only resolve the evaluations' noise
     # rows as v <= 0 (equalities v = 0): v = sign * c[index] - offset
     equal = np.isfinite(row_lower) & (row_lower == row_upper)
     low, high = np.isfinite(row_lower) & ~equal, np.isfinite(row_upper) & ~equal
@@ -2466,7 +2471,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     # it ~1e-2, and the violation grew while the objective fell
     penalty = float(options.get("penalty", 10.0))
     B, scaled_B = np.eye(u.size), False
-    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
+    steps, inner, outer, trials, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
     entry = violation(v)  # the violation at the start of the inner loop
     tolerance = None
 
@@ -2488,16 +2493,13 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             if measure <= ctol and projected <= gtol:
                 note()
                 return True, None, "Optimization terminated successfully (KKT point)"
-            stalls = stalls + 1 if inner == 0 else 0
-            if stalls >= 3:
-                note()
-                return False, "trust_region_collapsed", "no decrease of the augmented Lagrangian in three multiplier updates"
             if inner > 0 and measure > 0.5 * previous:  # a stalled inner loop says nothing about feasibility
                 penalty = min(10.0 * penalty, 1e12)
             multipliers = np.clip(slope, -1e12, 1e12)
             previous, tolerance, inner, outer = measure, max(0.1 * tolerance, gtol), 0, outer + 1
             entry = violation(v)
-            radius = max(radius, 1e3 * min_radius)
+            if radius < min_radius:  # collapsed: start the radius and the curvature model over
+                radius, B, scaled_B = initial_radius, np.eye(u.size), False
             note()
             continue
         free = ~(((u <= lower) & (gradient > 0)) | ((u >= upper) & (gradient < 0)))
@@ -2509,6 +2511,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         if not (np.isfinite(predicted) and predicted < 0.0) or size == 0.0:
             radius = 0.25 * min(radius, size) if size > 0 else 0.25 * radius
             continue
+        if max_trials is not None and trials >= int(max_trials):
+            note()
+            return False, "trial_budget_reached", "trial_budget_reached"
+        trials += 1
         try:
             f1, c1 = evaluate(u + d)
             v1 = sign * c1[index] - offset
@@ -2601,7 +2607,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         ``"equilibrium_trial_rejected"``. The last three set
         ``success=False`` and ``status=99``. AUGLAG adds ``multipliers``,
         ``penalty``, ``max_violation`` (largest scaled row violation) and
-        ``outer_iterations``, and may stop with ``"trust_region_collapsed"``.
+        ``outer_iterations``, and with ``max_trials`` may stop with ``"trial_budget_reached"``.
     """
     from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint, OptimizeResult
     from scipy.optimize import minimize as scipy_minimize

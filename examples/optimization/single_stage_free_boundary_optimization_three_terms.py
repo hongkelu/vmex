@@ -886,7 +886,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="accepted optimizer steps")
-    parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
+    parser.add_argument("--optimizer", choices=("slsqp", "auglag", "trust-constr"), default="slsqp",
                         help="SLSQP, or the augmented Lagrangian of the same loss and rows")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial coils (default: the case's COILS_FILE)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
@@ -1138,6 +1138,9 @@ def main(argv=None):
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
                               options=dict(maxiter=args.steps))
+    if args.optimizer == "trust-constr":  # experiment
+        result = opt.minimize(problem, x0=problem.accepted.parameters, method="TRUST-CONSTR", constraints=constraints,
+                              callback=lambda x: log_step(), options=dict(maxiter=args.steps))
     while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,

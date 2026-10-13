@@ -2603,7 +2603,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     from scipy.optimize import minimize as scipy_minimize
     from scipy.sparse import issparse
 
-    if method not in ("SLSQP", "AUGLAG"):
+    if method not in ("SLSQP", "AUGLAG", "TRUST-CONSTR"):
         raise ValueError("minimize(FunctionProblem) supports only method='SLSQP' or method='AUGLAG'")
     start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
     scales = np.asarray(problem.scales, dtype=float)
@@ -2763,8 +2763,15 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         result.update(report)
         return result
     try:
-        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP", bounds=bounds,
-                                constraints=scaled_constraints, options=options, tol=tol)
+        if method == "TRUST-CONSTR":  # experiment: scipy's trust-region SQP, BFGS objective and constraint Hessians
+            from scipy.optimize import BFGS
+            result = scipy_minimize(
+                fun, np.zeros_like(start), jac=jac, hess=BFGS(), method="trust-constr", bounds=bounds,
+                constraints=[NonlinearConstraint(c.fun, c.lb, c.ub, jac=c.jac, hess=BFGS()) for c in scaled_constraints],
+                options=dict(maxiter=100 * max(budget, 1), gtol=1e-12, xtol=1e-12))
+        else:
+            result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP", bounds=bounds,
+                                    constraints=scaled_constraints, options=options, tol=tol)
         if result.success:
             accept(result.x)
         result.x = start + np.asarray(result.x) * scales

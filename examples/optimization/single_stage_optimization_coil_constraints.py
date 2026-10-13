@@ -1441,8 +1441,8 @@ def main(argv=None):
 
     last = dict(time=time.monotonic(), step=0)
 
-    def log_step(u):
-        """Log the point ``u`` to ``metrics.jsonl``."""
+    def log_step(u, info=None):
+        """Log the point ``u`` to ``metrics.jsonl`` (with ``info``, the augmented Lagrangian's state)."""
         u = np.asarray(u, dtype=float)
         value, _ = objective(u)
         x = x0 + scales * u
@@ -1470,6 +1470,9 @@ def main(argv=None):
                    phiedge=float(phiedge_at(x)),
                    beta=float(opt.volume_average_beta(state, ctx)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started)
+        if info is not None:
+            row.update({key: float(info[key]) for key in
+                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials")})
         if args.beta > 0:
             row.update(total_normal_field_rms=float(total_normal_field_rms(coils, state, ctx)),
                        rbtor_ratio=float(rbtor_ratio(state, ctx, coils)))
@@ -1496,11 +1499,11 @@ def main(argv=None):
         objects_from_x(jnp.asarray(x))[3].to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), plasma_problem.equilibrium_from_x(x[:n_boundary]).wout)
 
-    def checkpoint(u):
-        """SLSQP callback: ``log_step`` and, every ``--save-every`` steps, ``save``."""
+    def checkpoint(u, info=None):
+        """Optimizer callback: ``log_step`` and, every ``--save-every`` steps, ``save``."""
         # SLSQP can accept a point whose equilibrium re-solve fails; log that and keep optimizing.
         try:
-            log_step(u)
+            log_step(u, info)
         except RuntimeError as error:
             last.update(time=time.monotonic(), step=last["step"] + 1)
             print(f"[step {last['step'] - 1}] not logged: {error}", flush=True)
@@ -1519,10 +1522,13 @@ def main(argv=None):
     if args.optimizer == "auglag":  # the same objective and rows through opt.minimize's augmented Lagrangian
         from scipy.optimize import NonlinearConstraint
 
-        rows = [NonlinearConstraint(c["fun"], 0.0, np.inf, jac=c["jac"]) for c in constraints]
+        # the raw plasma rows: a failed equilibrium is NaN, which AUGLAG rejects (SLSQP's -1 reads as a mild violation)
+        rows = [NonlinearConstraint(lambda u: np.asarray(plasma_rows_jit(jnp.asarray(np.asarray(u, dtype=float)))),
+                                    0.0, np.inf, jac=plasma_jacobian),
+                NonlinearConstraint(constraints[1]["fun"], 0.0, np.inf, jac=constraints[1]["jac"])]
         result = opt.minimize(opt.FunctionProblem.from_functions(u0, value_and_grad=objective), method="AUGLAG",
-                              constraints=rows, callback=lambda intermediate_result: checkpoint(intermediate_result.x),
-                              options=dict(maxiter=args.steps))
+                              constraints=rows, options=dict(maxiter=args.steps),
+                              callback=lambda intermediate_result: checkpoint(intermediate_result.x, intermediate_result))
     else:
         result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
                           constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})

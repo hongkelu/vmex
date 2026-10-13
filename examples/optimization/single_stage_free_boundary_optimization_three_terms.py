@@ -856,6 +856,38 @@ def coil_inequalities(coils):
                             (m["min_speed"] - 1e-4) / LENGTH_LIMIT))
 
 
+def coil_point_rows(coils):
+    """``coil_inequalities`` with the peak curvature and the coil-coil and self distances as rows at every point.
+
+    The same feasible set, but smooth rows: a max or min over points switches its active point between steps,
+    which a quadratic model cannot follow (an augmented Lagrangian's trust region then collapses at an active
+    peak).  Distances are those of the base coils' segments; their symmetry copies repeat them.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed, curvature = jnp.linalg.norm(base.gamma_dash, axis=-1), base.curvature
+    points = resampled(coils, DISTANCE_POINTS).gamma
+    nbase, n = curvature.shape[0], points.shape[1]
+    others = jnp.arange(points.shape[0])
+    inter = jnp.concatenate([jnp.min(jnp.where(
+        (others == b)[:, None], jnp.inf,
+        jax.lax.map(lambda q, b=b: jnp.min(segment_distances(points[b], q), axis=1), points)), axis=0)
+        for b in range(nbase)])
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+    own = jnp.concatenate([jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+                           for b in range(nbase)])
+    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+                            ((CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT).ravel(),
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (inter - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (own - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -874,8 +906,8 @@ def coil_constraint(coils_from_x):
     import jax.numpy as jnp
     from scipy.optimize import NonlinearConstraint
 
-    fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    jac = jax.jit(jax.jacrev(fun))
+    fun = jax.jit(lambda x: coil_point_rows(coils_from_x(x)))
+    jac = jax.jit(jax.jacfwd(fun))  # thousands of point rows, a few hundred coordinates
     return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                jac=lambda x: np.asarray(jac(jnp.asarray(x))))
 

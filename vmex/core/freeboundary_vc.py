@@ -160,6 +160,11 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+import os as _os
+_LABEL_MODE = _os.environ.get("VMEX_LABEL_MODE", "canonical")  # TEMP for testing
+_CANON_WEIGHT = float(_os.environ.get("VMEX_CANON_WEIGHT", "1.0"))
+
+
 def solve_free_boundary_three_term(
     inp: VmecInput,
     *,
@@ -418,11 +423,18 @@ class ThreeTermFreeBoundaryModel:
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
 
+        pos, neg = im._m1_pair_columns(cfg) if int(cfg.resolution.ntor) > 0 else (np.zeros(0, int), np.zeros(0, int))
+
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
-            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
-            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            if _LABEL_MODE == "seed":   # legacy: labelling tied to the seed boundary (start dependent)
+                label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
+                interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            else:   # canonical labelling: zcs_int(edge) = 0 (VMEC's polar gauge), the same for every start
+                interface = (jnp.sqrt(area)[None] * (scale * values)).ravel()
+                zb = runtime.setup.boundary_Z_sin
+                interface = jnp.concatenate([interface, _CANON_WEIGHT * 0.5 * (zb[pos] - zb[neg])])
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))

@@ -1012,9 +1012,14 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
-    if setup.freeze_m1 and setup.lconm1 and setup.lthreed and not setup.lasym:
+    if setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym):
         # the fixed gauge follows the boundary (it equals ``frozen`` at the solved parameters)
-        out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
+        if setup.lasym:
+            out["Z_sin"], out["Z_cos"] = pin_m1_gauge(
+                out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes,
+                Z_cos=out["Z_cos"], edge_Z_cos=boundary["Z_cos"])
+        else:
+            out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
     return SpectralState(**out)
 
 

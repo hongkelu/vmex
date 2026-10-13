@@ -2489,11 +2489,15 @@ def _gauge_fixed(rt: SolverRuntime, state: SpectralState | None) -> SpectralStat
     """``state`` with the constrained m=1 combination on its fixed-gauge profile
     (``RunSetup.freeze_m1``; a cold start is already on it)."""
     setup = rt.setup
-    if state is None or not (setup.freeze_m1 and setup.lconm1 and setup.lthreed) or setup.lasym:
+    if state is None or not (setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym)):
         return state
     # the state's own edge row: the boundary's labelling sets the profile
     z_sin = jnp.asarray(state.Z_sin)
-    return replace(state, Z_sin=pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes))
+    if not setup.lasym:
+        return replace(state, Z_sin=pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes))
+    z_cos = jnp.asarray(state.Z_cos)
+    z_sin, z_cos = pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes, Z_cos=z_cos, edge_Z_cos=z_cos[-1])
+    return replace(state, Z_sin=z_sin, Z_cos=z_cos)
 
 
 def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,

@@ -4088,7 +4088,10 @@ def _least_squares_implicit(
                 "decision vector did not produce a usable VMEC equilibrium"
             )
         result_input = input_from_x(x)
-        result = dataclasses.replace(hit[1], state=refined[1])
+        # host copy: the refinement may run on the implicit device (CPU under
+        # the AUTO policy) while ``runtime`` below lives on the default device
+        result = dataclasses.replace(
+            hit[1], state=jax.tree.map(np.asarray, refined[1]))
         ns = int(np.shape(result.state.R_cos)[0])
         runtime = prepare_runtime(
             result_input,

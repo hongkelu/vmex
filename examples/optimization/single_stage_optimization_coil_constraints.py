@@ -1079,8 +1079,9 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         deck = im.input_with_params(fixed, sol["params"])
         vj.write_wout(str(out / f"wout{tag}.nc"), opt.solve_equilibrium(deck, initial_state=sol["state"]).wout)
 
-    def log_step(u):
-        """SLSQP callback: log the accepted point to ``metrics.jsonl`` and save every ``--save-every`` steps."""
+    def log_step(u, info=None):
+        """Optimizer callback: log the accepted point to ``metrics.jsonl`` (with ``info``, the augmented
+        Lagrangian's state) and save every ``--save-every`` steps."""
         x = x0 + scales * np.asarray(u, dtype=float)
         sol = solve(x)
         if sol is None:
@@ -1107,6 +1108,9 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                    beta=float(opt.volume_average_beta(state, ctx)), **counters,
                    step_seconds=now - last["time"], elapsed_seconds=now - started,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
+        if info is not None:
+            row.update({key: float(info[key]) for key in
+                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials")})
         for k in counters:
             counters[k] = 0
         with open(out / "metrics.jsonl", "a") as stream:
@@ -1144,19 +1148,37 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                       flush=True)
         return
     u, stop = last["u"], dict(message="", success=False)
-    while last["step"] <= args.steps:
-        before = last["step"]
-        try:
-            result = minimize(objective, u, jac=objective_gradient, method="SLSQP", constraints=constraints,
-                              callback=log_step, options=dict(maxiter=args.steps + 1 - before, ftol=OPTIMIZER_FTOL))
-            stop = dict(message=str(result.message), success=bool(result.success))
-            break
-        except Rejected:
-            print("[slsqp] trial rejected: restarting from the accepted point", flush=True)
-            u = last["u"]
-            if last["step"] == before:
-                stop = dict(message="trial rejected before any progress", success=False)
+    if args.optimizer == "auglag":  # a rejected equilibrium is a rejected trial (NaN rows), not a -1 row
+        from scipy.optimize import NonlinearConstraint
+
+        def checked(u):
+            try:
+                return objective(u)
+            except Rejected as error:
+                raise opt.TrialRejected("no certified equilibrium") from error
+
+        rows = [NonlinearConstraint(lambda u: (np.full(nrows, np.nan) if solve(x0 + scales * u) is None
+                                               else plasma_values(u)), 0.0, np.inf, jac=plasma_jacobian),
+                NonlinearConstraint(constraints[1]["fun"], 0.0, np.inf, jac=constraints[1]["jac"])]
+        result = opt.minimize(opt.FunctionProblem.from_functions(u, fun=checked, grad=objective_gradient),
+                              method="AUGLAG", constraints=rows, options=dict(maxiter=args.steps),
+                              callback=lambda intermediate_result: log_step(intermediate_result.x,
+                                                                            intermediate_result))
+        stop = dict(message=str(result.message), success=bool(result.success))
+    else:
+        while last["step"] <= args.steps:
+            before = last["step"]
+            try:
+                result = minimize(objective, u, jac=objective_gradient, method="SLSQP", constraints=constraints,
+                                  callback=log_step, options=dict(maxiter=args.steps + 1 - before, ftol=OPTIMIZER_FTOL))
+                stop = dict(message=str(result.message), success=bool(result.success))
                 break
+            except Rejected:
+                print("[slsqp] trial rejected: restarting from the accepted point", flush=True)
+                u = last["u"]
+                if last["step"] == before:
+                    stop = dict(message="trial rejected before any progress", success=False)
+                    break
     x = x0 + scales * last["u"]
     save("", x)
     coils = coils_from_x(jnp.asarray(x))

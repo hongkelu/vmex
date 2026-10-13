@@ -76,7 +76,6 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 PHIEDGE_STEP = 0.05                # coordinate scale of the relative PHIEDGE change
 OPTIMIZER_FTOL = 1e-10             # SLSQP ftol
 OBJECTIVE_SCALE = 1.0              # multiplies the SLSQP objective (its ftol and step tests are absolute): ~1e6 for targets ~1e-6
-AUGLAG_OPTIONS = {}                # --optimizer auglag: opt.minimize(method="AUGLAG") options (ctol, gtol, inner_maxiter, ...)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -150,10 +149,6 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # Gil et al. (2026).  None: no force row.  CONDUCTOR_RADIUS: Gil's a = 0.15 m at R0 = 10.1266 m brought to R0 = 1 m.
 FORCE_LIMIT, FORCE_MARGIN = None, 0.0
 CONDUCTOR_RADIUS = 0.3 / 10.1266   # Gil et al. evaluate their Table 2 forces with a = 0.3 m (config_verification.py)
-# "max": one row per base coil, its peak force; "points": one row per quadrature point (the same feasible set). A
-# coil optimized against the limit holds several equal peaks, where the max row is not differentiable and neither
-# SLSQP nor AUGLAG can lower all of them through its linearization (2026-10-12, P25A-F10 start).
-FORCE_ROWS = "max"
 FORCE_POINTS = 1024   # converged: 128 under-resolves the peak self-force by 2-4 % (checked vs SIMSOPT, 2026-10-11)
 DISTANCE_POINTS_MIN = 1024  # segment distances: 256 is ~1 % optimistic on the coil-coil row; 1024 like force and curvature
 
@@ -922,7 +917,7 @@ def coil_forces(coils):
 
 
 def coil_point_forces(coils):
-    """Force per unit length (N/m) at every quadrature point of each base coil (FORCE_ROWS = "points")."""
+    """Force per unit length (N/m) at every quadrature point of each base coil (the force rows)."""
     import jax.numpy as jnp
     from essos.objective_functions import regularization_circ
     import coil_rows_local
@@ -945,7 +940,9 @@ def coil_metrics(coils):
              msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
              coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
     if FORCE_LIMIT is not None:
-        m["max_force"] = coil_forces(coils) if FORCE_ROWS == "max" else coil_point_forces(coils).ravel()
+        # one row per quadrature point: a coil optimized against the limit holds several equal peaks, where a row of
+        # the peak force is not differentiable and no linearization lowers them all (the same feasible set)
+        m["max_force"] = coil_point_forces(coils).ravel()
     return m
 
 
@@ -989,7 +986,7 @@ def coil_constraint(coils_from_x):
     from scipy.optimize import NonlinearConstraint
 
     fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    if FORCE_LIMIT is not None and FORCE_ROWS == "points":  # thousands of rows: forward mode, 8 directions at a time
+    if FORCE_LIMIT is not None:  # thousands of point rows: forward mode, 8 directions at a time
         jac = jax.jit(lambda x: jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size),
                                             batch_size=8).T)
     else:
@@ -1005,7 +1002,7 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="accepted optimizer steps")
     parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
-                        help="SLSQP, or the augmented Lagrangian of the same loss and rows (AUGLAG_OPTIONS)")
+                        help="SLSQP, or the augmented Lagrangian of the same loss and rows")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial coils (default: the case's COILS_FILE)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1, help="save coils and WOUT every this many steps")
@@ -1026,11 +1023,8 @@ def parse_args(argv=None):
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
-    parser.add_argument("--boundary-max-nfev", type=int, default=40,
-                        help="evaluations cap of each step's free-boundary solve (with --trial-ftol)")
-    parser.add_argument("--boundary-xtol", type=float,
-                        help="stop each boundary fit on its Gauss-Newton step, below this times the ESS scales, not "
-                        "on the cost change (--trial-ftol), so a design's boundary does not depend on the fit's start")
+    parser.add_argument("--boundary-max-nfev", type=int, default=100,
+                        help="evaluations cap of each step's free-boundary solve")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
                         help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
@@ -1198,7 +1192,6 @@ def main(argv=None):
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol, boundary_max_nfev=args.boundary_max_nfev,
-                                boundary_xtol=args.boundary_xtol,
                                 boundary_max_residual=args.max_boundary_residual))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
@@ -1287,7 +1280,7 @@ def main(argv=None):
     if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
-                              options=dict(AUGLAG_OPTIONS, maxiter=args.steps))
+                              options=dict(maxiter=args.steps))
     while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,

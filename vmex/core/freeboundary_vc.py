@@ -710,6 +710,11 @@ class ThreeTermFreeBoundaryModel:
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
 
+#: Gauss-Newton step, in units of the ESS scales, at which a design problem's boundary fits stop (8x8 LP QA: trials
+#: then reproduce their accepted point's rows to ~1e-8 relative, against 0.6-7% with a cost-change stop).
+_BOUNDARY_XTOL = 1e-8
+
+
 @dataclass(frozen=True)
 class _AcceptedPoint:
     """The design the optimizer last accepted (``ThreeTermFreeBoundaryProblem.accepted``)."""
@@ -740,19 +745,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=100,
+                  boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
-        ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
-        relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
-        first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
-        any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.  With ``boundary_xtol`` fits stop on the Gauss-Newton step instead of the cost change
-        (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`), and each gradient's polish takes its boundary to the
-        fixed point of the gradient's own Jacobian, which the next trials reuse: the accepted point and the trials
-        around it are then one smooth function of the design, whatever the fits' starts, at one Jacobian a step.
+        ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A boundary fit stops where its
+        Gauss-Newton step is below ``_BOUNDARY_XTOL`` times the ESS scales (not on a cost change, which stops early
+        at the rows' discretization floor) or after ``boundary_max_nfev`` evaluations; ``boundary_ftol`` is the
+        cost change of a cold fit's fresh-Jacobian phase.  A trial reuses the accepted point's Jacobian, and each
+        gradient's polish takes its boundary to that Jacobian's fixed point: the accepted point and the trials
+        around it are one smooth function of the design, whatever the fits' starts, at one Jacobian a step.  With
+        ``boundary_max_residual`` a fit that ends with any :class:`BoundaryResidual` term above it is no solution:
+        the trial tries its next start, or is rejected.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -766,16 +771,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
+                   boundary_max_residual=boundary_max_residual)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None, boundary_xtol=None):
+                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
         from .implicit import runtime_from_params
 
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
-        self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
 
@@ -851,7 +855,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for start in starts:
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev, xtol=self.boundary_xtol, fresh=False,
+                                                max_nfev=self.boundary_max_nfev, xtol=_BOUNDARY_XTOL, fresh=False,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
@@ -901,25 +905,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return J
 
         J = relinearize()
-        if self.boundary_xtol is not None:  # to this Jacobian's fixed point, solved tight; J stays the anchor
-            params_x = self._params_at(xj)
-            polished = model.solve_boundary(params_x, field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                            max_nfev=self.boundary_max_nfev, xtol=self.boundary_xtol, fresh=False)
-            self.stats["boundary_evaluations"] += polished["nfev"]
-            tight = model.evaluate(polished["x"], params_x, field, tight=True)
-            if tight is None:
-                raise TrialRejected("the polished boundary has no certified equilibrium")
-            rows, aux = tight
-            state, mask, params, _ = aux
-            sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
-                       values=np.asarray(self._rows(state, params, xj)))
-        else:
-            polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                            max_nfev=20)
-            self.stats["boundary_evaluations"] += polished["nfev"]
-            if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
-                sol.update(x=polished["x"], aux=polished["aux"])
-                J = relinearize()
+        # to this Jacobian's fixed point, solved tight; J stays the anchor of the next trials
+        params_x = self._params_at(xj)
+        polished = model.solve_boundary(params_x, field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
+                                        max_nfev=self.boundary_max_nfev, xtol=_BOUNDARY_XTOL, fresh=False)
+        self.stats["boundary_evaluations"] += polished["nfev"]
+        tight = model.evaluate(polished["x"], params_x, field, tight=True)
+        if tight is None:
+            raise TrialRejected("the polished boundary has no certified equilibrium")
+        rows, aux = tight
+        state, mask, params, _ = aux
+        sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
+                   values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)

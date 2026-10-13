@@ -420,8 +420,8 @@ def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar, method):
     anchor = p.accepted
     stats["fail"] = True
     result = opt.minimize(p, method=method, callback=lambda x: pytest.fail("failed trial promoted"),
-                          options={"maxiter": 20, **({"max_trials": 5} if method == "AUGLAG" else {})})
-    assert not result.success and (method == "SLSQP" or result.stop_reason == "trial_budget_reached")
+                          options={"maxiter": 20})
+    assert not result.success and (method == "SLSQP" or result.stop_reason == "no_progress")
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
 

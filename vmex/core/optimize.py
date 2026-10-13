@@ -2427,7 +2427,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     active rows taken exactly. A trial that raises :class:`~vmex.core.errors.TrialRejected` shrinks the radius; a
     radius that collapses without a step updates the multipliers and restarts the radius and the BFGS matrix. The run
     ends at its accepted-step budget, or where it cannot move: three restarts in a row without a step (success if
-    feasible). ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers, penalty
+    feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point; ``report`` (a dict) holds the multipliers, penalty
     and violation of the latest one. Returns ``(success, stop_reason, message)``.
 
     The only option is ``maxiter`` (accepted steps, default 100). The rest is fixed: penalty 10 (with the objective
@@ -2461,6 +2461,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     penalty = 10.0
     B, scaled_B = np.eye(u.size), False
     steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
+    solved = False  # since the last step a trial was solved, or the model foresaw no decrease (not all trials failed)
     entry = violation(v)  # the violation at the start of the inner loop
     tolerance = None
 
@@ -2485,8 +2486,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             stalls = stalls + 1 if inner == 0 and radius < min_radius else 0
             if stalls >= 3:  # no decrease at any radius from three fresh starts: stationary, or every trial fails
                 note()
-                feasible = violation(v) <= 1e-6
-                return feasible, None if feasible else "no_progress", "no decrease of the augmented Lagrangian found"
+                stationary = solved and violation(v) <= 1e-6
+                return stationary, None if stationary else "no_progress", "no decrease of the augmented Lagrangian found"
             previous, tolerance, inner, outer = measure, 0.1 * tolerance, 0, outer + 1
             entry = violation(v)
             if radius < min_radius:  # collapsed: start the radius and the curvature model over
@@ -2501,9 +2502,11 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         size = float(np.linalg.norm(d))
         if not (np.isfinite(predicted) and predicted < 0.0) or size == 0.0:
             radius = 0.25 * min(radius, size) if size > 0 else 0.25 * radius
+            solved = True
             continue
         try:
             f1, c1 = evaluate(u + d)
+            solved = True
             v1 = sign * c1[index] - offset
             terms1, slope1 = _phr(v1, multipliers, penalty, equality)
             ratio = (F + terms.sum() - scale * f1 - terms1.sum()) / -predicted
@@ -2534,7 +2537,7 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             radius = 0.5 * size
         note()
         accept(u, dict(report, augmented_lagrangian=F + terms1.sum(), ratio=ratio, rejected_trials=rejected))
-        rejected = 0
+        rejected, solved = 0, False
         if steps >= budget:
             return False, "accepted_step_budget_reached", "accepted_step_budget_reached"
 

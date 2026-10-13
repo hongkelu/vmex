@@ -1145,9 +1145,11 @@ def main(argv=None):
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
-    ceiling = (max_abs_iota,) if IOTA_CEILING else ()
+    # iota floors and ceiling hold on every surface, one row each: a minimum over surfaces switches surface where two
+    # are nearly equal, and no optimizer's linearization of it holds across that switch (the same feasible set)
+    ceiling = (abs_iota,) if IOTA_CEILING else ()
     vacuum = vacuum_iota(inp)
-    vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
+    vacuum_floor = (vacuum,) if VACUUM_IOTA_FLOOR else ()
     # stability rows: smooth minimum of PHIEDGE^2 DMerc over the window, hard maximum of the ballooning eigenvalue
     phiedge2 = float(inp.phiedge) ** 2
     s_full = np.linspace(0.0, 1.0, int(RESOLUTION[2]))
@@ -1188,7 +1190,7 @@ def main(argv=None):
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
-        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
+        quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *mercier, *ballooning,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
@@ -1202,16 +1204,20 @@ def main(argv=None):
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
+    state0, params0 = problem.state(problem.x0)  # the per-surface rows' counts
+    runtime0 = im.runtime_from_params(params0, model.cfg)
+    n_iota = int(np.size(abs_iota(state0, runtime0)))
+    n_vacuum = int(np.size(vacuum(state0, runtime0))) if vacuum_floor else 0
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
     nredl = int(redl is not None)
     lower, upper, row_scales = zip(
-        (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
+        *[(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR)] * n_iota,
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
-        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
+        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] * n_iota if ceiling else []),
+        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] * n_vacuum if vacuum_floor else []),
         *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, max(abs(MERCIER_FLOOR), STABILITY_TEMPERATURE))] if mercier else []),
         *([(-np.inf, BALLOONING_LIMIT - BALLOONING_MARGIN, 1e-3)] if ballooning else []),
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
@@ -1235,13 +1241,13 @@ def main(argv=None):
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         vac = np.asarray(vacuum(state_x, runtime_x))
-        stability_row = 3 + len(mirror) + len(ceiling) + len(vacuum_floor)
+        stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
         redl_row = stability_row + len(mercier) + len(ballooning)
         # "qa" holds the target residual of every case (QA, QH or QI), kept for compatibility
-        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x) / OBJECTIVE_SCALE, min_abs_iota=float(h[0]),
+        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x) / OBJECTIVE_SCALE, min_abs_iota=float(h[:n_iota].min()),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
-                   major_radius_m=float(h[1]), b_axis_t=float(h[2]),
+                   major_radius_m=float(h[n_iota]), b_axis_t=float(h[n_iota + 1]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
                    **({"mercier_min": float(h[stability_row])} if mercier else {}),

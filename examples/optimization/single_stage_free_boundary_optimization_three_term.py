@@ -72,7 +72,6 @@ FREE_COIL_CURRENTS = True          # every base-coil current is a design variabl
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 PHIEDGE_STEP = 0.05                # coordinate scale of the relative PHIEDGE change
 OPTIMIZER_FTOL = 1e-10             # SLSQP ftol
-AUGLAG_OPTIONS = {}                # --optimizer auglag: opt.minimize(method="AUGLAG") options (ctol, gtol, inner_maxiter, ...)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -888,7 +887,7 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--steps", type=int, default=100, help="accepted optimizer steps")
     parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
-                        help="SLSQP, or the augmented Lagrangian of the same loss and rows (AUGLAG_OPTIONS)")
+                        help="SLSQP, or the augmented Lagrangian of the same loss and rows")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial coils (default: the case's COILS_FILE)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1, help="save coils and WOUT every this many steps")
@@ -909,9 +908,6 @@ def parse_args(argv=None):
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
-    parser.add_argument("--boundary-xtol", type=float,
-                        help="stop each boundary fit on its Gauss-Newton step, below this times the ESS scales, not "
-                        "on the cost change (--trial-ftol), so a design's boundary does not depend on the fit's start")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
                         help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
@@ -1059,7 +1055,6 @@ def main(argv=None):
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                                boundary_xtol=args.boundary_xtol,
                                 boundary_max_residual=args.max_boundary_residual))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
@@ -1141,7 +1136,7 @@ def main(argv=None):
     if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
-                              options=dict(AUGLAG_OPTIONS, maxiter=args.steps))
+                              options=dict(maxiter=args.steps))
     while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,

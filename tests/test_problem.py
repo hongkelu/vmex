@@ -1124,10 +1124,9 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
     for method in ("SLSQP", "AUGLAG"):
         p = opt.FunctionProblem.from_functions(np.array([-1.2, 1.]), scales=np.array([.5, 2.]), value_and_grad=rosenbrock)
         found[method] = opt.minimize(p, method=method, constraints=disk,
-                                     options=dict(maxiter=300, **({"ftol": 1e-14} if method == "SLSQP" else
-                                                                  {"ctol": 1e-10, "gtol": 1e-10})))
+                                     options=dict(maxiter=300, **({"ftol": 1e-14} if method == "SLSQP" else {})))
     result = found["AUGLAG"]
-    assert result.success and result.stop_reason is None and result.max_violation <= 1e-10
+    assert result.success and result.stop_reason is None and result.max_violation <= 1e-8
     np.testing.assert_allclose(result.x, found["SLSQP"].x, atol=1e-6)
     np.testing.assert_allclose(result.jac, rosenbrock(result.x)[1])
 
@@ -1136,7 +1135,7 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
                                jac=lambda x: np.vstack([2*x, [1., -1.]]))
     seen = []
     result = opt.minimize(p, method="AUGLAG", constraints=rows, callback=lambda intermediate_result: seen.append(
-        intermediate_result), options=dict(maxiter=300, ctol=1e-8, gtol=1e-8))
+        intermediate_result), options=dict(maxiter=300))
     assert result.success and result.accepted_steps == len(seen)
     np.testing.assert_allclose(result.x, [np.sqrt(.5)]*2, atol=1e-7)
     assert {"penalty", "max_violation", "multipliers", "augmented_lagrangian"} <= set(seen[-1])
@@ -1144,7 +1143,7 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
     p = opt.FunctionProblem.from_functions(np.zeros(3), value_and_grad=lambda x: (
         float(x[0]**2 + 2*x[1]**2 + x[2]), np.array([2*x[0], 4*x[1], 1.])))
     result = opt.minimize(p, method="AUGLAG", bounds=Bounds([-np.inf, -np.inf, .5], [np.inf, np.inf, 3.]),
-                          constraints=LinearConstraint([[1., 1., 0.]], 1., 1.), options=dict(ctol=1e-10, gtol=1e-10))
+                          constraints=LinearConstraint([[1., 1., 0.]], 1., 1.))
     np.testing.assert_allclose(result.x, [2/3, 1/3, .5], atol=1e-8)
 
     def guarded(x):
@@ -1153,11 +1152,11 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
         return float(np.sum((x-2)**2)), 2*(x-2)
 
     p = opt.FunctionProblem.from_functions(np.array([.2, .2]), value_and_grad=guarded)
-    result = opt.minimize(p, method="AUGLAG", options=dict(initial_radius=50., ctol=1e-10, gtol=1e-10),
+    result = opt.minimize(p, method="AUGLAG",
                           constraints=NonlinearConstraint(lambda x: np.array([x.sum()]), -np.inf, 1.,
                                                           jac=lambda x: np.ones((1, 2))))
     np.testing.assert_allclose(result.x, [.5, .5], atol=1e-8)
-    with pytest.raises(ValueError, match="unknown AUGLAG options"):
+    with pytest.raises(ValueError, match="AUGLAG takes only maxiter"):
         opt.minimize(p, method="AUGLAG", options=dict(ftol=1e-12))
 
 

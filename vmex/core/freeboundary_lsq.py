@@ -478,13 +478,31 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         dz_b, dp_b = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
         rs = r if shift is None else r + shift
         if not columns:
-            def hvp(v):
-                """``H v`` for every row ``v`` of ``(b, n)`` (one program call; ``b`` the block width)."""
-                vj = jnp.asarray(np.atleast_2d(v))
+            def products(V):
+                vj = jnp.asarray(V)
                 one = lambda a: jnp.tensordot(vj, a, axes=1)  # noqa: E731
                 with vc.remat_scans():
-                    return np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam, jax.tree.map(one, dz_b),
-                                                            jax.tree.map(one, dp_b), dz_b, dp_b))
+                    return np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam,
+                                                            jax.tree.map(one, dz_b), jax.tree.map(one, dp_b), dz_b, dp_b))
+
+            def hvp(v):
+                """``H v`` for every row ``v`` of ``(b, n)``, ``hessian_chunk`` rows a program call.  A call that
+                runs out of device memory halves ``hessian_chunk`` (for the rest of the run) and is repeated: the
+                memory of a block of products depends on the quadrature the surface needs, unknown in advance."""
+                V = np.atleast_2d(v)
+                out = []
+                start = 0
+                while start < V.shape[0]:
+                    width = min(self.hessian_chunk, V.shape[0] - start)
+                    try:
+                        out.append(products(V[start:start + width]))
+                    except jax.errors.JaxRuntimeError as error:
+                        if "RESOURCE_EXHAUSTED" not in str(error) or width == 1:
+                            raise
+                        self.hessian_chunk = max(1, width // 2)
+                        continue
+                    start += width
+                return np.vstack(out)
 
             out = dict(hvp=hvp, g=J[:, :n].T @ rs, nu_c=nu_c, shift=shift, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
                        aux=aux, lam=lam, dz=dz, batch=batch, asymmetry=np.nan, adjoint=float(adjoint),

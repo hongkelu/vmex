@@ -123,3 +123,37 @@ def test_exact_design_gradients_match_resolved_differences():
         values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
         fd = (values[0] - values[1]) / (2 * h)
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-3, atol=1e-9 * max(1.0, abs(value)))
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
+    """LP QA at 0.5 % beta with the Redl current in the solve: the current's rows hold as equality constraints at
+    the solution, and the design gradients (a plasma coordinate, PHIEDGE, which moves the constraint rows too, and
+    the coil currents) match re-solved central differences."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    from tests.test_freeboundary_vc import _lp_beta0p5_profiles
+
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    problem = FreeBoundaryProblem.from_loss(
+        replace(inp, lfreeb=False), lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[1])),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.major_radius,), boundary_condition="three_terms",
+        three_terms_options=dict(method="least_squares", boundary_max_nfev=40, bootstrap=_lp_beta0p5_profiles(inp),
+                                 **OPTIONS))
+    model = problem.model
+    m = model.n_constraint_rows
+    assert m == model.x0.size - model.n_boundary > 0
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    sol = problem._record(x0)
+    rows = np.asarray(sol["rows"])
+    assert 0.5 * rows[-m:] @ rows[-m:] <= 1e-10 * 0.5 * rows[:-m] @ rows[:-m]
+    jac = problem.constraint_jac(x0)
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        fd = (values[0] - values[1]) / (2 * h)
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=5e-3, atol=1e-9 * max(1.0, abs(value)))

@@ -30,18 +30,19 @@ from tests.test_freeboundary_vc import _coil_field, _deck  # noqa: E402
 pytestmark = [pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax"),
               pytest.mark.full]  # ~30 min on a GPU: the PR lane runs test_freeboundary_lsq_fast.py
 
-GRID = 24
+GRID = 32  # >= 4 x the boundary modes
 OPTIONS = dict(nphi=GRID, ntheta=GRID, quadrature=(4 * 2 * GRID, 2 * GRID), hessian_chunk=2)
 
 
 def _vacuum_deck():
-    return replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    # the canonical labelling of a truncated boundary needs a few modes: 5 (at 2 the relabelled surface moves cm)
+    return replace(_deck("input.LandremanPaul2021_QA_lowres", 6, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
 
 
 @pytest.fixture(scope="module")
 def model_and_field():
     """LP QA at 0.5 % beta with its fitted coils: the three-terms rows (virtual casing, band-limited edge)."""
-    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 5, 13)  # boundary modes 3 (interior - 2)
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 7, 13)  # boundary modes 4 (interior - 2)
     model = lsq.LeastSquaresFreeBoundaryModel(replace(inp, lfreeb=False), **OPTIONS)
     assert not model.vacuum
     return model, _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")

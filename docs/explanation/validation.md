@@ -486,7 +486,11 @@ beta the rows are unchanged (B.n moments, the boundary two modes below the
 interior); an independent evaluation of the 12-mode answer at 16 modes
 (VMEX re-solve) reads 4.1e-4 / 1.2e-4 / 4.1e-4, DESC's own free boundary at
 12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and sheet current, higher
-pressure jump. The deck fixes the poloidal labelling, and at low resolution it
+pressure jump. The finite-beta moments share the projection's weakness: on
+LP QA at 0.5 % beta with its bundled coils (deck B.n 6.0e-3 at mpol 4,
+1.2e-3 at mpol 6) the answer keeps the deck's B.n, the residual sitting outside
+the boundary's modes (`test_finite_beta_free_boundary_removes_the_sheet_current`
+records it as an expected failure). The deck fixes the poloidal labelling, and at low resolution it
 matters: at mpol = 4 the LP QA case of `test_vacuum_free_boundary_agrees_with_nestor`
 ends at B.n 9.7e-4 with the LP deck's labelling (truncated from 8 modes) and at
 5.4e-4 with the labelling VMEC + NESTOR leaves (NESTOR's own: 5.9e-4).

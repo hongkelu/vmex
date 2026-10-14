@@ -227,20 +227,20 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
 _MAP_GRID_RTOL = float(np.sqrt(np.finfo(float).eps))
 
 
-def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None):
+def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None, extend=False):
     """:func:`_normal_displacement_map_on` on a grid that resolves it: from four points per boundary harmonic in
     each direction (``4 mpol`` poloidal, ``4 ntor + 4`` per field period), doubled until a doubling changes the map
     by less than ``_MAP_GRID_RTOL`` of its largest entry.  The displacement times the direction field
     ``g = n / (n_R^2 + n_Z^2)`` is not band-limited, so the fit depends on the grid until it is resolved.
     ``ntheta, nzeta`` fix the grid instead (no convergence check)."""
     if ntheta is not None and nzeta is not None:
-        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction)
+        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction, extend)
     ntor, mpol = (np.shape(inp.rbc)[0] - 1) // 2, np.shape(inp.rbc)[1]
     nt, nz = 4 * mpol, 4 * ntor + 4
-    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
     while True:
         nt, nz = 2 * nt, 2 * nz
-        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
         change = np.max(np.abs(finer[0] - out[0])) / np.max(np.abs(finer[0]))
         out = finer
         if change <= _MAP_GRID_RTOL:
@@ -250,15 +250,23 @@ def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, 
                              f"{nt} x {nz})")
 
 
-def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
+def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction, extend=False):
     """Boundary coordinates as a normal displacement of ``inp``'s surface: ``(M, modes, x_scale)``.
 
     ``h(theta, zeta) = sum h_mn cos(m theta - n nfp zeta)`` over ``modes`` (those of
-    :func:`~vmex.core.optimize.pack_boundary`, then ``(0, 0)``) moves each boundary point along the surface
-    normal, within its ``phi = zeta`` plane: ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit
-    normal, so its normal displacement is ``h``.  Its truncated Fourier fit is linear in ``h``: the packed
-    boundary coordinates are ``x0 + M h``.  Tangential moves (relabellings ``theta -> theta + delta(theta,
-    zeta)``, which no interface condition sees) are thereby absent from the unknowns.
+    :func:`~vmex.core.optimize.pack_boundary`, with ``extend`` the next poloidal harmonic ``m_top + 1`` on the
+    same toroidal modes, then ``(0, 0)``) moves each boundary point along the surface normal, within its ``phi = zeta`` plane:
+    ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit normal, so its normal displacement is
+    ``h``, or along ``direction``.  Its truncated Fourier fit is linear in ``h``: the packed boundary
+    coordinates are ``x0 + M h``.
+
+    The harmonic ``m_top + 1`` has no coefficient of its own: through the poloidal variation of the transport
+    direction it moves the top coefficients ``m_top``.  Without it the ``B . n`` that the boundary's top modes
+    leave at ``m_top + 1`` is outside every row's reach and its size is set by the reference's labelling (the
+    known-answer benchmark at 8 x 8: 1.4e-3 of B.n's 1.6e-3 RMS); with it the least squares sees and lowers it
+    (vacuum, where the rows are the exact least squares).
+    The remaining tangential moves (relabellings ``theta -> theta + delta(theta, zeta)``, which no interface
+    condition sees) stay absent from the unknowns.
     """
     from .optimize import _dof_modes, pack_boundary
 
@@ -289,7 +297,9 @@ def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
     A_r = cos[keep_r].reshape(int(keep_r.sum()), -1).T
     A_z = sin[keep].reshape(int(keep.sum()), -1).T
     pinv_r, pinv_z = np.linalg.pinv(A_r), np.linalg.pinv(A_z)
-    modes = list(_dof_modes(inp, max_mode)) + [(0, 0)]
+    m_top, n_top = min(int(max_mode), mpol - 1), min(int(max_mode), ntor)
+    extra = [(m_top + 1, n) for n in range(-n_top, n_top + 1)] if extend else []
+    modes = list(_dof_modes(inp, max_mode)) + extra + [(0, 0)]
     zero = replace(inp, rbc=np.zeros_like(rbc), zbs=np.zeros_like(zbs))
     columns = []
     for m, n in modes:
@@ -674,7 +684,8 @@ class ThreeTermsFreeBoundaryModel:
         if self.fixed_boundary:
             self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
         else:
-            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode)
+            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode,
+                                                                                        extend=self.vacuum)
             self.x0 = np.zeros(normal_map.shape[1])
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
@@ -725,7 +736,7 @@ class ThreeTermsFreeBoundaryModel:
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
                 return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
 
-            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
+            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial, extend=self.vacuum)
             self._normal_map = jnp.asarray(normal_map)
         self._implicit_setup()
         if not self.fixed_boundary:

@@ -964,3 +964,18 @@ def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
             rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
         fd = (rows[0] - rows[1]) / (2 * h)
         assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)
+
+
+def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
+    """Vacuum unknowns: the boundary modes, then m = mpol on every toroidal mode (it moves the top coefficients
+    through the poloidal variation of the transport direction), then (0, 0); the columns stay independent."""
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 4, 11)
+    top = max(inp.mpol - 1, inp.ntor)
+    M, modes, scale = fvc._normal_displacement_map(inp, top, extend=True)
+    M0, modes0, _ = fvc._normal_displacement_map(inp, top)
+    extra = [(inp.mpol, n) for n in range(-inp.ntor, inp.ntor + 1)]
+    assert modes == modes0[:-1] + extra + [(0, 0)] and M.shape == (M0.shape[0], M0.shape[1] + len(extra))
+    assert scale.size == len(modes)
+    s = np.linalg.svd(M, compute_uv=False)
+    assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
+    np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol

@@ -163,6 +163,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
             self.with_boundary = with_boundary
         self.hessian_chunk = int(hessian_chunk or self.chunk)
+        # The bootstrap rows (the last rows; square in the current coordinates) are equality constraints of the
+        # free-boundary solve, not least-squares rows: the current is exactly Redl's, whatever the rows' scale.
+        self.n_constraint_rows = 0 if self.fixed_boundary or self.bootstrap is None else int(self.bootstrap.x0.size)
         self.require_converged = False  # LeastSquaresFreeBoundaryProblem: an unconverged trial is a failed one
         self.gauge_residual = 0.0
         self._linearization = None
@@ -465,9 +468,18 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if np.max(np.abs(c)) <= 1e3 * tol:
                 break
         x, c = best
-        # Relabelling a truncated boundary is not exact: where no relabelling reaches c = 0 (a floor of ~1e-4 on
-        # some strongly shaped boundaries) the gauge is the relabelling of least |c|, and the floor is recorded.
+        # Relabelling a truncated boundary is not exact: on some strongly shaped boundaries no relabelling reaches
+        # c = 0 (a floor of ~1e-4).  There the least-|c| relabelling is finished by Gauss-Newton on c in the
+        # coefficients (minimum-norm steps in the x_scale metric): the surface then moves by O(floor), which the
+        # boundary's initial guess or trial step absorbs.  gauge_residual records the relabelling floor.
         self.gauge_residual = float(np.max(np.abs(c)))
+        S = np.asarray(getattr(self, "x_scale", np.ones(x.size)), dtype=float)
+        for _ in range(max_iter):
+            if np.max(np.abs(c)) <= tol:
+                break
+            A = np.asarray(self._gauge_jacobian(jnp.asarray(x))) * S[None]
+            x = x - S * np.linalg.lstsq(A, c, rcond=None)[0]
+            c = np.asarray(self.gauge_constraints(jnp.asarray(x)))
         return x
 
     def _second_order_setup(self, rows, active, edge):
@@ -479,26 +491,31 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         along tangents ``(dz_i, dp_i)`` (``F_z dz_i = -F_p dp_i``) is ``H_ij = [dp_i; dz_i]^T grad^2 L [dp_j;
         dz_j]``, one forward-over-reverse pass of ``L`` per column.  This includes ``sum_k r_k grad^2 r_k``, the
         term Gauss-Newton drops, which is not small here: the residual stays finite at a truncated boundary.
+
+        ``shift`` (``None``, or a constant added to the rows) makes ``Phi = 1/2 |rows + shift|^2``: with the
+        constraint rows' entries ``nu - r`` (zeros elsewhere) its Hessian is the Lagrangian's of the interface
+        cost with multipliers ``nu`` on the constraint rows, plus ``J_c^T J_c``, which vanishes on their null space.
         """
         im, cfg = self._im, self.cfg
 
         def tree_dot(a, b):
             return sum(jnp.sum(u * v) for u, v in zip(jax.tree.leaves(a), jax.tree.leaves(b)))
 
-        def lagrange_parts(state, mask, field):
+        def lagrange_parts(state, mask, field, shift):
             frozen = jax.lax.stop_gradient(state)
             P = im._dof_projector(cfg, mask)
             F = im.residual_fn(cfg, frozen, mask, formulation="raw")
 
             def phi(z, prm):
                 r = rows(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm, field)
+                r = r if shift is None else r + shift  # constant: second derivatives sum (r + shift) grad^2 r
                 return 0.5 * jnp.sum(r * r)
 
             return frozen, P, F, P(frozen), phi
 
-        def multiplier(state, mask, params, field):
+        def multiplier(state, mask, params, field, shift):
             """``(lam, L_p, adjoint residual / tolerance)``."""
-            frozen, P, F, z, phi = lagrange_parts(state, mask, field)
+            frozen, P, F, z, phi = lagrange_parts(state, mask, field, shift)
             system = im._raw_block_system(params, cfg, frozen, mask, active, self.chunk)
             phi_z, phi_p = jax.grad(phi, argnums=(0, 1))(z, params)
             _, vjp_z = jax.vjp(lambda zz: F(zz, params), z)
@@ -506,9 +523,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             lam, residual, tolerance = im._block_adjoint(system, lambda v: vjp_z(v)[0], P(phi_z), cfg)
             return lam, jax.tree.map(jnp.subtract, phi_p, vjp_p(lam)[0]), residual / tolerance
 
-        def hessian_columns(state, mask, params, field, lam, dz_cols, dp_cols, dz_basis, dp_basis):
+        def hessian_columns(state, mask, params, field, shift, lam, dz_cols, dp_cols, dz_basis, dp_basis):
             """``[dp_i; dz_i]^T grad^2 L [dp_j; dz_j]``: a row per column ``j``, a column per basis vector ``i``."""
-            _, P, F, z, phi = lagrange_parts(state, mask, field)
+            _, P, F, z, phi = lagrange_parts(state, mask, field, shift)
 
             def lagrangian(zz, prm):
                 return phi(zz, prm) - tree_dot(lam, F(zz, prm))
@@ -533,8 +550,41 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._project = jax.jit(project)
         self._last_second_order = None
 
+    def _reduced(self, x, gs_f, Jc):
+        """The constraints' null space and multipliers at ``x`` (ESS-scaled coordinates).
+
+        ``gs_f`` is the scaled gradient of the interface cost and ``Jc`` the scaled Jacobian of the constraint
+        rows (``None`` without them).  The constraints are the gauge conditions ``c(x) = 0`` and the constraint
+        rows; their multipliers ``nu`` solve ``B^T nu = -gs_f`` in least squares (``B`` the stacked scaled
+        constraint Jacobian).  Returns ``(N, gs, Hg, nu_c, B)``: an orthonormal null-space basis of ``B``, the
+        Lagrangian's scaled gradient ``gs_f + Jc^T nu_c``, the scaled gauge Hessian ``sum nu_k grad^2 c_k`` (``0``
+        without a gauge), the constraint rows' multipliers and ``B`` (``None`` without constraints).
+        """
+        S = np.asarray(self.x_scale, dtype=float)
+        blocks = []
+        if self.gauge_constraints is not None:
+            blocks.append(np.asarray(self._gauge_jacobian(jnp.asarray(x))) * S[None])
+        if Jc is not None:
+            blocks.append(Jc)
+        if not blocks:
+            return np.eye(x.size), gs_f, 0.0, np.zeros(0), None
+        B = np.vstack(blocks)
+        nu = -np.linalg.lstsq(B.T, gs_f, rcond=None)[0]
+        m = 0 if Jc is None else Jc.shape[0]
+        Hg = 0.0
+        if self.gauge_constraints is not None:
+            Hg = S[:, None] * np.asarray(self._gauge_hessian(jnp.asarray(x), jnp.asarray(nu[:nu.size - m]))) * S[None]
+        _, sv, Vt = np.linalg.svd(B)
+        rank = int(np.sum(sv > 1e-10 * sv[0]))  # the constraints' rank, at round-off
+        nu_c = nu[nu.size - m:]
+        return Vt[rank:].T, (gs_f if Jc is None else gs_f + Jc.T @ nu_c), Hg, nu_c, B
+
     def second_order(self, x, aux, field, extra=None, columns=True):
         """Exact gradient and Hessian of ``1/2 |rows|^2`` in the model coordinates at ``x``.
+
+        With constraint rows (``n_constraint_rows``) the cost is the interface rows' and the Hessian the
+        Lagrangian's, ``H + sum nu_k grad^2 r_k`` over the constraint rows (``nu`` of :meth:`_reduced`), and
+        ``g`` its gradient; the dict adds ``nu_c`` and ``shift`` (see :meth:`_second_order_setup`).
 
         ``columns=False`` skips the Hessian's columns: the dict then has ``hvp`` (``v -> H v`` in the model
         coordinates, one forward-over-reverse pass each) instead of ``H`` and ``C``.
@@ -555,43 +605,53 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         t1 = time.perf_counter()
         state, mask, params_x, _ = aux
         n = self.x0.size
-        with vc.remat_scans():
-            lam, grad_p, adjoint = self._multiplier(state, mask, params_x, field)
-        dz_b, dp_b = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
         r = np.asarray(self._rows(state, params_x, field))
+        m, shift, nu_c = self.n_constraint_rows, None, np.zeros(0)
+        if m:
+            S = np.asarray(self.x_scale, dtype=float)
+            k = r.size - m
+            nu_c = self._reduced(x, S * (J[:k, :n].T @ r[:k]), J[k:, :n] * S[None])[3]
+            shift = np.zeros(r.size)
+            shift[k:] = nu_c - r[k:]
+        shift_j = None if shift is None else jnp.asarray(shift)
+        with vc.remat_scans():
+            lam, grad_p, adjoint = self._multiplier(state, mask, params_x, field, shift_j)
+        dz_b, dp_b = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
+        rs = r if shift is None else r + shift
         if not columns:
             def hvp(v):
                 """``H v`` for every row ``v`` of ``(b, n)`` (one program call; ``b`` the block width)."""
                 vj = jnp.asarray(np.atleast_2d(v))
                 one = lambda a: jnp.tensordot(vj, a, axes=1)  # noqa: E731
                 with vc.remat_scans():
-                    return np.asarray(self._hessian_columns(state, mask, params_x, field, lam, jax.tree.map(one, dz_b),
+                    return np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam, jax.tree.map(one, dz_b),
                                                             jax.tree.map(one, dp_b), dz_b, dp_b))
 
-            out = dict(hvp=hvp, g=J[:, :n].T @ r, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
+            out = dict(hvp=hvp, g=J[:, :n].T @ rs, nu_c=nu_c, shift=shift, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
                        aux=aux, lam=lam, dz=dz, batch=batch, asymmetry=np.nan, adjoint=float(adjoint),
                        seconds=dict(jacobian=t1 - t0, multiplier=time.perf_counter() - t1))
             self._last_second_order = (key, out)
             return out
         with vc.remat_scans():  # traced (first call) with checkpointed quadrature chunks: bounded memory
             t2 = time.perf_counter()
-            cols = np.asarray(self._hessian_columns(state, mask, params_x, field, lam, dz, batch, dz_b, dp_b))
+            cols = np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam, dz, batch, dz_b, dp_b))
             t3 = time.perf_counter()
         H, C = cols[:n].T, cols[n:].T
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         H = 0.5 * (H + H.T)
-        out = dict(H=H, C=C, g=J[:, :n].T @ r, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
+        out = dict(H=H, C=C, g=J[:, :n].T @ rs, nu_c=nu_c, shift=shift, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
                    aux=aux, lam=lam, dz=dz, batch=batch, asymmetry=asymmetry, adjoint=float(adjoint),
                    seconds=dict(jacobian=t1 - t0, multiplier=t2 - t1, hessian=t3 - t2))
         self._last_second_order = (key, out)
         return out
 
-    def gradient(self, x, aux, field):
-        """Exact gradient ``J^T r`` of ``1/2 |rows|^2`` at a tight state by one adjoint solve (no tangents)."""
+    def gradient(self, x, aux, field, shift=None):
+        """Exact gradient ``J^T (r + shift)`` of ``1/2 |rows + shift|^2`` at a tight state by one adjoint solve
+        (no tangents); ``shift`` a constant (default none; minus the constraint rows: the interface cost's)."""
         field = self._bundle(field)
         state, mask, params_x, _ = aux
         with vc.remat_scans():
-            _, grad_p, _ = self._multiplier(state, mask, params_x, field)
+            _, grad_p, _ = self._multiplier(state, mask, params_x, field, None if shift is None else jnp.asarray(shift))
         return np.asarray(self._project(self.boundary_directions(params_x, x), grad_p))
 
     def _krylov_model(self, so, N, GN, Hg, S, gs, gq_norm_first):
@@ -649,6 +709,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                               callback=None, verbose=0):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
+        With constraint rows (the bootstrap current's, :attr:`n_constraint_rows`) the cost is the interface rows'
+        and every trial is restored onto ``r_c = 0`` by chord Newton steps in the current coordinates; the steps
+        live in the null space of the constraints' Jacobian too, with the Lagrangian Hessian.
         Every iterate is a tight equilibrium.  With a ``gauge`` the iterates stay on its constraint manifold
         ``c(x) = 0`` (each trial is relabelled back onto it) and the step solves the trust-region subproblem of
         the Lagrangian Hessian ``H + sum nu_k grad^2 c_k`` in the null space of ``grad c`` (``nu`` the
@@ -686,6 +749,39 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         S = np.asarray(self.x_scale, dtype=float)
         nfev, history, converged, status, started = 1, [], False, "max_iter", time.perf_counter()
         so = None
+        m, nbd = self.n_constraint_rows, self.n_boundary
+        k = r.size - m  # the interface rows; the constraint rows follow
+
+        def cost_of(rows):
+            return 0.5 * rows[:k] @ rows[:k]
+
+        def restore(x, got, J):
+            """Chord Newton on the constraint rows in the current coordinates with ``J``'s block (square), to
+            ``1/2 |r_c|^2 <= ftol`` times the cost: ``(x, got, reached)``, the last point where ``|r_c|`` fell."""
+            nonlocal nfev
+            if not m or got is None:
+                return x, got, got is not None
+            Jcc = J[k:, nbd:x.size] * S[None, nbd:]
+            for _ in range(10):
+                rc = got[0][k:]
+                if 0.5 * rc @ rc <= ftol * cost_of(got[0]):
+                    return x, got, True
+                x_try = x.copy()
+                x_try[nbd:] -= S[nbd:] * np.linalg.solve(Jcc, rc)
+                got_new = self.evaluate(x_try, params, field, tight=True)
+                nfev += 1
+                if got_new is None or np.linalg.norm(got_new[0][k:]) >= np.linalg.norm(rc):
+                    return x, got, False
+                x, got = x_try, got_new
+            return x, got, False
+
+        if m and 0.5 * r[k:] @ r[k:] > ftol * cost_of(r):  # the start onto the constraints (a Jacobian each try)
+            for _ in range(5):
+                x, (r, aux), reached = restore(x, (r, aux), self.linearize(x, aux, field)[0])
+                if reached:
+                    break
+            else:
+                raise RuntimeError("the start could not be restored onto the constraint rows")
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
         noise, state_prev = 0.0, aux[0]  # the cost's measured repeatability; a state of another boundary
@@ -702,15 +798,16 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                               g_adjoint=J[:, :x.size].T @ r_lin, seconds={})
                     H_full = None
                 r, aux = so["r"], so["aux"]
-                Js = so["J"][:, :x.size] * S[None]
+                Js = so["J"][:k, :x.size] * S[None]
                 GN = Js.T @ Js
                 if H_full is None:
                     H_full = GN
-                gs = S * so["g"]
+                gs_f = S * (so["J"][:k, :x.size].T @ r[:k])
                 model, need = ("exact" if need == "exact" else "gauss_newton"), None
             else:  # quasi-Newton: BFGS updates of the last model with the exact (adjoint) gradient
-                gs = S * self.gradient(x, aux, field)
-                step_s, y = (x - x_prev) / S, gs - gs_prev
+                shift = None if not m else np.r_[np.zeros(k), -r[k:]]  # the interface cost's gradient
+                gs_f = S * self.gradient(x, aux, field, shift=shift)
+                step_s, y = (x - x_prev) / S, gs_f - gs_prev
                 sy = float(step_s @ y)
                 if sy > 1e-12 * np.linalg.norm(step_s) * np.linalg.norm(y):  # curvature condition (round-off)
                     Bs = H_full @ step_s
@@ -721,21 +818,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 again = self.evaluate(x, params, field, seed=state_prev, tight=True)
                 nfev += 1
                 if again is not None:
-                    noise = max(noise, abs(0.5 * again[0] @ again[0] - 0.5 * r @ r))
-            Hs, Hg = H_full, 0.0
-            gs_prev, x_prev = gs, x.copy()
-            cost = 0.5 * r @ r
-            if self.gauge_constraints is not None:
-                xj = jnp.asarray(x)
-                A = np.asarray(self._gauge_jacobian(xj)) * S[None]
-                nu = -np.linalg.lstsq(A.T, gs, rcond=None)[0]
-                Hg = S[:, None] * np.asarray(self._gauge_hessian(xj, jnp.asarray(nu))) * S[None]
-                Hs = Hs + Hg
-                _, sv, Vt = np.linalg.svd(A)
-                rank = int(np.sum(sv > 1e-10 * sv[0]))  # the constraints' rank, at round-off
-                N = Vt[rank:].T
-            else:
-                N = np.eye(x.size)
+                    noise = max(noise, abs(cost_of(again[0]) - cost_of(r)))
+            gs_prev, x_prev = gs_f, x.copy()
+            cost = cost_of(r)
+            # the null space of the gauge conditions and of the constraint rows (their Jacobian from the last
+            # model), the Lagrangian's gradient and the gauge Hessian
+            N, gs, Hg, _, _ = self._reduced(x, gs_f, so["J"][k:, :x.size] * S[None] if m else None)
+            Hs = H_full + Hg
             N_full = N
             if fresh:
                 # The exact model on a Krylov subspace: preconditioned Lanczos on the reduced Hessian (one product
@@ -807,14 +896,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     x_try = self.gauge_restore(x_try)
                 except RuntimeError:  # the trial boundary has no canonical labelling nearby: a failed step
                     return x_try, None
-                return x_try, self.evaluate(x_try, params, field, tight=True)
+                x_try, got, reached = restore(x_try, self.evaluate(x_try, params, field, tight=True), so["J"])
+                return x_try, (got if reached else None)
 
             accepted = False
             for attempt in range(12):
                 step, predicted = model_step(radius)
                 x_new, got = trial(x + S * step)
                 nfev += 1
-                cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
+                cost_new = np.inf if got is None else cost_of(got[0])
                 rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
                 length = np.linalg.norm(step)
                 if verbose:
@@ -824,11 +914,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 if got is not None and rho <= 0.75:
                     # a step that is not "very successful" by the radius update's own test: a second-order
                     # correction from the residual at the trial point with the Jacobian at hand, x_t - (J N)^+ r_t
-                    JN = so["J"][:, :x.size] @ (S[:, None] * N_full)
-                    corrected, got2 = trial(x_new + S * (N_full @ -np.linalg.lstsq(JN, got[0], rcond=None)[0]))
+                    JN = so["J"][:k, :x.size] @ (S[:, None] * N_full)
+                    corrected, got2 = trial(x_new + S * (N_full @ -np.linalg.lstsq(JN, got[0][:k], rcond=None)[0]))
                     nfev += 1
-                    if got2 is not None and 0.5 * got2[0] @ got2[0] < cost_new:
-                        x_new, got, cost_new = corrected, got2, 0.5 * got2[0] @ got2[0]
+                    if got2 is not None and cost_of(got2[0]) < cost_new:
+                        x_new, got, cost_new = corrected, got2, cost_of(got2[0])
                         rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
                         if verbose:
                             print(f"  second-order correction: cost {cost_new:.10e} rho {rho:.3f}", flush=True)
@@ -844,9 +934,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         step2, predicted2 = model_step(radius)
                         x_try, got_try = trial(x + S * step2)
                         nfev += 1
-                        if got_try is None or 0.5 * got_try[0] @ got_try[0] >= cost_new:
+                        if got_try is None or cost_of(got_try[0]) >= cost_new:
                             break
-                        x_new, got, cost_new, length = x_try, got_try, 0.5 * got_try[0] @ got_try[0], np.linalg.norm(step2)
+                        x_new, got, cost_new, length = x_try, got_try, cost_of(got_try[0]), np.linalg.norm(step2)
                         if verbose:
                             print(f"  extended: |s| {length:.2e} cost {cost_new:.10e} predicted {predicted2:.2e}",
                                   flush=True)
@@ -952,7 +1042,9 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         second_order`) and ``H mu = dh/db`` the row ``h`` has ``dh/dx = dh/dx|_b - mu^T f_bx``.  ``f_bx`` along
         ``mu`` is a forward-over-reverse pass through the field and, for plasma parameters, the Hessian columns
         of their directions.  (Gauss-Newton would replace ``H`` by ``J^T J`` and ``f_bx`` by ``J_b^T J_x``, wrong
-        by ``sum_i r_i d^2 r_i`` when the rows do not vanish: by up to 21 % at finite beta.)
+        by ``sum_i r_i d^2 r_i`` when the rows do not vanish: by up to 21 % at finite beta.)  With the gauge and
+        the constraint rows ``r_c(b, x) = 0``, ``H`` is the Lagrangian Hessian on their null space and the
+        constraint rows' dependence on the plasma parameters adds the response off the null space.
         """
         model, xj = self.model, jnp.asarray(x)
         field = self.field(xj)
@@ -969,19 +1061,13 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         factors = model._im.block_factors_at(model.cfg, params, state, mask)
         params_bar = self._pullback(state, mask, params, xj, factors)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
-        # With a gauge the boundary solves min f s.t. c(b) = 0: the sensitivity lives in the null space N of
-        # grad c, with the Lagrangian Hessian W = H + sum nu_k grad^2 c_k (ESS-scaled for conditioning).
+        # The boundary solves min f s.t. c(b) = 0 (gauge) and r_c(b, x) = 0 (constraint rows): the sensitivity
+        # lives in the null space N of their Jacobian B, with the Lagrangian Hessian W (ESS-scaled).
         S = np.asarray(model.x_scale, dtype=float)
-        W = S[:, None] * so["H"] * S[None]
-        if model.gauge_constraints is not None:
-            bj = jnp.asarray(sol["x"])
-            A = np.asarray(model._gauge_jacobian(bj)) * S[None]
-            nu = -np.linalg.lstsq(A.T, S * so["g"], rcond=None)[0]
-            W = W + S[:, None] * np.asarray(model._gauge_hessian(bj, jnp.asarray(nu))) * S[None]
-            _, sv, Vt = np.linalg.svd(A)
-            N = Vt[int(np.sum(sv > 1e-10 * sv[0])):].T
-        else:
-            N = np.eye(nb)
+        J, r, m = so["J"], so["r"], model.n_constraint_rows
+        k = r.size - m
+        N, _, Hg, _, B = model._reduced(sol["x"], S * (J[:k, :nb].T @ r[:k]), J[k:, :nb] * S[None] if m else None)
+        W = S[:, None] * so["H"] * S[None] + Hg
         w, Q = np.linalg.eigh(N.T @ W @ N)
         if w[0] <= 0:
             raise TrialRejected(f"the reduced boundary Hessian is not positive definite (smallest eigenvalue "
@@ -999,9 +1085,13 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
                 gradients[k] -= np.asarray(self._coil_mixed(state, mask, params, xj, dz_mu, dp_mu))
         if self._plasma.size:
             gradients[:, self._plasma] -= mu.T @ so["C"]
-        J = so["J"]
+            if m:
+                # the constraint rows move with the plasma parameters: the boundary's response has the part
+                # -B^+ [0; dr_c/dp] off the null space, which enters through eta = (B^+)^T (S dh/db - W mu / S)
+                eta = np.linalg.lstsq(B.T, S[:, None] * G_b.T - W @ (mu / S[:, None]), rcond=None)[0]
+                gradients[:, self._plasma] -= eta[eta.shape[0] - m:].T @ J[k:, nb:]
         self._anchor = dict(x=self._x(x).copy(), b=sol["x"], J_b=J[:, :nb], J_p=J[:, nb:], state=state,
-                            params=params, cost=0.5 * so["r"] @ so["r"])
+                            params=params, cost=0.5 * so["r"][:k] @ so["r"][:k])
         sol["gradients"] = gradients
         sol["hessian_eigenvalues"] = w
         return gradients

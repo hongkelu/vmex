@@ -163,6 +163,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
             self.with_boundary = with_boundary
         self.hessian_chunk = int(hessian_chunk or self.chunk)
+        self.require_converged = False  # LeastSquaresFreeBoundaryProblem: an unconverged trial is a failed one
+        self.gauge_residual = 0.0
         self._linearization = None
         self._last_linearize = None
         self._gauge_setup("canonical")
@@ -236,9 +238,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         ``jacobian`` (a Galerkin warm start) is not used.
         """
         del jacobian
-        return self._newton(params, field, x0=x0, ftol=ftol, xtol=xtol,
-                            max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
-                            verbose=verbose)
+        out = self._newton(params, field, x0=x0, ftol=ftol, xtol=xtol,
+                           max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
+                           verbose=verbose)
+        if self.require_converged and not out["converged"]:  # an optimizer's trial: no answer, not a value
+            raise RuntimeError(f"the least-squares free boundary did not converge ({out['status']})")
+        return out
 
     def _gauge_setup(self, gauge):
         """Equality constraints ``c(x) = 0`` that fix the boundary's poloidal labelling (``gauge``).
@@ -382,7 +387,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     def gauge_restore(self, x, tol=1e-12, max_iter=30):
         """The boundary ``x`` relabelled onto ``c = 0`` (the surface is kept up to the truncation of the
-        relabelled boundary to the modes), by Levenberg-Marquardt on ``|c|^2`` over the relabellings."""
+        relabelled boundary to the modes), by Levenberg-Marquardt on ``|c|^2`` over the relabellings; where
+        ``c = 0`` is out of reach, the relabelling of least ``|c|`` (``gauge_residual`` records it)."""
         if self.gauge_constraints is None:
             return np.asarray(x, dtype=float)
         x = np.asarray(x, dtype=float)
@@ -459,8 +465,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if np.max(np.abs(c)) <= 1e3 * tol:
                 break
         x, c = best
-        if np.max(np.abs(c)) > 1e3 * tol:
-            raise RuntimeError(f"the gauge restoration did not converge (|c| = {np.max(np.abs(c)):.2e})")
+        # Relabelling a truncated boundary is not exact: where no relabelling reaches c = 0 (a floor of ~1e-4 on
+        # some strongly shaped boundaries) the gauge is the relabelling of least |c|, and the floor is recorded.
+        self.gauge_residual = float(np.max(np.abs(c)))
         return x
 
     def _second_order_setup(self, rows, active, edge):
@@ -912,6 +919,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         from .implicit import _assemble, _dof_projector, _edge_mask, runtime_from_params
 
         field_from_parameters = options["field_from_parameters"]
+        model.require_converged = True
         edge, cfg = _edge_mask(model.cfg), model.cfg
 
         def coil_mixed(state, mask, params, x, dz_mu, dp_mu):

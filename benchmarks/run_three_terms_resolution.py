@@ -461,16 +461,23 @@ def run_nestor_mgrid(modes, out):
     score(modes, out, "nestor_mgrid", eq, extra)
 
 
-def run_three_terms(modes, out, chunk):
+def run_three_terms(modes, out, chunk, reference="start"):
     from vmex.core.freeboundary_vc import solve_free_boundary_three_terms
 
     meter = Meter()
+    # The deck is the solver's fixed labelling reference (the free boundary is its displacement along the deck
+    # equilibrium's radial lines): the common start, not the answer.  ``--reference target`` labels with the
+    # target and starts from the start.
     inp = replace(deck(modes), lfreeb=True, mgrid_file="field(direct)")
-    fit = solve_free_boundary_three_terms(inp, external_field=load_field(out), initial_boundary=start_boundary(inp),
+    start = start_boundary(inp)
+    fit = solve_free_boundary_three_terms(start if reference == "start" else inp, external_field=load_field(out),
+                                         initial_boundary=None if reference == "start" else start,
                                          nphi=VC_GRID, ntheta=VC_GRID, max_nfev=60, trial_ftol=1e-11, chunk=chunk,
                                          quadrature=(4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID), verbose=2)
-    score(modes, out, "three_terms", fit.equilibrium, dict(nfev=int(fit.nfev), njev=int(fit.njev),
-                                                          cost=float(fit.cost), **meter()))
+    name = "three_terms" if reference == "start" else "three_terms_" + reference
+    score(modes, out, name, fit.equilibrium, dict(nfev=int(fit.nfev), njev=int(fit.njev), cost=float(fit.cost),
+                                                  converged=bool(fit.success), message=str(fit.message),
+                                                  reference=reference, **meter()))
 
 
 def run_score(modes, out, name, path):
@@ -549,6 +556,8 @@ def main(argv=None):
                                      "score", "table"))
     p.add_argument("args", nargs="+", help="[M] OUT [NAME WOUT]")
     p.add_argument("--chunk", type=int, help="Jacobian columns per batch (default 8, 4 above 8 modes, 2 at 12)")
+    p.add_argument("--reference", choices=("start", "target"), default="start",
+                   help="three_terms: the deck (the solver's labelling reference) is the common start or the target")
     p.add_argument("--case", choices=tuple(CASES), help="the deck (set by the field step and kept in OUT/case.txt)")
     a = p.parse_args(argv)
     modes = None if a.step in ("field", "mgrid", "table") else int(a.args[0])
@@ -577,7 +586,7 @@ def main(argv=None):
     elif a.step == "nestor":
         run_nestor(modes, out)
     elif a.step == "three_terms":
-        run_three_terms(modes, out, a.chunk or (8 if modes <= 8 else 4 if modes <= 10 else 2))
+        run_three_terms(modes, out, a.chunk or (8 if modes <= 8 else 4 if modes <= 10 else 2), a.reference)
     elif a.step == "score":
         run_score(modes, out, a.args[2], a.args[3])
     else:

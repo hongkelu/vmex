@@ -385,7 +385,7 @@ def bootstrap_input(inp, beta, device):
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
         model = ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
                                            fixed_boundary=True)
-        current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
+        current = model.solve_boundary(model.params0, None, max_nfev=30)
         state, _, params, _ = current["aux"]
         print(f"Redl current on its {current['x'].size} knots: max relative mismatch "
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
@@ -823,7 +823,6 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
     checking = bool(args.check_gradient)  # central differences need every trial solved tight
     model = ThreeTermsFreeBoundaryModel(inp, bootstrap=redl_profiles(inp)[0], bootstrap_helicity=REDL_HELICITY,
                                        fixed_boundary=True, chunk=args.chunk, trial_ftol=None if checking else 1e-11)
-    current_ftol = 1e-14 if checking else 1e-8
     fixed, nc = model.fixed, model.x0.size
     vary_phiedge = FREE_PHIEDGE
     phiedge0 = float(fixed.phiedge)
@@ -988,7 +987,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         params = plasma_params(model.params0, jnp.asarray(x))
         try:
             result = model.solve_boundary(params, None, x0=anchor.get("v"), jacobian=anchor.get("J_c"),
-                                          ftol=current_ftol, max_nfev=30)
+                                          max_nfev=30)
         except (vj.VmecError, RuntimeError) as error:
             print(f"[trial] failed: {str(error)[:300]}", flush=True)
             counters["failed"] += 1
@@ -1011,7 +1010,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         J, dz, batch, aux = model.linearize(sol["x"], sol["aux"], None, extra=extra)
         # polish the current with this Jacobian, and linearize again where it went if it gained
         polished = model.solve_boundary(plasma_params(model.params0, xj), None, x0=sol["x"], jacobian=J[:, :nc],
-                                        ftol=1e-10, max_nfev=10)
+                                        max_nfev=10)
         if 0.5 * polished["rows"] @ polished["rows"] < 0.9 * 0.5 * sol["rows"] @ sol["rows"]:
             sol.update(x=polished["x"], aux=polished["aux"])
             J, dz, batch, aux = model.linearize(sol["x"], sol["aux"], None, extra=extra)

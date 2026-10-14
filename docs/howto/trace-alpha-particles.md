@@ -125,9 +125,8 @@ wins. The Boozer transform takes about 2 s.
 **CPU or GPU.** Since ESSOS 0.19.3 (parallel spline lookup and compaction of
 lost alphas) a GPU is the faster choice for large ensembles: 1,024 alphas over
 2 ms take 2.4 s warm on an RTX A4000 against 18 s on eight CPU devices
-(uwplasma/ESSOS#98). ESSOS 0.21 tables `|B|` in the Boozer angles above 48
-modes and drops lost alphas across devices: the default ARIES-CS run on 10 M4
-cores went from 111 s to 53 s, QA from 11.2 s to 6.9 s, same energy error.
+(uwplasma/ESSOS#98). ESSOS 0.21 (angle table, lost alphas dropped) cut the
+default ARIES-CS run on 10 M4 cores from 111 s to 53 s and QA from 11 s to 7 s.
 
 ## Convergence of the defaults
 

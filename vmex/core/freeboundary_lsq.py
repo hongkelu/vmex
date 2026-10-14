@@ -10,19 +10,18 @@ G_coil`` fixes the net poloidal current.
 
 The interface conditions fix the surface but not its poloidal labelling: at finite resolution the labelling
 changes what the truncated series can represent, and the exact Hessian of the cost is flat and indefinite along
-relabellings.  The labelling is therefore fixed by a canonical condition on the boundary itself, with no
-reference surface: the spectral width ``F_6 = sum m^6 (R_mn^2 + Z_mn^2)`` is stationary under every ``m > 0``
-relabelling and the twist ``T = sum (n nfp)^2 (R_mn^2 + Z_mn^2)`` under every shift of the angle origin
-(:meth:`LeastSquaresFreeBoundaryModel._gauge_setup`).  The answer does not depend on the start or on the deck's
-boundary, which is only the initial guess.
+relabellings.  As in the Galerkin method, the deck's boundary fixes the labelling: the boundary's displacement
+from the deck's has no component along the deck's relabellings, one linear condition per relabelling mode
+(:meth:`LeastSquaresFreeBoundaryModel._gauge_setup`).  The answer does not depend on the start
+(``initial_boundary``).  With the bootstrap current in the solve, its rows are equality constraints: the current
+is Redl's exactly, whatever the rows' scale.
 
 The solver (:meth:`LeastSquaresFreeBoundaryModel._newton`) is a trust-region (quasi-)Newton method on the gauge
 manifold with exact second derivatives through the equilibrium (second-order adjoint,
 :meth:`LeastSquaresFreeBoundaryModel.second_order`): Gauss-Newton and BFGS models first, the exact Hessian as
 products in a preconditioned Lanczos subspace where they fail and to certify convergence.  Design gradients
 (:class:`LeastSquaresFreeBoundaryProblem`) use the exact reduced Hessian: Gauss-Newton's would be wrong by
-``sum_i r_i d^2 r_i`` (up to 21 % at finite beta).  It is reference-free and, at 8 x 8 and 12 x 12, 3-5 times
-slower than the Galerkin method.
+``sum_i r_i d^2 r_i`` (up to 21 % at finite beta).
 """
 
 from __future__ import annotations
@@ -137,7 +136,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` (its equilibria, tangents, pushes,
     pullbacks, warm-up and keywords) with the boundary's Fourier coefficients as coordinates (``x`` up to
     ``max_mode`` and ``RBC(0,0)``, :func:`~vmex.core.optimize.pack_boundary`; ``x0`` the deck's, ``x_scale``
-    their ESS scales), the least-squares rows of the module docstring, the canonical labelling gauge
+    their ESS scales), the least-squares rows of the module docstring, the deck's labelling gauge
     (:meth:`_gauge_setup`, :meth:`gauge_restore`) and exact second derivatives (:meth:`second_order`,
     :meth:`gradient`).  :meth:`solve_boundary` is the trust-region (quasi-)Newton solve (:meth:`_newton`).
     ``hessian_chunk`` bounds the second-derivative columns per batch (default ``chunk``).
@@ -167,10 +166,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         # free-boundary solve, not least-squares rows: the current is exactly Redl's, whatever the rows' scale.
         self.n_constraint_rows = 0 if self.fixed_boundary or self.bootstrap is None else int(self.bootstrap.x0.size)
         self.require_converged = False  # LeastSquaresFreeBoundaryProblem: an unconverged trial is a failed one
-        self.gauge_residual = 0.0
         self._linearization = None
         self._last_linearize = None
-        self._gauge_setup("canonical")
+        self._gauge_setup()
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
@@ -248,35 +246,23 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             raise RuntimeError(f"the least-squares free boundary did not converge ({out['status']})")
         return out
 
-    def _gauge_setup(self, gauge):
-        """Equality constraints ``c(x) = 0`` that fix the boundary's poloidal labelling (``gauge``).
+    def _gauge_setup(self):
+        """Linear equality constraints ``c(x) = 0`` that fix the boundary's poloidal labelling: the deck's.
 
         A boundary's Fourier coefficients describe a surface and an angle on it; the interface conditions see
         the angle only through the truncation, too weakly to fix it (the exact Hessian of the cost is
-        indefinite along relabellings).  ``gauge`` fixes it by a canonical condition on the boundary alone,
-        one equation per relabelling mode ``theta -> theta + omega``, ``omega = sum sin(m theta - n nfp phi)``
-        over the boundary modes (``m = 0``: ``n >= 1``), independent of any reference surface or start:
-
-        - ``"canonical"``: reference-free, defined by the boundary itself.  For ``m > 0`` relabellings the
-          spectral width ``F_6 = sum m^6 (R_mn^2 + Z_mn^2)`` is stationary; for the ``m = 0`` shifts of the
-          angle origin the twist ``T = sum (n nfp)^2 (R_mn^2 + Z_mn^2)`` is stationary: two functionals on two
-          disjoint blocks of relabellings, no relative weight.  Stationarity is that of the relabelled,
-          truncated boundary's coefficients (a minimum exists at any resolution).  ``m^6`` keeps the relabelled
-          surface
-          on the original one (LP QA: 0.05 mm at 8 modes, 0.001 mm at 12; ``m^4`` moves it by 1 mm at 8);
-        The model uses ``"canonical"``; ``None`` (no gauge) is the fixed-boundary model's.
+        indefinite along relabellings).  As in the Galerkin model the deck's boundary fixes it: the boundary's
+        displacement from the deck's has no component along the deck's relabellings ``theta -> theta + omega``,
+        ``omega = sum sin(m theta - n nfp phi)`` over the boundary modes (``m = 0``: ``n >= 1``, the shifts of the
+        angle origin), in the ESS-scaled metric.  One linear condition per relabelling mode; only the labelling
+        is fixed, the shape stays free, and every start reaches the same boundary.  (A reference-free gauge --
+        stationarity of the spectral width ``sum m^p (R^2 + Z^2)`` -- is unique too, but at low resolution its
+        labelling costs the truncated series cm-size shape on strongly shaped boundaries; see the docs.)
+        ``None`` (no gauge) is the fixed-boundary model's.
         """
-        self.gauge = gauge
         self.gauge_constraints = None
-        if gauge is None or self.fixed_boundary:
+        if self.fixed_boundary:
             return
-        cache = self.__dict__.setdefault("_gauge_sets", {})
-        key = gauge
-        if key in cache:  # a gauge used before (two-phase solves): its compiled functions, not new ones
-            self.__dict__.update(cache[key])
-            return
-        if gauge != "canonical":
-            raise ValueError(f"unknown gauge {gauge!r}")
         from .optimize import _dof_modes, boundary_arrays_from_x
 
         fixed, nb = self.fixed, self.n_boundary
@@ -284,14 +270,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         rbc0 = np.asarray(fixed.rbc)
         ntor_b, mpol_b = (rbc0.shape[0] - 1) // 2, rbc0.shape[1]
         m_all = np.arange(mpol_b)[None, :]
-        n_all = np.arange(-ntor_b, ntor_b + 1)[:, None]
-        mm = jnp.asarray(np.broadcast_to(m_all, rbc0.shape).astype(float))
-        nn = jnp.asarray(np.broadcast_to(n_all, rbc0.shape).astype(float)) * nfp
         # every odd relabelling: sin(m theta - n nfp phi), m >= 1, and the phi-dependent shift of the angle origin
         # sin(-n nfp phi), m = 0, n >= 1 (it maps R(1, 0) cos(theta) onto R(1, +-n): a near-null direction)
         gm = list(_dof_modes(fixed, self.max_mode))
         g_rows = np.array([n + ntor_b for _, n in gm]); g_cols = np.array([m for m, _ in gm])
-        is0 = jnp.asarray(g_cols == 0)
 
         def grid(nt, nz):
             """Separable Fourier factors on an ``nt x nz`` grid of one field period: (cos, sin)(m theta), (n nfp phi)."""
@@ -316,16 +298,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 return (jnp.einsum("tz,mt,nz->nm", q, sin_m, cos_n) - jnp.einsum("tz,mt,nz->nm", q, cos_m, sin_n)) / size
             return (jnp.einsum("tz,mt,nz->nm", q, cos_m, cos_n) + jnp.einsum("tz,mt,nz->nm", q, sin_m, sin_n)) / size
 
-        weights = (mm**6, nn**2)  # F_6 (m > 0 block) and the twist T (m = 0 block)
-
-        def functionals(x):
-            rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
-            return tuple(jnp.sum(w * (rbc**2 + zbs**2)) for w in weights)
-
         # Relabelling theta -> theta + omega of the boundary x, omega = sum_k w_k sin(m_k theta - n_k nfp phi):
         # the boundary sampled at the shifted angles and projected back onto the modes (the truncation).
-        modes = _dof_modes(fixed, self.max_mode)
-        rows_i = np.array([n + ntor_b for _, n in modes]); cols_i = np.array([m for m, _ in modes])
+        rows_i, cols_i = g_rows, g_cols
         theta_f, *fine = grid(2 * (4 * mpol_b + 8), 2 * (4 * ntor_b + 8))
         m_col = jnp.arange(mpol_b, dtype=float)[:, None, None]
         norm = jnp.asarray(np.where(np.broadcast_to(m_all, rbc0.shape) == 0, 1.0, 2.0))
@@ -346,141 +321,27 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return jnp.concatenate([x_new, x[x_new.size:]])
 
         self._relabel = jax.jit(relabel)
-
-        coarse = grid(4 * mpol_b + 8, 4 * ntor_b + 8)[1:]
-
-        def constraints(x):
-            """``(L R) R_theta + (L Z) Z_theta`` against every relabelling, ``L`` multiplying a harmonic by its
-            functional's weight (``m^6`` for m > 0 relabellings, ``(n nfp)^2`` for the m = 0 shifts), each block
-            over its functional: the first variation of ``F_6`` / ``T`` under the relabelling."""
-            rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
-            R_t = -series(rbc * mm, *coarse, odd=True)
-            Z_t = series(zbs * mm, *coarse, odd=False)
-            blocks = []
-            for w in weights:
-                q = R_t * series(rbc * w, *coarse, odd=False) + Z_t * series(zbs * w, *coarse, odd=True)
-                blocks.append(moments(q, *coarse, odd=True)[g_rows, g_cols]
-                              / (jnp.sum(w * mm * (rbc**2 + zbs**2)) + 1e-300))
-            return jnp.where(is0, blocks[1], blocks[0])
-
-        block0 = np.asarray(is0)
-
-        def block_newton(x, w, k):
-            """Gradient and Hessian of functional ``k`` of the relabelled boundary in its own block of omega."""
-            mask = jnp.asarray(block0 if k else ~block0, dtype=float)
-
-            def f(v):
-                return functionals(relabel(x, w + mask * v))[k]
-
-            z = jnp.zeros_like(w)
-            return jax.grad(f)(z) * mask, jax.hessian(f)(z) * mask[:, None] * mask[None], f(z)
-
-        self._block_newton = jax.jit(block_newton, static_argnums=2)
-        self._block_value = jax.jit(lambda x, w, k: functionals(relabel(x, w))[k], static_argnums=2)
-        self._gauge_blocks = block0
-        self._relabel_residual = jax.jit(lambda x, w: constraints(relabel(x, w)))
-        self._relabel_jacobian = jax.jit(jax.jacfwd(lambda x, w: constraints(relabel(x, w)), argnums=1))
+        S = np.asarray(self.x_scale, dtype=float)
+        x_ref = np.asarray(self.x0, dtype=float)
+        # the deck's relabelling tangents, orthonormal in the scaled metric: c(x) = Q^T (x - x_ref) / S
+        tangents = np.asarray(jax.jacfwd(lambda w: relabel(jnp.asarray(x_ref), w))(jnp.zeros(len(gm)))) / S[:, None]
+        Q = np.linalg.qr(tangents)[0]
+        self._gauge_matrix = Q.T / S[None]  # c(x) = A (x - x_ref): A is the constraints' Jacobian
+        self.gauge_reference = x_ref
         self.n_gauge = len(gm)
-        self.gauge_constraints = jax.jit(constraints)
-        self._gauge_jacobian = jax.jit(jax.jacfwd(constraints))
-        names = ("gauge_constraints", "_gauge_jacobian", "_gauge_hessian", "_relabel", "_relabel_residual",
-                 "_relabel_jacobian", "_block_newton", "_block_value", "_gauge_blocks", "n_gauge")
-        self._gauge_hessian = jax.jit(lambda x, nu: jax.hessian(lambda z: jnp.dot(nu, constraints(z)))(x))
-        cache[key] = {name: self.__dict__[name] for name in names if name in self.__dict__}
+        A, ref = jnp.asarray(self._gauge_matrix), jnp.asarray(x_ref)
+        self.gauge_constraints = jax.jit(lambda x: A @ (x - ref))
+        self._gauge_jacobian = lambda x: self._gauge_matrix
 
-    def gauge_restore(self, x, tol=1e-12, max_iter=30):
-        """The boundary ``x`` relabelled onto ``c = 0`` (the surface is kept up to the truncation of the
-        relabelled boundary to the modes), by Levenberg-Marquardt on ``|c|^2`` over the relabellings; where
-        ``c = 0`` is out of reach, the relabelling of least ``|c|`` (``gauge_residual`` records it)."""
-        if self.gauge_constraints is None:
-            return np.asarray(x, dtype=float)
+    def gauge_restore(self, x):
+        """The boundary ``x`` onto ``c = 0``: the orthogonal projection in the scaled metric (exact: ``c`` is
+        linear), which removes the displacement's components along the deck's relabellings."""
         x = np.asarray(x, dtype=float)
-        zero = jnp.zeros(self.n_gauge)
-
-        def levenberg_marquardt(residual, jacobian, step, w):
-            """Levenberg-Marquardt on ``|residual(w)|^2`` with ``w <- step(w, dw)``; returns the last ``w`` and
-            residual (stops at ``tol`` or when no damping decreases it)."""
-            c = residual(w)
-            mu = None
-            for _ in range(8 * max_iter):
-                if np.max(np.abs(c)) <= tol:
-                    break
-                A = jacobian(w)
-                AtA, Atc = A.T @ A, A.T @ c
-                scale = np.max(np.diag(AtA))
-                mu = 1e-3 * scale if mu is None else mu  # the textbook start, adapted below
-                while mu <= 1e12 * scale:
-                    w_try = step(w, -np.linalg.solve(AtA + mu * np.eye(c.size), Atc))
-                    c_try = residual(w_try)
-                    if np.linalg.norm(c_try) < np.linalg.norm(c):
-                        w, c, mu = w_try, c_try, mu / 3.0
-                        break
-                    mu *= 10.0
-                else:  # no relabelling decreases |c|
-                    break
-            return w, c
-
-        # One relabelling of x itself first (exact when the truncation lets c vanish on x's orbit), then, from
-        # its best point, relabellings of the current boundary (relabelling a truncated boundary twice is not
-        # one relabelling: at low resolution only these reach c = 0).
-        xj = jnp.asarray(x)
-        w = np.zeros(self.n_gauge)
-        # Start: alternate damped-Newton minimizations of F_6 over the m > 0 relabellings and of T over the m = 0
-        # shifts (each block minimizes its own functional, which is what c = 0 states to first order)
-        for _ in range(8):
-            moved = 0.0
-            for k in (0, 1):
-                active = self._gauge_blocks if k else ~self._gauge_blocks
-                for _ in range(20):
-                    g, H, f = map(np.asarray, self._block_newton(xj, jnp.asarray(w), k))
-                    g, H = g[active], H[np.ix_(active, active)]
-                    if not g.size or np.linalg.norm(g) <= 1e-13 * max(abs(float(f)), 1e-300):
-                        break
-                    lam, dw = 0.0, None
-                    for _ in range(30):  # damping (x10 a try) until the functional decreases
-                        if lam or np.all(np.linalg.eigvalsh(H) > 0):
-                            trial = np.linalg.solve(H + lam * np.eye(g.size), -g)
-                            w_try = w.copy()
-                            w_try[active] += trial
-                            if float(self._block_value(xj, jnp.asarray(w_try), k)) < float(f):
-                                dw = trial
-                                break
-                        lam = max(10 * lam, 1e-6 * np.max(np.abs(np.diag(H))) + 1e-300)
-                    if dw is None:
-                        break
-                    w[active] += dw
-                    moved = max(moved, float(np.max(np.abs(dw))))
-            if moved < 1e-12:
-                break
-        best = None
-        for w0 in (w, np.zeros(self.n_gauge)):  # from the block minimum, and failing that from x itself
-            w1, c = levenberg_marquardt(lambda w: np.asarray(self._relabel_residual(xj, jnp.asarray(w))),
-                                        lambda w: np.asarray(self._relabel_jacobian(xj, jnp.asarray(w))),
-                                        lambda w, dw: w + dw, w0)
-            x1 = np.asarray(self._relabel(xj, jnp.asarray(w1)))
-            if np.max(np.abs(c)) > tol:
-                x1, c = levenberg_marquardt(lambda z: np.asarray(self.gauge_constraints(jnp.asarray(z))),
-                                            lambda z: np.asarray(self._relabel_jacobian(jnp.asarray(z), zero)),
-                                            lambda z, dw: np.asarray(self._relabel(jnp.asarray(z), jnp.asarray(dw))),
-                                            x1)
-            if best is None or np.max(np.abs(c)) < np.max(np.abs(best[1])):
-                best = (x1, c)
-            if np.max(np.abs(c)) <= 1e3 * tol:
-                break
-        x, c = best
-        # Relabelling a truncated boundary is not exact: on some strongly shaped boundaries no relabelling reaches
-        # c = 0 (a floor of ~1e-4).  There the least-|c| relabelling is finished by Gauss-Newton on c in the
-        # coefficients (minimum-norm steps in the x_scale metric): the surface then moves by O(floor), which the
-        # boundary's initial guess or trial step absorbs.  gauge_residual records the relabelling floor.
-        self.gauge_residual = float(np.max(np.abs(c)))
-        S = np.asarray(getattr(self, "x_scale", np.ones(x.size)), dtype=float)
-        for _ in range(max_iter):
-            if np.max(np.abs(c)) <= tol:
-                break
-            A = np.asarray(self._gauge_jacobian(jnp.asarray(x))) * S[None]
-            x = x - S * np.linalg.lstsq(A, c, rcond=None)[0]
-            c = np.asarray(self.gauge_constraints(jnp.asarray(x)))
-        return x
+        if self.gauge_constraints is None:
+            return x
+        S = np.asarray(self.x_scale, dtype=float)
+        As = self._gauge_matrix * S[None]  # orthonormal rows
+        return x - S * (As.T @ (self._gauge_matrix @ (x - self.gauge_reference)))
 
     def _second_order_setup(self, rows, active, edge):
         """Exact second derivatives of the cost ``1/2 |rows|^2`` through the equilibrium.
@@ -557,8 +418,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         rows (``None`` without them).  The constraints are the gauge conditions ``c(x) = 0`` and the constraint
         rows; their multipliers ``nu`` solve ``B^T nu = -gs_f`` in least squares (``B`` the stacked scaled
         constraint Jacobian).  Returns ``(N, gs, Hg, nu_c, B)``: an orthonormal null-space basis of ``B``, the
-        Lagrangian's scaled gradient ``gs_f + Jc^T nu_c``, the scaled gauge Hessian ``sum nu_k grad^2 c_k`` (``0``
-        without a gauge), the constraint rows' multipliers and ``B`` (``None`` without constraints).
+        Lagrangian's scaled gradient ``gs_f + Jc^T nu_c``, the gauge's Hessian (``0``: the gauge is linear), the
+        constraint rows' multipliers and ``B`` (``None`` without constraints).
         """
         S = np.asarray(self.x_scale, dtype=float)
         blocks = []
@@ -572,8 +433,6 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         nu = -np.linalg.lstsq(B.T, gs_f, rcond=None)[0]
         m = 0 if Jc is None else Jc.shape[0]
         Hg = 0.0
-        if self.gauge_constraints is not None:
-            Hg = S[:, None] * np.asarray(self._gauge_hessian(jnp.asarray(x), jnp.asarray(nu[:nu.size - m]))) * S[None]
         _, sv, Vt = np.linalg.svd(B)
         rank = int(np.sum(sv > 1e-10 * sv[0]))  # the constraints' rank, at round-off
         nu_c = nu[nu.size - m:]
@@ -713,7 +572,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         and every trial is restored onto ``r_c = 0`` by chord Newton steps in the current coordinates; the steps
         live in the null space of the constraints' Jacobian too, with the Lagrangian Hessian.
         Every iterate is a tight equilibrium.  With a ``gauge`` the iterates stay on its constraint manifold
-        ``c(x) = 0`` (each trial is relabelled back onto it) and the step solves the trust-region subproblem of
+        ``c(x) = 0`` (each trial is projected back onto it) and the step solves the trust-region subproblem of
         the Lagrangian Hessian ``H + sum nu_k grad^2 c_k`` in the null space of ``grad c`` (``nu`` the
         least-squares multipliers), exactly, in the eigenbasis of the ESS-scaled reduced model (indefinite ones
         included).  Models, cheapest first: Gauss-Newton ``J^T J`` from one Jacobian, then BFGS updates with
@@ -891,11 +750,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 return N @ (Q @ z), -(gq @ z + 0.5 * np.sum(w * z * z))
 
             def trial(x_try):
-                """The relabelled trial and its rows, or ``(x_try, None)`` when it has no gauge or equilibrium."""
-                try:
-                    x_try = self.gauge_restore(x_try)
-                except RuntimeError:  # the trial boundary has no canonical labelling nearby: a failed step
-                    return x_try, None
+                """The trial on the gauge and the constraints and its rows, or ``(x_try, None)`` without equilibrium."""
+                x_try = self.gauge_restore(x_try)
                 x_try, got, reached = restore(x_try, self.evaluate(x_try, params, field, tight=True), so["J"])
                 return x_try, (got if reached else None)
 
@@ -1108,7 +964,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
     """:func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` with ``method="least_squares"``.
 
     The same keywords and result (``max_nfev`` caps the solver's models); ``initial_boundary`` is the start (its
-    coefficients, relabelled onto the canonical gauge).
+    coefficients, projected onto the deck's labelling gauge).
     """
     from scipy.optimize import OptimizeResult
 

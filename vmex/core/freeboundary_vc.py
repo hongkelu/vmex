@@ -400,11 +400,10 @@ def solve_free_boundary_three_terms(
 
     ``method`` chooses the formulation: ``"galerkin"`` (default; described below: the square system on the
     deck's normal displacement, with the deck as the labelling reference) or ``"least_squares"``
-    (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`: the boundary coefficients with a
-    canonical, reference-free labelling, the area-weighted least squares of the conditions on the grid, exact
-    second derivatives).  Galerkin is the faster (3-5 times at 8 x 8 and 12 x 12); least squares does not
-    depend on the deck's boundary at all (only the initial guess), which Galerkin's labelling reference does
-    at the truncation level.  Both take the keywords below and return the same result.
+    (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`: the boundary coefficients with the
+    deck's labelling, the area-weighted least squares of the conditions on the grid, exact second derivatives,
+    the bootstrap current's rows as equality constraints).  Galerkin is the faster.  Both take the keywords
+    below and return the same result.
 
     ``inp`` is a free-boundary deck (``PHIEDGE``, profiles, and the external
     field through ``external_field``, ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``).

@@ -3,8 +3,7 @@
 This page covers ``method="least_squares"`` of
 {func}`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 ({mod}`vmex.core.freeboundary_lsq`; the default, ``method="galerkin"``, solves a
-square system for the deck's normal displacement with the deck as labelling
-reference, and is 3-5 times faster): what it
+square system for the deck's normal displacement, and is faster): what it
 minimizes, why the poloidal labelling of the boundary needs a gauge, how the
 exact Hessian is built through the equilibrium, and how the design gradients
 of a single-stage problem follow from it.
@@ -52,23 +51,37 @@ every start solve a different problem. Run to full convergence from three
 starts, that gives quasi-symmetry residuals of $4.5$, $3.4$ and
 $3.8 \cdot 10^{-6}$, on surfaces 0.1 mm apart.
 
-The solver therefore fixes the labelling by exact constraints $c(b) = 0$, one
-per relabelling mode $\sin(m\theta - n N_{fp}\phi)$. These include the $m = 0$
-shifts of the angle origin. The constraints are defined by the boundary alone:
+The solver therefore fixes the labelling by exact linear constraints $c(b) = 0$,
+one per relabelling mode $\sin(m\theta - n N_{fp}\phi)$, including the $m = 0$
+shifts of the angle origin. As in the Galerkin method, the deck's boundary
+$b_\mathrm{deck}$ fixes the labelling: the displacement $b - b_\mathrm{deck}$
+has no component along the deck's relabellings (ESS-scaled metric). Only the
+labelling is fixed; the shape stays free. The start (``initial_boundary``) is
+projected onto $c = 0$, so every start reaches the same boundary.
 
-- $F_6 = \sum m^6 (R_{mn}^2 + Z_{mn}^2)$ is stationary under every $m > 0$
-  relabelling;
-- the twist $\sum (n N_{fp})^2 (R_{mn}^2 + Z_{mn}^2)$ is stationary under every
-  shift of the angle origin.
+Newton steps stay in the null space of $\nabla c$, and each trial is
+projected back onto $c = 0$ (exact, since $c$ is linear).
 
-The two functionals act on disjoint blocks of relabellings, so no relative
-weight enters. The weight $m^6$ keeps the relabelled, truncated surface on the
-original: the movement for LP QA is 0.05 mm at 8 modes and 0.001 mm at 12.
+### Why not a reference-free gauge
 
-Newton steps stay in the null space of $\nabla c$. Each trial is relabelled back
-onto $c = 0$, which leaves the surface unchanged up to the truncation. From
-far starts, a first phase holds the input boundary's labelling instead (a
-linear constraint). The answer does not depend on that phase.
+A gauge defined by the boundary alone is possible: stationarity of the spectral
+width $F_p = \sum m^p (R_{mn}^2 + Z_{mn}^2)$ under the $m > 0$ relabellings,
+and of the twist $\sum (n N_{fp})^2 (R_{mn}^2 + Z_{mn}^2)$ under the shifts. It
+is unique, but at low resolution its labelling costs the truncated series real
+shape. On an optimized, strongly shaped 8-mode boundary, relabelling to the
+$F_6$ minimum and truncating moves the surface by 4-6 mm (maximum normal
+distance). Satisfying the constraints exactly moves it by 15-33 mm. For the
+vacuum benchmark the field-line distance of the last closed surface at 12 modes
+is 0.114 mm in that gauge, against 0.048 mm with the deck's labelling.
+
+### Constraint rows: the bootstrap current
+
+With the bootstrap current in the solve, the current's rows are square in the
+current coordinates. They are equality constraints, not least-squares rows: any
+finite weight would trade the current against the interface conditions. The
+steps live in the null space of the gauge and the current rows' Jacobian. Each
+trial is restored onto the current rows by chord Newton steps in the current
+coordinates. The Hessian is the Lagrangian's, with the current rows' multipliers.
 
 ## The exact Hessian through the equilibrium
 
@@ -113,15 +126,16 @@ model fails and to certify convergence.
 ## Design gradients
 
 In single-stage optimization the boundary $b^*(x)$ minimizes $f(b, x)$ on the
-gauge manifold. A function $h$ of the equilibrium then has
+gauge manifold (and the current rows). A function $h$ of the equilibrium then has
 
 $$
 \frac{dh}{dx} = h_x - \mu^\top f_{bx}, \qquad
 N^\top W N\, \mu_N = N^\top h_b, \quad \mu = N \mu_N,
 $$
 
-with $W$ the Hessian of the gauge Lagrangian and $N$ a null-space basis of
-$\nabla c$.
+with $W$ the Lagrangian Hessian and $N$ a null-space basis of the
+constraints' Jacobian. The current rows depend on the plasma parameters too;
+their response off the null space adds one more term for those parameters.
 
 - The coil part of $f_{bx}\,\mu$ is one forward-over-reverse pass through the
   field.

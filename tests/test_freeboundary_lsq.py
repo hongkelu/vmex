@@ -35,7 +35,6 @@ OPTIONS = dict(nphi=GRID, ntheta=GRID, quadrature=(4 * 2 * GRID, 2 * GRID), hess
 
 
 def _vacuum_deck():
-    # the canonical labelling of a truncated boundary needs a few modes: 5 (at 2 the relabelled surface moves cm)
     return replace(_deck("input.LandremanPaul2021_QA_lowres", 6, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
 
 

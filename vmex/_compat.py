@@ -497,10 +497,8 @@ def _install_file_cache() -> bool:
     JAX opens its cache, including after :func:`_reset_jax_cache`) for local
     paths; remote (``gs://``-style) paths keep JAX's own cache.  Returns
     False, leaving JAX's cache in place, if JAX's internals are not the
-    expected ones.  ``VMEX_JAX_FILE_CACHE=1`` keeps JAX's.
+    expected ones.
     """
-    if _env("JAX_FILE_CACHE").strip().lower() in _ON:
-        return False
     try:
         from jax._src import compilation_cache, lru_cache
 

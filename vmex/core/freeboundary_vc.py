@@ -673,12 +673,9 @@ class ThreeTermsFreeBoundaryModel:
 
     def _warm_refinement(self):
         """Compile the seed solve's Newton-refinement programs while its multigrid ladder runs (see
-        :func:`~vmex.core.implicit.warm_refinement`); ``VMEX_WARM_TANGENTS=0`` turns it off."""
-        import os
+        :func:`~vmex.core.implicit.warm_refinement`)."""
         import threading
 
-        if os.environ.get("VMEX_WARM_TANGENTS", "1").strip().lower() in ("0", "false", "no", "off"):
-            return
         im, cfg, params = self._im, self.cfg, self.params0
 
         def work():
@@ -694,13 +691,9 @@ class ThreeTermsFreeBoundaryModel:
 
         They are the largest programs of a solve and depend only on the deck's structure, so they compile while
         the interface is set up and the first rows are evaluated (results are unchanged: the same executables).
-        ``VMEX_WARM_TANGENTS=0`` turns it off.
         """
-        import os
         import threading
 
-        if os.environ.get("VMEX_WARM_TANGENTS", "1").strip().lower() in ("0", "false", "no", "off"):
-            return
         im, cfg = self._im, self.cfg
         x = jnp.asarray(self.x0)
         params_x = self.with_boundary(self.params0, x)
@@ -850,10 +843,14 @@ class ThreeTermsFreeBoundaryModel:
             lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
 
         def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
-            n = jax.tree.leaves(dz)[0].shape[0]  # padded to whole chunks: no tail-width copy of the program
-            chunk = min(self.chunk, n)
-            return push_rows(state, mask, params, im._padded(dz, chunk), im._padded(pb, chunk), field,
-                             moments=moments)[:n]
+            """``push_rows`` one whole chunk at a time: one executable for any number of columns."""
+            n = jax.tree.leaves(dz)[0].shape[0]
+            state, mask, params, dz, pb = im._canonical_arrays(cfg, (state, mask, params, im._padded(dz, self.chunk),
+                                                                     im._padded(pb, self.chunk)))
+            pieces = [push_rows(state, mask, params, jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], dz),
+                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments)
+                      for lo in range(0, jax.tree.leaves(dz)[0].shape[0], self.chunk)]
+            return jnp.concatenate(pieces)[:n]
 
         self._push_rows = push_rows_padded
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps

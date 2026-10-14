@@ -3290,6 +3290,48 @@ def _staged_tangent_correct(params, x_star, dof_mask, factors, tangent_batch, in
     return chunk_map(correct, (tangent_batch, initial), chunk_size=chunk)
 
 
+def _gmres_norm(value: Array) -> Array:
+    """``solvax``'s GMRES residual norm (its ``_array_norm``), for :func:`_staged_tangent_check`."""
+    squared = jnp.maximum(jnp.real(jnp.vdot(value, value)), 0.0)
+    positive = squared > 0
+    norm = jnp.where(positive, jnp.sqrt(jnp.where(positive, squared, 1.0)), 0.0)
+    return jnp.where(jnp.isnan(squared), squared, norm)
+
+
+@functools.partial(jax.jit, static_argnames=("cfg", "chunk", "certify_rtol"))
+def _staged_tangent_check(params, x_star, dof_mask, factors, tangent_batch, initial, cfg, chunk, certify_rtol):
+    """The corrector's verdict on the block-direct responses, without its Krylov iteration.
+
+    :func:`_staged_tangent_correct` starts GMRES from ``initial`` and returns
+    it unchanged, with zero iterations, where its first residual
+    ``||b - A x0||`` already meets ``rtol ||b||`` (solvax checks before the
+    first Arnoldi cycle).  The raw block system is the exact radial
+    linearization, so that is the usual case; this program evaluates exactly
+    that test and the same report, and the corrector -- the largest program of
+    the tangent solve -- compiles and runs only for a chunk where some column
+    fails it.  Returns ``(report, accepted)``; ``accepted`` marks the columns
+    whose GMRES would not iterate.
+    """
+    frozen, _, z_star, raw_rhs, operator = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
+    residual = residual_fn(cfg, frozen, dof_mask)
+    rtol = cfg.adjoint_tol if certify_rtol is None else float(certify_rtol)
+
+    def check(args):
+        tangent, x0 = args
+        rhs = jax.tree.map(jnp.negative, jax.jvp(lambda prm: residual(z_star, prm), (params,), (tangent,))[1])
+        b_flat = ravel_pytree(_pin_concrete(cfg, rhs))[0]
+        applied = jax.jvp(lambda z: residual(z, params), (z_star,), (x0,))[1]
+        norm = _gmres_norm(b_flat - ravel_pytree(applied)[0])
+        accepted = norm <= jnp.maximum(0.0, rtol * _gmres_norm(b_flat))
+        krylov = types.SimpleNamespace(residual_norm=norm, iterations=jnp.int32(0), converged=accepted)
+        b = raw_rhs(tangent)
+        raw_defect = jax.tree.map(jnp.subtract, b, operator(x0))
+        raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
+        return _raw_certified_report(_linear_response_report(krylov, rhs, cfg, rtol=certify_rtol), raw_ok), accepted
+
+    return chunk_map(check, (tangent_batch, initial), chunk_size=chunk)
+
+
 @functools.partial(jax.jit, static_argnames=("cfg", "chunk", "certify_rtol"))
 def _staged_tangent_refine(params, x_star, dof_mask, factors, tangent_batch, solution, report, cfg, chunk,
                            certify_rtol):
@@ -3319,10 +3361,38 @@ def _staged_tangent_refine(params, x_star, dof_mask, factors, tangent_batch, sol
 def block_factors_at(cfg: ImplicitConfig, params: ImplicitParams, x_star: SpectralState,
                      dof_mask: SpectralState):
     """Raw block factors at ``x_star`` (host-level) through :func:`_refine_block_factor_core`'s executable."""
+    x_star, params, dof_mask = _canonical_arrays(cfg, (x_star, params, dof_mask))
     with _device_context(cfg):
         arguments = commit_to_single_device(tuple(
             _pin_concrete(cfg, tree) for tree in (x_star, params, x_star, dof_mask)))
         return _refine_block_factor_core(*arguments, cfg)
+
+
+def _canonical_arrays(cfg: ImplicitConfig, tree: Any) -> Any:
+    """Every array leaf as a strongly typed array committed to ``cfg.device``.
+
+    One argument structure per config, whatever produced the values (a
+    jitted map's weak-typed scalars, host NumPy, eager arrays): the staged
+    programs then compile once, and a background warm-up's executables are
+    the ones the real calls find."""
+    def canonical(leaf):
+        if not isinstance(leaf, (jax.Array, np.ndarray)):
+            return leaf
+        value = jnp.asarray(leaf, dtype=leaf.dtype)
+        return jax.device_put(value, cfg.device) if cfg.device is not None else value
+
+    with _device_context(cfg):
+        return jax.tree.map(canonical, tree)
+
+
+def _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk):
+    """Canonical arguments and the tangent batch as whole ``chunk``-column pieces (the last one padded)."""
+    params, x_star, dof_mask, tangent_batch = _canonical_arrays(cfg, (params, x_star, dof_mask, tangent_batch))
+    chunk = max(1, int(chunk))
+    batch = _padded(tangent_batch, chunk)
+    total = int(jax.tree.leaves(batch)[0].shape[0])
+    pieces = [jax.tree.map(lambda a, lo=lo: a[lo:lo + chunk], batch) for lo in range(0, total, chunk)]
+    return params, x_star, dof_mask, pieces, chunk
 
 
 def staged_tangent_multi_rhs(
@@ -3343,27 +3413,34 @@ def staged_tangent_multi_rhs(
     and conditionally refined every column is split: the block factors come
     from :func:`_refine_block_factor_core` -- the executable the forward
     solve's Newton refinement already compiled, at this config -- then one
-    program solves the right-hand sides through them, one runs the GMRES
-    corrector, and the refinement fallback compiles only if a column misses
-    its certificate.  The columns are padded to a multiple of ``chunk`` (no
-    second, tail-width copy of each program).  Compile time drops from one
-    whole-graph compile (116 s at LP QA 8 x 8 on an A100) to the sum of
-    the smaller stages, with no recompilation per call.
+    program solves the right-hand sides through them, one checks them against
+    the corrector's own stopping test (:func:`_staged_tangent_check`), the
+    GMRES corrector compiles and runs only for a chunk that fails it, and the
+    refinement fallback only for a chunk with a column that misses its
+    certificate.  Every program takes one chunk of
+    ``chunk`` columns (the last one padded), mapped over the batch on the
+    host: one executable per config serves any number of columns.
     """
     n = int(jax.tree.leaves(tangent_batch)[0].shape[0])
-    chunk = max(1, min(int(chunk), n))
     rtol = None if certify_rtol is None else float(certify_rtol)
     maxiter = None if certify_maxiter is None else int(certify_maxiter)
     factors = block_factors_at(cfg, params, x_star, dof_mask)
+    params, x_star, dof_mask, pieces, chunk = _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk)
+    results = []
     with _device_context(cfg):
-        batch = _padded(tangent_batch, chunk)
-        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, batch, cfg, chunk)
-        solution, report = _staged_tangent_correct(params, x_star, dof_mask, factors, batch, initial, cfg, chunk,
-                                                   rtol, maxiter)
-        if not bool(jnp.all(report.converged)):
-            solution, report = _staged_tangent_refine(params, x_star, dof_mask, factors, batch, solution, report,
-                                                      cfg, chunk, rtol)
-    return jax.tree.map(lambda a: a[:n], (solution, report))
+        for piece in pieces:
+            initial = _staged_tangent_initial(params, x_star, dof_mask, factors, piece, cfg, chunk)
+            report, accepted = _staged_tangent_check(params, x_star, dof_mask, factors, piece, initial, cfg,
+                                                     chunk, rtol)
+            solution = initial
+            if not bool(jnp.all(accepted)):
+                solution, report = _staged_tangent_correct(params, x_star, dof_mask, factors, piece, initial, cfg,
+                                                           chunk, rtol, maxiter)
+            if not bool(jnp.all(report.converged)):
+                solution, report = _staged_tangent_refine(params, x_star, dof_mask, factors, piece, solution,
+                                                          report, cfg, chunk, rtol)
+            results.append((solution, report))
+    return jax.tree.map(lambda *a: jnp.concatenate(a)[:n], *results)
 
 
 def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
@@ -3413,25 +3490,23 @@ def warm_staged_tangent(
     certify_rtol: float | None = None,
     certify_maxiter: int | None = None,
 ) -> None:
-    """Compile :func:`staged_tangent_multi_rhs`'s programs for these argument structures.
+    """Compile :func:`staged_tangent_multi_rhs`'s programs for this config ahead of its first call.
 
     Meant for a background thread (XLA compilation releases the GIL): a caller
     that knows its first linearization is coming -- the free-boundary model,
     right after its seed solve -- overlaps these compiles with its other set-up
-    work.  Runs the cheap stages (the factors, the block-direct responses) and
-    compiles the corrector ahead of time; the later real call finds every
-    executable in JAX's caches.
+    work.  Runs the cheap stages on one chunk (the factors, the block-direct
+    responses) and compiles the corrector's check ahead of time; the later real call,
+    for any number of columns, finds every executable in JAX's caches.
     """
-    n = int(jax.tree.leaves(tangent_batch)[0].shape[0])
-    chunk = max(1, min(int(chunk), n))
     rtol = None if certify_rtol is None else float(certify_rtol)
     maxiter = None if certify_maxiter is None else int(certify_maxiter)
     factors = block_factors_at(cfg, params, x_star, dof_mask)
+    params, x_star, dof_mask, pieces, chunk = _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk)
     with _device_context(cfg):
-        batch = _padded(tangent_batch, chunk)
-        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, batch, cfg, chunk)
-        _staged_tangent_correct.lower(params, x_star, dof_mask, factors, batch, initial, cfg, chunk,
-                                      rtol, maxiter).compile()
+        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, pieces[0], cfg, chunk)
+        _staged_tangent_check.lower(params, x_star, dof_mask, factors, pieces[0], initial, cfg, chunk,
+                                    rtol).compile()
 
 
 def implicit_state_tangent_multi_rhs(

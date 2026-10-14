@@ -530,6 +530,52 @@ def test_prefetch_serves_second_rung_and_legend_prints_once(monkeypatch):
     assert int(result.iterations) == int(baseline.iterations)
 
 
+def test_prefetch_compiles_every_later_rung_at_once(monkeypatch):
+    """At the first rung every later rung's lane starts compiling (in parallel); each rung waits for its own
+    executable, every prefetched one is served, no prefetch thread outlives the ladder, and the iterations
+    are bit-identical to a ladder without prefetch."""
+    import threading
+
+    inp = _load_input("solovev")
+    # unique NITER values: no other test compiles these lane structures
+    ladder = dict(ns_array=[5, 9, 13], ftol_array=[1e-8, 1e-9, 1e-10],
+                  niter_array=[741, 743, 745])
+    lines: list[str] = []
+    served = []
+
+    class Executables(dict):
+        def __setitem__(self, key, executable):
+            def recorded(carry, runtime):
+                result = executable(carry, runtime)
+                served.append(runtime.resolution.ns)
+                return result
+            super().__setitem__(key, recorded)
+
+    monkeypatch.setattr(solver, "_LANE_EXECUTABLES", Executables())
+    launched = []
+    real_launch = multigrid._launch_lane_prefetch
+
+    def launch(inp, *, ns_next, **kwargs):
+        launched.append(ns_next)
+        return real_launch(inp, ns_next=ns_next, **kwargs)
+
+    monkeypatch.setattr(multigrid, "_launch_lane_prefetch", launch)
+    result = multigrid.solve_multigrid(
+        inp, verbose=True, emit=lambda text="", end="\n": lines.append(str(text) + end),
+        prefetch_compile=True, **ladder)
+    output = "".join(lines)
+    assert result.converged
+    assert launched == [9, 13]  # both launched at the first rung
+    assert " compiling NS = 9 executable... (prefetched)\n" in output
+    assert " compiling NS = 13 executable... (prefetched)\n" in output
+    assert set(served) == {9, 13}
+    assert not [t for t in threading.enumerate() if t.name == "vmex-lane-prefetch" and t.is_alive()]
+
+    baseline = multigrid.solve_multigrid(inp, prefetch_compile=False, **ladder)
+    np.testing.assert_array_equal(result.fsq_history, baseline.fsq_history)
+    assert float(result.wb) == float(baseline.wb)
+
+
 # ---------------------------------------------------------------------------
 # TASK B: compile counts + wall time (cold subprocesses)
 # ---------------------------------------------------------------------------

@@ -509,12 +509,24 @@ def test_staged_tangent_matches_the_single_program(monkeypatch):
         p0, cfg, state, mask, tangent_batch, chunk=2, certify_rtol=1e-8, certify_maxiter=1)
     assert np.all(np.asarray(staged_report.converged)) and np.asarray(staged_report.converged).shape == (3,)
     assert _relative_difference(staged, reference) < 1e-10
+    np.testing.assert_allclose(np.asarray(staged_report.residual_norm), np.asarray(report.residual_norm),
+                               rtol=1e-6, atol=1e-13)  # round-off-level residuals
+    assert np.array_equal(np.asarray(staged_report.iterations), np.asarray(report.iterations))
 
     def stalled(A, b, cfg, *, x0=None, max_restarts=None, rtol=None):
         return jax.tree.map(lambda value: 1.001 * value, x0), im.LinearResponseReport(
             residual_norm=jnp.asarray(1.0e30), tolerance=jnp.asarray(0.0),
             iterations=jnp.asarray(1, jnp.int32), converged=jnp.asarray(False))
 
+    # Every column fails the corrector's first-residual test: the corrector runs (and stalls), and the
+    # refinement certifies the columns.
+    check = im._staged_tangent_check
+
+    def failing_check(*args, **kwargs):
+        report, accepted = check(*args, **kwargs)
+        return report._replace(converged=jnp.zeros_like(report.converged)), jnp.zeros_like(accepted)
+
+    monkeypatch.setattr(im, "_staged_tangent_check", failing_check)
     monkeypatch.setattr(im, "_adjoint_solve", stalled)
     jax.clear_caches()
     refined, refined_report = im.staged_tangent_multi_rhs(
@@ -538,3 +550,84 @@ def test_scanned_block_thomas_solve_matches_solvax(transpose):
     got = im._block_thomas_solve_scan(factors, rhs, transpose=transpose)
     want = block_thomas_solve(factors, rhs, transpose=transpose)
     np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=1e-13, atol=1e-13)
+
+
+def _fresh_small_solovev(max_iterations):
+    """The small Solovev deck under a config no other test compiled (``max_iterations`` makes it unique)."""
+    inp, _, p0 = _small_solovev_setup()
+    cfg = im.make_config(inp, ftol=1.0e-10, max_iterations=max_iterations)
+    return inp, cfg, p0
+
+
+class _CompileLog:
+    """Names of the programs JAX compiles (or looks up in its persistent cache) inside the context."""
+
+    def __enter__(self):
+        import logging
+
+        self.names, outer = [], self
+
+        class Handler(logging.Handler):
+            def emit(self, record):
+                message = record.getMessage()
+                if message.startswith("Compiling "):
+                    outer.names.append(message.split()[1])
+
+        self._handler, self._logger = Handler(), logging.getLogger("jax")
+        self._level = self._logger.level
+        self._logger.addHandler(self._handler)
+        self._logger.setLevel(logging.WARNING)
+        self._context = jax.log_compiles(True)
+        self._context.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self._context.__exit__(*exc)
+        self._logger.removeHandler(self._handler)
+        self._logger.setLevel(self._level)
+
+
+def test_warm_refinement_compiles_the_refinement_programs_ahead():
+    """warm_refinement leaves nothing for the refinement's real calls to compile."""
+    from vmex.core.device import commit_to_single_device
+
+    inp, cfg, p0 = _fresh_small_solovev(1013)
+    im.warm_refinement(cfg, p0)
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    state, params, mask = commit_to_single_device((state, p0, mask))
+    z = im._dof_projector(cfg, mask)(state)
+    with _CompileLog() as log:
+        im.residual_fn(cfg, state, mask)(z, params)
+        factors = im._refine_block_factors(cfg, params, state, mask, z)
+        im._refine_block_step(cfg, params, state, mask, z, factors)
+    assert not [name for name in log.names if "refine" in name or "residual_lane" in name], log.names
+
+
+def test_warm_staged_tangent_compiles_the_tangent_programs_ahead():
+    """warm_staged_tangent leaves nothing for staged_tangent_multi_rhs to compile."""
+    inp, cfg, p0 = _fresh_small_solovev(1017)
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    batch = jax.tree.map(lambda *x: jnp.stack(x), dataclasses.replace(
+        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
+        zero, zbs=zero.zbs.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
+        zero, pres_scale=jnp.ones_like(zero.pres_scale)))
+    im.warm_staged_tangent(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8, certify_maxiter=1)
+    with _CompileLog() as log:
+        _, report = im.staged_tangent_multi_rhs(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8,
+                                                certify_maxiter=1)
+    assert np.all(np.asarray(report.converged))
+    assert not [name for name in log.names if "staged" in name or "refine" in name], log.names
+
+
+def test_block_state_pullback_with_stored_factors_matches():
+    """The pullback through factors from block_factors_at equals the one that assembles its own."""
+    inp, cfg, p0 = _small_solovev_setup()
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    fields = im._active_state_fields(cfg)
+    gbar = jax.tree.map(lambda a: jnp.sin(jnp.arange(a.size, dtype=a.dtype).reshape(a.shape)), state)
+    own = im._block_state_pullback(p0, cfg, state, mask, active_fields=fields, probe_chunk_size=2)(gbar)
+    stored = im._block_state_pullback(p0, cfg, state, mask, active_fields=fields, probe_chunk_size=2,
+                                      factors=im.block_factors_at(cfg, p0, state, mask))(gbar)
+    assert bool(stored[1].converged)
+    assert _relative_difference(stored[0], own[0]) < 1e-10

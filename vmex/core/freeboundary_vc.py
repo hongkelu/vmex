@@ -360,9 +360,13 @@ def solve_free_boundary_three_terms(
                                verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
+    # From the rows' own state on its own rung (a restart skips the deck's lower rungs; an ``initial_state`` would
+    # seed the first rung and climb the ladder again: LP QA 2.5 %, 8 x 8, CURTOR x 0.99, that climb hit the
+    # iteration cap at fsq 1e-4 after 545 s and was returned, QS 1.12e-4 against the rows' 1.71e-5), and an
+    # equilibrium that does not reach the tolerance is an error, not a result.
     equilibrium = solve_equilibrium(
-        boundary, initial_state=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
-        forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000))
+        boundary, restart_from=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
+        forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000), raise_on_max_iterations=True)
     final = model.boundary_residual(equilibrium.solution, params, external_field)
     outside = model.normal_outside_modes(equilibrium.solution, params, external_field)
     if final.normal >= deck.normal:
@@ -1238,8 +1242,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         from .optimize import solve_equilibrium
 
         sol = self._record(x)
-        return solve_equilibrium(input_with_params(self.model.fixed, sol["params"]),
-                                 initial_state=sol["state"])
+        return solve_equilibrium(input_with_params(self.model.fixed, sol["params"]), restart_from=sol["state"])
 
     def close(self):
         """Drop every cached trial except the accepted one."""

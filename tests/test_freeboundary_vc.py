@@ -246,6 +246,14 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
         assert fit.success and fit.cost < 1e-18
         assert fit.boundary_residual.normal < fit.initial_boundary_residual.normal
     np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-10)
+    for fit in fits:  # the reported equilibrium is the rows' state, re-solved tight on its own rung
+        np.testing.assert_allclose(np.asarray(fit.equilibrium.solution.R_cos), np.asarray(fit.aux[0].R_cos),
+                                   rtol=0, atol=1e-6)
+    calls, solve = [], opt.solve_equilibrium  # ... seeded as a restart (the deck's lower rungs skipped)
+    monkeypatch.setattr(opt, "solve_equilibrium", lambda *a, **k: (calls.append(k), solve(*a, **k))[1])
+    fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
+    assert calls[-1]["restart_from"] is not None and "initial_state" not in calls[-1]
+    monkeypatch.setattr(opt, "solve_equilibrium", solve)
     # the rows at the deck: R0 d/dh of the mean square of B.n / B0, against central differences of it
     rows = np.asarray(model._rows(model.seed[0], model.params0, field))
     nfp, ntor = int(inp.nfp), int(inp.ntor)

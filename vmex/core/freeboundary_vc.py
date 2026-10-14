@@ -1149,7 +1149,7 @@ class ThreeTermsFreeBoundaryModel:
             ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
         return ok
 
-    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
         A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
@@ -1159,6 +1159,8 @@ class ThreeTermsFreeBoundaryModel:
         produces.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
+        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that has to be shortened
+        (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1174,6 +1176,7 @@ class ThreeTermsFreeBoundaryModel:
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
+        damped = False
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1219,6 +1222,11 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
+            if undamped and fresh and t < 1.0:
+                if accepted is not None:  # keep the shortened step's progress
+                    x, (r, aux), steps = x + t * p, accepted, steps + 1
+                damped = True
+                break
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
@@ -1247,22 +1255,33 @@ class ThreeTermsFreeBoundaryModel:
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
-                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
+                    converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
 
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
+
+        At finite beta the transported rows carry the field in their test functions, so their Newton basin is
+        narrow: far from the root the field's change along a step is a second-order term that the linearization
+        leaves out, and Newton on them stalls (LP QA 2.5 %, 12 x 12, 5 mm random start).  The plain sine moments
+        of ``B . n`` on the same modes have no field in their test functions and converge from farther.  A cold
+        solve (no ``jacobian``) therefore leaves the transported rows at their first Newton step that has to be
+        shortened, solves the plain moments from the start (the transported rows' steps can lead them astray),
+        and then the transported rows from the moments' root
+        (inside their basin: the two roots differ by the plasma's response in the test functions).  A warm solve
+        (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes the same route when Newton on
+        the transported rows stalls.
         """
-        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        cold = jacobian is None and not (self.vacuum or self.fixed_boundary)
+        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                    undamped=cold)
         if out["converged"] or self.vacuum or self.fixed_boundary:
             return out
-        # The transported rows carry the field in their test functions, and far from the answer Newton on them
-        # can stall; the plain moments (the same boundary modes) converge from farther: solve them first, then
-        # the transported rows from there.
         if verbose:
-            print("Newton on the transported rows stalled: plain moments first", flush=True)
+            print(f"Newton on the transported rows {'needs damping' if out['damped'] else 'stalled'}: "
+                  "plain moments first", flush=True)
         self._moments = True
         try:
             start = self._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)

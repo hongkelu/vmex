@@ -750,8 +750,10 @@ def test_finite_beta_rows_are_the_transported_normal_field_moments():
 
 
 def test_finite_beta_newton_falls_back_on_the_plain_moments():
-    """Finite beta: when Newton on the transported rows stalls (here at a stationary point of the cost that is no
-    root), the plain moments are solved first and the transported rows from their answer."""
+    """Finite beta, cold solve: at the first Newton step on the transported rows that has to be shortened (here on
+    the way to a stationary point of the cost that is no root), the plain moments are solved from the start and the
+    transported rows from their answer; a warm solve (a given Jacobian) near the root stays on the transported
+    rows."""
 
     def rows(z, moments):
         return np.array([z[0] + 1.7693]) if moments else np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
@@ -761,9 +763,17 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
 
     model = _stand_in(1, lambda z, tight=True: rows(z, model._moments), lambda z: jac(z, model._moments),
                       vacuum=False)
+    evaluated = []
+    evaluate = model.evaluate
+    model.evaluate = lambda z, *args, **kwargs: (evaluated.append((float(z[0]), model._moments)),
+                                                evaluate(z, *args, **kwargs))[1]
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
+    assert next(z for z, moments in evaluated if moments) == 0.0  # the moments start where the solve started
+    evaluated.clear()
+    warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6]), False))
+    assert warm["converged"] and not any(moments for _, moments in evaluated)
 
 
 class _Program:

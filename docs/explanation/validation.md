@@ -468,14 +468,16 @@ and 1 %; `y`: another optimizer step's boundary), at a final force residual of
 5e-12 m in vacuum, 2e-9 m at finite beta, where the rows' own noise sets the stop). B.n,
 pressure jump and sheet current are RMS over `|B|` on a 48 x 48 grid; the
 field-line columns are the LCFS's largest and RMS crossing distance (mm, 32
-lines, 30 transits). Before: the projected rows, same scorer.
+lines, 30 transits). In vacuum the three terms use the coil field itself; the
+before column (the projected rows) used virtual casing, whose quadrature adds
+about 1e-5 (QI: 1.5e-4).
 
 | case (modes) | starts | B.n / pressure / K | field lines mm | before: B.n / field lines |
 | --- | --- | --- | --- | --- |
-| LP QA + P30A coils, vacuum (8) | deck, r1, y | 5.8e-05 / 5.6e-05 / 6.3e-05 | 0.084 / 0.018 | 5.9e-05 / 0.061 / 0.014 |
-| LP QH reactor scale, vacuum (8) | deck | 1.3e-04 / 1.5e-04 / 1.7e-04 | 2.26 / 0.55 | 1.4e-04 / 2.69 / 0.73 |
-| LP QH reactor scale, vacuum (12) | deck, r4 | 4.2e-05 / 1.1e-04 / 1.2e-04 | 1.22 / 0.27 | 4.9e-04 / 21.3 / 5.0 (r4 failed) |
-| nfp 2 QI, fitted coils, vacuum (8) | deck, r1 | 2.3e-04 / 1.9e-04 / 4.1e-04 | 0.84 / 0.18 | 2.3e-04 / 0.64 / 0.16 |
+| LP QA + P30A coils, vacuum (8) | deck, r1, y | 4.7e-05 / 5.3e-05 / 6.1e-05 | 0.085 / 0.018 | 5.9e-05 / 0.061 / 0.014 |
+| LP QH reactor scale, vacuum (8) | deck | 1.3e-04 / 1.2e-04 / 1.6e-04 | 2.27 / 0.55 | 1.4e-04 / 2.69 / 0.73 |
+| LP QH reactor scale, vacuum (12) | deck, r4 | 4.2e-05 / 3.7e-05 / 7.5e-05 | 1.22 / 0.27 | 4.9e-04 / 21.3 / 5.0 (r4 failed) |
+| nfp 2 QI, fitted coils, vacuum (8) | deck, r1 | 7.8e-05 / 1.6e-04 / 2.2e-04 | 0.84 / 0.18 | 2.3e-04 / 0.64 / 0.16 |
 | LP QA beta 2.5 %, fitted coils (8) | deck | 5.0e-04 / 4.1e-04 / 6.0e-04 | | 5.4e-04 (moments) |
 | LP QA beta 2.5 %, fitted coils (12) | deck | 2.4e-04 / 2.9e-04 / 3.8e-04 | | 3.4e-04 (moments) |
 

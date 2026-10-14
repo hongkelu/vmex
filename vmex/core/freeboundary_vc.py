@@ -25,10 +25,14 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
   (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
   Jacobian.  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
   uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
-- finite beta: the area-weighted sine moments of ``B_out . n`` on the boundary modes, with the boundary two
-  modes below the interior (``_BOUNDARY_MODE_GAP``: the interior's edge field is least accurate in its top
-  modes).  The plasma's response makes the least-squares Jacobian an equilibrium Hessian; the moments need
-  only the implicit tangents.
+- finite beta: the same stationarity with the plasma's own response to ``h`` left out of the test functions:
+  a normal displacement ``h`` changes ``B . N`` by ``-|N| B_t . grad h`` (``N`` the area normal, ``B_t`` the
+  tangential field), so the rows are the area-weighted moments of ``B_out . n`` against ``B_out . grad
+  cos(m theta - n nfp phi)``, one per boundary mode (the exact least-squares rows would need the equilibrium's
+  Hessian).  The boundary keeps two modes fewer than the interior (``_BOUNDARY_MODE_GAP``: the interior's edge
+  field is least accurate in its top modes).  LP QA at 2.5 % beta, 12 x 12, evaluated by a 16-mode re-solve:
+  B.n / pressure jump / sheet current 2.8e-4 / 9.9e-5 / 2.8e-4, against 4.1e-4 / 1.1e-4 / 4.1e-4 with plain
+  sine moments of ``B_out . n``.
 
 Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
 pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
@@ -188,10 +192,10 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
-def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
-    """Area-weighted mean of ``(B . n)^2`` of ``field`` on the surface ``(rmnc, zmns)`` (traceable).
+def _surface_frame(rmnc, zmns, xm, xn, phi, theta):
+    """Points, ``e_theta``, ``e_phi`` (each ``(3, nphi, ntheta)``) of the surface ``(rmnc, zmns)`` (traceable).
 
-    ``phi, theta`` are the ``(nphi, ntheta)`` grid (one field period), ``phi_grid`` its ``phi`` axis.
+    ``phi, theta`` are the ``(nphi, ntheta)`` grid; the series is ``sum cos|sin(xm theta - xn phi)``.
     """
     phase = xm[:, None, None] * theta[None] - xn[:, None, None] * phi[None]
     cos, sin = jnp.cos(phase), jnp.sin(phase)
@@ -199,11 +203,19 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
     R_t, Z_t = jnp.tensordot(-rmnc * xm, sin, 1), jnp.tensordot(zmns * xm, cos, 1)
     R_p, Z_p = jnp.tensordot(rmnc * xn, sin, 1), jnp.tensordot(-zmns * xn, cos, 1)
     c, s = jnp.cos(phi), jnp.sin(phi)
-    e_theta = jnp.stack([R_t * c, R_t * s, Z_t])
-    e_phi = jnp.stack([R_p * c - R * s, R_p * s + R * c, Z_p])
+    return (jnp.stack([R * c, R * s, Z]), jnp.stack([R_t * c, R_t * s, Z_t]),
+            jnp.stack([R_p * c - R * s, R_p * s + R * c, Z_p]))
+
+
+def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
+    """Area-weighted mean of ``(B . n)^2`` of ``field`` on the surface ``(rmnc, zmns)`` (traceable).
+
+    ``phi, theta`` are the ``(nphi, ntheta)`` grid (one field period), ``phi_grid`` its ``phi`` axis.
+    """
+    points, e_theta, e_phi = _surface_frame(rmnc, zmns, xm, xn, phi, theta)
     N = jnp.cross(e_theta, e_phi, axis=0)
     area = jnp.linalg.norm(N, axis=0)
-    B = vc.external_B_cartesian(field, jnp.stack([R * c, R * s, Z]), phi_grid)
+    B = vc.external_B_cartesian(field, points, phi_grid)
     return jnp.sum(jnp.sum(B * N, axis=0) ** 2 / area) / jnp.sum(area)
 
 
@@ -311,7 +323,10 @@ def solve_free_boundary_three_terms(
     ``1e-17``, see ``_REPORT_FTOL``), ``model``, ``aux`` (``(state, mask,
     params, tight)``, for ``previous=``), ``boundary_residual`` and
     ``initial_boundary_residual`` (:class:`BoundaryResidual` of the reported
-    equilibrium, and at the start).
+    equilibrium, and at the start) and ``normal_outside_modes``
+    (:meth:`ThreeTermsFreeBoundaryModel.normal_outside_modes`).  A solve that
+    does not lower ``B . n`` below the deck's warns (``RuntimeWarning``) with
+    that out-of-band part.
     """
     from scipy.optimize import OptimizeResult
 
@@ -346,12 +361,20 @@ def solve_free_boundary_three_terms(
     equilibrium = solve_equilibrium(
         boundary, initial_state=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
         forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000))
+    final = model.boundary_residual(equilibrium.solution, params, external_field)
+    outside = model.normal_outside_modes(equilibrium.solution, params, external_field)
+    if final.normal >= initial.normal:
+        import warnings
+
+        warnings.warn(f"the free boundary did not lower B.n below the deck's ({final.normal:.2e} >= "
+                      f"{initial.normal:.2e} RMS over |B|); {outside:.2e} of it lies outside the boundary's "
+                      f"{len(model.boundary_modes)} modes, which the rows do not control", RuntimeWarning,
+                      stacklevel=2)
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
         njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
         input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
-        boundary_residual=model.boundary_residual(equilibrium.solution, params, external_field),
-        initial_boundary_residual=initial)
+        boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
 
 
 class ThreeTermsFreeBoundaryModel:
@@ -523,23 +546,24 @@ class ThreeTermsFreeBoundaryModel:
         area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
         B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
         self.B0 = B0
-        # Finite-beta moments on the boundary modes but (0, 0) (B.n is odd under stellarator symmetry: sine
-        # moments); surface data are (nphi, ntheta) over one field period.
+        # Surface data are (nphi, ntheta) over one field period.
         phi, theta = np.meshgrid(np.linspace(0.0, 2.0 * np.pi / nfp, nphi, endpoint=False),
                                  np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False), indexing="ij")
-        phases = [m * theta - n * nfp * phi for m, n in self.boundary_modes[:-1]]
-        sine = jnp.asarray(np.stack([2.0 * np.sin(a).ravel() for a in phases]))
+        # The boundary arrays' entries as series in (m, n nfp).
+        ntor_b, mpol_b = np.shape(self.params0.rbc)[0] // 2, np.shape(self.params0.rbc)[1]
+        modes = np.meshgrid(np.arange(-ntor_b, ntor_b + 1) * nfp, np.arange(mpol_b), indexing="ij")
+        xm, xn = jnp.asarray(modes[1].ravel(), dtype=float), jnp.asarray(modes[0].ravel(), dtype=float)
+        # R0 d/dh: B.grad = (B/R)(d_phi + iota d_theta), so R0 times the h-gradient of the mean square of
+        # B.n/B0 is a dimensionless moment of B.n/B0 (as are the finite-beta rows, with the same factor).
+        length = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])
+        phi_grid = jnp.asarray(phi[:, 0])
+        m_b = jnp.asarray([m for m, _ in self.boundary_modes[:-1]], dtype=float)[:, None, None]
+        n_b = jnp.asarray([n * nfp for _, n in self.boundary_modes[:-1]], dtype=float)[:, None, None]
+        test_sine = jnp.sin(m_b * theta[None] - n_b * phi[None])  # boundary modes but (0, 0): B.n is odd
         if vacuum:
-            # The boundary arrays are linear in x: their derivatives along x, and the (m, n nfp) of their entries.
+            # The boundary arrays are linear in x: their derivatives along x.
             boundary = jax.jacfwd(lambda x: self.with_boundary(self.params0, x))(jnp.asarray(self.x0))
             to_x = (boundary.rbc.reshape(-1, self.x0.size), boundary.zbs.reshape(-1, self.x0.size))
-            ntor_b, mpol_b = np.shape(self.params0.rbc)[0] // 2, np.shape(self.params0.rbc)[1]
-            modes = np.meshgrid(np.arange(-ntor_b, ntor_b + 1) * nfp, np.arange(mpol_b), indexing="ij")
-            xm, xn = jnp.asarray(modes[1].ravel(), dtype=float), jnp.asarray(modes[0].ravel(), dtype=float)
-            # R0 d/dh: B.grad = (B/R)(d_phi + iota d_theta), so R0 times the h-gradient of the mean square of
-            # B.n/B0 is a dimensionless moment of B.n/B0, of the size of the sine moments at finite beta.
-            length = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])
-            phi_grid = jnp.asarray(phi[:, 0])
 
         def interface_rows(state, params, field):
             """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary)."""
@@ -558,7 +582,15 @@ class ThreeTermsFreeBoundaryModel:
             B_out = vc.PlasmaVacuumInterface.from_surface_data(
                 data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
-            return jnp.concatenate([sine @ (weight * Bn), current])
+            # test functions B.grad(cos(m theta - n nfp phi)) R0 / B0: a normal displacement h changes B . N by
+            # -|N| B_t . grad h (the surface divergence of h B_t), the plasma's own response left out
+            _, e_theta, e_phi = _surface_frame(jnp.ravel(params.rbc), jnp.ravel(params.zbs), xm, xn, phi, theta)
+            N = jnp.cross(e_theta, e_phi, axis=0)
+            N2 = jnp.sum(N * N, axis=0)
+            b_theta = jnp.sum(jnp.cross(B_out, e_phi, axis=0) * N, axis=0) / N2
+            b_phi = jnp.sum(jnp.cross(e_theta, B_out, axis=0) * N, axis=0) / N2
+            tests = (n_b * b_phi[None] - m_b * b_theta[None]) * test_sine * (length / B0)
+            return jnp.concatenate([tests.reshape(tests.shape[0], -1) @ (weight * Bn), current])
 
         self.interface_rows = interface_rows
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
@@ -712,6 +744,23 @@ class ThreeTermsFreeBoundaryModel:
     def boundary_residual(self, state, params, field) -> BoundaryResidual:
         """:class:`BoundaryResidual` of a solved state."""
         return summarize_boundary_residual(*self._terms(state, params, field))
+
+    def normal_outside_modes(self, state, params, field) -> float:
+        """RMS (over ``|B|``, area-weighted) of the part of ``B_out . n`` outside the boundary's modes.
+
+        The rows control ``B . n`` through the boundary's modes; what lies outside them (higher poloidal or
+        toroidal harmonics) only resolution lowers.  Harmonics of the grid's FFT, in field periods.
+        """
+        rows, weights = map(np.asarray, self._terms(state, params, field))
+        f = rows[0] * np.sqrt(weights * weights.size)  # mean of f^2 = the weighted mean square of B.n
+        power = np.abs(np.fft.fft2(f) / f.size) ** 2  # axes (phi, theta)
+        k_phi = np.fft.fftfreq(f.shape[0], 1.0 / f.shape[0]).astype(int)
+        k_theta = np.fft.fftfreq(f.shape[1], 1.0 / f.shape[1]).astype(int)
+        inside = np.zeros(power.shape, dtype=bool)
+        for m, n in self.boundary_modes:  # sin(m theta - n nfp phi) holds (-n, m) and (n, -m)
+            inside |= (k_phi[:, None] == -n) & (k_theta[None, :] == m)
+            inside |= (k_phi[:, None] == n) & (k_theta[None, :] == -m)
+        return float(np.sqrt(max(power[~inside].sum(), 0.0)))
 
     def bootstrap_residual(self, state, params) -> float:
         """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""

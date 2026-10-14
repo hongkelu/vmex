@@ -116,18 +116,14 @@ def test_machine_scoped_never_nests_machines():
     assert _compat._machine_scoped(f"/shared/c/{other}") == f"/shared/c/{fingerprint}"
 
 
-def test_fingerprint_separates_hosts(monkeypatch):
-    """Two cluster nodes never share a cache directory, whatever their
-    /proc/cpuinfo says: XLA:CPU loads an entry built for other CPU features
-    after only logging the mismatch."""
-    real = _compat._host_identity()
-    assert real and real == _compat._host_identity()
-    monkeypatch.setattr(_compat.platform, "system", lambda: "Darwin")
-    assert _compat._host_identity()        # hardware UUID, or the hostname
-    monkeypatch.undo()
-    monkeypatch.setattr(_compat, "_host_identity", lambda: "node001")
+def test_fingerprint_shared_by_hosts_of_one_machine_type(monkeypatch):
+    """The cache directory names the machine type, not the host: nodes of
+    one cluster partition share a warm cache, while other CPU features
+    (XLA:CPU entries are not portable across them) get their own."""
     first = _compat._cache_machine_fingerprint()
-    monkeypatch.setattr(_compat, "_host_identity", lambda: "node002")
+    monkeypatch.setattr(_compat.platform, "node", lambda: "node002")
+    assert _compat._cache_machine_fingerprint() == first
+    monkeypatch.setattr(_compat.platform, "processor", lambda: "another-cpu")
     assert _compat._cache_machine_fingerprint() != first
 
 
@@ -877,3 +873,31 @@ def test_fresh_jax_environment_default_in_process(monkeypatch):
         assert jax.config.x64_enabled
     finally:
         jax.config.update("jax_enable_x64", previous)
+
+
+def test_prune_cache_entries_bounds_bytes(tmp_path):
+    """The byte bound drops the least recently used entries first."""
+    for i in range(6):
+        (tmp_path / f"k{i}-cache").write_bytes(b"x" * 100)
+        (tmp_path / f"k{i}-atime").write_bytes((1000 + i).to_bytes(8, "little"))
+    assert _compat._prune_cache_entries(str(tmp_path), 100, max_bytes=350) == 3
+    assert sorted(p.name for p in tmp_path.glob("*-cache")) == ["k3-cache", "k4-cache", "k5-cache"]
+    assert _compat._prune_cache_entries(str(tmp_path), 100, max_bytes=350) == 0
+
+
+def test_atomic_file_cache_roundtrip(tmp_path):
+    """vmex's file cache: atomic writes, first writer wins, hits touch the atime sidecar."""
+    import time
+
+    assert _compat._install_file_cache()
+    from jax._src import compilation_cache
+
+    cache, path = compilation_cache.get_file_cache(str(tmp_path))
+    assert not getattr(cache, "eviction_enabled", True)
+    assert cache.get("abc") is None
+    cache.put("abc", b"one")
+    cache.put("abc", b"two")
+    assert cache.get("abc") == b"one"
+    assert not list(tmp_path.glob(".*.tmp"))
+    stamp = int.from_bytes((tmp_path / "abc-atime").read_bytes(), "little")
+    assert abs(stamp - time.time_ns()) < 60e9

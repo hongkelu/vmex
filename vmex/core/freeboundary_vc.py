@@ -829,10 +829,14 @@ class ThreeTermsFreeBoundaryModel:
                 certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
-            """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
+            """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
 
             As upstream's implicit Jacobian: the state of a column is assembled from its projected response and
-            its parameters inside the map, so no batch of full states is ever built.
+            its parameters inside the map, so no batch of full states is ever built.  The columns are mapped
+            sequentially, not vectorized: a column's linearized rows hold the interface field on every surface
+            point at once (a coil Biot-Savart sum over all segments, the virtual-casing quadrature), and a
+            vectorized chunk of 8 multiplied that (LP QA 12 x 12: 9.6 GiB of temporaries, the solve's peak) for
+            no speed: a single column already fills the device.
             """
             frozen = jax.lax.stop_gradient(state)
             P = im._dof_projector(cfg, mask)
@@ -841,7 +845,7 @@ class ThreeTermsFreeBoundaryModel:
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
             return jax.lax.map(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                               (dz_batch, params_batch), batch_size=self.chunk)
+                               (dz_batch, params_batch))
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""

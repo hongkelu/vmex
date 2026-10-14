@@ -2749,8 +2749,13 @@ def _resolved_chunk_sizes(
 
 
 # Forward-mode probes vectorized together per surface in the colored band build:
-# 4096 // ns probes (132 at ns = 31, 40 at ns = 101) bounds the batch's memory.
-_COLORED_PROBE_BUDGET = 4096
+# 1024 // ns probes (20 at ns = 50, 10 at ns = 101) bounds the batch's memory.  The
+# batch's temporaries are the peak of a free-boundary solve: at 4096 // ns (81
+# probes at ns = 50) the build held 5.2 GiB at LP QA 8 x 8 and 7 GiB at 12 x 12;
+# at 1024 // ns it holds a quarter of that, and the build takes the same time
+# (the refinement that runs it: 1.1-2.4 s either way), since 20 full-operator
+# probes still fill the device.
+_COLORED_PROBE_BUDGET = 1024
 
 
 def _colored_bands(operator, pack, unpack, project, ns, block_size, dtype, chunk):

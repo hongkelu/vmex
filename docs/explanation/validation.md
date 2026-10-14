@@ -407,8 +407,10 @@ converges or reaches its 40,000 iterations, on the exact field or the mgrid.
 VMEC2000 + NESTOR on the same mgrid agrees with VMEX + NESTOR (24.1, 20.9 and
 19.4 mm at 4, 6 and 10). DESC stops 4.0 to 16 mm away with a sheet current of
 6e-4 to 4e-3; its dense force Jacobian exceeds a 32 GB GPU from M = 10 at
-L = 2M and at M = 13 at L = M. The three-terms boundary (B.n moments on two
-modes fewer than the interior, the deck as labelling reference) comes within
+L = 2M and at M = 13 at L = M. The three-terms boundary (measured with plain
+B.n moments as the finite-beta rows, before the transported test functions of
+the next section; two modes fewer than the interior, the deck as labelling
+reference) comes within
 2 to 3 mm from 9 modes, with a sheet current of 3e-4 to 4e-4, and 6 to 8 mm
 away at 6 to 8 modes (1.5e-3), where the deck, 11 mm from the target, labels a
 boundary of only 4 to 6 modes. (stalled): Newton stopped where the rows'

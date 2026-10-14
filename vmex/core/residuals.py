@@ -648,16 +648,14 @@ def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable) -> Array:
     ``profil3d.f`` interior guess -- so every solve of one boundary lands on one
     state.  Verified as a relabelling (gauges' surfaces, iota and Mercier terms
     converge together under refinement) for ``lasym = False``; ``lasym`` runs keep
-    VMEC2000's rule.  Returns ``Z_sin`` with those profiles; every other column is
-    untouched.
+    VMEC2000's rule.  Returns ``Z_sin`` with those profiles (``ntor > 0``, the
+    columns exist only in 3-D); every other column is untouched.
     """
     m = np.asarray(modes.m, dtype=int)
     n = np.asarray(modes.n, dtype=int)
     index = {(int(mm), int(nn)): k for k, (mm, nn) in enumerate(zip(m, n))}
     ntor = int(np.max(np.abs(n))) if n.size else 0
     Z_sin = jnp.asarray(Z_sin)
-    if ntor == 0:
-        return Z_sin
     pos = np.asarray([index[(1, j)] for j in range(1, ntor + 1)], dtype=int)
     neg = np.asarray([index[(1, -j)] for j in range(1, ntor + 1)], dtype=int)
     ns = int(Z_sin.shape[0])

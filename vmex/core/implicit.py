@@ -3508,7 +3508,8 @@ def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
 
 
 def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: int,
-                        certify_rtol: float | None = None) -> None:
+                        certify_rtol: float | None = None, certify_maxiter: int | None = None,
+                        fallbacks: bool = False) -> None:
     """Compile :func:`staged_tangent_multi_rhs`'s programs for ``cfg`` ahead of its first call.
 
     For a background thread started with a config's first solve (XLA
@@ -3516,10 +3517,13 @@ def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: i
     check take one chunk of ``chunk`` parameter tangents, whatever the number
     of columns, and depend only on the config's structure, so they compile
     from placeholder arguments (:func:`_placeholder_arguments`) while the
-    solve runs.  The later real calls find the executables in JAX's caches;
-    nothing runs.
+    solve runs.  ``fallbacks`` also compiles the GMRES corrector and the
+    refinement (with ``certify_maxiter``), which a chunk needs when the block
+    responses miss the check -- the single stage's plasma-parameter columns.
+    The later real calls find the executables in JAX's caches; nothing runs.
     """
     rtol = None if certify_rtol is None else float(certify_rtol)
+    maxiter = None if certify_maxiter is None else int(certify_maxiter)
     chunk = max(1, int(chunk))
     state, mask, params = _placeholder_arguments(cfg, params)
     piece = _zeros_like_structure(
@@ -3534,6 +3538,14 @@ def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: i
         initial = _zeros_like_structure(cfg, jax.eval_shape(
             lambda *a: _staged_tangent_initial(*a, cfg, chunk), params, state, mask, factors, piece))
         _staged_tangent_check.lower(params, state, mask, factors, piece, initial, cfg, chunk, rtol).compile()
+        if fallbacks:
+            _staged_tangent_correct.lower(params, state, mask, factors, piece, initial, cfg, chunk, rtol,
+                                          maxiter).compile()
+            report, _ = jax.eval_shape(lambda *a: _staged_tangent_check(*a, cfg, chunk, rtol),
+                                       params, state, mask, factors, piece, initial)
+            report = _zeros_like_structure(cfg, report)
+            _staged_tangent_refine.lower(params, state, mask, factors, piece, initial, report, cfg, chunk,
+                                         rtol).compile()
 
 
 def implicit_state_tangent_multi_rhs(

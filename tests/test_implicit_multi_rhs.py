@@ -612,12 +612,26 @@ def test_warm_staged_tangent_compiles_the_tangent_programs_ahead():
         zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
         zero, zbs=zero.zbs.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
         zero, pres_scale=jnp.ones_like(zero.pres_scale)))
-    im.warm_staged_tangent(cfg, p0, chunk=2, certify_rtol=1e-8)
+    im.warm_staged_tangent(cfg, p0, chunk=2, certify_rtol=1e-8, certify_maxiter=1, fallbacks=True)
     with _CompileLog() as log:
         _, report = im.staged_tangent_multi_rhs(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8,
                                                 certify_maxiter=1)
     assert np.all(np.asarray(report.converged))
     assert not [name for name in log.names if "staged" in name or "refine" in name], log.names
+    # the fallbacks a failing chunk needs are compiled too
+    check = im._staged_tangent_check
+
+    def failing_check(*args, **kwargs):
+        report, accepted = check(*args, **kwargs)
+        return report._replace(converged=jnp.zeros_like(report.converged)), jnp.zeros_like(accepted)
+
+    try:
+        im._staged_tangent_check = failing_check
+        with _CompileLog() as log:
+            im.staged_tangent_multi_rhs(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8, certify_maxiter=1)
+    finally:
+        im._staged_tangent_check = check
+    assert not [name for name in log.names if "staged" in name], log.names
 
 
 def test_block_state_pullback_with_stored_factors_matches():

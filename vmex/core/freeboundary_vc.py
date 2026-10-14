@@ -1347,7 +1347,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
-        self._gradient_programs_warmed = False
+        self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-terms free boundary")
@@ -1403,7 +1403,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
-        warm = self._warm_gradient_programs(sol, xj)
+        if self._warm_threads[0] is not None:  # the response fallbacks: wait instead of compiling them twice
+            self._warm_threads[0].join()
 
         def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
@@ -1438,8 +1439,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
                        values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
-        if warm is not None:  # its programs are the ones below: wait instead of compiling them twice
-            warm.join()
+        if self._warm_threads[1] is not None:  # the pullback and direct Jacobian
+            self._warm_threads[1].join()
         state, mask, params = model._im._canonical_arrays(model.cfg, (sol["state"], sol["mask"], sol["params"]))
         factors = model._im.block_factors_at(model.cfg, params, state, mask)
         params_bar = self._pullback(state, mask, params, xj, factors)
@@ -1454,34 +1455,44 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         sol["gradients"] = gradients
         return gradients
 
-    def _warm_gradient_programs(self, sol, xj):
-        """On the first gradient, compile its reverse-mode programs while the Jacobian is relinearized.
+    def _warm_gradient_programs(self, x0):
+        """Compile the design gradient's programs on background threads while the seed design is solved.
 
-        The pullback through the equilibrium and the direct design Jacobian of the rows are the largest programs
-        of a design gradient and depend only on the structures of the state, the plasma parameters and ``x``, so
-        a background thread compiles them (for the trial's state, with the arguments canonicalized as the real
-        calls are) while :meth:`linearize` solves and compiles the state responses.  Returns the thread, or
-        ``None`` once the programs exist.  Cache warming only: the same executables.
+        Two daemon threads, from placeholder arguments of the model's structure (values do not enter a
+        compilation): the state-response fallbacks the plasma-parameter columns need (GMRES corrector and
+        refinement, :func:`~vmex.core.implicit.warm_staged_tangent`), joined before the first relinearization,
+        and the pullback through the equilibrium and the direct design Jacobian, joined before the first
+        pullback.  Cache warming only: the same executables; a failure leaves the real call to compile.
         """
         import threading
 
-        if self._gradient_programs_warmed:
-            return None
-        self._gradient_programs_warmed = True
-        im, cfg = self.model._im, self.model.cfg
+        model = self.model
+        im, cfg, params0 = model._im, model.cfg, model.params0
 
-        def work():
+        def tangents():
             try:
-                state, mask, params = im._canonical_arrays(cfg, (sol["state"], sol["mask"], sol["params"]))
-                factors = im.block_factors_at(cfg, params, state, mask)
-                self._pullback.lower(state, mask, params, xj, factors).compile()
-                self._direct.lower(state, params, xj).compile()
+                im.warm_staged_tangent(cfg, params0, chunk=model.chunk, certify_rtol=cfg.jacobian_adjoint_tol,
+                                       certify_maxiter=cfg.jacobian_adjoint_maxiter, fallbacks=True)
             except Exception:  # cache warming only: the real calls compile on demand
                 pass
 
-        thread = threading.Thread(target=work, name="vmex-gradient-warm", daemon=True)
-        thread.start()
-        return thread
+        def gradient():
+            try:
+                state, mask, params = im._canonical_arrays(cfg, im._placeholder_arguments(cfg, params0))
+                arguments = (state, params, state, mask)
+                factors = im._zeros_like_structure(
+                    cfg, jax.eval_shape(lambda *a: im._refine_block_factor_core(*a, cfg), *arguments))
+                x = jnp.asarray(np.zeros_like(np.asarray(x0, dtype=float)))
+                self._pullback.lower(state, mask, params, x, factors).compile()
+                self._direct.lower(state, params, x).compile()
+            except Exception:  # cache warming only
+                pass
+
+        threads = tuple(threading.Thread(target=work, name=name, daemon=True)
+                        for work, name in ((tangents, "vmex-tangent-fallback-warm"), (gradient, "vmex-gradient-warm")))
+        for thread in threads:
+            thread.start()
+        return threads
 
     def _value(self, x):
         return float(self._record(x)["values"][0])

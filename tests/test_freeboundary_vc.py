@@ -733,26 +733,31 @@ class _Implicit:
             raise RuntimeError("no refinement")
         self.calls.append("refinement")
 
-    def warm_staged_tangent(self, cfg, params, *, chunk, certify_rtol):
+    def warm_staged_tangent(self, cfg, params, *, chunk, certify_rtol, certify_maxiter=None, fallbacks=False):
         if self.fail:
             raise RuntimeError("no tangent")
         self.calls.append(("tangent", chunk))
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_gradient_programs_compile_once_on_a_background_thread(fail):
-    """The first gradient starts one warm-up thread (a failure in it is swallowed); later ones start none."""
-    model = type("Model", (), {"_im": _Implicit(), "cfg": "cfg"})()
-    problem = type("Problem", (), {"model": model, "_gradient_programs_warmed": False,
-                                   "_pullback": _Program(fail), "_direct": _Program(fail)})()
-    sol = dict(state="state", mask="mask", params="params")
-    thread = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, sol, "x")
-    thread.join()
-    assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, sol, "x") is None
-    assert model._im.calls == ["factors"]
+def test_gradient_programs_compile_from_placeholders_on_background_threads(fail):
+    """The problem starts two warm-up threads (response fallbacks; pullback and direct Jacobian) from placeholder
+    arguments; a failure in either is swallowed."""
+    implicit = _Implicit(fail)
+    implicit._placeholder_arguments = lambda cfg, params: (jnp.ones(3), jnp.ones(3), params)
+    implicit._zeros_like_structure = lambda cfg, shapes: jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shapes)
+    implicit._refine_block_factor_core = lambda z, params, frozen, mask, cfg: (z * params, frozen + mask)
+    model = type("Model", (), {"_im": implicit, "params0": jnp.ones(3), "chunk": 2})()
+    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4, "jacobian_adjoint_maxiter": 10})()
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(fail), "_direct": _Program(fail)})()
+    threads = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(4))
+    for thread in threads:
+        thread.join()
     if not fail:
-        assert problem._pullback.lowered == [("state", "mask", "params", "x", "factors")]
-        assert problem._direct.lowered == [("state", "params", "x")]
+        assert ("tangent", 2) in implicit.calls
+        (state, mask, params, x, factors), = problem._pullback.lowered
+        assert x.shape == (4,) and len(factors) == 2
+        assert len(problem._direct.lowered) == 1
 
 
 @pytest.mark.parametrize("fail", [False, True])

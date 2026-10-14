@@ -704,8 +704,7 @@ class ThreeTermsFreeBoundaryModel:
         def work():
             try:
                 im.warm_staged_tangent(params_x, cfg, state, mask, batch, chunk=self.chunk,
-                                       certify_rtol=cfg.jacobian_adjoint_tol,
-                                       certify_maxiter=cfg.jacobian_adjoint_maxiter)
+                                       certify_rtol=cfg.jacobian_adjoint_tol)
             except Exception:  # cache warming only: the real call compiles on demand
                 pass
 

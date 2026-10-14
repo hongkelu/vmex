@@ -170,7 +170,6 @@ from solvax import (
     auto_chunk_size,
     block_tridiag_matvec,
     block_thomas_factor,
-    block_thomas_solve,
     chunk_map,
     gcrot as _solvax_gcrot,
     gmres as _solvax_gmres,
@@ -3488,7 +3487,6 @@ def warm_staged_tangent(
     *,
     chunk: int,
     certify_rtol: float | None = None,
-    certify_maxiter: int | None = None,
 ) -> None:
     """Compile :func:`staged_tangent_multi_rhs`'s programs for this config ahead of its first call.
 
@@ -3500,7 +3498,6 @@ def warm_staged_tangent(
     for any number of columns, finds every executable in JAX's caches.
     """
     rtol = None if certify_rtol is None else float(certify_rtol)
-    maxiter = None if certify_maxiter is None else int(certify_maxiter)
     factors = block_factors_at(cfg, params, x_star, dof_mask)
     params, x_star, dof_mask, pieces, chunk = _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk)
     with _device_context(cfg):

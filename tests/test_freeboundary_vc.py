@@ -507,6 +507,8 @@ def test_bootstrap_rows_are_the_current_errors_field_over_b0():
         curtor = jax.grad(lambda v: block.current(block.values(v), 1.0))(jnp.asarray(block.x0))
         np.testing.assert_allclose(block.weights, curtor, rtol=1e-12, atol=1e-15)
         assert block.weights.sum() == pytest.approx(1.0 - 0.5 * block.knots[1]) and np.all(block.weights > 0)  # I'(0) = 0
+        # the edge value continues the last two knots' line: a linear I' is exact at s = 1
+        assert float(block.values(1.0 - block.knots[1:-1])[-1]) == pytest.approx(0.0, abs=1e-14)
         with pytest.raises(ValueError, match="unit is not set"):
             block.x_scale
         with pytest.raises(ValueError, match="unit is not set"):

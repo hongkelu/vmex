@@ -862,9 +862,8 @@ class HalfMeshCurrent:
         edge = float(enclosed(jnp.asarray(1.0)))
         slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[1:-1])))
         self.x0 = float(deck.curtor) / edge * slope if edge else np.zeros(slope.size)  # the deck's current, in A
-        # d CURTOR / d v: the unknown knots' trapezoid weights, with the edge value 2 v[-1] - v[-2] on the last interval
-        self.weights = 0.5 * (self.knots[2:] - self.knots[:-2])
-        self.weights[-2:] += (self.knots[-1] - self.knots[-2]) * np.array([-0.5, 1.0])
+        # d CURTOR / d v: the unknown knots' trapezoid weights (CURTOR is linear in v), the edge value included
+        self.weights = np.asarray(jax.grad(lambda v: self.current(self.values(v), 1.0))(jnp.ones(slope.size)))
         self.unit = None
         self.profiles, self.helicity_n = profiles, int(helicity_n)
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
@@ -888,7 +887,8 @@ class HalfMeshCurrent:
     def values(self, v):
         """Every knot value from the unknowns ``v`` (the sub-axis knots', then the half-mesh ones)."""
         v = jnp.asarray(v)
-        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (2 * v[-1] - v[-2])[None]])
+        # the edge value: the line through the last two half-mesh knots (1 - 3h/2, 1 - h/2) at s = 1
+        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (1.5 * v[-1] - 0.5 * v[-2])[None]])
 
     def deck_with(self, deck, v):
         """``deck`` with the knot values ``v``."""

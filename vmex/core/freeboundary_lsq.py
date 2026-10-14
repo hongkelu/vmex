@@ -257,7 +257,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         angle origin), in the ESS-scaled metric.  One linear condition per relabelling mode; only the labelling
         is fixed, the shape stays free, and every start reaches the same boundary.  (A reference-free gauge --
         stationarity of the spectral width ``sum m^p (R^2 + Z^2)`` -- is unique too, but at low resolution its
-        labelling costs the truncated series cm-size shape on strongly shaped boundaries; see the docs.)
+        labelling costs the truncated series mm of shape on strongly shaped boundaries; see the docs.)
         ``None`` (no gauge) is the fixed-boundary model's.
         """
         self.gauge_constraints = None

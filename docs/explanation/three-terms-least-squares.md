@@ -69,8 +69,9 @@ width $F_p = \sum m^p (R_{mn}^2 + Z_{mn}^2)$ under the $m > 0$ relabellings,
 and of the twist $\sum (n N_{fp})^2 (R_{mn}^2 + Z_{mn}^2)$ under the shifts. It
 is unique, but at low resolution its labelling costs the truncated series real
 shape. On an optimized, strongly shaped 8-mode boundary, relabelling to the
-$F_6$ minimum and truncating moves the surface by 4-6 mm (maximum normal
-distance). Satisfying the constraints exactly moves it by 15-33 mm. For the
+spectral-width minimum and truncating moves the surface by 4-7 mm (maximum
+normal distance, $p = 4$ or $6$, at 8 and 10 modes), against 0.05 mm for LP QA
+at 8 modes with $p = 6$. For the
 vacuum benchmark the field-line distance of the last closed surface at 12 modes
 is 0.114 mm in that gauge, against 0.048 mm with the deck's labelling.
 

@@ -122,6 +122,13 @@ efficiency cores. On an M4 (4 + 6) all 10 cores trace 1.7x faster than the 4
 performance cores. A device count in `XLA_FLAGS` or `JAX_NUM_CPU_DEVICES`
 wins. The Boozer transform takes about 2 s.
 
+**ESSOS 0.21.** Above 48 Boozer modes ESSOS sums `|B|` once on an angle grid
+and evaluates it with quintic splines, and lost alphas are dropped and the
+survivors re-sharded across devices during the run. With the default 500
+alphas over 10 ms on 10 M4 cores (compilation excluded), ARIES-CS goes from
+111 s to 53 s (13.8 % lost against 12.2 %, about 1 sigma) and the Landreman-Paul
+QA from 11.2 s to 6.9 s, with the same energy error.
+
 **CPU or GPU.** Since ESSOS 0.19.3 (parallel spline lookup and compaction of
 lost alphas) a GPU is the faster choice for large ensembles: 1,024 alphas over
 2 ms take 2.4 s warm on an RTX A4000 against 18 s on eight CPU devices

@@ -495,7 +495,10 @@ DESC's own free boundary at 12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and
 sheet current, a higher pressure jump. DESC's force-converged evaluation at 16
 modes ranks DESC's answer first: 4.0e-4 / 1.2e-4 / 4.4e-4 against 3.7e-4 /
 6.2e-5 / 3.9e-4 (moments: 4.9e-4 / 1.6e-4 / 5.3e-4). From the r1 start the
-transported rows stalled and the plain moments led in (28 against 6 minutes). Neither row set controls `B . n`
+transported rows stalled and the plain moments led in (28 against 6 minutes). More
+interior headroom (16 interior modes, boundary 12) lowers the self-evaluated
+terms to 1.2e-4 / 1.1e-4 / 1.6e-4, but DESC's 16-mode evaluation reads
+5.9e-4 / 9.8e-5 / 6.1e-4: only the pressure jump improves there. Neither row set controls `B . n`
 outside the boundary's modes: on LP QA at 0.5 % beta with its bundled coils
 (deck B.n 6.0e-3 at mpol 4, 1.2e-3 at mpol 6) the answer keeps the deck's B.n
 (`test_finite_beta_free_boundary_removes_the_sheet_current` records it as an

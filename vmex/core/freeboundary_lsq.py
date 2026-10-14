@@ -933,12 +933,12 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         dz_b = jax.tree.map(lambda a: a[:nb], so["dz"])
         dp_b = jax.tree.map(lambda a: a[:nb], so["batch"])
-        for k, m in enumerate(mu.T):
-            mj = jnp.asarray(m)
+        for row, column in enumerate(mu.T):
+            mj = jnp.asarray(column)
             dz_mu = jax.tree.map(lambda a: jnp.tensordot(mj, a, axes=1), dz_b)
             dp_mu = jax.tree.map(lambda a: jnp.tensordot(mj, a, axes=1), dp_b)
             with vc.remat_scans():
-                gradients[k] -= np.asarray(self._coil_mixed(state, mask, params, xj, dz_mu, dp_mu))
+                gradients[row] -= np.asarray(self._coil_mixed(state, mask, params, xj, dz_mu, dp_mu))
         if self._plasma.size:
             gradients[:, self._plasma] -= mu.T @ so["C"]
             if m:

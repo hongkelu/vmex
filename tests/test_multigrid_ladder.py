@@ -679,3 +679,20 @@ def test_hot_restart_25pct_target():
     inp2 = dataclasses.replace(inp, rbc=rbc)
     hot = solver.solve(inp2, ftol=1e-14, initial_state=base.state)
     assert hot.converged and hot.iterations < 0.25 * base.iterations
+
+
+def test_prefetch_skips_a_rung_of_an_earlier_structure(monkeypatch):
+    """A later rung with an earlier rung's structure reuses its executable: nothing is prefetched for it."""
+    inp = _load_input("solovev")
+    launched = []
+    real_launch = multigrid._launch_lane_prefetch
+
+    def launch(inp, *, ns_next, **kwargs):
+        launched.append(ns_next)
+        return real_launch(inp, ns_next=ns_next, **kwargs)
+
+    monkeypatch.setattr(multigrid, "_launch_lane_prefetch", launch)
+    result = multigrid.solve_multigrid(inp, ns_array=[5, 9, 9], ftol_array=[1e-8, 1e-9, 1e-10],
+                                       niter_array=[751, 753, 753], prefetch_compile=True)
+    assert result.converged
+    assert launched == [9]

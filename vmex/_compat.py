@@ -506,12 +506,12 @@ def _install_file_cache() -> bool:
         if getattr(original, "_vmex_atomic", False):
             return True
         cache_class = _atomic_file_cache_class()
-        is_local = lru_cache._is_local_filesystem
+        lru_cache._is_local_filesystem  # noqa: B018 -- the predicate the wrapper relies on
     except Exception:
         return False
 
     def get_file_cache(path):
-        if not is_local(str(path)):
+        if not lru_cache._is_local_filesystem(str(path)):
             return original(path)
         cache = cache_class(path)
         if compilation_cache.config.compilation_cache_check_contents.value:

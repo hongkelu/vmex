@@ -901,3 +901,49 @@ def test_atomic_file_cache_roundtrip(tmp_path):
     assert not list(tmp_path.glob(".*.tmp"))
     stamp = int.from_bytes((tmp_path / "abc-atime").read_bytes(), "little")
     assert abs(stamp - time.time_ns()) < 60e9
+
+
+def test_prune_cache_entries_removes_stale_temporaries(tmp_path):
+    """A writer killed between write and rename leaves a temporary file; it goes after an hour."""
+    import os
+    import time
+
+    stale, fresh = tmp_path / ".k.1.ab.tmp", tmp_path / ".k.2.cd.tmp"
+    stale.write_bytes(b"x")
+    fresh.write_bytes(b"x")
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    (tmp_path / "k-cache").write_bytes(b"x")
+    assert _compat._prune_cache_entries(str(tmp_path), 10, max_bytes=100) == 0
+    assert not stale.exists() and fresh.exists()
+
+
+def test_atomic_file_cache_contract(tmp_path, monkeypatch):
+    """Empty keys are refused; remote paths keep JAX's own cache; content checking wraps vmex's."""
+    import pytest
+
+    assert _compat._install_file_cache()
+    assert _compat._install_file_cache()  # idempotent
+    from jax._src import compilation_cache
+
+    cache, _ = compilation_cache.get_file_cache(str(tmp_path))
+    with pytest.raises(ValueError):
+        cache.put("", b"x")
+    monkeypatch.setattr(compilation_cache.config, "compilation_cache_check_contents",
+                        types.SimpleNamespace(value=True))
+    wrapped, _ = compilation_cache.get_file_cache(str(tmp_path))
+    assert isinstance(wrapped, compilation_cache.VerificationCache)
+    monkeypatch.undo()
+    from jax._src import lru_cache
+
+    monkeypatch.setattr(lru_cache, "_is_local_filesystem", lambda path: False)
+    monkeypatch.setattr(compilation_cache, "LRUCache", lambda path, max_size: "jax's own")
+    remote, _ = compilation_cache.get_file_cache("gs://bucket/cache")
+    assert remote == "jax's own"
+
+
+def test_install_file_cache_leaves_unexpected_jax_internals_alone(monkeypatch):
+    from jax._src import compilation_cache
+
+    monkeypatch.delattr(compilation_cache, "get_file_cache")
+    assert _compat._install_file_cache() is False

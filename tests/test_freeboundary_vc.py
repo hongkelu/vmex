@@ -73,6 +73,36 @@ def _coil_field(name):
     return _FilamentField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
 
 
+def _stand_in(n, rows, jac, *, vacuum=True, repeat=None):
+    """A model whose rows and Jacobian are ``rows(z, tight)`` and ``jac(z)`` (no equilibrium): for Newton's logic.
+
+    ``repeat`` gives the rows of a second solve of the same point (default: the same rows, no noise)."""
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary, model._moments = vacuum, False, False
+    model.x0, model.x_scale, model.n_boundary, model.R0 = np.zeros(n), np.ones(n), n, 1.0
+    model.boundary_modes = [(1, 0)] * (n - 1) + [(0, 0)]
+    model.cfg = model.cfg_trial = None
+    model.evaluate = lambda z, params, field, tight=False: (rows(z, True), (z, None, None, True))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
+    model.rows_at = lambda aux, field: rows(aux[0], True)
+    model.repeat = (lambda z, params, field, aux: rows(z, True)) if repeat is None else repeat
+    return model
+
+
+def test_newton_convergence_test_is_a_step_in_metres():
+    """Converged when the Newton step is within round-off of the coordinates (sqrt(eps) R0) or within the step of
+    the measured row noise; the step's size is the RMS normal displacement; a singular Jacobian has no step."""
+    eps = np.finfo(float).eps
+    assert fvc.displacement_rms([3.0, 4.0], [(0, 0), (1, 0)]) == pytest.approx(np.sqrt(9.0 + 8.0))
+    assert fvc.newton_step_converged(0.9 * np.sqrt(eps) * 2.0, 0.0, 2.0)
+    assert not fvc.newton_step_converged(1.1 * np.sqrt(eps) * 2.0, 0.0, 2.0)
+    assert fvc.newton_step_converged(1e-6, 2e-6, 2.0) and not fvc.newton_step_converged(3e-6, 2e-6, 2.0)
+    assert fvc._newton_step(np.array([[1.0, 1.0], [1.0, 1.0 + 1e-17]]), np.ones(2)) is None
+    assert fvc._newton_step(np.array([[np.nan]]), np.ones(1)) is None
+    np.testing.assert_allclose(fvc._newton_step(np.array([[2.0, 0.0], [0.0, 1e-9]]), np.array([2.0, 1e-9])),
+                               [-1.0, -1.0])
+
+
 def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
@@ -203,7 +233,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
         warnings.simplefilter("always")
         again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
     assert not any("did not lower B.n" in str(w.message) for w in caught)
-    assert again.njev == 0 and again.cost <= max(fit.cost, fit.model._NEWTON_COST)
+    assert again.njev == 0 and again.cost <= fit.cost
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
 
@@ -292,50 +322,50 @@ def test_square_galerkin_boundary_is_solved_by_newton_from_a_stale_jacobian():
     """Square rows (the Galerkin free boundary): Newton reaches the root to round-off, reusing a stale Jacobian
     while it converges fast and refreshing it otherwise; the root does not depend on the start."""
 
-    def rows(x):
+    def rows(x, tight=True):
         return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
 
     def jac(x):
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
-    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary = True, False
-    model.x0, model.x_scale = np.zeros(2), np.ones(2)
-    model.cfg = model.cfg_trial = None
-    model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
-    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
+    model = _stand_in(2, rows, jac)
     root = np.array([1.0, 2.0])
     for start, jacobian in ((np.array([1.3, 1.7]), None), (np.array([0.8, 2.2]), jac(np.array([1.5, 1.5])))):
         out = model.solve_boundary(None, None, x0=start, jacobian=jacobian)
         assert out["converged"]
-        np.testing.assert_allclose(out["x"], root, atol=1e-11)
+        np.testing.assert_allclose(out["x"], root, atol=1e-12)
         assert out["nfev"] <= 12
 
 
 def test_newton_stops_at_the_noise_of_the_rows():
-    """Rows with evaluation noise (as virtual-casing rows have): below ``_NEWTON_FLOOR`` Newton stops once a step
-    no longer converges fast, instead of spending Jacobians on the noise, and reports convergence."""
-    noise = 1e-11
+    """Rows with evaluation noise (as virtual-casing rows have): below round-off of the coordinates Newton stops;
+    where the noise is larger and a fresh step no longer descends, the boundary is solved again from a second seed,
+    and the step is converged if it is within the step of that difference (the rows' noise), a stall otherwise."""
 
-    def rows(x):
-        draw = np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)  # a new draw per point
-        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0]) + noise * draw
+    def draw(x):  # a new draw per point
+        return np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)
+
+    def exact(x):
+        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
 
     def jac(x):
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
-    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary = True, False
-    model.x0, model.x_scale = np.zeros(2), np.ones(2)
-    model.cfg = model.cfg_trial = None
-    model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
-    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
-    for jacobian in (None, jac(np.array([1.0, 2.0]))):  # fresh Jacobians; a reused one at the root
-        out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]) if jacobian is None else np.array([1.0, 2.0]),
-                                   jacobian=jacobian)
-        assert out["converged"] and 0.5 * out["rows"] @ out["rows"] <= model._NEWTON_FLOOR
-        np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-9)
-        assert out["njev"] <= 6
+    for noise in (1e-11, 1e-6):
+        model = _stand_in(2, lambda x, tight=True, noise=noise: exact(x) + noise * draw(x), jac,
+                          repeat=lambda x, params, field, aux, noise=noise: exact(x) - 10.0 * noise * draw(x))
+        for jacobian in (None, jac(np.array([1.0, 2.0]))):  # fresh Jacobians; a reused one at the root
+            start = np.array([1.3, 1.7]) if jacobian is None else np.array([1.0, 2.0])
+            out = model.solve_boundary(None, None, x0=start, jacobian=jacobian)
+            assert out["converged"]
+            np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-9 if noise < 1e-8 else 1e-5)
+            assert out["njev"] <= 6
+            # the noise is measured only where it limits the step, then kept for the model's later solves
+            assert (out["noise"] is None) == (noise < 1e-8)
+    # a repeat that lands on the same rows: no noise, so a step that does not descend is a stall
+    model = _stand_in(2, lambda x, tight=True: exact(x) + 1e-6 * draw(x), jac)
+    out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]))
+    assert not out["converged"] and out["noise"] == 0.0
 
 
 def test_unknown_problem_boundary_condition_is_rejected():
@@ -391,11 +421,7 @@ def test_three_terms_problem_gradients_match_resolved_differences():
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
-    problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution
-    with pytest.raises(TrialRejected):
-        problem.fun(x0 + 1e-3 * np.eye(2)[0])
     # a boundary fit that did not converge is a failed trial, never a value (whatever its residual)
-    problem.boundary_max_residual = None
     solve = problem.model.solve_boundary
     problem.model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
     failed = problem.stats["failed"]
@@ -523,8 +549,8 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
 
 
 def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():
-    """Trials at a looser force tolerance (``trial_ftol``) carry noise; when a fresh Newton step no longer descends
-    on them, the trials are solved to the deck's tolerance and Newton converges to round-off."""
+    """Trials at a looser force tolerance (``trial_ftol``) carry noise.  Convergence is tested on rows solved to the
+    deck's tolerance only, and when a fresh Newton step no longer descends on the trials they are solved tight."""
 
     def rows(x, tight):
         exact = np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
@@ -534,30 +560,30 @@ def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():
     def jac(x):
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
-    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary = True, False
-    model.x0, model.x_scale, model.cfg, model.cfg_trial = np.zeros(2), np.ones(2), "deck", "trial"
+    model = _stand_in(2, rows, jac)
+    model.cfg, model.cfg_trial = "deck", "trial"
     model.evaluate = lambda z, params, field, tight=False: (rows(z, tight), (z, None, None, tight))
-    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
     out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]))
     assert out["converged"] and out["aux"][3]
-    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-11)
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-12)
+    # loose rows that are already within round-off of a root are re-solved tight before convergence is declared
+    loose = []
+    model.evaluate = lambda z, params, field, tight=False: (loose.append(not tight) or rows(z, True) + (
+        0.0 if tight else 1e-15), (z, None, None, tight))
+    out = model.solve_boundary(None, None, x0=np.array([1.0, 2.0]), jacobian=jac(np.array([1.0, 2.0])))
+    assert out["converged"] and out["aux"][3] and out["njev"] == 0 and loose[0] and not loose[-1]
 
 
 def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys):
     """A start with no certified equilibrium backs off toward the deck; rows without a root stall at their
-    stationary point, reported as not converged (and printed with ``verbose``)."""
+    stationary point (a singular Jacobian there), reported as not converged (and printed with ``verbose``)."""
 
-    def rows(x):
+    def rows(x, tight=True):
         return np.array([x[0] ** 2 + 1.0])  # no root: the cost is stationary at x = 0
 
-    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary = True, False
-    model.x0, model.x_scale, model.cfg = np.zeros(1), np.ones(1), None
-    model.cfg_trial = model.cfg
+    model = _stand_in(1, rows, lambda z: np.array([[2.0 * z[0]]]))
     model.evaluate = lambda z, params, field, tight=False: (
         None if abs(z[0]) > 1.0 else (rows(z), (z, None, None, True)))
-    model.linearize = lambda z, aux, field, extra=None: (np.array([[2.0 * z[0] + 1e-300]]), None, None, aux)
     out = model.solve_boundary(None, None, x0=np.array([1.2]), verbose=1)  # 1.2 fails, 0.9 = 0.75 x 1.2 is solved
     assert not out["converged"] and abs(out["x"][0]) < 0.9
     assert "Newton stalled" in capsys.readouterr().out
@@ -637,12 +663,8 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
     def jac(z, moments):
         return np.array([[1.0]]) if moments else np.array([[3.0 * z[0] ** 2 - 2.0]])
 
-    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary, model._moments = False, False, False
-    model.x0, model.x_scale, model.cfg = np.zeros(1), np.ones(1), None
-    model.cfg_trial = model.cfg
-    model.evaluate = lambda z, params, field, tight=False: (rows(z, model._moments), (z, None, None, True))
-    model.linearize = lambda z, aux, field, extra=None: (jac(z, model._moments), None, None, aux)
+    model = _stand_in(1, lambda z, tight=True: rows(z, model._moments), lambda z: jac(z, model._moments),
+                      vacuum=False)
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)

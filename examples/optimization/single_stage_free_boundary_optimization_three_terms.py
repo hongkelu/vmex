@@ -904,8 +904,6 @@ def parse_args(argv=None):
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
     parser.add_argument("--design-step-scale", type=float, default=DESIGN_STEP_SCALE,
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
-    parser.add_argument("--max-boundary-residual", type=float, default=0.05,
-                        help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
@@ -1048,8 +1046,7 @@ def main(argv=None):
         three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY,
-                                boundary_max_residual=args.max_boundary_residual))
+                                bootstrap_helicity=REDL_HELICITY))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

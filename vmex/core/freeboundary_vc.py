@@ -269,6 +269,51 @@ def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=128, nzeta=64, dir
     return np.asarray(columns).T, modes, np.exp(-alpha * levels) / np.exp(-alpha)
 
 
+def displacement_rms(h, modes) -> float:
+    """RMS over the angles of ``sum h_mn cos(m theta - n nfp zeta)`` on ``modes`` (metres for metres).
+
+    The normal displacement of the boundary for coefficients ``h`` on ``modes`` (``(m, n)`` pairs, as
+    :attr:`ThreeTermsFreeBoundaryModel.boundary_modes`): every mode but ``(0, 0)`` has mean square ``h^2 / 2``.
+    """
+    h = np.asarray(h, dtype=float)
+    weight = np.array([1.0 if (int(m), int(n)) == (0, 0) else 0.5 for m, n in modes])
+    return float(np.sqrt(np.sum(weight * h**2)))
+
+
+def newton_step_converged(step_rms: float, noise_rms: float, scale: float) -> bool:
+    """Whether a Newton step of RMS size ``step_rms`` leaves nothing the rows can resolve: the free boundary's
+    convergence test, shared by the Galerkin and least-squares solvers.
+
+    Converged when ``step_rms <= max(noise_rms, sqrt(eps) * scale)``:
+
+    - ``noise_rms`` is the step that the rows' measured noise alone produces (the difference of the rows of one
+      boundary solved from two seeds, through the inverse Jacobian): a smaller step is not resolved by the rows;
+    - ``sqrt(eps) * scale`` (``scale`` the coordinates' size, the major radius ``R0`` for a displacement) is
+      round-off: Newton's error after a step ``p`` is ``O(|p|^2 / scale)``, so a step below ``sqrt(eps) scale``
+      leaves an error at the coordinates' round-off ``eps * scale`` (the step tolerance of Dennis and Schnabel 1983, ch. 7).
+
+    The step is in the coordinates' own units (metres of normal displacement: :func:`displacement_rms`), so the
+    test does not depend on how the rows are scaled.
+    """
+    return bool(step_rms <= max(float(noise_rms), float(np.sqrt(np.finfo(float).eps)) * float(scale)))
+
+
+def _newton_step(J, r):
+    """The Newton step ``-J^-1 r`` of the square system, or ``None`` when ``J`` is numerically singular.
+
+    Singular means no correct digit in the step: ``cond(J) * eps >= 1`` for ``J`` with its columns scaled to
+    unit norm (the column scaling within ``sqrt(n)`` of the best one, van der Sluis 1969, so the coordinates'
+    units do not decide it).
+    """
+    J, r = np.asarray(J, dtype=float), np.asarray(r, dtype=float)
+    norms = np.linalg.norm(J, axis=0)
+    if not np.all(np.isfinite(J)) or not np.all(norms > 0.0):
+        return None
+    if not np.linalg.cond(J / norms[None, :]) * np.finfo(float).eps < 1.0:
+        return None
+    return -np.linalg.solve(J, r)
+
+
 def solve_free_boundary_three_terms(
     inp: VmecInput,
     *,
@@ -482,6 +527,7 @@ class ThreeTermsFreeBoundaryModel:
         # Boundary coordinates: the normal displacement h of the deck's surface (see _normal_displacement_map):
         # one function for the one normal condition, no tangential (relabelling) directions among the unknowns.
         x_ref = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
+        self.R0 = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])  # the length scale of the convergence test
         if self.fixed_boundary:
             self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
         else:
@@ -858,45 +904,99 @@ class ThreeTermsFreeBoundaryModel:
         self._last_linearize = (key, extra_key, (columns, dz, batch, aux), self._linearization)
         return columns, dz, batch, aux
 
-    #: Newton stops on the square system at this cost (0.5 |rows|^2; rows are B.n moments relative to B0):
-    #: rows of ~1e-12, the round-off of the vacuum rows
-    _NEWTON_COST = 1e-24
-    #: Below this cost (rows ~1e-9, four orders below the smallest interface residual of any case, ~1e-5) the
-    #: boundary is converged in every reported digit; there a fresh-Jacobian step that no longer converges fast
-    #: (a chord method's 10x) meets the rows' own evaluation noise (virtual-casing quadrature, force tolerance)
-    #: and further steps only spend Jacobians.
-    _NEWTON_FLOOR = 1e-18
+    def rows_at(self, aux, field):
+        """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve)."""
+        state, _, params_x, _ = aux
+        return np.asarray(self._rows(state, params_x, field, moments=self._moments))
+
+    def repeat(self, x, params, field, aux):
+        """The rows at ``x`` solved again, to the deck's tolerance, from a second seed; ``None`` if that fails.
+
+        The difference from the rows of ``aux`` (the same boundary, solved from another start) is the rows'
+        repeatability, the noise below which Newton cannot converge (:func:`newton_step_converged`).  The second
+        seed is the deck's equilibrium, or a cold start when ``x`` is the deck's boundary itself; the solver's
+        one-entry memos are cleared so that the boundary is really solved again.
+        """
+        im, cfg = self._im, self.cfg
+        params_x = self.with_boundary(params, jnp.asarray(x))
+        at_deck = not np.any(np.asarray(x)[:self.n_boundary] - self.x0[:self.n_boundary])
+        for memo in (im._LAST_SOLVE, im._LAST_REFINED, im._LAST_REFINEMENT_CORRECTION) + (
+                (im._HOT_CACHE,) if at_deck else ()):
+            memo.pop(cfg, None)
+        solved = self.solve(params_x, None if at_deck else self.seed[0], tight=True)
+        return None if solved is None else self.rows_at((*solved, params_x, True), field)
+
+    def _step_converged(self, step, noise_step, x):
+        """:func:`newton_step_converged` for the boundary part of ``step`` (metres, against ``R0``) and for the
+        bootstrap-current part (against the current values ``x``); ``noise_step`` is the step of the measured
+        row noise, or ``None`` before it is measured."""
+        nb = self.n_boundary
+        noise = np.zeros_like(step) if noise_step is None else noise_step
+        ok = nb == 0 or newton_step_converged(displacement_rms(step[:nb], self.boundary_modes),
+                                              displacement_rms(noise[:nb], self.boundary_modes), self.R0)
+        if step.size > nb:  # the bootstrap current: plain RMS of its knot values
+            rms = lambda v: float(np.sqrt(np.mean(np.square(v))))  # noqa: E731
+            ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
+        return ok
 
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
         A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
-        otherwise, and whenever a step fails, the Jacobian is refreshed at the current point.  Stops at
-        ``_NEWTON_COST``, where a fresh-Jacobian step no longer lowers the cost (round-off), or below
-        ``_NEWTON_FLOOR`` where a step no longer converges fast (the rows' noise: no Jacobian is spent on it).
+        otherwise, and whenever a step fails, the Jacobian is refreshed at the current point.  Converged when the
+        Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance: round-off, or the
+        step that the rows' measured noise (:meth:`repeat`, measured once a fresh Newton step finds no descent)
+        produces.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
+        (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
+        points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
         """
-        D = np.asarray(self.x_scale, dtype=float)
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
         for fraction in (0.75, 0.5, 0.25, 0.0):  # a far start may have no equilibrium: back off toward the deck
-            if got is not None or not np.any(x):
+            if got is not None or not np.any(x):  # (this only moves the start, never the answer)
                 break
             x = fraction * x
             got = self.evaluate(x, params, field)
         if got is None:
             raise RuntimeError("the starting boundary has no certified equilibrium")
         r, aux = got
-        J, fresh, nfev, njev, steps, started = jacobian, False, 1, 0, 0, time.perf_counter()
-        converged, tight = False, self.cfg_trial is self.cfg
+        J, fresh, slow, nfev, njev, steps, started = jacobian, False, False, 1, 0, 0, time.perf_counter()
+        # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
+        noises = self.__dict__.setdefault("_row_noise", {})
+        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
         while nfev < max_nfev:
-            cost = 0.5 * float(r @ r)
-            if cost <= self._NEWTON_COST:
-                converged = True
-                break
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
                 J, fresh, njev = np.asarray(J), True, njev + 1
-            p = D * np.linalg.lstsq(J * D[None, :], -r, rcond=1e-15)[0]
+                if not got[1][3] and aux[3]:  # the rows of the tight state the Jacobian belongs to
+                    r, got = self.rows_at(aux, field), (None, aux)
+            p = _newton_step(J, r)
+            if p is None:  # singular Jacobian: no Newton step
+                if not fresh:
+                    J = None
+                    continue
+                if verbose:
+                    print("Newton stalled: singular Jacobian", flush=True)
+                break
+            # the step of a Jacobian at this point or a nearby one (the previous point, ``previous=``, the
+            # single-stage anchor) is the distance to the root to first order
+            if self._step_converged(p, None if noise is None else _newton_step(J, noise), x):
+                if got[1][3]:  # converged: the last step leaves an error O(|p|^2), kept if it does not raise the rows
+                    converged, final = True, self.evaluate(x + p, params, field, tight=True)
+                    nfev += 1
+                    if final is not None and final[0] @ final[0] <= r @ r:
+                        x, (r, aux), steps = x + p, final, steps + 1
+                    break
+                tight, got = True, self.evaluate(x, params, field, tight=True)  # converge on tight rows only
+                nfev += 1
+                if got is None:
+                    break
+                r, aux = got
+                continue
+            if slow:  # the last step was slow: test convergence with its Jacobian, then refresh it
+                J, slow = None, False
+                continue
+            cost = 0.5 * float(r @ r)
             t, accepted = 1.0, None
             while t >= (1.0 / 64 if fresh else 1.0) and nfev < max_nfev:  # a reused J: its full step, or refresh
                 trial = self.evaluate(x + t * p, params, field, tight=tight)
@@ -917,28 +1017,27 @@ class ThreeTermsFreeBoundaryModel:
                         break
                     r, aux = got
                     continue
-                if fresh:  # no descent along a fresh Newton step: converged only at a stationary point
-                    # (round-off root, or the floor of an over-determined system: the step predicts no reduction)
-                    predicted = cost - 0.5 * float(np.sum((r + J @ p) ** 2))
-                    converged = cost <= self._NEWTON_FLOOR or predicted <= 1e-8 * cost
+                if fresh:  # no descent along a fresh Newton step: the rows' noise, or a stall
+                    if got[1][3] and nfev < max_nfev:
+                        again = self.repeat(x, params, field, aux)
+                        nfev += 1
+                        if again is not None:
+                            noise = again - r if noise is None or (np.linalg.norm(again - r)
+                                                                   > np.linalg.norm(noise)) else noise
+                            noises[self._moments] = noise
+                            converged = self._step_converged(p, _newton_step(J, noise), x)
                     if not converged and verbose:
-                        print(f"Newton stalled: cost {cost:.6e}, predicted reduction {predicted:.3e}", flush=True)
-                    break
-                if cost <= self._NEWTON_FLOOR:  # converged in every reported digit: no Jacobian for the noise
-                    converged = True
+                        print(f"Newton stalled: cost {cost:.6e}, step not within the rows' noise", flush=True)
                     break
                 J = None
                 continue
             new_cost = 0.5 * float(accepted[0] @ accepted[0])
-            x, (r, aux), steps = x + t * p, accepted, steps + 1
-            if new_cost > 1e-2 * cost:  # slower than a 10x residual reduction a step (a chord method)
-                if fresh and cost <= self._NEWTON_FLOOR:  # ... with a fresh Jacobian: the rows' noise floor
-                    converged = True
-                    break
-                J = None  # refresh the Jacobian
+            x, got, steps = x + t * p, accepted, steps + 1
+            r, aux = got
+            slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
-                    converged=converged)
+                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
@@ -1005,15 +1104,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_max_nfev=100,
-                  boundary_max_residual=None, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermsFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary is Newton-solved from
         the accepted point's first-order prediction with its Jacobian (refreshed when it no longer converges
-        fast), to at most ``boundary_max_nfev`` evaluations.  With ``boundary_max_residual`` a solution with any
-        :class:`BoundaryResidual` term above it is rejected: the trial tries its next start, or fails.
+        fast), to at most ``boundary_max_nfev`` evaluations; a fit that does not converge within them is no free
+        boundary: the trial tries its next start, or fails.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -1026,16 +1124,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual)
+                   boundary_max_nfev=boundary_max_nfev)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_max_nfev, boundary_max_residual=None):
+                 parameter_quantities, boundary_max_nfev):
         from .implicit import runtime_from_params
 
         self.model, self.field = model, field_from_parameters
         self.boundary_max_nfev = int(boundary_max_nfev)
-        self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
 
@@ -1117,13 +1213,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 self.stats["boundary_evaluations"] += fit["nfev"]
                 fit = None
                 continue
-            if self.boundary_max_residual is not None:
-                state, _, params_b, _ = fit["aux"]
-                residual = self.model.boundary_residual(state, params_b, field)
-                if max(residual.normal, residual.pressure, residual.sheet_current) > self.boundary_max_residual:
-                    self.stats["boundary_evaluations"] += fit["nfev"]
-                    fit = None  # the fit stalled away from the free boundary: try the next start
-                    continue
             break
         if fit is None:
             self.stats["failed"] += 1

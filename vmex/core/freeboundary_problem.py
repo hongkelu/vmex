@@ -577,8 +577,7 @@ class FreeBoundaryProblem(FunctionProblem):
             parameter maps, ``scales``, ``names``, the quantities and
             ``three_terms_options`` (keywords of
             :meth:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem.from_loss`: the
-            boundary solve's ``boundary_max_nfev`` and
-            ``boundary_max_residual``, and the
+            boundary solve's ``boundary_max_nfev``, and the
             :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` keywords);
             the other arguments are NESTOR's.
 

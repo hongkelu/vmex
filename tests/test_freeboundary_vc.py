@@ -199,9 +199,9 @@ def test_vacuum_free_boundary_agrees_with_nestor():
 
 
 _FINITE_BETA_LEAK = pytest.mark.xfail(strict=True, reason=(
-    "known limitation: the finite-beta rows are B.n moments on the boundary's modes (two below the interior's), "
-    "and B.n outside them is not controlled; LP QA 0.5 % beta with its bundled coils at mpol 4 ends at "
-    "B.n 5.9e-3 (deck 6.0e-3), at mpol 6 1.18e-3 (deck 1.17e-3); see docs/explanation/validation.md"))
+    "known limitation: the finite-beta rows act on the boundary's modes (two below the interior's), and B.n "
+    "outside them is not controlled (the solve warns); LP QA 0.5 % beta with its bundled coils at mpol 4 ends "
+    "at B.n 6.0e-3 (deck 6.0e-3), at mpol 6 1.15e-3 (deck 1.17e-3); see docs/explanation/validation.md"))
 
 
 @needs_vc

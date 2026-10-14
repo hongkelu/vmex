@@ -476,21 +476,23 @@ lines, 30 transits). Before: the projected rows, same scorer.
 | LP QH reactor scale, vacuum (8) | deck | 1.3e-04 / 1.5e-04 / 1.7e-04 | 2.26 / 0.55 | 1.4e-04 / 2.69 / 0.73 |
 | LP QH reactor scale, vacuum (12) | deck, r4 | 4.2e-05 / 1.1e-04 / 1.2e-04 | 1.22 / 0.27 | 4.9e-04 / 21.3 / 5.0 (r4 failed) |
 | nfp 2 QI, fitted coils, vacuum (8) | deck, r1 | 2.3e-04 / 1.9e-04 / 4.1e-04 | 0.84 / 0.18 | 2.3e-04 / 0.64 / 0.16 |
-| LP QA beta 2.5 %, fitted coils (8) | deck, r1 | 5.4e-04 / 4.3e-04 / 6.4e-04 | | |
-| LP QA beta 2.5 %, fitted coils (12) | deck, r1 | 3.4e-04 / 3.1e-04 / 4.5e-04 | | |
+| LP QA beta 2.5 %, fitted coils (8) | deck | 5.0e-04 / 4.1e-04 / 6.0e-04 | | 5.4e-04 (moments) |
+| LP QA beta 2.5 %, fitted coils (12) | deck | 2.4e-04 / 2.9e-04 / 3.8e-04 | | 3.4e-04 (moments) |
 
 The projection's leak was largest on LP QH at 12 modes, where it ended above
 the deck's own B.n (1.8e-4); least squares cannot. Where both did well the
 field lines differ by a few hundredths of a millimetre either way. At finite
-beta the rows are unchanged (B.n moments, the boundary two modes below the
-interior); an independent evaluation of the 12-mode answer at 16 modes
-(VMEX re-solve) reads 4.1e-4 / 1.2e-4 / 4.1e-4, DESC's own free boundary at
-12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and sheet current, higher
-pressure jump. The finite-beta moments share the projection's weakness: on
-LP QA at 0.5 % beta with its bundled coils (deck B.n 6.0e-3 at mpol 4,
-1.2e-3 at mpol 6) the answer keeps the deck's B.n, the residual sitting outside
-the boundary's modes (`test_finite_beta_free_boundary_removes_the_sheet_current`
-records it as an expected failure). The deck fixes the poloidal labelling, and at low resolution it
+beta the rows weigh `B_out . n` with the field-line transport of each boundary
+mode, `B_out . grad cos(m theta - n nfp phi)`, the least-squares stationarity
+without the plasma's own response; plain sine moments were the earlier rows
+("moments"). An independent evaluation of the 12-mode answer at 16 modes (VMEX
+re-solve) reads 2.8e-4 / 9.9e-5 / 2.8e-4 (moments: 4.1e-4 / 1.1e-4 / 4.1e-4),
+DESC's own free boundary at 12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and
+sheet current, a higher pressure jump. Neither row set controls `B . n`
+outside the boundary's modes: on LP QA at 0.5 % beta with its bundled coils
+(deck B.n 6.0e-3 at mpol 4, 1.2e-3 at mpol 6) the answer keeps the deck's B.n
+(`test_finite_beta_free_boundary_removes_the_sheet_current` records it as an
+expected failure; the solve warns and reports `normal_outside_modes`). The deck fixes the poloidal labelling, and at low resolution it
 matters: at mpol = 4 the LP QA case of `test_vacuum_free_boundary_agrees_with_nestor`
 ends at B.n 9.7e-4 with the LP deck's labelling (truncated from 8 modes) and at
 5.4e-4 with the labelling VMEC + NESTOR leaves (NESTOR's own: 5.9e-4).

@@ -346,11 +346,12 @@ def _newton_step(J, r):
 
 
 #: Surface grid points per field period, in each direction, per harmonic of the deck's interior (``mpol``,
-#: ``ntor``): the rows integrate products of the edge field, the geometry and the test functions, none band-limited
-#: (the coils' field is not).  Measured on the LP QA 2.5 % beta deck, 8 x 8 (``paper/runs/b23``): against a
-#: 96 x 96 grid, 4 points per harmonic (32) leave 1.3 % in the pressure-balance RMS, 6 (48) leave 2e-4 of it and
-#: 2e-6 of the B.n RMS.
-_GRID_POINTS_PER_HARMONIC = 6
+#: ``ntor``).  The rows integrate products of band-limited fields (edge field, geometry, test functions), which
+#: needs more than 2 points per harmonic to be alias-free; 4 gives margin.  Measured on LP QA
+#: (``paper/runs/b23``): at 12 x 12, 6 points per harmonic instead of 4 move the 2.5 % beta free boundary by 26 nm
+#: and cost 1.6x in the Newton phase; at 8 x 8 (32 x 32 against 96 x 96) the deck's B.n RMS moves by 7e-4
+#: (vacuum) / 2e-4 (beta) of itself and the beta pressure-balance RMS by 1.3 %, far below the interface floor.
+_GRID_POINTS_PER_HARMONIC = 4
 
 
 def interface_grid(inp) -> tuple[int, int]:

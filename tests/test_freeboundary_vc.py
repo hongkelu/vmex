@@ -150,17 +150,19 @@ def _nestor(inp, field):
 def test_vacuum_free_boundary_agrees_with_nestor():
     """In vacuum the free boundary is a flux surface of the coil field alone: both methods find it.
 
-    VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
-    essentially exact field (VMEC2000 1.3 mm), so the methods are compared at
-    that level; from either start the interface conditions end below NESTOR's.
-    At mpol = 4 the least-squares minimum is also flat to ~3 mm, so the
-    surfaces are compared within the sum of the two floors, and more sharply
-    through the residuals and the rotational transform.
+    The deck is the one VMEC + NESTOR leaves: its boundary fixes the poloidal labelling (module docstring).
+    From it and from the original LP deck's boundary the solve lands on one boundary, with the interface
+    conditions below NESTOR's.  VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
+    essentially exact field (VMEC2000 1.3 mm), so the surfaces are compared at that level, and more sharply
+    through the residuals and the rotational transform.  At mpol = 4 the labelling matters: with the original
+    LP deck's, truncated to 4 modes, B.n ends at 9.7e-4, with NESTOR's at 5.4e-4 (NESTOR's own: 5.9e-4).
     """
-    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
-                  am=np.zeros(21))
+    lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
+                 am=np.zeros(21))
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    nestor, nestor_deck, reported = _nestor(inp, field)
+    nestor, nestor_deck, reported = _nestor(lp, field)
+    inp = replace(lp, rbc=nestor_deck.rbc, zbs=nestor_deck.zbs, raxis_c=nestor_deck.raxis_c,
+                  zaxis_s=nestor_deck.zaxis_s)
     before = _residual(inp, nestor, field)
     for name in ("normal", "pressure", "sheet_current"):   # the gate on the NESTOR result
         np.testing.assert_allclose(getattr(reported, name), getattr(before, name), rtol=0.25)
@@ -169,26 +171,19 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     np.testing.assert_allclose(abs(fvc._coil_net_current(field, nestor.wout)), abs(float(nestor.wout.rbtor)),
                                rtol=1e-3)
     fits = [fvc.solve_free_boundary_three_terms(inp, external_field=field, initial_boundary=start)
-            for start in (None, nestor_deck)]
+            for start in (None, lp)]
+    np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-9)
     for fit in fits:
         after = _residual(inp, fit.equilibrium, field)
-        assert after.normal < before.normal and after.sheet_current < before.sheet_current
+        assert fit.success and after.normal < before.normal and after.sheet_current < before.sheet_current
     walls = [fit.equilibrium.wout for fit in fits]
-    for wall in walls:   # budget: NESTOR's own floor (~1.6 mm) plus the flat least-squares minimum (~3 mm)
-        assert _lcfs_distance(wall, nestor.wout) < 5e-3
+    for wall in walls:   # budget: NESTOR's own floor (~1.6 mm)
+        assert _lcfs_distance(wall, nestor.wout) < 2e-3
     np.testing.assert_allclose(np.asarray(walls[0].iotaf)[[0, -1]], np.asarray(nestor.wout.iotaf)[[0, -1]], atol=3e-3)
-    # The model's Jacobian (implicit state tangents, field as an argument) is upstream's implicit Jacobian of
-    # the same rows at the same state (the seed's: two independent re-solves of a boundary differ at the
-    # floor); and a warm restart at an unchanged field stays where it is.
-    fit, model = fits[0], fits[0].model
-    problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
-        state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
-        vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0])
-    J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
-    J_upstream = np.asarray(problem.residual_jac(model.x0))
-    assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
+    # a warm restart at an unchanged field stays where it is.
+    fit = fits[0]
     again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
-    assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
+    assert again.njev == 0 and again.cost <= max(fit.cost, fit.model._NEWTON_COST)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
 
@@ -206,6 +201,95 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     for name in ("normal", "pressure", "sheet_current"):
         assert getattr(res, name) < 0.25 * getattr(design, name), name
     assert res.sheet_current < 1.5e-3
+
+
+@needs_vc
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start():
+    """Vacuum, LP QA at mpol 3: the rows are the h-gradient of the mean square of B_coil . n (exact Hessian as
+    the Jacobian), Newton reaches them from the deck and from another start, and both land on one boundary."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    start = replace(inp, rbc=np.asarray(inp.rbc) * 1.01, zbs=np.asarray(inp.zbs) * 0.99)
+    fits = [fvc.solve_free_boundary_three_terms(inp, external_field=field, nphi=24, ntheta=24, initial_boundary=b)
+            for b in (None, start)]
+    model = fits[0].model
+    for fit in fits:
+        assert fit.success and fit.cost < 1e-18
+        assert fit.boundary_residual.normal < fit.initial_boundary_residual.normal
+    np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-10)
+    # the rows at the deck: R0 d/dh of the mean square of B.n / B0, against central differences of it
+    rows = np.asarray(model._rows(model.seed[0], model.params0, field))
+    nfp, ntor = int(inp.nfp), int(inp.ntor)
+    n, m = np.meshgrid(np.arange(-ntor, ntor + 1) * nfp, np.arange(inp.mpol), indexing="ij")
+    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, 24, endpoint=False),
+                             np.linspace(0, 2 * np.pi, 24, endpoint=False), indexing="ij")
+
+    def mean_square(x):
+        p = model.with_boundary(model.params0, jnp.asarray(x))
+        return float(fvc._mean_square_normal_field(jnp.ravel(p.rbc), jnp.ravel(p.zbs), jnp.asarray(m.ravel(), float),
+                                                   jnp.asarray(n.ravel(), float), phi, theta, jnp.asarray(phi[:, 0]),
+                                                   field))
+
+    R0, eye = float(np.asarray(inp.rbc)[ntor, 0]), np.eye(model.x0.size)
+    for k in (0, 3):
+        fd = (mean_square(1e-6 * eye[k]) - mean_square(-1e-6 * eye[k])) / 2e-6 * R0 / (2 * model.B0**2)
+        np.testing.assert_allclose(rows[k], fd, rtol=1e-5)
+    # the Jacobian (exact Hessian through the implicit state tangents) against re-solved central differences
+    J = model.linearize(fits[0].x, fits[0].aux, field)[0]
+    k, h = 2, 1e-6
+    fd = [model.evaluate(fits[0].x + s * h * eye[k], model.params0, field, tight=True)[0] for s in (1, -1)]
+    np.testing.assert_allclose(J[:, k], (fd[0] - fd[1]) / (2 * h), rtol=1e-4, atol=1e-6 * np.abs(J[:, k]).max())
+    again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
+    assert again.njev == 0 and again.success
+
+
+def test_square_galerkin_boundary_is_solved_by_newton_from_a_stale_jacobian():
+    """Square rows (the Galerkin free boundary): Newton reaches the root to round-off, reusing a stale Jacobian
+    while it converges fast and refreshing it otherwise; the root does not depend on the start."""
+
+    def rows(x):
+        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
+
+    def jac(x):
+        return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
+
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.x0, model.x_scale = np.zeros(2), np.ones(2)
+    model.cfg = model.cfg_trial = None
+    model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
+    root = np.array([1.0, 2.0])
+    for start, jacobian in ((np.array([1.3, 1.7]), None), (np.array([0.8, 2.2]), jac(np.array([1.5, 1.5])))):
+        out = model.solve_boundary(None, None, x0=start, jacobian=jacobian)
+        assert out["converged"]
+        np.testing.assert_allclose(out["x"], root, atol=1e-11)
+        assert out["nfev"] <= 12
+
+
+def test_newton_stops_at_the_noise_of_the_rows():
+    """Rows with evaluation noise (as virtual-casing rows have): below ``_NEWTON_FLOOR`` Newton stops once a step
+    no longer converges fast, instead of spending Jacobians on the noise, and reports convergence."""
+    noise = 1e-11
+
+    def rows(x):
+        draw = np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)  # a new draw per point
+        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0]) + noise * draw
+
+    def jac(x):
+        return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
+
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.x0, model.x_scale = np.zeros(2), np.ones(2)
+    model.cfg = model.cfg_trial = None
+    model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
+    for jacobian in (None, jac(np.array([1.0, 2.0]))):  # fresh Jacobians; a reused one at the root
+        out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]) if jacobian is None else np.array([1.0, 2.0]),
+                                   jacobian=jacobian)
+        assert out["converged"] and 0.5 * out["rows"] @ out["rows"] <= model._NEWTON_FLOOR
+        np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-9)
+        assert out["njev"] <= 6
 
 
 def test_unknown_problem_boundary_condition_is_rejected():
@@ -232,7 +316,6 @@ def test_problem_boundary_condition_dispatches_to_three_terms(monkeypatch):
 
 
 @needs_vc
-@pytest.mark.full
 @pytest.mark.usefixtures("_module_jit_enabled")
 def test_three_terms_problem_gradients_match_resolved_differences():
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
@@ -248,7 +331,7 @@ def test_three_terms_problem_gradients_match_resolved_differences():
         quantities=(opt.major_radius,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
         boundary_condition="three_terms",
-        three_terms_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48), boundary_ftol=1e-10,
+        three_terms_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48),
                                 boundary_max_nfev=80))
     assert isinstance(problem, fvc.ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
@@ -310,7 +393,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles, jacobian_ftol=None)
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles)
     model = fit.model
     state, mask, params, _ = fit.aux
     assert fit.x.size == model.n_boundary + 3 + 24
@@ -345,7 +428,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     profiles = _lp_beta0p5_profiles(inp)
     model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
     assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
-    out = model.solve_boundary(model.params0, None, ftol=1e-10)
+    out = model.solve_boundary(model.params0, None)
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
     picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
@@ -357,3 +440,89 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
+
+
+def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():
+    """Trials at a looser force tolerance (``trial_ftol``) carry noise; when a fresh Newton step no longer descends
+    on them, the trials are solved to the deck's tolerance and Newton converges to round-off."""
+
+    def rows(x, tight):
+        exact = np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
+        noise = np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)  # a new draw per point
+        return exact if tight else exact + 1e-6 * noise
+
+    def jac(x):
+        return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
+
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.x0, model.x_scale, model.cfg, model.cfg_trial = np.zeros(2), np.ones(2), "deck", "trial"
+    model.evaluate = lambda z, params, field, tight=False: (rows(z, tight), (z, None, None, tight))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
+    out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]))
+    assert out["converged"] and out["aux"][3]
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-11)
+
+
+def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys):
+    """A start with no certified equilibrium backs off toward the deck; rows without a root stall at their
+    stationary point, reported as not converged (and printed with ``verbose``)."""
+
+    def rows(x):
+        return np.array([x[0] ** 2 + 1.0])  # no root: the cost is stationary at x = 0
+
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.x0, model.x_scale, model.cfg = np.zeros(1), np.ones(1), None
+    model.cfg_trial = model.cfg
+    model.evaluate = lambda z, params, field, tight=False: (
+        None if abs(z[0]) > 1.0 else (rows(z), (z, None, None, True)))
+    model.linearize = lambda z, aux, field, extra=None: (np.array([[2.0 * z[0] + 1e-300]]), None, None, aux)
+    out = model.solve_boundary(None, None, x0=np.array([1.2]), verbose=1)  # 1.2 fails, 0.9 = 0.75 x 1.2 is solved
+    assert not out["converged"] and abs(out["x"][0]) < 0.9
+    assert "Newton stalled" in capsys.readouterr().out
+    model.evaluate = lambda z, params, field, tight=False: None
+    with pytest.raises(RuntimeError, match="no certified equilibrium"):
+        model.solve_boundary(None, None, x0=np.array([1.2]))
+
+
+def test_fixed_boundary_model_needs_the_bootstrap_current():
+    with pytest.raises(ValueError, match="bootstrap"):
+        fvc.ThreeTermsFreeBoundaryModel(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), fixed_boundary=True)
+
+
+def test_coil_net_current_is_the_circulation_around_the_axis():
+    """G = (1/2 pi) times the circulation of the field around the magnetic axis: R B_phi for a 1/R field."""
+    from types import SimpleNamespace
+
+    @dataclass(frozen=True)
+    class Toroidal:
+        b0r0: float
+
+        def b_cyl(self, r, phi, z):
+            return 0.0 * r, self.b0r0 / r, 0.0 * r
+
+    wout = SimpleNamespace(nfp=2, raxis_cc=np.array([1.0, 0.05]), zaxis_cs=np.array([0.0, 0.03]))
+    assert fvc._coil_net_current(Toroidal(1.7), wout) == pytest.approx(1.7, rel=1e-10)
+
+
+@needs_vc
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_finite_beta_rows_are_the_normal_field_moments():
+    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted sine
+    moments of B_out . n / B0 on its modes (B_out = coils + virtual casing) and the net-current row."""
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    nfp, n = int(inp.nfp), 16
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
+    assert not model.vacuum and model.max_mode == max(inp.mpol - 1, inp.ntor) - fvc._BOUNDARY_MODE_GAP
+    state = model.seed[0]
+    rows = np.asarray(model._rows(state, model.params0, field))
+    runtime = model._im.runtime_from_params(model.params0, model.cfg)
+    terms, weights = fvc.boundary_residual(model.fixed, state, field, runtime=runtime, nphi=n, ntheta=n,
+                                           precision=model.precision)
+    data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
+    bn = np.asarray(terms[0]) * np.linalg.norm(np.asarray(data.B_total), axis=0) / model.B0
+    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, n, endpoint=False),
+                             np.linspace(0, 2 * np.pi, n, endpoint=False), indexing="ij")
+    moments = [np.sum(np.asarray(weights) * bn * 2 * np.sin(m * theta - k * nfp * phi))
+               for m, k in model.boundary_modes[:-1]]
+    np.testing.assert_allclose(rows[:-1], moments, rtol=1e-9, atol=1e-13)

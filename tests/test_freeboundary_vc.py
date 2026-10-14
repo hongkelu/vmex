@@ -1,10 +1,14 @@
 """Free boundary from the three virtual-casing interface conditions.
 
 :mod:`vmex.core.freeboundary_vc` solves for the boundary on which ``B.n``,
-the pressure jump and the sheet current vanish. Lanes: input validation; the
-residual rows' definitions on a converged finite-beta state; and (``full``)
-the vacuum and finite-beta Landreman--Paul QA cases with their bundled ESSOS
-coils, where the solve agrees with NESTOR and is independent of its start.
+the pressure jump and the sheet current vanish. PR lane (mpol 3, ns 11, 16 x 16
+grids): input validation; the rows' definitions; the vacuum solve from two
+starts with its rows, Jacobian and warm restart against finite differences;
+design gradients against re-solved differences; the fixed-boundary bootstrap
+current; Newton on stand-in rows. Full lane (``full``, mpol 4, ns 25): the
+Landreman--Paul QA cases with their bundled ESSOS coils -- vacuum against
+NESTOR, finite beta and the bootstrap current with the free boundary -- and the
+bootstrap current against the Picard loop.
 """
 
 from __future__ import annotations
@@ -235,7 +239,7 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     start = replace(inp, rbc=np.asarray(inp.rbc) * 1.01, zbs=np.asarray(inp.zbs) * 0.99)
-    fits = [fvc.solve_free_boundary_three_terms(inp, external_field=field, nphi=24, ntheta=24, initial_boundary=b)
+    fits = [fvc.solve_free_boundary_three_terms(inp, external_field=field, nphi=16, ntheta=16, initial_boundary=b)
             for b in (None, start)]
     model = fits[0].model
     for fit in fits:
@@ -246,8 +250,8 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     rows = np.asarray(model._rows(model.seed[0], model.params0, field))
     nfp, ntor = int(inp.nfp), int(inp.ntor)
     n, m = np.meshgrid(np.arange(-ntor, ntor + 1) * nfp, np.arange(inp.mpol), indexing="ij")
-    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, 24, endpoint=False),
-                             np.linspace(0, 2 * np.pi, 24, endpoint=False), indexing="ij")
+    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, 16, endpoint=False),
+                             np.linspace(0, 2 * np.pi, 16, endpoint=False), indexing="ij")
 
     def mean_square(x):
         p = model.with_boundary(model.params0, jnp.asarray(x))
@@ -356,7 +360,7 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
-    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = FreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
@@ -365,7 +369,7 @@ def test_three_terms_problem_gradients_match_resolved_differences():
         quantities=(opt.major_radius,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
         boundary_condition="three_terms",
-        three_terms_options=dict(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48),
+        three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32),
                                 boundary_max_nfev=80))
     assert isinstance(problem, fvc.ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
@@ -398,17 +402,18 @@ def test_bootstrap_current_profile_layout():
     """A knot per half-mesh surface, I'(0) = 0 and three unknown knots inside s_1, CURTOR its integral."""
     from vmex.core.profiles import current
 
-    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False)
+    ns = 25  # the deck's current is resolved to 2 % by the line segments from here
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, ns), lfreeb=False)
     from vmex.core.bootstrap import HalfMeshCurrent
 
     block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
-    s = (np.arange(1, 25) - 0.5) / 24
+    s = (np.arange(1, ns) - 0.5) / (ns - 1)
     np.testing.assert_allclose(block.knots[4:-1], s)
     values = np.asarray(block.values(block.x0))
     assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     np.testing.assert_allclose(block.deck.ac_aux_f, values)
-    assert block.x0.size == 3 + 24
+    assert block.x0.size == 3 + ns - 1
     assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
     # the deck's own enclosed current away from the axis, where only the first cell differs
     deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
@@ -454,28 +459,41 @@ def test_bootstrap_current_solved_with_the_free_boundary():
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
-def test_fixed_boundary_bootstrap_model_matches_picard():
-    """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is the Picard loop's, with exact columns."""
-    from vmex.core import bootstrap as bs
-
-    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False,
+def _fixed_boundary_bootstrap():
+    """LP QA 0.5 % at a fixed boundary: the Gauss-Newton bootstrap current (``fixed_boundary=True``) solved."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
     model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
-    assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
-    out = model.solve_boundary(model.params0, None)
+    return inp, profiles, model, model.solve_boundary(model.params0, None)
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_fixed_boundary_bootstrap_model_has_exact_columns():
+    """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is Redl's, with exact Jacobian columns."""
+    inp, profiles, model, out = _fixed_boundary_bootstrap()
+    assert model.n_boundary == 0 and model.x0.size == 3 + 10  # three knots inside s_1, then the half mesh
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
-    picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
-    np.testing.assert_allclose(np.asarray(params.ac_aux_f), picard.input.ac_aux_f,
-                               rtol=0, atol=2e-4 * np.max(np.abs(picard.input.ac_aux_f)))
     J = model.linearize(out["x"], out["aux"], None)[0]
     k, h = 5, 1e-5 * model.x_scale[5]
     rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_fixed_boundary_bootstrap_model_matches_picard():
+    """The Gauss-Newton current at a fixed boundary is the one the Picard loop converges to."""
+    from vmex.core import bootstrap as bs
+
+    inp, profiles, model, out = _fixed_boundary_bootstrap()
+    params = out["aux"][2]
+    picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
+    np.testing.assert_allclose(np.asarray(params.ac_aux_f), picard.input.ac_aux_f,
+                               rtol=0, atol=2e-4 * np.max(np.abs(picard.input.ac_aux_f)))
 
 
 def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():

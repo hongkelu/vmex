@@ -53,7 +53,9 @@ finite beta).  VMEX fixes the gauge instead (:attr:`ImplicitConfig.freeze_m1`,
 solves hold the combination at ``sqrt(s) * edge`` from the first iteration, so
 the state is a single-valued function of the parameters whatever the seed, and
 :func:`_assemble` carries the profile's boundary dependence, so the implicit
-derivative is the derivative of the re-solve map.
+derivative is the derivative of the re-solve map.  ``lasym`` runs keep
+VMEC2000's rule (the fixed gauge is verified as a relabelling for
+stellarator-symmetric runs only; docs/explanation/validation.md).
 
 Anchoring the fixed point
 -------------------------

@@ -612,7 +612,7 @@ def test_warm_staged_tangent_compiles_the_tangent_programs_ahead():
         zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
         zero, zbs=zero.zbs.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
         zero, pres_scale=jnp.ones_like(zero.pres_scale)))
-    im.warm_staged_tangent(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8)
+    im.warm_staged_tangent(cfg, p0, chunk=2, certify_rtol=1e-8)
     with _CompileLog() as log:
         _, report = im.staged_tangent_multi_rhs(p0, cfg, state, mask, batch, chunk=2, certify_rtol=1e-8,
                                                 certify_maxiter=1)

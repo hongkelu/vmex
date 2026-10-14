@@ -639,7 +639,7 @@ class ThreeTermsFreeBoundaryModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
-        self._warm_refinement()
+        self._warm_programs()
         seed = self.solve(self.params0)
         if seed is None:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
@@ -663,52 +663,39 @@ class ThreeTermsFreeBoundaryModel:
             normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
             self._normal_map = jnp.asarray(normal_map)
         self._implicit_setup()
-        self._warm = None
         if not self.fixed_boundary:
-            self._start_warm(state, mask)
             grid = interface_grid(fixed)
             self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
             self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
             self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
 
-    def _warm_refinement(self):
-        """Compile the seed solve's Newton-refinement programs while its multigrid ladder runs (see
-        :func:`~vmex.core.implicit.warm_refinement`)."""
-        import threading
+    def _warm_programs(self):
+        """Compile the solve's largest programs on background threads while the seed equilibrium is solved.
 
-        im, cfg, params = self._im, self.cfg, self.params0
-
-        def work():
-            try:
-                im.warm_refinement(cfg, params)
-            except Exception:  # cache warming only
-                pass
-
-        threading.Thread(target=work, name="vmex-refine-warm", daemon=True).start()
-
-    def _start_warm(self, state, mask):
-        """Compile the first linearization's tangent programs on a background thread.
-
-        They are the largest programs of a solve and depend only on the deck's structure, so they compile while
-        the interface is set up and the first rows are evaluated (results are unchanged: the same executables).
+        The seed solve's Newton-refinement programs (:func:`~vmex.core.implicit.warm_refinement`) and the first
+        linearization's tangent programs (:func:`~vmex.core.implicit.warm_staged_tangent`) depend only on the
+        deck's structure, so they compile in parallel with the multigrid ladder (XLA compilation releases the
+        GIL).  :meth:`linearize` joins the tangent thread before its first tangent solve.  Cache warming only:
+        the same executables.
         """
         import threading
 
-        im, cfg = self._im, self.cfg
-        x = jnp.asarray(self.x0)
-        params_x = self.with_boundary(self.params0, x)
-        directions = self.boundary_directions(params_x, x)
-        nb = self.n_boundary
-        batch = jax.tree.map(lambda a: a[:nb], directions)
+        im, cfg, params, chunk = self._im, self.cfg, self.params0, self.chunk
 
-        def work():
+        def refinement():
             try:
-                im.warm_staged_tangent(params_x, cfg, state, mask, batch, chunk=self.chunk,
-                                       certify_rtol=cfg.jacobian_adjoint_tol)
-            except Exception:  # cache warming only: the real call compiles on demand
+                im.warm_refinement(cfg, params)
+            except Exception:  # cache warming only: the real calls compile on demand
                 pass
 
-        self._warm = threading.Thread(target=work, name="vmex-tangent-warm", daemon=True)
+        def tangents():
+            try:
+                im.warm_staged_tangent(cfg, params, chunk=chunk, certify_rtol=cfg.jacobian_adjoint_tol)
+            except Exception:  # cache warming only
+                pass
+
+        threading.Thread(target=refinement, name="vmex-refine-warm", daemon=True).start()
+        self._warm = threading.Thread(target=tangents, name="vmex-tangent-warm", daemon=True)
         self._warm.start()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):

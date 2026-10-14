@@ -3442,16 +3442,11 @@ def staged_tangent_multi_rhs(
     return jax.tree.map(lambda *a: jnp.concatenate(a)[:n], *results)
 
 
-def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
-    """Compile the Newton refinement's programs for ``cfg`` ahead of its first solve.
+def _placeholder_arguments(cfg: ImplicitConfig, params: ImplicitParams):
+    """``(state, dof_mask, params)`` of the config's structure, committed as the solves commit their own.
 
-    For a background thread started before a config's first (cold) solve: the
-    preconditioned residual lane and the block-factor and block-step cores
-    depend only on the config's structure, so they compile while the solve's
-    multigrid ladder runs, instead of after it.  Placeholder arrays of the
-    real structure (the template's initial state, the structural dof mask,
-    ``params``) are lowered exactly as :func:`_refined_state` passes its own,
-    so the later calls find the executables in JAX's caches; nothing runs.
+    The template's initial state and the structural dof mask: the values of a
+    program's arguments do not enter its compilation, only their structure.
     """
     from .solver import _initial_state
 
@@ -3466,44 +3461,69 @@ def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
         if mask is None:
             mask = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), _fixed_boundary_dof_mask(cfg))
             _MASK_CACHE[cache_key] = mask
-        state, params, mask = commit_to_single_device((state, params, jax.tree.map(jnp.asarray, mask)))
+        return commit_to_single_device((state, jax.tree.map(jnp.asarray, mask), params))
+
+
+def _zeros_like_structure(cfg: ImplicitConfig, shapes: Any) -> Any:
+    """Committed zero arrays of the shapes and dtypes of ``shapes`` (``jax.eval_shape`` output)."""
+    def zeros(a):
+        value = jnp.zeros(a.shape, a.dtype)
+        return jax.device_put(value, cfg.device) if cfg.device is not None else value
+
+    with _device_context(cfg):
+        return jax.tree.map(zeros, shapes)
+
+
+def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
+    """Compile the Newton refinement's programs for ``cfg`` ahead of its first solve.
+
+    For a background thread started before a config's first (cold) solve: the
+    preconditioned residual lane and the block-factor and block-step cores
+    depend only on the config's structure, so they compile while the solve's
+    multigrid ladder runs, instead of after it.  Placeholder arguments of the
+    real structure (:func:`_placeholder_arguments`) are lowered exactly as
+    :func:`_refined_state` passes its own, so the later calls find the
+    executables in JAX's caches; nothing runs.
+    """
+    state, mask, params = _placeholder_arguments(cfg, params)
+    with _device_context(cfg):
         z = _dof_projector(cfg, mask)(state)
         _preconditioned_residual_lane.lower(z, params, state, mask, cfg).compile()
         arguments = commit_to_single_device(tuple(
             _pin_concrete(cfg, tree) for tree in (z, params, state, mask)))
         _refine_block_factor_core.lower(*arguments, cfg).compile()
-        shapes = jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments)
-        factors = jax.tree.map(lambda a: jax.device_put(jnp.zeros(a.shape, a.dtype), cfg.device)
-                               if cfg.device is not None else jnp.zeros(a.shape, a.dtype), shapes)
+        factors = _zeros_like_structure(
+            cfg, jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments))
         _refine_block_step_core.lower(*arguments, factors, cfg).compile()
 
 
-def warm_staged_tangent(
-    params: ImplicitParams,
-    cfg: ImplicitConfig,
-    x_star: SpectralState,
-    dof_mask: SpectralState,
-    tangent_batch: ImplicitParams,
-    *,
-    chunk: int,
-    certify_rtol: float | None = None,
-) -> None:
-    """Compile :func:`staged_tangent_multi_rhs`'s programs for this config ahead of its first call.
+def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: int,
+                        certify_rtol: float | None = None) -> None:
+    """Compile :func:`staged_tangent_multi_rhs`'s programs for ``cfg`` ahead of its first call.
 
-    Meant for a background thread (XLA compilation releases the GIL): a caller
-    that knows its first linearization is coming -- the free-boundary model,
-    right after its seed solve -- overlaps these compiles with its other set-up
-    work.  Runs the cheap stages on one chunk (the factors, the block-direct
-    responses) and compiles the corrector's check ahead of time; the later real call,
-    for any number of columns, finds every executable in JAX's caches.
+    For a background thread started with a config's first solve (XLA
+    compilation releases the GIL): the block-direct stage and the corrector's
+    check take one chunk of ``chunk`` parameter tangents, whatever the number
+    of columns, and depend only on the config's structure, so they compile
+    from placeholder arguments (:func:`_placeholder_arguments`) while the
+    solve runs.  The later real calls find the executables in JAX's caches;
+    nothing runs.
     """
     rtol = None if certify_rtol is None else float(certify_rtol)
-    factors = block_factors_at(cfg, params, x_star, dof_mask)
-    params, x_star, dof_mask, pieces, chunk = _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk)
+    chunk = max(1, int(chunk))
+    state, mask, params = _placeholder_arguments(cfg, params)
+    piece = _zeros_like_structure(
+        cfg, jax.tree.map(lambda a: jax.ShapeDtypeStruct((chunk,) + a.shape, a.dtype), params))
+    params, state, mask, piece = _canonical_arrays(cfg, (params, state, mask, piece))
     with _device_context(cfg):
-        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, pieces[0], cfg, chunk)
-        _staged_tangent_check.lower(params, x_star, dof_mask, factors, pieces[0], initial, cfg, chunk,
-                                    rtol).compile()
+        arguments = commit_to_single_device(tuple(
+            _pin_concrete(cfg, tree) for tree in (state, params, state, mask)))
+        factors = _zeros_like_structure(
+            cfg, jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments))
+        _staged_tangent_initial.lower(params, state, mask, factors, piece, cfg, chunk).compile()
+        initial = _zeros_like_structure(cfg, jax.eval_shape(
+            lambda *a: _staged_tangent_initial(*a, cfg, chunk), params, state, mask, factors, piece))
+        _staged_tangent_check.lower(params, state, mask, factors, piece, initial, cfg, chunk, rtol).compile()
 
 
 def implicit_state_tangent_multi_rhs(

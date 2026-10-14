@@ -733,7 +733,7 @@ class _Implicit:
             raise RuntimeError("no refinement")
         self.calls.append("refinement")
 
-    def warm_staged_tangent(self, params, cfg, state, mask, batch, *, chunk, certify_rtol):
+    def warm_staged_tangent(self, cfg, params, *, chunk, certify_rtol):
         if self.fail:
             raise RuntimeError("no tangent")
         self.calls.append(("tangent", chunk))
@@ -761,12 +761,9 @@ def test_model_warm_up_threads_swallow_their_failures(fail):
     import threading
 
     implicit = _Implicit(fail)
-    model = type("Model", (), {"_im": implicit, "cfg": "cfg", "params0": "p0", "x0": np.zeros(3), "chunk": 2,
-                               "n_boundary": 3, "with_boundary": lambda self, params, x: params,
-                               "boundary_directions": lambda self, params, x: jnp.eye(3)})()
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
     model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4})()
-    fvc.ThreeTermsFreeBoundaryModel._warm_refinement(model)
-    fvc.ThreeTermsFreeBoundaryModel._start_warm(model, "state", "mask")
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
     model._warm.join()
     for thread in threading.enumerate():
         if thread.name in ("vmex-refine-warm", "vmex-tangent-warm"):

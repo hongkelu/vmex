@@ -763,7 +763,7 @@ def test_certified_trial_guards_reject_stale_or_missing_memo(monkeypatch):
             assert not lane.equilibrium_from_x(lane.x0).result.converged
         with monkeypatch.context() as m:
             m.setitem(implicit_module._LAST_REFINED, cfg,
-                      (*implicit_module._LAST_REFINED[cfg][:2], True))
+                      (*implicit_module._LAST_REFINED[cfg][:2], True, np.nan))
             with pytest.raises(RuntimeError, match="usable VMEC equilibrium"):
                 lane.equilibrium_from_x(lane.x0)
 

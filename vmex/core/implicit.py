@@ -370,9 +370,18 @@ class ImplicitConfig:
     #: Largest ``(fsqr + fsqz + fsql) / ftol`` accepted for implicit
     #: differentiation when a trial exhausts its iteration budget.  The
     #: adjoint assumes ``F = 0``, so this is the same strict ``1e2`` bar as
-    #: every :mod:`vmex.core.optimize` entry point; the free-boundary config
-    #: tightens it to ``1.0``.
+    #: every :mod:`vmex.core.optimize` entry point (the three-terms free
+    #: boundary keeps it, and certifies by ``certify_refined`` as well).
     max_fsq_ratio: float = 1.0e2
+    #: Certified (status 0) only if the Newton refinement lands the state at
+    #: ``|F| <= refine_tol``; a refinement that stops above it is status 4.
+    #: Off by default, where the refinement is an accuracy gain over a state
+    #: the host solve already certified (``max_fsq_ratio``).  The three-terms
+    #: free boundary turns it on: its interface rows and their implicit
+    #: derivatives are taken at the refined state, and a refinement that
+    #: stopped in ``(refine_tol, _REFINE_FAR_STALL * refine_tol]`` (status 0
+    #: otherwise) would leave them at a state that is not the root.
+    certify_refined: bool = False
     #: seed repeated host solves from the last converged state of this config
     #: (optimization trials; the fixed point — hence the gradient — is
     #: unchanged, only the iteration count drops).  Makes the callback
@@ -411,6 +420,7 @@ def make_config(
     hot_restart: bool = False,
     device: Any = None,
     freeze_m1: bool | None = None,
+    certify_refined: bool = False,
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
 
@@ -418,6 +428,8 @@ def make_config(
     an iteration-limited solve still counts as derivative-certified (status 0
     of :func:`solve_implicit_status`); a converged solve always does.  The
     default ``1e2`` matches :func:`vmex.core.optimize.make_problem`.
+    ``certify_refined`` also requires the Newton refinement to reach
+    ``refine_tol`` (:attr:`ImplicitConfig.certify_refined`).
 
     ``device`` is the already-RESOLVED placement device (pass the result of
     :func:`vmex.core.device.resolve_implicit_device`, not a policy string) —
@@ -447,6 +459,7 @@ def make_config(
         adjoint_gcrot_m=int(adjoint_gcrot_m), adjoint_gcrot_k=int(adjoint_gcrot_k),
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
+        certify_refined=bool(certify_refined),
         hot_restart=bool(hot_restart), device=device,
         # fixed boundary (incl. the three-terms interior): fixed gauge; VMEC + NESTOR free boundary and lasym:
         # VMEC2000's rule
@@ -1399,12 +1412,14 @@ _HOST_ERROR: list[VmecError] = []
 _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
     weakref.WeakKeyDictionary()
 
-# cfg -> (params-bytes key, refined state, stalled): one-entry memo mirroring
-# _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips the second
-# equilibrium solve also skips the second frozen-residual measurement.
-# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
+# cfg -> (params-bytes key, refined state, stalled, |F|): one-entry memo
+# mirroring _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips
+# the second equilibrium solve also skips the second frozen-residual
+# measurement.  ``stalled`` marks an anchor abandoned far from the root
+# (_REFINE_FAR_STALL); ``|F|`` is the refined state's force residual, measured
+# for ``certify_refined`` configs only (``nan`` otherwise).
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float]] = weakref.WeakKeyDictionary()
 
 # cfg -> whether its latest _refined_state call stopped at _REFINE_FAR_STALL.
 _ANCHOR_STALLED: dict[int, bool] = {}
@@ -1574,7 +1589,11 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
             _LAST_REFINEMENT_CORRECTION[cfg] = correction
         else:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
-        hit = (key, refined, stalled)
+        residual = np.nan
+        if cfg.certify_refined:
+            residual = float(_tree_norm(residual_fn(cfg, refined, dof_mask)(
+                _dof_projector(cfg, dof_mask)(refined), params)))
+        hit = (key, refined, stalled, residual)
         _LAST_REFINED[cfg] = hit
     return hit[1]
 
@@ -1960,8 +1979,10 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
     """Status-returning host callback for optimization trial points.
 
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
-    when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
-    3 when the fixed-point anchor stalled far from the root.
+    when the iteration budget was exhausted above ``cfg.max_fsq_ratio``,
+    3 when the fixed-point anchor stalled far from the root, and 4 (with
+    ``cfg.certify_refined``) when the refinement stopped above
+    ``cfg.refine_tol``.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
     residual is the host solver's own, from before the fixed-point refinement
@@ -2014,6 +2035,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
+        if (status == 0 and cfg.certify_refined and np.isfinite(cfg.refine_tol)
+                and not (refined is not None and refined[0] == hit[0] and refined[3] <= cfg.refine_tol)):
+            status = 4  # the refinement missed refine_tol: the state is not the root
         if status != 0:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         return state, mask, np.int32(status), np.float64(fsq), np.float64(ratio)

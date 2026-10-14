@@ -511,7 +511,9 @@ class ThreeTermsFreeBoundaryModel:
         # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
         # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
         # the derivative of the re-solve map.
-        cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
+        # Certified means refined to |F| <= refine_tol: the rows and their implicit derivatives are taken at the
+        # refined state, which must be the root (a refinement that stops short is a failed evaluation).
+        cfg = im.make_config(fixed, multigrid=True, hot_restart=True, certify_refined=True)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
         # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.

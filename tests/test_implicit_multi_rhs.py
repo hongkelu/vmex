@@ -489,3 +489,36 @@ def test_chunk_size_resolver_accepts_auto_and_rejects_other_strings():
 def test_tree_bytes_is_exact_from_shapes():
     tree = {"a": jnp.zeros((3, 4)), "b": np.zeros(5, dtype=np.float32)}
     assert im._tree_bytes(tree) == 3 * 4 * 8 + 5 * 4
+
+
+def test_staged_tangent_matches_the_single_program(monkeypatch):
+    """The staged tangent solve (stored factors, separate corrector, lazy refinement, padded chunks)
+    reproduces the single-program responses, and still refines a column the corrector leaves uncertified."""
+    inp, cfg, p0 = _small_solovev_setup()
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    tangent_batch = jax.tree.map(lambda *x: jnp.stack(x), dataclasses.replace(
+        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
+        zero, pres_scale=jnp.ones_like(zero.pres_scale)), dataclasses.replace(
+        zero, zbs=zero.zbs.at[inp.ntor, 1].set(1.0)))
+
+    reference, report = jax.jit(lambda: im._implicit_evolved_tangent_multi_rhs(
+        p0, cfg, state, mask, tangent_batch, active_fields=im._active_state_fields(cfg),
+        probe_chunk_size=2, response_chunk_size=2, certify_rtol=1e-8, certify_maxiter=1))()
+    staged, staged_report = im.staged_tangent_multi_rhs(
+        p0, cfg, state, mask, tangent_batch, chunk=2, certify_rtol=1e-8, certify_maxiter=1)
+    assert np.all(np.asarray(staged_report.converged)) and np.asarray(staged_report.converged).shape == (3,)
+    assert _relative_difference(staged, reference) < 1e-10
+
+    def stalled(A, b, cfg, *, x0=None, max_restarts=None, rtol=None):
+        return jax.tree.map(lambda value: 1.001 * value, x0), im.LinearResponseReport(
+            residual_norm=jnp.asarray(1.0e30), tolerance=jnp.asarray(0.0),
+            iterations=jnp.asarray(1, jnp.int32), converged=jnp.asarray(False))
+
+    monkeypatch.setattr(im, "_adjoint_solve", stalled)
+    jax.clear_caches()
+    refined, refined_report = im.staged_tangent_multi_rhs(
+        p0, cfg, state, mask, tangent_batch, chunk=2, certify_rtol=1e-8, certify_maxiter=1)
+    jax.clear_caches()
+    assert np.all(np.asarray(refined_report.converged))
+    assert _relative_difference(refined, reference) < 1e-8

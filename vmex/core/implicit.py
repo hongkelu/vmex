@@ -3159,6 +3159,164 @@ def _implicit_evolved_tangent_multi_rhs(
     return solution, report
 
 
+class _FactoredBlocks(NamedTuple):
+    """Stored raw block factors with the closures that apply them (no bands)."""
+
+    factors: Any
+    pack: Callable
+    unpack: Callable
+    project: Callable
+    row_scale: Array
+    column_scale: Array
+
+
+def _factored_blocks(cfg: ImplicitConfig, dof_mask: SpectralState, factors) -> _FactoredBlocks:
+    """:class:`_FactoredBlocks` of ``(factors, row_scale, column_scale)`` from
+    :func:`_refine_block_factor_core` (the packing of :func:`_raw_block_system`)."""
+    block_factors, row_scale, column_scale = factors
+    return _FactoredBlocks(
+        block_factors, lambda tree: _pack_active(cfg, tree),
+        lambda matrix: _unpack_active(cfg, matrix), _dof_projector(cfg, dof_mask),
+        row_scale, column_scale)
+
+
+def _padded(batch: Any, chunk: int) -> Any:
+    """``batch`` with its leading axis padded to a multiple of ``chunk`` by repeating the last entry.
+
+    ``jax.lax.map(..., batch_size=chunk)`` traces a non-divisible tail as a
+    second batched computation, doubling the program; the repeated entries are
+    independent copies (every map here is column-wise), sliced off after."""
+    n = int(jax.tree.leaves(batch)[0].shape[0])
+    extra = (-n) % int(chunk)
+    if not extra:
+        return batch
+    return jax.tree.map(lambda a: jnp.concatenate([a, jnp.repeat(a[-1:], extra, axis=0)]), batch)
+
+
+def _staged_tangent_parts(params, cfg, x_star, dof_mask, factors):
+    frozen = jax.lax.stop_gradient(x_star)
+    blocks = _factored_blocks(cfg, dof_mask, factors)
+    z_star = blocks.project(x_star)
+    raw_residual = residual_fn(cfg, frozen, dof_mask, formulation="raw")
+
+    def raw_rhs(tangent):
+        value = jax.jvp(lambda prm: raw_residual(z_star, prm), (params,), (tangent,))[1]
+        return jax.tree.map(jnp.negative, value)
+
+    def operator(tangent):
+        return jax.jvp(lambda z: raw_residual(z, params), (z_star,), (tangent,))[1]
+
+    return frozen, blocks, z_star, raw_rhs, operator
+
+
+@functools.partial(jax.jit, static_argnames=("cfg", "chunk"))
+def _staged_tangent_initial(params, x_star, dof_mask, factors, tangent_batch, cfg, chunk):
+    """Block-direct responses of :func:`_implicit_evolved_tangent_multi_rhs` from stored factors."""
+    _, blocks, _, raw_rhs, _ = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
+    rhs_batch = jax.vmap(blocks.project)(chunk_map(raw_rhs, tangent_batch, chunk_size=chunk))
+    packed = jax.vmap(blocks.pack)(rhs_batch) * blocks.row_scale[None]
+    solution = block_thomas_solve(blocks.factors, jnp.moveaxis(packed, 0, -1))
+    solution = solution * blocks.column_scale[..., None]
+    return jax.vmap(lambda matrix: blocks.project(blocks.unpack(matrix)))(jnp.moveaxis(solution, -1, 0))
+
+
+@functools.partial(jax.jit, static_argnames=("cfg", "chunk", "certify_rtol", "certify_maxiter"))
+def _staged_tangent_correct(params, x_star, dof_mask, factors, tangent_batch, initial, cfg, chunk,
+                            certify_rtol, certify_maxiter):
+    """The GMRES corrector and raw certificate of :func:`_implicit_evolved_tangent_multi_rhs`."""
+    frozen, _, z_star, raw_rhs, operator = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
+    residual = residual_fn(cfg, frozen, dof_mask)
+
+    def correct(args):
+        tangent, x0 = args
+        rhs = jax.tree.map(jnp.negative, jax.jvp(lambda prm: residual(z_star, prm), (params,), (tangent,))[1])
+        solution, krylov = _adjoint_solve(
+            lambda value: jax.jvp(lambda z: residual(z, params), (z_star,), (value,))[1],
+            rhs, cfg, x0=x0, rtol=certify_rtol, max_restarts=certify_maxiter)
+        b = raw_rhs(tangent)
+        raw_defect = jax.tree.map(jnp.subtract, b, operator(solution))
+        raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
+        return solution, _raw_certified_report(_linear_response_report(krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
+
+    return chunk_map(correct, (tangent_batch, initial), chunk_size=chunk)
+
+
+@functools.partial(jax.jit, static_argnames=("cfg", "chunk", "certify_rtol"))
+def _staged_tangent_refine(params, x_star, dof_mask, factors, tangent_batch, solution, report, cfg, chunk,
+                           certify_rtol):
+    """Raw-block refinement of the uncertified columns (compiled only when a column misses)."""
+    _, blocks, _, raw_rhs, operator = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
+
+    def apply(rhs):
+        return _block_inverse_apply(blocks.factors, blocks.pack, blocks.unpack, blocks.project,
+                                    blocks.row_scale, blocks.column_scale, rhs)
+
+    def refine(args):
+        tangent, x, converged = args
+        b = raw_rhs(tangent)
+        for _ in range(_BLOCK_REFINEMENT_PASSES):
+            defect = jax.tree.map(jnp.subtract, b, operator(x))
+            x = jax.tree.map(jnp.add, x, apply(defect))
+        ok = _tree_norm(jax.tree.map(jnp.subtract, b, operator(x))) <= \
+            _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
+        return x, jnp.logical_and(ok, jnp.logical_not(converged))
+
+    refined, gained = chunk_map(refine, (tangent_batch, solution, report.converged), chunk_size=chunk)
+    kept = jax.tree.map(lambda new, old: jnp.where(gained.reshape((-1,) + (1,) * (new.ndim - 1)), new, old),
+                        refined, solution)
+    return kept, report._replace(converged=jnp.logical_or(report.converged, gained))
+
+
+def block_factors_at(cfg: ImplicitConfig, params: ImplicitParams, x_star: SpectralState,
+                     dof_mask: SpectralState):
+    """Raw block factors at ``x_star`` (host-level) through :func:`_refine_block_factor_core`'s executable."""
+    with _device_context(cfg):
+        arguments = commit_to_single_device(tuple(
+            _pin_concrete(cfg, tree) for tree in (x_star, params, x_star, dof_mask)))
+        return _refine_block_factor_core(*arguments, cfg)
+
+
+def staged_tangent_multi_rhs(
+    params: ImplicitParams,
+    cfg: ImplicitConfig,
+    x_star: SpectralState,
+    dof_mask: SpectralState,
+    tangent_batch: ImplicitParams,
+    *,
+    chunk: int,
+    certify_rtol: float | None = None,
+    certify_maxiter: int | None = None,
+) -> tuple[SpectralState, LinearResponseReport]:
+    """:func:`_implicit_evolved_tangent_multi_rhs` as separately compiled stages (host-level, concrete inputs).
+
+    The same responses (fixed-boundary configs, the colored block system), but
+    the one program that assembled and factored the blocks, solved, corrected
+    and conditionally refined every column is split: the block factors come
+    from :func:`_refine_block_factor_core` -- the executable the forward
+    solve's Newton refinement already compiled, at this config -- then one
+    program solves the right-hand sides through them, one runs the GMRES
+    corrector, and the refinement fallback compiles only if a column misses
+    its certificate.  The columns are padded to a multiple of ``chunk`` (no
+    second, tail-width copy of each program).  Compile time drops from one
+    whole-graph compile (116 s at LP QA 8 x 8 on an A100) to the sum of
+    the smaller stages, with no recompilation per call.
+    """
+    n = int(jax.tree.leaves(tangent_batch)[0].shape[0])
+    chunk = max(1, min(int(chunk), n))
+    rtol = None if certify_rtol is None else float(certify_rtol)
+    maxiter = None if certify_maxiter is None else int(certify_maxiter)
+    factors = block_factors_at(cfg, params, x_star, dof_mask)
+    with _device_context(cfg):
+        batch = _padded(tangent_batch, chunk)
+        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, batch, cfg, chunk)
+        solution, report = _staged_tangent_correct(params, x_star, dof_mask, factors, batch, initial, cfg, chunk,
+                                                   rtol, maxiter)
+        if not bool(jnp.all(report.converged)):
+            solution, report = _staged_tangent_refine(params, x_star, dof_mask, factors, batch, solution, report,
+                                                      cfg, chunk, rtol)
+    return jax.tree.map(lambda a: a[:n], (solution, report))
+
+
 def implicit_state_tangent_multi_rhs(
     params: ImplicitParams,
     cfg: ImplicitConfig,
@@ -3568,8 +3726,15 @@ def _block_state_pullback(
     *,
     active_fields: tuple[str, ...],
     probe_chunk_size: int,
+    factors: Any = None,
 ) -> Callable[[SpectralState], tuple[ImplicitParams, LinearResponseReport]]:
     """One raw block factorization shared by every state-cotangent row.
+
+    ``factors`` (``(factors, row_scale, column_scale)`` of
+    :func:`_refine_block_factor_core` at ``x_star``) skips the assembly and
+    factorization here: the same factors, from the executable the forward
+    refinement already compiled, instead of a second copy of the colored
+    block assembly inside the caller's program.
 
     Returns ``pullback(gbar) -> (parameter cotangent, report)`` for one row:
     the exact block adjoint refined once (:func:`_block_adjoint`), NaN where
@@ -3584,10 +3749,15 @@ def _block_state_pullback(
     P = _dof_projector(cfg, dof_mask)
     F = residual_fn(cfg, frozen, dof_mask, formulation="raw")
     z_star = P(x_star)
-    system = _raw_block_system(
-        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
-    )
-    if isinstance(system.diagonal, jax.core.Tracer):
+    if factors is None:
+        system = _raw_block_system(
+            params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
+        )
+        traced = isinstance(system.diagonal, jax.core.Tracer)
+    else:
+        system = _factored_blocks(cfg, dof_mask, factors)
+        traced = isinstance(jax.tree.leaves(factors)[0], jax.core.Tracer)
+    if traced:
         _mark_compiled_adjoint(cfg)
     _, vjp_z = jax.vjp(lambda z: F(z, params), z_star)
     _, vjp_p = jax.vjp(lambda prm: F(z_star, prm), params)

@@ -739,10 +739,12 @@ class ThreeTermsFreeBoundaryModel:
         edge = im._edge_mask(cfg)
 
         def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
-            return im._implicit_evolved_tangent_multi_rhs(
-                params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
-                probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
+            """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
+
+            Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
+            forward refinement's compiled program, then the block solve and the GMRES corrector."""
+            return im.staged_tangent_multi_rhs(
+                params, cfg, state, mask, batch, chunk=self.chunk,
                 certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
@@ -767,15 +769,23 @@ class ThreeTermsFreeBoundaryModel:
             z = jax.tree.map(lambda a, d: a + jnp.tensordot(dx, d, axes=1), P(frozen), dz_batch)
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
-        self._tangents = jax.jit(tangents)
+        self._tangents = tangents
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
+        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
             lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
+
+        def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
+            n = jax.tree.leaves(dz)[0].shape[0]  # padded to whole chunks: no tail-width copy of the program
+            chunk = min(self.chunk, n)
+            return push_rows(state, mask, params, im._padded(dz, chunk), im._padded(pb, chunk), field,
+                             moments=moments)[:n]
+
+        self._push_rows = push_rows_padded
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
 
-        def pullback(fun, state, mask, params, cotangents, *args):
+        def pullback(fun, state, mask, params, cotangents, *args, factors=None):
             """``ImplicitParams`` gradients of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
@@ -785,7 +795,7 @@ class ThreeTermsFreeBoundaryModel:
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
-                                            probe_chunk_size=self.chunk)
+                                            probe_chunk_size=self.chunk, factors=factors)
             funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
             parts = []
             for f, c in zip(funs, blocks):
@@ -1228,10 +1238,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
 
-        def pullback(state, mask, params, x):
-            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
+        def pullback(state, mask, params, x, factors):
+            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
+
+            ``factors``: the block factors at ``state`` (:func:`~vmex.core.implicit.block_factors_at`, an
+            executable compiled once per config), not a second block assembly inside this program."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, factors=factors)
 
         self._pullback = jax.jit(pullback)
 
@@ -1339,7 +1352,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                        values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        factors = model._im.block_factors_at(model.cfg, params, state, sol["mask"])
+        params_bar = self._pullback(state, sol["mask"], params, xj, factors)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row

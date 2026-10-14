@@ -66,6 +66,7 @@ The names keep ``three_terms`` (the three interface conditions above) for compat
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 import hashlib
 import time
 from typing import Any
@@ -506,6 +507,29 @@ def solve_free_boundary_three_terms(
         boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
 
 
+def _surface_data(fixed, cfg, state, params, nphi, ntheta):
+    """:func:`~vmex.core.virtual_casing.surface_field_data_from_state` of a concrete state as one compiled program.
+
+    Eagerly, the field and surface assembly dispatch hundreds of small operations, each compiled on first use
+    (~15 s on a GPU before the first row); the program compiles once.  Its static fields (``nfp``, symmetry,
+    ``signgs``, convention) are those of the traced construction.
+    """
+    from . import implicit as im
+
+    static = {}
+
+    def arrays(state, params):
+        data = vc.surface_field_data_from_state(fixed, state, runtime=im.runtime_from_params(params, cfg),
+                                                nphi=nphi, ntheta=ntheta)
+        static.update(nfp=data.nfp, stellsym=data.stellsym, signgs=data.signgs,
+                      source_convention=data.source_convention)
+        return dict(gamma=data.gamma, B_total=data.B_total, normal=data.normal, area_vector=data.area_vector,
+                    theta=data.theta, phi=data.phi)
+
+    values = jax.jit(arrays)(state, params)
+    return vc.VmecSurfaceFieldData(**values, **static)
+
+
 def _try(function, *args):
     """``function(*args)``, or the exception it raised (for a worker thread to hand back)."""
     try:
@@ -650,11 +674,10 @@ class ThreeTermsFreeBoundaryModel:
             # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
             # convention of the deck is carried to the free boundary without sliding (known-target benchmark,
             # deck 11 mm away: 8 x 8 field lines 1.23 -> 0.36 mm, K 1.9e-3 -> 3.8e-4).
-            sp = vc._state_field_spectra(fixed, state, im.runtime_from_params(self.params0, self.cfg))
-            xm, xn = np.asarray(sp["xm"]), np.asarray(sp["xn"])
-            ds = 1.0 / (int(sp["ns"]) - 1)
-            dr = (np.asarray(sp["rmnc"])[-1] - np.asarray(sp["rmnc"])[-2]) / ds
-            dz = (np.asarray(sp["zmns"])[-1] - np.asarray(sp["zmns"])[-2]) / ds
+            xm, xn, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, self.cfg.resolution))
+            ds = 1.0 / (rmnc.shape[0] - 1)
+            dr = (rmnc[-1] - rmnc[-2]) / ds
+            dz = (zmns[-1] - zmns[-2]) / ds
 
             def radial(T, Zg):
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
@@ -701,20 +724,21 @@ class ThreeTermsFreeBoundaryModel:
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
         """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
-        from .optimize import solve_equilibrium
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        runtime = im.runtime_from_params(self.params0, cfg)
-        surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+        surface = _surface_data(fixed, cfg, state, self.params0, nphi, ntheta)
         quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
         else:
             precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
         self.precision = precision
-        # A closed curve inside the coils for G_coil: the seed's magnetic axis.
-        axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
+        # A closed curve inside the coils for G_coil: the seed's magnetic axis (its wout raxis_cc / zaxis_cs, read
+        # from the solved seed state; the circulation is the same on any loop that links the coils).
+        _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
+        n_axis = int(cfg.resolution.ntor) + 1
+        axis = _axis_loop(SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
         vacuum = self.vacuum
         area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
         B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))

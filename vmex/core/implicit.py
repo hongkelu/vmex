@@ -186,6 +186,7 @@ from .geometry import (
 )
 from .input import VmecInput
 from .multigrid import solve_multigrid
+from .restart import skip_ladder_rungs
 from .residuals import (
     m1_physical_to_constrained, m1_residue_rotation, pin_m1_gauge,
     scalxc_scale_force, zero_m1_z_force,
@@ -1464,14 +1465,23 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
         # NITER-exhausted final stages still return a usable (penalized)
         # state — matching the optimize.least_squares trial-solve policy
         # (VMEC2000 behaves the same way).
-        run = lambda init: solve_multigrid(  # noqa: E731
-            inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
-            lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
-            initial_state=init, use_fft=False,
+        niter_arr = np.asarray(inp2.niter_array).ravel()
+        niter_arr = np.concatenate([niter_arr, np.full(max(ns_arr.size - niter_arr.size, 0), niter_arr[-1])])
+
+        def run(init):
+            # A seed (hot restart, perturbation prediction) already has the final radial resolution: the
+            # coarse rungs only exist to build one (restart.skip_ladder_rungs), and the fixed point does not
+            # depend on the seed.
+            first = 0 if init is None else skip_ladder_rungs(ns_arr, int(init.R_cos.shape[0]))
+            return solve_multigrid(
+                inp2, ns_array=ns_arr[first:], ftol_array=ftol_arr[first:],
+                niter_array=niter_arr[first:ns_arr.size], mode=cfg.mode,
+                lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
+                initial_state=init, use_fft=False,
                 device=solver_device,
-            # an optimization's configs (hot restart) compile every rung of
-            # their first ladder in parallel; later ladders find them built
-            prefetch_compile=bool(cfg.hot_restart))
+                # an optimization's configs (hot restart) compile every rung of
+                # their first ladder in parallel; later ladders find them built
+                prefetch_compile=bool(cfg.hot_restart))
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,

@@ -631,3 +631,27 @@ def test_block_state_pullback_with_stored_factors_matches():
                                       factors=im.block_factors_at(cfg, p0, state, mask))(gbar)
     assert bool(stored[1].converged)
     assert _relative_difference(stored[0], own[0]) < 1e-10
+
+
+def test_seeded_multigrid_solves_run_only_the_final_rung(monkeypatch):
+    """A hot-restart trial is seeded at the final radial resolution: the coarse rungs that only build a seed
+    are skipped, and the trial reaches the same equilibrium as a cold ladder."""
+    inp, _, p0 = _small_solovev_setup()
+    inp = dataclasses.replace(inp, ns_array=np.asarray([3, 5]), ftol_array=np.asarray([1e-8, 1e-10]),
+                              niter_array=np.asarray([1000]))
+    ladders = []
+    real = im.solve_multigrid
+
+    def recording(inp, **kwargs):
+        ladders.append(list(np.asarray(kwargs["ns_array"])))
+        return real(inp, **kwargs)
+
+    monkeypatch.setattr(im, "solve_multigrid", recording)
+    cfg = im.make_config(inp, multigrid=True, hot_restart=True, ftol=1e-10, max_iterations=1021)
+    im.solve_implicit_with_aux(p0, cfg)
+    moved = dataclasses.replace(p0, rbc=p0.rbc.at[inp.ntor, 1].add(1e-3))
+    hot, _ = im.solve_implicit_with_aux(moved, cfg)
+    cold_cfg = im.make_config(inp, multigrid=True, ftol=1e-10, max_iterations=1023)
+    cold, _ = im.solve_implicit_with_aux(moved, cold_cfg)
+    assert ladders[0] == [3, 5] and ladders[1] == [5] and ladders[2] == [3, 5]
+    assert _relative_difference(hot, cold) < 1e-8

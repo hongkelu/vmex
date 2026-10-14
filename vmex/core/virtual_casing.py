@@ -427,27 +427,10 @@ def _wrout_cos_coeffs_jax(f, modes, trig):
     return coeff * jnp.asarray(_wrout_dmult(modes, trig))[None, :]
 
 
-def _state_field_spectra(inp, state, runtime=None):
-    """Traceable geometry and contravariant-field spectra for a live state."""
-    if bool(inp.lasym):
-        raise NotImplementedError(
-            "live-state field evaluation supports lasym = False only"
-        )
-    from .fields import magnetic_fields, metric_elements
+def _geometry_tables(res, ns):
+    """Mode table and Nyquist-grid trig tables of :func:`_state_field_spectra`."""
     from .fourier import Resolution, mode_table, trig_tables
-    from .geometry import (
-        apply_lambda_axis_closure,
-        half_mesh_jacobian,
-        real_space_geometry,
-    )
-    from .nyquist import nyquist_limits
-    from .residuals import m1_constrained_to_physical
-    from .setup import boundary_from_input, flux_profiles, radial_grids
-    from .solver import resolution_from_input
-    from .transforms import physical_to_internal_scale
 
-    ns = int(np.shape(state.R_cos)[0])
-    res = resolution_from_input(inp, ns=ns) if runtime is None else runtime.resolution
     mpol, ntor, nfp, lasym = int(res.mpol), int(res.ntor), int(res.nfp), bool(res.lasym)
     nzeta = int(res.nzeta)
     modes = mode_table(mpol, ntor)
@@ -456,6 +439,53 @@ def _state_field_spectra(inp, state, runtime=None):
     trig = trig_tables(Resolution(mpol=mnyq_grid + 1, ntor=nnyq_grid,
                                   ntheta=int(res.ntheta), nzeta=nzeta,
                                   nfp=nfp, lasym=lasym, ns=ns))
+    return modes, trig
+
+
+def _physical_geometry(state, res, modes, trig):
+    """Physical ``(R_cos, Z_sin, R_sin, Z_cos)``, the wout mode scaling and ``(xm, xn)`` of a state."""
+    from .residuals import m1_constrained_to_physical
+    from .transforms import physical_to_internal_scale
+
+    physical = m1_constrained_to_physical(
+        state.R_cos, state.Z_sin, state.R_sin, state.Z_cos,
+        modes=modes, lthreed=bool(res.lthreed), lasym=bool(res.lasym), lconm1=True)
+    mode_scale = 1.0 / physical_to_internal_scale(modes, trig)
+    xm = jnp.asarray(modes.m, dtype=float)
+    xn = jnp.asarray(modes.n, dtype=float) * float(res.nfp)
+    return physical, mode_scale, xm, xn
+
+
+def _state_geometry_spectra(state, res):
+    """``(xm, xn, rmnc, zmns)`` of a stellarator-symmetric state: :func:`_state_field_spectra`'s geometry
+    coefficients alone (the same operations), without its field evaluation."""
+    ns = int(np.shape(state.R_cos)[0])
+    modes, trig = _geometry_tables(res, ns)
+    (R_cos_p, Z_sin_p, _, _), mode_scale, xm, xn = _physical_geometry(state, res, modes, trig)
+    return xm, xn, R_cos_p * mode_scale[None, :], Z_sin_p * mode_scale[None, :]
+
+
+def _state_field_spectra(inp, state, runtime=None):
+    """Traceable geometry and contravariant-field spectra for a live state."""
+    if bool(inp.lasym):
+        raise NotImplementedError(
+            "live-state field evaluation supports lasym = False only"
+        )
+    from .fields import magnetic_fields, metric_elements
+    from .geometry import (
+        apply_lambda_axis_closure,
+        half_mesh_jacobian,
+        real_space_geometry,
+    )
+    from .fourier import mode_table
+    from .nyquist import nyquist_limits
+    from .setup import boundary_from_input, flux_profiles, radial_grids
+    from .solver import resolution_from_input
+
+    ns = int(np.shape(state.R_cos)[0])
+    res = resolution_from_input(inp, ns=ns) if runtime is None else runtime.resolution
+    mpol, ntor, nfp, lasym = int(res.mpol), int(res.ntor), int(res.nfp), bool(res.lasym)
+    modes, trig = _geometry_tables(res, ns)
     if runtime is None:
         grids = radial_grids(ns)
         boundary = boundary_from_input(inp, modes=modes, trig=trig, lconm1=True)
@@ -469,9 +499,7 @@ def _state_field_spectra(inp, state, runtime=None):
                 ("phips", "phipf", "chips", "mass", "icurv")}
         gamma, ncurr = float(runtime.gamma), int(runtime.setup.ncurr)
 
-    R_cos_p, Z_sin_p, R_sin_p, Z_cos_p = m1_constrained_to_physical(
-        state.R_cos, state.Z_sin, state.R_sin, state.Z_cos,
-        modes=modes, lthreed=bool(res.lthreed), lasym=lasym, lconm1=True)
+    (R_cos_p, Z_sin_p, R_sin_p, Z_cos_p), mode_scale, xm, xn = _physical_geometry(state, res, modes, trig)
     lambda_sin = apply_lambda_axis_closure(state.L_sin, modes=modes, ntor=ntor)
     geometry = real_space_geometry(
         R_cos=R_cos_p, R_sin=R_sin_p, Z_cos=Z_cos_p, Z_sin=Z_sin_p,
@@ -501,13 +529,10 @@ def _state_field_spectra(inp, state, runtime=None):
     # extra sqrt(s) on the odd-m rows here shrank every interior surface
     # towards the axis, which left adjacent surfaces crossing on a shaped
     # boundary and put B at the wrong place.
-    mode_scale = 1.0 / physical_to_internal_scale(modes, trig)
     rmnc = R_cos_p * mode_scale[None, :]
     zmns = Z_sin_p * mode_scale[None, :]
     rmns = R_sin_p * mode_scale[None, :] if lasym else None
     zmnc = Z_cos_p * mode_scale[None, :] if lasym else None
-    xm = jnp.asarray(modes.m, dtype=float)
-    xn = jnp.asarray(modes.n, dtype=float) * float(nfp)
 
     # The native field form (extender._contravariant_native) builds B from
     # these rather than from the fitted B^u/B^v tables: ``lmns`` carries VMEC's

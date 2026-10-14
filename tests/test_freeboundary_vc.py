@@ -776,3 +776,38 @@ def test_try_hands_back_the_exception():
     assert fvc._try(lambda a: a + 1, 1) == 2
     error = fvc._try(lambda: 1 / 0)
     assert isinstance(error, ZeroDivisionError)
+
+
+def test_geometry_spectra_are_the_field_spectra_geometry():
+    """The model's radial-line and axis inputs: _state_field_spectra's geometry coefficients without its fields,
+    and the wout axis rows."""
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    eq = opt.solve_equilibrium(inp)
+    state, runtime = eq.solution, eq.solver_context
+    full = vc._state_field_spectra(inp, state, runtime)
+    xm, xn, rmnc, zmns = vc._state_geometry_spectra(state, runtime.resolution)
+    for got, key in ((xm, "xm"), (xn, "xn"), (rmnc, "rmnc"), (zmns, "zmns")):
+        np.testing.assert_array_equal(np.asarray(got), np.asarray(full[key]))
+    n_axis = int(runtime.resolution.ntor) + 1
+    np.testing.assert_allclose(np.asarray(rmnc)[0, :n_axis], np.asarray(eq.wout.raxis_cc), rtol=1e-13, atol=1e-15)
+    np.testing.assert_allclose(np.asarray(zmns)[0, :n_axis], np.asarray(eq.wout.zaxis_cs), rtol=1e-13, atol=1e-15)
+
+
+def test_compiled_surface_data_is_the_eager_construction():
+    """The model's seed surface data, built as one program, equals the eager construction."""
+    from vmex.core import implicit as im
+
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    cfg = im.make_config(inp, ftol=1e-10, max_iterations=1000)
+    params = im.params_from_input(inp)
+    state, _ = im.solve_implicit_with_aux(params, cfg)
+    got = fvc._surface_data(inp, cfg, state, params, 6, 8)
+    want = vc.surface_field_data_from_state(inp, state, runtime=im.runtime_from_params(params, cfg), nphi=6,
+                                            ntheta=8)
+    for name in ("gamma", "B_total", "normal", "area_vector", "theta", "phi"):
+        np.testing.assert_allclose(np.asarray(getattr(got, name)), np.asarray(getattr(want, name)),
+                                   rtol=1e-12, atol=1e-14)
+    assert (got.nfp, got.stellsym, got.signgs, got.source_convention) == \
+        (want.nfp, want.stellsym, want.signgs, want.source_convention)

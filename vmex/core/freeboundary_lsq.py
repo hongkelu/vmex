@@ -499,22 +499,32 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         tol_c = float(np.sqrt(self.cfg.ftol))
 
         def restore(x, got, J):
-            """Chord Newton on the constraint rows with ``J``'s rows of them (minimum-norm steps in the scaled
-            coordinates) to ``max |r_c| <= sqrt(FTOL)``: ``(x, got, reached)``, the last point where ``|r_c|`` fell."""
+            """Chord Newton on the constraint rows with ``J``'s rows of them, to ``max |r_c| <= sqrt(FTOL)``:
+            ``(x, got, reached)``, the last point where ``|r_c|`` fell.  The unknowns of a step are the current
+            coordinates (the bootstrap rows are square in them) and one boundary direction, the scaled gradient
+            of the net-current row (the least boundary motion that moves G); a step that does not lower ``|r_c|``
+            is halved."""
             nonlocal nfev
             if not m or got is None:
                 return x, got, got is not None
-            Jc = J[k:, :x.size] * S[None]
+            nb = self.n_boundary
+            u = S[:nb] * (J[k, :nb] * S[:nb])  # the net-current row's steepest boundary direction (scaled metric)
+            A = np.column_stack([J[k:, :nb] @ u, J[k:, nb:x.size] * S[None, nb:]])
             for _ in range(10):
                 rc = got[0][k:]
                 if np.max(np.abs(rc)) <= tol_c:
                     return x, got, True
-                x_try = x - S * np.linalg.lstsq(Jc, rc, rcond=None)[0]
-                got_new = self.evaluate(x_try, params, field, tight=True)
-                nfev += 1
-                if got_new is None or np.linalg.norm(got_new[0][k:]) >= np.linalg.norm(rc):
+                z = np.linalg.solve(A, -rc)
+                step = np.r_[z[0] * u, S[nb:] * z[1:]]
+                for _ in range(10):  # halving until |r_c| falls
+                    got_new = self.evaluate(x + step, params, field, tight=True)
+                    nfev += 1
+                    if got_new is not None and np.linalg.norm(got_new[0][k:]) < np.linalg.norm(rc):
+                        break
+                    step = 0.5 * step
+                else:
                     return x, got, False
-                x, got = x_try, got_new
+                x, got = x + step, got_new
             return x, got, False
 
         if m and np.max(np.abs(r[k:])) > tol_c:  # the start onto the constraints (a Jacobian each try)

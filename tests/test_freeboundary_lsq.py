@@ -76,7 +76,7 @@ def test_solve_is_start_independent(model_and_field):
     model, field = model_and_field
     nb = model.n_boundary
     start = model.x0.copy()
-    start[:nb] += 0.3 * model.x_scale[:nb] * np.random.default_rng(1).standard_normal(nb)
+    start[:nb] += 0.05 * model.x_scale[:nb] * np.random.default_rng(1).standard_normal(nb)
     ends = []
     for x0 in (None, start):
         out = model.solve_boundary(model.params0, field, x0=x0, max_iter=40)

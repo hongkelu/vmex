@@ -1,32 +1,42 @@
-"""Free-boundary equilibria from the three plasma-vacuum interface conditions.
+"""Free-boundary equilibria by virtual casing, with the boundary as the unknown.
 
-At a free boundary ``S`` without a sheet current the interface conditions are
+At a free boundary ``S`` without a sheet current the plasma-vacuum interface conditions are
 (Conlin et al. 2024, arXiv:2412.05680)
 
 1. ``B_out . n = 0``,
 2. ``|B_out|^2 = |B_in|^2 + 2 mu0 p``,
 3. ``n x (B_out - B_in) = mu0 K = 0``,
 
-with ``B_out = B_coil + B_plasma`` and ``B_plasma`` the plasma's own field from
-the virtual-casing principle (:mod:`vmex.core.virtual_casing`).  NESTOR
-(:mod:`vmex.core.freeboundary`) builds the vacuum field that satisfies (1) by
-construction and balances only ``|B|`` in (2), so it accepts any tangential
-field jump: a VMEC/NESTOR equilibrium may carry an edge sheet current.  Here
-the boundary is the unknown instead.  Every trial boundary is a fixed-boundary
-equilibrium, and a Gauss-Newton least-squares solve minimizes the stacked
-residual of all three conditions with exact implicit derivatives
-(:class:`ThreeTermsFreeBoundaryModel`).  At an exact solution all three vanish
-together; at finite resolution they stop at a floor set mainly by ``mpol``
-(about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where the relative
-``weights`` decide the balance.
+with ``B_out = B_coil + B_plasma`` and ``B_plasma`` the plasma's own field from the virtual-casing principle
+(:mod:`vmex.core.virtual_casing`).  Two curl- and divergence-free fields outside ``S`` with the same normal
+component and the same net poloidal current ``G`` are equal, so (1) and ``G_plasma = G_coil`` imply (2) and (3)
+when the edge pressure vanishes (a nonzero edge pressure needs a sheet current and is rejected).
 
-Condition (1) alone leaves one direction open: the flux of ``B_out`` through
-the closed surface vanishes identically, and a mismatch of the net poloidal
-current ``G`` adds a field tangent to ``S``.  Conditions (2) and (3) close it in
-principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
-(``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
-all three exactly; a nonzero edge pressure needs a sheet current and is
-rejected.
+The unknown is the displacement ``h(theta, zeta)`` of the deck's boundary along the deck equilibrium's radial
+coordinate lines, measured normal to the surface (one function on the deck's boundary modes;
+:func:`_normal_displacement_map`).  The deck fixes the boundary's poloidal labelling: at finite resolution the
+labelling decides how well the truncated series represents the surface, and a labelling taken from the start (or
+left free) makes the answer depend on the start or the fit crawl.  ``initial_boundary`` only sets the starting
+``h``.  The equations are square in ``h``, with the net poloidal current row ``G_plasma = G_coil`` for the
+``(0, 0)`` mode:
+
+- vacuum (no pressure, no plasma current): ``B_out = B_coil`` is an explicit function of the boundary, and the
+  rows are the stationarity of the area-weighted mean square of ``B_coil . n`` in ``h``
+  (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
+  Jacobian.  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
+  uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
+- finite beta: the area-weighted sine moments of ``B_out . n`` on the boundary modes, with the boundary two
+  modes below the interior (``_BOUNDARY_MODE_GAP``: the interior's edge field is least accurate in its top
+  modes).  The plasma's response makes the least-squares Jacobian an equilibrium Hessian; the moments need
+  only the implicit tangents.
+
+Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
+pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
+
+Every trial boundary is a fixed-boundary equilibrium (Newton-refined; :mod:`vmex.core.implicit`), so the rows
+and their exact implicit derivatives are smooth functions of the boundary, the coils and the plasma parameters.
+VMEC2000 counterpart: none; this replaces NESTOR (``vacuum.f`` and its callees, :mod:`vmex.core.vacuum`) as the
+free-boundary condition.
 
 Entry points, from the most to the least packaged:
 
@@ -45,6 +55,8 @@ Entry points, from the most to the least packaged:
   parameters, without recompiling -- the pieces an optimizer needs;
 - :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
   check a NESTOR result.
+
+The names keep ``three_terms`` (the three interface conditions above) for compatibility.
 """
 
 from __future__ import annotations
@@ -143,10 +155,13 @@ def _axis_loop(wout):
     """Points ``(3, n)``, tangent and spacing of the magnetic axis of ``wout``: a closed curve inside the coils."""
     phi = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
     harmonics = np.arange(np.asarray(wout.raxis_cc).size) * int(wout.nfp)
-    R = np.cos(np.outer(phi, harmonics)) @ np.asarray(wout.raxis_cc, dtype=float)
-    Z = -np.sin(np.outer(phi, harmonics)) @ np.asarray(wout.zaxis_cs, dtype=float)
+    rc, zs = np.asarray(wout.raxis_cc, dtype=float), np.asarray(wout.zaxis_cs, dtype=float)
+    cos, sin = np.cos(np.outer(phi, harmonics)), np.sin(np.outer(phi, harmonics))
+    R, Z = cos @ rc, -sin @ zs
+    R_p, Z_p = -sin @ (rc * harmonics), -cos @ (zs * harmonics)  # exact tangent: the periodic sum is spectral
     points = np.stack([R * np.cos(phi), R * np.sin(phi), Z])
-    return jnp.asarray(points), jnp.asarray(np.gradient(points, phi, axis=1)), float(phi[1] - phi[0])
+    tangent = np.stack([R_p * np.cos(phi) - R * np.sin(phi), R_p * np.sin(phi) + R * np.cos(phi), Z_p])
+    return jnp.asarray(points), jnp.asarray(tangent), float(phi[1] - phi[0])
 
 
 def _net_current(field, points, tangent, dphi):
@@ -160,6 +175,75 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
+    """Area-weighted mean of ``(B . n)^2`` of ``field`` on the surface ``(rmnc, zmns)`` (traceable).
+
+    ``phi, theta`` are the ``(nphi, ntheta)`` grid (one field period), ``phi_grid`` its ``phi`` axis.
+    """
+    phase = xm[:, None, None] * theta[None] - xn[:, None, None] * phi[None]
+    cos, sin = jnp.cos(phase), jnp.sin(phase)
+    R, Z = jnp.tensordot(rmnc, cos, 1), jnp.tensordot(zmns, sin, 1)
+    R_t, Z_t = jnp.tensordot(-rmnc * xm, sin, 1), jnp.tensordot(zmns * xm, cos, 1)
+    R_p, Z_p = jnp.tensordot(rmnc * xn, sin, 1), jnp.tensordot(-zmns * xn, cos, 1)
+    c, s = jnp.cos(phi), jnp.sin(phi)
+    e_theta = jnp.stack([R_t * c, R_t * s, Z_t])
+    e_phi = jnp.stack([R_p * c - R * s, R_p * s + R * c, Z_p])
+    N = jnp.cross(e_theta, e_phi, axis=0)
+    area = jnp.linalg.norm(N, axis=0)
+    B = vc.external_B_cartesian(field, jnp.stack([R * c, R * s, Z]), phi_grid)
+    return jnp.sum(jnp.sum(B * N, axis=0) ** 2 / area) / jnp.sum(area)
+
+
+def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=128, nzeta=64, direction=None):
+    """Boundary coordinates as a normal displacement of ``inp``'s surface: ``(M, modes, x_scale)``.
+
+    ``h(theta, zeta) = sum h_mn cos(m theta - n nfp zeta)`` over ``modes`` (those of
+    :func:`~vmex.core.optimize.pack_boundary`, then ``(0, 0)``) moves each boundary point along the surface
+    normal, within its ``phi = zeta`` plane: ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit
+    normal, so its normal displacement is ``h``.  Its truncated Fourier fit is linear in ``h``: the packed
+    boundary coordinates are ``x0 + M h``.  Tangential moves (relabellings ``theta -> theta + delta(theta,
+    zeta)``, which no interface condition sees) are thereby absent from the unknowns.
+    """
+    from .optimize import _dof_modes, pack_boundary
+
+    rbc, zbs, nfp = np.asarray(inp.rbc, dtype=float), np.asarray(inp.zbs, dtype=float), int(inp.nfp)
+    ntor, mpol = (rbc.shape[0] - 1) // 2, rbc.shape[1]
+    th = np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False)
+    ze = np.linspace(0.0, 2.0 * np.pi / nfp, nzeta, endpoint=False)
+    T, Zg = np.meshgrid(th, ze, indexing="ij")
+    ns, ms = np.arange(-ntor, ntor + 1), np.arange(mpol)
+    ph = ms[None, :, None, None] * T[None, None] - ns[:, None, None, None] * nfp * Zg[None, None]
+    cos, sin = np.cos(ph), np.sin(ph)
+    R = np.einsum("nm,nmij->ij", rbc, cos)
+    Rt = np.einsum("nm,nmij->ij", -rbc * ms[None, :], sin)
+    Zt = np.einsum("nm,nmij->ij", zbs * ms[None, :], cos)
+    NR, NZ = -R * Zt, R * Rt  # (e_theta x e_zeta) in its R and Z components; the phi one is not representable
+    N = np.sqrt(NR**2 + NZ**2 + (np.einsum("nm,nmij->ij", zbs * ms[None, :], cos)
+                                 * np.einsum("nm,nmij->ij", rbc * ns[:, None] * nfp, sin)
+                                 - Rt * np.einsum("nm,nmij->ij", -zbs * ns[:, None] * nfp, cos)) ** 2)
+    nR, nZ = NR / N, NZ / N
+    if direction is None:
+        gR, gZ = nR / (nR**2 + nZ**2), nZ / (nR**2 + nZ**2)
+    else:  # move along a given (R, Z) direction field, scaled so the normal displacement is h
+        dR, dZ = direction(T, Zg)
+        gR, gZ = dR / (nR * dR + nZ * dZ), dZ / (nR * dR + nZ * dZ)
+    keep = ~((ms[None, :] == 0) & (ns[:, None] <= 0))
+    keep_r = ~((ms[None, :] == 0) & (ns[:, None] < 0))
+    A_r = cos[keep_r].reshape(int(keep_r.sum()), -1).T
+    A_z = sin[keep].reshape(int(keep.sum()), -1).T
+    pinv_r, pinv_z = np.linalg.pinv(A_r), np.linalg.pinv(A_z)
+    modes = list(_dof_modes(inp, max_mode)) + [(0, 0)]
+    zero = replace(inp, rbc=np.zeros_like(rbc), zbs=np.zeros_like(zbs))
+    columns = []
+    for m, n in modes:
+        h = np.cos(m * T - n * nfp * Zg)
+        dr, dz = np.zeros_like(rbc), np.zeros_like(zbs)
+        dr[keep_r], dz[keep] = pinv_r @ (h * gR).ravel(), pinv_z @ (h * gZ).ravel()
+        columns.append(pack_boundary(replace(zero, rbc=dr, zbs=dz), max_mode, vary_major_radius=True))
+    levels = np.asarray([max(abs(m), abs(n)) if (m, n) != (0, 0) else 1 for m, n in modes], dtype=float)
+    return np.asarray(columns).T, modes, np.exp(-alpha * levels) / np.exp(-alpha)
+
+
 def solve_free_boundary_three_terms(
     inp: VmecInput,
     *,
@@ -170,11 +254,6 @@ def solve_free_boundary_three_terms(
     nphi: int | None = None,
     ntheta: int | None = None,
     digits: int = 4,
-    weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
-    net_current_weight: float = 1.0,
-    label_weight: float = 1e-2,
-    ftol: float = 1e-4,
-    jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
@@ -185,57 +264,41 @@ def solve_free_boundary_three_terms(
     previous=None,
     verbose: int = 0,
 ):
-    """Free-boundary equilibrium of ``inp`` from the three interface conditions.
+    """Free-boundary equilibrium of ``inp`` (the interface conditions of the module docstring).
 
     ``inp`` is a free-boundary deck (``PHIEDGE``, profiles, and the external
-    field through ``external_field``, ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``);
-    its boundary, or that of ``initial_boundary``, is the initial guess, so a
-    fixed-boundary design and the coils fitted to it make a natural start.  The
-    boundary Fourier coefficients up to ``max_mode`` (default: all) and
-    ``RBC(0,0)`` are solved for at fixed toroidal flux, pressure and current or
-    iota, every trial being a fixed-boundary equilibrium on the deck's
-    ``NS_ARRAY`` ladder.  ``external_field`` is anything
+    field through ``external_field``, ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``).
+    The free boundary is the deck's boundary displaced along the deck
+    equilibrium's radial lines (:class:`ThreeTermsFreeBoundaryModel`): the deck is the fixed reference of
+    the boundary's labelling, so the solution does not depend on where the
+    solve starts; ``initial_boundary`` (another surface) only sets the starting
+    displacement.  Every trial is a fixed-boundary equilibrium on the deck's
+    ``NS_ARRAY`` ladder at fixed toroidal flux, pressure and current or iota.
+    ``external_field`` is anything
     :func:`~vmex.core.virtual_casing.external_B_cartesian` accepts (an
     :class:`~vmex.core.mgrid.MgridField`, a ``xyz -> B`` callable such as an
     ESSOS Biot-Savart field, or a coil field with ``b_cyl``).
 
-    The residual is ``sqrt(area weight)`` times ``weights = (normal, pressure,
-    sheet current)`` times the rows of :func:`boundary_residual` on an
-    ``nphi x ntheta`` grid over one field period (default 48 x 48), with the
-    virtual-casing quadrature planned once on the initial boundary to
-    ``digits``.  The grid, not ``digits``, limits the virtual-casing field:
-    for a current-free state it returns ``|B_plasma| / |B|`` of about 2e-4 at
-    48 x 48 and 5e-5 at 64 x 64 (whose quadrature needs several times the
-    memory), below the residual floor that ``mpol`` sets (module docstring).
-    Rows of the boundary points' displacement along the surface in ``theta``,
-    relative to the initial boundary and scaled by ``label_weight``, fix the
-    boundary's poloidal labelling, which the interface conditions leave free.
-    ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
-    the net poloidal current (edge ``rbtor`` against the external field's
-    circulation around the seed's magnetic axis), the direction the
-    normal-field rows cannot see.
-
-    A trust region with exact implicit Jacobians
-    (:class:`ThreeTermsFreeBoundaryModel`) runs to a relative cost change of
-    ``jacobian_ftol``; Levenberg-Marquardt steps with its last Jacobian then go
-    on to ``ftol``, the floor set by the resolution (``None``: the trust region
-    runs to ``ftol``).  ``previous``, an earlier result for the same deck
-    (typically before a coil change), starts from its boundary with those steps
-    and its Jacobian, and from its model: neither new coils nor a repeat solve
-    compile anything.  ``quadrature``, ``trial_ftol`` and ``chunk`` are
-    :class:`ThreeTermsFreeBoundaryModel`'s (fixed singular quadrature, looser
-    trial equilibria, Jacobian columns per batch).
-    ``bootstrap`` (kinetic profiles), ``bootstrap_helicity`` and
-    ``bootstrap_weight`` solve for a Redl-self-consistent current profile
-    together with the boundary (:class:`ThreeTermsFreeBoundaryModel`).
+    The equations (module docstring) are Newton-solved on an ``nphi x ntheta``
+    grid over one field period (default 48 x 48), with the virtual-casing
+    quadrature planned once on the deck to ``digits`` (or fixed by
+    ``quadrature``), to at most ``max_nfev`` evaluations.  ``previous``, an
+    earlier result for the same deck (typically before a coil change), starts
+    from its boundary, Jacobian and model: neither new coils nor a repeat
+    solve compile anything.  ``trial_ftol`` and ``chunk`` are
+    :class:`ThreeTermsFreeBoundaryModel`'s.  ``bootstrap`` (kinetic
+    profiles), ``bootstrap_helicity`` and ``bootstrap_weight`` solve for a
+    Redl-self-consistent current profile together with the boundary.
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
-    coordinates, then any bootstrap-current values), ``fun`` (the residual),
-    ``jac`` (its last Jacobian), ``cost``, ``nfev``, ``njev``, ``input`` (the
-    free boundary, and the current, as a fixed-boundary deck),
-    ``equilibrium``, ``model``, ``aux`` (``(state, mask, params, tight)`` of
-    the solution, for ``previous=``), ``boundary_residual`` and
-    ``initial_boundary_residual`` (:class:`BoundaryResidual` at the start).
+    coordinates, then any bootstrap-current values), ``fun`` (the equations),
+    ``jac`` (the last Jacobian), ``cost``, ``nfev``, ``njev``, ``success``
+    (converged), ``input`` (the free boundary, and the current, as a
+    fixed-boundary deck), ``equilibrium`` (solved to a final force residual of
+    ``1e-17``, see ``_REPORT_FTOL``), ``model``, ``aux`` (``(state, mask,
+    params, tight)``, for ``previous=``), ``boundary_residual`` and
+    ``initial_boundary_residual`` (:class:`BoundaryResidual` of the reported
+    equilibrium, and at the start).
     """
     from scipy.optimize import OptimizeResult
 
@@ -255,27 +318,27 @@ def solve_free_boundary_three_terms(
         model, x0, jacobian = previous.model, previous.x, previous.jac
         seed_state, seed_params = previous.aux[0], previous.aux[2]
     else:
-        start = inp if initial_boundary is None else replace(
-            inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,
-            raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
         model = ThreeTermsFreeBoundaryModel(
-            start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
-            weights=weights, net_current_weight=net_current_weight, label_weight=label_weight,
+            inp, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
-        x0 = jacobian = None
+        x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
+        jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
     initial = model.boundary_residual(seed_state, seed_params, external_field)
-    out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
-                               jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
-                               max_nfev=max_nfev, verbose=verbose)
+    out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
+                               verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
+    equilibrium = solve_equilibrium(
+        boundary, initial_state=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
+        forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000))
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
-        njev=out["njev"], success=True, message=f"{out['accepted']} Levenberg-Marquardt steps after the trust region",
-        input=boundary, equilibrium=solve_equilibrium(boundary, initial_state=state), model=model, aux=out["aux"],
-        boundary_residual=model.boundary_residual(state, params, external_field), initial_boundary_residual=initial)
+        njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
+        input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
+        boundary_residual=model.boundary_residual(equilibrium.solution, params, external_field),
+        initial_boundary_residual=initial)
 
 
 class ThreeTermsFreeBoundaryModel:
@@ -288,33 +351,30 @@ class ThreeTermsFreeBoundaryModel:
     nor new plasma parameters recompile anything, which is what an optimizer
     that solves the free boundary at every step needs.
 
-    Coordinates: ``x`` are the boundary coefficients up to ``max_mode`` and
-    ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
-    deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
-    (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
-    replaces.  The rows are those of :func:`solve_free_boundary_three_terms`,
-    with the quadrature plan and the labelling reference fixed on the deck's
-    boundary (``seed``: its ``(state, mask)``).
+    Coordinates: ``x`` is the displacement ``h`` of the deck's boundary on
+    its modes up to ``max_mode`` (``x0 = 0`` the deck; ``x_scale`` their ESS
+    scales; :meth:`displacement_of` the coordinates of another surface),
+    ``params`` an ``ImplicitParams`` (``params0`` the deck's) whose boundary
+    ``with_boundary(params, x)`` replaces.  The rows are the square
+    equations of the module docstring, with the quadrature plan and the field
+    scale ``B0`` fixed on the deck (``seed``: its ``(state, mask)``).
 
-    Methods: :meth:`solve_boundary` (the K = 0 boundary, cold or warm),
+    Methods: :meth:`solve_boundary` (the free boundary, cold or warm),
     :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
     and the state responses), :meth:`push` (forward-mode columns of other
     functions of the equilibrium), :meth:`pullback` (their reverse-mode
     gradients), :meth:`boundary_residual`, :meth:`bootstrap_residual` and
-    :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
-    runtime, field)`` are the traceable rows themselves.
+    :meth:`solve`; ``rows(state, params, field)`` (and its interface part
+    ``interface_rows``) are the traceable rows themselves.
 
     ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
     force residual (each is re-solved to the deck's before it is
     differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
     quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
     ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
-    shaped boundary.  Use ``(4 nfp nphi, 2 ntheta)``: with ``quad_np = ntheta``
-    the tangential plasma field on a vacuum surface is off by ~3e-4 ``|B|``, the
-    fit absorbs it in the boundary, and its near-resonant B.n harmonics grow
-    several-fold (8 x 8 vacuum benchmark: field lines leave the LCFS by 7 mm
-    instead of 1 mm), at no extra memory.  ``chunk`` bounds the Jacobian
-    columns per batch.
+    shaped boundary; use ``(4 nfp nphi, 2 ntheta)`` (finite beta: with
+    ``quad_np = ntheta`` the tangential plasma field is off by ~3e-4 ``|B|``).
+    ``chunk`` bounds the Jacobian columns per batch.
 
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
@@ -322,9 +382,7 @@ class ThreeTermsFreeBoundaryModel:
     knot values (three inside the first surface, then one on every half-mesh
     surface) after the boundary coordinates (``n_boundary`` of them), and the
     rows gain one self-consistency row per knot, scaled by
-    ``bootstrap_weight`` (large by default: the current is no interface
-    condition to trade against the others, so its block is solved far below
-    their floor; see :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
+    ``bootstrap_weight`` (see :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
     ``ns <= 97``, a prescribed-current deck).  The current then follows the
     equilibrium instead of being an input, and :meth:`bootstrap_residual`
     reports how far it is from Redl's.  ``fixed_boundary=True`` (with
@@ -334,24 +392,34 @@ class ThreeTermsFreeBoundaryModel:
     single stage's equilibrium, with the same Jacobians and pullbacks.
     """
 
-    def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
-                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
+    def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
                  fixed_boundary=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
-        from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
+        from .optimize import boundary_arrays_from_x, pack_boundary
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
+
+        # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
+        _, p_peak = _edge_pressure(fixed)
+        self.vacuum = (bootstrap is None and p_peak == 0.0 and int(fixed.ncurr) == 1 and float(fixed.curtor) == 0.0
+                       and (fixed.ac is None or not np.any(np.asarray(fixed.ac, dtype=float))))
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
-        self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
+        # At finite beta the boundary keeps fewer modes than the interior (the fixed-boundary convention, mpol - 2
+        # and ntor - 2): the interface conditions use the interior's field at the edge, least accurate in its top
+        # modes, and a boundary that uses them fits that error (LP QA beta 2.5 %: interior/boundary 12/12 B.n
+        # 4.1e-4, 16/12 1.6e-4) and gains a near-null direction there.  In vacuum the conditions need only the coils.
+        top = max(fixed.mpol - 1, fixed.ntor)
+        top = top if self.vacuum else max(top - _BOUNDARY_MODE_GAP, 1)
+        self.max_mode = int(top if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
         # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
         # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
@@ -369,10 +437,14 @@ class ThreeTermsFreeBoundaryModel:
             im._template_runtime(self.cfg_trial)
         self.params0 = im.params_from_input(fixed, device=device)
         im._template_runtime(cfg)
-        self.x0 = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
-        self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
+        # Boundary coordinates: the normal displacement h of the deck's surface (see _normal_displacement_map):
+        # one function for the one normal condition, no tangential (relabelling) directions among the unknowns.
+        x_ref = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         if self.fixed_boundary:
-            self.x0, self.x_scale = self.x0[:0], self.x_scale[:0]
+            self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
+        else:
+            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode)
+            self.x0 = np.zeros(normal_map.shape[1])
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
@@ -380,11 +452,13 @@ class ThreeTermsFreeBoundaryModel:
         self.chunk = int(chunk)
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
-        self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+        self._x_ref = jnp.asarray(x_ref)
+        self._normal_map = None if normal_map is None else jnp.asarray(normal_map)
 
         def with_boundary(params, x):
             if not self.fixed_boundary:
-                rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
+                rbc, zbs = boundary_arrays_from_x(fixed, self._x_ref + self._normal_map @ x[:nb], self.max_mode,
+                                                  vary_major_radius=True)
                 params = replace(params, rbc=rbc, zbs=zbs)
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
@@ -395,40 +469,82 @@ class ThreeTermsFreeBoundaryModel:
         state, mask = seed[:2]
         self.seed = (state, mask)
         if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
+            # The boundary moves along the deck equilibrium's radial coordinate lines dX/ds at the edge (VMEC's
+            # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
+            # convention of the deck is carried to the free boundary without sliding (known-target benchmark,
+            # deck 11 mm away: 8 x 8 field lines 1.23 -> 0.36 mm, K 1.9e-3 -> 3.8e-4).
+            sp = vc._state_field_spectra(fixed, state, im.runtime_from_params(self.params0, self.cfg))
+            xm, xn = np.asarray(sp["xm"]), np.asarray(sp["xn"])
+            ds = 1.0 / (int(sp["ns"]) - 1)
+            dr = (np.asarray(sp["rmnc"])[-1] - np.asarray(sp["rmnc"])[-2]) / ds
+            dz = (np.asarray(sp["zmns"])[-1] - np.asarray(sp["zmns"])[-2]) / ds
+
+            def radial(T, Zg):
+                a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
+                return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
+
+            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
+            self._normal_map = jnp.asarray(normal_map)
+        if not self.fixed_boundary:
+            self._interface_setup(state, nphi, ntheta, digits, quadrature)
         self._implicit_setup()
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight):
-        """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
+    def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
+        """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
+        nfp = int(fixed.nfp)
         runtime = im.runtime_from_params(self.params0, cfg)
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
         precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        gamma0 = jnp.asarray(surface.gamma)
-        wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
-        e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma0, axis=-1), axis=-1))
-        length = jnp.linalg.norm(e_theta, axis=0)
-        tangent = e_theta / (length * jnp.mean(length))[None]
-        scale = jnp.repeat(jnp.asarray(weights, dtype=float), jnp.asarray([1, 1, 3]))[:, None, None]
+        self.precision = precision
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
+        vacuum = self.vacuum
+        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
+        B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
+        self.B0 = B0
+        # Finite-beta moments on the boundary modes but (0, 0) (B.n is odd under stellarator symmetry: sine
+        # moments); surface data are (nphi, ntheta) over one field period.
+        phi, theta = np.meshgrid(np.linspace(0.0, 2.0 * np.pi / nfp, nphi, endpoint=False),
+                                 np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False), indexing="ij")
+        phases = [m * theta - n * nfp * phi for m, n in self.boundary_modes[:-1]]
+        sine = jnp.asarray(np.stack([2.0 * np.sin(a).ravel() for a in phases]))
+        if vacuum:
+            # The boundary arrays are linear in x: their derivatives along x, and the (m, n nfp) of their entries.
+            boundary = jax.jacfwd(lambda x: self.with_boundary(self.params0, x))(jnp.asarray(self.x0))
+            to_x = (boundary.rbc.reshape(-1, self.x0.size), boundary.zbs.reshape(-1, self.x0.size))
+            ntor_b, mpol_b = np.shape(self.params0.rbc)[0] // 2, np.shape(self.params0.rbc)[1]
+            modes = np.meshgrid(np.arange(-ntor_b, ntor_b + 1) * nfp, np.arange(mpol_b), indexing="ij")
+            xm, xn = jnp.asarray(modes[1].ravel(), dtype=float), jnp.asarray(modes[0].ravel(), dtype=float)
+            # R0 d/dh: B.grad = (B/R)(d_phi + iota d_theta), so R0 times the h-gradient of the mean square of
+            # B.n/B0 is a dimensionless moment of B.n/B0, of the size of the sine moments at finite beta.
+            length = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])
+            phi_grid = jnp.asarray(phi[:, 0])
 
-        def rows_at(state, runtime, field):
-            values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
-                                                   digits=digits, precision=precision, p_edge=0.0)
-            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
-            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
-            if not net_current_weight:
-                return interface
+        def interface_rows(state, params, field):
+            """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary)."""
+            runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
             G = jnp.abs(_vacuum_scalars(state, runtime)[1])
-            return jnp.concatenate([interface, (net_current_weight * (G - G_coil) / G_coil)[None]])
+            current = ((G - G_coil) / G_coil)[None]
+            if vacuum:  # no plasma current: the field outside is the coils' own, an explicit function of h
+                gradient = jax.grad(lambda r, z: _mean_square_normal_field(
+                    r.ravel(), z.ravel(), xm, xn, phi, theta, phi_grid, field), argnums=(0, 1))(params.rbc, params.zbs)
+                rows = to_x[0].T @ gradient[0].ravel() + to_x[1].T @ gradient[1].ravel()
+                return jnp.concatenate([length * rows[:-1] / (2.0 * B0**2), current])
+            data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+            area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+            weight = (area / jnp.sum(area)).ravel()
+            B_out = vc.PlasmaVacuumInterface.from_surface_data(
+                data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
+            Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
+            return jnp.concatenate([sine @ (weight * Bn), current])
 
-        self.rows_at = rows_at
+        self.interface_rows = interface_rows
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
@@ -438,10 +554,9 @@ class ThreeTermsFreeBoundaryModel:
         im, cfg = self._im, self.cfg
 
         def rows(state, params, field):
-            runtime = im.runtime_from_params(params, cfg)
-            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field)]
             if self.bootstrap is not None:
-                parts.append(self.bootstrap.rows(state, runtime, params))
+                parts.append(self.bootstrap.rows(state, im.runtime_from_params(params, cfg), params))
             return jnp.concatenate(parts)
 
         self.rows = rows
@@ -454,7 +569,7 @@ class ThreeTermsFreeBoundaryModel:
             return im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))[0]
+                certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
@@ -510,6 +625,47 @@ class ThreeTermsFreeBoundaryModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
+
+    def displacement_of(self, boundary, ntheta=96, nzeta=48):
+        """Coordinates ``x`` (normal displacement of the reference surface) closest to ``boundary``'s surface.
+
+        Each reference point is moved along its normal to the nearest point of the other surface (nearest-point
+        iteration on a dense sampling), and the displacements are fitted on the normal modes.
+        """
+        from .optimize import boundary_arrays_from_x
+
+        nfp = int(self.fixed.nfp)
+
+        def points(rbc, zbs, nt, nz, full=False):
+            rbc, zbs = np.asarray(rbc, dtype=float), np.asarray(zbs, dtype=float)
+            ntor = (rbc.shape[0] - 1) // 2
+            ms, ns = np.arange(rbc.shape[1]), np.arange(-ntor, ntor + 1)
+            th = np.linspace(0.0, 2.0 * np.pi, nt, endpoint=False)
+            ze = np.linspace(0.0, 2.0 * np.pi / (1 if full else nfp), nz, endpoint=False)
+            T, P = np.meshgrid(th, ze, indexing="ij")
+            ph = ms[None, :, None, None] * T[None, None] - ns[:, None, None, None] * nfp * P[None, None]
+            R = np.einsum("nm,nmij->ij", rbc, np.cos(ph)); Z = np.einsum("nm,nmij->ij", zbs, np.sin(ph))
+            Rt = np.einsum("nm,nmij->ij", -rbc * ms, np.sin(ph)); Zt = np.einsum("nm,nmij->ij", zbs * ms, np.cos(ph))
+            Rp = np.einsum("nm,nmij->ij", rbc * ns[:, None] * nfp, np.sin(ph))
+            Zp = np.einsum("nm,nmij->ij", -zbs * ns[:, None] * nfp, np.cos(ph))
+            X = np.stack([R * np.cos(P), R * np.sin(P), Z], -1)
+            et = np.stack([Rt * np.cos(P), Rt * np.sin(P), Zt], -1)
+            ep = np.stack([Rp * np.cos(P) - R * np.sin(P), Rp * np.sin(P) + R * np.cos(P), Zp], -1)
+            N = np.cross(et, ep)
+            return T, P, X, N / np.linalg.norm(N, axis=-1, keepdims=True)
+
+        from scipy.spatial import cKDTree
+        r0, z0 = boundary_arrays_from_x(self.fixed, self._x_ref, self.max_mode, vary_major_radius=True)
+        T, P, X, n = points(r0, z0, ntheta, nzeta)
+        _, _, Y, _ = points(boundary.rbc, boundary.zbs, 4 * ntheta, 4 * nzeta * nfp, full=True)
+        tree = cKDTree(Y.reshape(-1, 3))
+        t = np.zeros(T.shape)
+        for _ in range(4):  # the point of the other surface on the normal line, by nearest-point iteration
+            _, k = tree.query((X + t[..., None] * n).reshape(-1, 3))
+            t = np.sum((Y.reshape(-1, 3)[k].reshape(X.shape) - X) * n, axis=-1)
+        basis = np.stack([np.cos(m * T - k * nfp * P).ravel() for m, k in self.boundary_modes], axis=1)
+        h = np.linalg.lstsq(basis, t.ravel(), rcond=None)[0]
+        return np.r_[h, np.zeros(self.n_boundary - h.size), self.x0[self.n_boundary:]]
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -622,67 +778,104 @@ class ThreeTermsFreeBoundaryModel:
         self._last_linearize = (key, extra_key, (columns, dz, batch, aux), self._linearization)
         return columns, dz, batch, aux
 
-    def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0):
-        """K = 0 boundary for ``params`` and ``field``.
+    #: Newton stops on the square system at this cost (0.5 |rows|^2; rows are B.n moments relative to B0):
+    #: rows of ~1e-12, the round-off of the vacuum rows
+    _NEWTON_COST = 1e-24
+    #: Below this cost (rows ~1e-9, four orders below the smallest interface residual of any case, ~1e-5) the
+    #: boundary is converged in every reported digit; there a fresh-Jacobian step that no longer converges fast
+    #: (a chord method's 10x) meets the rows' own evaluation noise (virtual-casing quadrature, force tolerance)
+    #: and further steps only spend Jacobians.
+    _NEWTON_FLOOR = 1e-18
 
-        With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
-        step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`).
-        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
-        ``njev``, ``accepted`` and ``converged``.
+    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+        """The boundary where the square rows vanish: Newton steps with backtracking.
+
+        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
+        otherwise, and whenever a step fails, the Jacobian is refreshed at the current point.  Stops at
+        ``_NEWTON_COST``, where a fresh-Jacobian step no longer lowers the cost (round-off), or below
+        ``_NEWTON_FLOOR`` where a step no longer converges fast (the rows' noise: no Jacobian is spent on it).
         """
-        import scipy.optimize
-
+        D = np.asarray(self.x_scale, dtype=float)
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
-        nfev = njev = 0
-        if jacobian is not None:
-            first = self.evaluate(x, params, field)
-            if first is None:
-                raise RuntimeError("the warm-start boundary has no certified equilibrium")
-            out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
-            self._radius = out["radius"]
-            close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
-            if (out["accepted"] or out["converged"]) and close:
-                return dict(out, jacobian=jacobian, njev=0)
-            # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
-            J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
-            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
-            self._radius = again["radius"]
-            again["nfev"] += out["nfev"]
-            if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
-                return dict(again, jacobian=J1, njev=1)
-            x, nfev = again["x"], again["nfev"]
-        memo = {}
+        got = self.evaluate(x, params, field)
+        for fraction in (0.75, 0.5, 0.25, 0.0):  # a far start may have no equilibrium: back off toward the deck
+            if got is not None or not np.any(x):
+                break
+            x = fraction * x
+            got = self.evaluate(x, params, field)
+        if got is None:
+            raise RuntimeError("the starting boundary has no certified equilibrium")
+        r, aux = got
+        J, fresh, nfev, njev, steps, started = jacobian, False, 1, 0, 0, time.perf_counter()
+        converged, tight = False, self.cfg_trial is self.cfg
+        while nfev < max_nfev:
+            cost = 0.5 * float(r @ r)
+            if cost <= self._NEWTON_COST:
+                converged = True
+                break
+            if J is None:
+                J, _, _, aux = self.linearize(x, aux, field)
+                J, fresh, njev = np.asarray(J), True, njev + 1
+            p = D * np.linalg.lstsq(J * D[None, :], -r, rcond=1e-15)[0]
+            t, accepted = 1.0, None
+            while t >= (1.0 / 64 if fresh else 1.0) and nfev < max_nfev:  # a reused J: its full step, or refresh
+                trial = self.evaluate(x + t * p, params, field, tight=tight)
+                nfev += 1
+                if trial is not None and 0.5 * float(trial[0] @ trial[0]) < (1.0 - 1e-4 * t) * cost:
+                    accepted = trial
+                    break
+                t *= 0.25
+            if verbose:
+                new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
+                print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
+                      f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
+            if accepted is None:
+                if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
+                    tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
+                    nfev += 1
+                    if got is None:  # no certified equilibrium at the deck's tolerance
+                        break
+                    r, aux = got
+                    continue
+                if fresh:  # no descent along a fresh Newton step: converged only at a stationary point
+                    # (round-off root, or the floor of an over-determined system: the step predicts no reduction)
+                    predicted = cost - 0.5 * float(np.sum((r + J @ p) ** 2))
+                    converged = cost <= self._NEWTON_FLOOR or predicted <= 1e-8 * cost
+                    if not converged and verbose:
+                        print(f"Newton stalled: cost {cost:.6e}, predicted reduction {predicted:.3e}", flush=True)
+                    break
+                if cost <= self._NEWTON_FLOOR:  # converged in every reported digit: no Jacobian for the noise
+                    converged = True
+                    break
+                J = None
+                continue
+            new_cost = 0.5 * float(accepted[0] @ accepted[0])
+            x, (r, aux), steps = x + t * p, accepted, steps + 1
+            if new_cost > 1e-2 * cost:  # slower than a 10x residual reduction a step (a chord method)
+                if fresh and cost <= self._NEWTON_FLOOR:  # ... with a fresh Jacobian: the rows' noise floor
+                    converged = True
+                    break
+                J = None  # refresh the Jacobian
+            fresh = False  # the Jacobian (if kept) is now of the previous point
+        return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
+                    converged=converged)
 
-        def fun(z):
-            got = self.evaluate(z, params, field)
-            if got is None:
-                return np.full(memo.get("size", 1), 1e6)
-            memo.update(key=z.tobytes(), size=got[0].size, rows=got[0], aux=got[1])
-            return got[0]
+    def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+        """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
 
-        def jac(z):
-            nonlocal njev
-            if memo.get("key") != z.tobytes():
-                fun(z)
-            njev += 1
-            J, _, _, memo["aux"] = self.linearize(z, memo["aux"], field)
-            memo.update(jacobian=J, jkey=z.tobytes())
-            return J
+        See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
+        params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
+        """
+        return self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
 
-        fit = scipy.optimize.least_squares(fun, x, jac=jac, x_scale=self.x_scale, ftol=max(ftol, jacobian_ftol),
-                                           xtol=1e-5, gtol=1e-10, max_nfev=max_nfev, verbose=verbose)
-        nfev += int(fit.nfev)
-        if memo.get("key") != fit.x.tobytes():
-            fun(fit.x)
-        J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
-        out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
-        self._radius = out["radius"]
-        return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
+
+#: Boundary modes fewer than the interior's at finite beta (see ThreeTermsFreeBoundaryModel).
+_BOUNDARY_MODE_GAP = 2
+
+#: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves ~1 % in
+#: QS ~ 1e-6 (the boundary solve's own states are Newton-refined and need no such tolerance).
+_REPORT_FTOL = 1e-17
+
 
 
 @dataclass(frozen=True)
@@ -702,9 +895,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsFreeBoundaryModel`), warm-started from the
     first-order prediction of the latest linearized solution; a trial without a certified solution raises
     :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
-    implicit function theorem of the boundary least squares,
+    implicit function theorem of the (square) boundary equations,
 
-        dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db,
+        dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b^-T dh/db,
 
     with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
     bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
@@ -715,16 +908,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100,
                   boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermsFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
-        ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
-        relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
-        first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
-        any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.
+        ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary is Newton-solved from
+        the accepted point's first-order prediction with its Jacobian (refreshed when it no longer converges
+        fast), to at most ``boundary_max_nfev`` evaluations.  With ``boundary_max_residual`` a solution with any
+        :class:`BoundaryResidual` term above it is rejected: the trial tries its next start, or fails.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -737,15 +929,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
+                   boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
+                 parameter_quantities, boundary_max_nfev, boundary_max_residual=None):
         from .implicit import runtime_from_params
 
         self.model, self.field = model, field_from_parameters
-        self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
+        self.boundary_max_nfev = int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
@@ -821,9 +1013,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         fit = None
         for start in starts:
             try:
-                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev,
-                                                target_cost=4 * anchor["cost"] if anchor else None)
+                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, max_nfev=self.boundary_max_nfev)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
             if self.boundary_max_residual is not None:
@@ -872,12 +1062,22 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return J
 
         J = relinearize()
-        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                        max_nfev=20)
+        # to this Jacobian's fixed point, solved tight; J stays the anchor of the next trials
+        params_x = self._params_at(xj)
+        polished = model.solve_boundary(params_x, field, x0=sol["x"], jacobian=J[:, :nb],
+                                        max_nfev=self.boundary_max_nfev)
         self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
+        if polished["njev"]:  # J's own steps stalled and fresh ones finished: the anchor is relinearized there
             sol.update(x=polished["x"], aux=polished["aux"])
             J = relinearize()
+        else:
+            tight = model.evaluate(polished["x"], params_x, field, tight=True)
+            if tight is None:
+                raise TrialRejected("the polished boundary has no certified equilibrium")
+            rows, aux = tight
+            state, mask, params, _ = aux
+            sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
+                       values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -946,70 +1146,3 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         """Drop every cached trial except the accepted one."""
         key = self.accepted.parameters.tobytes()
         self._cache = {k: v for k, v in self._cache.items() if k == key}
-
-
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
-    """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
-
-    Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
-    whose length is the trust radius (the Gauss-Newton step if shorter), from one SVD of ``J``.  The radius
-    shrinks to a quarter of a step that gained less than a quarter of its predicted reduction, or that failed
-    to solve, and doubles after a step at the radius that gained three quarters of it.  ``radius`` carries the
-    last solve's radius over (at least 1/20 of the first Gauss-Newton step; default: that step's length).
-    Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
-    that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
-    Gauss-Newton step.
-    """
-    J = np.asarray(J)
-    norms = np.linalg.norm(J, axis=0)
-    norms[norms == 0.0] = 1.0
-    U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-    nfev, accepted, converged, slow = 1, 0, False, 0  # nfev counts the caller's evaluation at x
-    started = time.perf_counter()
-
-    def step(g, lam):
-        return -(sv / (sv**2 + lam)) * g  # in the singular basis of the scaled Jacobian
-
-    while nfev < max_nfev:
-        g = U.T @ r
-        cost = 0.5 * r @ r
-        if 0.5 * g @ g <= ftol * cost:  # the Gauss-Newton step's predicted gain
-            converged = True
-            break
-        full = np.linalg.norm(step(g, 0.0))
-        if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
-            radius = full if radius is None else max(radius, 0.05 * full)
-        if radius < 1e-4 * full:
-            break
-        lam = 0.0
-        if full > radius:  # the damping whose step has the radius' length (bisection in log lam)
-            lo, hi = np.log(sv[-1] ** 2 * 1e-12 + 1e-300), np.log(sv[0] ** 2 * (full / radius) + 1e-300)
-            for _ in range(60):
-                mid = 0.5 * (lo + hi)
-                lo, hi = (mid, hi) if np.linalg.norm(step(g, np.exp(mid))) > radius else (lo, mid)
-            lam = np.exp(hi)
-        z = step(g, lam)
-        length = np.linalg.norm(z)
-        predicted = cost - 0.5 * (r @ r - g @ g + np.sum((g + sv * z) ** 2))
-        x_new = x + (Vt.T @ z) / norms
-        got = evaluate(x_new)
-        nfev += 1
-        cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
-        rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
-        if verbose:
-            print(f"Levenberg-Marquardt step {nfev - 1}: |step| {length:.2e} (radius {radius:.2e}), cost "
-                  f"{cost:.6e} -> {cost_new:.6e}, gain ratio {rho:.2f} ({time.perf_counter() - started:.1f} s)",
-                  flush=True)
-        if rho < 0.25:
-            radius = 0.25 * length
-        elif rho > 0.75 and length > 0.99 * radius:
-            radius = 2.0 * radius
-        slow = slow + 1 if cost_new > 0.95 * cost else 0
-        if cost_new < cost:
-            x, (r, aux), accepted = x_new, got, accepted + 1
-            if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
-                converged = True
-                break
-        if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
-            break
-    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius)

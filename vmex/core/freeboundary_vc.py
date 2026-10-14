@@ -100,8 +100,21 @@ def _fingerprint(*trees) -> str:
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):
-    """Rows and weights of :func:`boundary_residual`, plus the boundary points ``(3, nphi, ntheta)``."""
+    """Rows and weights of :func:`boundary_residual`, plus the boundary points ``(3, nphi, ntheta)``.
+
+    ``precision=None`` with ``digits=None`` is the vacuum: no plasma current, so ``B_out`` is the external field
+    alone (no virtual casing, whose quadrature would only add its error).
+    """
     data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+    if digits is None:
+        B_in, normal = jnp.asarray(data.B_total), jnp.asarray(data.normal)
+        B_out = vc.external_B_cartesian(external_field, jnp.asarray(data.gamma), jnp.asarray(data.phi))
+        area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+        B2 = jnp.sum(B_in**2, axis=0)
+        scale = jnp.sqrt(B2)
+        rows = [jnp.sum(B_out * normal, axis=0) / scale, (jnp.sum(B_out**2, axis=0) - B2) / (2.0 * B2),
+                jnp.cross(normal, B_out - B_in, axis=0) / scale]
+        return jnp.concatenate([rows[0][None], rows[1][None], rows[2]]), area / jnp.sum(area), data.gamma
     interface = vc.PlasmaVacuumInterface.from_surface_data(
         data, p_edge=p_edge, digits=digits, precision=precision)
     B_in = jnp.asarray(data.B_total)
@@ -499,7 +512,10 @@ class ThreeTermsFreeBoundaryModel:
         runtime = im.runtime_from_params(self.params0, cfg)
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
-        precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
+        if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
+            precision, digits = None, None
+        else:
+            precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
         self.precision = precision
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)

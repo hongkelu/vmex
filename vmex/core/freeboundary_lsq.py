@@ -640,9 +640,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         the Lagrangian Hessian ``H + sum nu_k grad^2 c_k`` in the null space of ``grad c`` (``nu`` the
         least-squares multipliers), exactly, in the eigenbasis of the ESS-scaled reduced model (indefinite ones
         included).  Models, cheapest first: Gauss-Newton ``J^T J`` from one Jacobian, then BFGS updates with
-        the exact adjoint gradient (one block factorization a step); the exact Hessian (second-order adjoint,
-        :meth:`second_order`) only where a cheaper model fails (a step gaining under a quarter of its
-        prediction, or none) and to certify convergence.  A step that is not very successful is followed by a
+        the exact adjoint gradient (one block factorization a step); where a quasi-Newton model fails (a step
+        gaining under a quarter of its prediction, or none) a fresh Gauss-Newton model, and only where that
+        fails too the exact Hessian (second-order adjoint, :meth:`second_order`), which also certifies
+        convergence.  A step that is not very successful is followed by a
         second-order correction ``-(J N)^+ r(x_trial)``; a very successful step at the radius is extended
         along the same model while it gains.
 
@@ -841,11 +842,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
                         callback(np.asarray(x).copy())
-                    if rho < 0.25 and not tiny:
-                        need = "exact"  # the model was poor: the exact Hessian at the new point
+                    if rho < 0.25 and not tiny:  # a poor model: the next better one at the new point
+                        need = "exact" if model == "gauss_newton" else "gauss_newton"
                     break
-                if not fresh:  # a Gauss-Newton or quasi-Newton model that fails: the exact Hessian
-                    need = "exact"
+                if not fresh:  # a model that fails: a fresh Jacobian (quasi-Newton), else the exact Hessian
+                    need = "exact" if model == "gauss_newton" else "gauss_newton"
                     break
                 if tiny:  # the exact model's gain is below the cost's repeatability: nothing left to resolve
                     break

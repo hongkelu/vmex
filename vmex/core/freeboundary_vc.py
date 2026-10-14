@@ -621,9 +621,8 @@ class ThreeTermsFreeBoundaryModel:
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    knot values (three inside the first surface, then one on every half-mesh
-    surface) after the boundary coordinates (``n_boundary`` of them), and the
-    rows gain one self-consistency row per knot, in the interface rows' units
+    knot values (one on the axis, then one on every half-mesh surface) after
+    the boundary coordinates (``n_boundary`` of them), and the rows gain one self-consistency row per knot, in the interface rows' units
     (the poloidal field of the current error over ``B0``; see
     :class:`~vmex.core.bootstrap.HalfMeshCurrent`; a prescribed-current deck).
     The current then follows the equilibrium instead of being an input, and

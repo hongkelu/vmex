@@ -697,3 +697,85 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
+
+
+class _Program:
+    """Stand-in jitted program: records its AOT lowering, or fails it."""
+
+    def __init__(self, fail=False):
+        self.fail, self.lowered = fail, []
+
+    def lower(self, *args):
+        if self.fail:
+            raise RuntimeError("no program")
+        self.lowered.append(args)
+        return self
+
+    def compile(self):
+        return self
+
+
+class _Implicit:
+    """Stand-in for :mod:`vmex.core.implicit` as the warm-up threads use it."""
+
+    def __init__(self, fail=False):
+        self.fail, self.calls = fail, []
+
+    def _canonical_arrays(self, cfg, tree):
+        return tree
+
+    def block_factors_at(self, cfg, params, state, mask):
+        self.calls.append("factors")
+        return "factors"
+
+    def warm_refinement(self, cfg, params):
+        if self.fail:
+            raise RuntimeError("no refinement")
+        self.calls.append("refinement")
+
+    def warm_staged_tangent(self, params, cfg, state, mask, batch, *, chunk, certify_rtol):
+        if self.fail:
+            raise RuntimeError("no tangent")
+        self.calls.append(("tangent", chunk))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_gradient_programs_compile_once_on_a_background_thread(fail):
+    """The first gradient starts one warm-up thread (a failure in it is swallowed); later ones start none."""
+    model = type("Model", (), {"_im": _Implicit(), "cfg": "cfg"})()
+    problem = type("Problem", (), {"model": model, "_gradient_programs_warmed": False,
+                                   "_pullback": _Program(fail), "_direct": _Program(fail)})()
+    sol = dict(state="state", mask="mask", params="params")
+    thread = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, sol, "x")
+    thread.join()
+    assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, sol, "x") is None
+    assert model._im.calls == ["factors"]
+    if not fail:
+        assert problem._pullback.lowered == [("state", "mask", "params", "x", "factors")]
+        assert problem._direct.lowered == [("state", "params", "x")]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_model_warm_up_threads_swallow_their_failures(fail):
+    """The refinement and tangent warm-ups run on daemon threads; a failing one leaves nothing behind."""
+    import threading
+
+    implicit = _Implicit(fail)
+    model = type("Model", (), {"_im": implicit, "cfg": "cfg", "params0": "p0", "x0": np.zeros(3), "chunk": 2,
+                               "n_boundary": 3, "with_boundary": lambda self, params, x: params,
+                               "boundary_directions": lambda self, params, x: jnp.eye(3)})()
+    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_refinement(model)
+    fvc.ThreeTermsFreeBoundaryModel._start_warm(model, "state", "mask")
+    model._warm.join()
+    for thread in threading.enumerate():
+        if thread.name in ("vmex-refine-warm", "vmex-tangent-warm"):
+            thread.join()
+    if not fail:
+        assert "refinement" in implicit.calls and ("tangent", 2) in implicit.calls
+
+
+def test_try_hands_back_the_exception():
+    assert fvc._try(lambda a: a + 1, 1) == 2
+    error = fvc._try(lambda: 1 / 0)
+    assert isinstance(error, ZeroDivisionError)

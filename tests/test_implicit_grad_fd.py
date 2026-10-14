@@ -324,3 +324,16 @@ def test_li383_fixed_m1_gauge_makes_resolve_fd_exact():
     for field in ("R_cos", "Z_sin", "L_sin"):
         a, b = np.asarray(getattr(x0, field)), np.asarray(getattr(x1, field))
         assert np.linalg.norm(a - b) <= 1e-9 * np.linalg.norm(a), field
+
+
+def test_fixed_m1_gauge_is_for_stellarator_symmetric_runs():
+    """The fixed gauge is verified as a relabelling for ``lasym = False`` only
+    (docs/explanation/validation.md): ``lasym`` keeps VMEC2000's rule by
+    default, and asking for the fixed gauge there is refused."""
+    from vmex.core import solver
+
+    sym = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
+    asym = VmecInput.from_file(str(DATA_DIR / "input.up_down_asymmetric_tokamak"))
+    assert im.make_config(sym).freeze_m1 and not im.make_config(asym).freeze_m1
+    with pytest.raises(ValueError, match="stellarator-symmetric"):
+        solver.solve(asym, freeze_m1=True, max_iterations=1)

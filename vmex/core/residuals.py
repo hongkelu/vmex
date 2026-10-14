@@ -633,45 +633,35 @@ def preconditioned_residuals(
     )
 
 
-def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable,
-                 Z_cos: Array | None = None, edge_Z_cos: Array | None = None):
-    """Put the constrained m=1 combinations on their initial-guess profile.
+def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable) -> Array:
+    """Put the constrained m=1 combination on its initial-guess profile.
 
-    With ``lconm1`` the evolved m=1 pairs ``zcs_int = (rss - zcs)/2`` (3-D:
-    the antisymmetric ``Z_sin(m=1, +/-n)`` columns of the signed packing) and,
-    for ``lasym``, ``zcc_int = (rsc - zcc)/2`` (the symmetric ``Z_cos(m=1,
-    +/-n)`` columns and ``Z_cos(m=1, n=0)``) are angle gauges: VMEC2000 zeroes
-    their force once ``fsqz < 1e-6`` (``residue.f90``), so a converged state
-    keeps whatever values the solver's path left there, and two solves of one
-    boundary from different starts converge (fsq 1e-17) to states up to 1e-3
-    (vacuum) or 1e-1 (finite beta, in lambda) apart.  VMEX fixes the gauge
-    instead (``RunSetup.freeze_m1``, the default for fixed-boundary solves):
-    the force stays zeroed from the first iteration and the combinations are
-    held at ``sqrt(s) * edge`` -- the ``profil3d.f`` interior guess -- so every
-    solve of one boundary lands on one state.  Returns ``Z_sin`` (and
-    ``(Z_sin, Z_cos)`` when ``Z_cos`` is given) with those profiles; every
-    other column is untouched.
+    With ``lconm1`` the evolved 3-D m=1 pairs ``zcs_int = (rss - zcs)/2`` (the
+    antisymmetric ``Z_sin(m=1, +/-n)`` columns of the signed packing) are angle
+    gauges: VMEC2000 zeroes their force once ``fsqz < 1e-6`` (``residue.f90``),
+    so a converged state keeps whatever values the solver's path left there, and
+    two solves of one boundary from different starts converge (fsq 1e-17) to
+    states up to 1e-3 (vacuum) or 1e-1 (finite beta, in lambda) apart.  VMEX
+    fixes the gauge instead (``RunSetup.freeze_m1``, the default for
+    stellarator-symmetric fixed-boundary solves): the force stays zeroed from the
+    first iteration and the combinations are held at ``sqrt(s) * edge`` -- the
+    ``profil3d.f`` interior guess -- so every solve of one boundary lands on one
+    state.  Verified as a relabelling (gauges' surfaces, iota and Mercier terms
+    converge together under refinement) for ``lasym = False``; ``lasym`` runs keep
+    VMEC2000's rule.  Returns ``Z_sin`` with those profiles; every other column is
+    untouched.
     """
     m = np.asarray(modes.m, dtype=int)
     n = np.asarray(modes.n, dtype=int)
     index = {(int(mm), int(nn)): k for k, (mm, nn) in enumerate(zip(m, n))}
     ntor = int(np.max(np.abs(n))) if n.size else 0
+    Z_sin = jnp.asarray(Z_sin)
+    if ntor == 0:
+        return Z_sin
     pos = np.asarray([index[(1, j)] for j in range(1, ntor + 1)], dtype=int)
     neg = np.asarray([index[(1, -j)] for j in range(1, ntor + 1)], dtype=int)
-    Z_sin = jnp.asarray(Z_sin)
     ns = int(Z_sin.shape[0])
     profile = jnp.sqrt(jnp.linspace(0.0, 1.0, ns, dtype=Z_sin.dtype))[:, None]
-    if ntor > 0:
-        edge = jnp.asarray(edge_Z_sin)
-        shift = profile * (0.5 * (edge[pos] - edge[neg]))[None, :] - 0.5 * (Z_sin[:, pos] - Z_sin[:, neg])
-        Z_sin = Z_sin.at[:, pos].add(shift).at[:, neg].add(-shift)
-    if Z_cos is None:
-        return Z_sin
-    Z_cos = jnp.asarray(Z_cos)
-    edge = jnp.asarray(edge_Z_cos)
-    k10 = index[(1, 0)]
-    Z_cos = Z_cos.at[:, k10].set(profile[:, 0] * edge[k10])
-    if ntor > 0:
-        shift = profile * (0.5 * (edge[pos] + edge[neg]))[None, :] - 0.5 * (Z_cos[:, pos] + Z_cos[:, neg])
-        Z_cos = Z_cos.at[:, pos].add(shift).at[:, neg].add(shift)
-    return Z_sin, Z_cos
+    edge = jnp.asarray(edge_Z_sin)
+    shift = profile * (0.5 * (edge[pos] - edge[neg]))[None, :] - 0.5 * (Z_sin[:, pos] - Z_sin[:, neg])
+    return Z_sin.at[:, pos].add(shift).at[:, neg].add(-shift)

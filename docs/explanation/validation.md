@@ -238,8 +238,7 @@ convergence: on this deck VMEX iota at ρ = 0.1 is 0.188, 0.176 and 0.166 for ns
 ## The m=1 angle gauge: one equilibrium per boundary
 
 With `lconm1`, VMEC2000 evolves the m=1 pair `zcs_int = (rss - zcs)/2` (the
-antisymmetric `Z_sin(m=1, ±n)` columns; for `lasym` also `zcc_int` and
-`Z_cos(m=1, n=0)`). This combination is an angle gauge. `residue.f90` releases
+antisymmetric `Z_sin(m=1, ±n)` columns). This combination is an angle gauge. `residue.f90` releases
 its force until `fsqz < 1e-6` and zeroes it afterwards, so the converged state
 keeps whatever value the solver's path left there.
 
@@ -250,13 +249,14 @@ different starts converge (fsq ~1e-17) to different states.
 - The implicit linearization holds the combination fixed, so it is not the
   derivative of the map a re-solve follows.
 
-**What VMEX does instead.** Fixed-boundary solves fix the gauge (`freeze_m1`,
-the default). The force stays zeroed from the first iteration. At every stage
+**What VMEX does instead.** Stellarator-symmetric fixed-boundary solves fix the
+gauge (`freeze_m1`, the default). The force stays zeroed from the first iteration. At every stage
 start (cold start, seed, hot restart, multigrid interpolation) the combination
 is put on `sqrt(s) * edge`, the `profil3d.f` interior guess
 (`residuals.pin_m1_gauge`). `implicit._assemble` carries that profile's
 boundary dependence. `freeze_m1=False` reproduces VMEC2000 bit for bit.
-VMEX + NESTOR free boundary keeps VMEC2000's rule (see below).
+VMEX + NESTOR free boundary keeps VMEC2000's rule (see below), and so do `lasym`
+runs (see "Relabelling, not new physics" below).
 
 **The test.** Each deck below is solved at 6 modes with its own multigrid
 ladder. One solve starts cold. The other starts from a seed perturbed along
@@ -281,8 +281,42 @@ boundary directions.
 | Nuhrenberg-Zille QHS | fixed | 3.9e-12 | 1.0e-8 | 5813 / 5812 |
 | CTH-like | fixed | 4.6e-14 | 1.4e-8 | 475 / 392 |
 | DSHAPE | fixed | 3.0e-14 | 1.4e-10 | 1328 / 1328 |
-| up-down asymmetric tokamak (lasym) | fixed | 1.2e-12 | 1.9e-9 | 2956 / 1685 |
-| non-stellarator-symmetric 3-D (lasym) | fixed | 2.5e-12 | 3.0e-8 | 1774 / 1659 |
+
+**Relabelling, not new physics.** The fixed gauge must give VMEC2000's
+equilibrium in another poloidal labelling, so the two rules' answers must
+converge together under refinement. Fixed-boundary solves (ftol 1e-14) under both
+rules, compared at s = 1/4, 1/2, 3/4: the gauge gap against the
+discretization error (VMEC2000's rule at that resolution against its finest),
+both relative. "Surfaces" is the distance between the flux-surface curves as
+point sets, in minor radii; iota is absolute.
+
+| Deck | (ns, mpol) | Surfaces gap / disc. | iota gap / disc. | DMerc gap / disc. |
+| --- | --- | --- | --- | --- |
+| LP QA beta 2.5 % | (13, 5) | 1.3e-3 / 1.9e-2 | 8.2e-5 / 3.8e-3 | 1.3e-2 / 4.9e-1 |
+| | (25, 8) | 1.3e-4 / 1.3e-2 | 2.1e-6 / 1.1e-3 | 2.4e-4 / 1.1e-1 |
+| | (49, 12) | 5.7e-5 / finest | 1.6e-6 / finest | 8.2e-4 / finest |
+| LP QH reactor scale, vacuum | (13, 5) | 2.8e-3 / 5.5e-3 | 6.7e-4 / 2.2e-3 | vacuum |
+| | (25, 8) | 1.3e-3 / 2.7e-3 | 1.1e-4 / 6.8e-4 | |
+| | (49, 12) | 4.7e-4 / finest | 7.6e-5 / finest | |
+| P30A QA, vacuum | (25, 8) | 8.6e-5 / 2.0e-3 | 5.0e-6 / 6.1e-5 | vacuum |
+| | (49, 12) | 2.5e-5 / 6.3e-4 | 5.1e-7 / 2.9e-5 | |
+| | (97, 16) | 2.7e-5 / finest | 6.2e-7 / finest | |
+| shaped up-down-symmetric tokamak | all | 0 | 0 | 0 |
+| up-down asymmetric tokamak (lasym) | (13, 5) | 8.9e-4 / 2.7e-2 | prescribed | 9.8e-3 / 6.4e-1 |
+| | (25, 8) | 2.3e-4 / 8.1e-3 | | 4.1e-3 / 1.9e-1 |
+| | (49, 12) | 8.5e-5 / 2.2e-3 | | 7.2e-4 / 3.4e-2 |
+| | (97, 12) | 3.0e-5 / finest | | 1.4e-4 / finest |
+
+In the symmetric cases the gap shrinks with resolution and stays 2-200x below
+the discretization error; on P30A it levels off at 3e-5 minor radii from
+(49, 12), still 20x below that level's error. The axisymmetric tokamak has no
+m=1 gauge column. The asymmetric tokamak passes the same test, but on a 3-D
+non-stellarator-symmetric deck (`input.basic_non_stellsym_pressure`) the
+fixed-gauge solve did not converge at (25, 8) and (49, 12) where VMEC2000's
+rule did (at (25, 8)), so `lasym` runs keep VMEC2000's rule; `freeze_m1=True`
+with `lasym` is an error. Vacuum Mercier terms and the QS ratio of these
+near-symmetric decks are round-off level, so their relative gaps carry no
+information.
 
 On a 12 x 12, ns 51 vacuum single-stage case, the three-terms rows at one
 boundary from a seeded and a cold solve agree:

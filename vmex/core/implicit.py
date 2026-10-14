@@ -446,8 +446,9 @@ def make_config(
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
         hot_restart=bool(hot_restart), device=device,
-        # fixed boundary (incl. the three-terms interior): fixed gauge; VMEC + NESTOR free boundary: VMEC2000's rule
-        freeze_m1=(not bool(inp.lfreeb)) if freeze_m1 is None else bool(freeze_m1),
+        # fixed boundary (incl. the three-terms interior): fixed gauge; VMEC + NESTOR free boundary and lasym:
+        # VMEC2000's rule
+        freeze_m1=(not (bool(inp.lfreeb) or bool(inp.lasym))) if freeze_m1 is None else bool(freeze_m1),
     ))
 
 
@@ -1013,14 +1014,9 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
-    if setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym):
+    if setup.freeze_m1 and setup.lconm1 and setup.lthreed:
         # the fixed gauge follows the boundary (it equals ``frozen`` at the solved parameters)
-        if setup.lasym:
-            out["Z_sin"], out["Z_cos"] = pin_m1_gauge(
-                out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes,
-                Z_cos=out["Z_cos"], edge_Z_cos=boundary["Z_cos"])
-        else:
-            out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
+        out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
     return SpectralState(**out)
 
 

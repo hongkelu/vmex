@@ -707,8 +707,9 @@ def prepare_runtime(
     spectral row never evolves in fixed-boundary mode, so they are constants
     of the run.
 
-    ``freeze_m1`` (default for fixed-boundary inputs; ``None`` picks
-    ``not inp.lfreeb``, so VMEC + NESTOR free boundary keeps VMEC2000's rule)
+    ``freeze_m1`` (default for stellarator-symmetric fixed-boundary inputs;
+    ``None`` picks ``not (inp.lfreeb or lasym)``, so VMEC + NESTOR free boundary
+    and ``lasym`` keep VMEC2000's rule; ``True`` with ``lasym`` is an error)
     fixes the angle gauge of the constrained m=1 combination: its force stays zeroed from the first iteration and every
     stage starts with it on the ``profil3d.f`` profile
     (:func:`~vmex.core.residuals.pin_m1_gauge`), so the converged state is a
@@ -757,8 +758,11 @@ def prepare_runtime(
     # still performs its first evolve/funct3d pass before ``iter2 >= niter``
     # terminates the stage, so the effective trajectory capacity is one.
     effective_iterations = max(1, requested_iterations)
-    if freeze_m1 is None:  # fixed boundary: fixed gauge; VMEC + NESTOR free boundary: VMEC2000's rule
-        freeze_m1 = not (isinstance(source, VmecInput) and bool(source.lfreeb))
+    if freeze_m1 is None:  # fixed boundary: fixed gauge; VMEC + NESTOR free boundary and lasym: VMEC2000's rule
+        freeze_m1 = not (isinstance(source, VmecInput) and bool(source.lfreeb)) and not bool(setup.lasym)
+    if freeze_m1 and bool(setup.lasym):
+        raise ValueError("the fixed m=1 gauge (freeze_m1) is verified for stellarator-symmetric runs only; "
+                         "lasym runs keep VMEC2000's m=1 rule")
     if bool(setup.freeze_m1) != bool(freeze_m1):
         setup = replace(setup, freeze_m1=bool(freeze_m1))
     rt = SolverRuntime(
@@ -2492,15 +2496,11 @@ def _gauge_fixed(rt: SolverRuntime, state: SpectralState | None) -> SpectralStat
     """``state`` with the constrained m=1 combination on its fixed-gauge profile
     (``RunSetup.freeze_m1``; a cold start is already on it)."""
     setup = rt.setup
-    if state is None or not (setup.freeze_m1 and setup.lconm1 and (setup.lthreed or setup.lasym)):
+    if state is None or not (setup.freeze_m1 and setup.lconm1 and setup.lthreed):
         return state
     # the state's own edge row: the boundary's labelling sets the profile
     z_sin = jnp.asarray(state.Z_sin)
-    if not setup.lasym:
-        return replace(state, Z_sin=pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes))
-    z_cos = jnp.asarray(state.Z_cos)
-    z_sin, z_cos = pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes, Z_cos=z_cos, edge_Z_cos=z_cos[-1])
-    return replace(state, Z_sin=z_sin, Z_cos=z_cos)
+    return replace(state, Z_sin=pin_m1_gauge(z_sin, z_sin[-1], modes=rt.modes))
 
 
 def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,

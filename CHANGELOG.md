@@ -7,6 +7,8 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
+- One fixed-boundary state per boundary (`freeze_m1`); the three-terms free boundary is a square Newton system
+  (vacuum: least squares of B.n). LP QH 12 x 12 vacuum: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm.
 - `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
   solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
   sheet current; `ThreeTermsFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to

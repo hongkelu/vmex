@@ -481,7 +481,7 @@ about 1e-5 (QI: 1.5e-4).
 | LP QH reactor scale, vacuum (12) | deck, r4 | 4.2e-05 / 3.7e-05 / 7.5e-05 | 1.22 / 0.27 | 4.9e-04 / 21.3 / 5.0 (r4 failed) |
 | nfp 2 QI, fitted coils, vacuum (8) | deck, r1 | 7.8e-05 / 1.6e-04 / 2.2e-04 | 0.84 / 0.18 | 2.3e-04 / 0.64 / 0.16 |
 | LP QA beta 2.5 %, fitted coils (8) | deck | 5.0e-04 / 4.1e-04 / 6.0e-04 | | 5.4e-04 (moments) |
-| LP QA beta 2.5 %, fitted coils (12) | deck | 2.4e-04 / 2.9e-04 / 3.8e-04 | | 3.4e-04 (moments) |
+| LP QA beta 2.5 %, fitted coils (12) | deck, r1 | 2.4e-04 / 2.9e-04 / 3.8e-04 | | 3.4e-04 (moments) |
 
 The projection's leak was largest on LP QH at 12 modes, where it ended above
 the deck's own B.n (1.8e-4); least squares cannot. Where both did well the
@@ -492,7 +492,10 @@ without the plasma's own response; plain sine moments were the earlier rows
 ("moments"). An independent evaluation of the 12-mode answer at 16 modes (VMEX
 re-solve) reads 2.8e-4 / 9.9e-5 / 2.8e-4 (moments: 4.1e-4 / 1.1e-4 / 4.1e-4),
 DESC's own free boundary at 12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and
-sheet current, a higher pressure jump. Neither row set controls `B . n`
+sheet current, a higher pressure jump. DESC's force-converged evaluation at 16
+modes ranks DESC's answer first: 4.0e-4 / 1.2e-4 / 4.4e-4 against 3.7e-4 /
+6.2e-5 / 3.9e-4 (moments: 4.9e-4 / 1.6e-4 / 5.3e-4). From the r1 start the
+transported rows stalled and the plain moments led in (28 against 6 minutes). Neither row set controls `B . n`
 outside the boundary's modes: on LP QA at 0.5 % beta with its bundled coils
 (deck B.n 6.0e-3 at mpol 4, 1.2e-3 at mpol 6) the answer keeps the deck's B.n
 (`test_finite_beta_free_boundary_removes_the_sheet_current` records it as an

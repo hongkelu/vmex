@@ -460,11 +460,27 @@ def solve_free_boundary_three_terms(
         x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
         jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
-    initial = model.boundary_residual(seed_state, seed_params, external_field)
-    # the warning's reference is the deck itself, also on a warm restart (whose start is ``previous``'s answer)
-    deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0, external_field)
+    # The starting residuals are reports (and the reference of the warning below): their programs compile and run
+    # on a background thread while the boundary is solved.  The warning's reference is the deck itself, also on a
+    # warm restart (whose start is ``previous``'s answer).
+    import threading
+
+    def reports():
+        initial = model.boundary_residual(seed_state, seed_params, external_field)
+        deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0,
+                                                                         external_field)
+        return initial, deck
+
+    report_box = []
+    reporter = threading.Thread(target=lambda: report_box.append(_try(reports)), name="vmex-initial-residual",
+                                daemon=True)
+    reporter.start()
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
                                verbose=verbose)
+    reporter.join()
+    if isinstance(report_box[0], BaseException):
+        raise report_box[0]
+    initial, deck = report_box[0]
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
     # From the rows' own state on its own rung (a restart skips the deck's lower rungs; an ``initial_state`` would
@@ -488,6 +504,14 @@ def solve_free_boundary_three_terms(
         njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
         input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
         boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
+
+
+def _try(function, *args):
+    """``function(*args)``, or the exception it raised (for a worker thread to hand back)."""
+    try:
+        return function(*args)
+    except BaseException as error:  # noqa: BLE001 -- re-raised by the caller
+        return error
 
 
 class ThreeTermsFreeBoundaryModel:
@@ -615,6 +639,7 @@ class ThreeTermsFreeBoundaryModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
+        self._warm_refinement()
         seed = self.solve(self.params0)
         if seed is None:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
@@ -637,12 +662,62 @@ class ThreeTermsFreeBoundaryModel:
 
             normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
             self._normal_map = jnp.asarray(normal_map)
+        self._implicit_setup()
+        self._warm = None
         if not self.fixed_boundary:
+            self._start_warm(state, mask)
             grid = interface_grid(fixed)
             self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
             self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
             self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
-        self._implicit_setup()
+
+    def _warm_refinement(self):
+        """Compile the seed solve's Newton-refinement programs while its multigrid ladder runs (see
+        :func:`~vmex.core.implicit.warm_refinement`); ``VMEX_WARM_TANGENTS=0`` turns it off."""
+        import os
+        import threading
+
+        if os.environ.get("VMEX_WARM_TANGENTS", "1").strip().lower() in ("0", "false", "no", "off"):
+            return
+        im, cfg, params = self._im, self.cfg, self.params0
+
+        def work():
+            try:
+                im.warm_refinement(cfg, params)
+            except Exception:  # cache warming only
+                pass
+
+        threading.Thread(target=work, name="vmex-refine-warm", daemon=True).start()
+
+    def _start_warm(self, state, mask):
+        """Compile the first linearization's tangent programs on a background thread.
+
+        They are the largest programs of a solve and depend only on the deck's structure, so they compile while
+        the interface is set up and the first rows are evaluated (results are unchanged: the same executables).
+        ``VMEX_WARM_TANGENTS=0`` turns it off.
+        """
+        import os
+        import threading
+
+        if os.environ.get("VMEX_WARM_TANGENTS", "1").strip().lower() in ("0", "false", "no", "off"):
+            return
+        im, cfg = self._im, self.cfg
+        x = jnp.asarray(self.x0)
+        params_x = self.with_boundary(self.params0, x)
+        directions = self.boundary_directions(params_x, x)
+        nb = self.n_boundary
+        batch = jax.tree.map(lambda a: a[:nb], directions)
+
+        def work():
+            try:
+                im.warm_staged_tangent(params_x, cfg, state, mask, batch, chunk=self.chunk,
+                                       certify_rtol=cfg.jacobian_adjoint_tol,
+                                       certify_maxiter=cfg.jacobian_adjoint_maxiter)
+            except Exception:  # cache warming only: the real call compiles on demand
+                pass
+
+        self._warm = threading.Thread(target=work, name="vmex-tangent-warm", daemon=True)
+        self._warm.start()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
         """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
@@ -965,6 +1040,9 @@ class ThreeTermsFreeBoundaryModel:
         if extra is not None:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        if self._warm is not None:  # its programs are this call's: wait instead of compiling them twice
+            self._warm.join()
+            self._warm = None
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
         dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])

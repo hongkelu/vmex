@@ -426,13 +426,19 @@ def solve_multigrid(
     first_executed = True
     residual_continuation = None
     carry = rt = None
-    prefetch_thread: threading.Thread | None = None
+    # Prefetch threads of later rungs, by rung index: every remaining rung's
+    # lane compiles at once (in parallel, XLA releases the GIL), and each rung
+    # joins its own thread before it starts, so it never compiles twice.
+    prefetch_threads: dict[int, threading.Thread] = {}
     # runvmec.f resets DELT to the input value at every stage; the loop-driver
     # scalars are host config shared by all rungs (never pytree structure).
     time_step0, nstep_cadence = _loop_driver_config(
         inp, time_step=time_step, nstep=nstep
     )
     for igrid in range(n_stages):
+        own = prefetch_threads.pop(igrid, None)
+        if own is not None:
+            own.join()
         nsval = int(ns_arr[igrid])
         resolution = resolution_from_input(inp, ns=nsval)
         stage_use_fft = _resolve_use_fft(use_fft, device, resolution)
@@ -467,32 +473,33 @@ def solve_multigrid(
         # iterations finish.  Equal-structure next rungs reuse this rung's
         # executable directly, so nothing needs prefetching (ftol is pytree
         # DATA — a tolerance-only change is not a new structure).
-        if (
-            prefetch_compile
-            and mode == "cli"
-            and igrid + 1 < n_stages
-            and not jax.config.jax_disable_jit
-            and (
-                int(ns_arr[igrid + 1]) != nsval
-                or int(niter_arr[igrid + 1]) != int(niter_arr[igrid])
-            )
-        ):
-            ns_next = int(ns_arr[igrid + 1])
-            use_fft_next = _resolve_use_fft(
-                use_fft, device, resolution_from_input(inp, ns=ns_next))
-            attempt_key = (
-                ns_next, float(ftol_arr[igrid + 1]), int(niter_arr[igrid + 1]),
-                bool(use_fft_next), int(inp.mpol), int(inp.ntor),
-                int(inp.nfp), bool(inp.lasym), bool(lconm1), freeze_m1, time_step, tcon0,
-                gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
-                str(device),
-            )
-            if attempt_key not in _PREFETCH_ATTEMPTED:
+        # Overlapped compilation (see the docstring): start building every
+        # later rung's executable now, all at once, so each is (mostly) ready
+        # when its rung begins.  Equal-structure rungs reuse an earlier rung's
+        # executable directly, so nothing needs prefetching for them (ftol is
+        # pytree DATA -- a tolerance-only change is not a new structure).
+        if prefetch_compile and mode == "cli" and not jax.config.jax_disable_jit:
+            for later in range(igrid + 1, n_stages):
+                ns_next = int(ns_arr[later])
+                if any(int(ns_arr[j]) == ns_next and int(niter_arr[j]) == int(niter_arr[later])
+                       for j in range(igrid, later)):
+                    continue
+                use_fft_next = _resolve_use_fft(
+                    use_fft, device, resolution_from_input(inp, ns=ns_next))
+                attempt_key = (
+                    ns_next, float(ftol_arr[later]), int(niter_arr[later]),
+                    bool(use_fft_next), int(inp.mpol), int(inp.ntor),
+                    int(inp.nfp), bool(inp.lasym), bool(lconm1), freeze_m1, time_step, tcon0,
+                    gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
+                    str(device),
+                )
+                if attempt_key in _PREFETCH_ATTEMPTED:
+                    continue
                 _PREFETCH_ATTEMPTED.add(attempt_key)
-                prefetch_thread = _launch_lane_prefetch(
+                prefetch_threads[later] = _launch_lane_prefetch(
                     inp, ns_next=ns_next,
-                    ftol_next=float(ftol_arr[igrid + 1]),
-                    niter_next=int(niter_arr[igrid + 1]),
+                    ftol_next=float(ftol_arr[later]),
+                    niter_next=int(niter_arr[later]),
                     lconm1=lconm1, freeze_m1=freeze_m1, time_step=time_step, tcon0=tcon0,
                     gamma=gamma, nstep=nstep, precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
@@ -512,12 +519,13 @@ def solve_multigrid(
                 use_fft=stage_use_fft,
                 emit_legend=first_executed,
             )
-        # Join the prefetch before any cache release below: a mid-compile
+        # Join the prefetches before any cache release below: a mid-compile
         # jax.clear_caches() on another thread is the one interaction the
         # overlap must never have.
-        if prefetch_thread is not None:
-            prefetch_thread.join()
-            prefetch_thread = None
+        if release_stage_cache or igrid + 1 == n_stages:
+            for thread in prefetch_threads.values():
+                thread.join()
+            prefetch_threads.clear()
         first_executed = False
         ier = int(carry.ier)
         if (

@@ -1469,7 +1469,10 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
             inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
             lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
             initial_state=init, use_fft=False,
-                device=solver_device)
+                device=solver_device,
+            # an optimization's configs (hot restart) compile every rung of
+            # their first ladder in parallel; later ladders find them built
+            prefetch_compile=bool(cfg.hot_restart))
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
@@ -2974,7 +2977,7 @@ def _raw_block_solve(
     packed = jax.vmap(system.pack)(rhs_batch)
     packed = packed * (system.column_scale if transpose
                        else system.row_scale)[None]
-    solution = block_thomas_solve(
+    solution = _block_thomas_solve_scan(
         system.factors, jnp.moveaxis(packed, 0, -1), transpose=transpose
     )
     solution = solution * (system.row_scale if transpose
@@ -2996,6 +2999,52 @@ def _raw_block_solve(
         iterations=jnp.ones(residual_norm.shape, dtype=jnp.int32),
         converged=residual_norm <= tolerance,
     )
+
+
+def _block_thomas_solve_scan(factors, rhs: Array, transpose: bool = False) -> Array:
+    """:func:`solvax.block_thomas_solve` (stored LU factors) as two ``lax.scan`` sweeps.
+
+    The same per-block operations in the same order, but solvax unrolls both
+    sweeps in Python: at ``ns = 50`` that is 100 inlined LU solves per call
+    site, and the stored-factor callers here (the staged tangent solve, the
+    refinement's preconditioner, the block adjoints) have several call sites
+    each -- a large share of their XLA compile time.  A scan compiles one
+    block step.  Scans transpose on every supported JAX (>= 0.10).
+    """
+    from jax.scipy.linalg import lu_solve
+
+    delta_lu, delta_piv, lower, upper = factors
+    if transpose:
+        down_blocks = jnp.swapaxes(lower[1:], -1, -2)
+        up_blocks = jnp.swapaxes(upper[:-1], -1, -2)
+        trans = 1
+    else:
+        down_blocks = upper[:-1]
+        up_blocks = lower[1:]
+        trans = 0
+    fdt = delta_lu.dtype
+    work = jnp.result_type(rhs, lower)
+
+    def tsolve(lu, piv, v):
+        return lu_solve((lu, piv), v.astype(fdt), trans=trans).astype(work)
+
+    def downward(sigma_next, inputs):
+        rhs_k, down_k, lu_next, piv_next = inputs
+        sigma_k = rhs_k - down_k @ tsolve(lu_next, piv_next, sigma_next)
+        return sigma_k, sigma_k
+
+    _, sigma = jax.lax.scan(downward, rhs[-1], (rhs[:-1], down_blocks, delta_lu[1:], delta_piv[1:]),
+                            reverse=True)
+    sigma = jnp.concatenate([sigma, rhs[-1][None]], axis=0)
+    first = tsolve(delta_lu[0], delta_piv[0], sigma[0])
+
+    def upward(previous, inputs):
+        sigma_k, up_k, lu_k, piv_k = inputs
+        solution = tsolve(lu_k, piv_k, sigma_k - up_k @ previous)
+        return solution, solution
+
+    _, rest = jax.lax.scan(upward, first, (sigma[1:], up_blocks, delta_lu[1:], delta_piv[1:]))
+    return jnp.concatenate([first[None], rest], axis=0)
 
 
 def _pack_active(cfg: ImplicitConfig, tree: SpectralState) -> Array:
@@ -3031,7 +3080,7 @@ def _block_inverse_apply(
         raise ValueError("raw block factors were not requested")
     packed = pack(project(rhs))
     packed = packed * (column_scale if transpose else row_scale)
-    solution = block_thomas_solve(
+    solution = _block_thomas_solve_scan(
         factors, packed[..., None], transpose=transpose)[..., 0]
     solution = solution * (row_scale if transpose else column_scale)
     return project(unpack(solution))
@@ -3215,7 +3264,7 @@ def _staged_tangent_initial(params, x_star, dof_mask, factors, tangent_batch, cf
     _, blocks, _, raw_rhs, _ = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
     rhs_batch = jax.vmap(blocks.project)(chunk_map(raw_rhs, tangent_batch, chunk_size=chunk))
     packed = jax.vmap(blocks.pack)(rhs_batch) * blocks.row_scale[None]
-    solution = block_thomas_solve(blocks.factors, jnp.moveaxis(packed, 0, -1))
+    solution = _block_thomas_solve_scan(blocks.factors, jnp.moveaxis(packed, 0, -1))
     solution = solution * blocks.column_scale[..., None]
     return jax.vmap(lambda matrix: blocks.project(blocks.unpack(matrix)))(jnp.moveaxis(solution, -1, 0))
 
@@ -3315,6 +3364,74 @@ def staged_tangent_multi_rhs(
             solution, report = _staged_tangent_refine(params, x_star, dof_mask, factors, batch, solution, report,
                                                       cfg, chunk, rtol)
     return jax.tree.map(lambda a: a[:n], (solution, report))
+
+
+def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
+    """Compile the Newton refinement's programs for ``cfg`` ahead of its first solve.
+
+    For a background thread started before a config's first (cold) solve: the
+    preconditioned residual lane and the block-factor and block-step cores
+    depend only on the config's structure, so they compile while the solve's
+    multigrid ladder runs, instead of after it.  Placeholder arrays of the
+    real structure (the template's initial state, the structural dof mask,
+    ``params``) are lowered exactly as :func:`_refined_state` passes its own,
+    so the later calls find the executables in JAX's caches; nothing runs.
+    """
+    from .solver import _initial_state
+
+    with _device_context(cfg):
+        # Concrete first, as _host_solve_and_mask_impl does: these per-config Python caches must never be
+        # filled under a trace (a tracer stored there leaks into every later call).
+        template = _template_runtime(cfg)
+        _boundary_pack_tables(cfg)
+        state = jax.tree.map(jnp.asarray, _initial_state(template.setup))
+        cache_key = _mask_cache_key(cfg)
+        mask = _MASK_CACHE.get(cache_key)
+        if mask is None:
+            mask = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), _fixed_boundary_dof_mask(cfg))
+            _MASK_CACHE[cache_key] = mask
+        state, params, mask = commit_to_single_device((state, params, jax.tree.map(jnp.asarray, mask)))
+        z = _dof_projector(cfg, mask)(state)
+        _preconditioned_residual_lane.lower(z, params, state, mask, cfg).compile()
+        arguments = commit_to_single_device(tuple(
+            _pin_concrete(cfg, tree) for tree in (z, params, state, mask)))
+        _refine_block_factor_core.lower(*arguments, cfg).compile()
+        shapes = jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments)
+        factors = jax.tree.map(lambda a: jax.device_put(jnp.zeros(a.shape, a.dtype), cfg.device)
+                               if cfg.device is not None else jnp.zeros(a.shape, a.dtype), shapes)
+        _refine_block_step_core.lower(*arguments, factors, cfg).compile()
+
+
+def warm_staged_tangent(
+    params: ImplicitParams,
+    cfg: ImplicitConfig,
+    x_star: SpectralState,
+    dof_mask: SpectralState,
+    tangent_batch: ImplicitParams,
+    *,
+    chunk: int,
+    certify_rtol: float | None = None,
+    certify_maxiter: int | None = None,
+) -> None:
+    """Compile :func:`staged_tangent_multi_rhs`'s programs for these argument structures.
+
+    Meant for a background thread (XLA compilation releases the GIL): a caller
+    that knows its first linearization is coming -- the free-boundary model,
+    right after its seed solve -- overlaps these compiles with its other set-up
+    work.  Runs the cheap stages (the factors, the block-direct responses) and
+    compiles the corrector ahead of time; the later real call finds every
+    executable in JAX's caches.
+    """
+    n = int(jax.tree.leaves(tangent_batch)[0].shape[0])
+    chunk = max(1, min(int(chunk), n))
+    rtol = None if certify_rtol is None else float(certify_rtol)
+    maxiter = None if certify_maxiter is None else int(certify_maxiter)
+    factors = block_factors_at(cfg, params, x_star, dof_mask)
+    with _device_context(cfg):
+        batch = _padded(tangent_batch, chunk)
+        initial = _staged_tangent_initial(params, x_star, dof_mask, factors, batch, cfg, chunk)
+        _staged_tangent_correct.lower(params, x_star, dof_mask, factors, batch, initial, cfg, chunk,
+                                      rtol, maxiter).compile()
 
 
 def implicit_state_tangent_multi_rhs(

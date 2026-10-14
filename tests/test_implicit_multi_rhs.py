@@ -522,3 +522,19 @@ def test_staged_tangent_matches_the_single_program(monkeypatch):
     jax.clear_caches()
     assert np.all(np.asarray(refined_report.converged))
     assert _relative_difference(refined, reference) < 1e-8
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_scanned_block_thomas_solve_matches_solvax(transpose):
+    """The scanned stored-factor solve is solvax's unrolled one, sweep for sweep."""
+    from solvax import block_thomas_factor, block_thomas_solve
+
+    rng = np.random.default_rng(0)
+    n, m, k = 7, 5, 3
+    lower, upper = (jnp.asarray(0.2 * rng.standard_normal((n, m, m))) for _ in range(2))
+    diag = jnp.asarray(rng.standard_normal((n, m, m)) + 4.0 * np.eye(m))
+    factors = block_thomas_factor(lower, diag, upper)
+    rhs = jnp.asarray(rng.standard_normal((n, m, k)))
+    got = im._block_thomas_solve_scan(factors, rhs, transpose=transpose)
+    want = block_thomas_solve(factors, rhs, transpose=transpose)
+    np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=1e-13, atol=1e-13)

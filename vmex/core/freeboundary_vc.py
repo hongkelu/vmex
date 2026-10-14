@@ -23,7 +23,8 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
 - vacuum (no pressure, no plasma current): ``B_out = B_coil`` is an explicit function of the boundary, and the
   rows are the stationarity of the area-weighted mean square of ``B_coil . n`` in ``h``
   (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
-  Jacobian.  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
+  Jacobian.  ``h`` also has the poloidal harmonic ``m = mpol``, where the B.n that the top modes leave lies
+  (known-answer benchmark, 8 x 8: field lines 0.34 -> 0.10 mm).  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
   uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
 - finite beta: the same stationarity with the plasma's own response to ``h`` left out of the test functions:
   a normal displacement ``h`` changes ``B . N`` by ``-|N| B_t . grad h`` (``N`` the area normal, ``B_t`` the

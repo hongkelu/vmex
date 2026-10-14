@@ -471,7 +471,8 @@ def _lp_beta0p5_profiles(inp):
 
 
 def test_bootstrap_current_profile_layout():
-    """A knot per half-mesh surface, I'(0) = 0 and three unknown knots inside s_1, CURTOR its integral."""
+    """A knot per half-mesh surface and one on the axis, the first segment with the deck's I(s_1), CURTOR the
+    profile's integral."""
     from vmex.core.profiles import current
 
     ns = 25  # the deck's current is resolved to 2 % by the line segments from here
@@ -480,18 +481,19 @@ def test_bootstrap_current_profile_layout():
 
     block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
-    np.testing.assert_allclose(block.knots[4:-1], s)
+    np.testing.assert_allclose(block.knots[1:-1], s)
     values = np.asarray(block.values(block.x0))
-    assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
+    assert block.knots[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     np.testing.assert_allclose(block.deck.ac_aux_f, values)
-    assert block.x0.size == 3 + ns - 1
+    assert block.x0.size == ns
     assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
     # the deck's own enclosed current away from the axis, where only the first cell differs
     deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
         current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, 1.0))
     outer = s[s > 0.2]
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
+    assert deck_I(block.deck, s[0]) == pytest.approx(deck_I(inp, s[0]), rel=1e-3)  # the first segment's integral
 
 
 def test_bootstrap_rows_are_the_current_errors_field_over_b0():
@@ -506,7 +508,7 @@ def test_bootstrap_rows_are_the_current_errors_field_over_b0():
         block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
         curtor = jax.grad(lambda v: block.current(block.values(v), 1.0))(jnp.asarray(block.x0))
         np.testing.assert_allclose(block.weights, curtor, rtol=1e-12, atol=1e-15)
-        assert block.weights.sum() == pytest.approx(1.0 - 0.5 * block.knots[1]) and np.all(block.weights > 0)  # I'(0) = 0
+        assert block.weights.sum() == pytest.approx(1.0) and np.all(block.weights > 0)
         # the edge value continues the last two knots' line: a linear I' is exact at s = 1
         assert float(block.values(1.0 - block.knots[1:-1])[-1]) == pytest.approx(0.0, abs=1e-14)
         with pytest.raises(ValueError, match="unit is not set"):
@@ -521,17 +523,17 @@ def test_bootstrap_rows_are_the_current_errors_field_over_b0():
         error = 1e5 * np.ones(block.x0.size)  # a uniform error of 1e5 A per unit s
         block.mismatch = lambda *_: (jnp.asarray(error), None)
         rows = np.asarray(block.rows(None, None, None))
-        assert np.sum(rows**2) == pytest.approx((1e5 * MU0) ** 2 * (1.0 - 0.5 * block.knots[1]), rel=1e-12)
+        assert np.sum(rows**2) == pytest.approx((1e5 * MU0) ** 2, rel=1e-12)
 
 
 def test_bootstrap_current_has_a_knot_per_surface_beyond_ndatafmax(tmp_path):
-    """ns = 101 (the interior the finite-beta interface terms need): 105 knots, more than VMEC2000's 101; the
+    """ns = 101 (the interior the finite-beta interface terms need): 102 knots, more than VMEC2000's 101; the
     profile keeps them all and only an INDATA namelist of it is refit to 101."""
     from vmex.core.bootstrap import HalfMeshCurrent
 
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False)
     block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
-    assert block.knots.size == 101 + 4 and block.x0.size == 3 + 100
+    assert block.knots.size == 101 + 1 and block.x0.size == 101
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     with pytest.warns(RuntimeWarning, match="refit to VMEC2000's 101"):
         reread = vj.VmecInput.from_file(block.deck.to_indata(tmp_path / "input.bootstrap"))
@@ -553,7 +555,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
                                               quadrature=(4 * int(inp.nfp) * 48, 96))
     model = fit.model
     state, mask, params, _ = fit.aux
-    assert fit.x.size == model.n_boundary + 3 + 24
+    assert fit.x.size == model.n_boundary + 25
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
     # independently of the inversion: VMEC's <J.B> (finite-difference identity) is Redl's away from the ends
@@ -567,7 +569,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     # Jacobian columns of a boundary and two current coordinates against central differences of re-solved rows
     # (small steps: near the axis Redl's rows are strongly nonlinear in the boundary, through f_t ~ eps^(1/2))
     J = model.linearize(fit.x, fit.aux, field)[0]
-    for k in (0, model.n_boundary + 3, model.n_boundary + 15):
+    for k in (0, model.n_boundary + 1, model.n_boundary + 13):
         h = 1e-5 * model.x_scale[k]
         rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
                 for sign in (1, -1)]
@@ -588,11 +590,11 @@ def _fixed_boundary_bootstrap():
 def test_fixed_boundary_bootstrap_model_has_exact_columns():
     """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is Redl's, with exact Jacobian columns."""
     inp, profiles, model, out = _fixed_boundary_bootstrap()
-    assert model.n_boundary == 0 and model.x0.size == 3 + 10  # three knots inside s_1, then the half mesh
+    assert model.n_boundary == 0 and model.x0.size == 1 + 10  # the axis knot, then the half mesh
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
     J = model.linearize(out["x"], out["aux"], None)[0]
-    k, h = 5, 1e-5 * model.x_scale[5]
+    k, h = 3, 1e-5 * model.x_scale[3]
     rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
@@ -602,17 +604,17 @@ def test_fixed_boundary_bootstrap_model_has_exact_columns():
 @pytest.mark.full
 @pytest.mark.usefixtures("_module_jit_enabled")
 def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
-    """ns = 101 with the bootstrap current in the solve (103 knot unknowns, beyond VMEC2000's ndatafmax): Redl's
-    current, and Jacobian columns of a sub-axis, a mid-radius and the last knot against re-solved differences."""
+    """ns = 101 with the bootstrap current in the solve (101 knot unknowns, beyond VMEC2000's ndatafmax): Redl's
+    current, and Jacobian columns of the axis, a mid-radius and the last knot against re-solved differences."""
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([40000]))
     model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), fixed_boundary=True)
     out = model.solve_boundary(model.params0, None)
-    assert out["converged"] and model.x0.size == 3 + 100
+    assert out["converged"] and model.x0.size == 101
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
     J = model.linearize(out["x"], out["aux"], None)[0]
-    for k in (1, 53, model.x0.size - 1):
+    for k in (0, 51, model.x0.size - 1):
         h = 1e-5 * model.x_scale[k]
         rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
                 for sign in (1, -1)]

@@ -761,6 +761,29 @@ def plasma_field_on_boundary(
     return field._vc.compute_internal_B(field.B_total, **kwargs)
 
 
+_REMAT = [False]  # set by remat_scans while second-order programs are traced
+
+
+class remat_scans:
+    """Context: virtual-casing quadratures traced inside it checkpoint their chunk scans (``remat=True``).
+
+    A reverse pass through the quadrature otherwise keeps every source chunk's kernel intermediates
+    (``targets x sources`` per array: 22 GiB at 48 x 48 targets, 384 x 96 sources), which a second-order pass
+    (forward over reverse, the exact Hessian) cannot afford; checkpointed, each chunk is recomputed in the
+    reverse sweep and only its inputs are kept.  Values are unchanged.  Needs virtual_casing_jax with the
+    far-field ``remat`` option.
+    """
+
+    def __enter__(self):
+        self._saved = _REMAT[0]
+        _REMAT[0] = True
+        return self
+
+    def __exit__(self, *exc):
+        _REMAT[0] = self._saved
+        return False
+
+
 def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
     """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
 
@@ -789,7 +812,7 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
         setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
         patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
         orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
+        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype), remat=_REMAT[0])
     grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
     B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
     return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on

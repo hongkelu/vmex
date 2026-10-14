@@ -65,6 +65,9 @@ own.
 .. automodule:: vmex.core.freeboundary_vc
    :members:
 
+.. automodule:: vmex.core.freeboundary_lsq
+   :members:
+
 .. automodule:: vmex.core.parallel
    :members:
 

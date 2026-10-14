@@ -354,6 +354,8 @@ def solve_free_boundary_three_terms(
         jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
     initial = model.boundary_residual(seed_state, seed_params, external_field)
+    # the warning's reference is the deck itself, also on a warm restart (whose start is ``previous``'s answer)
+    deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
                                verbose=verbose)
     state, _, params, _ = out["aux"]
@@ -363,11 +365,11 @@ def solve_free_boundary_three_terms(
         forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000))
     final = model.boundary_residual(equilibrium.solution, params, external_field)
     outside = model.normal_outside_modes(equilibrium.solution, params, external_field)
-    if final.normal >= initial.normal:
+    if final.normal >= deck.normal:
         import warnings
 
         warnings.warn(f"the free boundary did not lower B.n below the deck's ({final.normal:.2e} >= "
-                      f"{initial.normal:.2e} RMS over |B|); {outside:.2e} of it lies outside the boundary's "
+                      f"{deck.normal:.2e} RMS over |B|); {outside:.2e} of it lies outside the boundary's "
                       f"{len(model.boundary_modes)} modes, which the rows do not control", RuntimeWarning,
                       stacklevel=2)
     return OptimizeResult(

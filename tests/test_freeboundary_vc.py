@@ -9,6 +9,7 @@ coils, where the solve agrees with NESTOR and is independent of its start.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -157,10 +158,11 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     The answer depends on the deck: its boundary is the reference of the poloidal labelling (module
     docstring), not only the start.  Here the deck is the one VMEC + NESTOR leaves; from it and from the
     original LP deck's boundary the solve lands on one boundary, with the interface conditions below NESTOR's.
-    With the original LP deck as the deck the answer differs (B.n 9.7e-4) and is again start-independent.  VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
-    essentially exact field (VMEC2000 1.3 mm), so the surfaces are compared at that level, and more sharply
-    through the residuals and the rotational transform.  At mpol = 4 the labelling matters: with the original
-    LP deck's, truncated to 4 modes, B.n ends at 9.7e-4, with NESTOR's at 5.4e-4 (NESTOR's own: 5.9e-4).
+    VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an essentially exact field (VMEC2000
+    1.3 mm), so the surfaces are compared at that level, and more sharply through the residuals and the
+    rotational transform.  At mpol = 4 the labelling matters: with the original LP deck as the deck (its
+    labelling truncated to 4 modes) B.n ends at 9.7e-4, again from either start; with NESTOR's at 5.4e-4
+    (NESTOR's own: 5.9e-4).
     """
     lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
                  am=np.zeros(21))
@@ -193,7 +195,10 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     assert all(fit.success for fit in lp_fits)
     # a warm restart at an unchanged field stays where it is.
     fit = fits[0]
-    again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
+    assert not any("did not lower B.n" in str(w.message) for w in caught)
     assert again.njev == 0 and again.cost <= max(fit.cost, fit.model._NEWTON_COST)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
@@ -259,8 +264,11 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     k, h = 2, 1e-6
     fd = [model.evaluate(fits[0].x + s * h * eye[k], model.params0, field, tight=True)[0] for s in (1, -1)]
     np.testing.assert_allclose(J[:, k], (fd[0] - fd[1]) / (2 * h), rtol=1e-4, atol=1e-6 * np.abs(J[:, k]).max())
-    again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
+    with warnings.catch_warnings(record=True) as caught:  # a warm restart is measured against the deck too
+        warnings.simplefilter("always")
+        again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
     assert again.njev == 0 and again.success
+    assert not any("did not lower B.n" in str(w.message) for w in caught)
     assert 0.0 < fits[0].normal_outside_modes <= fits[0].boundary_residual.normal
     # a solve that does not lower B.n says so, with the part outside the boundary's modes
     monkeypatch.setattr(model, "boundary_residual", lambda *args: fvc.BoundaryResidual(1.0, 1.0, 1.0))

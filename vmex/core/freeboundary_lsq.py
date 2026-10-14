@@ -2,11 +2,10 @@
 
 The second method of :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` (the first,
 ``method="galerkin"``, is the module :mod:`vmex.core.freeboundary_vc`'s square system on the deck's normal
-displacement).  Here the unknowns are the boundary's Fourier coefficients and the solve minimizes the
-area-weighted sum of squares of the interface conditions on a grid, each over ``|B_in|``: in vacuum
-``B_coil . n``; at finite beta ``B_out . n``, the pressure-balance jump and ``n x (B_out - B_in)``, with the
-interior edge field kept on VMEC's Galerkin band (:func:`_band_limited`).  A row ``(G_plasma - G_coil) /
-G_coil`` fixes the net poloidal current.
+displacement).  It minimizes, subject to equality constraints, the area-weighted sum of squares on a grid of: in
+vacuum ``B_coil . n / B0``; at finite beta the jump ``(B_out - B_in) / B0`` (:func:`_jump_rows`: the normal
+field and the sheet current in one norm), with the interior edge field kept on VMEC's Galerkin band
+(:func:`_band_limited`).  ``G_plasma = G_coil`` (the net poloidal current) is a constraint.
 
 The unknowns are those of the Galerkin method: the displacement of the deck's boundary along its radial
 coordinate lines, one coefficient per boundary mode.  The boundary's Fourier coefficients themselves are not
@@ -108,27 +107,18 @@ jax.tree_util.register_dataclass(_Bundle, data_fields=["field", "consts"], meta_
 
 
 
-def _interface_terms_banded(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge,
-                     band_limit=False):
-    """Rows and weights of :func:`boundary_residual`, plus the boundary points ``(3, nphi, ntheta)``.
-
-    ``band_limit`` keeps the interior edge field on VMEC's Galerkin band (:func:`_band_limited`) before the
-    virtual casing, the pressure balance and the sheet current see it.
+def _jump_rows(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, B0):
+    """``sqrt(area / A) (B_out - B_in) / B0`` (three Cartesian components a grid point), the interior edge field on
+    VMEC's Galerkin band (:func:`_band_limited`).  ``B_in . n = 0``, so its squares sum to the area mean of
+    ``(B_out . n)^2 + |n x (B_out - B_in)|^2`` over ``B0^2``: the normal field and the sheet current in one norm,
+    without relative weights.  With zero edge pressure the pressure balance ``|B_out| = |B_in|`` follows from
+    ``B_out = B_in``, so it is not a row (it is reported, :meth:`LeastSquaresFreeBoundaryModel.boundary_residual`).
     """
-    data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
-    if band_limit:
-        data = _band_limited(data, int(inp.mpol), int(inp.ntor))
-    interface = vc.PlasmaVacuumInterface.from_surface_data(
-        data, p_edge=p_edge, digits=digits, precision=precision)
-    B_in = jnp.asarray(data.B_total)
-    B_out = interface.total_B_out(external_field)
-    B2 = interface.Bin_mag2
-    scale = jnp.sqrt(B2)
-    normal = jnp.sum(B_out * interface.normal, axis=0) / scale
-    pressure = interface.pressure_balance_residual(external_field) / (2.0 * B2)
-    sheet = jnp.cross(interface.normal, B_out - B_in, axis=0) / scale
-    return jnp.concatenate([normal[None], pressure[None], sheet]), interface.weights, interface.gamma
-
+    data = _band_limited(vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta),
+                         int(inp.mpol), int(inp.ntor))
+    interface = vc.PlasmaVacuumInterface.from_surface_data(data, p_edge=0.0, digits=digits, precision=precision)
+    jump = interface.total_B_out(external_field) - jnp.asarray(data.B_total)
+    return (jnp.sqrt(interface.weights)[None] * jump / B0).ravel()
 
 
 class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
@@ -146,9 +136,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         rbc = np.asarray(self.fixed.rbc)
         self._major_radius = float(rbc[(rbc.shape[0] - 1) // 2, 0])
         self.hessian_chunk = int(hessian_chunk or self.chunk)
-        # The bootstrap rows (the last rows; square in the current coordinates) are equality constraints of the
-        # free-boundary solve, not least-squares rows: the current is exactly Redl's, whatever the rows' scale.
-        self.n_constraint_rows = 0 if self.fixed_boundary or self.bootstrap is None else int(self.bootstrap.x0.size)
+        # The net-current row and the bootstrap rows (the last rows) are equality constraints of the free-boundary
+        # solve, not least-squares rows: G = G_coil and the current is Redl's, whatever the rows' scale.
+        self.n_constraint_rows = 0 if self.fixed_boundary else 1 + (0 if self.bootstrap is None
+                                                                    else int(self.bootstrap.x0.size))
         self.require_converged = False  # LeastSquaresFreeBoundaryProblem: an unconverged trial is a failed one
         self._linearization = None
         self._last_linearize = None
@@ -173,13 +164,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         axis_points, axis_tangent, axis_dphi = _axis_loop(
             SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
         area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
+        # B0: the area-RMS |B| on the seed boundary, the rows' constant field unit
         self.B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
         # The run's constants enter the compiled rows as arguments (_Bundle), not as closed-over arrays.
         self._consts = dict(axis=(axis_points, axis_tangent, jnp.asarray(axis_dphi)), B0=jnp.asarray(self.B0))
         vacuum = self.vacuum
 
         def interface_rows(state, params, field, moments=False):
-            """``sqrt(area)`` times the interface conditions over ``|B|`` on the grid, and the net-current row."""
+            """The jump rows (:func:`_jump_rows`; in vacuum ``sqrt(area / A) B_coil . n / B0``), then the
+            net-current row ``(G - G_coil) / G_coil`` (an equality constraint of the solve)."""
             field, consts = (field.field, field.consts) if isinstance(field, _Bundle) else (field, self._consts)
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *consts["axis"]))
@@ -191,10 +184,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 B = vc.external_B_cartesian(field, jnp.asarray(data.gamma), jnp.asarray(data.phi))
                 bn = jnp.sum(B * jnp.asarray(data.normal), axis=0) / consts["B0"]
                 return jnp.concatenate([(jnp.sqrt(area / jnp.sum(area)) * bn).ravel(), current])
-            values, area, _ = _interface_terms_banded(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
-                                                      digits=digits, precision=precision, p_edge=0.0,
-                                                      band_limit=True)
-            return jnp.concatenate([(jnp.sqrt(area)[None] * values).ravel(), current])
+            jump = _jump_rows(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits,
+                              precision=precision, B0=consts["B0"])
+            return jnp.concatenate([jump, current])
 
         self.interface_rows = interface_rows
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
@@ -215,7 +207,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         return summarize_boundary_residual(*self._terms(state, params, field))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None, ftol=1e-10, xtol=1e-9,
-                       max_iter=40, callback=None, verbose=0):
+                       max_iter=60, callback=None, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the deck's boundary).
 
         :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``, and
@@ -309,7 +301,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return np.eye(x.size), gs_f, 0.0, np.zeros(0), None
         nu = -np.linalg.lstsq(Jc.T, gs_f, rcond=None)[0]
         _, sv, Vt = np.linalg.svd(Jc)
-        rank = int(np.sum(sv > 1e-10 * sv[0]))  # the constraints' rank, at round-off
+        rank = int(np.sum(sv > np.finfo(float).eps * max(Jc.shape) * sv[0]))  # numpy's matrix_rank tolerance
+        if rank < Jc.shape[0]:
+            raise RuntimeError(f"the constraint rows are dependent (rank {rank} of {Jc.shape[0]})")
         return Vt[rank:].T, gs_f + Jc.T @ nu, 0.0, nu, Jc
 
     def second_order(self, x, aux, field, extra=None, columns=True):
@@ -456,7 +450,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._krylov_T = Rinv.T @ T @ Rinv
         return Nr @ Qb, gq_norm_first
 
-    def _newton(self, params, field, *, x0=None, ftol=1e-10, xtol=1e-9, max_iter=40, radius=None,
+    def _newton(self, params, field, *, x0=None, ftol=1e-10, xtol=1e-9, max_iter=60, radius=None,
                               callback=None, verbose=0):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
@@ -494,25 +488,28 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         S = np.asarray(self.x_scale, dtype=float)
         nfev, history, converged, status, started = 1, [], False, "max_iter", time.perf_counter()
         so = None
-        m, nbd = self.n_constraint_rows, self.n_boundary
+        m = self.n_constraint_rows
         k = r.size - m  # the interface rows; the constraint rows follow
 
         def cost_of(rows):
             return 0.5 * rows[:k] @ rows[:k]
 
+        # The constraint rows are relative field (or current) mismatches; an equilibrium solved to FTOL determines
+        # its fields to about sqrt(FTOL) relative, so the rows are restored to that level, not further.
+        tol_c = float(np.sqrt(self.cfg.ftol))
+
         def restore(x, got, J):
-            """Chord Newton on the constraint rows in the current coordinates with ``J``'s block (square), to
-            ``1/2 |r_c|^2 <= ftol`` times the cost: ``(x, got, reached)``, the last point where ``|r_c|`` fell."""
+            """Chord Newton on the constraint rows with ``J``'s rows of them (minimum-norm steps in the scaled
+            coordinates) to ``max |r_c| <= sqrt(FTOL)``: ``(x, got, reached)``, the last point where ``|r_c|`` fell."""
             nonlocal nfev
             if not m or got is None:
                 return x, got, got is not None
-            Jcc = J[k:, nbd:x.size] * S[None, nbd:]
+            Jc = J[k:, :x.size] * S[None]
             for _ in range(10):
                 rc = got[0][k:]
-                if 0.5 * rc @ rc <= ftol * cost_of(got[0]):
+                if np.max(np.abs(rc)) <= tol_c:
                     return x, got, True
-                x_try = x.copy()
-                x_try[nbd:] -= S[nbd:] * np.linalg.solve(Jcc, rc)
+                x_try = x - S * np.linalg.lstsq(Jc, rc, rcond=None)[0]
                 got_new = self.evaluate(x_try, params, field, tight=True)
                 nfev += 1
                 if got_new is None or np.linalg.norm(got_new[0][k:]) >= np.linalg.norm(rc):
@@ -520,7 +517,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 x, got = x_try, got_new
             return x, got, False
 
-        if m and 0.5 * r[k:] @ r[k:] > ftol * cost_of(r):  # the start onto the constraints (a Jacobian each try)
+        if m and np.max(np.abs(r[k:])) > tol_c:  # the start onto the constraints (a Jacobian each try)
             for _ in range(5):
                 x, (r, aux), reached = restore(x, (r, aux), self.linearize(x, aux, field)[0])
                 if reached:
@@ -616,7 +613,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 break
             newton = np.linalg.norm(gq / w) if w[0] > 0 else np.inf
             if radius is None:
-                radius = min(newton, 0.1 * np.linalg.norm(x / S)) if np.isfinite(newton) else 1e-3
+                # the first radius: the Newton step, or (indefinite model) the gradient step of the stiffest mode
+                radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
 
@@ -729,7 +727,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_max_nfev=40,
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100,
                   boundary_max_residual=None, **model_options):
         """Solve the seed design's free boundary (keywords as the Galerkin problem's)."""
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
@@ -752,8 +750,9 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         model.require_converged = True
         edge, cfg = _edge_mask(model.cfg), model.cfg
 
-        def coil_mixed(state, mask, params, x, dz_mu, dp_mu):
-            """``d/d eps grad_x 1/2 |rows(field(x))|^2`` along the boundary response ``(dz_mu, dp_mu)``."""
+        def coil_mixed(state, mask, params, x, shift, dz_mu, dp_mu):
+            """``d/d eps grad_x 1/2 |rows(field(x)) + shift|^2`` along the boundary response ``(dz_mu, dp_mu)``
+            (``shift`` of :meth:`LeastSquaresFreeBoundaryModel.second_order`: the Lagrangian's mixed derivative)."""
             frozen = jax.lax.stop_gradient(state)
             P = _dof_projector(cfg, mask)
 
@@ -761,12 +760,19 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
                 def cost(xx):
                     r = model.rows(_assemble(z, runtime_from_params(prm, cfg), frozen, P, edge), prm,
                                    field_from_parameters(xx))
+                    r = r if shift is None else r + shift
                     return 0.5 * jnp.sum(r * r)
                 return jax.grad(cost)(x)
 
             return jax.jvp(grad_x, (P(frozen), params), (P(dz_mu), dp_mu))[1]
 
+        def constraint_field_jacobian(state, params, x):
+            """``d r_c / dx`` through the field at a fixed equilibrium (the net-current row's G_coil)."""
+            return jax.jacfwd(lambda xx: model.rows(state, params, field_from_parameters(xx))[
+                -model.n_constraint_rows:])(x)
+
         self._coil_mixed = jax.jit(coil_mixed)
+        self._constraint_field_jacobian = jax.jit(constraint_field_jacobian)
         super().__init__(model, loss, x0, **options)
 
     def _linearize(self, x, sol):
@@ -817,19 +823,24 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         dz_b = jax.tree.map(lambda a: a[:nb], so["dz"])
         dp_b = jax.tree.map(lambda a: a[:nb], so["batch"])
+        shift = None if so["shift"] is None else jnp.asarray(so["shift"])
         for row, column in enumerate(mu.T):
             mj = jnp.asarray(column)
             dz_mu = jax.tree.map(lambda a: jnp.tensordot(mj, a, axes=1), dz_b)
             dp_mu = jax.tree.map(lambda a: jnp.tensordot(mj, a, axes=1), dp_b)
             with vc.remat_scans():
-                gradients[row] -= np.asarray(self._coil_mixed(state, mask, params, xj, dz_mu, dp_mu))
+                gradients[row] -= np.asarray(self._coil_mixed(state, mask, params, xj, shift, dz_mu, dp_mu))
         if self._plasma.size:
             gradients[:, self._plasma] -= mu.T @ so["C"]
-            if m:
-                # the constraint rows move with the plasma parameters: the boundary's response has the part
-                # -B^+ [0; dr_c/dp] off the null space, which enters through eta = (B^+)^T (S dh/db - W mu / S)
-                eta = np.linalg.lstsq(B.T, S[:, None] * G_b.T - W @ (mu / S[:, None]), rcond=None)[0]
-                gradients[:, self._plasma] -= eta[eta.shape[0] - m:].T @ J[k:, nb:]
+        if m:
+            # the constraint rows move with the design (G_coil with the coils, the currents' rows with the plasma
+            # parameters): the boundary's response has the part -B^+ dr_c/dx off the null space, which enters
+            # through eta = (B^+)^T (S dh/db - W mu / S)
+            eta = np.linalg.lstsq(B.T, S[:, None] * G_b.T - W @ (mu / S[:, None]), rcond=None)[0]
+            J_cx = np.array(self._constraint_field_jacobian(state, params, xj))
+            if self._plasma.size:
+                J_cx[:, self._plasma] += J[k:, nb:]
+            gradients -= eta.T @ J_cx
         self._anchor = dict(x=self._x(x).copy(), b=sol["x"], J_b=J[:, :nb], J_p=J[:, nb:], state=state,
                             params=params, cost=0.5 * so["r"][:k] @ so["r"][:k])
         sol["gradients"] = gradients
@@ -841,7 +852,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = None, mgrid_path=None,
                                       initial_boundary: VmecInput | None = None, max_mode: int | None = None,
                                       nphi: int | None = None, ntheta: int | None = None, digits: int = 4,
-                                      max_nfev: int = 40, quadrature: tuple[int, int] | None = None,
+                                      max_nfev: int = 60, quadrature: tuple[int, int] | None = None,
                                       trial_ftol: float | None = None, chunk: int = 8, bootstrap=None,
                                       bootstrap_helicity: int = 0, bootstrap_weight: float = 100.0, previous=None,
                                       verbose: int = 0):
@@ -878,9 +889,10 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
     out = model.solve_boundary(model.params0, external_field, x0=x0, max_iter=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
+    # from the rows' own state on its own rung, and an equilibrium short of the tolerance is an error (as Galerkin's)
     equilibrium = solve_equilibrium(
-        boundary, initial_state=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
-        forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000))
+        boundary, restart_from=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
+        forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000), raise_on_max_iterations=True)
     final = model.boundary_residual(equilibrium.solution, params, external_field)
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],

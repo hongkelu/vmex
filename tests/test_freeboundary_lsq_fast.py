@@ -44,7 +44,7 @@ def test_vacuum_rows_newton_with_exact_hessian():
     for sign in (1, -1):
         xs = x + sign * eps * S * v
         _, aux_s = model.evaluate(xs, model.params0, field, tight=True)
-        grads.append(S * model.gradient(xs, aux_s, field))
+        grads.append(S * model.gradient(xs, aux_s, field, shift=so["shift"]))
     fd = (grads[0] - grads[1]) / (2 * eps)
     np.testing.assert_allclose(S * (so["H"] @ (S * v)), fd, rtol=1e-4, atol=1e-4 * np.max(np.abs(fd)))
     # Hessian-vector blocks: equal to the columns, and a block that exhausts device memory is split in halves

@@ -64,7 +64,7 @@ def test_exact_hessian_matches_gradient_differences(model_and_field):
     for sign in (1, -1):
         xs = x + sign * eps * S * v
         _, aux_s = model.evaluate(xs, model.params0, field, tight=True)
-        grads.append(S * model.gradient(xs, aux_s, field))
+        grads.append(S * model.gradient(xs, aux_s, field, shift=so["shift"]))
     fd = (grads[0] - grads[1]) / (2 * eps)
     np.testing.assert_allclose(S * (so["H"] @ (S * v)), fd, rtol=1e-4, atol=1e-4 * np.max(np.abs(fd)))
 

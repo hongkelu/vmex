@@ -12,23 +12,29 @@ of a single-stage problem follow from it.
 
 The unknowns are the boundary Fourier coefficients $b$ (with $R_{00}$).
 Every iterate is a converged fixed-boundary equilibrium on that boundary.
-The rows $r(b)$ are the interface conditions on an $n_\phi \times n_\theta$
-grid over one field period, each weighted by the square root of its area
-element:
+The rows $r(b)$ are, on an $n_\phi \times n_\theta$ grid over one field
+period, each weighted by the square root of its share of the area:
 
 - in vacuum, $B_\mathrm{coil}\cdot n / B_0$. $B_\mathrm{out}$ is the coil
   field exactly, so this is the field-line condition, and the interior field
   does not enter;
-- at finite beta, $B_\mathrm{out}\cdot n$, the pressure-balance jump and the
-  three components of $n \times (B_\mathrm{out} - B_\mathrm{in})$, with
-  $B_\mathrm{out} = B_\mathrm{coil} + B_\mathrm{plasma}$ from virtual casing.
-  $B_\mathrm{in}$ is first restricted to VMEC's own Galerkin band
-  ($m \le$ `mpol` $-1$, $|n| \le$ `ntor`); outside it the edge field is not
-  determined by the equilibrium.
+- at finite beta, the jump $(B_\mathrm{out} - B_\mathrm{in}) / B_0$ (three
+  Cartesian components), with $B_\mathrm{out} = B_\mathrm{coil} +
+  B_\mathrm{plasma}$ from virtual casing and $B_\mathrm{in}$ restricted to
+  VMEC's own Galerkin band ($m \le$ `mpol` $-1$, $|n| \le$ `ntor`; outside it
+  the edge field is not determined by the equilibrium). Since
+  $B_\mathrm{in}\cdot n = 0$, the cost is the area mean of
+  $(B_\mathrm{out}\cdot n)^2 + |n \times (B_\mathrm{out} - B_\mathrm{in})|^2$
+  over $B_0^2$: the normal field and the sheet current in one norm, with no
+  relative weights. With zero edge pressure the pressure balance
+  $|B_\mathrm{out}| = |B_\mathrm{in}|$ follows from
+  $B_\mathrm{out} = B_\mathrm{in}$, so it is not a row. All three terms are
+  still reported.
 
-One more row, $(G_\mathrm{plasma} - G_\mathrm{coil})/G_\mathrm{coil}$, fixes
-the net poloidal current. That direction is one that $B\cdot n$ cannot see.
-The solver minimizes $f(b) = \tfrac12 |r(b)|^2$.
+$B_0$ is the area-RMS $|B|$ on the seed boundary. The net poloidal current
+$G_\mathrm{plasma} = G_\mathrm{coil}$, a direction that $B\cdot n$ cannot
+see, is an equality constraint (as are the bootstrap current's rows, below).
+The solver minimizes $f(b) = \tfrac12 |r(b)|^2$ subject to them.
 
 ## Why the labelling must be fixed
 
@@ -80,14 +86,15 @@ at 8 modes with $p = 6$. For the
 vacuum benchmark the field-line distance of the last closed surface at 12 modes
 is 0.114 mm in that gauge, against 0.048 mm with the deck's labelling.
 
-### Constraint rows: the bootstrap current
+### Constraint rows: the net current and the bootstrap current
 
-With the bootstrap current in the solve, the current's rows are square in the
-current coordinates. They are equality constraints, not least-squares rows: any
-finite weight would trade the current against the interface conditions. The
-steps live in the null space of the current rows' Jacobian. Each
-trial is restored onto the current rows by chord Newton steps in the current
-coordinates. The Hessian is the Lagrangian's, with the current rows' multipliers.
+The net-current row and, with the bootstrap current in the solve, the current's
+rows are equality constraints, not least-squares rows: any finite weight would
+trade them against the interface conditions. The steps live in the null space
+of their Jacobian. Each trial is restored onto them by chord Newton steps
+(minimum-norm, scaled coordinates) to $\sqrt{\mathrm{FTOL}}$, the relative
+precision of an equilibrium's fields. The Hessian is the Lagrangian's, with the
+constraints' multipliers.
 
 ## The exact Hessian through the equilibrium
 

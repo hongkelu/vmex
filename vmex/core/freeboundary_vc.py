@@ -565,8 +565,12 @@ class ThreeTermsFreeBoundaryModel:
             boundary = jax.jacfwd(lambda x: self.with_boundary(self.params0, x))(jnp.asarray(self.x0))
             to_x = (boundary.rbc.reshape(-1, self.x0.size), boundary.zbs.reshape(-1, self.x0.size))
 
-        def interface_rows(state, params, field):
-            """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary)."""
+        def interface_rows(state, params, field, moments=False):
+            """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary).
+
+            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the transported ones,
+            the robust start of :meth:`solve_boundary` (no field in the test functions).
+            """
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
             G = jnp.abs(_vacuum_scalars(state, runtime)[1])
@@ -582,6 +586,8 @@ class ThreeTermsFreeBoundaryModel:
             B_out = vc.PlasmaVacuumInterface.from_surface_data(
                 data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
+            if moments:
+                return jnp.concatenate([2.0 * test_sine.reshape(test_sine.shape[0], -1) @ (weight * Bn), current])
             # test functions B.grad(cos(m theta - n nfp phi)) R0 / B0: a normal displacement h changes B . N by
             # -|N| B_t . grad h (the surface divergence of h B_t), the plasma's own response left out
             _, e_theta, e_phi = _surface_frame(jnp.ravel(params.rbc), jnp.ravel(params.zbs), xm, xn, phi, theta)
@@ -601,14 +607,15 @@ class ThreeTermsFreeBoundaryModel:
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
         im, cfg = self._im, self.cfg
 
-        def rows(state, params, field):
-            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field)]
+        def rows(state, params, field, moments=False):
+            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field, moments)]
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, im.runtime_from_params(params, cfg), params))
             return jnp.concatenate(parts)
 
         self.rows = rows
-        self._rows = jax.jit(rows)
+        self._rows = jax.jit(rows, static_argnames="moments")
+        self._moments = False  # solve_boundary's robust start (finite beta) uses the plain moments
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
@@ -643,8 +650,8 @@ class ThreeTermsFreeBoundaryModel:
 
         self._tangents = jax.jit(tangents)
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
-            lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
+        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
+            lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
@@ -783,7 +790,7 @@ class ThreeTermsFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x, tight)
+        return np.asarray(self._rows(state, params_x, field, moments=self._moments)), (state, mask, params_x, tight)
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -801,7 +808,8 @@ class ThreeTermsFreeBoundaryModel:
         for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
-        key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
+        key = _fingerprint(x, params_x, field) + ("moments" if self._moments else "")
+        extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
         if last is not None and last[0] == key and extra_key in (None, last[1]):
             J, dz, batch, aux = last[2]
@@ -833,7 +841,8 @@ class ThreeTermsFreeBoundaryModel:
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
-        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field,
+                                                        moments=self._moments)).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
@@ -931,7 +940,23 @@ class ThreeTermsFreeBoundaryModel:
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
         """
-        return self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        if out["converged"] or self.vacuum or self.fixed_boundary:
+            return out
+        # The transported rows carry the field in their test functions, and far from the answer Newton on them
+        # can stall; the plain moments (the same boundary modes) converge from farther: solve them first, then
+        # the transported rows from there.
+        if verbose:
+            print("Newton on the transported rows stalled: plain moments first", flush=True)
+        self._moments = True
+        try:
+            start = self._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)
+        finally:
+            self._moments = False
+        final = self._newton_boundary(params, field, x0=start["x"], max_nfev=max_nfev, verbose=verbose)
+        for key in ("nfev", "njev"):
+            final[key] += out[key] + start[key]
+        return final
 
 
 #: Boundary modes fewer than the interior's at finite beta (see ThreeTermsFreeBoundaryModel).

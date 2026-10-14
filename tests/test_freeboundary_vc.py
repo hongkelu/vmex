@@ -279,6 +279,7 @@ def test_square_galerkin_boundary_is_solved_by_newton_from_a_stale_jacobian():
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
     model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary = True, False
     model.x0, model.x_scale = np.zeros(2), np.ones(2)
     model.cfg = model.cfg_trial = None
     model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
@@ -304,6 +305,7 @@ def test_newton_stops_at_the_noise_of_the_rows():
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
     model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary = True, False
     model.x0, model.x_scale = np.zeros(2), np.ones(2)
     model.cfg = model.cfg_trial = None
     model.evaluate = lambda z, params, field, tight=False: (rows(z), (z, None, None, True))
@@ -481,6 +483,7 @@ def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():
         return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
 
     model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary = True, False
     model.x0, model.x_scale, model.cfg, model.cfg_trial = np.zeros(2), np.ones(2), "deck", "trial"
     model.evaluate = lambda z, params, field, tight=False: (rows(z, tight), (z, None, None, tight))
     model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
@@ -497,6 +500,7 @@ def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys
         return np.array([x[0] ** 2 + 1.0])  # no root: the cost is stationary at x = 0
 
     model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary = True, False
     model.x0, model.x_scale, model.cfg = np.zeros(1), np.ones(1), None
     model.cfg_trial = model.cfg
     model.evaluate = lambda z, params, field, tight=False: (
@@ -569,3 +573,24 @@ def test_finite_beta_rows_are_the_transported_normal_field_moments():
     expected = [np.sum(weights * bn * R0 / model.B0 * (k * nfp * b_p - m * b_t) * np.sin(m * theta - k * nfp * phi))
                 for m, k in model.boundary_modes[:-1]]
     np.testing.assert_allclose(rows[:-1], expected, rtol=1e-8, atol=1e-13)
+
+
+def test_finite_beta_newton_falls_back_on_the_plain_moments():
+    """Finite beta: when Newton on the transported rows stalls (here at a stationary point of the cost that is no
+    root), the plain moments are solved first and the transported rows from their answer."""
+
+    def rows(z, moments):
+        return np.array([z[0] + 1.7693]) if moments else np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
+
+    def jac(z, moments):
+        return np.array([[1.0]]) if moments else np.array([[3.0 * z[0] ** 2 - 2.0]])
+
+    model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    model.vacuum, model.fixed_boundary, model._moments = False, False, False
+    model.x0, model.x_scale, model.cfg = np.zeros(1), np.ones(1), None
+    model.cfg_trial = model.cfg
+    model.evaluate = lambda z, params, field, tight=False: (rows(z, model._moments), (z, None, None, True))
+    model.linearize = lambda z, aux, field, extra=None: (jac(z, model._moments), None, None, aux)
+    out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
+    assert out["converged"] and not model._moments
+    np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)

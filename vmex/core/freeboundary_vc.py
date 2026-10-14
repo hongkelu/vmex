@@ -132,7 +132,7 @@ def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digit
 
 
 def boundary_residual(inp: VmecInput, state, external_field: Any, *, runtime=None,
-                      nphi: int, ntheta: int, digits: int = 4, precision=None,
+                      nphi: int, ntheta: int, digits: int = vc.VC_DIGITS, precision=None,
                       p_edge: float = 0.0):
     """Pointwise interface conditions on the boundary of a live ``state``.
 
@@ -219,7 +219,37 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
     return jnp.sum(jnp.sum(B * N, axis=0) ** 2 / area) / jnp.sum(area)
 
 
-def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=128, nzeta=64, direction=None):
+#: Relative change of the displacement map under a doubled grid at which its grid counts as converged: the map's
+#: error then moves a boundary displacement ``h`` by less than ``sqrt(eps) |h|``, below the Newton step tolerance
+#: (:func:`newton_step_converged`).  LP QA 8 x 8 / 12 x 12 decks (``paper/runs/b23``): 64 x 32 -> 128 x 64 changes
+#: the map by 1.8e-7 / 1.1e-4, 128 x 64 -> 256 x 128 by 9e-14 / 1.2e-12.
+_MAP_GRID_RTOL = float(np.sqrt(np.finfo(float).eps))
+
+
+def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None):
+    """:func:`_normal_displacement_map_on` on a grid that resolves it: from four points per boundary harmonic in
+    each direction (``4 mpol`` poloidal, ``4 ntor + 4`` per field period), doubled until a doubling changes the map
+    by less than ``_MAP_GRID_RTOL`` of its largest entry.  The displacement times the direction field
+    ``g = n / (n_R^2 + n_Z^2)`` is not band-limited, so the fit depends on the grid until it is resolved.
+    ``ntheta, nzeta`` fix the grid instead (no convergence check)."""
+    if ntheta is not None and nzeta is not None:
+        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction)
+    ntor, mpol = (np.shape(inp.rbc)[0] - 1) // 2, np.shape(inp.rbc)[1]
+    nt, nz = 4 * mpol, 4 * ntor + 4
+    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+    while True:
+        nt, nz = 2 * nt, 2 * nz
+        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+        change = np.max(np.abs(finer[0] - out[0])) / np.max(np.abs(finer[0]))
+        out = finer
+        if change <= _MAP_GRID_RTOL:
+            return out
+        if nt * nz > 2**22:  # 4M points: the map does not converge (a non-smooth direction field)
+            raise ValueError(f"the boundary displacement map does not converge in its grid ({change:.1e} at "
+                             f"{nt} x {nz})")
+
+
+def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
     """Boundary coordinates as a normal displacement of ``inp``'s surface: ``(M, modes, x_scale)``.
 
     ``h(theta, zeta) = sum h_mn cos(m theta - n nfp zeta)`` over ``modes`` (those of
@@ -239,6 +269,7 @@ def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=128, nzeta=64, dir
     ns, ms = np.arange(-ntor, ntor + 1), np.arange(mpol)
     ph = ms[None, :, None, None] * T[None, None] - ns[:, None, None, None] * nfp * Zg[None, None]
     cos, sin = np.cos(ph), np.sin(ph)
+    del ph
     R = np.einsum("nm,nmij->ij", rbc, cos)
     Rt = np.einsum("nm,nmij->ij", -rbc * ms[None, :], sin)
     Zt = np.einsum("nm,nmij->ij", zbs * ms[None, :], cos)
@@ -314,6 +345,33 @@ def _newton_step(J, r):
     return -np.linalg.solve(J, r)
 
 
+#: Surface grid points per field period, in each direction, per harmonic of the deck's interior (``mpol``,
+#: ``ntor``): the rows integrate products of the edge field, the geometry and the test functions, none band-limited
+#: (the coils' field is not).  Measured on the LP QA 2.5 % beta deck, 8 x 8 (``paper/runs/b23``): against a
+#: 96 x 96 grid, 4 points per harmonic (32) leave 1.3 % in the pressure-balance RMS, 6 (48) leave 2e-4 of it and
+#: 2e-6 of the B.n RMS.
+_GRID_POINTS_PER_HARMONIC = 6
+
+
+def interface_grid(inp) -> tuple[int, int]:
+    """``(nphi, ntheta)`` per field period of the interface rows of the deck ``inp``.
+
+    ``_GRID_POINTS_PER_HARMONIC * max(mpol, ntor)`` in both directions (one rule for both: the edge field's
+    harmonics follow the field lines, which mix the two).  The default of :class:`ThreeTermsFreeBoundaryModel`.
+    """
+    n = _GRID_POINTS_PER_HARMONIC * max(int(inp.mpol), int(inp.ntor), 1)
+    return n, n
+
+
+def interface_quadrature(nfp: int, nphi: int, ntheta: int) -> tuple[int, int]:
+    """The virtual-casing singular quadrature ``(quad_nt, quad_np)`` for an ``nphi x ntheta`` field-period grid:
+    ``(4 nfp nphi, 2 ntheta)``.  With ``quad_np = ntheta`` the tangential plasma field is off by ~3e-4 ``|B|`` on
+    the LP QA 2.5 % beta boundary; planning the quadrature from its own error estimate instead can exhaust a GPU on
+    a strongly shaped boundary.  The default of :class:`ThreeTermsFreeBoundaryModel`.
+    """
+    return 4 * int(nfp) * int(nphi), 2 * int(ntheta)
+
+
 def solve_free_boundary_three_terms(
     inp: VmecInput,
     *,
@@ -323,7 +381,7 @@ def solve_free_boundary_three_terms(
     max_mode: int | None = None,
     nphi: int | None = None,
     ntheta: int | None = None,
-    digits: int = 4,
+    digits: int = vc.VC_DIGITS,
     max_nfev: int = 60,
     quadrature: tuple[int, int] | None = None,
     trial_ftol: float | None = None,
@@ -350,9 +408,10 @@ def solve_free_boundary_three_terms(
     ESSOS Biot-Savart field, or a coil field with ``b_cyl``).
 
     The equations (module docstring) are Newton-solved on an ``nphi x ntheta``
-    grid over one field period (default 48 x 48), with the virtual-casing
-    quadrature planned once on the deck to ``digits`` (or fixed by
-    ``quadrature``), to at most ``max_nfev`` evaluations.  ``previous``, an
+    grid over one field period (default :func:`interface_grid`), with the
+    virtual-casing singular quadrature ``quadrature`` (default
+    :func:`interface_quadrature`) and its singular patches planned once on
+    the deck to ``digits``, to at most ``max_nfev`` evaluations.  ``previous``, an
     earlier result for the same deck (typically before a coil change), starts
     from its boundary, Jacobian and model: neither new coils nor a repeat
     solve compile anything.  ``trial_ftol`` and ``chunk`` are
@@ -392,7 +451,7 @@ def solve_free_boundary_three_terms(
         seed_state, seed_params = previous.aux[0], previous.aux[2]
     else:
         model = ThreeTermsFreeBoundaryModel(
-            inp, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
+            inp, max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
         x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
@@ -456,11 +515,10 @@ class ThreeTermsFreeBoundaryModel:
 
     ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
     force residual (each is re-solved to the deck's before it is
-    differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
-    quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
-    ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
-    shaped boundary; use ``(4 nfp nphi, 2 ntheta)`` (finite beta: with
-    ``quad_np = ntheta`` the tangential plasma field is off by ~3e-4 ``|B|``).
+    differentiated).  ``nphi x ntheta`` is the rows' grid over one field period (default
+    :func:`interface_grid`); ``quadrature = (quad_nt, quad_np)`` is the virtual-casing singular quadrature
+    (default :func:`interface_quadrature`; ``quad_nt`` a multiple of ``nfp * nphi``) and ``digits`` the accuracy
+    its singular patches are planned to (default :data:`~vmex.core.virtual_casing.VC_DIGITS`).
     ``chunk`` bounds the Jacobian columns per batch.
 
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
@@ -479,7 +537,8 @@ class ThreeTermsFreeBoundaryModel:
     single stage's equilibrium, with the same Jacobians and pullbacks.
     """
 
-    def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4, chunk=8, device=None,
+    def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
+                 device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
                  fixed_boundary=False):
         from . import implicit as im
@@ -576,7 +635,10 @@ class ThreeTermsFreeBoundaryModel:
             normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
             self._normal_map = jnp.asarray(normal_map)
         if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature)
+            grid = interface_grid(fixed)
+            self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
+            self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
+            self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
         self._implicit_setup()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
@@ -588,7 +650,7 @@ class ThreeTermsFreeBoundaryModel:
         nfp = int(fixed.nfp)
         runtime = im.runtime_from_params(self.params0, cfg)
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
-        quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
+        quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
         else:

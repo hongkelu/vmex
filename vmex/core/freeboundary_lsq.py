@@ -554,12 +554,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         r = np.asarray(self._rows(state, params_x, field))
         if not columns:
             def hvp(v):
-                """``H v``: the Hessian column of the direction ``sum_j v_j (dp_j, dz_j)``."""
-                vj = jnp.asarray(v)[None]
+                """``H v`` for every row ``v`` of ``(b, n)`` (one program call; ``b`` the block width)."""
+                vj = jnp.asarray(np.atleast_2d(v))
                 one = lambda a: jnp.tensordot(vj, a, axes=1)  # noqa: E731
                 with vc.remat_scans():
                     return np.asarray(self._hessian_columns(state, mask, params_x, field, lam, jax.tree.map(one, dz_b),
-                                                            jax.tree.map(one, dp_b), dz_b, dp_b))[0]
+                                                            jax.tree.map(one, dp_b), dz_b, dp_b))
 
             out = dict(hvp=hvp, g=J[:, :n].T @ r, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
                        aux=aux, lam=lam, dz=dz, batch=batch, asymmetry=np.nan, adjoint=float(adjoint),
@@ -588,45 +588,52 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         return np.asarray(self._project(self.boundary_directions(params_x, x), grad_p))
 
     def _krylov_model(self, so, N, GN, Hg, S, gs, gq_norm_first):
-        """Preconditioned Lanczos subspace of the exact reduced Hessian; sets ``self._krylov_T``.
+        """Preconditioned block-Krylov subspace of the exact reduced Hessian; sets ``self._krylov_T``.
 
-        Returns the subspace basis in the scaled model coordinates (``n x k``, to use in place of ``N``) and the
-        forcing term's scale.  ``Hg`` is the scaled gauge-constraint Hessian (``0`` without a gauge).
+        Block Lanczos with ``hessian_chunk`` vectors a block (one program call computes a block's Hessian
+        products), starting from the preconditioned gradient and fixed pseudo-random directions; the subspace
+        grows until the Newton step on it has a residual below ``eta |g|`` (``eta = min(1/2, sqrt(|g| /
+        |g_first|))``, the Eisenstat-Walker choice for superlinear convergence).  Returns the subspace basis in the
+        scaled model coordinates (``n x k``, in place of ``N``; orthonormal, so radii mean the same for every
+        model) and the forcing term's scale.  ``Hg`` is the scaled gauge-constraint Hessian (``0`` without one).
         """
         Nr = N
         wg, Qg = np.linalg.eigh(Nr.T @ GN @ Nr)
         wg = np.maximum(wg, np.finfo(float).eps * wg[-1])  # J^T J is positive semidefinite: round-off floor
         Mih = (Qg / np.sqrt(wg)) @ Qg.T
 
-        def op(v):
-            step = Nr @ (Mih @ v)
-            return Mih @ (Nr.T @ (S * so["hvp"](S * step) + (Hg @ step if np.ndim(Hg) else 0.0)))
+        def op(V):  # V: (n_r, b) in the preconditioned reduced coordinates
+            steps = Nr @ (Mih @ V)  # (n, b) scaled
+            HV = (S[:, None] * so["hvp"]((S[:, None] * steps).T).T) + (Hg @ steps if np.ndim(Hg) else 0.0)
+            return Mih @ (Nr.T @ HV)
 
         g = Mih @ (Nr.T @ gs)
         g_norm = float(np.linalg.norm(g))
         gq_norm_first = g_norm if gq_norm_first is None else gq_norm_first
         eta = min(0.5, np.sqrt(g_norm / max(gq_norm_first, 1e-300)))
-        K, alphas, betas = [g / max(g_norm, 1e-300)], [], []
-        for j in range(g.size):
-            w = op(K[j])
-            alphas.append(float(K[j] @ w))
-            Kj = np.asarray(K)
-            w = w - Kj.T @ (Kj @ w)  # full reorthogonalization (the subspace stays small)
-            w = w - Kj.T @ (Kj @ w)
-            T = np.diag(alphas) + np.diag(betas, 1) + np.diag(betas, -1)
+        width = max(1, min(self.hessian_chunk, g.size))
+        start = np.column_stack([g, np.random.default_rng(0).standard_normal((g.size, width - 1))])
+        V = np.linalg.qr(start)[0]
+        K, HK = np.zeros((g.size, 0)), np.zeros((g.size, 0))
+        while True:
+            W = op(V)
+            K, HK = np.hstack([K, V]), np.hstack([HK, W])
+            T = 0.5 * (K.T @ HK + HK.T @ K)
             ev = np.linalg.eigvalsh(T)
-            beta = float(np.linalg.norm(w))
-            if ev[0] > 0:  # the Newton step on the subspace, and its residual beta |e_k^T y|
-                y = np.linalg.solve(T, g_norm * np.eye(len(alphas))[0])
-                if beta * abs(y[-1]) <= eta * g_norm:
+            if ev[0] > 0:  # the Newton step on the subspace and its true residual H K y - g
+                y = np.linalg.solve(T, K.T @ g)
+                if np.linalg.norm(HK @ y - g) <= eta * g_norm:
                     break
-            if beta <= np.finfo(float).eps * max(abs(ev).max(), 1e-300):
+            if K.shape[1] >= g.size:
                 break
-            betas.append(beta)
-            K.append(w / beta)
-        # the subspace in the trust region's own metric (Euclidean in the scaled reduced coordinates): an
-        # orthonormal basis Q R = Mih K and the tridiagonal in it, so that radii mean the same for every model
-        Qb, Rb = np.linalg.qr(Mih @ np.asarray(K[:len(alphas)]).T)
+            W = W - K @ (K.T @ W)
+            W = W - K @ (K.T @ W)  # full reorthogonalization (the subspace stays small)
+            Q, R = np.linalg.qr(W)
+            keep = np.abs(np.diag(R)) > np.finfo(float).eps * max(np.abs(ev).max(), 1e-300) * 1e3
+            if not np.any(keep):
+                break
+            V = Q[:, keep][:, :g.size - K.shape[1]]
+        Qb, Rb = np.linalg.qr(Mih @ K)
         Rinv = np.linalg.inv(Rb)
         self._krylov_T = Rinv.T @ T @ Rinv
         return Nr @ Qb, gq_norm_first

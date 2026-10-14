@@ -985,9 +985,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     :func:`vmex.core.optimize.minimize`.  ``loss``, ``quantities``, ``parameter_quantities``,
     ``field_from_parameters`` and ``plasma_from_parameters`` are as there.  Every trial is the K = 0 boundary
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsFreeBoundaryModel`), warm-started from the
-    first-order prediction of the latest linearized solution; a trial without a certified solution raises
-    :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
-    implicit function theorem of the (square) boundary equations,
+    first-order prediction of the latest linearized solution; a trial without a certified solution, or whose
+    boundary fit did not converge from any start (a stalled Newton solve is no free boundary, whatever its
+    residual), raises :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design
+    gradient of the implicit function theorem of the (square) boundary equations,
 
         dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b^-T dh/db,
 
@@ -1108,6 +1109,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, max_nfev=self.boundary_max_nfev)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
+            if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
+                self.stats["boundary_evaluations"] += fit["nfev"]
+                fit = None
+                continue
             if self.boundary_max_residual is not None:
                 state, _, params_b, _ = fit["aux"]
                 residual = self.model.boundary_residual(state, params_b, field)
@@ -1159,6 +1164,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         polished = model.solve_boundary(params_x, field, x0=sol["x"], jacobian=J[:, :nb],
                                         max_nfev=self.boundary_max_nfev)
         self.stats["boundary_evaluations"] += polished["nfev"]
+        if not polished["converged"]:
+            raise TrialRejected("the polish of the boundary did not converge")
         if polished["njev"]:  # J's own steps stalled and fresh ones finished: the anchor is relinearized there
             sol.update(x=polished["x"], aux=polished["aux"])
             J = relinearize()

@@ -386,6 +386,24 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution
     with pytest.raises(TrialRejected):
         problem.fun(x0 + 1e-3 * np.eye(2)[0])
+    # a boundary fit that did not converge is a failed trial, never a value (whatever its residual)
+    problem.boundary_max_residual = None
+    solve = problem.model.solve_boundary
+    problem.model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    failed = problem.stats["failed"]
+    with pytest.raises(TrialRejected):
+        problem.fun(x0 + 1.5e-3 * np.eye(2)[0])
+    assert problem.stats["failed"] == failed + 1
+    calls = []  # the trial's fit converges, the gradient's polish of it does not: no gradient either
+
+    def polish_stalls(*args, **kwargs):
+        calls.append(1)
+        return dict(solve(*args, **kwargs), converged=len(calls) == 1)
+
+    problem.model.solve_boundary = polish_stalls
+    with pytest.raises(TrialRejected, match="polish"):
+        problem.value_and_grad(x0 + 2.5e-3 * np.eye(2)[0])
+    problem.model.solve_boundary = solve
 
 
 def _lp_beta0p5_profiles(inp):

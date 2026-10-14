@@ -7,6 +7,9 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased
 
+- The bootstrap current solved with the equilibrium (`HalfMeshCurrent`) keeps a knot on every half-mesh surface at
+  any `ns` (it was capped at 97 by VMEC2000's `ndatafmax`); only an INDATA namelist or a WOUT echo of a longer
+  profile is refit to a 101-knot subset, with a warning (`vmex.core.input.fit_aux_knots`).
 - One fixed-boundary state per boundary (`freeze_m1`); the three-terms free boundary is a square Newton system
   (vacuum: least squares of B.n). LP QH 12 x 12 vacuum: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm.
 - `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)

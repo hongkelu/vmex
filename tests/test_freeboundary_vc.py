@@ -751,7 +751,7 @@ def test_gradient_programs_compile_from_placeholders_on_background_threads(fail)
     implicit._zeros_like_structure = lambda cfg, shapes: jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shapes)
     implicit._refine_block_factor_core = lambda z, params, frozen, mask, cfg: (z * params, frozen + mask)
     model = type("Model", (), {"_im": implicit, "params0": jnp.ones(3), "chunk": 2})()
-    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4, "jacobian_adjoint_maxiter": 10})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
     problem = type("Problem", (), {"model": model, "_pullback": _Program(fail), "_direct": _Program(fail)})()
     threads = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(4))
     for thread in threads:
@@ -770,7 +770,7 @@ def test_model_warm_up_threads_swallow_their_failures(fail):
 
     implicit = _Implicit(fail)
     model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
-    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11})()
     fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
     model._warm.join()
     for thread in threading.enumerate():
@@ -825,9 +825,23 @@ def test_warm_ups_stay_off_on_a_single_cpu():
     """A process confined to one CPU starts no warm-up thread: there is nothing to overlap."""
     implicit = _Implicit(cpus=1)
     model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
-    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4, "jacobian_adjoint_maxiter": 10})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
     fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
     assert model._warm is None
     problem = type("Problem", (), {"model": model, "_pullback": _Program(), "_direct": _Program()})()
     assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(2)) == (None, None)
     assert implicit.calls == []
+
+
+def test_uncertified_state_responses_are_an_error():
+    """A response column that misses its certificate stops the linearization instead of entering the Jacobian."""
+    from vmex.core.implicit import LinearResponseReport
+
+    def report(converged):
+        n = len(converged)
+        return LinearResponseReport(residual_norm=np.full(n, 2.0), tolerance=np.ones(n),
+                                    iterations=np.zeros(n, int), converged=np.asarray(converged))
+
+    assert fvc._certified("dz", report([True, True])) == "dz"
+    with pytest.raises(RuntimeError, match="1 of 2 state responses"):
+        fvc._certified("dz", report([True, False]))

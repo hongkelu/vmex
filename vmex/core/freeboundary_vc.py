@@ -530,6 +530,21 @@ def _surface_data(fixed, cfg, state, params, nphi, ntheta):
     return vc.VmecSurfaceFieldData(**values, **static)
 
 
+def _certified(responses, report):
+    """``responses`` if every column's linear solve met its certificate, else a ``RuntimeError``.
+
+    The boundary Jacobian and the design gradients are built from these state responses; an uncertified one
+    would enter them silently.  ``RuntimeError`` is what a trial's failed linearization raises: the Newton
+    solve stops, and the single-stage problem rejects the trial.
+    """
+    converged = np.asarray(report.converged)
+    if not bool(np.all(converged)):
+        worst = float(np.max(np.asarray(report.residual_norm) / np.asarray(report.tolerance)))
+        raise RuntimeError(f"{int(np.sum(~converged))} of {converged.size} state responses of the boundary "
+                           f"Jacobian missed their certificate (worst residual {worst:.3g} x the tolerance)")
+    return responses
+
+
 def _try(function, *args):
     """``function(*args)``, or the exception it raised (for a worker thread to hand back)."""
     try:
@@ -716,7 +731,7 @@ class ThreeTermsFreeBoundaryModel:
 
         def tangents():
             try:
-                im.warm_staged_tangent(cfg, params, chunk=chunk, certify_rtol=cfg.jacobian_adjoint_tol)
+                im.warm_staged_tangent(cfg, params, chunk=chunk, certify_rtol=cfg.adjoint_tol)
             except Exception:  # cache warming only
                 pass
 
@@ -823,10 +838,15 @@ class ThreeTermsFreeBoundaryModel:
             """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
 
             Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
-            forward refinement's compiled program, then the block solve and the GMRES corrector."""
-            return im.staged_tangent_multi_rhs(
+            forward refinement's compiled program, then the block solve and the GMRES corrector.  A column the
+            corrector and the refinement leave uncertified is an error (:func:`_certified`), never a silent
+            column of the Jacobian.  The columns are certified to the adjoint tolerance (``adjoint_tol``), not the
+            looser one for least-squares Jacobians: they are the boundary Jacobian of a square Newton solve and
+            the implicit-function-theorem design gradients, which must be exact.  The block-direct responses
+            usually meet it outright (the raw block system is the exact radial linearization)."""
+            return _certified(*im.staged_tangent_multi_rhs(
                 params, cfg, state, mask, batch, chunk=self.chunk,
-                certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
+                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter))
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
@@ -1480,8 +1500,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         def tangents():
             try:
-                im.warm_staged_tangent(cfg, params0, chunk=model.chunk, certify_rtol=cfg.jacobian_adjoint_tol,
-                                       certify_maxiter=cfg.jacobian_adjoint_maxiter, fallbacks=True)
+                im.warm_staged_tangent(cfg, params0, chunk=model.chunk, certify_rtol=cfg.adjoint_tol,
+                                       certify_maxiter=cfg.adjoint_maxiter, fallbacks=True)
             except Exception:  # cache warming only: the real calls compile on demand
                 pass
 

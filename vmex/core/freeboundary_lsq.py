@@ -39,7 +39,7 @@ from . import virtual_casing as vc
 from .errors import TrialRejected
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
                               _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
-                              _net_current, _surface_data, summarize_boundary_residual)
+                              _net_current, summarize_boundary_residual)
 from .input import VmecInput
 
 
@@ -145,14 +145,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
+    def _interface_setup(self, state, surface, nphi, ntheta, digits, quadrature):
         """The least-squares rows, with the quadrature plan of the seed ``state`` (none in vacuum)."""
         from .freeboundary import _vacuum_scalars
         from types import SimpleNamespace
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        surface = _surface_data(fixed, cfg, state, self.params0, nphi, ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
@@ -163,9 +162,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         n_axis = int(cfg.resolution.ntor) + 1
         axis_points, axis_tangent, axis_dphi = _axis_loop(
             SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
-        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
-        # B0: the area-RMS |B| on the seed boundary, the rows' constant field unit
-        self.B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
+        # self.B0 (the base model's area-RMS |B| on the seed boundary) is the rows' constant field unit
         # The run's constants enter the compiled rows as arguments (_Bundle), not as closed-over arrays.
         self._consts = dict(axis=(axis_points, axis_tangent, jnp.asarray(axis_dphi)), B0=jnp.asarray(self.B0))
         vacuum = self.vacuum
@@ -864,7 +861,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
                                       nphi: int | None = None, ntheta: int | None = None, digits: int = 4,
                                       max_nfev: int = 60, quadrature: tuple[int, int] | None = None,
                                       trial_ftol: float | None = None, chunk: int = 8, bootstrap=None,
-                                      bootstrap_helicity: int = 0, bootstrap_weight: float = 100.0, previous=None,
+                                      bootstrap_helicity: int = 0, previous=None,
                                       verbose: int = 0):
     """:func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` with ``method="least_squares"``.
 
@@ -891,7 +888,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
         model = LeastSquaresFreeBoundaryModel(
             inp, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
+            bootstrap_helicity=bootstrap_helicity)
         x0 = None
         if initial_boundary is not None:
             x0 = np.r_[model.displacement_of(initial_boundary), model.x0[model.n_boundary:]]

@@ -456,7 +456,7 @@ def solve_free_boundary_three_terms(
             inp, external_field=external_field, mgrid_path=mgrid_path, initial_boundary=initial_boundary,
             max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, max_nfev=max_nfev, quadrature=quadrature,
             trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
-            bootstrap_weight=bootstrap_weight, previous=previous, verbose=verbose)
+            previous=previous, verbose=verbose)
     if method != "galerkin":
         raise ValueError(f"method must be 'galerkin' or 'least_squares', got {method!r}")
     if bool(inp.lasym):

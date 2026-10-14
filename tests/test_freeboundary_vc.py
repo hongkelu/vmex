@@ -494,6 +494,34 @@ def test_bootstrap_current_profile_layout():
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
 
 
+def test_bootstrap_rows_are_the_current_errors_field_over_b0():
+    """The rows are sqrt(w_j) (I' - I'_Redl) / unit with w_j = d CURTOR / d v_j and unit = L B0 / mu0: their
+    squared norm is the integral over s of the error's poloidal field over B0, at any ns; no weight to tune."""
+    import jax
+    from vmex.core.bootstrap import HalfMeshCurrent
+    from vmex.core.profiles import MU0
+
+    for ns in (13, 25):
+        inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, ns), lfreeb=False)
+        block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
+        curtor = jax.grad(lambda v: block.current(block.values(v), 1.0))(jnp.asarray(block.x0))
+        np.testing.assert_allclose(block.weights, curtor, rtol=1e-12, atol=1e-15)
+        assert block.weights.sum() == pytest.approx(1.0 - 0.5 * block.knots[1]) and np.all(block.weights > 0)  # I'(0) = 0
+        with pytest.raises(ValueError, match="unit is not set"):
+            block.x_scale
+        with pytest.raises(ValueError, match="unit is not set"):
+            block.rows(None, None, None)
+        with pytest.raises(ValueError, match="positive and finite"):
+            block.set_unit(0.0, 1.0)
+        block.set_unit(0.5, 2.0)
+        assert block.unit == pytest.approx(1.0 / MU0)
+        np.testing.assert_allclose(block.x_scale, 1.0 / MU0)
+        error = 1e5 * np.ones(block.x0.size)  # a uniform error of 1e5 A per unit s
+        block.mismatch = lambda *_: (jnp.asarray(error), None)
+        rows = np.asarray(block.rows(None, None, None))
+        assert np.sum(rows**2) == pytest.approx((1e5 * MU0) ** 2 * (1.0 - 0.5 * block.knots[1]), rel=1e-12)
+
+
 def test_bootstrap_current_has_a_knot_per_surface_beyond_ndatafmax(tmp_path):
     """ns = 101 (the interior the finite-beta interface terms need): 105 knots, more than VMEC2000's 101; the
     profile keeps them all and only an INDATA namelist of it is refit to 101."""

@@ -815,12 +815,23 @@ class HalfMeshCurrent:
     """A current profile with a value on every half-mesh surface, solved to be Redl's bootstrap current.
 
     ``I'(s)`` is a line-segment profile (``line_segment_ip``) with a knot on every half-mesh surface
-    ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each surface
-    has the row ``weight (I'(s_j) - I'_Redl(s_j)) / I'_ref / sqrt(ns - 1)``
-    (:func:`redl_current_derivative`; ``I'_ref`` the largest starting value): a square block, so the
-    current is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with
-    the boundary (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
-    ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
+    ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each knot has the row
+    ``sqrt(w_j) (I'(s_j) - I'_Redl(s_j)) / unit`` (:func:`redl_current_derivative`), a square block, so the current
+    is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with the boundary
+    (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with ``profile="half_mesh"`` by
+    fixed-point iteration at a fixed boundary.
+
+    The rows' scale is the interface rows' own, not a weight.  ``w_j`` are the knots' trapezoid weights in the
+    profile's integral (``1 / (ns - 1)`` on the half mesh), so the block's squared norm is the integral over ``s`` of
+    ``((I' - I'_Redl) / unit)^2``, the same at any ``ns``; ``unit = L B0 / mu0`` (:meth:`set_unit`, by the model from
+    its seed boundary: ``L`` the mean poloidal circumference, ``B0`` the area-RMS ``|B|`` that also scales the
+    interface rows) is the toroidal current whose poloidal field on the boundary is ``B0``.  A current error is thus
+    measured by the field it carries over ``|B|``, as ``B . n / B0`` and the net-current row ``(G - G_coil) /
+    G_coil`` are.  The square Newton solve of the free boundary does not depend on the scale (its root is where every
+    row vanishes).  The former rows ``100 (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (``I'_ref`` the deck's largest
+    ``I'``) weighed the current ~100 times the interface rows, so the Newton Jacobian's conditioning and the merit
+    function hung on a tuned number and on the starting current (qa4-beta 8 x 8: scaled Jacobian cond 1.4e7, cold
+    solve stalled; in these units 5.3e4, the boundary block's own, and 7 Newton evaluations).
 
     ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped
     fraction -- and inside ``s_1`` knots at ``s_1 / 64, s_1 / 16, s_1 / 4`` carry Redl's current on the
@@ -828,7 +839,7 @@ class HalfMeshCurrent:
     (``s^(1/4)`` in the banana regime, decaying where the collisionality diverges): unknowns with a row
     each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
     CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
-    its own current's derivative.  ``weight`` is the model's ``bootstrap_weight``.
+    its own current's derivative (``x0``, the initial condition only).
 
     The knot count ``ns + 4`` is not bound by VMEC2000's ``ndatafmax`` (101): VMEX's profiles have any length.
     Only an INDATA namelist or a WOUT holds at most 101 knots; writing one refits the profile to a subset of its
@@ -837,7 +848,7 @@ class HalfMeshCurrent:
 
     SUB = (1 / 64, 1 / 16, 1 / 4)
 
-    def __init__(self, deck, profiles, helicity_n, weight=1.0):
+    def __init__(self, deck, profiles, helicity_n):
         from .profiles import current
 
         if int(deck.ncurr) != 1:
@@ -851,13 +862,28 @@ class HalfMeshCurrent:
         edge = float(enclosed(jnp.asarray(1.0)))
         slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[1:-1])))
         self.x0 = float(deck.curtor) / edge * slope if edge else np.zeros(slope.size)  # the deck's current, in A
-        self.ref = float(np.max(np.abs(self.x0))) or 1e4
-        self.x_scale = np.full(slope.size, self.ref)
-        self.weight = float(weight) / np.sqrt(ns - 1)
+        # d CURTOR / d v: the unknown knots' trapezoid weights, with the edge value 2 v[-1] - v[-2] on the last interval
+        self.weights = 0.5 * (self.knots[2:] - self.knots[:-2])
+        self.weights[-2:] += (self.knots[-1] - self.knots[-2]) * np.array([-0.5, 1.0])
+        self.unit = None
         self.profiles, self.helicity_n = profiles, int(helicity_n)
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
         self.deck = dataclasses.replace(deck, pcurr_type="line_segment_ip", ac_aux_s=self.knots,
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
+
+    def set_unit(self, length, field):
+        """Measure the current in ``unit = length field / mu0`` [A]: ``length`` the boundary's mean poloidal
+        circumference [m] and ``field`` its RMS ``|B|`` [T].  Also the coordinates' scale ``x_scale``."""
+        self.unit = float(length) * float(field) / MU0
+        if not (np.isfinite(self.unit) and self.unit > 0):
+            raise ValueError(f"the current unit must be positive and finite, got {self.unit}")
+
+    @property
+    def x_scale(self):
+        """The coordinates' scale: :attr:`unit` (set by :meth:`set_unit`) on every knot."""
+        if self.unit is None:
+            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
+        return np.full(self.x0.size, self.unit)
 
     def values(self, v):
         """Every knot value from the unknowns ``v`` (the sub-axis knots', then the half-mesh ones)."""
@@ -886,8 +912,10 @@ class HalfMeshCurrent:
         return params.ac_aux_f[1 : 1 + target.size] - target, target
 
     def rows(self, state, runtime, params):
-        """The self-consistency rows ``weight (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (traceable)."""
-        return self.weight * self.mismatch(state, runtime, params)[0] / self.ref
+        """The self-consistency rows ``sqrt(w_j) (I' - I'_Redl) / unit`` (traceable)."""
+        if self.unit is None:
+            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
+        return jnp.asarray(np.sqrt(self.weights) / self.unit) * self.mismatch(state, runtime, params)[0]
 
 
 def vmec_j_dot_B(

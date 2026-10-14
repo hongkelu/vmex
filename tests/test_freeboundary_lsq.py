@@ -18,7 +18,6 @@ import pytest
 jax = pytest.importorskip("jax")
 jax.config.update("jax_enable_x64", True)
 
-import jax.numpy as jnp  # noqa: E402
 
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_lsq as lsq  # noqa: E402
@@ -52,7 +51,7 @@ def test_exact_hessian_matches_gradient_differences(model_and_field):
     """H v from the second-order adjoint against central differences of the exact gradient J^T r, and the
     gradient from the multiplier against J^T r."""
     model, field = model_and_field
-    x = model.gauge_restore(model.x0)
+    x = np.array(model.x0)
     _, aux = model.evaluate(x, model.params0, field, tight=True)
     so = model.second_order(x, aux, field)
     assert so["asymmetry"] < 1e-8
@@ -72,11 +71,12 @@ def test_exact_hessian_matches_gradient_differences(model_and_field):
 
 @pytest.mark.usefixtures("_module_jit_enabled")
 def test_solve_is_start_independent(model_and_field):
-    """Two starts (the deck, and the deck shrunk by 3 % and relabelled) reach the same boundary at finite beta,
+    """Two starts (the deck, and a random displacement of it) reach the same boundary at finite beta,
     with a positive-definite reduced Hessian."""
     model, field = model_and_field
-    start = np.array(model._relabel(jnp.asarray(model.x0), 2e-2 * jnp.ones(model.n_gauge)))
-    start[:-1] *= np.where(np.abs(start[:-1]) > 0.5, 1.0, 0.97)  # every coefficient but the major radius
+    nb = model.n_boundary
+    start = model.x0.copy()
+    start[:nb] += 0.3 * model.x_scale[:nb] * np.random.default_rng(1).standard_normal(nb)
     ends = []
     for x0 in (None, start):
         out = model.solve_boundary(model.params0, field, x0=x0, max_iter=40)

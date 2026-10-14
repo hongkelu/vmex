@@ -4,7 +4,7 @@ This page covers ``method="least_squares"`` of
 {func}`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 ({mod}`vmex.core.freeboundary_lsq`; the default, ``method="galerkin"``, solves a
 square system for the deck's normal displacement, and is faster): what it
-minimizes, why the poloidal labelling of the boundary needs a gauge, how the
+minimizes, why the poloidal labelling must be fixed, how the
 exact Hessian is built through the equilibrium, and how the design gradients
 of a single-stage problem follow from it.
 
@@ -30,7 +30,7 @@ One more row, $(G_\mathrm{plasma} - G_\mathrm{coil})/G_\mathrm{coil}$, fixes
 the net poloidal current. That direction is one that $B\cdot n$ cannot see.
 The solver minimizes $f(b) = \tfrac12 |r(b)|^2$.
 
-## Why the labelling needs a gauge
+## Why the labelling must be fixed
 
 A set of boundary coefficients describes a surface *and* a poloidal angle on
 it. The relabelling $\theta \to \theta + \omega(\theta, \phi)$ leaves the
@@ -51,18 +51,23 @@ every start solve a different problem. Run to full convergence from three
 starts, that gives quasi-symmetry residuals of $4.5$, $3.4$ and
 $3.8 \cdot 10^{-6}$, on surfaces 0.1 mm apart.
 
-The solver therefore fixes the labelling by exact linear constraints $c(b) = 0$,
-one per relabelling mode $\sin(m\theta - n N_{fp}\phi)$, including the $m = 0$
-shifts of the angle origin. As in the Galerkin method, the deck's boundary
-$b_\mathrm{deck}$ fixes the labelling: the displacement $b - b_\mathrm{deck}$
-has no component along the deck's relabellings (ESS-scaled metric). Only the
-labelling is fixed; the shape stays free. The start (``initial_boundary``) is
-projected onto $c = 0$, so every start reaches the same boundary.
+The solver therefore uses the Galerkin method's unknowns instead of the
+coefficients: the displacement of the deck's boundary along its radial
+coordinate lines, one coefficient per boundary mode. These displacements are
+normal to the deck, so the deck fixes the labelling and no tangential
+(relabelling) direction is left. The start (``initial_boundary``) is
+converted to such a displacement, so every start reaches the same boundary.
 
-Newton steps stay in the null space of $\nabla c$, and each trial is
-projected back onto $c = 0$ (exact, since $c$ is linear).
+A first version kept the coefficients and constrained the displacement from the
+deck to have no component along the deck's relabellings. That removes the
+relabellings with the boundary's own modes, but not the tangential
+displacements that the truncated relabellings with higher modes produce. At
+8 × 8 and β = 2.5 % the weakest reduced Gauss-Newton directions of that
+formulation were 90-97 % tangential. Along them the cost grows as $t^4$
+(the surface moves only at second order): ten times the quadratic model at
+steps of 0.03, so trust-region steps failed and the solve took 45 models.
 
-### Why not a reference-free gauge
+### Why not a reference-free labelling
 
 A gauge defined by the boundary alone is possible: stationarity of the spectral
 width $F_p = \sum m^p (R_{mn}^2 + Z_{mn}^2)$ under the $m > 0$ relabellings,
@@ -80,7 +85,7 @@ is 0.114 mm in that gauge, against 0.048 mm with the deck's labelling.
 With the bootstrap current in the solve, the current's rows are square in the
 current coordinates. They are equality constraints, not least-squares rows: any
 finite weight would trade the current against the interface conditions. The
-steps live in the null space of the gauge and the current rows' Jacobian. Each
+steps live in the null space of the current rows' Jacobian. Each
 trial is restored onto the current rows by chord Newton steps in the current
 coordinates. The Hessian is the Lagrangian's, with the current rows' multipliers.
 
@@ -126,8 +131,8 @@ model fails and to certify convergence.
 
 ## Design gradients
 
-In single-stage optimization the boundary $b^*(x)$ minimizes $f(b, x)$ on the
-gauge manifold (and the current rows). A function $h$ of the equilibrium then has
+In single-stage optimization the boundary $b^*(x)$ minimizes $f(b, x)$ (on the current rows' manifold, when the current is in the
+solve). A function $h$ of the equilibrium then has
 
 $$
 \frac{dh}{dx} = h_x - \mu^\top f_{bx}, \qquad

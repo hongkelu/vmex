@@ -154,9 +154,10 @@ def _nestor(inp, field):
 def test_vacuum_free_boundary_agrees_with_nestor():
     """In vacuum the free boundary is a flux surface of the coil field alone: both methods find it.
 
-    The deck is the one VMEC + NESTOR leaves: its boundary fixes the poloidal labelling (module docstring).
-    From it and from the original LP deck's boundary the solve lands on one boundary, with the interface
-    conditions below NESTOR's.  VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
+    The answer depends on the deck: its boundary is the reference of the poloidal labelling (module
+    docstring), not only the start.  Here the deck is the one VMEC + NESTOR leaves; from it and from the
+    original LP deck's boundary the solve lands on one boundary, with the interface conditions below NESTOR's.
+    With the original LP deck as the deck the answer differs (B.n 9.7e-4) and is again start-independent.  VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
     essentially exact field (VMEC2000 1.3 mm), so the surfaces are compared at that level, and more sharply
     through the residuals and the rotational transform.  At mpol = 4 the labelling matters: with the original
     LP deck's, truncated to 4 modes, B.n ends at 9.7e-4, with NESTOR's at 5.4e-4 (NESTOR's own: 5.9e-4).
@@ -184,6 +185,12 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     for wall in walls:   # budget: NESTOR's own floor (~1.6 mm)
         assert _lcfs_distance(wall, nestor.wout) < 2e-3
     np.testing.assert_allclose(np.asarray(walls[0].iotaf)[[0, -1]], np.asarray(nestor.wout.iotaf)[[0, -1]], atol=3e-3)
+    # With the LP deck itself as the deck (its labelling, truncated to 4 modes, as the reference) the answer is
+    # another one (B.n 9.7e-4), but again the same from either start.
+    lp_fits = [fvc.solve_free_boundary_three_terms(lp, external_field=field, initial_boundary=start)
+               for start in (None, nestor_deck)]
+    np.testing.assert_allclose(lp_fits[1].x, lp_fits[0].x, rtol=0, atol=1e-9)
+    assert all(fit.success for fit in lp_fits)
     # a warm restart at an unchanged field stays where it is.
     fit = fits[0]
     again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fit)
@@ -217,7 +224,7 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.usefixtures("_module_jit_enabled")
-def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start():
+def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monkeypatch):
     """Vacuum, LP QA at mpol 3: the rows are the h-gradient of the mean square of B_coil . n (exact Hessian as
     the Jacobian), Newton reaches them from the deck and from another start, and both land on one boundary."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
@@ -254,6 +261,11 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start():
     np.testing.assert_allclose(J[:, k], (fd[0] - fd[1]) / (2 * h), rtol=1e-4, atol=1e-6 * np.abs(J[:, k]).max())
     again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
     assert again.njev == 0 and again.success
+    assert 0.0 < fits[0].normal_outside_modes <= fits[0].boundary_residual.normal
+    # a solve that does not lower B.n says so, with the part outside the boundary's modes
+    monkeypatch.setattr(model, "boundary_residual", lambda *args: fvc.BoundaryResidual(1.0, 1.0, 1.0))
+    with pytest.warns(RuntimeWarning, match="outside the boundary's"):
+        fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
 
 
 def test_square_galerkin_boundary_is_solved_by_newton_from_a_stale_jacobian():
@@ -520,23 +532,40 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 @needs_vc
 @pytest.mark.usefixtures("_module_jit_enabled")
-def test_finite_beta_rows_are_the_normal_field_moments():
-    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted sine
-    moments of B_out . n / B0 on its modes (B_out = coils + virtual casing) and the net-current row."""
+def test_finite_beta_rows_are_the_transported_normal_field_moments():
+    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted
+    moments of B_out . n / B0 (coils + virtual casing) against R0 / B0 B_out . grad cos(m theta - n nfp phi) on
+    its modes, then the net-current row.  B_out's contravariant components here come from the surface metric."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
-    nfp, n = int(inp.nfp), 16
+    nfp, n, ntor = int(inp.nfp), 16, int(inp.ntor)
     model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
     assert not model.vacuum and model.max_mode == max(inp.mpol - 1, inp.ntor) - fvc._BOUNDARY_MODE_GAP
     state = model.seed[0]
     rows = np.asarray(model._rows(state, model.params0, field))
     runtime = model._im.runtime_from_params(model.params0, model.cfg)
-    terms, weights = fvc.boundary_residual(model.fixed, state, field, runtime=runtime, nphi=n, ntheta=n,
-                                           precision=model.precision)
     data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
-    bn = np.asarray(terms[0]) * np.linalg.norm(np.asarray(data.B_total), axis=0) / model.B0
+    B_out = np.asarray(vc.PlasmaVacuumInterface.from_surface_data(
+        data, p_edge=0.0, precision=model.precision).total_B_out(field))
+    normal, area = np.asarray(data.normal), np.linalg.norm(np.asarray(data.area_vector), axis=0)
+    bn, weights = np.sum(B_out * normal, axis=0) / model.B0, area / area.sum()
     phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, n, endpoint=False),
                              np.linspace(0, 2 * np.pi, n, endpoint=False), indexing="ij")
-    moments = [np.sum(np.asarray(weights) * bn * 2 * np.sin(m * theta - k * nfp * phi))
-               for m, k in model.boundary_modes[:-1]]
-    np.testing.assert_allclose(rows[:-1], moments, rtol=1e-9, atol=1e-13)
+    rbc, zbs = np.asarray(model.fixed.rbc), np.asarray(model.fixed.zbs)
+    R = Rt = Rp = Zt = Zp = 0.0
+    for k in range(-ntor, ntor + 1):
+        for m in range(int(inp.mpol)):
+            a = m * theta - k * nfp * phi
+            R, Rt, Rp = R + rbc[k + ntor, m] * np.cos(a), Rt - m * rbc[k + ntor, m] * np.sin(a), \
+                Rp + k * nfp * rbc[k + ntor, m] * np.sin(a)
+            Zt, Zp = Zt + m * zbs[k + ntor, m] * np.cos(a), Zp - k * nfp * zbs[k + ntor, m] * np.cos(a)
+    e_t = np.stack([Rt * np.cos(phi), Rt * np.sin(phi), Zt])
+    e_p = np.stack([Rp * np.cos(phi) - R * np.sin(phi), Rp * np.sin(phi) + R * np.cos(phi), Zp])
+    g = np.array([[np.sum(e_t * e_t, 0), np.sum(e_t * e_p, 0)], [np.sum(e_t * e_p, 0), np.sum(e_p * e_p, 0)]])
+    covariant = np.stack([np.sum(B_out * e_t, 0), np.sum(B_out * e_p, 0)])
+    b_t, b_p = np.linalg.solve(np.moveaxis(g, (0, 1), (-2, -1)), np.moveaxis(covariant, 0, -1)[..., None])[..., 0].T
+    b_t, b_p = b_t.T, b_p.T
+    R0 = float(rbc[ntor, 0])
+    expected = [np.sum(weights * bn * R0 / model.B0 * (k * nfp * b_p - m * b_t) * np.sin(m * theta - k * nfp * phi))
+                for m, k in model.boundary_modes[:-1]]
+    np.testing.assert_allclose(rows[:-1], expected, rtol=1e-8, atol=1e-13)

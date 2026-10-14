@@ -140,11 +140,10 @@ virtual casing (Conlin et al. 2024, arXiv:2412.05680):
 The unknown is the displacement of the deck's boundary along the deck
 equilibrium's radial lines, and the equations are square: in vacuum (coil
 field alone, no virtual casing) the least-squares stationarity of `B . n`,
-at finite beta its moments on the boundary modes, plus one net-current row.
-Newton's method drives them to round-off, with exact implicit derivatives.
-Pressure balance and sheet current follow from the other conditions and are
-reported. The deck fixes the boundary's poloidal labelling, so the answer
-does not depend on where the solve starts:
+at finite beta the same with the plasma's response left out of the test
+functions, plus one net-current row; Newton's method drives them to round-off,
+with exact implicit derivatives. Pressure balance and sheet current follow and
+are reported. The answer does not depend on where the solve starts:
 
 ```python
 import vmex as vj
@@ -168,15 +167,22 @@ flag and the `solve_file` keyword override it):
 /
 ```
 
-(`"_vmex": {"boundary_condition": "three_terms"}` in a JSON input). A fixed-boundary design and the coils fitted to it are the natural deck;
-`initial_boundary=` starts the solve from another surface without changing the
-answer. The edge pressure must vanish (a pressure jump needs a sheet current),
-and `virtual-casing-jax` must be installed for finite beta. Use a GPU: on a
-shared A100 node an 8 x 8 vacuum solve takes 4.5 to 7.5 minutes end to end, 3 to
-4 of them compilation, and LP QA at 2.5 % beta 9 to 11 minutes at 8 x 8 and 15
-to 18 at 12 x 12 (VMEX + NESTOR: 4 to 7 minutes). The reported `equilibrium` is re-solved
-to a final force residual of 1e-17: plain descent stopped at the usual 1e-13
-leaves about 1 % error in a quasisymmetry error of 1e-6.
+(`"_vmex": {"boundary_condition": "three_terms"}` in a JSON input).
+
+The deck's boundary is more than the start: it is the reference of the
+poloidal labelling, and at low resolution the answer depends on it. LP QA in
+vacuum at mpol 4 ends at B.n 9.7e-4 with the LP deck's labelling and 5.4e-4
+with the one VMEC + NESTOR leaves (NESTOR: 5.9e-4); with a deck 11 mm from a
+known answer, field lines stay within 0.11 to 0.13 mm of the surface from 9
+modes, 0.3 to 0.8 mm below. A fixed-boundary design with its fitted coils, or
+a VMEC + NESTOR result, makes a good deck; a reference-free free boundary
+needs the least-squares formulation (a separate option). A solve that does not
+lower `B . n` below the deck's warns, with `normal_outside_modes`, the part its
+rows cannot reach. The edge pressure must vanish, and `virtual-casing-jax`
+must be installed for finite beta. On a shared A100 an 8 x 8 vacuum solve takes
+2.5 to 7.5 minutes end to end (up to 4 of them compilation), LP QA at 2.5 %
+beta 9 to 15 minutes at 8 x 8 and 12 x 12 (VMEX + NESTOR: 4 to 7). The reported
+`equilibrium` is re-solved to a final force residual of 1e-17.
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 exposes the grid and quadrature controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few
@@ -190,11 +196,9 @@ fit.boundary_residual, fit.equilibrium.wout          # the conditions, the free 
 moved = solve_free_boundary_three_terms(inp, external_field=new_coil_field, previous=fit)
 ```
 
-For a free-boundary single-stage optimization, pass
-`boundary_condition="three_terms"` to `FreeBoundaryProblem.from_loss` (the same
-loss, parameter maps and quantities as with NESTOR): every trial is a
-free boundary, warm-started from the last linearized one, and the
-design gradients follow from the implicit function theorem of the boundary equations
+For single-stage optimization pass `boundary_condition="three_terms"` to
+`FreeBoundaryProblem.from_loss`: every trial is a warm-started free boundary,
+with implicit-function-theorem design gradients
 ({class}`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`).
 
 ```python
@@ -206,17 +210,13 @@ result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_co
 ```
 
 {class}`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` gives the pieces
-directly (`solve_boundary`, `linearize`, `pullback`), with the coils an
-argument of the compiled code.
+(`solve_boundary`, `linearize`, `pullback`), the coils an argument.
 
-To check a NESTOR result, pass `report_boundary_residual=True`
-(`result.boundary_residual`). VMEC + NESTOR leaves a floor of a few 1e-4 even
-for an exact field, so a `sheet_current` well above 1e-3 marks a genuine edge
-sheet current.
+To check a NESTOR result, pass `report_boundary_residual=True`: a
+`sheet_current` well above 1e-3 marks a genuine edge sheet current.
 
-How close each method gets to a known answer at mpol = ntor = 4 to 12, and at
-what cost, is recorded in {doc}`/explanation/validation`
-("Three-terms free boundary against VMEC + NESTOR and DESC").
+Validation and costs: {doc}`/explanation/validation` ("Three-terms free
+boundary ...").
 
 ## Key knobs
 

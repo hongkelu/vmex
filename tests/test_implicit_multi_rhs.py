@@ -669,3 +669,15 @@ def test_seeded_multigrid_solves_run_only_the_final_rung(monkeypatch):
     cold, _ = im.solve_implicit_with_aux(moved, cold_cfg)
     assert ladders[0] == [3, 5] and ladders[1] == [5] and ladders[2] == [3, 5]
     assert _relative_difference(hot, cold) < 1e-8
+
+
+def test_overlapping_compiles_follow_the_cpu_affinity(monkeypatch):
+    import os
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0}, raising=False)
+    assert not im._overlapping_compiles_pay()
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0, 1}, raising=False)
+    assert im._overlapping_compiles_pay()
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 1)
+    assert not im._overlapping_compiles_pay()

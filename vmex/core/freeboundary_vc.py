@@ -703,7 +703,10 @@ class ThreeTermsFreeBoundaryModel:
         """
         import threading
 
+        self._warm = None
         im, cfg, params, chunk = self._im, self.cfg, self.params0, self.chunk
+        if not im._overlapping_compiles_pay():
+            return
 
         def refinement():
             try:
@@ -1468,6 +1471,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         model = self.model
         im, cfg, params0 = model._im, model.cfg, model.params0
+        if not im._overlapping_compiles_pay():
+            return None, None
 
         def tangents():
             try:

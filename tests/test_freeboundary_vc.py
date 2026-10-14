@@ -718,8 +718,11 @@ class _Program:
 class _Implicit:
     """Stand-in for :mod:`vmex.core.implicit` as the warm-up threads use it."""
 
-    def __init__(self, fail=False):
-        self.fail, self.calls = fail, []
+    def __init__(self, fail=False, cpus=2):
+        self.fail, self.calls, self.cpus = fail, [], cpus
+
+    def _overlapping_compiles_pay(self):
+        return self.cpus > 1
 
     def _canonical_arrays(self, cfg, tree):
         return tree
@@ -816,3 +819,15 @@ def test_compiled_surface_data_is_the_eager_construction():
                                    rtol=1e-12, atol=1e-14)
     assert (got.nfp, got.stellsym, got.signgs, got.source_convention) == \
         (want.nfp, want.stellsym, want.signgs, want.source_convention)
+
+
+def test_warm_ups_stay_off_on_a_single_cpu():
+    """A process confined to one CPU starts no warm-up thread: there is nothing to overlap."""
+    implicit = _Implicit(cpus=1)
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
+    model.cfg = type("Cfg", (), {"jacobian_adjoint_tol": 1e-4, "jacobian_adjoint_maxiter": 10})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
+    assert model._warm is None
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(), "_direct": _Program()})()
+    assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(2)) == (None, None)
+    assert implicit.calls == []

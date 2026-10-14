@@ -1481,7 +1481,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 device=solver_device,
                 # an optimization's configs (hot restart) compile every rung of
                 # their first ladder in parallel; later ladders find them built
-                prefetch_compile=bool(cfg.hot_restart))
+                prefetch_compile=bool(cfg.hot_restart) and _overlapping_compiles_pay())
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
@@ -3450,6 +3450,21 @@ def staged_tangent_multi_rhs(
                                                           report, cfg, chunk, rtol)
             results.append((solution, report))
     return jax.tree.map(lambda *a: jnp.concatenate(a)[:n], *results)
+
+
+def _overlapping_compiles_pay() -> bool:
+    """Whether compiling on a background thread can overlap the caller's work.
+
+    XLA compiles a program on one core.  A process confined to a single CPU
+    (its scheduler affinity) gains nothing from a warm-up thread or a rung
+    prefetch -- it only time-slices against the solve it was meant to
+    overlap -- so those run only when the process may use more than one CPU.
+    """
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):  # no affinity API (macOS, Windows)
+        cpus = os.cpu_count() or 1
+    return cpus > 1
 
 
 def _placeholder_arguments(cfg: ImplicitConfig, params: ImplicitParams):

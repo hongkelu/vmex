@@ -494,6 +494,20 @@ def test_bootstrap_current_profile_layout():
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
 
 
+def test_bootstrap_current_has_a_knot_per_surface_beyond_ndatafmax(tmp_path):
+    """ns = 101 (the interior the finite-beta interface terms need): 105 knots, more than VMEC2000's 101; the
+    profile keeps them all and only an INDATA namelist of it is refit to 101."""
+    from vmex.core.bootstrap import HalfMeshCurrent
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False)
+    block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
+    assert block.knots.size == 101 + 4 and block.x0.size == 3 + 100
+    np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
+    with pytest.warns(RuntimeWarning, match="refit to VMEC2000's 101"):
+        reread = vj.VmecInput.from_file(block.deck.to_indata(tmp_path / "input.bootstrap"))
+    assert reread.ac_aux_s.size == 101 and reread.ac_aux_s[-1] == 1.0
+
+
 @needs_vc
 @pytest.mark.full
 @_FINITE_BETA_LEAK
@@ -553,6 +567,27 @@ def test_fixed_boundary_bootstrap_model_has_exact_columns():
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
+
+
+@pytest.mark.full
+@pytest.mark.usefixtures("_module_jit_enabled")
+def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
+    """ns = 101 with the bootstrap current in the solve (103 knot unknowns, beyond VMEC2000's ndatafmax): Redl's
+    current, and Jacobian columns of a sub-axis, a mid-radius and the last knot against re-solved differences."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False,
+                  ftol_array=np.array([1e-13]), niter_array=np.array([40000]))
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), fixed_boundary=True)
+    out = model.solve_boundary(model.params0, None)
+    assert out["converged"] and model.x0.size == 3 + 100
+    state, _, params, _ = out["aux"]
+    assert model.bootstrap_residual(state, params) < 1e-4
+    J = model.linearize(out["x"], out["aux"], None)[0]
+    for k in (1, 53, model.x0.size - 1):
+        h = 1e-5 * model.x_scale[k]
+        rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
+                for sign in (1, -1)]
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), k
 
 
 @pytest.mark.full

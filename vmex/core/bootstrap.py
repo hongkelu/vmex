@@ -829,20 +829,20 @@ class HalfMeshCurrent:
     each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
     CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
     its own current's derivative.  ``weight`` is the model's ``bootstrap_weight``.
+
+    The knot count ``ns + 4`` is not bound by VMEC2000's ``ndatafmax`` (101): VMEX's profiles have any length.
+    Only an INDATA namelist or a WOUT holds at most 101 knots; writing one refits the profile to a subset of its
+    knots, with a warning (:func:`~vmex.core.input.fit_aux_knots`).
     """
 
     SUB = (1 / 64, 1 / 16, 1 / 4)
 
     def __init__(self, deck, profiles, helicity_n, weight=1.0):
         from .profiles import current
-        from .wout import _NDFMAX
 
         if int(deck.ncurr) != 1:
             raise ValueError("a bootstrap current needs a prescribed current profile (ncurr = 1)")
         ns = int(np.asarray(deck.ns_array)[-1])
-        if ns - 1 + len(self.SUB) + 2 > _NDFMAX:
-            raise ValueError("a bootstrap current has a knot per half-mesh surface: "
-                             f"ns <= {_NDFMAX - len(self.SUB) - 1}")
         s_half = (np.arange(1, ns) - 0.5) / (ns - 1)
         self.knots = np.r_[0.0, s_half[0] * np.asarray(self.SUB), s_half, 1.0]
         self.current = functools.partial(current, "line_segment_ip", deck.ac, self.knots)  # (values, s) -> I(s)

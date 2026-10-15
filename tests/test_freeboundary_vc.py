@@ -857,10 +857,11 @@ def _beta2p5_deck(mpol):
 @needs_vc
 @pytest.mark.usefixtures("_module_jit_enabled")
 @pytest.mark.parametrize("moments", [False, True])
+@pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile
 @pytest.mark.parametrize("case", [
     "small",
     # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (plain moments 55-84 % off)
-    pytest.param("production", marks=pytest.mark.full),
+    "production",
 ])
 def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
     """Finite beta, both row types (transported, plain moments): every Jacobian column pushed by the model is

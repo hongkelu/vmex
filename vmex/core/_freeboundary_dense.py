@@ -25,6 +25,7 @@ from jax.flatten_util import ravel_pytree
 from solvax import block_thomas_solve
 from solvax.krylov import gmres
 
+from .loops import map_columns
 from . import implicit as im
 from .errors import AdjointSolveError
 
@@ -118,7 +119,9 @@ def _assemble_device(tangent, template, space, *, batch_size):
     copy or transpose is materialized.
     """
     size = space.left.shape[0]
-    batch_size = min(batch_size, size)
+    # at least two columns per loop step: a one-column JVP body is the program XLA:GPU miscompiles
+    # (vmex.core.loops)
+    batch_size = min(max(batch_size, 2), size)
     chunks = (size + batch_size - 1)//batch_size
     dtype = ravel_pytree(template)[0].dtype
 
@@ -166,7 +169,7 @@ def _assemble_colored(tangent, template, space, seeds, probe_of, surface, *, bat
     """Return the Jacobian transpose from radially colored JVP probes."""
     def probe(seed):
         return _compress(tangent(_expand(seed, template, space)), space)
-    rows = jax.lax.map(probe, seeds, batch_size=batch_size)
+    rows = map_columns(probe, seeds, batch_size=batch_size)
     band = jnp.abs(surface[:, None] - surface[None, :]) <= bandwidth  # [column, row]
     if edge_axis:  # axis unknowns (columns) also reach the edge equations (rows)
         edge = jax.tree.leaves(template)[0].shape[0] - 1

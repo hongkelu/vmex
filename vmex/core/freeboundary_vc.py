@@ -66,6 +66,7 @@ The names keep ``three_terms`` (the three interface conditions above) for compat
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 import hashlib
 import time
 from typing import Any
@@ -461,11 +462,27 @@ def solve_free_boundary_three_terms(
         x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
         jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
-    initial = model.boundary_residual(seed_state, seed_params, external_field)
-    # the warning's reference is the deck itself, also on a warm restart (whose start is ``previous``'s answer)
-    deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0, external_field)
+    # The starting residuals are reports (and the reference of the warning below): their programs compile and run
+    # on a background thread while the boundary is solved.  The warning's reference is the deck itself, also on a
+    # warm restart (whose start is ``previous``'s answer).
+    import threading
+
+    def reports():
+        initial = model.boundary_residual(seed_state, seed_params, external_field)
+        deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0,
+                                                                         external_field)
+        return initial, deck
+
+    report_box = []
+    reporter = threading.Thread(target=lambda: report_box.append(_try(reports)), name="vmex-initial-residual",
+                                daemon=True)
+    reporter.start()
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
                                verbose=verbose)
+    reporter.join()
+    if isinstance(report_box[0], BaseException):
+        raise report_box[0]
+    initial, deck = report_box[0]
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
     # From the rows' own state on its own rung (a restart skips the deck's lower rungs; an ``initial_state`` would
@@ -489,6 +506,52 @@ def solve_free_boundary_three_terms(
         njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
         input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
         boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
+
+
+def _surface_data(fixed, cfg, state, params, nphi, ntheta):
+    """:func:`~vmex.core.virtual_casing.surface_field_data_from_state` of a concrete state as one compiled program.
+
+    Eagerly, the field and surface assembly dispatch hundreds of small operations, each compiled on first use
+    (~15 s on a GPU before the first row); the program compiles once.  Its static fields (``nfp``, symmetry,
+    ``signgs``, convention) are those of the traced construction.
+    """
+    from . import implicit as im
+
+    static = {}
+
+    def arrays(state, params):
+        data = vc.surface_field_data_from_state(fixed, state, runtime=im.runtime_from_params(params, cfg),
+                                                nphi=nphi, ntheta=ntheta)
+        static.update(nfp=data.nfp, stellsym=data.stellsym, signgs=data.signgs,
+                      source_convention=data.source_convention)
+        return dict(gamma=data.gamma, B_total=data.B_total, normal=data.normal, area_vector=data.area_vector,
+                    theta=data.theta, phi=data.phi)
+
+    values = jax.jit(arrays)(state, params)
+    return vc.VmecSurfaceFieldData(**values, **static)
+
+
+def _certified(responses, report):
+    """``responses`` if every column's linear solve met its certificate, else a ``RuntimeError``.
+
+    The boundary Jacobian and the design gradients are built from these state responses; an uncertified one
+    would enter them silently.  ``RuntimeError`` is what a trial's failed linearization raises: the Newton
+    solve stops, and the single-stage problem rejects the trial.
+    """
+    converged = np.asarray(report.converged)
+    if not bool(np.all(converged)):
+        worst = float(np.max(np.asarray(report.residual_norm) / np.asarray(report.tolerance)))
+        raise RuntimeError(f"{int(np.sum(~converged))} of {converged.size} state responses of the boundary "
+                           f"Jacobian missed their certificate (worst residual {worst:.3g} x the tolerance)")
+    return responses
+
+
+def _try(function, *args):
+    """``function(*args)``, or the exception it raised (for a worker thread to hand back)."""
+    try:
+        return function(*args)
+    except BaseException as error:  # noqa: BLE001 -- re-raised by the caller
+        return error
 
 
 class ThreeTermsFreeBoundaryModel:
@@ -616,6 +679,7 @@ class ThreeTermsFreeBoundaryModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
+        self._warm_programs()
         seed = self.solve(self.params0)
         if seed is None:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
@@ -626,11 +690,10 @@ class ThreeTermsFreeBoundaryModel:
             # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
             # convention of the deck is carried to the free boundary without sliding (known-target benchmark,
             # deck 11 mm away: 8 x 8 field lines 1.23 -> 0.36 mm, K 1.9e-3 -> 3.8e-4).
-            sp = vc._state_field_spectra(fixed, state, im.runtime_from_params(self.params0, self.cfg))
-            xm, xn = np.asarray(sp["xm"]), np.asarray(sp["xn"])
-            ds = 1.0 / (int(sp["ns"]) - 1)
-            dr = (np.asarray(sp["rmnc"])[-1] - np.asarray(sp["rmnc"])[-2]) / ds
-            dz = (np.asarray(sp["zmns"])[-1] - np.asarray(sp["zmns"])[-2]) / ds
+            xm, xn, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, self.cfg.resolution))
+            ds = 1.0 / (rmnc.shape[0] - 1)
+            dr = (rmnc[-1] - rmnc[-2]) / ds
+            dz = (zmns[-1] - zmns[-2]) / ds
 
             def radial(T, Zg):
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
@@ -638,30 +701,63 @@ class ThreeTermsFreeBoundaryModel:
 
             normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
             self._normal_map = jnp.asarray(normal_map)
+        self._implicit_setup()
         if not self.fixed_boundary:
             grid = interface_grid(fixed)
             self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
             self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
             self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
-        self._implicit_setup()
+
+    def _warm_programs(self):
+        """Compile the solve's largest programs on background threads while the seed equilibrium is solved.
+
+        The seed solve's Newton-refinement programs (:func:`~vmex.core.implicit.warm_refinement`) and the first
+        linearization's tangent programs (:func:`~vmex.core.implicit.warm_staged_tangent`) depend only on the
+        deck's structure, so they compile in parallel with the multigrid ladder (XLA compilation releases the
+        GIL).  :meth:`linearize` joins the tangent thread before its first tangent solve.  Cache warming only:
+        the same executables.
+        """
+        import threading
+
+        self._warm = None
+        im, cfg, params, chunk = self._im, self.cfg, self.params0, self.chunk
+        if not im._overlapping_compiles_pay():
+            return
+
+        def refinement():
+            try:
+                im.warm_refinement(cfg, params)
+            except Exception:  # cache warming only: the real calls compile on demand
+                pass
+
+        def tangents():
+            try:
+                im.warm_staged_tangent(cfg, params, chunk=chunk, certify_rtol=cfg.adjoint_tol)
+            except Exception:  # cache warming only
+                pass
+
+        threading.Thread(target=refinement, name="vmex-refine-warm", daemon=True).start()
+        self._warm = threading.Thread(target=tangents, name="vmex-tangent-warm", daemon=True)
+        self._warm.start()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
         """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
-        from .optimize import solve_equilibrium
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        runtime = im.runtime_from_params(self.params0, cfg)
-        surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+        surface = _surface_data(fixed, cfg, state, self.params0, nphi, ntheta)
         quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
         else:
             precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
         self.precision = precision
-        # A closed curve inside the coils for G_coil: the seed's magnetic axis.
-        axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
+        # A closed curve inside the coils for G_coil: the seed's magnetic axis (its wout raxis_cc / zaxis_cs, read
+        # from the solved seed state; the circulation is the same on any loop that links the coils).
+        _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
+        n_axis = int(cfg.resolution.ntor) + 1
+        axis = _axis_loop(SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
         vacuum = self.vacuum
         area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
         B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
@@ -740,17 +836,28 @@ class ThreeTermsFreeBoundaryModel:
         edge = im._edge_mask(cfg)
 
         def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
-            return im._implicit_evolved_tangent_multi_rhs(
-                params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
-                probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
+            """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
+
+            Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
+            forward refinement's compiled program, then the block solve and the GMRES corrector.  A column the
+            corrector and the refinement leave uncertified is an error (:func:`_certified`), never a silent
+            column of the Jacobian.  The columns are certified to the adjoint tolerance (``adjoint_tol``), not the
+            looser one for least-squares Jacobians: they are the boundary Jacobian of a square Newton solve and
+            the implicit-function-theorem design gradients, which must be exact.  The block-direct responses
+            usually meet it outright (the raw block system is the exact radial linearization)."""
+            return _certified(*im.staged_tangent_multi_rhs(
+                params, cfg, state, mask, batch, chunk=self.chunk,
+                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter))
 
         def push(fun, state, mask, params, dz_batch, params_batch):
-            """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
+            """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
 
             As upstream's implicit Jacobian: the state of a column is assembled from its projected response and
-            its parameters inside the map, so no batch of full states is ever built.
+            its parameters inside the map, so no batch of full states is ever built.  The columns are mapped
+            sequentially, not vectorized: a column's linearized rows hold the interface field on every surface
+            point at once (a coil Biot-Savart sum over all segments, the virtual-casing quadrature), and a
+            vectorized chunk of 8 multiplied that (LP QA 12 x 12: 9.6 GiB of temporaries, the solve's peak) for
+            no speed: a single column already fills the device.
             """
             frozen = jax.lax.stop_gradient(state)
             P = im._dof_projector(cfg, mask)
@@ -758,8 +865,11 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
+            # Two columns per step (vmex.core.loops): wider batches buy 7-18 % of the push at 3-5x its peak
+            # memory (LP QA beta 12 x 12, grid 48, 221 columns: 38.4 / 35.9 / 33.6 s per Jacobian at 2 / 4 / 8,
+            # 2.6 / 7.2 / 13.5 GiB), and a single column is the program XLA:GPU miscompiles.
             return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                               (dz_batch, params_batch), batch_size=self.chunk)
+                               (dz_batch, params_batch), batch_size=2)
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""
@@ -768,15 +878,27 @@ class ThreeTermsFreeBoundaryModel:
             z = jax.tree.map(lambda a, d: a + jnp.tensordot(dx, d, axes=1), P(frozen), dz_batch)
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
-        self._tangents = jax.jit(tangents)
+        self._tangents = tangents
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
+        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
             lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
+
+        def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
+            """``push_rows`` one whole chunk at a time: one executable for any number of columns."""
+            n = jax.tree.leaves(dz)[0].shape[0]
+            state, mask, params, dz, pb = im._canonical_arrays(cfg, (state, mask, params, im._padded(dz, self.chunk),
+                                                                     im._padded(pb, self.chunk)))
+            pieces = [push_rows(state, mask, params, jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], dz),
+                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments)
+                      for lo in range(0, jax.tree.leaves(dz)[0].shape[0], self.chunk)]
+            return jnp.concatenate(pieces)[:n]
+
+        self._push_rows = push_rows_padded
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
 
-        def pullback(fun, state, mask, params, cotangents, *args):
+        def pullback(fun, state, mask, params, cotangents, *args, factors=None):
             """``ImplicitParams`` gradients of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
@@ -786,7 +908,7 @@ class ThreeTermsFreeBoundaryModel:
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
-                                            probe_chunk_size=self.chunk)
+                                            probe_chunk_size=self.chunk, factors=factors)
             funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
             parts = []
             for f, c in zip(funs, blocks):
@@ -956,6 +1078,9 @@ class ThreeTermsFreeBoundaryModel:
         if extra is not None:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        if self._warm is not None:  # its programs are this call's: wait instead of compiling them twice
+            self._warm.join()
+            self._warm = None
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
         dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
@@ -1229,10 +1354,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
 
-        def pullback(state, mask, params, x):
-            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
+        def pullback(state, mask, params, x, factors):
+            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
+
+            ``factors``: the block factors at ``state`` (:func:`~vmex.core.implicit.block_factors_at`, an
+            executable compiled once per config), not a second block assembly inside this program."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, factors=factors)
 
         self._pullback = jax.jit(pullback)
 
@@ -1250,6 +1378,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
+        self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-terms free boundary")
@@ -1305,6 +1434,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
+        if self._warm_threads[0] is not None:  # the response fallbacks: wait instead of compiling them twice
+            self._warm_threads[0].join()
 
         def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
@@ -1339,8 +1470,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
                        values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
-        state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        if self._warm_threads[1] is not None:  # the pullback and direct Jacobian
+            self._warm_threads[1].join()
+        state, mask, params = model._im._canonical_arrays(model.cfg, (sol["state"], sol["mask"], sol["params"]))
+        factors = model._im.block_factors_at(model.cfg, params, state, mask)
+        params_bar = self._pullback(state, mask, params, xj, factors)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
@@ -1351,6 +1485,47 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         sol["gradients"] = gradients
         return gradients
+
+    def _warm_gradient_programs(self, x0):
+        """Compile the design gradient's programs on background threads while the seed design is solved.
+
+        Two daemon threads, from placeholder arguments of the model's structure (values do not enter a
+        compilation): the state-response fallbacks the plasma-parameter columns need (GMRES corrector and
+        refinement, :func:`~vmex.core.implicit.warm_staged_tangent`), joined before the first relinearization,
+        and the pullback through the equilibrium and the direct design Jacobian, joined before the first
+        pullback.  Cache warming only: the same executables; a failure leaves the real call to compile.
+        """
+        import threading
+
+        model = self.model
+        im, cfg, params0 = model._im, model.cfg, model.params0
+        if not im._overlapping_compiles_pay():
+            return None, None
+
+        def tangents():
+            try:
+                im.warm_staged_tangent(cfg, params0, chunk=model.chunk, certify_rtol=cfg.adjoint_tol,
+                                       certify_maxiter=cfg.adjoint_maxiter, fallbacks=True)
+            except Exception:  # cache warming only: the real calls compile on demand
+                pass
+
+        def gradient():
+            try:
+                state, mask, params = im._canonical_arrays(cfg, im._placeholder_arguments(cfg, params0))
+                arguments = (state, params, state, mask)
+                factors = im._zeros_like_structure(
+                    cfg, jax.eval_shape(lambda *a: im._refine_block_factor_core(*a, cfg), *arguments))
+                x = jnp.asarray(np.zeros_like(np.asarray(x0, dtype=float)))
+                self._pullback.lower(state, mask, params, x, factors).compile()
+                self._direct.lower(state, params, x).compile()
+            except Exception:  # cache warming only
+                pass
+
+        threads = tuple(threading.Thread(target=work, name=name, daemon=True)
+                        for work, name in ((tangents, "vmex-tangent-fallback-warm"), (gradient, "vmex-gradient-warm")))
+        for thread in threads:
+            thread.start()
+        return threads
 
     def _value(self, x):
         return float(self._record(x)["values"][0])

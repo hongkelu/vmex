@@ -688,3 +688,192 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
+
+
+class _Program:
+    """Stand-in jitted program: records its AOT lowering, or fails it."""
+
+    def __init__(self, fail=False):
+        self.fail, self.lowered = fail, []
+
+    def lower(self, *args):
+        if self.fail:
+            raise RuntimeError("no program")
+        self.lowered.append(args)
+        return self
+
+    def compile(self):
+        return self
+
+
+class _Implicit:
+    """Stand-in for :mod:`vmex.core.implicit` as the warm-up threads use it."""
+
+    def __init__(self, fail=False, cpus=2):
+        self.fail, self.calls, self.cpus = fail, [], cpus
+
+    def _overlapping_compiles_pay(self):
+        return self.cpus > 1
+
+    def _canonical_arrays(self, cfg, tree):
+        return tree
+
+    def block_factors_at(self, cfg, params, state, mask):
+        self.calls.append("factors")
+        return "factors"
+
+    def warm_refinement(self, cfg, params):
+        if self.fail:
+            raise RuntimeError("no refinement")
+        self.calls.append("refinement")
+
+    def warm_staged_tangent(self, cfg, params, *, chunk, certify_rtol, certify_maxiter=None, fallbacks=False):
+        if self.fail:
+            raise RuntimeError("no tangent")
+        self.calls.append(("tangent", chunk))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_gradient_programs_compile_from_placeholders_on_background_threads(fail):
+    """The problem starts two warm-up threads (response fallbacks; pullback and direct Jacobian) from placeholder
+    arguments; a failure in either is swallowed."""
+    implicit = _Implicit(fail)
+    implicit._placeholder_arguments = lambda cfg, params: (jnp.ones(3), jnp.ones(3), params)
+    implicit._zeros_like_structure = lambda cfg, shapes: jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shapes)
+    implicit._refine_block_factor_core = lambda z, params, frozen, mask, cfg: (z * params, frozen + mask)
+    model = type("Model", (), {"_im": implicit, "params0": jnp.ones(3), "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(fail), "_direct": _Program(fail)})()
+    threads = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(4))
+    for thread in threads:
+        thread.join()
+    if not fail:
+        assert ("tangent", 2) in implicit.calls
+        (state, mask, params, x, factors), = problem._pullback.lowered
+        assert x.shape == (4,) and len(factors) == 2
+        assert len(problem._direct.lowered) == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_model_warm_up_threads_swallow_their_failures(fail):
+    """The refinement and tangent warm-ups run on daemon threads; a failing one leaves nothing behind."""
+    import threading
+
+    implicit = _Implicit(fail)
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
+    model._warm.join()
+    for thread in threading.enumerate():
+        if thread.name in ("vmex-refine-warm", "vmex-tangent-warm"):
+            thread.join()
+    if not fail:
+        assert "refinement" in implicit.calls and ("tangent", 2) in implicit.calls
+
+
+def test_try_hands_back_the_exception():
+    assert fvc._try(lambda a: a + 1, 1) == 2
+    error = fvc._try(lambda: 1 / 0)
+    assert isinstance(error, ZeroDivisionError)
+
+
+def test_geometry_spectra_are_the_field_spectra_geometry():
+    """The model's radial-line and axis inputs: _state_field_spectra's geometry coefficients without its fields,
+    and the wout axis rows."""
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    eq = opt.solve_equilibrium(inp)
+    state, runtime = eq.solution, eq.solver_context
+    full = vc._state_field_spectra(inp, state, runtime)
+    xm, xn, rmnc, zmns = vc._state_geometry_spectra(state, runtime.resolution)
+    for got, key in ((xm, "xm"), (xn, "xn"), (rmnc, "rmnc"), (zmns, "zmns")):
+        np.testing.assert_array_equal(np.asarray(got), np.asarray(full[key]))
+    n_axis = int(runtime.resolution.ntor) + 1
+    np.testing.assert_allclose(np.asarray(rmnc)[0, :n_axis], np.asarray(eq.wout.raxis_cc), rtol=1e-13, atol=1e-15)
+    np.testing.assert_allclose(np.asarray(zmns)[0, :n_axis], np.asarray(eq.wout.zaxis_cs), rtol=1e-13, atol=1e-15)
+
+
+def test_compiled_surface_data_is_the_eager_construction():
+    """The model's seed surface data, built as one program, equals the eager construction."""
+    from vmex.core import implicit as im
+
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    cfg = im.make_config(inp, ftol=1e-10, max_iterations=1000)
+    params = im.params_from_input(inp)
+    state, _ = im.solve_implicit_with_aux(params, cfg)
+    got = fvc._surface_data(inp, cfg, state, params, 6, 8)
+    want = vc.surface_field_data_from_state(inp, state, runtime=im.runtime_from_params(params, cfg), nphi=6,
+                                            ntheta=8)
+    for name in ("gamma", "B_total", "normal", "area_vector", "theta", "phi"):
+        np.testing.assert_allclose(np.asarray(getattr(got, name)), np.asarray(getattr(want, name)),
+                                   rtol=1e-12, atol=1e-14)
+    assert (got.nfp, got.stellsym, got.signgs, got.source_convention) == \
+        (want.nfp, want.stellsym, want.signgs, want.source_convention)
+
+
+def test_warm_ups_stay_off_on_a_single_cpu():
+    """A process confined to one CPU starts no warm-up thread: there is nothing to overlap."""
+    implicit = _Implicit(cpus=1)
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
+    assert model._warm is None
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(), "_direct": _Program()})()
+    assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(2)) == (None, None)
+    assert implicit.calls == []
+
+
+def test_uncertified_state_responses_are_an_error():
+    """A response column that misses its certificate stops the linearization instead of entering the Jacobian."""
+    from vmex.core.implicit import LinearResponseReport
+
+    def report(converged):
+        n = len(converged)
+        return LinearResponseReport(residual_norm=np.full(n, 2.0), tolerance=np.ones(n),
+                                    iterations=np.zeros(n, int), converged=np.asarray(converged))
+
+    assert fvc._certified("dz", report([True, True])) == "dz"
+    with pytest.raises(RuntimeError, match="1 of 2 state responses"):
+        fvc._certified("dz", report([True, False]))
+
+
+def _beta2p5_deck(mpol):
+    """The LP QA 2.5 % deck at ``mpol = ntor`` with its own radial ladder (a production-size free boundary)."""
+    inp = vj.VmecInput.from_file(DATA / "input.LandremanPaul2021_QA_beta2p5_bootstrap")
+    inp = inp.change_resolution(mpol=mpol, ntor=mpol, ntheta=max(64, 4 * mpol + 8), nzeta=max(64, 4 * mpol + 8))
+    return replace(inp, lfreeb=True, mgrid_file="essos_coils(direct)")
+
+
+@needs_vc
+@pytest.mark.parametrize("moments", [False, True])
+@pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile
+@pytest.mark.parametrize("case", [
+    "small",
+    # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (plain moments 55-84 % off)
+    "production",
+])
+def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
+    """Finite beta, both row types (transported, plain moments): every Jacobian column pushed by the model is
+    the central difference of tightly re-solved rows."""
+    if case == "small":
+        inp, n = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), 16
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    else:
+        inp, n = _beta2p5_deck(10), 48
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta2p5_bootstrap.json")
+    nfp = int(inp.nfp)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
+    model._moments = moments
+    x0 = np.zeros(model.x0.size)
+    _, aux = model.evaluate(x0, model.params0, field, tight=True)
+    J = np.asarray(model.linearize(x0, aux, field)[0])
+    for k in (0, model.n_boundary - 1):
+        h = 1e-5
+        rows = []
+        for sign in (1, -1):
+            params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * h * np.eye(x0.size)[k]))
+            state, _ = model.solve(params, seed=aux[0], tight=True)
+            rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)

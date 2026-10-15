@@ -159,3 +159,39 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
     with pytest.raises(RuntimeError, match="dependent"):
         model._reduced(np.zeros(4), np.zeros(4), np.ones((2, 4)))
     assert model._reduced(np.zeros(4), np.ones(4), None)[0].shape == (4, 4)
+
+
+def test_problem_entry_and_finite_beta_rows():
+    """Cheap end-to-end coverage: the least-squares single-stage problem in vacuum (design gradient along the coil
+    currents against central differences of cold trials), the solve entry through ``method="least_squares"``
+    with an ``initial_boundary``, and the finite-beta jump rows (band-limited edge field, virtual casing) at a
+    small grid."""
+    from vmex import optimize as opt
+    from vmex.core import freeboundary_vc as fvc
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 9), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    grid = dict(nphi=16, ntheta=16, quadrature=(64, 32))
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[1])),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        boundary_condition="three_terms", three_terms_options=dict(method="least_squares", **grid))
+    assert isinstance(problem, lsq.LeastSquaresFreeBoundaryProblem)
+    value, grad = problem.value_and_grad(problem.x0)
+    h = 2e-3
+    values = []
+    for s in (1, -1):
+        problem._anchor = {}
+        values.append(problem.fun(problem.x0 + s * h * np.eye(2)[1]))
+    np.testing.assert_allclose(grad[1], (values[0] - values[1]) / (2 * h), rtol=1e-2, atol=1e-8)
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=coils, method="least_squares", initial_boundary=inp,
+                                              **grid)
+    assert fit.success and isinstance(fit.model, lsq.LeastSquaresFreeBoundaryModel)
+    beta = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 13)
+    model = lsq.LeastSquaresFreeBoundaryModel(replace(beta, lfreeb=False), **grid)
+    assert not model.vacuum
+    rows, aux = model.evaluate(np.array(model.x0), model.params0,
+                               _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json"), tight=True)
+    assert np.all(np.isfinite(rows)) and rows.size == 3 * 16 * 16 + model.n_constraint_rows

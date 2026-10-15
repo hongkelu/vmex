@@ -81,14 +81,7 @@ def _band_limited(data, mpol, ntor):
     det = gtt * gpp - gtp * gtp
     bt, bp = (gpp * Bt - gtp * Bp) / det, (gtt * Bp - gtp * Bt) / det
     filtered = bt[None] * e_t + bp[None] * e_p
-    try:
-        return replace(data, B_total=filtered)
-    except TypeError:  # not a dataclass: copy the attributes
-        import copy
-
-        out = copy.copy(data)
-        object.__setattr__(out, "B_total", filtered)
-        return out
+    return replace(data, B_total=filtered)
 
 
 
@@ -206,6 +199,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     def boundary_residual(self, state, params, field) -> BoundaryResidual:
         """:class:`~vmex.core.freeboundary_vc.BoundaryResidual` of a solved state (the common evaluator)."""
         return summarize_boundary_residual(*self._terms(state, params, field))
+
+    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
+        """The optimizer's warm trial (``ThreeTermsFreeBoundaryProblem._solve``): :meth:`solve_boundary` from ``x0``
+        with ``jacobian`` as its first Gauss-Newton model (``undamped`` is the Galerkin Newton's option)."""
+        del undamped
+        return self.solve_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None,
                        max_iter=60, callback=None, verbose=0):

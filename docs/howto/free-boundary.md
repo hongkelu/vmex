@@ -169,10 +169,10 @@ flag and the `solve_file` keyword override it; in a JSON input, `"_vmex": {"boun
 
 The deck's boundary is more than the start: it is the reference of the
 poloidal labelling, and at low resolution the answer depends on it. LP QA in
-vacuum at mpol 4 ends at B.n 9.7e-4 with the LP deck's labelling and 5.4e-4
+vacuum at mpol 4 ends at B.n 7.4e-4 with the LP deck's labelling and 5.2e-4
 with the one VMEC + NESTOR leaves (NESTOR: 5.9e-4); with a deck 11 mm from a
-known answer, field lines stay within 0.11 to 0.13 mm of the surface from 9
-modes, 0.3 to 0.8 mm below. A fixed-boundary design with its fitted coils, or
+known answer, field lines stay within 0.10 mm of the surface from 8 modes,
+0.2 mm at 6 and 0.5 mm at 4. A fixed-boundary design with its fitted coils, or
 a VMEC + NESTOR result, makes a good deck; a reference-free free boundary
 needs the least-squares formulation (a separate option). A solve that does not
 lower `B . n` below the deck's warns, with `normal_outside_modes`, the part its

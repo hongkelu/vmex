@@ -644,6 +644,9 @@ class ThreeTermsFreeBoundaryModel:
     single stage's equilibrium, with the same Jacobians and pullbacks.
     """
 
+    #: the virtual casing of the rows is the coarse one (:meth:`solve_boundary`'s steps far from the root)
+    _coarse = False
+
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
                  device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0,
@@ -797,10 +800,12 @@ class ThreeTermsFreeBoundaryModel:
         nfp = int(fixed.nfp)
         quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
-            precision, digits = None, None
+            precision, digits, coarse_precision = None, None, None
         else:
             precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        self.precision = precision
+            # one digit fewer for the Newton steps far from the root (solve_boundary's precision continuation)
+            coarse_precision = vc.plan_vc_precision(surface, digits=digits - 1, quad_nt=quad_nt, quad_np=quad_np)
+        self.precision, self.coarse_precision = precision, coarse_precision
         # A closed curve inside the coils for G_coil: the seed's magnetic axis (its wout raxis_cc / zaxis_cs, read
         # from the solved seed state; the circulation is the same on any loop that links the coils).
         _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
@@ -826,11 +831,12 @@ class ThreeTermsFreeBoundaryModel:
             boundary = jax.jacfwd(lambda x: self.with_boundary(self.params0, x))(jnp.asarray(self.x0))
             to_x = (boundary.rbc.reshape(-1, self.x0.size), boundary.zbs.reshape(-1, self.x0.size))
 
-        def interface_rows(state, params, field, moments=False):
+        def interface_rows(state, params, field, moments=False, coarse=False):
             """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary).
 
             ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the transported ones,
-            the robust start of :meth:`solve_boundary` (no field in the test functions).
+            the robust start of :meth:`solve_boundary` (no field in the test functions).  ``coarse=True``: the
+            virtual casing to one digit fewer (:meth:`solve_boundary`'s steps far from the root).
             """
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
@@ -845,7 +851,8 @@ class ThreeTermsFreeBoundaryModel:
             area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
             weight = (area / jnp.sum(area)).ravel()
             B_out = vc.PlasmaVacuumInterface.from_surface_data(
-                data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
+                data, p_edge=0.0, digits=digits - 1 if coarse else digits,
+                precision=coarse_precision if coarse else precision).total_B_out(field)
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
             if moments:
                 return jnp.concatenate([2.0 * test_sine.reshape(test_sine.shape[0], -1) @ (weight * Bn), current])
@@ -868,15 +875,16 @@ class ThreeTermsFreeBoundaryModel:
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
         im, cfg = self._im, self.cfg
 
-        def rows(state, params, field, moments=False):
-            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field, moments)]
+        def rows(state, params, field, moments=False, coarse=False):
+            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field, moments, coarse)]
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, im.runtime_from_params(params, cfg), params))
             return jnp.concatenate(parts)
 
         self.rows = rows
-        self._rows = jax.jit(rows, static_argnames="moments")
+        self._rows = jax.jit(rows, static_argnames=("moments", "coarse"))
         self._moments = False  # solve_boundary's robust start (finite beta) uses the plain moments
+        self._coarse = False  # and its steps far from the root the coarse virtual casing
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
@@ -922,16 +930,18 @@ class ThreeTermsFreeBoundaryModel:
 
         self._tangents = tangents
         self.push = push
-        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
-            lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
+        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False, coarse=False: push(
+            lambda s, p: rows(s, p, field, moments, coarse), state, mask, params, dz, pb),
+            static_argnames=("moments", "coarse"))
 
-        def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
+        def push_rows_padded(state, mask, params, dz, pb, field, moments=False, coarse=False):
             """``push_rows`` one whole chunk at a time: one executable for any number of columns."""
             n = jax.tree.leaves(dz)[0].shape[0]
             state, mask, params, dz, pb = im._canonical_arrays(cfg, (state, mask, params, im._padded(dz, self.chunk),
                                                                      im._padded(pb, self.chunk)))
             pieces = [push_rows(state, mask, params, jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], dz),
-                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments)
+                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments,
+                                coarse=coarse)
                       for lo in range(0, jax.tree.leaves(dz)[0].shape[0], self.chunk)]
             return jnp.concatenate(pieces)[:n]
 
@@ -1074,7 +1084,8 @@ class ThreeTermsFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments)), (state, mask, params_x, tight)
+        return (np.asarray(self._rows(state, params_x, field, moments=self._moments, coarse=self._coarse)),
+                (state, mask, params_x, tight))
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -1092,7 +1103,7 @@ class ThreeTermsFreeBoundaryModel:
         for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
-        key = _fingerprint(x, params_x, field) + ("moments" if self._moments else "")
+        key = _fingerprint(x, params_x, field) + ("moments" if self._moments else "") + ("coarse" if self._coarse else "")
         extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
         if last is not None and last[0] == key and extra_key in (None, last[1]):
@@ -1129,7 +1140,7 @@ class ThreeTermsFreeBoundaryModel:
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
         columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field,
-                                                        moments=self._moments)).T
+                                                        moments=self._moments, coarse=self._coarse)).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
@@ -1139,10 +1150,12 @@ class ThreeTermsFreeBoundaryModel:
         self._last_linearize = (key, extra_key, (columns, dz, batch, aux), self._linearization)
         return columns, dz, batch, aux
 
-    def rows_at(self, aux, field):
-        """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve)."""
+    def rows_at(self, aux, field, coarse=None):
+        """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve); ``coarse`` defaults to the
+        model's current virtual-casing precision."""
         state, _, params_x, _ = aux
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments))
+        return np.asarray(self._rows(state, params_x, field, moments=self._moments,
+                                     coarse=self._coarse if coarse is None else coarse))
 
     def repeat(self, x, params, field, aux):
         """The rows at ``x`` solved again, to the deck's tolerance, from a second seed; ``None`` if that fails.
@@ -1200,7 +1213,8 @@ class ThreeTermsFreeBoundaryModel:
         J, fresh, slow, nfev, njev, steps, started = jacobian, False, False, 1, 0, 0, time.perf_counter()
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
-        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
+        kind = (self._moments, self._coarse)
+        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(kind)
         damped = False
         while nfev < max_nfev:
             if J is None:
@@ -1218,7 +1232,10 @@ class ThreeTermsFreeBoundaryModel:
                 break
             # the step of a Jacobian at this point or a nearby one (the previous point, ``previous=``, the
             # single-stage anchor) is the distance to the root to first order
-            if self._step_converged(p, None if noise is None else _newton_step(J, noise), x):
+            # the coarse virtual casing's own error, the fine rows less the coarse ones here: a smaller step is
+            # below what the coarse rows resolve (solve_boundary then continues with the fine ones)
+            limit = self.rows_at(got[1], field, coarse=False) - r if self._coarse else noise
+            if self._step_converged(p, None if limit is None else _newton_step(J, limit), x):
                 if got[1][3]:  # converged: the last step leaves an error O(|p|^2), kept if it does not raise the rows
                     converged, final = True, self.evaluate(x + p, params, field, tight=True)
                     nfev += 1
@@ -1267,7 +1284,7 @@ class ThreeTermsFreeBoundaryModel:
                         if again is not None:
                             noise = again - r if noise is None or (np.linalg.norm(again - r)
                                                                    > np.linalg.norm(noise)) else noise
-                            noises[self._moments] = noise
+                            noises[kind] = noise
                             converged = self._step_converged(p, _newton_step(J, noise), x)
                     if not converged and verbose:
                         print(f"Newton stalled: cost {cost:.6e}, step not within the rows' noise", flush=True)
@@ -1287,6 +1304,35 @@ class ThreeTermsFreeBoundaryModel:
 
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
+
+        At finite beta the steps far from the root use the virtual casing to one digit fewer (``coarse``: its
+        Jacobian columns cost about half, LP QA 12 x 12), and stop once the Newton step is within what the
+        coarse rows resolve: the step that the difference between the fine and the coarse rows at the current
+        point produces.  From there the fine rows converge with the coarse Jacobian (refreshed when it no longer
+        converges fast), so the answer, its reported terms and its implicit derivatives are the fine ones.  The
+        route of either precision is :meth:`_solve_route`.
+        """
+        if getattr(self, "coarse_precision", None) is None:  # vacuum, fixed boundary: no virtual casing
+            return self._solve_route(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        self._coarse = True
+        try:
+            first = self._solve_route(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        finally:
+            self._coarse = False
+        if verbose:
+            print(f"coarse virtual casing {'converged' if first['converged'] else 'did not converge'}: the fine "
+                  "rows from there", flush=True)
+        if first["converged"]:
+            final = self._solve_route(params, field, x0=first["x"], jacobian=first["jacobian"], max_nfev=max_nfev,
+                                      verbose=verbose)
+        else:
+            final = self._solve_route(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        for key in ("nfev", "njev"):
+            final[key] += first[key]
+        return final
+
+    def _solve_route(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+        """:meth:`solve_boundary` at the model's current virtual-casing precision.
 
         At finite beta the transported rows carry the field in their test functions, so their Newton basin is
         narrow: far from the root the field's change along a step is a second-order term that the linearization

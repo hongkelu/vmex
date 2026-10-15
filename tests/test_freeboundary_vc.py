@@ -1011,3 +1011,56 @@ def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
     s = np.linalg.svd(M, compute_uv=False)
     assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
     np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol
+
+
+@needs_vc
+@pytest.mark.full  # a finite-beta model compiles for minutes on a CPU runner
+def test_finite_beta_precision_continuation_lands_on_the_fine_answer():
+    """Finite beta: the steps far from the root use the virtual casing to one digit fewer, until the Newton step
+    is within the coarse rows' own error; the fine rows finish.  The answer is the fine-only solve's, to the
+    solver's step tolerance, and the coarse and fine rows really differ."""
+    inp, n = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), 16
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * int(inp.nfp) * n, 2 * n))
+    assert model.coarse_precision is not None
+    route = []
+    newton = model._newton_boundary
+    model._newton_boundary = lambda *a, **k: (route.append(model._coarse), newton(*a, **k))[1]
+    both = model.solve_boundary(model.params0, field)
+    assert both["converged"] and route[0] and not route[-1]  # coarse first, fine last
+    coarse, fine = model.rows_at(both["aux"], field, coarse=True), model.rows_at(both["aux"], field, coarse=False)
+    assert 0.0 < np.linalg.norm(coarse - fine) and np.allclose(fine, both["rows"])
+    model._newton_boundary, model.coarse_precision = newton, None
+    model._linearization = model._last_linearize = None
+    only_fine = model.solve_boundary(model.params0, field)
+    gap = fvc.displacement_rms(both["x"][:model.n_boundary] - only_fine["x"][:model.n_boundary], model.boundary_modes)
+    assert only_fine["converged"] and fvc.newton_step_converged(gap, 0.0, model.R0), gap
+
+
+def test_precision_continuation_route_on_stand_in_rows():
+    """solve_boundary's precision continuation on stand-in rows: the coarse rows (the fine ones plus a small
+    smooth error) first, to within their difference from the fine ones, then the fine rows to their root; a
+    coarse phase that does not converge leaves the fine route to start over from the start."""
+
+    def rows(z, coarse):
+        exact = np.array([z[0] ** 2 + z[1] - 3.0, z[0] - z[1] ** 3 + 7.0])
+        return exact + (1e-6 * np.array([np.sin(z[0]), np.cos(z[1])]) if coarse else 0.0)
+
+    def jac(z):
+        return np.array([[2.0 * z[0], 1.0], [1.0, -3.0 * z[1] ** 2]])
+
+    model = _stand_in(2, lambda z, tight=True: rows(z, model._coarse), jac, vacuum=False)
+    model.rows_at = lambda aux, field, coarse=None: rows(aux[0], model._coarse if coarse is None else coarse)
+    model.coarse_precision = "planned"
+    route = []
+    newton = model._newton_boundary
+    model._newton_boundary = lambda *a, **k: (route.append(model._coarse), newton(*a, **k))[1]
+    out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]), verbose=1)
+    assert out["converged"] and route[0] and not route[-1] and not model._coarse
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-10)
+    route.clear()
+    model._newton_boundary = lambda *a, **k: (route.append(model._coarse),
+                                              dict(newton(*a, **k), converged=not model._coarse))[1]
+    out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]))
+    assert out["converged"] and all(route[:-1]) and route[-1] is False  # the coarse route, then the fine one
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-10)

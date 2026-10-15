@@ -62,6 +62,7 @@ import jax.numpy as jnp
 from . import virtual_casing as vc
 from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
+from .loops import map_columns
 from .problem import FunctionProblem
 
 
@@ -465,7 +466,7 @@ class ThreeTermFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
-            return jax.lax.map(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
+            return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
                                (dz_batch, params_batch), batch_size=self.chunk)
 
         def predict(state, mask, dz_batch, dx, params):
@@ -503,7 +504,7 @@ class ThreeTermFreeBoundaryModel:
                     state_bar, params_bar = vjp(c)
                     return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-                parts.append(jax.lax.map(row, c))
+                parts.append(map_columns(row, c))  # a vjp per row: see vmex.core.loops
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback

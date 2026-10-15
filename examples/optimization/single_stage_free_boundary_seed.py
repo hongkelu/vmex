@@ -15,12 +15,14 @@ The seed is built in four stages, each to convergence:
    ``B_plasma`` from virtual casing (zero in vacuum), under the case's coil
    rows, by Levenberg-Marquardt with the exact Jacobian (``fit_coils_exact``),
    run to convergence and checked against the case's own coil rows;
-4. the free boundary of those coils, which the three-terms example solves when
-   it starts from this seed (``--seed-run``): Newton from the deck, a few steps
-   because the coils hold it.
+4. the free boundary of those coils (Newton from the deck, a few steps because
+   the coils hold it), and the deck and coils scaled so that its axis |B| is
+   ``B0`` (``scaled_to_axis_field``: an exact invariance, the free boundary is
+   unchanged); the three-terms example starts from this seed (``--seed-run``)
+   and solves the same free boundary again.
 
 Vacuum (``--beta 0``) takes the same path with no pressure and no plasma field.
-Stages 1-3 run here and write ``input.run`` (the deck), ``coils.initial.json``
+Stages 1-4 run here and write ``input.run`` (the deck), ``coils.initial.json``
 and ``seed_report.json`` (wall time and result of every stage) to ``--output``;
 then
 
@@ -354,8 +356,62 @@ def fit_coils_exact(coils, wout, inp, *, vacuum):
     return coils_from_u(jnp.asarray(u)), dict(initial_normal_rms=before, rounds=rounds)
 
 
-def build_rotating_ellipse_seed(beta, bootstrap, device="gpu", n_coils=None):
-    """Stages 1-3; returns ``(inp, fixed, profiles, coils, report)`` (``report``: every stage's wall time)."""
+# ---- stage 4: the free boundary, and the field scale --------------------------------------------------------------
+def coil_field_of(coils):
+    """The three-terms example's differentiable filament field of ``coils``."""
+    import jax
+    import jax.numpy as jnp
+
+    try:  # a pytree of its arrays (as CoilChart registers it)
+        jax.tree_util.register_dataclass(tt.DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"],
+                                         meta_fields=[])
+    except ValueError:  # registered already
+        pass
+    return tt.DirectCoilField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
+
+
+def scaled_to_axis_field(inp, coils, profiles, vc_grid, trial_ftol):
+    """Stage 4: the free boundary of ``coils``, then the deck and coils scaled so that its axis |B| is ``B0``.
+
+    The fitted coils hold the seed's boundary only to their B.n residual, so their free boundary differs from it
+    and so does its axis |B| (QA: 2-5 % below B0, QH 7 %).  Ideal-MHD equilibria are invariant under B -> lambda B,
+    p -> lambda^2 p, I -> lambda I: coil currents, PHIEDGE and the plasma current scaled by lambda = B0 / |B_axis|
+    and the pressure by lambda^2 leave the free boundary unchanged and put its axis |B| at B0 (beta and iota are
+    unchanged; the Redl current follows, with the kinetic profiles' collisionality kept by ``redl_profiles``).
+    The solve uses the three-terms example's interface grid, so it is the boundary that example starts from.
+    Returns the scaled deck and coils and the solve's report.
+    """
+    from essos.coils import Coils
+    from vmex import optimize as opt
+    from vmex.core.freeboundary_vc import solve_free_boundary_three_terms
+
+    started = time.monotonic()
+    result = solve_free_boundary_three_terms(
+        replace(inp, lfreeb=False), external_field=coil_field_of(coils), nphi=vc_grid, ntheta=vc_grid,
+        quadrature=(4 * int(inp.nfp) * vc_grid, 2 * vc_grid), trial_ftol=trial_ftol, bootstrap=profiles,
+        bootstrap_helicity=tt.REDL_HELICITY)
+    if not result.success:
+        raise RuntimeError(f"the seed coils' free boundary did not converge ({result.message})")
+    eq = result.equilibrium
+    b_axis = float(opt.axis_field_strength(eq.state, eq.runtime))
+    factor = tt.B0 / b_axis
+    scaled = replace(inp, phiedge=float(inp.phiedge) * factor, pres_scale=float(inp.pres_scale) * factor**2,
+                     curtor=float(inp.curtor) * factor,
+                     **({} if inp.ac_aux_f is None else {"ac_aux_f": np.asarray(inp.ac_aux_f, dtype=float) * factor}),
+                     ac=np.asarray(inp.ac, dtype=float) * factor)
+    coils = Coils(coils.curves, coils.dofs_currents_raw * factor, currents_scale=coils.currents_scale)
+    report = dict(nfev=int(result.nfev), b_axis=b_axis, factor=factor, seconds=time.monotonic() - started,
+                  normal=result.boundary_residual.normal, pressure=result.boundary_residual.pressure,
+                  sheet_current=result.boundary_residual.sheet_current)
+    print(f"[stage 4] free boundary in {report['seconds']:.0f} s ({result.nfev} evaluations): B.n "
+          f"{report['normal']:.2e}, axis |B| {b_axis:.5f} T -> fields x {factor:.5f}", flush=True)
+    return scaled, coils, report
+
+
+def build_rotating_ellipse_seed(beta, bootstrap, device="gpu", n_coils=None, vc_grid=48, trial_ftol=1e-11):
+    """Stages 1-4; returns ``(inp, fixed, profiles, coils, report)`` (``report``: every stage's wall time).
+
+    ``fixed`` is the stage-2 equilibrium (before the stage-4 field scale)."""
     from essos.coils import Coils
 
     timings, started = {}, time.monotonic()
@@ -367,8 +423,11 @@ def build_rotating_ellipse_seed(beta, bootstrap, device="gpu", n_coils=None):
     coils = seed_coils(inp, fixed.wout, n_coils)
     coils, fit = fit_coils_exact(coils, fixed.wout, inp, vacuum=beta == 0 and not bootstrap)
     timings["coil_fit_s"] = time.monotonic() - started
-    return inp, fixed, profiles, coils, dict(timings=timings, fit=fit, beta=float(fixed.wout.betatotal),
-                                             curtor=float(inp.curtor), phiedge=float(inp.phiedge))
+    inp, coils, free = scaled_to_axis_field(inp, coils, profiles, vc_grid, trial_ftol)
+    timings["free_boundary_s"] = free["seconds"]
+    return inp, fixed, profiles, coils, dict(timings=timings, fit=fit, free_boundary=free,
+                                             beta=float(fixed.wout.betatotal), curtor=float(inp.curtor),
+                                             phiedge=float(inp.phiedge))
 
 
 def parse_args(argv=None):
@@ -381,6 +440,10 @@ def parse_args(argv=None):
     parser.add_argument("--ellipse", type=float, nargs=3, metavar=("NFP", "ASPECT", "RATIO"),
                         help="rotating ellipse (default: the case's SEED)")
     parser.add_argument("--coils-per-half-period", type=int, help="default: the case coil file's")
+    parser.add_argument("--vc-grid", type=int, default=48, help="interface grid per field period of the stage-4 "
+                        "free boundary (pass the three-terms run's --vc-grid)")
+    parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
+                        help="force residual of the stage-4 trial equilibria (pass the three-terms run's)")
     args = parser.parse_args(argv)
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
@@ -402,7 +465,8 @@ def main(argv=None):
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     inp, _, _, coils, report = build_rotating_ellipse_seed(args.beta, args.bootstrap, "gpu",
-                                                           args.coils_per_half_period)
+                                                           args.coils_per_half_period, args.vc_grid,
+                                                           args.trial_forward_ftol)
     inp.to_indata(out / "input.run")
     coils.to_json(str(out / "coils.initial.json"))
     report.update(case=tt.CASE, seed=list(tt.SEED), resolution=list(tt.RESOLUTION))

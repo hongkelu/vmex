@@ -27,7 +27,6 @@ from tests.test_freeboundary_vc import _coil_field, _deck  # noqa: E402
 pytestmark = pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax")
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_vacuum_rows_newton_with_exact_hessian():
     """Vacuum B_coil.n rows: the exact Hessian matches central differences of the exact gradient, and the solve
     converges with a positive-definite reduced Hessian."""

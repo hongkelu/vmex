@@ -46,7 +46,6 @@ def model_and_field():
     return model, _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_exact_hessian_matches_gradient_differences(model_and_field):
     """H v from the second-order adjoint against central differences of the exact gradient J^T r, and the
     gradient from the multiplier against J^T r."""
@@ -69,7 +68,6 @@ def test_exact_hessian_matches_gradient_differences(model_and_field):
     np.testing.assert_allclose(S * (so["H"] @ (S * v)), fd, rtol=1e-4, atol=1e-4 * np.max(np.abs(fd)))
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_solve_is_start_independent(model_and_field):
     """Two starts (the deck, and the deck shrunk by 1 %) reach the same boundary at finite beta,
     with a positive-definite reduced Hessian."""
@@ -87,7 +85,6 @@ def test_solve_is_start_independent(model_and_field):
     np.testing.assert_allclose(ends[0], ends[1], atol=1e-6)
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_solve_entry_least_squares():
     """``solve_free_boundary_three_terms`` (vacuum: B_coil.n rows) returns a converged result with its history;
     an unknown method is rejected."""
@@ -104,7 +101,6 @@ def test_solve_entry_least_squares():
         fvc.solve_free_boundary_three_terms(inp, external_field=field, method="lsq")
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_exact_design_gradients_match_resolved_differences():
     """Design gradients with the exact reduced Hessian (``exact_gradient=True``) against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
@@ -127,7 +123,6 @@ def test_exact_design_gradients_match_resolved_differences():
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-3, atol=1e-9 * max(1.0, abs(value)))
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
     """LP QA at 0.5 % beta with the Redl current in the solve: the current's rows hold as equality constraints at
     the solution, and the design gradients (a plasma coordinate, PHIEDGE, which moves the constraint rows too, and

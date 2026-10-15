@@ -252,7 +252,9 @@ def test_vacuum_free_boundary_agrees_with_nestor():
 _FINITE_BETA_LEAK = pytest.mark.xfail(strict=True, reason=(
     "known limitation: the finite-beta rows act on the boundary's modes (two below the interior's), and B.n "
     "outside them is not controlled (the solve warns); LP QA 0.5 % beta with its bundled coils at mpol 4 ends "
-    "at B.n 6.0e-3 (deck 6.0e-3), at mpol 6 1.15e-3 (deck 1.17e-3); see docs/explanation/validation.md"))
+    "at B.n 6.0e-3 (deck 6.0e-3), at mpol 6 1.15e-3 (deck 1.17e-3). At mpol 4 most of it (4.3e-3) lies outside "
+    "even the interior's modes: the mpol-4 truncation of the deck, whose B.n at 12 modes is 1.2e-3 (a 12-mode "
+    "re-solve of the mpol-4 deck reads 4.8e-3); see docs/explanation/validation.md"))
 
 
 @needs_vc
@@ -285,7 +287,9 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     for fit in fits:
         assert fit.success and fit.cost < 1e-18
         assert fit.boundary_residual.normal < fit.initial_boundary_residual.normal
-    np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-10)
+    # one boundary, to the solver's own step tolerance (newton_step_converged: sqrt(eps) R0 of normal displacement)
+    gap = fvc.displacement_rms(fits[1].x - fits[0].x, model.boundary_modes)
+    assert fvc.newton_step_converged(gap, 0.0, model.R0), gap
     for fit in fits:  # the reported equilibrium is the rows' state, re-solved tight on its own rung
         np.testing.assert_allclose(np.asarray(fit.equilibrium.solution.R_cos), np.asarray(fit.aux[0].R_cos),
                                    rtol=0, atol=1e-6)
@@ -437,23 +441,36 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
     # a boundary fit that did not converge is a failed trial, never a value (whatever its residual)
-    solve = problem.model.solve_boundary
-    problem.model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model = problem.model
+    solve, newton = model.solve_boundary, model._newton_boundary
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model._newton_boundary = lambda *args, **kwargs: dict(newton(*args, **kwargs), converged=False)
     failed = problem.stats["failed"]
     with pytest.raises(TrialRejected):
         problem.fun(x0 + 1.5e-3 * np.eye(2)[0])
     assert problem.stats["failed"] == failed + 1
-    calls = []  # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    # warm starts that need damping hand over to the cold solve from the deck, which finds the boundary
+    routes = []
 
-    def polish_stalls(*args, **kwargs):
-        calls.append(1)
-        return dict(solve(*args, **kwargs), converged=len(calls) == 1)
+    def warm_damped(*args, **kwargs):
+        if kwargs.get("jacobian") is None:  # the cold solve's own Newton
+            return newton(*args, **kwargs)
+        routes.append("warm")
+        return dict(newton(*args, **kwargs), converged=False, damped=True)
 
-    problem.model.solve_boundary = polish_stalls
+    def cold(*args, **kwargs):
+        routes.append("cold" if kwargs.get("jacobian") is None else "polish")
+        return solve(*args, **kwargs)
+
+    model._newton_boundary, model.solve_boundary = warm_damped, cold
+    problem.fun(x0 + 2e-3 * np.eye(2)[0])
+    assert routes == ["warm", "warm", "cold"]
+    model._newton_boundary = newton
+    # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
     with pytest.raises(TrialRejected, match="polish"):
         problem.value_and_grad(x0 + 2.5e-3 * np.eye(2)[0])
-    problem.model.solve_boundary = solve
-
+    model.solve_boundary = solve
 
 def _lp_beta0p5_profiles(inp):
     """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""
@@ -466,7 +483,8 @@ def _lp_beta0p5_profiles(inp):
 
 
 def test_bootstrap_current_profile_layout():
-    """A knot per half-mesh surface, I'(0) = 0 and three unknown knots inside s_1, CURTOR its integral."""
+    """A knot per half-mesh surface and one on the axis, the first segment with the deck's I(s_1), CURTOR the
+    profile's integral."""
     from vmex.core.profiles import current
 
     ns = 25  # the deck's current is resolved to 2 % by the line segments from here
@@ -475,18 +493,63 @@ def test_bootstrap_current_profile_layout():
 
     block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
-    np.testing.assert_allclose(block.knots[4:-1], s)
+    np.testing.assert_allclose(block.knots[1:-1], s)
     values = np.asarray(block.values(block.x0))
-    assert values[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
+    assert block.knots[0] == 0.0 and block.deck.pcurr_type == "line_segment_ip"
     np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
     np.testing.assert_allclose(block.deck.ac_aux_f, values)
-    assert block.x0.size == 3 + ns - 1
+    assert block.x0.size == ns
     assert block.deck.curtor == pytest.approx(float(current("line_segment_ip", inp.ac, block.knots, values, 1.0)))
     # the deck's own enclosed current away from the axis, where only the first cell differs
     deck_I = lambda d, x: float(d.curtor) * np.asarray(current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, x)) / float(  # noqa: E731
         current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, 1.0))
     outer = s[s > 0.2]
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
+    assert deck_I(block.deck, s[0]) == pytest.approx(deck_I(inp, s[0]), rel=1e-3)  # the first segment's integral
+
+
+def test_bootstrap_rows_are_the_current_errors_field_over_b0():
+    """The rows are sqrt(w_j) (I' - I'_Redl) / unit with w_j = d CURTOR / d v_j and unit = L B0 / mu0: their
+    squared norm is the integral over s of the error's poloidal field over B0, at any ns; no weight to tune."""
+    import jax
+    from vmex.core.bootstrap import HalfMeshCurrent
+    from vmex.core.profiles import MU0
+
+    for ns in (13, 25):
+        inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, ns), lfreeb=False)
+        block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
+        curtor = jax.grad(lambda v: block.current(block.values(v), 1.0))(jnp.asarray(block.x0))
+        np.testing.assert_allclose(block.weights, curtor, rtol=1e-12, atol=1e-15)
+        assert block.weights.sum() == pytest.approx(1.0) and np.all(block.weights > 0)
+        # the edge value continues the last two knots' line: a linear I' is exact at s = 1
+        assert float(block.values(1.0 - block.knots[1:-1])[-1]) == pytest.approx(0.0, abs=1e-14)
+        with pytest.raises(ValueError, match="unit is not set"):
+            block.x_scale
+        with pytest.raises(ValueError, match="unit is not set"):
+            block.rows(None, None, None)
+        with pytest.raises(ValueError, match="positive and finite"):
+            block.set_unit(0.0, 1.0)
+        block.set_unit(0.5, 2.0)
+        assert block.unit == pytest.approx(1.0 / MU0)
+        np.testing.assert_allclose(block.x_scale, 1.0 / MU0)
+        error = 1e5 * np.ones(block.x0.size)  # a uniform error of 1e5 A per unit s
+        block.mismatch = lambda *_: (jnp.asarray(error), None)
+        rows = np.asarray(block.rows(None, None, None))
+        assert np.sum(rows**2) == pytest.approx((1e5 * MU0) ** 2, rel=1e-12)
+
+
+def test_bootstrap_current_has_a_knot_per_surface_beyond_ndatafmax(tmp_path):
+    """ns = 101 (the interior the finite-beta interface terms need): 102 knots, more than VMEC2000's 101; the
+    profile keeps them all and only an INDATA namelist of it is refit to 101."""
+    from vmex.core.bootstrap import HalfMeshCurrent
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False)
+    block = HalfMeshCurrent(inp, _lp_beta0p5_profiles(inp), 0)
+    assert block.knots.size == 101 + 1 and block.x0.size == 101
+    np.testing.assert_array_equal(block.deck.ac_aux_s, block.knots)
+    with pytest.warns(RuntimeWarning, match="refit to VMEC2000's 101"):
+        reread = vj.VmecInput.from_file(block.deck.to_indata(tmp_path / "input.bootstrap"))
+    assert reread.ac_aux_s.size == 101 and reread.ac_aux_s[-1] == 1.0
 
 
 @needs_vc
@@ -503,7 +566,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
                                               quadrature=(4 * int(inp.nfp) * 48, 96))
     model = fit.model
     state, mask, params, _ = fit.aux
-    assert fit.x.size == model.n_boundary + 3 + 24
+    assert fit.x.size == model.n_boundary + 25
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
     # independently of the inversion: VMEC's <J.B> (finite-difference identity) is Redl's away from the ends
@@ -517,7 +580,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     # Jacobian columns of a boundary and two current coordinates against central differences of re-solved rows
     # (small steps: near the axis Redl's rows are strongly nonlinear in the boundary, through f_t ~ eps^(1/2))
     J = model.linearize(fit.x, fit.aux, field)[0]
-    for k in (0, model.n_boundary + 3, model.n_boundary + 15):
+    for k in (0, model.n_boundary + 1, model.n_boundary + 13):
         h = 1e-5 * model.x_scale[k]
         rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
                 for sign in (1, -1)]
@@ -537,15 +600,35 @@ def _fixed_boundary_bootstrap():
 def test_fixed_boundary_bootstrap_model_has_exact_columns():
     """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is Redl's, with exact Jacobian columns."""
     inp, profiles, model, out = _fixed_boundary_bootstrap()
-    assert model.n_boundary == 0 and model.x0.size == 3 + 10  # three knots inside s_1, then the half mesh
+    assert model.n_boundary == 0 and model.x0.size == 1 + 10  # the axis knot, then the half mesh
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
     J = model.linearize(out["x"], out["aux"], None)[0]
-    k, h = 5, 1e-5 * model.x_scale[5]
+    k, h = 3, 1e-5 * model.x_scale[3]
     rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
+
+
+@pytest.mark.full
+def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
+    """ns = 101 with the bootstrap current in the solve (101 knot unknowns, beyond VMEC2000's ndatafmax): Redl's
+    current, and Jacobian columns of the axis, a mid-radius and the last knot against re-solved differences."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False,
+                  ftol_array=np.array([1e-13]), niter_array=np.array([40000]))
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), fixed_boundary=True)
+    out = model.solve_boundary(model.params0, None)
+    assert out["converged"] and model.x0.size == 101
+    state, _, params, _ = out["aux"]
+    assert model.bootstrap_residual(state, params) < 1e-4
+    J = model.linearize(out["x"], out["aux"], None)[0]
+    for k in (0, 51, model.x0.size - 1):
+        h = 1e-5 * model.x_scale[k]
+        rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
+                for sign in (1, -1)]
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), k
 
 
 @pytest.mark.full
@@ -634,48 +717,63 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 
 @needs_vc
-def test_finite_beta_rows_are_the_transported_normal_field_moments():
-    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted
-    moments of B_out . n / B0 (coils + virtual casing) against R0 / B0 B_out . grad cos(m theta - n nfp phi) on
-    its modes, then the net-current row.  B_out's contravariant components here come from the surface metric."""
+def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
+    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are R0 T0^T r then the
+    net-current row, with r = sqrt(w) B_out . n / |B_in| (coils + virtual casing) on the grid and T0 the response
+    of the deck's r to each boundary coordinate (here three columns, by central differences of re-solved
+    equilibria; on a GPU also the guard against miscompiled column maps).  The rows'
+    Jacobian (state-only rows: all through the implicit state responses) and their derivative along the coil
+    currents (through r and T0) match central differences."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
-    nfp, n, ntor = int(inp.nfp), 16, int(inp.ntor)
+    nfp, n = int(inp.nfp), 16
     model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
     assert not model.vacuum and model.max_mode == max(inp.mpol - 1, inp.ntor) - fvc._BOUNDARY_MODE_GAP
-    state = model.seed[0]
-    rows = np.asarray(model._rows(state, model.params0, field))
-    runtime = model._im.runtime_from_params(model.params0, model.cfg)
-    data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
-    B_out = np.asarray(vc.PlasmaVacuumInterface.from_surface_data(
-        data, p_edge=0.0, precision=model.precision).total_B_out(field))
-    normal, area = np.asarray(data.normal), np.linalg.norm(np.asarray(data.area_vector), axis=0)
-    bn, weights = np.sum(B_out * normal, axis=0) / model.B0, area / area.sum()
-    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, n, endpoint=False),
-                             np.linspace(0, 2 * np.pi, n, endpoint=False), indexing="ij")
-    rbc, zbs = np.asarray(model.fixed.rbc), np.asarray(model.fixed.zbs)
-    R = Rt = Rp = Zt = Zp = 0.0
-    for k in range(-ntor, ntor + 1):
-        for m in range(int(inp.mpol)):
-            a = m * theta - k * nfp * phi
-            R, Rt, Rp = R + rbc[k + ntor, m] * np.cos(a), Rt - m * rbc[k + ntor, m] * np.sin(a), \
-                Rp + k * nfp * rbc[k + ntor, m] * np.sin(a)
-            Zt, Zp = Zt + m * zbs[k + ntor, m] * np.cos(a), Zp - k * nfp * zbs[k + ntor, m] * np.cos(a)
-    e_t = np.stack([Rt * np.cos(phi), Rt * np.sin(phi), Zt])
-    e_p = np.stack([Rp * np.cos(phi) - R * np.sin(phi), Rp * np.sin(phi) + R * np.cos(phi), Zp])
-    g = np.array([[np.sum(e_t * e_t, 0), np.sum(e_t * e_p, 0)], [np.sum(e_t * e_p, 0), np.sum(e_p * e_p, 0)]])
-    covariant = np.stack([np.sum(B_out * e_t, 0), np.sum(B_out * e_p, 0)])
-    b_t, b_p = np.linalg.solve(np.moveaxis(g, (0, 1), (-2, -1)), np.moveaxis(covariant, 0, -1)[..., None])[..., 0].T
-    b_t, b_p = b_t.T, b_p.T
-    R0 = float(rbc[ntor, 0])
-    expected = [np.sum(weights * bn * R0 / model.B0 * (k * nfp * b_p - m * b_t) * np.sin(m * theta - k * nfp * phi))
-                for m, k in model.boundary_modes[:-1]]
-    np.testing.assert_allclose(rows[:-1], expected, rtol=1e-8, atol=1e-13)
+    state, mask = model.seed
+    x0, nb, step = np.asarray(model.x0), model.n_boundary, 1e-6
+
+    def residual(state, params, f):
+        runtime = model._im.runtime_from_params(params, model.cfg)
+        data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
+        B_out = np.asarray(vc.PlasmaVacuumInterface.from_surface_data(
+            data, p_edge=0.0, precision=model.precision).total_B_out(f))
+        B_in, area = np.asarray(data.B_total), np.linalg.norm(np.asarray(data.area_vector), axis=0)
+        return (np.sqrt(area / area.sum()) * np.sum(B_out * np.asarray(data.normal), 0)
+                / np.linalg.norm(B_in, axis=0)).ravel()
+
+    with pytest.raises(ValueError, match="deck's response"):  # a bare field has no test functions at finite beta
+        model.rows(state, model.params0, field)
+    rows = np.asarray(model._rows(state, model.params0, model.attach(field)))
+    J = np.asarray(model.linearize(x0, (state, mask, model.params0, True), field)[0])
+    r0 = residual(state, model.params0, field)
+    R0 = float(np.asarray(model.fixed.rbc)[int(inp.ntor), 0])
+    for k in (0, nb // 2, nb - 1):  # a low and a middle mode, and (0, 0) (no test function, a Jacobian column)
+        pair = []
+        for sign in (1.0, -1.0):
+            params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * step * np.eye(x0.size)[k]))
+            solved = model.solve(params, seed=state)[0]
+            pair.append((residual(solved, params, field), np.asarray(model._rows(solved, params, model.attach(field)))))
+        T0_k = (pair[0][0] - pair[1][0]) / (2 * step)  # the deck response's column k
+        if k < nb - 1:
+            np.testing.assert_allclose(rows[k], R0 * T0_k @ r0, rtol=1e-5)
+        central = (pair[0][1] - pair[1][1]) / (2 * step)
+        np.testing.assert_allclose(J[:, k], central, rtol=1e-5, atol=1e-6 * np.abs(J).max())
+
+    def with_currents(scale):
+        return replace(field, currents=field.currents * scale)
+
+    tangent = replace(jax.tree.map(jnp.zeros_like, field), currents=field.currents)
+    along = np.asarray(jax.jvp(lambda f: model.rows(state, model.params0, model.attach(f)), (field,), (tangent,))[1])
+    central = (np.asarray(model._rows(state, model.params0, model.attach(with_currents(1 + step))))
+               - np.asarray(model._rows(state, model.params0, model.attach(with_currents(1 - step))))) / (2 * step)
+    np.testing.assert_allclose(along, central, rtol=1e-6, atol=1e-9 * np.abs(along).max())
 
 
 def test_finite_beta_newton_falls_back_on_the_plain_moments():
-    """Finite beta: when Newton on the transported rows stalls (here at a stationary point of the cost that is no
-    root), the plain moments are solved first and the transported rows from their answer."""
+    """Finite beta, cold solve: at the first Newton step on the deck-response rows that has to be shortened (here on
+    the way to a stationary point of the cost that is no root), the plain moments are solved from the start and the
+    deck-response rows from their answer; a warm solve (a given Jacobian) near the root stays on the deck-response
+    rows."""
 
     def rows(z, moments):
         return np.array([z[0] + 1.7693]) if moments else np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
@@ -685,6 +783,218 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
 
     model = _stand_in(1, lambda z, tight=True: rows(z, model._moments), lambda z: jac(z, model._moments),
                       vacuum=False)
+    evaluated = []
+    evaluate = model.evaluate
+    model.evaluate = lambda z, *args, **kwargs: (evaluated.append((float(z[0]), model._moments)),
+                                                evaluate(z, *args, **kwargs))[1]
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
+    assert next(z for z, moments in evaluated if moments) == 0.0  # the moments start where the solve started
+    evaluated.clear()
+    warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6]), False))
+    assert warm["converged"] and not any(moments for _, moments in evaluated)
+
+
+class _Program:
+    """Stand-in jitted program: records its AOT lowering, or fails it."""
+
+    def __init__(self, fail=False):
+        self.fail, self.lowered = fail, []
+
+    def lower(self, *args):
+        if self.fail:
+            raise RuntimeError("no program")
+        self.lowered.append(args)
+        return self
+
+    def compile(self):
+        return self
+
+
+class _Implicit:
+    """Stand-in for :mod:`vmex.core.implicit` as the warm-up threads use it."""
+
+    def __init__(self, fail=False, cpus=2):
+        self.fail, self.calls, self.cpus = fail, [], cpus
+
+    def _overlapping_compiles_pay(self):
+        return self.cpus > 1
+
+    def _canonical_arrays(self, cfg, tree):
+        return tree
+
+    def block_factors_at(self, cfg, params, state, mask):
+        self.calls.append("factors")
+        return "factors"
+
+    def warm_refinement(self, cfg, params):
+        if self.fail:
+            raise RuntimeError("no refinement")
+        self.calls.append("refinement")
+
+    def warm_staged_tangent(self, cfg, params, *, chunk, certify_rtol, certify_maxiter=None, fallbacks=False):
+        if self.fail:
+            raise RuntimeError("no tangent")
+        self.calls.append(("tangent", chunk))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_gradient_programs_compile_from_placeholders_on_background_threads(fail):
+    """The problem starts two warm-up threads (response fallbacks; pullback and direct Jacobian) from placeholder
+    arguments; a failure in either is swallowed."""
+    implicit = _Implicit(fail)
+    implicit._placeholder_arguments = lambda cfg, params: (jnp.ones(3), jnp.ones(3), params)
+    implicit._zeros_like_structure = lambda cfg, shapes: jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shapes)
+    implicit._refine_block_factor_core = lambda z, params, frozen, mask, cfg: (z * params, frozen + mask)
+    model = type("Model", (), {"_im": implicit, "params0": jnp.ones(3), "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(fail), "_direct": _Program(fail)})()
+    threads = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(4))
+    for thread in threads:
+        thread.join()
+    if not fail:
+        assert ("tangent", 2) in implicit.calls
+        (state, mask, params, x, factors), = problem._pullback.lowered
+        assert x.shape == (4,) and len(factors) == 2
+        assert len(problem._direct.lowered) == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_model_warm_up_threads_swallow_their_failures(fail):
+    """The refinement and tangent warm-ups run on daemon threads; a failing one leaves nothing behind."""
+    import threading
+
+    implicit = _Implicit(fail)
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
+    model._warm.join()
+    for thread in threading.enumerate():
+        if thread.name in ("vmex-refine-warm", "vmex-tangent-warm"):
+            thread.join()
+    if not fail:
+        assert "refinement" in implicit.calls and ("tangent", 2) in implicit.calls
+
+
+def test_try_hands_back_the_exception():
+    assert fvc._try(lambda a: a + 1, 1) == 2
+    error = fvc._try(lambda: 1 / 0)
+    assert isinstance(error, ZeroDivisionError)
+
+
+def test_geometry_spectra_are_the_field_spectra_geometry():
+    """The model's radial-line and axis inputs: _state_field_spectra's geometry coefficients without its fields,
+    and the wout axis rows."""
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    eq = opt.solve_equilibrium(inp)
+    state, runtime = eq.solution, eq.solver_context
+    full = vc._state_field_spectra(inp, state, runtime)
+    xm, xn, rmnc, zmns = vc._state_geometry_spectra(state, runtime.resolution)
+    for got, key in ((xm, "xm"), (xn, "xn"), (rmnc, "rmnc"), (zmns, "zmns")):
+        np.testing.assert_array_equal(np.asarray(got), np.asarray(full[key]))
+    n_axis = int(runtime.resolution.ntor) + 1
+    np.testing.assert_allclose(np.asarray(rmnc)[0, :n_axis], np.asarray(eq.wout.raxis_cc), rtol=1e-13, atol=1e-15)
+    np.testing.assert_allclose(np.asarray(zmns)[0, :n_axis], np.asarray(eq.wout.zaxis_cs), rtol=1e-13, atol=1e-15)
+
+
+def test_compiled_surface_data_is_the_eager_construction():
+    """The model's seed surface data, built as one program, equals the eager construction."""
+    from vmex.core import implicit as im
+
+    inp = vj.VmecInput.from_file(str(DATA / "input.solovev")).change_resolution(mpol=3, ntor=0, ntheta=12, nzeta=4)
+    inp = replace(inp, ns_array=np.asarray([5]), ftol_array=np.asarray([1e-10]), niter_array=np.asarray([1000]))
+    cfg = im.make_config(inp, ftol=1e-10, max_iterations=1000)
+    params = im.params_from_input(inp)
+    state, _ = im.solve_implicit_with_aux(params, cfg)
+    got = fvc._surface_data(inp, cfg, state, params, 6, 8)
+    want = vc.surface_field_data_from_state(inp, state, runtime=im.runtime_from_params(params, cfg), nphi=6,
+                                            ntheta=8)
+    for name in ("gamma", "B_total", "normal", "area_vector", "theta", "phi"):
+        np.testing.assert_allclose(np.asarray(getattr(got, name)), np.asarray(getattr(want, name)),
+                                   rtol=1e-12, atol=1e-14)
+    assert (got.nfp, got.stellsym, got.signgs, got.source_convention) == \
+        (want.nfp, want.stellsym, want.signgs, want.source_convention)
+
+
+def test_warm_ups_stay_off_on_a_single_cpu():
+    """A process confined to one CPU starts no warm-up thread: there is nothing to overlap."""
+    implicit = _Implicit(cpus=1)
+    model = type("Model", (), {"_im": implicit, "params0": "p0", "chunk": 2})()
+    model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
+    fvc.ThreeTermsFreeBoundaryModel._warm_programs(model)
+    assert model._warm is None
+    problem = type("Problem", (), {"model": model, "_pullback": _Program(), "_direct": _Program()})()
+    assert fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(2)) == (None, None)
+    assert implicit.calls == []
+
+
+def test_uncertified_state_responses_are_an_error():
+    """A response column that misses its certificate stops the linearization instead of entering the Jacobian."""
+    from vmex.core.implicit import LinearResponseReport
+
+    def report(converged):
+        n = len(converged)
+        return LinearResponseReport(residual_norm=np.full(n, 2.0), tolerance=np.ones(n),
+                                    iterations=np.zeros(n, int), converged=np.asarray(converged))
+
+    assert fvc._certified("dz", report([True, True])) == "dz"
+    with pytest.raises(RuntimeError, match="1 of 2 state responses"):
+        fvc._certified("dz", report([True, False]))
+
+
+def _beta2p5_deck(mpol):
+    """The LP QA 2.5 % deck at ``mpol = ntor`` with its own radial ladder (a production-size free boundary)."""
+    inp = vj.VmecInput.from_file(DATA / "input.LandremanPaul2021_QA_beta2p5_bootstrap")
+    inp = inp.change_resolution(mpol=mpol, ntor=mpol, ntheta=max(64, 4 * mpol + 8), nzeta=max(64, 4 * mpol + 8))
+    return replace(inp, lfreeb=True, mgrid_file="essos_coils(direct)")
+
+
+@needs_vc
+@pytest.mark.parametrize("moments", [False, True])
+@pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile
+@pytest.mark.parametrize("case", [
+    "small",
+    # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (plain moments 55-84 % off)
+    "production",
+])
+def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
+    """Finite beta, both row types (transported, plain moments): every Jacobian column pushed by the model is
+    the central difference of tightly re-solved rows."""
+    if case == "small":
+        inp, n = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), 16
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    else:
+        inp, n = _beta2p5_deck(10), 48
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta2p5_bootstrap.json")
+    nfp = int(inp.nfp)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
+    model._moments = moments
+    x0 = np.zeros(model.x0.size)
+    _, aux = model.evaluate(x0, model.params0, field, tight=True)
+    J = np.asarray(model.linearize(x0, aux, field)[0])
+    for k in (0, model.n_boundary - 1):
+        h = 1e-5
+        rows = []
+        for sign in (1, -1):
+            params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * h * np.eye(x0.size)[k]))
+            state, _ = model.solve(params, seed=aux[0], tight=True)
+            rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)
+
+
+def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
+    """Vacuum unknowns: the boundary modes, then m = mpol on every toroidal mode (it moves the top coefficients
+    through the poloidal variation of the transport direction), then (0, 0); the columns stay independent."""
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 4, 11)
+    top = max(inp.mpol - 1, inp.ntor)
+    M, modes, scale = fvc._normal_displacement_map(inp, top, extend=True)
+    M0, modes0, _ = fvc._normal_displacement_map(inp, top)
+    extra = [(inp.mpol, n) for n in range(-inp.ntor, inp.ntor + 1)]
+    assert modes == modes0[:-1] + extra + [(0, 0)] and M.shape == (M0.shape[0], M0.shape[1] + len(extra))
+    assert scale.size == len(modes)
+    s = np.linalg.svd(M, compute_uv=False)
+    assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
+    np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol

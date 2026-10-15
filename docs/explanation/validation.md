@@ -466,24 +466,26 @@ DESC's polynomial basis reaches 0.02 to 0.05 mm:
 
 | M = N | three-terms: mm / field lines / axis / K | DESC (L = 2M) | DESC (L = M) | VMEX + NESTOR |
 | --- | --- | --- | --- | --- |
-| 4 | 2.0 / 0.79 / 0.36 / 1.8e-03 | 1.6 / 1.02 / 2.67 | 12.3 / 7.54 / 11.66 | 1.6 / 0.59 / 0.37 |
-| 5 | 1.5 / 0.47 / 0.22 / 5.5e-04 | 1.6 / 0.24 / 0.03 | 1.9 / 0.88 / 0.69 | 5.7 / 1.58 / 0.89 |
-| 6 | 1.6 / 0.40 / 0.40 / 3.9e-04 | 1.5 / 0.20 / 0.26 | 1.7 / 0.48 / 0.10 | 1.7 / 0.21 / 0.32 |
-| 7 | 1.5 / 0.16 / 0.41 / 1.3e-04 | 1.6 / 0.39 / 0.05 | 1.6 / 0.19 / 0.14 | 4.0 / 1.44 / 0.42 |
-| 8 | 1.6 / 0.34 / 0.41 / 2.3e-04 | 1.5 / 0.26 / 0.03 | 1.6 / 0.34 / 0.26 | 1.7 / 0.37 / 0.35 |
-| 9 | 1.5 / 0.11 / 0.41 / 7.9e-05 | 1.6 / 0.17 / 0.02 | 1.6 / 0.28 / 0.10 | 3.6 / 1.08 / 0.45 |
-| 10 | 1.6 / 0.25 / 0.41 / 1.5e-04 | | 1.6 / 0.14 / 0.29 | 2.0 / 0.64 / 0.43 |
-| 11 | 1.5 / 0.13 / 0.39 / 6.6e-05 | | 1.6 / 0.12 / 0.17 | 2.2 / 0.76 / 0.43 |
-| 12 | 1.5 / 0.13 / 0.38 / 9.1e-05 | | 1.5 / 0.12 / 0.05 | 2.5 / 0.88 / 0.46 |
-| 13 | 1.5 / 0.12 / 0.39 / 5.0e-05 | | | 1.6 / 0.54 / 0.43 |
+| 4 | 1.7 / 0.52 / 0.51 / 1.3e-03 | 1.6 / 1.02 / 2.67 | 12.3 / 7.54 / 11.66 | 1.6 / 0.59 / 0.37 |
+| 5 | 1.6 / 0.37 / 0.19 / 3.1e-04 | 1.6 / 0.24 / 0.03 | 1.9 / 0.88 / 0.69 | 5.7 / 1.58 / 0.89 |
+| 6 | 1.5 / 0.20 / 0.36 / 1.2e-04 | 1.5 / 0.20 / 0.26 | 1.7 / 0.48 / 0.10 | 1.7 / 0.21 / 0.32 |
+| 7 | 1.5 / 0.18 / 0.37 / 1.1e-04 | 1.6 / 0.39 / 0.05 | 1.6 / 0.19 / 0.14 | 4.0 / 1.44 / 0.42 |
+| 8 | 1.5 / 0.10 / 0.38 / 3.2e-05 | 1.5 / 0.26 / 0.03 | 1.6 / 0.34 / 0.26 | 1.7 / 0.37 / 0.35 |
+| 9 | 1.5 / 0.07 / 0.37 / 5.3e-05 | 1.6 / 0.17 / 0.02 | 1.6 / 0.28 / 0.10 | 3.6 / 1.08 / 0.45 |
+| 10 | 1.5 / 0.06 / 0.38 / 2.4e-05 | | 1.6 / 0.14 / 0.29 | 2.0 / 0.64 / 0.43 |
+| 11 | 1.5 / 0.10 / 0.38 / 3.9e-05 | | 1.6 / 0.12 / 0.17 | 2.2 / 0.76 / 0.43 |
+| 12 | 1.5 / 0.05 / 0.38 / 2.3e-05 | | 1.5 / 0.12 / 0.05 | 2.5 / 0.88 / 0.46 |
+| 13 | 1.6 / 0.06 / 0.38 / 2.8e-05 | | | 1.6 / 0.54 / 0.43 |
 
-From 9 modes (and at 7) the three-terms solution holds its field lines better
-than the target (0.11 to 0.16 against 0.24), so its LCFS 1.5 mm away is the
-field's flux surface more closely than the target is; DESC does as well from 9
-modes (0.12 to 0.17). Below that, and at even mode numbers up to 10, the deck's
-labelling (transported 11 mm from the scaled start) limits the truncated
-boundary: 0.25 to 0.79, where the least-squares solver this replaced, which
-let the labelling relax toward the start's, held 0.09 to 0.23. Field-line quality
+From 6 modes the three-terms solution holds its field lines better than the
+target (0.05 to 0.20 against 0.24), so its LCFS 1.5 mm away is the field's flux
+surface more closely than the target is; DESC does as well from 9 modes (0.12
+to 0.17). From 8 modes it is below the least-squares solver this replaced
+(0.09 to 0.21, which let the labelling relax toward the start's); at 4 and 5
+modes the deck's labelling (transported 11 mm from the scaled start) still
+limits the truncated boundary (0.52 and 0.37 against 0.23 and 0.09). Without
+the vacuum unknowns' harmonic m = mpol the B.n that the top modes left at
+m = mpol was out of the rows' reach: 0.25 to 0.79 at 4, 6, 8 and 10 modes. Field-line quality
 follows the near-resonant `B.n` harmonic (m, n) = (5, 2) (5 iota - 2 = 0.08),
 recorded as `resonant_bn`, not the RMS of `B.n` (`coil_bn_rms`): NESTOR's swings
 between resolutions are swings of that harmonic. With the singular quadrature
@@ -528,8 +530,11 @@ re-solve) reads 2.8e-4 / 9.9e-5 / 2.8e-4 (moments: 4.1e-4 / 1.1e-4 / 4.1e-4),
 DESC's own free boundary at 12 modes 4.8e-4 / 6.8e-5 / 4.4e-4: lower B.n and
 sheet current, a higher pressure jump. DESC's force-converged evaluation at 16
 modes ranks DESC's answer first: 4.0e-4 / 1.2e-4 / 4.4e-4 against 3.7e-4 /
-6.2e-5 / 3.9e-4 (moments: 4.9e-4 / 1.6e-4 / 5.3e-4). From the r1 start the
-transported rows stalled and the plain moments led in (28 against 6 minutes). More
+6.2e-5 / 3.9e-4 (moments: 4.9e-4 / 1.6e-4 / 5.3e-4). From the r1 start Newton
+on the transported rows needs damping at its second step; a cold solve then
+leads with the plain moments from the start and finishes on the transported
+rows (8.6 minutes against 6 from the deck, the same boundary to 1e-9 mm; when
+the plain moments led in only after a stall, 28 minutes). More
 interior headroom (16 interior modes, boundary 12) lowers the self-evaluated
 terms to 1.2e-4 / 1.1e-4 / 1.6e-4, but DESC's 16-mode evaluation reads
 5.9e-4 / 9.8e-5 / 6.1e-4: only the pressure jump improves there. Neither row set controls `B . n`
@@ -538,8 +543,14 @@ outside the boundary's modes: on LP QA at 0.5 % beta with its bundled coils
 (`test_finite_beta_free_boundary_removes_the_sheet_current` records it as an
 expected failure; the solve warns and reports `normal_outside_modes`). The deck fixes the poloidal labelling, and at low resolution it
 matters: at mpol = 4 the LP QA case of `test_vacuum_free_boundary_agrees_with_nestor`
-ends at B.n 9.7e-4 with the LP deck's labelling (truncated from 8 modes) and at
-5.4e-4 with the labelling VMEC + NESTOR leaves (NESTOR's own: 5.9e-4).
+ends at B.n 7.4e-4 with the LP deck's labelling (truncated from 8 modes) and at
+5.2e-4 with the labelling VMEC + NESTOR leaves (NESTOR's own: 5.9e-4). The
+vacuum unknowns include the poloidal harmonic m = mpol (module docstring of
+`vmex.core.freeboundary_vc`); without it these were 9.7e-4 and 5.4e-4. The
+labelling's effect shrinks with resolution like the discretization error:
+relabelling LP QA's deck by theta -> theta + 0.1 sin(theta) moves the vacuum
+answer 0.008 mm at 12 modes, where going from 8 to 12 modes moves it 0.04 mm;
+at 2.5 % beta the same relabelling moves it 0.45 mm and 8 to 12 modes 3.0 mm.
 
 ## Mirror geometry: analytic limits
 

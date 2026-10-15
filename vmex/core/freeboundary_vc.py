@@ -62,6 +62,7 @@ import jax.numpy as jnp
 from . import virtual_casing as vc
 from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
+from .loops import map_columns
 from .problem import FunctionProblem
 
 
@@ -503,7 +504,7 @@ class ThreeTermFreeBoundaryModel:
                     state_bar, params_bar = vjp(c)
                     return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-                parts.append(jax.lax.map(row, c))
+                parts.append(map_columns(row, c))  # a vjp per row: see vmex.core.loops
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback

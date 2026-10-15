@@ -172,6 +172,7 @@ from .device import (
     AUTO, _put_numeric_leaves, commit_to_single_device, resolve_implicit_device,
 )
 from .errors import AdjointSolveError, VmecError
+from .loops import map_columns
 from .fields import magnetic_fields, metric_elements
 from .fourier import Resolution
 from .geometry import (
@@ -2854,13 +2855,17 @@ def _raw_block_system(
             min(block_size, max(8, _COLORED_PROBE_BUDGET // ns)))
     else:
         # Rows 0 and 1 depend on VMEC's lambda-axis closure. All later rows share
-        # one ordinary local kernel; lax.map keeps the compile graph bounded in ns.
+        # one ordinary local kernel; a loop keeps the compile graph bounded in ns.
+        # The body takes a vjp, so the loop carries a batch axis (vmex.core.loops):
+        # probe_chunk_size rows per step, the caller's probe batch.  Measured
+        # (A100, LP QA 8 x 8, ns 51): 874 ms one row at a time, 243 ms at 8 rows.
         axis_rows = jnp.arange(min(2, ns))
-        axis_jacobians = jax.lax.map(
+        axis_jacobians = map_columns(
             lambda row: row_jacobian(row, axis_closure=True), axis_rows)
         ordinary_rows = jnp.arange(2, ns)
-        ordinary_jacobians = jax.lax.map(
-            lambda row: row_jacobian(row, axis_closure=False), ordinary_rows)
+        ordinary_jacobians = map_columns(
+            lambda row: row_jacobian(row, axis_closure=False), ordinary_rows,
+            batch_size=int(probe_chunk_size))
         jacobians = jnp.concatenate((axis_jacobians, ordinary_jacobians), axis=0)
         rows = jnp.arange(ns); starts = jnp.clip(rows - 1, 0, ns - 3)
 

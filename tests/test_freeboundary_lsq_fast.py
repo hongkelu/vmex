@@ -95,7 +95,8 @@ class _ToyModel(lsq.LeastSquaresFreeBoundaryModel):
     def __init__(self, n=4, fail_at=np.inf):
         self.x0, self.x_scale, self.n_boundary, self.n_constraint_rows = np.zeros(n), np.ones(n), n, 1
         self.cfg = type("cfg", (), {"ftol": 1e-24})()
-        self._major_radius, self.hessian_chunk, self.certificate_extra = 1.0, 2, None
+        self.R0, self.boundary_modes = 1.0, [(1, 0)] * n
+        self.hessian_chunk, self.certificate_extra = 2, None
         self.require_converged, self.fail_at = False, fail_at
 
         def rows(x):
@@ -143,7 +144,7 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
     start = np.array([-1.2, 1.0, -0.5, 0.3])
     nearby = np.asarray(_ToyModel().jac_fn(jnp.asarray(start + 0.1)))  # a warm start's (stale) Jacobian
     for model, kw in ((_ToyModel(), {}), (_ToyModel(), dict(jacobian=nearby)), (_ToyModel(fail_at=2.0), {})):
-        out = model._newton(None, None, x0=start, max_iter=200, ftol=1e-16, verbose=1, **kw)
+        out = model._newton(None, None, x0=start, max_iter=200, verbose=1, **kw)
         assert out["converged"], out["status"]
         x = out["x"]
         r = np.asarray(model.rows_fn(jnp.asarray(x)))

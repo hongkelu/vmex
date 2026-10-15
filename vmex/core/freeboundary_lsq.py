@@ -39,7 +39,7 @@ from . import virtual_casing as vc
 from .errors import TrialRejected
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
                               _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
-                              _net_current, summarize_boundary_residual)
+                              _net_current, displacement_rms, summarize_boundary_residual)
 from .input import VmecInput
 
 
@@ -133,8 +133,6 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     def __init__(self, inp: VmecInput, *, hessian_chunk=None, **options):
         super().__init__(inp, **options)
-        rbc = np.asarray(self.fixed.rbc)
-        self._major_radius = float(rbc[(rbc.shape[0] - 1) // 2, 0])
         self.hessian_chunk = int(hessian_chunk or self.chunk)
         # The net-current row and the bootstrap rows (the last rows) are equality constraints of the free-boundary
         # solve, not least-squares rows: G = G_coil and the current is Redl's, whatever the rows' scale.
@@ -206,7 +204,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         """:class:`~vmex.core.freeboundary_vc.BoundaryResidual` of a solved state (the common evaluator)."""
         return summarize_boundary_residual(*self._terms(state, params, field))
 
-    def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None, ftol=1e-10, xtol=1e-9,
+    def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None,
                        max_iter=60, callback=None, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the deck's boundary).
 
@@ -214,7 +212,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         ``jacobian`` (rows by coordinates, a nearby boundary's: an optimizer's previous trial) is the first
         Gauss-Newton model instead of a fresh linearization.
         """
-        out = self._newton(params, field, x0=x0, ftol=ftol, xtol=xtol, jacobian=jacobian,
+        out = self._newton(params, field, x0=x0, jacobian=jacobian,
                            max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
                            verbose=verbose)
         if self.require_converged and not out["converged"]:  # an optimizer's trial: no answer, not a value
@@ -454,7 +452,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._krylov_T = Rinv.T @ T @ Rinv
         return Nr @ Qb, gq_norm_first
 
-    def _newton(self, params, field, *, x0=None, ftol=1e-10, xtol=1e-9, max_iter=60, radius=None,
+    def _newton(self, params, field, *, x0=None, max_iter=60, radius=None,
                               callback=None, verbose=0, jacobian=None):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
@@ -470,11 +468,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         second-order correction ``-(J N)^+ r(x_trial)``; a very successful step at the radius is extended
         along the same model while it gains.
 
-        Converged: at an exact, positive-definite reduced Hessian, the Newton step's predicted gain is below
-        ``ftol`` times the cost or below the cost's repeatability -- measured at every exact model by solving
-        the same boundary again from another state (FTOL 1e-17 equilibria repeat to 3e-11..3e-10 of the cost
-        at 8 x 8 and to ~3e-6 at 12 x 12, finite beta) --, or it moves the boundary by less than ``xtol R00``,
-        or no step gains although the exact model predicts one (the noise floor).  Anything else is reported as a stall
+        Converged: at an exact, positive-definite reduced Hessian, the Newton step passes the shared test
+        :func:`~vmex.core.freeboundary_vc.newton_step_converged` (its RMS normal displacement against round-off of
+        ``R0`` and against the step that the rows' measured noise produces -- the same boundary solved again from
+        another state at every exact model), or no step gains although the exact model predicts one (the cost's
+        noise floor).  Anything else is reported as a stall
         (``converged=False``).  Returns a dict with ``x``, ``rows``, ``aux``, ``jacobian``, ``hessian``,
         ``nfev``, ``njev``, ``converged``, ``status`` and ``history`` (a row per model: cost, reduced gradient
         norm, smallest and largest eigenvalue of the reduced model and of ``J^T J``, Newton decrement, gap
@@ -541,6 +539,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
         noise, state_prev = 0.0, aux[0]  # the cost's measured repeatability; a state of another boundary
+        noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
         for it in range(int(max_iter)):
             if need is not None or H_full is None:
@@ -586,6 +585,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 nfev += 1
                 if again is not None:
                     noise = max(noise, abs(cost_of(again[0]) - cost_of(r)))
+                    if noise_rows is None or np.linalg.norm(again[0] - r) > np.linalg.norm(noise_rows):
+                        noise_rows = again[0] - r
             gs_prev, x_prev = gs_f, x.copy()
             cost = cost_of(r)
             # the null space of the constraint rows (their Jacobian from the last model) and the Lagrangian's gradient
@@ -606,10 +607,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             gq = Q.T @ gr
             w_gn = np.linalg.eigvalsh(N.T @ GN @ N)
             decrement = float(np.sum(gq**2 / w)) if w[0] > 0 else np.inf
-            # geometric test: the Newton step moves no boundary point by more than xtol * R00 (the sum of the
-            # coefficient changes bounds the displacement); below it the cost only sees the solves' noise
-            moved = (float(np.sum(np.abs((S * (N @ (Q @ (-gq / w))))[:self.n_boundary])))
-                     if w[0] > 0 and self.n_boundary else np.inf)  # no boundary (fixed_boundary): no geometric test
+            # the Newton step, and the step the rows' measured noise alone produces (same model): the shared
+            # convergence test (newton_step_converged) compares their sizes in metres
+            step_n = S * (N @ (Q @ (-gq / w))) if w[0] > 0 else None
+            step_noise = None
+            if step_n is not None and noise_rows is not None:
+                g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))
+                step_noise = S * (N @ (Q @ ((Q.T @ g_noise) / w)))
+            moved = (displacement_rms(step_n[:self.n_boundary], self.boundary_modes)
+                     if step_n is not None and self.n_boundary else np.inf)
             history.append([cost, float(np.linalg.norm(gr)), w[0], w[-1], w_gn[0], w_gn[-1], decrement,
                             float(np.linalg.norm(so["g"] - so["g_adjoint"]) / max(np.linalg.norm(so["g"]), 1e-300))
                             if fresh else np.nan, so["asymmetry"] if fresh else np.nan, time.perf_counter() - started])
@@ -622,21 +628,17 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       + ("times " + " ".join(f"{k} {v:.1f}" for k, v in so["seconds"].items()) + " s " if fresh else "")
                       + f"({history[-1][-1]:.0f} s)", flush=True)
             if verbose > 1:  # the weakest direction of the reduced Hessian, in boundary modes
-                from .optimize import _dof_modes
-                labels = [f"{f}({m},{n})" for f in ("R", "Z") for m, n in _dof_modes(self.fixed, self.max_mode)] + ["R(0,0)"]
+                labels = [f"h({m},{n})" for m, n in self.boundary_modes]
                 v = S * (N @ Q[:, 0])
                 v = v[:len(labels)] / np.max(np.abs(v[:len(labels)]))
                 top = np.argsort(-np.abs(v))[:6]
                 print("  weakest:", " ".join(f"{labels[k]}:{v[k]:+.2f}" for k in top), flush=True)
-            floor = max(ftol * cost, noise)  # gains below it are not resolved by the equilibria
-            if 0.5 * decrement <= floor or moved <= xtol * self._major_radius:
+            floor = noise  # gains below the cost's repeatability are not resolved by the equilibria
+            if step_n is not None and self._step_converged(step_n, step_noise, x):
                 if not fresh:  # certify with the exact Hessian
                     need = "exact"
                     continue
-                converged = True
-                status = ("converged" if 0.5 * decrement <= ftol * cost else
-                          "converged: gain below the cost's repeatability" if 0.5 * decrement <= floor else
-                          "converged: step below xtol")
+                converged, status = True, "converged"
                 break
             newton = np.linalg.norm(gq / w) if w[0] > 0 else np.inf
             if radius is None:

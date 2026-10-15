@@ -141,6 +141,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self.n_constraint_rows = 0 if self.fixed_boundary else 1 + (0 if self.bootstrap is None
                                                                     else int(self.bootstrap.x0.size))
         self.require_converged = False  # LeastSquaresFreeBoundaryProblem: an unconverged trial is a failed one
+        # LeastSquaresFreeBoundaryProblem: params -> the plasma directions of its design gradient; the exact model
+        # is then built with every column and these mixed columns, which the design gradient at the answer reuses
+        self.certificate_extra = None
         self._linearization = None
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
@@ -207,11 +210,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                        max_iter=60, callback=None, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the deck's boundary).
 
-        :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``, and
-        ``jacobian`` (a Galerkin warm start) is not used.
+        :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``;
+        ``jacobian`` (rows by coordinates, a nearby boundary's: an optimizer's previous trial) is the first
+        Gauss-Newton model instead of a fresh linearization.
         """
-        del jacobian
-        out = self._newton(params, field, x0=x0, ftol=ftol, xtol=xtol,
+        out = self._newton(params, field, x0=x0, ftol=ftol, xtol=xtol, jacobian=jacobian,
                            max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
                            verbose=verbose)
         if self.require_converged and not out["converged"]:  # an optimizer's trial: no answer, not a value
@@ -448,7 +451,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         return Nr @ Qb, gq_norm_first
 
     def _newton(self, params, field, *, x0=None, ftol=1e-10, xtol=1e-9, max_iter=60, radius=None,
-                              callback=None, verbose=0):
+                              callback=None, verbose=0, jacobian=None):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
         With constraint rows (the bootstrap current's, :attr:`n_constraint_rows`) the cost is the interface rows'
@@ -537,8 +540,19 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
         for it in range(int(max_iter)):
             if need is not None or H_full is None:
-                if need == "exact":  # the exact Hessian as products (Lanczos below), J^T J under the next BFGS
+                if need == "exact" and self.certificate_extra is not None:
+                    # an optimizer's trial: the exact Hessian with every column (and the mixed columns of
+                    # certificate_extra(params)), which its design gradient at the answer then reuses
+                    so = self.second_order(x, aux, field, extra=self.certificate_extra(params), columns=True)
+                    H_full = None
+                elif need == "exact":  # the exact Hessian as products (Lanczos below), J^T J under the next BFGS
                     so = self.second_order(x, aux, field, columns=False)
+                    H_full = None
+                elif jacobian is not None and so is None:  # the warm start's Jacobian, the exact gradient here
+                    J = np.asarray(jacobian, dtype=float)
+                    g_f = self.gradient(x, aux, field, shift=None if not m else np.r_[np.zeros(k), -r[k:]])
+                    so = dict(J=J, r=r, g=g_f, g_f=g_f, g_adjoint=g_f, aux=aux, asymmetry=np.nan, adjoint=np.nan,
+                              seconds={})
                     H_full = None
                 else:  # the Jacobian alone: Gauss-Newton, the start of the quasi-Newton updates
                     J, _, _, aux = self.linearize(x, aux, field)
@@ -551,7 +565,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 GN = Js.T @ Js
                 if H_full is None:
                     H_full = GN
-                gs_f = S * (so["J"][:k, :x.size].T @ r[:k])
+                gs_f = S * (so["g_f"] if "g_f" in so else so["J"][:k, :x.size].T @ r[:k])
                 model, need = ("exact" if need == "exact" else "gauss_newton"), None
             else:  # quasi-Newton: BFGS updates of the last model with the exact (adjoint) gradient
                 shift = None if not m else np.r_[np.zeros(k), -r[k:]]  # the interface cost's gradient
@@ -574,14 +588,16 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             N, gs, Hg, _, _ = self._reduced(x, gs_f, so["J"][k:, :x.size] * S[None] if m else None)
             Hs = H_full + Hg
             N_full = N
-            if fresh:
+            if fresh and "H" in so:  # every column of the exact Hessian (an optimizer's certificate)
+                Hs = S[:, None] * so["H"] * S[None] + Hg
+            elif fresh:
                 # The exact model on a Krylov subspace: preconditioned Lanczos on the reduced Hessian (one product
                 # H v a vector), preconditioner the reduced Gauss-Newton matrix.  The subspace grows until the
                 # Newton step's residual is below eta |g| (forcing eta = min(1/2, sqrt(|g| / |g_first|)), the
                 # Eisenstat-Walker choice for superlinear convergence); the trust-region steps below are then
                 # exact in it.  The eigenpairs of the tridiagonal certify convergence on the subspace.
                 N, gq_norm_first = self._krylov_model(so, N, GN, Hg, S, gs, gq_norm_first)
-            Hr, gr = N.T @ Hs @ N if not fresh else self._krylov_T, N.T @ gs
+            Hr, gr = (self._krylov_T if fresh and "H" not in so else N.T @ Hs @ N), N.T @ gs
             w, Q = np.linalg.eigh(Hr)
             gq = Q.T @ gr
             w_gn = np.linalg.eigvalsh(N.T @ GN @ N)
@@ -781,6 +797,18 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         self._coil_mixed = jax.jit(coil_mixed)
         self._constraint_field_jacobian = jax.jit(constraint_field_jacobian)
         super().__init__(model, loss, x0, **options)
+
+    def _solve(self, x):
+        """:meth:`ThreeTermsFreeBoundaryProblem._solve`, the boundary's certificate built with what
+        :meth:`_exact_gradients` needs at the answer (every Hessian column and the plasma directions' mixed
+        columns): the design gradient then reuses it instead of linearizing again."""
+        xj = jnp.asarray(np.asarray(x, dtype=float))
+        self.model.certificate_extra = ((lambda params: self._plasma_directions(params, xj)) if self._plasma.size
+                                        else (lambda params: None))
+        try:
+            return super()._solve(x)
+        finally:
+            self.model.certificate_extra = None
 
     def _linearize(self, x, sol):
         """Every row's design gradient at ``sol`` (cached): :meth:`_exact_gradients`."""

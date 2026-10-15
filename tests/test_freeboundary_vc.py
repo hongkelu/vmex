@@ -717,49 +717,62 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 
 @needs_vc
-def test_finite_beta_rows_are_the_transported_normal_field_moments():
-    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted
-    moments of B_out . n / B0 (coils + virtual casing) against R0 / B0 B_out . grad cos(m theta - n nfp phi) on
-    its modes, then the net-current row.  B_out's contravariant components here come from the surface metric."""
+def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
+    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are R0 T0^T r then the
+    net-current row, with r = sqrt(w) B_out . n / |B_in| (coils + virtual casing) on the grid and T0 the response
+    of the deck's r to each boundary coordinate (here three columns, by central differences of re-solved
+    equilibria; on a GPU also the guard against miscompiled column maps).  The rows'
+    Jacobian (state-only rows: all through the implicit state responses) and their derivative along the coil
+    currents (through r and T0) match central differences."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
-    nfp, n, ntor = int(inp.nfp), 16, int(inp.ntor)
+    nfp, n = int(inp.nfp), 16
     model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
     assert not model.vacuum and model.max_mode == max(inp.mpol - 1, inp.ntor) - fvc._BOUNDARY_MODE_GAP
-    state = model.seed[0]
-    rows = np.asarray(model._rows(state, model.params0, field))
-    runtime = model._im.runtime_from_params(model.params0, model.cfg)
-    data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
-    B_out = np.asarray(vc.PlasmaVacuumInterface.from_surface_data(
-        data, p_edge=0.0, precision=model.precision).total_B_out(field))
-    normal, area = np.asarray(data.normal), np.linalg.norm(np.asarray(data.area_vector), axis=0)
-    bn, weights = np.sum(B_out * normal, axis=0) / model.B0, area / area.sum()
-    phi, theta = np.meshgrid(np.linspace(0, 2 * np.pi / nfp, n, endpoint=False),
-                             np.linspace(0, 2 * np.pi, n, endpoint=False), indexing="ij")
-    rbc, zbs = np.asarray(model.fixed.rbc), np.asarray(model.fixed.zbs)
-    R = Rt = Rp = Zt = Zp = 0.0
-    for k in range(-ntor, ntor + 1):
-        for m in range(int(inp.mpol)):
-            a = m * theta - k * nfp * phi
-            R, Rt, Rp = R + rbc[k + ntor, m] * np.cos(a), Rt - m * rbc[k + ntor, m] * np.sin(a), \
-                Rp + k * nfp * rbc[k + ntor, m] * np.sin(a)
-            Zt, Zp = Zt + m * zbs[k + ntor, m] * np.cos(a), Zp - k * nfp * zbs[k + ntor, m] * np.cos(a)
-    e_t = np.stack([Rt * np.cos(phi), Rt * np.sin(phi), Zt])
-    e_p = np.stack([Rp * np.cos(phi) - R * np.sin(phi), Rp * np.sin(phi) + R * np.cos(phi), Zp])
-    g = np.array([[np.sum(e_t * e_t, 0), np.sum(e_t * e_p, 0)], [np.sum(e_t * e_p, 0), np.sum(e_p * e_p, 0)]])
-    covariant = np.stack([np.sum(B_out * e_t, 0), np.sum(B_out * e_p, 0)])
-    b_t, b_p = np.linalg.solve(np.moveaxis(g, (0, 1), (-2, -1)), np.moveaxis(covariant, 0, -1)[..., None])[..., 0].T
-    b_t, b_p = b_t.T, b_p.T
-    R0 = float(rbc[ntor, 0])
-    expected = [np.sum(weights * bn * R0 / model.B0 * (k * nfp * b_p - m * b_t) * np.sin(m * theta - k * nfp * phi))
-                for m, k in model.boundary_modes[:-1]]
-    np.testing.assert_allclose(rows[:-1], expected, rtol=1e-8, atol=1e-13)
+    state, mask = model.seed
+    x0, nb, step = np.asarray(model.x0), model.n_boundary, 1e-6
+
+    def residual(state, params, f):
+        runtime = model._im.runtime_from_params(params, model.cfg)
+        data = vc.surface_field_data_from_state(model.fixed, state, runtime=runtime, nphi=n, ntheta=n)
+        B_out = np.asarray(vc.PlasmaVacuumInterface.from_surface_data(
+            data, p_edge=0.0, precision=model.precision).total_B_out(f))
+        B_in, area = np.asarray(data.B_total), np.linalg.norm(np.asarray(data.area_vector), axis=0)
+        return (np.sqrt(area / area.sum()) * np.sum(B_out * np.asarray(data.normal), 0)
+                / np.linalg.norm(B_in, axis=0)).ravel()
+
+    with pytest.raises(ValueError, match="deck's response"):  # a bare field has no test functions at finite beta
+        model.rows(state, model.params0, field)
+    rows = np.asarray(model._rows(state, model.params0, model.attach(field)))
+    J = np.asarray(model.linearize(x0, (state, mask, model.params0, True), field)[0])
+    r0 = residual(state, model.params0, field)
+    R0 = float(np.asarray(model.fixed.rbc)[int(inp.ntor), 0])
+    for k in (0, nb // 2, nb - 1):  # a low and a middle mode, and (0, 0) (no test function, a Jacobian column)
+        pair = []
+        for sign in (1.0, -1.0):
+            params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * step * np.eye(x0.size)[k]))
+            solved = model.solve(params, seed=state)[0]
+            pair.append((residual(solved, params, field), np.asarray(model._rows(solved, params, model.attach(field)))))
+        T0_k = (pair[0][0] - pair[1][0]) / (2 * step)  # the deck response's column k
+        if k < nb - 1:
+            np.testing.assert_allclose(rows[k], R0 * T0_k @ r0, rtol=1e-5)
+        central = (pair[0][1] - pair[1][1]) / (2 * step)
+        np.testing.assert_allclose(J[:, k], central, rtol=1e-5, atol=1e-6 * np.abs(J).max())
+
+    def with_currents(scale):
+        return replace(field, currents=field.currents * scale)
+
+    tangent = replace(jax.tree.map(jnp.zeros_like, field), currents=field.currents)
+    along = np.asarray(jax.jvp(lambda f: model.rows(state, model.params0, model.attach(f)), (field,), (tangent,))[1])
+    central = (np.asarray(model._rows(state, model.params0, model.attach(with_currents(1 + step))))
+               - np.asarray(model._rows(state, model.params0, model.attach(with_currents(1 - step))))) / (2 * step)
+    np.testing.assert_allclose(along, central, rtol=1e-6, atol=1e-9 * np.abs(along).max())
 
 
 def test_finite_beta_newton_falls_back_on_the_plain_moments():
-    """Finite beta, cold solve: at the first Newton step on the transported rows that has to be shortened (here on
+    """Finite beta, cold solve: at the first Newton step on the deck-response rows that has to be shortened (here on
     the way to a stationary point of the cost that is no root), the plain moments are solved from the start and the
-    transported rows from their answer; a warm solve (a given Jacobian) near the root stays on the transported
+    deck-response rows from their answer; a warm solve (a given Jacobian) near the root stays on the deck-response
     rows."""
 
     def rows(z, moments):

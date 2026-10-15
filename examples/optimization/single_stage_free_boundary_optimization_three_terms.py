@@ -1318,6 +1318,8 @@ def main(argv=None):
             save(f".step{row['step']}")
 
     log_step()
+    if args.steps == 0:  # an evaluation (e.g. --restart: a cold re-solve of saved coils), no optimizer
+        return
     if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),

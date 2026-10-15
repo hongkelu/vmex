@@ -345,42 +345,46 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             lam, grad_p, adjoint = self._multiplier(state, mask, params_x, field, shift_j)
         dz_b, dp_b = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
         rs = r if shift is None else r + shift
-        if not columns:
-            def products(V):
-                vj = jnp.asarray(V)
-                one = lambda a: jnp.tensordot(vj, a, axes=1)  # noqa: E731
-                with vc.remat_scans():
-                    return np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam,
-                                                            jax.tree.map(one, dz_b), jax.tree.map(one, dp_b), dz_b, dp_b))
+        def blocked(dz_cols, dp_cols):
+            """Hessian columns along the tangents ``(dz_cols, dp_cols)`` (leading axis), ``hessian_chunk`` a program
+            call (the last block zero-padded: one executable).  A call that runs out of device memory halves
+            ``hessian_chunk`` (for the rest of the run) and is repeated: the memory of a block depends on the
+            quadrature the surface needs, unknown in advance."""
+            count = jax.tree.leaves(dz_cols)[0].shape[0]
+            out, start = [], 0
+            while start < count:
+                width = min(self.hessian_chunk, count)
+                take = lambda a: jax.lax.dynamic_slice_in_dim(  # noqa: E731
+                    jnp.concatenate([a, jnp.zeros((width,) + a.shape[1:], a.dtype)]), start, width)
+                try:
+                    with vc.remat_scans():
+                        block = np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam,
+                                                                 jax.tree.map(take, dz_cols),
+                                                                 jax.tree.map(take, dp_cols), dz_b, dp_b))
+                except jax.errors.JaxRuntimeError as error:
+                    if "RESOURCE_EXHAUSTED" not in str(error) or width == 1:
+                        raise
+                    self.hessian_chunk = max(1, width // 2)
+                    continue
+                out.append(block[:count - start])
+                start += width
+            return np.vstack(out)
 
+        if not columns:
             def hvp(v):
-                """``H v`` for every row ``v`` of ``(b, n)``, ``hessian_chunk`` rows a program call.  A call that
-                runs out of device memory halves ``hessian_chunk`` (for the rest of the run) and is repeated: the
-                memory of a block of products depends on the quadrature the surface needs, unknown in advance."""
-                V = np.atleast_2d(v)
-                out = []
-                start = 0
-                while start < V.shape[0]:
-                    width = min(self.hessian_chunk, V.shape[0] - start)
-                    try:
-                        out.append(products(V[start:start + width]))
-                    except jax.errors.JaxRuntimeError as error:
-                        if "RESOURCE_EXHAUSTED" not in str(error) or width == 1:
-                            raise
-                        self.hessian_chunk = max(1, width // 2)
-                        continue
-                    start += width
-                return np.vstack(out)
+                """``H v`` for every row ``v`` of ``(b, n)`` (:func:`blocked`)."""
+                vj = jnp.asarray(np.atleast_2d(v))
+                one = lambda a: jnp.tensordot(vj, a, axes=1)  # noqa: E731
+                return blocked(jax.tree.map(one, dz_b), jax.tree.map(one, dp_b))
 
             out = dict(hvp=hvp, g=J[:, :n].T @ rs, nu_c=nu_c, shift=shift, g_adjoint=np.asarray(self._project(dp_b, grad_p)), J=J, r=r,
                        aux=aux, lam=lam, dz=dz, batch=batch, asymmetry=np.nan, adjoint=float(adjoint),
                        seconds=dict(jacobian=t1 - t0, multiplier=time.perf_counter() - t1))
             self._last_second_order = (key, out)
             return out
-        with vc.remat_scans():  # traced (first call) with checkpointed quadrature chunks: bounded memory
-            t2 = time.perf_counter()
-            cols = np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam, dz, batch, dz_b, dp_b))
-            t3 = time.perf_counter()
+        t2 = time.perf_counter()
+        cols = blocked(dz, batch)
+        t3 = time.perf_counter()
         H, C = cols[:n].T, cols[n:].T
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         H = 0.5 * (H + H.T)

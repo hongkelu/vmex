@@ -94,7 +94,8 @@ def test_solve_entry_least_squares():
     inp = _vacuum_deck()
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     entry = {k: v for k, v in OPTIONS.items() if k != "hessian_chunk"}
-    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, method="least_squares", **entry)
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, method="least_squares", initial_boundary=inp,
+                                              **entry)
     assert fit.model.vacuum and isinstance(fit.model, lsq.LeastSquaresFreeBoundaryModel)
     assert fit.success and fit.status.startswith("converged")
     assert fit.history.shape[1] == 10

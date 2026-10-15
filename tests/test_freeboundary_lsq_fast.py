@@ -65,6 +65,21 @@ def test_vacuum_rows_newton_with_exact_hessian():
     finally:
         model._hessian_columns = columns
     assert model.hessian_chunk == 1 and calls[0] == 3 and len(calls) == 4
-    out = model.solve_boundary(model.params0, field, max_iter=60)
+    accepted = []
+    out = model.solve_boundary(model.params0, field, max_iter=60, verbose=2, callback=accepted.append)
     assert out["converged"], out["status"]
     assert out["history"][-1][2] > 0
+    assert len(accepted) >= 1 and np.array_equal(accepted[-1], out["x"])
+    # inside an optimizer an unconverged solve is an error, not an answer
+    model.require_converged = True
+    with pytest.raises(RuntimeError, match="did not converge"):
+        model.solve_boundary(model.params0, field, max_iter=1)
+
+
+def test_entry_rejects_what_it_does_not_support():
+    """Stellarator-asymmetric decks and non-callable losses are refused before any solve."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 9), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    with pytest.raises(NotImplementedError, match="lasym"):
+        lsq.solve_free_boundary_least_squares(replace(inp, lasym=True), external_field=object())
+    with pytest.raises(TypeError, match="callable"):
+        lsq.LeastSquaresFreeBoundaryProblem.from_loss(inp, None, np.zeros(1), field_from_parameters=lambda x: x)

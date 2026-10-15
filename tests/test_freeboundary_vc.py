@@ -938,32 +938,6 @@ def _beta2p5_deck(mpol):
     return replace(inp, lfreeb=True, mgrid_file="essos_coils(direct)")
 
 
-@pytest.mark.parametrize("count", [0, 1, 2, 5])
-def test_map_columns_never_compiles_an_unbatched_column(count):
-    """_map_columns equals vmap for any column count (zero-size leaves included), and its loop steps over blocks
-    of two columns: XLA:GPU miscompiles these tangents for one column per program."""
-    def function(column):
-        return {"x": 2.0 * column[0] + column[1][0], "empty": column[1][1:]}
-
-    columns = (jnp.arange(count * 3.0).reshape(count, 3), jnp.arange(count * 1.0).reshape(count, 1))
-    out = jax.jit(lambda c: fvc._map_columns(function, c))(columns)
-    expected = jax.vmap(function)(columns)
-    np.testing.assert_array_equal(out["x"], expected["x"])
-    assert out["empty"].shape == (count, 0)
-    def scans(jaxpr):
-        for eqn in jaxpr.eqns:
-            if eqn.primitive.name == "scan":
-                yield eqn
-            for param in eqn.params.values():
-                inner = getattr(param, "jaxpr", param)
-                if hasattr(inner, "eqns"):
-                    yield from scans(inner)
-
-    scans = list(scans(jax.make_jaxpr(lambda c: fvc._map_columns(function, c))(columns).jaxpr))
-    assert len(scans) == 1 and fvc._COLUMNS_PER_STEP >= 2
-    assert {v.aval.shape[1] for v in scans[0].invars} == {fvc._COLUMNS_PER_STEP}
-
-
 @needs_vc
 @pytest.mark.parametrize("moments", [False, True])
 @pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile

@@ -32,6 +32,7 @@ import platform
 _CACHE_FORMAT_VERSION = "5"
 _CACHE_MAX_ENTRIES = 1024            # resident executables; see _prune_cache_entries
 _CACHE_RECENT_SECONDS = 24 * 3600    # entries used this recently survive the cap, up to 4x it
+_CACHE_STALE_SECONDS = 14 * 24 * 3600  # unused machine dirs go after two weeks (spans a paused project)
 _CACHE_SIZE_FLOOR = 2 << 30          # 2 GiB
 _CACHE_SIZE_CEILING = 20 << 30       # 20 GiB
 _CACHE_DISK_FRACTION = 0.10
@@ -531,10 +532,50 @@ def _reset_jax_cache() -> None:
         compilation_cache.reset_cache()
 
 
+def _prune_stale_machines(cache_dir: str, max_age: float = _CACHE_STALE_SECONDS) -> int:
+    """Remove the sibling machine directories of ``cache_dir`` unused for ``max_age`` seconds.
+
+    The entry bound (:func:`_prune_cache_entries`) holds per machine directory
+    only, and every new machine type -- or, while the fingerprint named the
+    host, every cluster node -- opens a directory of its own, so a shared cache
+    root grew without bound (120 GB in 83 directories on one project).  A
+    directory whose modification time (an entry written or removed) is older
+    than ``max_age`` belongs to a machine or a jax build no longer in use and
+    is removed whole; one stat per sibling.  Only directories named like a
+    fingerprint are touched.  Returns the number removed.
+    """
+    import pathlib
+    import shutil
+    import time
+
+    path = pathlib.Path(cache_dir)
+    if not _FINGERPRINT_NAME.fullmatch(path.name):
+        return 0
+    removed = 0
+    cutoff = time.time() - max_age
+    try:
+        siblings = list(path.parent.iterdir())
+    except OSError:
+        return 0
+    for sibling in siblings:
+        if sibling == path or not _FINGERPRINT_NAME.fullmatch(sibling.name):
+            continue
+        try:
+            if not sibling.is_dir() or sibling.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(sibling)
+            removed += 1
+        except OSError:  # another process removed or is using it: leave it
+            continue
+    return removed
+
+
 def _configure_compilation_cache(jax_module: Any, cache_dir: str | None) -> None:
     """Apply vmex's persistent-cache defaults to an imported JAX module."""
     if cache_dir is None:
         return
+    with contextlib.suppress(Exception):
+        _prune_stale_machines(cache_dir)
     try:
         # Keep the directory small before anything writes to it: every write
         # re-scans it (see _prune_cache_entries).  0 disables the bound.

@@ -1156,6 +1156,35 @@ def test_augmented_lagrangian_reaches_the_constrained_minima():
         opt.minimize(p, method="AUGLAG", options=dict(ftol=1e-12))
 
 
+def test_augmented_lagrangian_resume_continues_the_run():
+    """A run split into two calls, the second resumed from the first's state, is the one-call run."""
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    def rosenbrock(x):
+        return (float((1-x[0])**2 + 100*(x[1]-x[0]**2)**2),
+                np.array([-2*(1-x[0]) - 400*x[0]*(x[1]-x[0]**2), 200*(x[1]-x[0]**2)]))
+
+    disk = NonlinearConstraint(lambda x: np.array([x@x]), -np.inf, 1.5, jac=lambda x: 2*x[None])
+    scales = np.array([.5, 2.])
+
+    def run(x0, steps, **resume):
+        p = opt.FunctionProblem.from_functions(x0, scales=scales, value_and_grad=rosenbrock)
+        return opt.minimize(p, method="AUGLAG", constraints=disk, options=dict(maxiter=steps, **resume))
+
+    whole = run(np.array([-1.2, 1.]), 24)
+    first = run(np.array([-1.2, 1.]), 13)
+    second = run(first.x, 11, resume=first.state)
+    assert first.state["row_keys"].size and first.state["outer"] >= 1
+    np.testing.assert_allclose(second.x, whole.x, rtol=1e-9, atol=1e-12)
+    assert second.penalty == whole.penalty
+    with pytest.raises(ValueError, match="resume state does not match"):
+        opt.minimize(opt.FunctionProblem.from_functions(np.zeros(3), value_and_grad=lambda x: (float(x@x), 2*x)),
+                     method="AUGLAG", constraints=NonlinearConstraint(lambda x: np.array([x.sum()]), 1., np.inf,
+                                                                       jac=lambda x: np.ones((1, 3))),
+                     options=dict(resume=first.state))
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

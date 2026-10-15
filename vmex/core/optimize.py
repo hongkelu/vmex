@@ -2447,13 +2447,17 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     feasible and its trials were solved, i.e. stationary; ``"no_progress"`` if no trial could be evaluated). ``accept(u, info)`` is told each accepted point (with the step norm, its model and actual decreases and whether the objective's BFGS update was damped); ``report`` (a dict) holds the multipliers, penalty
     and violation of the latest one. Returns ``(success, stop_reason, message)``.
 
-    The only option is ``maxiter`` (accepted steps, default 100). The rest is fixed: penalty 10 (with the objective
+    The only option is ``maxiter`` (accepted steps, default 100); ``resume`` takes the ``report["state"]`` of an
+    earlier call (objective scale, multipliers, penalty, radius, curvature matrices and loop counters) and continues
+    that run from its last accepted point, so a run split over several calls (allocations) is one run. The rest is
+    fixed: penalty 10 (with the objective
     scaled to 1 and each row in units of its tolerance, a violation of one unit costs five starting objectives), zero
     starting multipliers, radius 0.1 in scaled coordinates (at most 100), ten accepted steps per multiplier update.
     """
-    unknown = set(options) - {"maxiter"}
+    unknown = set(options) - {"maxiter", "resume"}
     if unknown:
-        raise ValueError(f"AUGLAG takes only maxiter, not {sorted(unknown)}")
+        raise ValueError(f"AUGLAG takes only maxiter (and a run's own resume state), not {sorted(unknown)}")
+    resume = options.get("resume")
     budget = int(options.get("maxiter", 100))
     inner_budget, initial_radius, max_radius = 10, 0.1, 100.0
     radius, min_radius = initial_radius, 1e-8 * initial_radius  # shorter steps only resolve the evaluations' noise
@@ -2470,6 +2474,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
 
     f, c, gf, J = linearize(u)
     scale = 1.0 if f == 0.0 else float(np.clip(1.0 / abs(f), 1e-12, 1e12))  # F(start) = 1
+    if resume is not None:  # a continued run keeps its objective scale (the penalty's balance)
+        scale = float(resume["scale"])
     F, gF, v, A = scale * f, scale * gf, sign * c[index] - offset, sign[:, None] * J[index]
     # zero, not least squares: many nearly parallel active rows (a limit at every point) inflate that fit
     multipliers = np.zeros(v.size)
@@ -2477,14 +2483,35 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     # it ~1e-2, and the violation grew while the objective fell
     penalty = 10.0
     B, B_f, B_rows = np.eye(u.size), None, {}  # B_f, B_rows: the objective's and the rows' curvature
-    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, np.inf  # rejected: trials since the last step
+    # previous: the violation at the last multiplier update; the first update compares with the start's
+    steps, inner, outer, stalls, rejected, previous = 0, 0, 0, 0, 0, violation(v)  # rejected: trials since the last step
     solved = False  # since the last step a trial was solved, or the model foresaw no decrease (not all trials failed)
     entry = violation(v)  # the violation at the start of the inner loop
     tolerance = None
+    if resume is not None:  # continue the run where it stopped: its multipliers, penalty, radius, curvature, counters
+        if (np.shape(resume["multipliers"]) != multipliers.shape
+                or (np.size(resume["B_f"]) and np.shape(resume["B_f"]) != (u.size, u.size))):
+            raise ValueError("resume state does not match these rows and coordinates")
+        multipliers = np.asarray(resume["multipliers"], dtype=float).copy()
+        penalty, radius = float(resume["penalty"]), float(resume["trust_radius"])
+        B_f = None if np.size(resume["B_f"]) == 0 else np.asarray(resume["B_f"], dtype=float).copy()
+        B_rows = {int(k): np.asarray(m, dtype=float).copy() for k, m in zip(resume["row_keys"], resume["row_B"])}
+        if B_f is not None:
+            B = B_f + sum(max(multipliers[k], 0.0) * B_k for k, B_k in B_rows.items())
+        inner, outer, stalls = int(resume["inner"]), int(resume["outer"]), int(resume["stalls"])
+        previous, entry = float(resume["previous"]), float(resume["entry"])
+        tolerance = None if not np.isfinite(resume["tolerance"]) else float(resume["tolerance"])
 
     def note(**extra):
         report.update(multipliers=multipliers.copy(), penalty=penalty, max_violation=violation(v),
                       outer_iterations=outer, trust_radius=radius, **extra)
+        keys = sorted(B_rows)
+        report["state"] = dict(  # what resume needs to continue this run exactly
+            scale=scale, multipliers=multipliers.copy(), penalty=penalty, trust_radius=radius,
+            B_f=np.zeros(0) if B_f is None else B_f, row_keys=np.asarray(keys, dtype=int),
+            row_B=[B_rows[k] for k in keys],  # references (the updates rebind, never modify, a row's matrix)
+            inner=inner, outer=outer, stalls=stalls, previous=previous, entry=entry,
+            tolerance=np.inf if tolerance is None else tolerance)
 
     note()
     while True:

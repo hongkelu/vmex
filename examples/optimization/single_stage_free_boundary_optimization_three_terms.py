@@ -1293,6 +1293,11 @@ def main(argv=None):
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
+        if intermediate_result is not None:  # the run's own state, so that --restart continues this very run
+            state = dict(intermediate_result["state"])
+            state["row_B"] = np.asarray(state["row_B"]).reshape(len(state["row_keys"]), *np.shape(x) * 2)
+            np.savez(out / "auglag_state.tmp.npz", **state)
+            os.replace(out / "auglag_state.tmp.npz", out / "auglag_state.npz")
         if intermediate_result is not None:  # augmented Lagrangian state (the max violation is in scaled row units)
             row.update({key: float(intermediate_result[key]) for key in
                         ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
@@ -1323,10 +1328,17 @@ def main(argv=None):
     log_step()
     if args.steps == 0:  # an evaluation (e.g. --restart: a cold re-solve of saved coils), no optimizer
         return
+    # a restart of an augmented-Lagrangian run continues it (multipliers, penalty, radius, curvature, counters)
+    state_file = None if args.restart is None else args.restart / "auglag_state.npz"
+    resume = ({"resume": dict(np.load(state_file))} if args.optimizer == "auglag" and state_file is not None
+              and state_file.exists() else {})
+    if resume:
+        print(f"[auglag] continuing the run of {state_file}: penalty {float(resume['resume']['penalty']):g}, "
+              f"radius {float(resume['resume']['trust_radius']):.3g}", flush=True)
     if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
-                              options=dict(maxiter=args.steps))
+                              options=dict(maxiter=args.steps, **resume))
     while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,

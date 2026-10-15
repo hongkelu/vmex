@@ -156,7 +156,7 @@ print(result.boundary_residual)   # RMS of B.n, pressure jump and mu0 K, over |B
 
 or `vmex input.case --boundary-condition three-terms` on the command line,
 or a directive in the deck itself, which VMEC2000 reads as a comment (the CLI
-flag and the `solve_file` keyword override it):
+flag and the `solve_file` keyword override it; in a JSON input, `"_vmex": {"boundary_condition": "three_terms"}`):
 
 ```fortran
 !@VMEX BOUNDARY_CONDITION = THREE_TERMS
@@ -166,8 +166,6 @@ flag and the `solve_file` keyword override it):
   ...
 /
 ```
-
-(`"_vmex": {"boundary_condition": "three_terms"}` in a JSON input).
 
 The deck's boundary is more than the start: it is the reference of the
 poloidal labelling, and at low resolution the answer depends on it. LP QA in
@@ -179,10 +177,8 @@ a VMEC + NESTOR result, makes a good deck; a reference-free free boundary
 needs the least-squares formulation (a separate option). A solve that does not
 lower `B . n` below the deck's warns, with `normal_outside_modes`, the part its
 rows cannot reach. The edge pressure must vanish, and `virtual-casing-jax`
-must be installed for finite beta. On a shared A100 an 8 x 8 vacuum solve takes
-2.5 to 7.5 minutes end to end (up to 4 of them compilation), LP QA at 2.5 %
-beta 9 to 15 minutes at 8 x 8 and 12 x 12 (VMEX + NESTOR: 4 to 7). The reported
-`equilibrium` is re-solved to a final force residual of 1e-17.
+must be installed for finite beta. The reported `equilibrium` is re-solved to a
+final force residual of 1e-17 (timings: {doc}`/explanation/validation`).
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 exposes the grid and quadrature controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few
@@ -204,19 +200,22 @@ with implicit-function-theorem design gradients
 ```python
 problem = opt.FreeBoundaryProblem.from_loss(
     inp, loss, x0, field_from_parameters=coils_from_x, plasma_from_parameters=plasma_from_x,
-    quantities=(opt.major_radius,), boundary_condition="three_terms",
-    three_terms_options=dict(quadrature=(4 * inp.nfp * 48, 96)))
+    quantities=(opt.major_radius,), boundary_condition="three_terms")
 result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_constraint(lower, upper)])
 ```
 
 {class}`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` gives the pieces
 (`solve_boundary`, `linearize`, `pullback`), the coils an argument.
 
-To check a NESTOR result, pass `report_boundary_residual=True`: a
-`sheet_current` well above 1e-3 marks a genuine edge sheet current.
+**Radial resolution at finite beta.** The rows use `B_in` at the edge, which carries VMEC's first-order
+radial error (amplified near resonant harmonics), so the boundary depends on the interior `ns`: on LP QA at
+2.5 % beta, 12 x 12, it moves about 0.9 mm from ns 51 to 101 and 0.3 to 0.7 mm from 71 to 101 (vacuum rows use
+only the coil field and do not depend on `ns`). Optimize at ns 51, verify final designs at ns 101 and score them
+with an independent band-limited evaluation at ns 201, never the solver's own terms. A radial grid packed
+toward the edge or the resonant region is future work.
 
-Validation and costs: {doc}`/explanation/validation` ("Three-terms free
-boundary ...").
+To check a NESTOR result, pass `report_boundary_residual=True`: a `sheet_current` well above 1e-3 marks a
+genuine edge sheet current. Validation and costs: {doc}`/explanation/validation` ("Three-terms free boundary").
 
 ## Key knobs
 

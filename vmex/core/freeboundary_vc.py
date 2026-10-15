@@ -26,14 +26,21 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
   Jacobian.  ``h`` also has the poloidal harmonic ``m = mpol``, where the B.n that the top modes leave lies
   (known-answer benchmark, 8 x 8: field lines 0.34 -> 0.10 mm).  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
   uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
-- finite beta: the same stationarity with the plasma's own response to ``h`` left out of the test functions:
-  a normal displacement ``h`` changes ``B . N`` by ``-|N| B_t . grad h`` (``N`` the area normal, ``B_t`` the
-  tangential field), so the rows are the area-weighted moments of ``B_out . n`` against ``B_out . grad
-  cos(m theta - n nfp phi)``, one per boundary mode (the exact least-squares rows would need the equilibrium's
-  Hessian).  The boundary keeps two modes fewer than the interior (``_BOUNDARY_MODE_GAP``: the interior's edge
-  field is least accurate in its top modes).  LP QA at 2.5 % beta, 12 x 12, evaluated by a 16-mode re-solve:
-  B.n / pressure jump / sheet current 2.8e-4 / 9.9e-5 / 2.8e-4, against 4.1e-4 / 1.1e-4 / 4.1e-4 with plain
-  sine moments of ``B_out . n``.
+- finite beta: Petrov-Galerkin rows ``R0 T0^T r = 0`` for the pointwise residual ``r = sqrt(w) B_out . n /
+  |B_in|`` (``w`` the area weights, ``B_out`` coils plus virtual casing), with the test functions ``T0`` the exact
+  response of the DECK's ``r`` to each boundary coordinate but ``(0, 0)``, the plasma's own response included
+  (:meth:`ThreeTermsFreeBoundaryModel._deck_response`; the coil field and its gradient at the deck's points
+  enter them, so their dependence on the coils is explicit).  Test functions that leave the plasma response out
+  (the moments of ``B_out . n`` against ``B_out . grad cos(m theta - n nfp phi)``, the first variation of the
+  mean square of ``B . n`` with the field frozen) are weakest on the near-resonant modes, where the plasma
+  responds most, and left B.n there: LP QA at 2.5 % beta, 12 x 12, ns 101, evaluated by a 16-mode ns-101
+  re-solve, B.n / pressure jump / sheet current 2.82e-4 / 2.5e-5 / 2.85e-4 ((4,1) and (5,1) harmonics 1.1e-4 and
+  0.9e-4) against 1.11e-4 / 1.7e-5 / 1.10e-4 with the deck's response, within 0.17 mm of the least-squares
+  boundary (1.25e-4); a cold solve from the deck 330 s against 815 s.  Test functions taken at the solution
+  itself would make the rows the exact least squares, whose design derivatives need the second derivatives
+  of the equilibrium; the deck's are fixed, so the rows' derivatives are first derivatives (coil direction:
+  the implicit derivative matches central differences to 5e-5).  The boundary keeps two modes fewer than the
+  interior (``_BOUNDARY_MODE_GAP``: the interior's edge field is least accurate in its top modes).
 
 Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
 pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
@@ -96,6 +103,22 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
+
+
+@dataclass(frozen=True)
+class _DeckField:
+    """An external field with the deck's response data (:meth:`ThreeTermsFreeBoundaryModel._deck_response`).
+
+    The finite-beta rows' test functions combine the field with these deck arrays; they travel with the field as
+    one pytree argument of the compiled rows, not as constants of the programs
+    (:meth:`ThreeTermsFreeBoundaryModel.attach`).
+    """
+
+    field: Any
+    deck: Any
+
+
+jax.tree_util.register_dataclass(_DeckField, data_fields=["field", "deck"], meta_fields=[])
 
 
 def _fingerprint(*trees) -> str:
@@ -625,6 +648,7 @@ class ThreeTermsFreeBoundaryModel:
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity)
         self.fixed_boundary = bool(fixed_boundary)
+        self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 
         # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
         _, p_peak = _edge_pressure(fixed)
@@ -798,9 +822,10 @@ class ThreeTermsFreeBoundaryModel:
         def interface_rows(state, params, field, moments=False):
             """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary).
 
-            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the transported ones,
+            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the deck-response rows,
             the robust start of :meth:`solve_boundary` (no field in the test functions).
             """
+            deck, field = (field.deck, field.field) if isinstance(field, _DeckField) else (None, field)
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
             G = jnp.abs(_vacuum_scalars(state, runtime)[1])
@@ -818,20 +843,68 @@ class ThreeTermsFreeBoundaryModel:
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
             if moments:
                 return jnp.concatenate([2.0 * test_sine.reshape(test_sine.shape[0], -1) @ (weight * Bn), current])
-            # test functions B.grad(cos(m theta - n nfp phi)) R0 / B0: a normal displacement h changes B . N by
-            # -|N| B_t . grad h (the surface divergence of h B_t), the plasma's own response left out
-            _, e_theta, e_phi = _surface_frame(jnp.ravel(params.rbc), jnp.ravel(params.zbs), xm, xn, phi, theta)
-            N = jnp.cross(e_theta, e_phi, axis=0)
-            N2 = jnp.sum(N * N, axis=0)
-            b_theta = jnp.sum(jnp.cross(B_out, e_phi, axis=0) * N, axis=0) / N2
-            b_phi = jnp.sum(jnp.cross(e_theta, B_out, axis=0) * N, axis=0) / N2
-            tests = (n_b * b_phi[None] - m_b * b_theta[None]) * test_sine * (length / B0)
-            return jnp.concatenate([tests.reshape(tests.shape[0], -1) @ (weight * Bn), current])
+            # test functions: the exact response of the pointwise sqrt(w) B.n / |B_in| to each boundary coordinate
+            # at the deck (plasma response included; _deck_response), for this field: R0 d r_deck / d h_k
+            if deck is None:
+                raise ValueError("the finite-beta rows need the deck's response: pass model.attach(field)")
+            (X0, n0, s0, Bp0), (dX, dn, ds, dBp) = deck
+            Bc0 = vc.external_B_cartesian(field, X0, phi_grid)
+            unit = jnp.eye(3)[:, :, None, None] * jnp.ones_like(X0)[None]
+            DBc = jax.vmap(lambda e: jax.jvp(lambda X: vc.external_B_cartesian(field, X, phi_grid), (X0,), (e,))[1])(unit)
+            base = Bc0 + Bp0
+            moved = jnp.einsum("iopq,kipq->kopq", DBc, dX) + dBp  # the field's change at the moving deck points
+            tests = (ds * jnp.sum(base * n0, axis=0)[None]
+                     + s0[None] * (jnp.sum(moved * n0[None], axis=1) + jnp.sum(base[None] * dn, axis=1)))
+            B_in = jnp.asarray(data.B_total)
+            r = (jnp.sqrt(weight) * Bn * B0 / jnp.linalg.norm(B_in, axis=0).ravel())
+            return jnp.concatenate([length * tests[:-1].reshape(tests.shape[0] - 1, -1) @ r, current])
 
         self.interface_rows = interface_rows
+        if not vacuum:
+            self.deck = self._deck_response(nphi, ntheta, digits, precision)
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
+
+    def attach(self, field, deck=None):
+        """``field`` with the deck's response data (``deck``, default :attr:`deck`) for the compiled rows.
+
+        The identity in vacuum (no deck data) and on a field that already carries them.
+        """
+        deck = self.deck if deck is None else deck
+        return field if deck is None or isinstance(field, _DeckField) else _DeckField(field, deck)
+
+    def _deck_response(self, nphi, ntheta, digits, precision):
+        """The finite-beta rows' test space: the deck's boundary data and their exact responses to ``h``.
+
+        The pointwise residual ``r = sqrt(w) B_out . n / |B_in|`` (``w`` the area weights) at the deck depends on
+        the boundary coordinates through the deck equilibrium (points, normal, weights, ``|B_in|`` and the
+        plasma's own field ``B_plasma``, all independent of the coils) and through the coil field at the moving
+        points.  Returned: those deck data ``(X, n, s, B_plasma)`` (``s = sqrt(w) / |B_in|``) and their implicit
+        tangents along each boundary coordinate (one block-factorized tangent solve at the seed state); the rows
+        combine them with the coil field and its gradient at the deck points.
+        """
+        im, cfg, fixed, nb = self._im, self.cfg, self.fixed, self.n_boundary
+        state, mask = self.seed
+        directions = jax.tree.map(lambda a: a[:nb], self.boundary_directions(self.params0, self.x0))
+        if self._warm is not None:  # its programs are this call's: wait instead of compiling them twice
+            self._warm.join()
+            self._warm = None
+
+        def geometry(state, params):
+            runtime = im.runtime_from_params(params, cfg)
+            data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+            interface = vc.PlasmaVacuumInterface.from_surface_data(data, p_edge=0.0, digits=digits,
+                                                                    precision=precision)
+            area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+            s = jnp.sqrt(area / jnp.sum(area)) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
+            return jnp.asarray(data.gamma), jnp.asarray(data.normal), s, interface.B_plasma
+
+        dz = self._tangents(self.params0, state, mask, directions)
+        primal = jax.jit(geometry)(state, self.params0)
+        tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
+            state, mask, self.params0, dz, directions)
+        return primal, tangent
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -1046,7 +1119,8 @@ class ThreeTermsFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments)), (state, mask, params_x, tight)
+        return (np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments)),
+                (state, mask, params_x, tight))
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -1100,7 +1174,7 @@ class ThreeTermsFreeBoundaryModel:
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
-        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field,
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, self.attach(field),
                                                         moments=self._moments)).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
@@ -1114,7 +1188,7 @@ class ThreeTermsFreeBoundaryModel:
     def rows_at(self, aux, field):
         """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve)."""
         state, _, params_x, _ = aux
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments))
+        return np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments))
 
     def repeat(self, x, params, field, aux):
         """The rows at ``x`` solved again, to the deck's tolerance, from a second seed; ``None`` if that fails.
@@ -1260,16 +1334,12 @@ class ThreeTermsFreeBoundaryModel:
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
 
-        At finite beta the transported rows carry the field in their test functions, so their Newton basin is
-        narrow: far from the root the field's change along a step is a second-order term that the linearization
-        leaves out, and Newton on them stalls (LP QA 2.5 %, 12 x 12, 5 mm random start).  The plain sine moments
-        of ``B . n`` on the same modes have no field in their test functions and converge from farther.  A cold
-        solve (no ``jacobian``) therefore leaves the transported rows at their first Newton step that has to be
-        shortened, solves the plain moments from the start (the transported rows' steps can lead them astray),
-        and then the transported rows from the moments' root
-        (inside their basin: the two roots differ by the plasma's response in the test functions).  A warm solve
-        (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes the same route when Newton on
-        the transported rows stalls.
+        At finite beta Newton on the deck-response rows converges from the deck (LP QA 2.5 %, 8 x 8 and 12 x 12;
+        the qa6 seed with its initial coils, where moments-led rows that leave out the plasma response stalled).
+        Should a cold solve (no ``jacobian``) need to shorten a Newton step, it solves the plain sine moments of
+        ``B . n`` on the same modes from the start (no field in their test functions) and then the rows from the
+        moments' root; a warm solve (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes
+        the same route when Newton on the rows stalls.
         """
         cold = jacobian is None and not (self.vacuum or self.fixed_boundary)
         out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
@@ -1277,7 +1347,7 @@ class ThreeTermsFreeBoundaryModel:
         if out["converged"] or self.vacuum or self.fixed_boundary:
             return out
         if verbose:
-            print(f"Newton on the transported rows {'needs damping' if out['damped'] else 'stalled'}: "
+            print(f"Newton on the deck-response rows {'needs damping' if out['damped'] else 'stalled'}: "
                   "plain moments first", flush=True)
         self._moments = True
         try:
@@ -1406,10 +1476,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
+        # the deck's response data are an argument (model.attach), not constants of these programs
+        self._field_vjp = jax.jit(lambda state, params, x, lam, deck: jax.vjp(
+            lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx, deck: jax.jvp(
+            lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
         self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
@@ -1438,7 +1509,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if anchor:
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model.deck))
             starts = [(anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["J_b"]),
                       (anchor["b"], anchor["J_b"]), (None, None)]
         fit = None
@@ -1490,7 +1561,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux
             sol.update(aux=aux, state=state, mask=mask, params=params,
-                       rows=np.asarray(model._rows(state, params, field)),
+                       rows=np.asarray(model._rows(state, params, model.attach(field))),
                        values=np.asarray(self._rows(state, params, xj)))
             self.stats["linearizations"] += 1
             return J
@@ -1524,7 +1595,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model.deck)) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=self._x(x).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])

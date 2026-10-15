@@ -33,7 +33,6 @@ from vmex.core.errors import (
 
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
 
 
 def _dense_cfg(*, adjoint_tol=1e-11, **overrides):

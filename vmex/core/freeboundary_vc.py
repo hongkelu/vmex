@@ -864,8 +864,12 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
+            # batch_size=1, not a bare (unbatched) map: XLA:GPU miscompiles the bare while-loop body of these
+            # columns (jaxlib 0.11.2, CUDA; LP QA beta 2.5 % 8 x 8: the plain-moments columns 55-84 % off the
+            # resolved differences, B_out . n's tangent wrong while B_out's and n's are right; correct on CPU,
+            # eagerly, unrolled, and with a batch axis).  One column at a time either way.
             return jax.lax.map(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                               (dz_batch, params_batch))
+                               (dz_batch, params_batch), batch_size=1)
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""
@@ -914,7 +918,7 @@ class ThreeTermsFreeBoundaryModel:
                     state_bar, params_bar = vjp(c)
                     return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-                parts.append(jax.lax.map(row, c))
+                parts.append(jax.lax.map(row, c, batch_size=1))  # not a bare while-loop body: see ``push``
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback

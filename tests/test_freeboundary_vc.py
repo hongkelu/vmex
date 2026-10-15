@@ -845,3 +845,44 @@ def test_uncertified_state_responses_are_an_error():
     assert fvc._certified("dz", report([True, True])) == "dz"
     with pytest.raises(RuntimeError, match="1 of 2 state responses"):
         fvc._certified("dz", report([True, False]))
+
+
+def _beta2p5_deck(mpol):
+    """The LP QA 2.5 % deck at ``mpol = ntor`` with its own radial ladder (a production-size free boundary)."""
+    inp = vj.VmecInput.from_file(DATA / "input.LandremanPaul2021_QA_beta2p5_bootstrap")
+    inp = inp.change_resolution(mpol=mpol, ntor=mpol, ntheta=max(64, 4 * mpol + 8), nzeta=max(64, 4 * mpol + 8))
+    return replace(inp, lfreeb=True, mgrid_file="essos_coils(direct)")
+
+
+@needs_vc
+@pytest.mark.usefixtures("_module_jit_enabled")
+@pytest.mark.parametrize("moments", [False, True])
+@pytest.mark.parametrize("case", [
+    "small",
+    # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (plain moments 55-84 % off)
+    pytest.param("production", marks=pytest.mark.full),
+])
+def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
+    """Finite beta, both row types (transported, plain moments): every Jacobian column pushed by the model is
+    the central difference of tightly re-solved rows."""
+    if case == "small":
+        inp, n = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), 16
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    else:
+        inp, n = _beta2p5_deck(10), 48
+        field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta2p5_bootstrap.json")
+    nfp = int(inp.nfp)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
+    model._moments = moments
+    x0 = np.zeros(model.x0.size)
+    _, aux = model.evaluate(x0, model.params0, field, tight=True)
+    J = np.asarray(model.linearize(x0, aux, field)[0])
+    for k in (0, model.n_boundary - 1):
+        h = 1e-5
+        rows = []
+        for sign in (1, -1):
+            params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * h * np.eye(x0.size)[k]))
+            state, _ = model.solve(params, seed=aux[0], tight=True)
+            rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
+        fd = (rows[0] - rows[1]) / (2 * h)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)

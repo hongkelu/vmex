@@ -32,9 +32,9 @@ then
         --modes 8 8 --seed-run runs/seed-qa4 --output runs/three-terms-qa4
 
 QA nfp 2 (``qa4-beta``: A 4, b/a 0.5, 4 coils per half period), 8 x 8, ns 51,
-A100 (paper/runs/seed): vacuum 208 s, <beta> 2.5 % 434 s, 2.5 % with the Redl
-current 573-629 s for stages 1-4; the three-terms example then took 3 SLSQP
-steps from each without a failed trial.
+A100: the seed (stages 1-4) takes 188 s in vacuum and 448 s at <beta> 2.5 %
+with the Redl current in the solve; the three-terms example then took 3 SLSQP
+steps from each without a failed trial (869 s and 1729 s end to end).
 """
 
 import argparse

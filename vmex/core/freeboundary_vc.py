@@ -347,10 +347,12 @@ def _newton_step(J, r):
 
 #: Surface grid points per field period, in each direction, per harmonic of the deck's interior (``mpol``,
 #: ``ntor``).  The rows integrate products of band-limited fields (edge field, geometry, test functions), which
-#: needs more than 2 points per harmonic to be alias-free; 4 gives margin.  Measured on LP QA
-#: (``paper/runs/b23``): at 12 x 12, 6 points per harmonic instead of 4 move the 2.5 % beta free boundary by 26 nm
-#: and cost 1.6x in the Newton phase; at 8 x 8 (32 x 32 against 96 x 96) the deck's B.n RMS moves by 7e-4
-#: (vacuum) / 2e-4 (beta) of itself and the beta pressure-balance RMS by 1.3 %, far below the interface floor.
+#: needs more than 2 points per harmonic to be alias-free; 4 gives margin.  Measured on LP QA at 2.5 % beta
+#: (``paper/runs/b23``): 4 instead of 6 points per harmonic move the free boundary by 0.41 um at 8 x 8 and 26 nm
+#: at 12 x 12, with B.n unchanged: far below the boundary's dependence on the interior ``ns`` (~1 mm), and no
+#: larger than the effect of the virtual-casing accuracy (``VC_DIGITS`` 4 -> 5: 0.4-1.0 um).  The reported pressure-balance RMS moves by
+#: ~1 % at 8 x 8 because the report is integrated on the same grid; final numbers come from an independent,
+#: converged evaluation, not from the solver's own report.
 _GRID_POINTS_PER_HARMONIC = 4
 
 

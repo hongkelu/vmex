@@ -908,7 +908,8 @@ def test_filter_bsubuv_lasym_halves_the_self_conjugate_nyquist_modes():
 
 
 def test_half_mesh_picard_makes_the_current_redls():
-    """Fixed boundary, LP QA at 0.5% beta: I' on every half-mesh surface iterated to Redl's, I'(0) = 0."""
+    """Fixed boundary, LP QA at 0.5% beta: I' on every half-mesh surface iterated to Redl's, the first segment
+    carrying Redl's near-axis enclosed current."""
     inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
         mpol=3, ntor=3, ntheta=12, nzeta=12)
     inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
@@ -918,7 +919,7 @@ def test_half_mesh_picard_makes_the_current_redls():
     profiles = _paper_profiles(n0, T0)
     result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh")
     assert result.converged and result.input.pcurr_type == "line_segment_ip"
-    assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
+    assert np.size(result.input.ac_aux_s) == 24 + 2
     state, rt = result.equilibrium.solution, result.equilibrium.solver_context
     # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
     hm = bs._half_mesh_fields(state, rt)
@@ -974,3 +975,19 @@ def test_self_consistent_bootstrap_rejects_unknown_profile():
     """An unknown current representation fails before any equilibrium is solved."""
     with pytest.raises(ValueError, match="profile must be"):
         bs.self_consistent_bootstrap(None, None, 0, profile="spline")
+
+
+def test_near_axis_redl_mean_is_the_converged_integral_of_the_ratio():
+    """The mean of the near-axis ratio over 0 < s < s_1 (the first segment's enclosed current): N_AXIS nodes in
+    t = x^(1/4) agree with 256 to 1e-10 in both regimes; about 4/5 (the mean of s^(1/4)) in the banana regime."""
+    geom = bs.RedlGeometry(
+        surfaces=jnp.array([0.01]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
+        R=jnp.array([6.0]), epsilon=jnp.array([1e-4]), f_t=jnp.array([0.0146]), fsa_B2=jnp.array([1.0]),
+        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.98]), Bmax=jnp.array([1.02]), psi_edge=jnp.asarray(-0.5),
+        nfp=2)
+    for n0, T0, low, high in ((1e12, 1e6, 0.7 * 0.8, 1.4 * 0.8), (1e21, 1e3, 0.0, 0.7 * 0.8)):
+        profiles = _paper_profiles(n0, T0)
+        jr = bs.j_dot_B_redl(profiles, geom, 0)[0]
+        mean = float(bs.near_axis_redl_mean(profiles, 0, geom, jr))
+        assert mean == pytest.approx(float(bs.near_axis_redl_mean(profiles, 0, geom, jr, 256)), abs=1e-10)
+        assert low < mean < high

@@ -393,7 +393,6 @@ def solve_free_boundary_three_terms(
     chunk: int = 8,
     bootstrap=None,
     bootstrap_helicity: int = 0,
-    bootstrap_weight: float = 100.0,
     previous=None,
     verbose: int = 0,
 ):
@@ -421,8 +420,8 @@ def solve_free_boundary_three_terms(
     from its boundary, Jacobian and model: neither new coils nor a repeat
     solve compile anything.  ``trial_ftol`` and ``chunk`` are
     :class:`ThreeTermsFreeBoundaryModel`'s.  ``bootstrap`` (kinetic
-    profiles), ``bootstrap_helicity`` and ``bootstrap_weight`` solve for a
-    Redl-self-consistent current profile together with the boundary.
+    profiles) and ``bootstrap_helicity`` solve for a Redl-self-consistent
+    current profile together with the boundary.
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates, then any bootstrap-current values), ``fun`` (the equations),
@@ -458,7 +457,7 @@ def solve_free_boundary_three_terms(
         model = ThreeTermsFreeBoundaryModel(
             inp, max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
+            bootstrap_helicity=bootstrap_helicity)
         x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
         jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
@@ -591,13 +590,12 @@ class ThreeTermsFreeBoundaryModel:
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    knot values (three inside the first surface, then one on every half-mesh
-    surface) after the boundary coordinates (``n_boundary`` of them), and the
-    rows gain one self-consistency row per knot, scaled by
-    ``bootstrap_weight`` (see :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
-    ``ns <= 97``, a prescribed-current deck).  The current then follows the
-    equilibrium instead of being an input, and :meth:`bootstrap_residual`
-    reports how far it is from Redl's.  ``fixed_boundary=True`` (with
+    knot values (one on the axis, then one on every half-mesh surface) after
+    the boundary coordinates (``n_boundary`` of them), and the rows gain one self-consistency row per knot, in the interface rows' units
+    (the poloidal field of the current error over ``B0``; see
+    :class:`~vmex.core.bootstrap.HalfMeshCurrent`; a prescribed-current deck).
+    The current then follows the equilibrium instead of being an input, and
+    :meth:`bootstrap_residual` reports how far it is from Redl's.  ``fixed_boundary=True`` (with
     ``bootstrap``) holds the boundary at that of ``params`` and solves only the
     current: ``x`` is the current values alone, the rows are the bootstrap ones
     and no external field or virtual casing enters -- the fixed-boundary
@@ -606,7 +604,7 @@ class ThreeTermsFreeBoundaryModel:
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
                  device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0,
                  fixed_boundary=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
@@ -614,8 +612,7 @@ class ThreeTermsFreeBoundaryModel:
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
-        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
-                                                                       bootstrap_weight)
+        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity)
         self.fixed_boundary = bool(fixed_boundary)
 
         # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
@@ -664,7 +661,6 @@ class ThreeTermsFreeBoundaryModel:
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
-            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         self.chunk = int(chunk)
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
@@ -685,6 +681,18 @@ class ThreeTermsFreeBoundaryModel:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
         self.seed = (state, mask)
+        # The seed boundary's field scale B0 (area-RMS |B|) scales the interface rows, and with its mean poloidal
+        # circumference the bootstrap rows (HalfMeshCurrent.set_unit): every row is a field over B0.
+        grid = interface_grid(fixed)
+        self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
+        surface = _surface_data(fixed, cfg, state, self.params0, self.nphi, self.ntheta)
+        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
+        self.B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
+        if self.bootstrap is not None:
+            gamma = np.asarray(surface.gamma)  # (3, nphi, ntheta) over one field period
+            length = float(np.mean(np.sum(np.linalg.norm(np.roll(gamma, -1, axis=2) - gamma, axis=0), axis=1)))
+            self.bootstrap.set_unit(length, self.B0)
+            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         if not self.fixed_boundary:
             # The boundary moves along the deck equilibrium's radial coordinate lines dX/ds at the edge (VMEC's
             # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
@@ -703,10 +711,8 @@ class ThreeTermsFreeBoundaryModel:
             self._normal_map = jnp.asarray(normal_map)
         self._implicit_setup()
         if not self.fixed_boundary:
-            grid = interface_grid(fixed)
-            self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
             self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
-            self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
+            self._interface_setup(state, surface, self.nphi, self.ntheta, digits, self.quadrature)
 
     def _warm_programs(self):
         """Compile the solve's largest programs on background threads while the seed equilibrium is solved.
@@ -740,13 +746,12 @@ class ThreeTermsFreeBoundaryModel:
         self._warm = threading.Thread(target=tangents, name="vmex-tangent-warm", daemon=True)
         self._warm.start()
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
-        """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
+    def _interface_setup(self, state, surface, nphi, ntheta, digits, quadrature):
+        """The interface rows, with the quadrature plan of the seed ``state`` (its boundary data ``surface``)."""
         from .freeboundary import _vacuum_scalars
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        surface = _surface_data(fixed, cfg, state, self.params0, nphi, ntheta)
         quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
@@ -758,10 +763,7 @@ class ThreeTermsFreeBoundaryModel:
         _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
         n_axis = int(cfg.resolution.ntor) + 1
         axis = _axis_loop(SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
-        vacuum = self.vacuum
-        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
-        B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
-        self.B0 = B0
+        vacuum, B0 = self.vacuum, self.B0
         # Surface data are (nphi, ntheta) over one field period.
         phi, theta = np.meshgrid(np.linspace(0.0, 2.0 * np.pi / nfp, nphi, endpoint=False),
                                  np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False), indexing="ij")

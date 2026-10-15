@@ -103,6 +103,20 @@ def test_newton_convergence_test_is_a_step_in_metres():
                                [-1.0, -1.0])
 
 
+def test_normal_displacement_map_grid_is_refined_until_converged(monkeypatch):
+    """The displacement map's grid doubles until the map converges (to sqrt(eps)); a fixed grid is taken as given;
+    a map that does not converge in its grid is an error."""
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
+    M, modes, _ = fvc._normal_displacement_map(inp, 2)
+    fine, _, _ = fvc._normal_displacement_map(inp, 2, ntheta=256, nzeta=256)
+    np.testing.assert_allclose(M, fine, rtol=0, atol=1e-7 * np.abs(fine).max())
+    calls = []
+    monkeypatch.setattr(fvc, "_normal_displacement_map_on", lambda *args: (
+        calls.append(1) or (np.full((2, 2), (-1.0) ** len(calls)), modes, None)))
+    with pytest.raises(ValueError, match="does not converge"):
+        fvc._normal_displacement_map(inp, 2)
+
+
 def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
@@ -306,6 +320,10 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     k, h = 2, 1e-6
     fd = [model.evaluate(fits[0].x + s * h * eye[k], model.params0, field, tight=True)[0] for s in (1, -1)]
     np.testing.assert_allclose(J[:, k], (fd[0] - fd[1]) / (2 * h), rtol=1e-4, atol=1e-6 * np.abs(J[:, k]).max())
+    # the rows' repeatability: the answer solved again from the deck's state, and the deck solved again cold
+    for x, aux in ((fits[0].x, fits[0].aux), (model.x0, (model.seed[0], model.seed[1], model.params0, True))):
+        rows, again = model.rows_at(aux, field), model.repeat(x, model.params0, field, aux)
+        np.testing.assert_allclose(again, rows, rtol=0, atol=1e-8 * max(np.abs(rows).max(), 1e-12))
     with warnings.catch_warnings(record=True) as caught:  # a warm restart is measured against the deck too
         warnings.simplefilter("always")
         again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
@@ -330,7 +348,8 @@ def test_square_galerkin_boundary_is_solved_by_newton_from_a_stale_jacobian():
 
     model = _stand_in(2, rows, jac)
     root = np.array([1.0, 2.0])
-    for start, jacobian in ((np.array([1.3, 1.7]), None), (np.array([0.8, 2.2]), jac(np.array([1.5, 1.5])))):
+    for start, jacobian in ((np.array([1.3, 1.7]), None), (np.array([0.8, 2.2]), jac(np.array([1.5, 1.5]))),
+                            (np.array([0.9, 2.1]), -jac(np.array([1.0, 2.0])))):  # a wrong one: refreshed
         out = model.solve_boundary(None, None, x0=start, jacobian=jacobian)
         assert out["converged"]
         np.testing.assert_allclose(out["x"], root, atol=1e-12)
@@ -572,6 +591,12 @@ def test_newton_solves_the_trials_tight_once_their_tolerance_is_the_noise():
         0.0 if tight else 1e-15), (z, None, None, tight))
     out = model.solve_boundary(None, None, x0=np.array([1.0, 2.0]), jacobian=jac(np.array([1.0, 2.0])))
     assert out["converged"] and out["aux"][3] and out["njev"] == 0 and loose[0] and not loose[-1]
+    # trial noise above the rows near the root: no fresh step descends on loose trials, so they are solved tight
+    model.evaluate = lambda z, params, field, tight=False: (rows(z, True) + (0.0 if tight else 1e-3), (
+        z, None, None, tight))
+    out = model.solve_boundary(None, None, x0=np.array([1.0 + 1e-5, 2.0]))
+    assert out["converged"] and out["aux"][3]
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-12)
 
 
 def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys):
@@ -587,6 +612,9 @@ def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys
     out = model.solve_boundary(None, None, x0=np.array([1.2]), verbose=1)  # 1.2 fails, 0.9 = 0.75 x 1.2 is solved
     assert not out["converged"] and abs(out["x"][0]) < 0.9
     assert "Newton stalled" in capsys.readouterr().out
+    # a singular Jacobian (given, then fresh) has no Newton step: refreshed, then a stall
+    out = model.solve_boundary(None, None, x0=np.array([0.0]), jacobian=np.zeros((1, 1)), verbose=1)
+    assert not out["converged"] and out["njev"] == 1 and "singular Jacobian" in capsys.readouterr().out
     model.evaluate = lambda z, params, field, tight=False: None
     with pytest.raises(RuntimeError, match="no certified equilibrium"):
         model.solve_boundary(None, None, x0=np.array([1.2]))

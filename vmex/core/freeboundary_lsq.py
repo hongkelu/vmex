@@ -349,19 +349,21 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             ``hessian_chunk`` (for the rest of the run) and is repeated: the memory of a block depends on the
             quadrature the surface needs, unknown in advance."""
             count = jax.tree.leaves(dz_cols)[0].shape[0]
-            out, start, padded = [], 0, None
+            out, start = [], 0
             while start < count:
                 width = min(self.hessian_chunk, count)
-                if padded is None or padded[0] != width:  # pad once a width: every block a slice, no copies
-                    extra = -count % width
-                    padded = (width, *(jax.tree.map(lambda a: jnp.concatenate(  # noqa: B023
-                        [a, jnp.zeros((extra,) + a.shape[1:], a.dtype)]), t) for t in (dz_cols, dp_cols)))
-                take = lambda a: a[start:start + width]  # noqa: E731
+
+                def take(a):  # this block's columns; the last block zero-padded to the width (one executable)
+                    block = a[start:start + width]
+                    if block.shape[0] < width:
+                        block = jnp.concatenate([block, jnp.zeros((width - block.shape[0],) + a.shape[1:], a.dtype)])
+                    return block
+
                 try:
                     with vc.remat_scans():
                         block = np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam,
-                                                                 jax.tree.map(take, padded[1]),
-                                                                 jax.tree.map(take, padded[2]), dz_b, dp_b))
+                                                                 jax.tree.map(take, dz_cols),
+                                                                 jax.tree.map(take, dp_cols), dz_b, dp_b))
                 except jax.errors.JaxRuntimeError as error:
                     if "RESOURCE_EXHAUSTED" not in str(error) or width == 1:
                         raise

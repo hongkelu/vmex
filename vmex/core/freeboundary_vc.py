@@ -79,6 +79,7 @@ import jax.numpy as jnp
 from . import virtual_casing as vc
 from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
+from .loops import map_columns
 from .problem import FunctionProblem
 
 
@@ -530,38 +531,6 @@ def _surface_data(fixed, cfg, state, params, nphi, ntheta):
     return vc.VmecSurfaceFieldData(**values, **static)
 
 
-def _map_columns(function, columns):
-    """``jax.vmap(function)(columns)``, mapped two columns at a time.
-
-    Never one column per program: XLA:GPU miscompiles the unbatched forward tangent of these rows (jaxlib
-    0.11.2, CUDA; LP QA beta 2.5 % 8 x 8: the tangent of ``B_out . n`` 100 % off the op-by-op one while those of
-    ``B_out`` and ``n`` are right, so the plain-moments Jacobian columns came out 55-84 % off the resolved
-    differences).  The wrong program is the single column itself -- ``jax.jit`` of one column is wrong, and so
-    is a bare ``lax.map``'s loop body -- and a one-column ``vmap`` inside the loop is exact only until the body
-    is wrapped (a multi-platform ``jax.export`` breaks it again).  Every program with two or more columns per
-    step is exact on GPU, in-process and exported (paper/runs/speed/p0/scan_repro8.py).  Two is also the fastest
-    of the memory-light forms measured: 8 columns in 1.36 s against 1.63 s one at a time, with 0.37 GiB of
-    temporaries against 0.19; four per step cost 3.3 GiB, since every column holds the interface field on every
-    surface point.  An odd count repeats its last column, and the copy is dropped afterwards, so no step is
-    ever unbatched.  The reshapes are explicit, so zero-size leaves (an empty profile parameter's cotangent)
-    map too.
-    """
-    count = jax.tree.leaves(columns)[0].shape[0]
-    steps = -(-count // _COLUMNS_PER_STEP)
-    padding = steps * _COLUMNS_PER_STEP - count
-
-    def blocked(a):
-        if padding:
-            a = jnp.concatenate([a, jnp.repeat(a[-1:], padding, axis=0)])
-        return a.reshape((steps, _COLUMNS_PER_STEP) + a.shape[1:])
-
-    out = jax.lax.map(jax.vmap(function), jax.tree.map(blocked, columns))
-    return jax.tree.map(lambda a: a.reshape((steps * _COLUMNS_PER_STEP,) + a.shape[2:])[:count], out)
-
-
-_COLUMNS_PER_STEP = 2  # the smallest batch XLA:GPU compiles these tangents right at (see _map_columns)
-
-
 def _certified(responses, report):
     """``responses`` if every column's linear solve met its certificate, else a ``RuntimeError``.
 
@@ -896,8 +865,11 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
-            return _map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                                (dz_batch, params_batch))
+            # Two columns per step (vmex.core.loops): wider batches buy 7-18 % of the push at 3-5x its peak
+            # memory (LP QA beta 12 x 12, grid 48, 221 columns: 38.4 / 35.9 / 33.6 s per Jacobian at 2 / 4 / 8,
+            # 2.6 / 7.2 / 13.5 GiB), and a single column is the program XLA:GPU miscompiles.
+            return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
+                               (dz_batch, params_batch), batch_size=2)
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""
@@ -946,7 +918,7 @@ class ThreeTermsFreeBoundaryModel:
                     state_bar, params_bar = vjp(c)
                     return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-                parts.append(_map_columns(row, c))
+                parts.append(map_columns(row, c))  # a vjp per row: see vmex.core.loops
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback

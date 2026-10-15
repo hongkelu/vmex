@@ -151,7 +151,7 @@ def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
     value, grad = problem.value_and_grad(x0)
     sol = problem._record(x0)
     rows = np.asarray(sol["rows"])
-    assert 0.5 * rows[-m:] @ rows[-m:] <= 1e-10 * 0.5 * rows[:-m] @ rows[:-m]
+    assert np.max(np.abs(rows[-m:])) <= np.sqrt(model.cfg.ftol)  # restored to the equilibrium's field precision
     jac = problem.constraint_jac(x0)
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]

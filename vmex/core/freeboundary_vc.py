@@ -1455,16 +1455,28 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._cache[key]
         self.stats["trials"] += 1
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        anchor, starts, J = self._anchor, [None], None
-        if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
+        # Warm starts first, each with the anchor's Jacobian: its first-order boundary prediction, then its own
+        # boundary.  They are near the answer by construction, so Newton from them must not need damping; one that
+        # does is outside the Newton basin (a large design step) and hands over at once.  The last start is the
+        # cold solve from the deck, the same answer by any route (QH vacuum 12 x 12, single-stage step 1: the warm
+        # starts sat at cost 5e-3 and 6e-2 and crawled with damped steps for 990 s; the seed's cold solve from the
+        # deck had converged in 5 full steps).
+        starts = [(None, None)]
+        anchor = self._anchor
+        if anchor:
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
-            starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
+            starts = [(anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["J_b"]),
+                      (anchor["b"], anchor["J_b"]), (None, None)]
         fit = None
-        for start in starts:
+        for start, J in starts:
             try:
-                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, max_nfev=self.boundary_max_nfev)
+                if J is None:  # cold: the full route (solve_boundary's damping lead-in at finite beta)
+                    fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev)
+                else:
+                    fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
+                                                      max_nfev=self.boundary_max_nfev, undamped=True)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start

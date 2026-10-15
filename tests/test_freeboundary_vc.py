@@ -441,23 +441,36 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
     # a boundary fit that did not converge is a failed trial, never a value (whatever its residual)
-    solve = problem.model.solve_boundary
-    problem.model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model = problem.model
+    solve, newton = model.solve_boundary, model._newton_boundary
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model._newton_boundary = lambda *args, **kwargs: dict(newton(*args, **kwargs), converged=False)
     failed = problem.stats["failed"]
     with pytest.raises(TrialRejected):
         problem.fun(x0 + 1.5e-3 * np.eye(2)[0])
     assert problem.stats["failed"] == failed + 1
-    calls = []  # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    # warm starts that need damping hand over to the cold solve from the deck, which finds the boundary
+    routes = []
 
-    def polish_stalls(*args, **kwargs):
-        calls.append(1)
-        return dict(solve(*args, **kwargs), converged=len(calls) == 1)
+    def warm_damped(*args, **kwargs):
+        if kwargs.get("jacobian") is None:  # the cold solve's own Newton
+            return newton(*args, **kwargs)
+        routes.append("warm")
+        return dict(newton(*args, **kwargs), converged=False, damped=True)
 
-    problem.model.solve_boundary = polish_stalls
+    def cold(*args, **kwargs):
+        routes.append("cold" if kwargs.get("jacobian") is None else "polish")
+        return solve(*args, **kwargs)
+
+    model._newton_boundary, model.solve_boundary = warm_damped, cold
+    problem.fun(x0 + 2e-3 * np.eye(2)[0])
+    assert routes == ["warm", "warm", "cold"]
+    model._newton_boundary = newton
+    # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
     with pytest.raises(TrialRejected, match="polish"):
         problem.value_and_grad(x0 + 2.5e-3 * np.eye(2)[0])
-    problem.model.solve_boundary = solve
-
+    model.solve_boundary = solve
 
 def _lp_beta0p5_profiles(inp):
     """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""

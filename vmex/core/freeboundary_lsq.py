@@ -129,12 +129,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     pullbacks, warm-up, keywords and coordinates: the deck boundary's displacement along its radial lines), the
     least-squares rows of the module docstring and exact second derivatives (:meth:`second_order`,
     :meth:`gradient`).  :meth:`solve_boundary` is the trust-region (quasi-)Newton solve (:meth:`_newton`).
-    ``hessian_chunk`` bounds the second-derivative columns per batch (default ``chunk``).
+    ``hessian_chunk`` bounds the second-derivative columns per program call (default and least: 2).
     """
 
     def __init__(self, inp: VmecInput, *, hessian_chunk=None, **options):
         super().__init__(inp, **options)
-        self.hessian_chunk = max(2, int(hessian_chunk or self.chunk))  # >= 2 (vmex.core.loops)
+        # Hessian columns a program call: two, the least vmex.core.loops allows.  Measured at beta 8x8 (VC digits 5):
+        # 85 columns in 50.8 s at two a call against 53.1 s at eight, peak GPU 3.1 against 25.5 GiB.
+        self.hessian_chunk = max(2, int(hessian_chunk or 2))
         # The net-current row and the bootstrap rows (the last rows) are equality constraints of the free-boundary
         # solve, not least-squares rows: G = G_coil and the current is Redl's, whatever the rows' scale.
         self.n_constraint_rows = 0 if self.fixed_boundary else 1 + (0 if self.bootstrap is None

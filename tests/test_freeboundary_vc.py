@@ -320,10 +320,11 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     k, h = 2, 1e-6
     fd = [model.evaluate(fits[0].x + s * h * eye[k], model.params0, field, tight=True)[0] for s in (1, -1)]
     np.testing.assert_allclose(J[:, k], (fd[0] - fd[1]) / (2 * h), rtol=1e-4, atol=1e-6 * np.abs(J[:, k]).max())
-    # the rows' repeatability: the answer solved again from the deck's state, and the deck solved again cold
+    # the rows' repeatability: the answer solved again from the deck's state, and the deck solved again cold, agree
+    # to the rows' noise (dimensionless rows; measured ~1e-13 at the answer)
     for x, aux in ((fits[0].x, fits[0].aux), (model.x0, (model.seed[0], model.seed[1], model.params0, True))):
         rows, again = model.rows_at(aux, field), model.repeat(x, model.params0, field, aux)
-        np.testing.assert_allclose(again, rows, rtol=0, atol=1e-8 * max(np.abs(rows).max(), 1e-12))
+        np.testing.assert_allclose(again, rows, rtol=0, atol=1e-10)
     with warnings.catch_warnings(record=True) as caught:  # a warm restart is measured against the deck too
         warnings.simplefilter("always")
         again = fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])

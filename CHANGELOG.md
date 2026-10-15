@@ -12,13 +12,13 @@ revision it was measured at, and the pages that cite it.
   (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.
 - Finite-beta three-terms rows test B.n against the deck's exact response (plasma included; `model.attach`): LP QA
   2.5 % 12 x 12 ns 101 B.n 2.8e-4 to 1.1e-4, cold solve 641 to 330 s; first-order design gradients exact.
-- `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`):
-  one fixed-boundary state per boundary (`freeze_m1`), a square Newton system for B.n, pressure balance and no sheet
-  current (vacuum: least squares of B.n; LP QH 12 x 12: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm; a
-  finite-beta QA step 265 to 74 s); `ThreeTermsFreeBoundaryModel`; `from_loss(..., field_from_parameters=,
-  plasma_from_parameters=)` optimizes PHIEDGE and the current. Derivatives: dense LU (`forward_dense_jax`) or O(ns)
-  block factors (`structured`, 15.4 to 7.8 GiB at 8x8). New: `solve_free_boundary(include_edge_in_convergence=True)`,
-  `opt.axis_iota`, `opt.axis_field_strength`, `opt.major_radius`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
+- `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
+  (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
+  4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:
+  dense LU (`forward_dense_jax`) or O(ns) block factors (`structured`, 15.4->7.8 GiB at 8x8); PHIEDGE, current via
+  `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)`; new `opt.axis_iota`/`axis_field_strength`/
+  `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
+- Example `single_stage_free_boundary_seed.py`: rotating ellipse -> finite-beta coils -> free-boundary seed.
 
 ## 0.11.10 - 2026-10-13
 

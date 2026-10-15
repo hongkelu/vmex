@@ -132,6 +132,7 @@ UNTESTED_EXAMPLES = {
     "examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
     "examples/optimization/single_stage_optimization_coil_constraints.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
     "examples/optimization/single_stage_free_boundary_optimization_three_terms.py": "GPU benchmark; ThreeTermsFreeBoundaryProblem is covered by tests/test_freeboundary_vc.py",
+    "examples/optimization/single_stage_free_boundary_seed.py": "GPU benchmark; its fit, start coils and coil rows are covered by tests/test_free_boundary_seed_example.py",
 }
 
 

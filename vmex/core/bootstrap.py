@@ -64,6 +64,7 @@ import jax
 import jax.numpy as jnp
 
 from .fields import surface_currents
+from .loops import map_columns
 from .input import VmecInput
 from .profiles import MU0
 from .solver import SolverRuntime, SpectralState
@@ -458,12 +459,11 @@ def _trapped_fraction_from_fields(
     modB = interpolate(modB)
     sqrtg = interpolate(sqrtg)
     if serial_surfaces:
-        result = jax.lax.map(
-            lambda x: compute_trapped_fraction(
-                x[0][None], x[1][None], n_lambda=n_lambda),
+        return map_columns(
+            lambda x: tuple(v[0] for v in compute_trapped_fraction(
+                x[0][None], x[1][None], n_lambda=n_lambda)),
             (modB, sqrtg),
         )
-        return tuple(x[:, 0] for x in result)
     return compute_trapped_fraction(modB, sqrtg, n_lambda=n_lambda)
 
 

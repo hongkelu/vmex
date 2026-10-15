@@ -170,7 +170,6 @@ from solvax import (
     auto_chunk_size,
     block_tridiag_matvec,
     block_thomas_factor,
-    chunk_map,
     gcrot as _solvax_gcrot,
     gmres as _solvax_gmres,
 )
@@ -179,6 +178,7 @@ from .device import (
     AUTO, _put_numeric_leaves, commit_to_single_device, resolve_implicit_device,
 )
 from .errors import AdjointSolveError, VmecError
+from .loops import map_columns
 from .fields import magnetic_fields, metric_elements
 from .fourier import Resolution
 from .geometry import (
@@ -2777,7 +2777,7 @@ def _colored_bands(operator, pack, unpack, project, ns, block_size, dtype, chunk
         tangent = project(unpack(delta))
         return pack(project(operator(tangent))) + delta - pack(tangent)
 
-    responses = jax.lax.map(probe, jnp.arange(3 * block_size), batch_size=int(chunk))
+    responses = map_columns(probe, jnp.arange(3 * block_size), batch_size=int(chunk))
     responses = responses.reshape(3, block_size, ns, block_size)  # color, input, row, output
 
     def band(offset):
@@ -2907,10 +2907,10 @@ def _raw_block_system(
         # batched intermediates despite this otherwise-local construction.
         _, pullback = jax.vjp(row_residual, zeros)
         basis = jnp.eye(block_size, dtype=dtype)
-        return chunk_map(
+        return map_columns(
             lambda cotangent: pullback(cotangent)[0],
             basis,
-            chunk_size=min(int(probe_chunk_size), block_size),
+            batch_size=min(int(probe_chunk_size), block_size),
         )
 
     if colored:
@@ -2920,13 +2920,17 @@ def _raw_block_system(
             min(block_size, max(8, _COLORED_PROBE_BUDGET // ns)))
     else:
         # Rows 0 and 1 depend on VMEC's lambda-axis closure. All later rows share
-        # one ordinary local kernel; lax.map keeps the compile graph bounded in ns.
+        # one ordinary local kernel; a loop keeps the compile graph bounded in ns.
+        # The body takes a vjp, so the loop carries a batch axis (vmex.core.loops):
+        # probe_chunk_size rows per step, the caller's probe batch.  Measured
+        # (A100, LP QA 8 x 8, ns 51): 874 ms one row at a time, 243 ms at 8 rows.
         axis_rows = jnp.arange(min(2, ns))
-        axis_jacobians = jax.lax.map(
-            lambda row: row_jacobian(row, axis_closure=True), axis_rows)
+        axis_jacobians = map_columns(
+            lambda row: row_jacobian(row, axis_closure=True), axis_rows, batch_size=None)
         ordinary_rows = jnp.arange(2, ns)
-        ordinary_jacobians = jax.lax.map(
-            lambda row: row_jacobian(row, axis_closure=False), ordinary_rows)
+        ordinary_jacobians = map_columns(
+            lambda row: row_jacobian(row, axis_closure=False), ordinary_rows,
+            batch_size=int(probe_chunk_size))
         jacobians = jnp.concatenate((axis_jacobians, ordinary_jacobians), axis=0)
         rows = jnp.arange(ns); starts = jnp.clip(rows - 1, 0, ns - 3)
 
@@ -3149,8 +3153,8 @@ def _implicit_evolved_tangent_multi_rhs(
     # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
     initial, _ = _raw_block_solve(
         system,
-        chunk_map(raw_rhs, tangent_batch,
-                  chunk_size=max(1, int(response_chunk_size))),
+        map_columns(raw_rhs, tangent_batch,
+                  batch_size=max(1, int(response_chunk_size))),
         cfg,
     )
 
@@ -3183,9 +3187,9 @@ def _implicit_evolved_tangent_multi_rhs(
         return solution, _raw_certified_report(_linear_response_report(
             krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
 
-    solution, report = chunk_map(
+    solution, report = map_columns(
         correct, (tangent_batch, initial),
-        chunk_size=max(1, int(response_chunk_size)),
+        batch_size=max(1, int(response_chunk_size)),
     )
 
     def refine(args):
@@ -3201,9 +3205,9 @@ def _implicit_evolved_tangent_multi_rhs(
         return x, jnp.logical_and(ok, jnp.logical_not(converged))
 
     def refine_uncertified(_):
-        refined, gained = chunk_map(
+        refined, gained = map_columns(
             refine, (tangent_batch, solution, report.converged),
-            chunk_size=max(1, int(response_chunk_size)),
+            batch_size=max(1, int(response_chunk_size)),
         )
         kept = jax.tree.map(
             lambda new, old: jnp.where(
@@ -3276,7 +3280,7 @@ def _staged_tangent_parts(params, cfg, x_star, dof_mask, factors):
 def _staged_tangent_initial(params, x_star, dof_mask, factors, tangent_batch, cfg, chunk):
     """Block-direct responses of :func:`_implicit_evolved_tangent_multi_rhs` from stored factors."""
     _, blocks, _, raw_rhs, _ = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
-    rhs_batch = jax.vmap(blocks.project)(chunk_map(raw_rhs, tangent_batch, chunk_size=chunk))
+    rhs_batch = jax.vmap(blocks.project)(map_columns(raw_rhs, tangent_batch, batch_size=chunk))
     packed = jax.vmap(blocks.pack)(rhs_batch) * blocks.row_scale[None]
     solution = _block_thomas_solve_scan(blocks.factors, jnp.moveaxis(packed, 0, -1))
     solution = solution * blocks.column_scale[..., None]
@@ -3301,7 +3305,7 @@ def _staged_tangent_correct(params, x_star, dof_mask, factors, tangent_batch, in
         raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
         return solution, _raw_certified_report(_linear_response_report(krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
 
-    return chunk_map(correct, (tangent_batch, initial), chunk_size=chunk)
+    return map_columns(correct, (tangent_batch, initial), batch_size=chunk)
 
 
 def _gmres_norm(value: Array) -> Array:
@@ -3343,7 +3347,7 @@ def _staged_tangent_check(params, x_star, dof_mask, factors, tangent_batch, init
         raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
         return _raw_certified_report(_linear_response_report(krylov, rhs, cfg, rtol=certify_rtol), raw_ok), accepted
 
-    return chunk_map(check, (tangent_batch, initial), chunk_size=chunk)
+    return map_columns(check, (tangent_batch, initial), batch_size=chunk)
 
 
 @functools.partial(jax.jit, static_argnames=("cfg", "chunk", "certify_rtol"))
@@ -3366,7 +3370,7 @@ def _staged_tangent_refine(params, x_star, dof_mask, factors, tangent_batch, sol
             _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
         return x, jnp.logical_and(ok, jnp.logical_not(converged))
 
-    refined, gained = chunk_map(refine, (tangent_batch, solution, report.converged), chunk_size=chunk)
+    refined, gained = map_columns(refine, (tangent_batch, solution, report.converged), batch_size=chunk)
     kept = jax.tree.map(lambda new, old: jnp.where(gained.reshape((-1,) + (1,) * (new.ndim - 1)), new, old),
                         refined, solution)
     return kept, report._replace(converged=jnp.logical_or(report.converged, gained))
@@ -3388,7 +3392,10 @@ def _canonical_arrays(cfg: ImplicitConfig, tree: Any) -> Any:
     One argument structure per config, whatever produced the values (a
     jitted map's weak-typed scalars, host NumPy, eager arrays): the staged
     programs then compile once, and a background warm-up's executables are
-    the ones the real calls find."""
+    the ones the real calls find.  Without a ``cfg.device`` the leaves are
+    committed to the one device they share (:func:`commit_to_single_device`,
+    as the warm-ups' placeholders are): JAX keys an executable on commitment,
+    and an uncommitted real argument missed the warm-up's executable."""
     def canonical(leaf):
         if not isinstance(leaf, (jax.Array, np.ndarray)):
             return leaf
@@ -3396,7 +3403,8 @@ def _canonical_arrays(cfg: ImplicitConfig, tree: Any) -> Any:
         return jax.device_put(value, cfg.device) if cfg.device is not None else value
 
     with _device_context(cfg):
-        return jax.tree.map(canonical, tree)
+        out = jax.tree.map(canonical, tree)
+        return out if cfg.device is not None else commit_to_single_device(out)
 
 
 def _staged_chunks(cfg, params, x_star, dof_mask, tangent_batch, chunk):
@@ -3552,18 +3560,19 @@ def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: i
     with _device_context(cfg):
         arguments = commit_to_single_device(tuple(
             _pin_concrete(cfg, tree) for tree in (state, params, state, mask)))
-        factors = _zeros_like_structure(
-            cfg, jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments))
+        # placeholders committed like the real calls' arrays (_canonical_arrays): commitment is part of the key
+        factors = _canonical_arrays(cfg, _zeros_like_structure(
+            cfg, jax.eval_shape(lambda *a: _refine_block_factor_core(*a, cfg), *arguments)))
         _staged_tangent_initial.lower(params, state, mask, factors, piece, cfg, chunk).compile()
-        initial = _zeros_like_structure(cfg, jax.eval_shape(
-            lambda *a: _staged_tangent_initial(*a, cfg, chunk), params, state, mask, factors, piece))
+        initial = _canonical_arrays(cfg, _zeros_like_structure(cfg, jax.eval_shape(
+            lambda *a: _staged_tangent_initial(*a, cfg, chunk), params, state, mask, factors, piece)))
         _staged_tangent_check.lower(params, state, mask, factors, piece, initial, cfg, chunk, rtol).compile()
         if fallbacks:
             _staged_tangent_correct.lower(params, state, mask, factors, piece, initial, cfg, chunk, rtol,
                                           maxiter).compile()
             report, _ = jax.eval_shape(lambda *a: _staged_tangent_check(*a, cfg, chunk, rtol),
                                        params, state, mask, factors, piece, initial)
-            report = _zeros_like_structure(cfg, report)
+            report = _canonical_arrays(cfg, _zeros_like_structure(cfg, report))
             _staged_tangent_refine.lower(params, state, mask, factors, piece, initial, report, cfg, chunk,
                                          rtol).compile()
 
@@ -4057,8 +4066,8 @@ def _implicit_state_pullback_multi_rhs_impl(
         pullback = _block_state_pullback(
             params, cfg, x_star, dof_mask, active_fields=active_fields,
             probe_chunk_size=probe_chunk_size)
-        # Rows cross the map as flat vectors: chunk_map cannot reshape the
-        # zero-size state families of a stellarator-symmetric state.
+        # Rows cross the map as flat vectors (the zero-size state families of
+        # a stellarator-symmetric state stay out of the mapped pytree).
         _, unravel_state = ravel_pytree(x_star)
         _, unravel_params = ravel_pytree(params)
 
@@ -4066,9 +4075,9 @@ def _implicit_state_pullback_multi_rhs_impl(
             gradient, report = pullback(unravel_state(flat_gbar))
             return ravel_pytree(gradient)[0], report
 
-        flat_gradients, report = chunk_map(
+        flat_gradients, report = map_columns(
             flat_row, jax.vmap(lambda gbar: ravel_pytree(gbar)[0])(gbar_batch),
-            chunk_size=max(1, int(response_chunk_size)),
+            batch_size=max(1, int(response_chunk_size)),
         )
         _raise_unconverged_rows(cfg, report, "block-tridiagonal adjoint")
         return jax.vmap(unravel_params)(flat_gradients)

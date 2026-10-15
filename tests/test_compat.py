@@ -639,6 +639,45 @@ def _seed_cache(path, count):
         (path / f"k{i}-atime").write_bytes(i.to_bytes(8, "little"))
 
 
+def test_stale_machine_directories_are_removed_from_a_shared_root(tmp_path, monkeypatch):
+    """Sibling machine directories unused for two weeks go; this machine's, recent ones and foreign names stay."""
+    import os
+    import time
+
+    root = tmp_path / "jax_cache"
+    mine, recent, stale = (root / f"linux-x86_64-{n:016x}" for n in (1, 2, 3))
+    foreign = root / "keep-me"
+    stale_file = root / "darwin-arm64-00000000000000ff"
+    for directory in (mine, recent, stale, foreign):
+        directory.mkdir(parents=True)
+        (directory / "entry-cache").write_bytes(b"x")
+    stale_file.write_bytes(b"not a directory")
+    old = time.time() - _compat._CACHE_STALE_SECONDS - 60
+    for path in (mine, stale, foreign, stale_file):
+        os.utime(path, (old, old))
+    assert _compat._prune_stale_machines(str(mine)) == 1
+    assert sorted(p.name for p in root.iterdir()) == sorted(p.name for p in (mine, recent, foreign, stale_file))
+    # not a machine directory: nothing to judge its siblings by
+    assert _compat._prune_stale_machines(str(foreign)) == 0
+    assert _compat._prune_stale_machines(str(tmp_path / "absent" / mine.name)) == 0
+
+    def refuse(path):
+        raise OSError("busy")
+
+    os.utime(recent, (old, old))
+    monkeypatch.setattr("shutil.rmtree", refuse)
+    assert _compat._prune_stale_machines(str(mine)) == 0 and recent.exists()
+
+
+def test_configuring_a_cache_prunes_stale_machines(tmp_path, monkeypatch):
+    """_configure_compilation_cache runs the sibling prune, and a failure there does not stop the set-up."""
+    seen = []
+    monkeypatch.setattr(_compat, "_prune_stale_machines", lambda path: seen.append(path) or 1 / 0)
+    config = types.SimpleNamespace(update=lambda *args: None)
+    _compat._configure_compilation_cache(types.SimpleNamespace(config=config), str(tmp_path))
+    assert seen == [str(tmp_path)]
+
+
 def test_prune_cache_entries_keeps_the_most_recently_used(tmp_path):
     _seed_cache(tmp_path, 50)
     assert _compat._prune_cache_entries(str(tmp_path), 10) == 40

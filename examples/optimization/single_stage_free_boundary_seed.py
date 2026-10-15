@@ -16,10 +16,10 @@ The seed is built in four stages, each to convergence:
    rows, by Levenberg-Marquardt with the exact Jacobian (``fit_coils_exact``),
    run to convergence and checked against the case's own coil rows;
 4. the free boundary of those coils (Newton from the deck, a few steps because
-   the coils hold it), and the deck and coils scaled so that its axis |B| is
-   ``B0`` (``scaled_to_axis_field``: an exact invariance, the free boundary is
-   unchanged); the three-terms example starts from this seed (``--seed-run``)
-   and solves the same free boundary again.
+   the coils hold it), written as the deck, and the deck and coils scaled so
+   that its axis |B| is ``B0`` (``scaled_to_axis_field``: an exact invariance,
+   the free boundary is unchanged); the three-terms example starts from this
+   seed (``--seed-run``) at the root of its free-boundary equations.
 
 Vacuum (``--beta 0``) takes the same path with no pressure and no plasma field.
 Stages 1-4 run here and write ``input.run`` (the deck), ``coils.initial.json``
@@ -371,15 +371,16 @@ def coil_field_of(coils):
 
 
 def scaled_to_axis_field(inp, coils, profiles, vc_grid, trial_ftol):
-    """Stage 4: the free boundary of ``coils``, then the deck and coils scaled so that its axis |B| is ``B0``.
+    """Stage 4: the free boundary of ``coils`` as the deck, scaled with the coils so that its axis |B| is ``B0``.
 
     The fitted coils hold the seed's boundary only to their B.n residual, so their free boundary differs from it
     and so does its axis |B| (QA: 2-5 % below B0, QH 7 %).  Ideal-MHD equilibria are invariant under B -> lambda B,
     p -> lambda^2 p, I -> lambda I: coil currents, PHIEDGE and the plasma current scaled by lambda = B0 / |B_axis|
     and the pressure by lambda^2 leave the free boundary unchanged and put its axis |B| at B0 (beta and iota are
     unchanged; the Redl current follows, with the kinetic profiles' collisionality kept by ``redl_profiles``).
-    The solve uses the three-terms example's interface grid, so it is the boundary that example starts from.
-    Returns the scaled deck and coils and the solve's report.
+    The solve uses the three-terms example's interface grid, and the deck written is that free boundary (with the
+    solved current), so the example's first solve starts at its root.  Returns the scaled deck and coils and the
+    solve's report.
     """
     from essos.coils import Coils
     from vmex import optimize as opt
@@ -395,6 +396,9 @@ def scaled_to_axis_field(inp, coils, profiles, vc_grid, trial_ftol):
     eq = result.equilibrium
     b_axis = float(opt.axis_field_strength(eq.state, eq.runtime))
     factor = tt.B0 / b_axis
+    # The solved free boundary (and, with the Redl current in the solve, its current) becomes the deck: the
+    # three-terms example then starts at its root instead of solving it again from the fixed boundary.
+    inp = replace(result.input, lfreeb=False)
     scaled = replace(inp, phiedge=float(inp.phiedge) * factor, pres_scale=float(inp.pres_scale) * factor**2,
                      curtor=float(inp.curtor) * factor,
                      **({} if inp.ac_aux_f is None else {"ac_aux_f": np.asarray(inp.ac_aux_f, dtype=float) * factor}),

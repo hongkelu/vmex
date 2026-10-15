@@ -64,6 +64,7 @@ import jax
 import jax.numpy as jnp
 
 from .fields import surface_currents
+from .loops import map_columns
 from .input import VmecInput
 from .profiles import MU0
 from .solver import SolverRuntime, SpectralState
@@ -450,12 +451,11 @@ def _trapped_fraction_from_fields(
     modB = interpolate(modB)
     sqrtg = interpolate(sqrtg)
     if serial_surfaces:
-        result = jax.lax.map(
-            lambda x: compute_trapped_fraction(
-                x[0][None], x[1][None], n_lambda=n_lambda),
+        return map_columns(
+            lambda x: tuple(v[0] for v in compute_trapped_fraction(
+                x[0][None], x[1][None], n_lambda=n_lambda)),
             (modB, sqrtg),
         )
-        return tuple(x[:, 0] for x in result)
     return compute_trapped_fraction(modB, sqrtg, n_lambda=n_lambda)
 
 
@@ -818,8 +818,8 @@ class HalfMeshCurrent:
     ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each surface
     has the row ``weight (I'(s_j) - I'_Redl(s_j)) / I'_ref / sqrt(ns - 1)``
     (:func:`redl_current_derivative`; ``I'_ref`` the largest starting value): a square block, so the
-    current is Redl's wherever the equilibrium is.  The three-term free boundary solves it together with
-    the boundary (``ThreeTermFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
+    current is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with
+    the boundary (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
     ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
 
     ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped

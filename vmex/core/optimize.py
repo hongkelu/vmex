@@ -76,9 +76,9 @@ import jax.numpy as jnp
 
 from solvax import (
     auto_chunk_size,
-    chunk_map,
 )
 
+from .loops import map_columns
 from .device import AUTO
 from .errors import AdjointSolveError, TrialRejected, VmecConvergenceError
 from .input import VmecInput
@@ -347,8 +347,8 @@ class Equilibrium:
 def _auto_jac_chunk(dim: int) -> int:
     """Avoid a second remainder graph without expanding the memory budget."""
     bound = min(int(auto_chunk_size(dim)), int(np.ceil(np.sqrt(dim))))
-    # lax.map traces a separate vmap for the tail. Prefer a nearby divisor,
-    # but retain the original width when avoiding a tail would serialize it.
+    # map_columns pads an uneven last step. Prefer a nearby divisor, but
+    # retain the original width when avoiding padding would serialize it.
     widths = range(bound, (bound + 1) // 2 - 1, -1)
     return next((width for width in widths if dim % width == 0), bound)
 
@@ -2175,7 +2175,7 @@ def least_squares(
     The knobs below are inert for ``jac=None``.
 
     ``jac_chunk_size`` chunks the per-dof Jacobian columns via
-    :func:`solvax.chunk_map`: ``"auto"`` (default) caps SOLVAX's
+    :func:`vmex.core.loops.map_columns` (batches of at least two): ``"auto"`` (default) caps SOLVAX's
     device-aware width by a conservative square-root policy, so an
     accelerator memory report cannot expand the full probe batch; an ``int``
     fixes that many dofs at a time; ``None`` forces one wide batch. Automatic
@@ -2574,7 +2574,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     callbacks and the returned ``x``/``jac`` stay in the problem's units. A
     problem exposing ``accept_x`` (a
     :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
-    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`) must
+    :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`) must
     start at its accepted point, and each SLSQP major iterate is promoted with
     ``accept_x`` when its Jacobian is requested.
 
@@ -2833,7 +2833,7 @@ def minimize(
     units; ``problem.scales`` conditions SciPy internally. A problem exposing
     ``accept_x``, such as
     :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
-    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`, promotes
+    :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`, promotes
     only accepted iterates and ``options["maxiter"]`` counts accepted steps.
     Besides SciPy's fields the result carries ``accepted_steps`` and
     ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,
@@ -3477,7 +3477,7 @@ def _least_squares_implicit(
     mask_const = jax.tree.map(_place, mask_np)
 
     # One-hot dof tangents in ImplicitParams space, stacked over dofs
-    # (leading axis ndof) so chunk_map can process them in fixed-size chunks:
+    # (leading axis ndof) so map_columns can process them in fixed-size chunks:
     # boundary rbc/zbs (and, for lasym, rbs/zbc) rows first, then the scaled
     # AC/CURTOR rows.
     t_rbc = np.zeros((ndof,) + np.shape(params0.rbc))
@@ -3607,8 +3607,8 @@ def _least_squares_implicit(
             return column_of(dz, tp), dz, report
 
         tangent_chunk = ndof if chunk is None else chunk
-        cols, dz_cols, krylov = chunk_map(
-            column, tangent_stack, chunk_size=tangent_chunk
+        cols, dz_cols, krylov = map_columns(
+            column, tangent_stack, batch_size=tangent_chunk
         )
         return jnp.transpose(cols), dz_cols, _linear_response_summary(krylov)
 
@@ -3659,8 +3659,8 @@ def _least_squares_implicit(
             tp = tangent_of(tp_stack)
             return column_of(dz, tp), dz
 
-        cols, dz_cols = chunk_map(
-            column, (tangent_stack, dz0), chunk_size=tangent_chunk
+        cols, dz_cols = map_columns(
+            column, (tangent_stack, dz0), batch_size=tangent_chunk
         )
         return jnp.transpose(cols), dz_cols, _linear_response_summary(report)
 
@@ -3710,11 +3710,11 @@ def _least_squares_implicit(
                 params_bar, _ = pullback(state_bar)
                 return x_bar + boundary(params_bar)[0]
 
-            return chunk_map(row, indices, chunk_size=reverse_width)
+            return map_columns(row, indices, batch_size=reverse_width)
 
         def failed(_):
-            return chunk_map(lambda i: direct(cotangent_of(i))[0], indices,
-                             chunk_size=reverse_width)
+            return map_columns(lambda i: direct(cotangent_of(i))[0], indices,
+                             batch_size=reverse_width)
 
         return jax.lax.cond(status == 0, converged, failed, operand=None)
 

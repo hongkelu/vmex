@@ -762,7 +762,7 @@ def test_certified_trial_guards_reject_stale_or_missing_memo(monkeypatch):
             assert not lane.equilibrium_from_x(lane.x0).result.converged
         with monkeypatch.context() as m:
             m.setitem(implicit_module._LAST_REFINED, cfg,
-                      (*implicit_module._LAST_REFINED[cfg][:2], True))
+                      (*implicit_module._LAST_REFINED[cfg][:2], True, np.nan))
             with pytest.raises(RuntimeError, match="usable VMEC equilibrium"):
                 lane.equilibrium_from_x(lane.x0)
 
@@ -1761,7 +1761,7 @@ def test_budget_exhausted_warm_seed_falls_through_to_cold(monkeypatch):
         __hash__ = object.__hash__
 
     cfg = Config(inp=None, hot_restart=True, multigrid=False, resolution=None,
-                 ftol=1e-12, max_iterations=10, mode=None, lconm1=True)
+                 ftol=1e-12, max_iterations=10, mode=None, lconm1=True, freeze_m1=True)
     im._HOT_CACHE[cfg] = "warm"
     result = im._host_solve(cfg, {"leaf": np.zeros(1)})
     assert calls == ["warm", None] and result.converged

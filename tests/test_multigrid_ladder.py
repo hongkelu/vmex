@@ -181,6 +181,7 @@ def test_ladder_converges_and_matches_vmec2000_ladder(case):
     result = multigrid.solve_multigrid(
         _load_input(case), ns_array=cfg["ns_array"],
         ftol_array=cfg["ftol_array"], niter_array=[25000],
+        freeze_m1=False,  # VMEC2000's m=1 rule: machine-precision parity with the xvmec2000 ladder
     )
     assert result.converged
     ftol = cfg["ftol_array"][-1]

@@ -303,64 +303,67 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 4,
    "ns": 51,
-   "force_fsq": 1.355995361061587e-13,
-   "bn": 0.00018587151572030744,
-   "pressure_balance": 0.00016634147118744857,
-   "sheet_current": 0.00024216271955644368,
-   "qa": 5.154182440681267e-05,
-   "iota_axis": 0.42253374124596443,
-   "iota_edge": 0.4153028445941591,
-   "aspect": 5.9999936534585805,
-   "volume_m3": 0.5646828993483093,
-   "lcfs_mm_vs_truth": 1.672,
-   "nfev": 10,
-   "njev": 7,
-   "cost": 1.01555605258544e-07,
-   "seconds": 260.5,
-   "compile_seconds": 185.3,
-   "peak_gpu_gib": 1.88,
+   "force_fsq": 3.3073301883638675e-22,
+   "bn": 0.0010266845916678854,
+   "pressure_balance": 0.0013157512190810877,
+   "sheet_current": 0.0018064177347799997,
+   "qa": 0.0007457457920710628,
+   "iota_axis": 0.42961452964170604,
+   "iota_edge": 0.414772133211193,
+   "aspect": 5.999308873404265,
+   "volume_m3": 0.5647502913423132,
+   "lcfs_mm_vs_truth": 1.982,
+   "nfev": 13,
+   "njev": 2,
+   "cost": 1.1577961587205381e-23,
+   "converged": true,
+   "message": "8 Newton steps",
+   "reference": "start",
+   "seconds": 422.7,
+   "compile_seconds": 400.1,
+   "peak_gpu_gib": 8.61,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.83,
+   "lcfs_mm_vs_target": 1.734,
    "poincare_surfaces": {
     "0.1": [
-     0.525,
-     0.113
+     2.394,
+     0.58
     ],
     "0.3": [
-     0.562,
-     0.138
+     3.98,
+     0.798
     ],
     "0.5": [
-     0.781,
-     0.189
+     3.469,
+     0.733
     ],
     "0.7": [
-     0.98,
-     0.227
+     2.599,
+     0.675
     ],
     "0.9": [
-     1.35,
-     0.308
+     3.236,
+     0.865
     ],
     "1": [
-     1.555,
-     0.38
+     4.321,
+     1.065
     ]
    },
-   "poincare_mm_max": 1.555,
-   "poincare_mm_rms": 0.38,
+   "poincare_mm_max": 4.321,
+   "poincare_mm_rms": 1.065,
    "poincare_lost": 0,
-   "axis_mm": 0.346,
-   "coil_bn_max": 0.001010945280317498,
-   "coil_bn_rms": 0.00024157828197599558,
+   "axis_mm": 0.361,
+   "coil_bn_max": 0.0024639042503569685,
+   "coil_bn_rms": 0.0008270189956397432,
    "resonant_bn": [
-    4,
+    5,
     2,
-    6.18962874631149e-05,
-    -0.3388
+    7.935629090420398e-05,
+    0.0739
    ]
   },
   {
@@ -711,64 +714,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 5,
    "ns": 51,
-   "force_fsq": 6.609609796738735e-22,
-   "bn": 4.201173806913135e-05,
-   "pressure_balance": 2.472455446072421e-05,
-   "sheet_current": 4.7097160677158996e-05,
-   "qa": 3.01204603170591e-06,
-   "iota_axis": 0.42172149605535825,
-   "iota_edge": 0.4156913239729991,
-   "aspect": 5.999999853858015,
-   "volume_m3": 0.5647009117101295,
-   "lcfs_mm_vs_truth": 1.611,
-   "nfev": 9,
-   "njev": 7,
-   "cost": 7.868406477960565e-09,
-   "seconds": 294.8,
-   "compile_seconds": 200.3,
-   "peak_gpu_gib": 1.93,
+   "force_fsq": 8.1978398571761755e-22,
+   "bn": 0.00031384041137216996,
+   "pressure_balance": 0.0004418846637674765,
+   "sheet_current": 0.000545471117824495,
+   "qa": 6.780301703344219e-05,
+   "iota_axis": 0.42261643950414485,
+   "iota_edge": 0.4151485697733772,
+   "aspect": 5.9999242749427895,
+   "volume_m3": 0.5647417133637195,
+   "lcfs_mm_vs_truth": 1.533,
+   "nfev": 13,
+   "njev": 3,
+   "cost": 8.805247812216705e-25,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 441.4,
+   "compile_seconds": 419.6,
+   "peak_gpu_gib": 8.64,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.64,
    "poincare_surfaces": {
     "0.1": [
-     0.455,
-     0.1
+     1.081,
+     0.32
     ],
     "0.3": [
-     0.198,
-     0.051
+     1.585,
+     0.515
     ],
     "0.5": [
-     0.139,
-     0.048
+     1.987,
+     0.593
     ],
     "0.7": [
-     0.244,
-     0.057
+     2.12,
+     0.561
     ],
     "0.9": [
-     0.609,
-     0.121
+     1.588,
+     0.429
     ],
     "1": [
-     0.829,
-     0.166
+     1.814,
+     0.386
     ]
    },
-   "poincare_mm_max": 0.829,
-   "poincare_mm_rms": 0.166,
+   "poincare_mm_max": 1.814,
+   "poincare_mm_rms": 0.386,
    "poincare_lost": 0,
-   "axis_mm": 0.388,
-   "coil_bn_max": 0.00019655234999777182,
-   "coil_bn_rms": 4.845937580516512e-05,
+   "axis_mm": 0.218,
+   "coil_bn_max": 0.0009325340074092513,
+   "coil_bn_rms": 0.00029601998121158677,
    "resonant_bn": [
-    6,
+    3,
     2,
-    1.912084586266741e-05,
-    0.4941
+    8.057746802093209e-05,
+    -0.7546
    ]
   },
   {
@@ -1119,64 +1124,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 6,
    "ns": 51,
-   "force_fsq": 6.964016924445119e-22,
-   "bn": 2.7427016637597438e-05,
-   "pressure_balance": 1.592494664403578e-05,
-   "sheet_current": 2.7644352172693766e-05,
-   "qa": 2.2328826443280028e-07,
-   "iota_axis": 0.4225634520372835,
-   "iota_edge": 0.4158169506105002,
-   "aspect": 6.000069611692062,
-   "volume_m3": 0.5647177930621993,
-   "lcfs_mm_vs_truth": 1.629,
-   "nfev": 9,
-   "njev": 7,
-   "cost": 5.808109342942561e-09,
-   "seconds": 320.8,
-   "compile_seconds": 197.0,
-   "peak_gpu_gib": 2.02,
+   "force_fsq": 8.322787209513221e-22,
+   "bn": 0.00034820092558903685,
+   "pressure_balance": 0.0001628496717951701,
+   "sheet_current": 0.00038983173272807054,
+   "qa": 2.1461550941846052e-05,
+   "iota_axis": 0.41903189028992616,
+   "iota_edge": 0.41495196612165075,
+   "aspect": 6.00095874070135,
+   "volume_m3": 0.5648376946480518,
+   "lcfs_mm_vs_truth": 1.611,
+   "nfev": 8,
+   "njev": 3,
+   "cost": 1.0559900367119273e-28,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 353.4,
+   "compile_seconds": 326.5,
+   "peak_gpu_gib": 8.7,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.629,
    "poincare_surfaces": {
     "0.1": [
-     0.45,
-     0.132
+     0.941,
+     0.206
     ],
     "0.3": [
-     0.521,
-     0.114
+     0.958,
+     0.23
     ],
     "0.5": [
-     0.57,
-     0.131
+     1.207,
+     0.303
     ],
     "0.7": [
-     0.683,
-     0.156
+     1.821,
+     0.397
     ],
     "0.9": [
-     0.789,
-     0.197
+     2.916,
+     0.567
     ],
     "1": [
-     0.997,
-     0.229
+     3.642,
+     0.705
     ]
    },
-   "poincare_mm_max": 0.997,
-   "poincare_mm_rms": 0.229,
+   "poincare_mm_max": 3.642,
+   "poincare_mm_rms": 0.705,
    "poincare_lost": 0,
-   "axis_mm": 0.382,
-   "coil_bn_max": 9.371777040828858e-05,
-   "coil_bn_rms": 2.938465834652707e-05,
+   "axis_mm": 0.397,
+   "coil_bn_max": 0.0011631690361959763,
+   "coil_bn_rms": 0.00035534509715030366,
    "resonant_bn": [
-    5,
+    4,
     2,
-    1.3246968349033839e-05,
-    0.0791
+    0.0001288962892041484,
+    -0.3402
    ]
   },
   {
@@ -1527,64 +1534,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 7,
    "ns": 51,
-   "force_fsq": 1.5501596358973587e-21,
-   "bn": 2.536971629482687e-05,
-   "pressure_balance": 2.751811049654535e-05,
-   "sheet_current": 3.458655599886058e-05,
-   "qa": 1.0606449311774497e-06,
-   "iota_axis": 0.42307411666594297,
-   "iota_edge": 0.4158077666464853,
-   "aspect": 6.000049382569067,
-   "volume_m3": 0.5647136020002299,
-   "lcfs_mm_vs_truth": 1.626,
-   "nfev": 12,
-   "njev": 9,
-   "cost": 4.36220505787193e-09,
-   "seconds": 420.2,
-   "compile_seconds": 222.6,
-   "peak_gpu_gib": 2.15,
+   "force_fsq": 1.8159351415682932e-17,
+   "bn": 9.635080658701414e-05,
+   "pressure_balance": 8.613935582622064e-05,
+   "sheet_current": 0.00013127260962215743,
+   "qa": 1.0275528139501763e-05,
+   "iota_axis": 0.422320561142853,
+   "iota_edge": 0.41577748372637074,
+   "aspect": 6.0002553832367544,
+   "volume_m3": 0.5647492550318136,
+   "lcfs_mm_vs_truth": 1.537,
+   "nfev": 8,
+   "njev": 2,
+   "cost": 3.569202413981069e-27,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 436.0,
+   "compile_seconds": 415.2,
+   "peak_gpu_gib": 8.8,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.626,
    "poincare_surfaces": {
     "0.1": [
-     0.402,
-     0.124
+     0.607,
+     0.161
     ],
     "0.3": [
-     0.384,
-     0.088
+     0.394,
+     0.104
     ],
     "0.5": [
-     0.485,
-     0.113
+     0.548,
+     0.128
     ],
     "0.7": [
-     0.765,
-     0.172
+     0.644,
+     0.157
     ],
     "0.9": [
-     1.067,
-     0.253
+     0.626,
+     0.182
     ],
     "1": [
-     1.33,
-     0.306
+     0.759,
+     0.202
     ]
    },
-   "poincare_mm_max": 1.33,
-   "poincare_mm_rms": 0.306,
+   "poincare_mm_max": 0.759,
+   "poincare_mm_rms": 0.202,
    "poincare_lost": 0,
-   "axis_mm": 0.382,
-   "coil_bn_max": 9.245188917043609e-05,
-   "coil_bn_rms": 2.6796419262075706e-05,
+   "axis_mm": 0.408,
+   "coil_bn_max": 0.0003511719309638372,
+   "coil_bn_rms": 0.00010725862194365853,
    "resonant_bn": [
-    5,
+    4,
     2,
-    1.8587934230872862e-05,
-    0.079
+    4.939445285566777e-05,
+    -0.3369
    ]
   },
   {
@@ -1876,64 +1885,67 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 8,
    "ns": 51,
-   "force_fsq": 2.2068305434104483e-21,
-   "bn": 1.8567547427085203e-05,
-   "pressure_balance": 1.5936777872737954e-05,
-   "sheet_current": 2.2283908487980557e-05,
-   "qa": 4.3863957479651866e-07,
-   "iota_axis": 0.42327456410174835,
-   "iota_edge": 0.4158421764745944,
-   "aspect": 6.000061135202644,
-   "volume_m3": 0.5647170419681677,
-   "lcfs_mm_vs_truth": 1.623,
-   "nfev": 14,
-   "njev": 11,
-   "cost": 2.7531399067382913e-09,
-   "seconds": 378.5,
-   "compile_seconds": 59.9,
-   "peak_gpu_gib": 2.32,
+   "force_fsq": 1.903025187599197e-17,
+   "bn": 0.00019784114742810678,
+   "pressure_balance": 0.00011555331341090797,
+   "sheet_current": 0.00022777683776264082,
+   "qa": 1.9954293703514057e-05,
+   "iota_axis": 0.42439709546369864,
+   "iota_edge": 0.41524818053437645,
+   "aspect": 6.000189439980691,
+   "volume_m3": 0.5647449321966844,
+   "lcfs_mm_vs_truth": 1.633,
+   "nfev": 8,
+   "njev": 2,
+   "cost": 1.0203575094448074e-25,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 290.7,
+   "compile_seconds": 258.8,
+   "peak_gpu_gib": 8.85,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.623,
+   "lcfs_mm_vs_target": 1.633,
    "poincare_surfaces": {
     "0.1": [
-     0.443,
-     0.128
+     0.846,
+     0.189
     ],
     "0.3": [
-     0.58,
-     0.126
+     1.174,
+     0.28
     ],
     "0.5": [
-     0.788,
-     0.177
+     1.133,
+     0.308
     ],
     "0.7": [
-     0.945,
-     0.223
+     1.613,
+     0.334
     ],
     "0.9": [
-     1.071,
-     0.258
+     2.065,
+     0.422
     ],
     "1": [
-     1.186,
-     0.277
+     2.235,
+     0.504
     ]
    },
-   "poincare_mm_max": 1.186,
-   "poincare_mm_rms": 0.277,
+   "poincare_mm_max": 2.235,
+   "poincare_mm_rms": 0.504,
    "poincare_lost": 0,
-   "axis_mm": 0.407,
-   "coil_bn_max": 9.024135841219563e-05,
-   "coil_bn_rms": 2.756325310413075e-05,
+   "axis_mm": 0.408,
+   "coil_bn_max": 0.0007837628739528072,
+   "coil_bn_rms": 0.00021928655823300346,
    "resonant_bn": [
     5,
     2,
-    1.909064396654795e-05,
-    0.0792
+    3.6716479574766935e-05,
+    0.0762
    ]
   },
   {
@@ -2225,64 +2237,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 9,
    "ns": 51,
-   "force_fsq": 1.8700737440289177e-13,
-   "bn": 1.640665496405865e-05,
-   "pressure_balance": 1.8111541325018495e-05,
-   "sheet_current": 2.309063594989061e-05,
-   "qa": 4.244391912747849e-06,
-   "iota_axis": 0.423242244530156,
-   "iota_edge": 0.4158274449063687,
-   "aspect": 6.000055557683789,
-   "volume_m3": 0.5647160882995944,
-   "lcfs_mm_vs_truth": 1.623,
-   "nfev": 15,
-   "njev": 10,
-   "cost": 2.454419156408779e-09,
-   "seconds": 598.1,
-   "compile_seconds": 200.9,
-   "peak_gpu_gib": 1.99,
+   "force_fsq": 3.0569047479357155e-21,
+   "bn": 7.313713139208986e-05,
+   "pressure_balance": 3.222804242660392e-05,
+   "sheet_current": 7.880339808322803e-05,
+   "qa": 1.0179453543777164e-06,
+   "iota_axis": 0.4230325108583529,
+   "iota_edge": 0.4157698066222677,
+   "aspect": 6.0000967858768375,
+   "volume_m3": 0.5647305582922268,
+   "lcfs_mm_vs_truth": 1.524,
+   "nfev": 11,
+   "njev": 6,
+   "cost": 2.9657612916845368e-27,
+   "converged": true,
+   "message": "8 Newton steps",
+   "reference": "start",
+   "seconds": 537.6,
+   "compile_seconds": 468.5,
+   "peak_gpu_gib": 5.2,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.623,
    "poincare_surfaces": {
     "0.1": [
-     0.46,
-     0.126
+     0.644,
+     0.154
     ],
     "0.3": [
-     0.441,
+     0.421,
      0.101
     ],
     "0.5": [
-     0.67,
-     0.148
+     0.32,
+     0.074
     ],
     "0.7": [
-     0.853,
-     0.196
+     0.338,
+     0.076
     ],
     "0.9": [
-     0.895,
-     0.209
+     0.65,
+     0.117
     ],
     "1": [
-     0.872,
-     0.203
+     0.893,
+     0.159
     ]
    },
-   "poincare_mm_max": 0.872,
-   "poincare_mm_rms": 0.203,
+   "poincare_mm_max": 0.893,
+   "poincare_mm_rms": 0.159,
    "poincare_lost": 0,
-   "axis_mm": 0.397,
-   "coil_bn_max": 9.287791648489801e-05,
-   "coil_bn_rms": 2.8883204274752354e-05,
+   "axis_mm": 0.413,
+   "coil_bn_max": 0.00026037945607431783,
+   "coil_bn_rms": 7.59401546062393e-05,
    "resonant_bn": [
     5,
     2,
-    1.4417244441057594e-05,
-    0.0791
+    1.3502953259968392e-05,
+    0.0788
    ]
   },
   {
@@ -2509,64 +2523,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 10,
    "ns": 51,
-   "force_fsq": 1.4700393011521112e-13,
-   "bn": 1.3546352700464858e-05,
-   "pressure_balance": 1.5869008208648205e-05,
-   "sheet_current": 2.0224188176467913e-05,
-   "qa": 1.2503300309927711e-06,
-   "iota_axis": 0.4231376698814649,
-   "iota_edge": 0.4158394160931622,
-   "aspect": 6.000057871935627,
-   "volume_m3": 0.5647168132871351,
-   "lcfs_mm_vs_truth": 1.637,
-   "nfev": 18,
-   "njev": 13,
-   "cost": 1.8155647851577493e-09,
-   "seconds": 819.1,
-   "compile_seconds": 182.5,
-   "peak_gpu_gib": 2.33,
+   "force_fsq": 1.883544633275472e-17,
+   "bn": 0.0001325858649532374,
+   "pressure_balance": 6.751946433578062e-05,
+   "sheet_current": 0.00014633946514233423,
+   "qa": 1.2519587982198246e-05,
+   "iota_axis": 0.4228167909226589,
+   "iota_edge": 0.4156150524242785,
+   "aspect": 6.000048779887443,
+   "volume_m3": 0.5647243862440863,
+   "lcfs_mm_vs_truth": 1.55,
+   "nfev": 9,
+   "njev": 5,
+   "cost": 1.0435090658360684e-25,
+   "converged": true,
+   "message": "8 Newton steps",
+   "reference": "start",
+   "seconds": 341.9,
+   "compile_seconds": 253.5,
+   "peak_gpu_gib": 5.49,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.637,
    "poincare_surfaces": {
     "0.1": [
-     0.45,
-     0.136
+     0.754,
+     0.148
     ],
     "0.3": [
-     0.603,
-     0.135
+     0.573,
+     0.129
     ],
     "0.5": [
-     0.931,
-     0.207
+     0.604,
+     0.161
     ],
     "0.7": [
-     1.1,
-     0.26
+     0.914,
+     0.216
     ],
     "0.9": [
-     1.141,
-     0.269
+     1.903,
+     0.363
     ],
     "1": [
-     1.145,
-     0.262
+     2.777,
+     0.504
     ]
    },
-   "poincare_mm_max": 1.145,
-   "poincare_mm_rms": 0.262,
+   "poincare_mm_max": 2.777,
+   "poincare_mm_rms": 0.504,
    "poincare_lost": 0,
-   "axis_mm": 0.409,
-   "coil_bn_max": 8.561595158155485e-05,
-   "coil_bn_rms": 2.6251141789437094e-05,
+   "axis_mm": 0.411,
+   "coil_bn_max": 0.0004561133442227373,
+   "coil_bn_rms": 0.00014055436257008654,
    "resonant_bn": [
     5,
     2,
-    1.644411064932813e-05,
-    0.0792
+    3.3954213096453305e-05,
+    0.0781
    ]
   },
   {
@@ -2793,64 +2809,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 11,
    "ns": 51,
-   "force_fsq": 1.3627816826936884e-13,
-   "bn": 1.1675313660171108e-05,
-   "pressure_balance": 1.6243796830534156e-05,
-   "sheet_current": 1.9728048806956613e-05,
-   "qa": 2.2381394548365653e-06,
-   "iota_axis": 0.4230339745137411,
-   "iota_edge": 0.41583275749408166,
-   "aspect": 6.000055641813608,
-   "volume_m3": 0.5647163108165555,
-   "lcfs_mm_vs_truth": 1.658,
-   "nfev": 19,
-   "njev": 14,
-   "cost": 1.7246467834348935e-09,
-   "seconds": 1244.3,
-   "compile_seconds": 229.6,
-   "peak_gpu_gib": 2.95,
+   "force_fsq": 4.8708131668869316e-21,
+   "bn": 6.262390637704597e-05,
+   "pressure_balance": 2.643067937368317e-05,
+   "sheet_current": 6.604479448246435e-05,
+   "qa": 3.724219690510624e-07,
+   "iota_axis": 0.4230154910135151,
+   "iota_edge": 0.4157807266311661,
+   "aspect": 6.000008800555039,
+   "volume_m3": 0.5647196797598056,
+   "lcfs_mm_vs_truth": 1.526,
+   "nfev": 9,
+   "njev": 5,
+   "cost": 1.4165524984062236e-28,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 492.6,
+   "compile_seconds": 413.0,
+   "peak_gpu_gib": 4.0,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.658,
    "poincare_surfaces": {
     "0.1": [
-     0.425,
-     0.13
+     0.543,
+     0.142
     ],
     "0.3": [
-     0.254,
-     0.08
+     0.433,
+     0.104
     ],
     "0.5": [
-     0.452,
-     0.106
+     0.464,
+     0.095
     ],
     "0.7": [
-     0.646,
-     0.154
+     0.545,
+     0.108
     ],
     "0.9": [
-     0.844,
-     0.181
+     0.652,
+     0.137
     ],
     "1": [
-     0.878,
-     0.183
+     0.796,
+     0.165
     ]
    },
-   "poincare_mm_max": 0.878,
-   "poincare_mm_rms": 0.183,
+   "poincare_mm_max": 0.796,
+   "poincare_mm_rms": 0.165,
    "poincare_lost": 0,
-   "axis_mm": 0.402,
-   "coil_bn_max": 9.214691652589241e-05,
-   "coil_bn_rms": 2.433953386688745e-05,
+   "axis_mm": 0.393,
+   "coil_bn_max": 0.00020813289781541135,
+   "coil_bn_rms": 5.586751277470402e-05,
    "resonant_bn": [
     5,
     2,
-    1.1470986270087857e-05,
-    0.0792
+    9.636445484243685e-06,
+    0.0789
    ]
   },
   {
@@ -3136,64 +3154,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 12,
    "ns": 51,
-   "force_fsq": 9.485117238420474e-14,
-   "bn": 1.029751431980275e-05,
-   "pressure_balance": 1.5695019310011433e-05,
-   "sheet_current": 1.8765813908718313e-05,
-   "qa": 1.155719909003086e-06,
-   "iota_axis": 0.4230974930269241,
-   "iota_edge": 0.4158359033416874,
-   "aspect": 6.00005533208974,
-   "volume_m3": 0.564716364266391,
-   "lcfs_mm_vs_truth": 1.616,
-   "nfev": 18,
-   "njev": 13,
-   "cost": 1.4507806493598278e-09,
-   "seconds": 1374.4,
-   "compile_seconds": 237.8,
-   "peak_gpu_gib": 4.11,
+   "force_fsq": 1.9647796182363253e-17,
+   "bn": 8.635721077927748e-05,
+   "pressure_balance": 4.127869231914553e-05,
+   "sheet_current": 9.127392077224547e-05,
+   "qa": 6.041727691934201e-06,
+   "iota_axis": 0.4230207573059418,
+   "iota_edge": 0.41571511503841,
+   "aspect": 5.999965146373715,
+   "volume_m3": 0.5647139824569036,
+   "lcfs_mm_vs_truth": 1.522,
+   "nfev": 9,
+   "njev": 4,
+   "cost": 1.2967751826358763e-26,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 303.3,
+   "compile_seconds": 180.5,
+   "peak_gpu_gib": 4.28,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.616,
    "poincare_surfaces": {
     "0.1": [
-     0.451,
-     0.136
+     0.57,
+     0.138
     ],
     "0.3": [
-     0.62,
-     0.131
+     0.54,
+     0.104
     ],
     "0.5": [
-     0.939,
-     0.2
+     0.799,
+     0.12
     ],
     "0.7": [
-     1.126,
-     0.251
+     0.829,
+     0.132
     ],
     "0.9": [
-     1.153,
-     0.251
+     0.619,
+     0.124
     ],
     "1": [
-     1.099,
-     0.235
+     0.522,
+     0.142
     ]
    },
-   "poincare_mm_max": 1.099,
-   "poincare_mm_rms": 0.235,
+   "poincare_mm_max": 0.522,
+   "poincare_mm_rms": 0.142,
    "poincare_lost": 0,
-   "axis_mm": 0.411,
-   "coil_bn_max": 7.14212553405726e-05,
-   "coil_bn_rms": 2.3579138284554366e-05,
+   "axis_mm": 0.375,
+   "coil_bn_max": 0.00027595364968820856,
+   "coil_bn_rms": 8.333875261841398e-05,
    "resonant_bn": [
     5,
     2,
-    1.4096607753081061e-05,
-    0.0792
+    5.746909090700597e-06,
+    0.0786
    ]
   },
   {
@@ -3355,64 +3375,66 @@
    "lcfs_mm_vs_target": 0.0
   },
   {
-   "method": "three_term",
+   "method": "three_terms",
    "modes": 13,
    "ns": 51,
-   "force_fsq": 4.0574584807073645e-14,
-   "bn": 9.448565267349191e-06,
-   "pressure_balance": 1.5493485622914076e-05,
-   "sheet_current": 1.8374886841550016e-05,
-   "qa": 3.730401690121192e-06,
-   "iota_axis": 0.4230533543471797,
-   "iota_edge": 0.4158351287261137,
-   "aspect": 6.000055405260374,
-   "volume_m3": 0.5647163316699081,
-   "lcfs_mm_vs_truth": 1.609,
-   "nfev": 19,
-   "njev": 14,
-   "cost": 1.4085348719221951e-09,
-   "seconds": 1698.2,
-   "compile_seconds": 239.8,
-   "peak_gpu_gib": 5.59,
+   "force_fsq": 1.6719754719161917e-17,
+   "bn": 4.795918054940156e-05,
+   "pressure_balance": 2.4742964603032084e-05,
+   "sheet_current": 5.042701586051072e-05,
+   "qa": 2.590166597876577e-07,
+   "iota_axis": 0.422933398744613,
+   "iota_edge": 0.41579079100277017,
+   "aspect": 5.999966740550255,
+   "volume_m3": 0.5647143434158579,
+   "lcfs_mm_vs_truth": 1.533,
+   "nfev": 9,
+   "njev": 4,
+   "cost": 8.283282016722065e-28,
+   "converged": true,
+   "message": "7 Newton steps",
+   "reference": "start",
+   "seconds": 619.2,
+   "compile_seconds": 528.6,
+   "peak_gpu_gib": 4.92,
    "device": "cuda:0",
-   "lcfs_mm_vs_target": 1.609,
    "poincare_surfaces": {
     "0.1": [
-     0.472,
-     0.13
+     0.572,
+     0.137
     ],
     "0.3": [
-     0.31,
-     0.073
+     0.417,
+     0.105
     ],
     "0.5": [
-     0.238,
-     0.063
+     0.414,
+     0.094
     ],
     "0.7": [
-     0.395,
-     0.089
+     0.513,
+     0.102
     ],
     "0.9": [
-     0.584,
-     0.119
+     0.732,
+     0.126
     ],
     "1": [
-     0.648,
-     0.131
+     0.913,
+     0.15
     ]
    },
-   "poincare_mm_max": 0.648,
-   "poincare_mm_rms": 0.131,
+   "poincare_mm_max": 0.913,
+   "poincare_mm_rms": 0.15,
    "poincare_lost": 0,
-   "axis_mm": 0.399,
-   "coil_bn_max": 9.270622850895407e-05,
-   "coil_bn_rms": 2.3664252098410817e-05,
+   "axis_mm": 0.389,
+   "coil_bn_max": 0.00014993936667237435,
+   "coil_bn_rms": 3.813586236390576e-05,
    "resonant_bn": [
     5,
     2,
-    8.398384992675799e-06,
-    0.0792
+    7.081553758135374e-06,
+    0.079
    ]
   }
  ]

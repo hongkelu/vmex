@@ -216,7 +216,7 @@ _PREFETCH_ATTEMPTED: set = set()
 
 def _launch_lane_prefetch(
     inp: VmecInput, *, ns_next: int, ftol_next: float, niter_next: int,
-    lconm1: bool, time_step, tcon0, gamma, nstep, precon_type,
+    lconm1: bool, freeze_m1, time_step, tcon0, gamma, nstep, precon_type,
     prec2d_threshold, prec2d, use_fft, device,
 ) -> threading.Thread:
     """Start compiling the NEXT rung's block-lane executable in the background.
@@ -238,7 +238,7 @@ def _launch_lane_prefetch(
             with device_context(device, resolution):
                 rt = prepare_runtime(
                     inp, resolution, ftol=float(ftol_next),
-                    max_iterations=int(niter_next), lconm1=lconm1,
+                    max_iterations=int(niter_next), lconm1=lconm1, freeze_m1=freeze_m1,
                     tcon0=tcon0, gamma=gamma,
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
@@ -264,6 +264,7 @@ def solve_multigrid(
     *,
     mode: str = "cli",
     lconm1: bool = True,
+    freeze_m1: bool | None = None,
     verbose: bool = False,
     emit=emit_flushed,
     initial_state: SpectralState | None = None,
@@ -438,7 +439,7 @@ def solve_multigrid(
         with device_context(device, resolution):
             rt = prepare_runtime(
                 inp, resolution, ftol=float(ftol_arr[igrid]),
-                max_iterations=int(niter_arr[igrid]), lconm1=lconm1,
+                max_iterations=int(niter_arr[igrid]), lconm1=lconm1, freeze_m1=freeze_m1,
                 tcon0=tcon0, gamma=gamma,
                 precon_type=precon_type, prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d, use_fft=stage_use_fft,
@@ -482,7 +483,7 @@ def solve_multigrid(
             attempt_key = (
                 ns_next, float(ftol_arr[igrid + 1]), int(niter_arr[igrid + 1]),
                 bool(use_fft_next), int(inp.mpol), int(inp.ntor),
-                int(inp.nfp), bool(inp.lasym), bool(lconm1), time_step, tcon0,
+                int(inp.nfp), bool(inp.lasym), bool(lconm1), freeze_m1, time_step, tcon0,
                 gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
                 str(device),
             )
@@ -492,7 +493,7 @@ def solve_multigrid(
                     inp, ns_next=ns_next,
                     ftol_next=float(ftol_arr[igrid + 1]),
                     niter_next=int(niter_arr[igrid + 1]),
-                    lconm1=lconm1, time_step=time_step, tcon0=tcon0,
+                    lconm1=lconm1, freeze_m1=freeze_m1, time_step=time_step, tcon0=tcon0,
                     gamma=gamma, nstep=nstep, precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft_next,
@@ -541,7 +542,7 @@ def solve_multigrid(
                     [np.asarray([niter_arr[0]], dtype=niter_arr.dtype), niter_arr]
                 ),
                 mode=mode,
-                lconm1=lconm1,
+                lconm1=lconm1, freeze_m1=freeze_m1,
                 verbose=verbose,
                 emit=emit,
                 initial_state=initial_state,
@@ -640,7 +641,7 @@ def solve_free_boundary_multigrid(
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
     boundary_condition: str = "nestor",
-    three_term_options: dict | None = None,
+    three_terms_options: dict | None = None,
     report_boundary_residual: bool = False,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
@@ -704,12 +705,12 @@ def solve_free_boundary_multigrid(
     on-demand compilation, and background threads are joined before the
     ``release_stage_cache`` point exactly like the fixed-boundary ladder.
 
-    ``boundary_condition="three_term"`` replaces NESTOR's vacuum pressure
+    ``boundary_condition="three_terms"`` replaces NESTOR's vacuum pressure
     by all three plasma-vacuum interface conditions (``B . n = 0``, pressure
     balance and no sheet current) with the plasma field from virtual casing:
     the boundary is solved for by
-    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term`
-    (keywords in ``three_term_options``) starting from the deck boundary,
+    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
+    (keywords in ``three_terms_options``) starting from the deck boundary,
     and the result is the fixed-boundary ladder's final stage on that boundary,
     with ``result.boundary_residual`` set and ``result.vacuum = None``.  Only
     the ladder, external-field, ``verbose``/``emit`` and ``device`` arguments
@@ -723,19 +724,19 @@ def solve_free_boundary_multigrid(
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
-    if boundary_condition == "three_term":
+    if boundary_condition == "three_terms":
         if initial_state is not None or restart_from is not None:
             raise NotImplementedError(
-                "boundary_condition='three_term' starts from the deck boundary; "
+                "boundary_condition='three_terms' starts from the deck boundary; "
                 "set it on inp instead of passing initial_state/restart_from")
-        from .freeboundary_vc import solve_free_boundary_three_term
+        from .freeboundary_vc import solve_free_boundary_three_terms
 
         ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
                          ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
                          niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
-        fit = solve_free_boundary_three_term(
+        fit = solve_free_boundary_three_terms(
             ladder, external_field=external_field, mgrid_path=mgrid_path,
-            **(three_term_options or {}))
+            **(three_terms_options or {}))
         ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
         result = solve_multigrid(
             fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
@@ -743,7 +744,7 @@ def solve_free_boundary_multigrid(
             initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
         return replace(result, boundary_residual=fit.boundary_residual)
     if boundary_condition != "nestor":
-        raise ValueError(f"boundary_condition must be 'nestor' or 'three_term', got {boundary_condition!r}")
+        raise ValueError(f"boundary_condition must be 'nestor' or 'three_terms', got {boundary_condition!r}")
 
     ns_arr = _vmec_ns_prefix(inp.ns_array if ns_array is None else ns_array)
     if ns_arr.size == 0:
@@ -1061,7 +1062,7 @@ def solve_file(
     does the same and emits a :class:`RuntimeWarning`, with the documented
     precedence ``CLI flag > Python keyword > file directive > package
     default``; an explicit ``polish_config`` wins over ``polish_fail``.
-    ``boundary_condition`` (``"nestor"`` or ``"three_term"``) overrides the
+    ``boundary_condition`` (``"nestor"`` or ``"three_terms"``) overrides the
     deck's ``!@VMEX BOUNDARY_CONDITION`` for an ``LFREEB = T`` deck (see
     :func:`solve_free_boundary_multigrid`).
 

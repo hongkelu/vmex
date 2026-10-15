@@ -33,6 +33,7 @@ from scipy.sparse.linalg import LinearOperator, gcrotmk
 from solvax import SpluFactorization, block_thomas_factor, block_thomas_solve
 from solvax import gmres as _solvax_gmres
 
+from .loops import map_columns
 from . import implicit as im
 from .device import AUTO, resolve_implicit_device
 from .freeboundary import (
@@ -307,7 +308,7 @@ def _edge_response(cfg: FreeBoundaryImplicitConfig, params, field_parameters,
         return cfg.vacuum_program.bsq_edge(*unflatten(vector), field)
 
     # In batches: one vmap over all ~400 columns needs a 6 GB temporary at ns = 51.
-    columns = jax.lax.map(lambda tangent: jax.jvp(kernel, (flat,), (tangent,))[1],
+    columns = map_columns(lambda tangent: jax.jvp(kernel, (flat,), (tangent,))[1],
                           jnp.eye(flat.size, dtype=flat.dtype), batch_size=_EDGE_RESPONSE_BATCH)
     return jax.lax.stop_gradient((kernel(flat), jnp.moveaxis(columns, 0, -1), flat))
 
@@ -937,9 +938,9 @@ def _edge_probe_columns(edge_values, pullback, lower, diagonal, upper,
         return pack(project(jax.tree.map(
             jnp.subtract, pullback(cotangent)[0], band_t(cotangent)[0])))
 
-    return im.chunk_map(
+    return map_columns(
         column, edge_values,
-        chunk_size=min(chunk, int(edge_values.shape[0])))
+        batch_size=min(chunk, int(edge_values.shape[0])))
 
 
 @functools.partial(jax.jit, static_argnames=("cfg",))
@@ -1317,7 +1318,7 @@ def _anchor_coupling(z, params, field_parameters, frozen, rcon0, zcon0,
         lambda bsq: pack(_projected_residual_lane(
             z, params, field_parameters, frozen, rcon0, zcon0, dof_mask, bsq,
             None, cfg=cfg, formulation="raw")), value)
-    columns = jax.lax.map(force_of_pressure, jnp.moveaxis(jacobian, -1, 0),
+    columns = map_columns(force_of_pressure, jnp.moveaxis(jacobian, -1, 0),
                           batch_size=_EDGE_RESPONSE_BATCH)
     count = columns.shape[0]
 
@@ -1326,7 +1327,7 @@ def _anchor_coupling(z, params, field_parameters, frozen, rcon0, zcon0,
         return ravel_pytree(_vacuum_inputs(state, rt))[0]
 
     _, inputs_t = jax.vjp(inputs, jnp.zeros(shape, row_scale.dtype))
-    rows = jax.lax.map(lambda e: inputs_t(e)[0], jnp.eye(count, dtype=columns.dtype),
+    rows = map_columns(lambda e: inputs_t(e)[0], jnp.eye(count, dtype=columns.dtype),
                        batch_size=_EDGE_RESPONSE_BATCH).reshape(count, -1)
     # Every bulk solve in one block-Thomas sweep: (ns, block, count) right-hand sides.
     scaled = jnp.moveaxis(columns, 0, -1) * row_scale[..., None]

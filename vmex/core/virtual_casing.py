@@ -59,6 +59,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .loops import map_columns
+
 try:  # optional dependency (uwplasma/virtual_casing_jax)
     from virtual_casing_jax import (
         ExteriorFieldConfig,
@@ -98,6 +100,12 @@ except ImportError as _exc:  # pragma: no cover - exercised only when the dep is
 
 #: Vacuum permeability [T m / A] (VMEC2000 ``mu0`` convention).
 MU0 = 4.0e-7 * np.pi
+
+#: Accuracy (decimal digits of the plasma field relative to ``|B|``) the singular patches of the on-surface virtual
+#: casing are planned to.  Its error enters ``B_out . n`` directly, so it must stay an order below the interface
+#: residuals a free boundary reaches (finite beta: 2.4e-4 of ``|B|``, LP QA 2.5 %, 12 x 12): 5 digits.  Measured on
+#: that deck at 8 x 8 (``paper/runs/b23``): 4 digits move ``B.n / |B|`` pointwise by up to 1.4e-4, 5 and 6 agree.
+VC_DIGITS = 5
 
 __all__ = [
     "MU0",
@@ -193,8 +201,8 @@ def _get(wout, name):
 def surface_field_data_from_wout(
     wout,
     *,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -213,6 +221,9 @@ def surface_field_data_from_wout(
     - ``normal`` / ``area_vector`` = ``e_theta x e_phi`` (oriented outward),
 
     all in the package's structure-of-arrays layout ``(3, nphi, ntheta)``.
+    ``nphi`` and ``ntheta`` have no default: the grid that resolves a surface
+    and its field depends on their mode content (see
+    :func:`~vmex.core.freeboundary_vc.interface_grid`).
 
     The construction is validated by ``|B_total . n| / |B|`` ~ 1e-16 on a
     converged equilibrium (the VMEC free-boundary condition), see the module test.
@@ -531,8 +542,8 @@ def surface_field_data_from_state(
     state,
     *,
     runtime=None,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -573,8 +584,8 @@ def _carries_asymmetric_harmonics(state) -> bool:
 def surface_field_data_from_high_order(
     state,
     *,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     use_stellsym: bool = True,
 ) -> "VmecSurfaceFieldData":
     """Build virtual-casing surface data directly from a polished native state.
@@ -658,7 +669,7 @@ def surface_field_data_from_high_order(
 def plan_vc_precision(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = 4,
+    digits: int = VC_DIGITS,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -686,7 +697,7 @@ def plan_vc_precision(
 def plasma_field_on_boundary(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = 4,
+    digits: int = VC_DIGITS,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -989,7 +1000,8 @@ def _nearest_surface_point(series, point, steps: int = 6):
         better = value < best_value
         return (angles, jnp.where(better, angles, best), jnp.where(better, value, best_value)), None
 
-    (_, best, value), _ = jax.lax.scan(step, (start, start, distance2(start)), None, length=steps)
+    # unrolled: the step differentiates, and a rolled loop over derivatives is unsafe on GPU (vmex.core.loops)
+    (_, best, value), _ = jax.lax.scan(step, (start, start, distance2(start)), None, length=steps, unroll=True)
     return best, jnp.sqrt(value)
 
 
@@ -1018,8 +1030,14 @@ def _graded_sources(series, center, distance, nodes):
             jnp.sum(area * B, axis=-1).reshape(-1))
 
 
+#: Targets per step of the graded rule when the caller sets none.  Each target's graded sources are summed in
+#: blocks of 4096 (``layer_derivatives``), so 64 targets hold 64 x 4096 x 27 doubles (57 MB) at order 2.
+#: Measured (A100, 512 targets, gradient in the surface data): 755 ms one target at a time, 95 ms at 64.
+GRADED_TARGET_BATCH = 64
+
+
 def _graded_target_batch_size(value):
-    """Validate a static target batch; None retains the serial map."""
+    """Validate a static target batch; None means :data:`GRADED_TARGET_BATCH`."""
     if value is None:
         return None
     try:
@@ -1041,8 +1059,8 @@ def _graded_field(series, points, order: int, nodes, *, target_batch_size=None):
         sources = _graded_sources(series, center, distance, nodes)
         return tuple(v[0] for v in layer_derivatives(point[None], *sources, order=int(order)))
 
-    return jax.lax.map(one, jnp.asarray(points),
-                       batch_size=_graded_target_batch_size(target_batch_size))
+    # differentiated in the surface data: a batch axis in the loop body (vmex.core.loops)
+    return map_columns(one, jnp.asarray(points), batch_size=_graded_target_batch_size(target_batch_size) or GRADED_TARGET_BATCH)
 
 
 def graded_plasma_field(surface_data, points, *, order: int = 0, nodes=GRADED_NODES,
@@ -1072,7 +1090,7 @@ def graded_plasma_field(surface_data, points, *, order: int = 0, nodes=GRADED_NO
     more ``3`` axis per order.  Traceable and differentiable in the points and
     the surface data; the grading centre is held fixed under differentiation.
     ``target_batch_size`` optionally evaluates that many target rules together;
-    ``None`` keeps the serial, memory-bounded default. Larger batches increase
+    ``None`` uses :data:`GRADED_TARGET_BATCH`, memory-bounded. Larger batches increase
     the working set; they change scheduling, not the quadrature or its accuracy.
     """
     _require_vcj()
@@ -1175,7 +1193,7 @@ class PlasmaVacuumInterface:
         surface_data: "VmecSurfaceFieldData",
         *,
         p_edge: float = 0.0,
-        digits: int = 4,
+        digits: int = VC_DIGITS,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,
@@ -1221,11 +1239,11 @@ class PlasmaVacuumInterface:
         cls,
         wout,
         *,
-        nphi: int = 32,
-        ntheta: int = 32,
+        nphi: int,
+        ntheta: int,
         s_index: int = -1,
         p_edge: float = 0.0,
-        digits: int = 4,
+        digits: int = VC_DIGITS,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,

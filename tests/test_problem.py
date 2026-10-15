@@ -644,19 +644,8 @@ def test_vary_phiedge_requires_implicit_derivatives():
 
 def test_vary_phiedge_appends_a_relative_phiedge_dof():
     """vary_phiedge: a named trailing dof, round-tripped through the input,
-    whose implicit Jacobian column matches central differences of re-solves.
-
-    Jitted, as ``_module_jit_enabled`` does (the conftest disables jit globally,
-    and a thread-local ``jax.disable_jit(False)`` misses the solver's threads):
-    three solves take seconds, not six minutes."""
-    import jax
-
-    previous = bool(jax.config.jax_disable_jit)
-    jax.config.update("jax_disable_jit", False)
-    try:
-        _check_vary_phiedge()
-    finally:
-        jax.config.update("jax_disable_jit", previous)
+    whose implicit Jacobian column matches central differences of re-solves."""
+    _check_vary_phiedge()
 
 
 def _check_vary_phiedge():

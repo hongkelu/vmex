@@ -20,7 +20,6 @@ from vmex.core import optimize as opt  # noqa: E402
 from vmex.core.input import VmecInput  # noqa: E402
 from vmex.core.statephysics import _iotas_half  # noqa: E402
 
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")  # full solves: run jitted
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 KNOTS = np.r_[0.0, np.geomspace(1e-6, 1.0, 60)]
 

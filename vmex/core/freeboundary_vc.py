@@ -530,6 +530,25 @@ def _surface_data(fixed, cfg, state, params, nphi, ntheta):
     return vc.VmecSurfaceFieldData(**values, **static)
 
 
+def _map_columns(function, columns):
+    """``jax.lax.map(function, columns)`` one column at a time, on a loop body with a batch axis.
+
+    Not a bare (unbatched) ``lax.map``: XLA:GPU miscompiles that while-loop body here (jaxlib 0.11.2, CUDA;
+    LP QA beta 2.5 % 8 x 8: the plain-moments Jacobian columns 55-84 % off the resolved differences, the tangent
+    of ``B_out . n`` wrong while those of ``B_out`` and ``n`` are right; exact on CPU, eagerly, unrolled and with
+    a batch axis -- paper/runs/speed/p0/scan_repro*.py).  One column at a time is also the fastest form measured:
+    a vectorized chunk of columns multiplies the interface field's temporaries (9.6 GiB at LP QA 12 x 12 for 8)
+    for no speed, since one column already fills the device.  The batch axis is a one-column ``vmap`` inside
+    the loop (``lax.map``'s own ``batch_size`` reshapes the outputs and fails on zero-size leaves, such as an
+    empty profile parameter's cotangent).
+    """
+    def batched(column):
+        out = jax.vmap(function)(jax.tree.map(lambda a: a[None], column))
+        return jax.tree.map(lambda a: a[0], out)
+
+    return jax.lax.map(batched, columns)
+
+
 def _certified(responses, report):
     """``responses`` if every column's linear solve met its certificate, else a ``RuntimeError``.
 
@@ -864,12 +883,8 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
-            # batch_size=1, not a bare (unbatched) map: XLA:GPU miscompiles the bare while-loop body of these
-            # columns (jaxlib 0.11.2, CUDA; LP QA beta 2.5 % 8 x 8: the plain-moments columns 55-84 % off the
-            # resolved differences, B_out . n's tangent wrong while B_out's and n's are right; correct on CPU,
-            # eagerly, unrolled, and with a batch axis).  One column at a time either way.
-            return jax.lax.map(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                               (dz_batch, params_batch), batch_size=1)
+            return _map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
+                                (dz_batch, params_batch))
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""
@@ -918,7 +933,7 @@ class ThreeTermsFreeBoundaryModel:
                     state_bar, params_bar = vjp(c)
                     return jax.tree.map(jnp.add, params_bar, back(state_bar)[0])
 
-                parts.append(jax.lax.map(row, c, batch_size=1))  # not a bare while-loop body: see ``push``
+                parts.append(_map_columns(row, c))
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback

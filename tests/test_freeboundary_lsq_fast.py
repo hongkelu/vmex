@@ -17,6 +17,8 @@ jax = pytest.importorskip("jax")
 jax.config.update("jax_enable_x64", True)
 
 
+import jax.numpy as jnp  # noqa: E402
+
 from vmex.core import freeboundary_lsq as lsq  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 
@@ -83,3 +85,77 @@ def test_entry_rejects_what_it_does_not_support():
         lsq.solve_free_boundary_least_squares(replace(inp, lasym=True), external_field=object())
     with pytest.raises(TypeError, match="callable"):
         lsq.LeastSquaresFreeBoundaryProblem.from_loss(inp, None, np.zeros(1), field_from_parameters=lambda x: x)
+
+
+class _ToyModel(lsq.LeastSquaresFreeBoundaryModel):
+    """The trust-region Newton of :class:`LeastSquaresFreeBoundaryModel` on a cheap nonlinear least squares:
+    extended Rosenbrock rows and one nonlinear equality row (last), no equilibrium.  ``fail_at`` makes the
+    evaluation at boundaries farther than it from the start fail (no equilibrium), as trials can."""
+
+    def __init__(self, n=4, fail_at=np.inf):
+        self.x0, self.x_scale, self.n_boundary, self.n_constraint_rows = np.zeros(n), np.ones(n), n, 1
+        self.cfg = type("cfg", (), {"ftol": 1e-24})()
+        self._major_radius, self.hessian_chunk, self.certificate_extra = 1.0, 2, None
+        self.require_converged, self.fail_at = False, fail_at
+
+        def rows(x):
+            body = [10.0 * (x[i + 1] - x[i] ** 2) for i in range(n - 1)] + [1.0 - x[i] for i in range(n - 1)]
+            return jnp.stack(body + [x[0] ** 2 + x[-1] - 0.5])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+
+    def evaluate(self, x, params, field, seed=None, tight=False):
+        if np.max(np.abs(x - self.x0)) > self.fail_at:
+            return None
+        return np.asarray(self.rows_fn(jnp.asarray(x))), (np.array(x), None, np.array(x), None)
+
+    def _rows(self, state, params, field):
+        return np.asarray(self.rows_fn(jnp.asarray(state)))
+
+    def linearize(self, x, aux, field, extra=None):
+        return np.asarray(self.jac_fn(jnp.asarray(x))), None, None, aux
+
+    def gradient(self, x, aux, field, shift=None):
+        r = np.asarray(self.rows_fn(jnp.asarray(x)))
+        return np.asarray(self.jac_fn(jnp.asarray(x))).T @ (r if shift is None else r + shift)
+
+    def second_order(self, x, aux, field, extra=None, columns=True):
+        J, r = self.linearize(x, aux, field)[0], self._rows(x, None, None)
+        k, S = r.size - 1, np.asarray(self.x_scale)
+        nu = self._reduced(x, S * (J[:k].T @ r[:k]), J[k:] * S[None])[3]
+        shift = np.r_[np.zeros(k), nu - r[k:]]
+        H = np.asarray(self.hess_fn(jnp.asarray(x), jnp.asarray(shift)))
+        out = dict(J=J, r=r, g=J.T @ (r + shift), g_adjoint=J.T @ (r + shift), aux=aux, shift=shift,
+                   asymmetry=0.0, adjoint=0.0, seconds={})
+        if columns:
+            out.update(H=H, C=np.zeros((x.size, 0)))
+        else:
+            out["hvp"] = lambda V: np.atleast_2d(V) @ H
+        return out
+
+
+def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
+    """The solve's step logic (trust region with bisection, second-order corrections, failed trials, the
+    restoration of the constraint row, Krylov and full-column exact models) on extended Rosenbrock rows with a
+    nonlinear equality row: it converges to the constrained minimum (stationary on the constraint)."""
+    start = np.array([-1.2, 1.0, -0.5, 0.3])
+    nearby = np.asarray(_ToyModel().jac_fn(jnp.asarray(start + 0.1)))  # a warm start's (stale) Jacobian
+    for model, kw in ((_ToyModel(), {}), (_ToyModel(), dict(jacobian=nearby)), (_ToyModel(fail_at=2.0), {})):
+        out = model._newton(None, None, x0=start, max_iter=200, ftol=1e-16, verbose=1, **kw)
+        assert out["converged"], out["status"]
+        x = out["x"]
+        r = np.asarray(model.rows_fn(jnp.asarray(x)))
+        J = np.asarray(model.jac_fn(jnp.asarray(x)))
+        assert abs(r[-1]) <= np.sqrt(model.cfg.ftol) * 10
+        g = J[:-1].T @ r[:-1]  # stationary on the constraint: g in the span of the constraint's gradient
+        c = J[-1] / np.linalg.norm(J[-1])
+        assert np.linalg.norm(g - (g @ c) * c) <= 1e-6 * max(1.0, np.linalg.norm(g))
+    model = _ToyModel()
+    model.certificate_extra = lambda params: None  # full-column certificates
+    out = model._newton(None, None, x0=start, max_iter=200)
+    assert out["converged"], out["status"]
+    with pytest.raises(RuntimeError, match="dependent"):
+        model._reduced(np.zeros(4), np.zeros(4), np.ones((2, 4)))
+    assert model._reduced(np.zeros(4), np.ones(4), None)[0].shape == (4, 4)

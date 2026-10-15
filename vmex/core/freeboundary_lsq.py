@@ -664,12 +664,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 x_try, got, reached = restore(x_try, self.evaluate(x_try, params, field, tight=True), so["J"])
                 return x_try, (got if reached else None)
 
-            accepted = False
+            accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
             for attempt in range(12):
                 step, predicted = model_step(radius)
                 x_new, got = trial(x + S * step)
                 nfev += 1
                 cost_new = np.inf if got is None else cost_of(got[0])
+                evaluated = evaluated or got is not None
                 rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
                 length = np.linalg.norm(step)
                 if verbose:
@@ -721,7 +722,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise
-                converged = bool(w[0] > 0)
+                converged = bool(w[0] > 0) and evaluated  # trials without equilibria are no noise floor
                 status = ("converged: noise floor" if converged else "stalled: no acceptable step") + \
                     f" (predicted gain {0.5 * decrement / cost:.1e} of the cost)"
                 break

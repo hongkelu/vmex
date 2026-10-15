@@ -130,6 +130,28 @@ def test_map_columns_matches_the_unbatched_map_and_differences(batch_size):
     np.testing.assert_allclose(jac, fd, rtol=1e-6, atol=1e-8)
 
 
+def test_map_columns_never_compiles_a_batch_of_one(monkeypatch):
+    """Every vmapped body sees a batch of at least two, padding included (one column, uneven tails)."""
+    original, batches = jax.vmap, []
+
+    def spy(function):
+        def mapped(xs):
+            batches.append({int(jnp.shape(a)[0]) for a in jax.tree.leaves(xs)})
+            return original(function)(xs)
+        return mapped
+
+    monkeypatch.setattr(jax, "vmap", spy)
+    for count, batch_size in ((1, 1), (1, None), (2, 1), (5, 1), (7, 3), (9, 4), (49, 8), (4, None)):
+        batches.clear()
+        out = jax.jit(lambda xs, b=batch_size: map_columns(lambda c: 2.0 * c, xs, batch_size=b))(
+            jnp.arange(float(count)))
+        np.testing.assert_array_equal(out, 2.0 * np.arange(count))
+        sizes = set().union(*batches)
+        assert sizes and min(sizes) >= 2, (count, batch_size, sizes)
+        if batch_size is not None and count > 1:
+            assert max(sizes) <= max(2, batch_size), (count, batch_size, sizes)
+
+
 def test_map_columns_pytrees_zero_size_leaves_and_errors():
     columns = (jnp.arange(5.0), jnp.zeros((5, 0)))
     out = map_columns(lambda c: {"a": 2.0 * c[0], "empty": c[1]}, columns, batch_size=2)

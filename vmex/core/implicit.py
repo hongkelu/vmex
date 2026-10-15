@@ -2861,7 +2861,7 @@ def _raw_block_system(
         # (A100, LP QA 8 x 8, ns 51): 874 ms one row at a time, 243 ms at 8 rows.
         axis_rows = jnp.arange(min(2, ns))
         axis_jacobians = map_columns(
-            lambda row: row_jacobian(row, axis_closure=True), axis_rows)
+            lambda row: row_jacobian(row, axis_closure=True), axis_rows, batch_size=None)
         ordinary_rows = jnp.arange(2, ns)
         ordinary_jacobians = map_columns(
             lambda row: row_jacobian(row, axis_closure=False), ordinary_rows,

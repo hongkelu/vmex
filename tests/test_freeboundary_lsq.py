@@ -156,6 +156,9 @@ def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
     jac = problem.constraint_jac(x0)
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]
-        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        values = []
+        for s in (1, -1):  # cold trials (from the deck, not the anchor's prediction): deterministic answers
+            problem._anchor = {}
+            values.append(np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)])
         fd = (values[0] - values[1]) / (2 * h)
-        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=5e-3, atol=1e-9 * max(1.0, abs(value)))
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-3, atol=1e-9 * max(1.0, abs(value)))

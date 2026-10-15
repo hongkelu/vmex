@@ -45,8 +45,9 @@ def _differentiates(node) -> bool:
 
 
 def _bare_loops(path: Path) -> list[str]:
-    """``file:line`` of every bare ``lax.map``, and of every ``scan``/``fori_loop``/``while_loop`` whose
-    body (a lambda or a function defined in the same module) differentiates without being unrolled."""
+    """``file:line`` of every ``lax.map`` / ``chunk_map`` (maps go through ``map_columns``: a batch of one,
+    bare or as an uneven tail, is the miscompiled program), and of every ``scan``/``fori_loop``/``while_loop``
+    whose body (a lambda or a function defined in the same module) differentiates without being unrolled."""
     tree = ast.parse(path.read_text(), filename=str(path))
     defs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     found = []
@@ -56,8 +57,8 @@ def _bare_loops(path: Path) -> list[str]:
         name = _dotted(node.func)
         keywords = {k.arg for k in node.keywords}
         where = f"{path.relative_to(ROOT)}:{node.lineno}"
-        if name.endswith("lax.map") and "batch_size" not in keywords:
-            found.append(f"{where} bare lax.map")
+        if name.endswith("lax.map") or name.split(".")[-1] == "chunk_map":
+            found.append(f"{where} {name.split('.')[-1]} (use map_columns)")
         elif name.split(".")[-1] in ("scan", "fori_loop", "while_loop") and "lax" in name and "unroll" not in keywords:
             bodies = [a for a in node.args if isinstance(a, ast.Lambda)]
             bodies += [defs[a.id] for a in node.args if isinstance(a, ast.Name) and a.id in defs]
@@ -67,7 +68,7 @@ def _bare_loops(path: Path) -> list[str]:
 
 
 def test_no_bare_loop_over_derivatives_in_vmex():
-    """Every loop over derivative computations goes through ``map_columns`` (or a batched/unrolled form)."""
+    """Every map goes through ``map_columns``; no rolled scan/fori/while body differentiates."""
     found = [hit for path in sorted((ROOT / "vmex").rglob("*.py")) if path != _HELPER for hit in _bare_loops(path)]
     assert not found, "bare loops (XLA:GPU miscompile, see vmex.core.loops):\n" + "\n".join(found)
 
@@ -81,17 +82,20 @@ def test_the_lint_sees_the_patterns(tmp_path):
         "def body(c, x):\n    return c, jax.jvp(f, (x,), (x,))[1]\n"
         "a = jax.lax.map(f, xs)\n"
         "b = lax.map(f, xs, batch_size=4)\n"
+        "b2 = map_columns(f, xs, batch_size=4)\n"
         "c = jax.lax.scan(body, 0, xs)\n"
         "d = jax.lax.scan(body, 0, xs, unroll=True)\n"
         "e = jax.lax.fori_loop(0, 3, lambda i, v: jax.grad(g)(v), v0)\n"
-        "f2 = jax.lax.scan(lambda c, x: (c + x, None), 0, xs)\n")
+        "f2 = jax.lax.scan(lambda c, x: (c + x, None), 0, xs)\n"
+        "g2 = im.chunk_map(f, xs, chunk_size=8)\n")
     global ROOT
     saved, ROOT = ROOT, tmp_path
     try:
         hits = _bare_loops(source)
     finally:
         ROOT = saved
-    assert [h.split(" ", 1)[0] for h in hits] == ["vmex/probe.py:5", "vmex/probe.py:7", "vmex/probe.py:9"], hits
+    assert [h.split(" ", 1)[0] for h in hits] == [
+        "vmex/probe.py:5", "vmex/probe.py:6", "vmex/probe.py:8", "vmex/probe.py:10", "vmex/probe.py:12"], hits
 
 
 def _field(x, p):

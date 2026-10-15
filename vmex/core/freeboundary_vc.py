@@ -466,7 +466,7 @@ class ThreeTermFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
-            return jax.lax.map(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
+            return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
                                (dz_batch, params_batch), batch_size=self.chunk)
 
         def predict(state, mask, dz_batch, dx, params):

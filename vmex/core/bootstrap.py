@@ -102,6 +102,9 @@ ELEMENTARY_CHARGE = 1.602176634e-19
 
 #: Gauss-Legendre order for the trapped-fraction lambda quadrature, shared by
 #: every entry point so the geometry lanes and the objective agree by default.
+#: Converged: the Redl current derivative (:func:`redl_current_derivative`) on
+#: the half mesh is within 8e-14 (qa4-beta) / 4e-14 (qa6) of 256 nodes, relative
+#: to its largest value (32 nodes: 2e-11 / 1e-11; 8 x 8, ns 51, 2.5 % beta).
 N_LAMBDA = 64
 
 
@@ -162,13 +165,18 @@ jax.tree_util.register_dataclass(
 # ===========================================================================
 
 
-def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) -> Array:
+def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8) -> Array:
     """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
 
     ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant
     from the grid extremum find the continuous one; its location is held fixed when differentiating, so
     the derivative is that of the interpolant's extremum (envelope theorem) -- continuous where the
     grid extremum jumps between points, unlike a hard grid ``max``.
+
+    ``newton_steps``: Newton converges quadratically from the grid extremum; the Redl current derivative it
+    feeds moved (relative to its largest value) by 6e-6 / 4e-9 / 4e-16 after 1 / 2 / 4 steps on qa4-beta and
+    2e-4 / 8e-6 / 3e-13 on qa6 (8 x 8, ns 51, against 16 steps), so 8 steps (8e-16) reach round-off with margin;
+    a converged step is a no-op.
     """
     nsurf, nt, nz = modB.shape
     F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
@@ -792,6 +800,23 @@ def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlG
     return j_dot_B_redl(profiles, near, helicity_n)[0] / jnp.asarray(j_dot_b)[0]
 
 
+#: Gauss-Legendre nodes of :func:`near_axis_redl_mean` in ``t = x^(1/4)``: within 2e-12 of 1024 nodes in the
+#: banana regime (16 nodes: 1e-8), 1e-15 when collisional.
+N_AXIS = 32
+
+
+def near_axis_redl_mean(profiles: KineticProfiles, helicity_n: int, geom: RedlGeometry, j_dot_b,
+                        n_nodes: int = N_AXIS) -> Array:
+    """The mean of :func:`near_axis_redl_ratio` over ``0 < s < s_1``: ``int_0^1 ratio(x) dx``.
+
+    Gauss-Legendre in ``t = x^(1/4)`` (``dx = 4 t^3 dt``), where the banana-regime ``x^(1/4)`` is smooth.
+    """
+    nodes, weights = np.polynomial.legendre.leggauss(int(n_nodes))
+    t = 0.5 * (nodes + 1.0)
+    ratio = near_axis_redl_ratio(profiles, helicity_n, geom, j_dot_b, jnp.asarray(t**4))
+    return jnp.sum(jnp.asarray(0.5 * weights * 4.0 * t**3) * ratio)
+
+
 def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tuple[Array, Array]:
     """``(s, dI/ds)`` on the half mesh that makes ``<J.B>`` equal ``j_dot_b`` [A T/m^2] there.
 
@@ -815,54 +840,85 @@ class HalfMeshCurrent:
     """A current profile with a value on every half-mesh surface, solved to be Redl's bootstrap current.
 
     ``I'(s)`` is a line-segment profile (``line_segment_ip``) with a knot on every half-mesh surface
-    ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each surface
-    has the row ``weight (I'(s_j) - I'_Redl(s_j)) / I'_ref / sqrt(ns - 1)``
-    (:func:`redl_current_derivative`; ``I'_ref`` the largest starting value): a square block, so the
-    current is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with
-    the boundary (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
-    ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
+    ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each knot has the row
+    ``sqrt(w_j) (I'(s_j) - I'_Redl(s_j)) / unit`` (:func:`redl_current_derivative`), a square block, so the current
+    is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with the boundary
+    (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with ``profile="half_mesh"`` by
+    fixed-point iteration at a fixed boundary.
 
-    ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped
-    fraction -- and inside ``s_1`` knots at ``s_1 / 64, s_1 / 16, s_1 / 4`` carry Redl's current on the
-    near-axis continuation of the ``s_1`` geometry, ``I'_Redl(s_1)`` times :func:`near_axis_redl_ratio`
-    (``s^(1/4)`` in the banana regime, decaying where the collisionality diverges): unknowns with a row
-    each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
-    CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
-    its own current's derivative.  ``weight`` is the model's ``bootstrap_weight``.
+    The rows' scale is the interface rows' own, not a weight.  ``w_j`` are the knots' trapezoid weights in the
+    profile's integral (``1 / (ns - 1)`` on the half mesh), so the block's squared norm is the integral over ``s`` of
+    ``((I' - I'_Redl) / unit)^2``, the same at any ``ns``; ``unit = L B0 / mu0`` (:meth:`set_unit`, by the model from
+    its seed boundary: ``L`` the mean poloidal circumference, ``B0`` the area-RMS ``|B|`` that also scales the
+    interface rows) is the toroidal current whose poloidal field on the boundary is ``B0``.  A current error is thus
+    measured by the field it carries over ``|B|``, as ``B . n / B0`` and the net-current row ``(G - G_coil) /
+    G_coil`` are.  The square Newton solve of the free boundary does not depend on the scale (its root is where every
+    row vanishes).  The former rows ``100 (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (``I'_ref`` the deck's largest
+    ``I'``) weighed the current ~100 times the interface rows, so the Newton Jacobian's conditioning and the merit
+    function hung on a tuned number and on the starting current (qa4-beta 8 x 8: scaled Jacobian cond 1.4e7, cold
+    solve stalled; in these units 5.3e4, the boundary block's own, and 7 Newton evaluations).
+
+    Inside the first surface VMEC sees the current only through the enclosed current at ``s_1`` (its current
+    profile is sampled at the half-mesh surfaces), so the first segment carries exactly the enclosed current of
+    Redl's current on the near-axis continuation of the ``s_1`` geometry: ``int_0^s1 I' ds = s_1 I'_Redl(s_1)
+    R``, with ``R`` the mean of :func:`near_axis_redl_ratio` over ``0 < s < s_1`` (:func:`near_axis_redl_mean`;
+    ``R = 4/5`` for the banana-regime ``s^(1/4)``, less where the collisionality diverges towards the axis).
+    The knot at ``s = 0`` is the unknown that does so, with the row ``I'(0) - (2 R - 1) I'_Redl(s_1)``: its
+    value is that of the straight segment with this integral, not the current density on the axis (which
+    vanishes with the trapped fraction).  Fixed knots inside ``s_1`` instead (formerly at ``s_1 / 64, s_1 / 16,
+    s_1 / 4``) left the piecewise-linear integral 4.1 % (qa4-beta) and 4.6 % (qa6) below the model's (8 x 8,
+    ns 51, 2.5 % beta; there ``R`` = 0.767 and 0.751, and the first segment carries 0.35 % of CURTOR).  The edge knot continues
+    the last two linearly (it only enters CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input
+    on this profile, starting from its own current (``x0``, the initial condition only).
+
+    The knot count ``ns + 1`` is not bound by VMEC2000's ``ndatafmax`` (101): VMEX's profiles have any length.
+    Only an INDATA namelist or a WOUT holds at most 101 knots; writing one refits the profile to a subset of its
+    knots, with a warning (:func:`~vmex.core.input.fit_aux_knots`).
     """
 
-    SUB = (1 / 64, 1 / 16, 1 / 4)
-
-    def __init__(self, deck, profiles, helicity_n, weight=1.0):
+    def __init__(self, deck, profiles, helicity_n):
         from .profiles import current
-        from .wout import _NDFMAX
 
         if int(deck.ncurr) != 1:
             raise ValueError("a bootstrap current needs a prescribed current profile (ncurr = 1)")
         ns = int(np.asarray(deck.ns_array)[-1])
-        if ns - 1 + len(self.SUB) + 2 > _NDFMAX:
-            raise ValueError("a bootstrap current has a knot per half-mesh surface: "
-                             f"ns <= {_NDFMAX - len(self.SUB) - 1}")
         s_half = (np.arange(1, ns) - 0.5) / (ns - 1)
-        self.knots = np.r_[0.0, s_half[0] * np.asarray(self.SUB), s_half, 1.0]
+        self.knots = np.r_[0.0, s_half, 1.0]
         self.current = functools.partial(current, "line_segment_ip", deck.ac, self.knots)  # (values, s) -> I(s)
         enclosed = functools.partial(current, deck.pcurr_type, deck.ac, deck.ac_aux_s, deck.ac_aux_f,
                                      bloat=deck.bloat)
         edge = float(enclosed(jnp.asarray(1.0)))
-        slope = np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[1:-1])))
+        slope = np.array(jax.vmap(jax.grad(enclosed))(jnp.asarray(self.knots[:-1])))
+        # the axis knot: the straight first segment with the deck's enclosed current at s_1
+        slope[0] = 2.0 * float(enclosed(jnp.asarray(s_half[0]))) / s_half[0] - slope[1]
         self.x0 = float(deck.curtor) / edge * slope if edge else np.zeros(slope.size)  # the deck's current, in A
-        self.ref = float(np.max(np.abs(self.x0))) or 1e4
-        self.x_scale = np.full(slope.size, self.ref)
-        self.weight = float(weight) / np.sqrt(ns - 1)
+        # d CURTOR / d v: the unknown knots' trapezoid weights (CURTOR is linear in v), the edge value included
+        self.weights = np.asarray(jax.grad(lambda v: self.current(self.values(v), 1.0))(jnp.ones(slope.size)))
+        self.unit = None
         self.profiles, self.helicity_n = profiles, int(helicity_n)
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
         self.deck = dataclasses.replace(deck, pcurr_type="line_segment_ip", ac_aux_s=self.knots,
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
 
+    def set_unit(self, length, field):
+        """Measure the current in ``unit = length field / mu0`` [A]: ``length`` the boundary's mean poloidal
+        circumference [m] and ``field`` its RMS ``|B|`` [T].  Also the coordinates' scale ``x_scale``."""
+        self.unit = float(length) * float(field) / MU0
+        if not (np.isfinite(self.unit) and self.unit > 0):
+            raise ValueError(f"the current unit must be positive and finite, got {self.unit}")
+
+    @property
+    def x_scale(self):
+        """The coordinates' scale: :attr:`unit` (set by :meth:`set_unit`) on every knot."""
+        if self.unit is None:
+            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
+        return np.full(self.x0.size, self.unit)
+
     def values(self, v):
-        """Every knot value from the unknowns ``v`` (the sub-axis knots', then the half-mesh ones)."""
+        """Every knot value from the unknowns ``v`` (the axis knot's, then the half-mesh ones)."""
         v = jnp.asarray(v)
-        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (2 * v[-1] - v[-2])[None]])
+        # the edge value: the line through the last two half-mesh knots (1 - 3h/2, 1 - h/2) at s = 1
+        return jnp.concatenate([v, (1.5 * v[-1] - 0.5 * v[-2])[None]])
 
     def deck_with(self, deck, v):
         """``deck`` with the knot values ``v``."""
@@ -875,19 +931,21 @@ class HalfMeshCurrent:
         return dataclasses.replace(params, ac_aux_f=values, curtor=self.current(values, 1.0))
 
     def target(self, state, runtime):
-        """``I'_Redl`` at the sub-axis knots and the half-mesh surfaces (traceable)."""
+        """The axis knot's ``(2 R - 1) I'_Redl(s_1)``, then ``I'_Redl`` on the half-mesh surfaces (traceable)."""
         _, target, geom, jr = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime)
-        ratio = near_axis_redl_ratio(self.profiles, self.helicity_n, geom, jr, jnp.asarray(self.SUB))
-        return jnp.concatenate([target[0] * ratio, target])
+        mean = near_axis_redl_mean(self.profiles, self.helicity_n, geom, jr)
+        return jnp.concatenate([((2.0 * mean - 1.0) * target[0])[None], target])
 
     def mismatch(self, state, runtime, params):
-        """``(I' - I'_Redl, I'_Redl)`` at the sub-axis knots and the half-mesh surfaces."""
+        """``(I' - I'_Redl, I'_Redl)`` at the axis knot and the half-mesh surfaces (:meth:`target`)."""
         target = self.target(state, runtime)
-        return params.ac_aux_f[1 : 1 + target.size] - target, target
+        return params.ac_aux_f[: target.size] - target, target
 
     def rows(self, state, runtime, params):
-        """The self-consistency rows ``weight (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (traceable)."""
-        return self.weight * self.mismatch(state, runtime, params)[0] / self.ref
+        """The self-consistency rows ``sqrt(w_j) (I' - I'_Redl) / unit`` (traceable)."""
+        if self.unit is None:
+            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
+        return jnp.asarray(np.sqrt(self.weights) / self.unit) * self.mismatch(state, runtime, params)[0]
 
 
 def vmec_j_dot_B(

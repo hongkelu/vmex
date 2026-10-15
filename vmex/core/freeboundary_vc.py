@@ -23,16 +23,24 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
 - vacuum (no pressure, no plasma current): ``B_out = B_coil`` is an explicit function of the boundary, and the
   rows are the stationarity of the area-weighted mean square of ``B_coil . n`` in ``h``
   (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
-  Jacobian.  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
+  Jacobian.  ``h`` also has the poloidal harmonic ``m = mpol``, where the B.n that the top modes leave lies
+  (known-answer benchmark, 8 x 8: field lines 0.34 -> 0.10 mm).  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
   uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
-- finite beta: the same stationarity with the plasma's own response to ``h`` left out of the test functions:
-  a normal displacement ``h`` changes ``B . N`` by ``-|N| B_t . grad h`` (``N`` the area normal, ``B_t`` the
-  tangential field), so the rows are the area-weighted moments of ``B_out . n`` against ``B_out . grad
-  cos(m theta - n nfp phi)``, one per boundary mode (the exact least-squares rows would need the equilibrium's
-  Hessian).  The boundary keeps two modes fewer than the interior (``_BOUNDARY_MODE_GAP``: the interior's edge
-  field is least accurate in its top modes).  LP QA at 2.5 % beta, 12 x 12, evaluated by a 16-mode re-solve:
-  B.n / pressure jump / sheet current 2.8e-4 / 9.9e-5 / 2.8e-4, against 4.1e-4 / 1.1e-4 / 4.1e-4 with plain
-  sine moments of ``B_out . n``.
+- finite beta: Petrov-Galerkin rows ``R0 T0^T r = 0`` for the pointwise residual ``r = sqrt(w) B_out . n /
+  |B_in|`` (``w`` the area weights, ``B_out`` coils plus virtual casing), with the test functions ``T0`` the exact
+  response of the DECK's ``r`` to each boundary coordinate but ``(0, 0)``, the plasma's own response included
+  (:meth:`ThreeTermsFreeBoundaryModel._deck_response`; the coil field and its gradient at the deck's points
+  enter them, so their dependence on the coils is explicit).  Test functions that leave the plasma response out
+  (the moments of ``B_out . n`` against ``B_out . grad cos(m theta - n nfp phi)``, the first variation of the
+  mean square of ``B . n`` with the field frozen) are weakest on the near-resonant modes, where the plasma
+  responds most, and left B.n there: LP QA at 2.5 % beta, 12 x 12, ns 101, evaluated by a 16-mode ns-101
+  re-solve, B.n / pressure jump / sheet current 2.82e-4 / 2.5e-5 / 2.85e-4 ((4,1) and (5,1) harmonics 1.1e-4 and
+  0.9e-4) against 1.11e-4 / 1.7e-5 / 1.10e-4 with the deck's response, within 0.17 mm of the least-squares
+  boundary (1.25e-4); a cold solve from the deck 330 s against 815 s.  Test functions taken at the solution
+  itself would make the rows the exact least squares, whose design derivatives need the second derivatives
+  of the equilibrium; the deck's are fixed, so the rows' derivatives are first derivatives (coil direction:
+  the implicit derivative matches central differences to 5e-5).  The boundary keeps two modes fewer than the
+  interior (``_BOUNDARY_MODE_GAP``: the interior's edge field is least accurate in its top modes).
 
 Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
 pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
@@ -66,6 +74,7 @@ The names keep ``three_terms`` (the three interface conditions above) for compat
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 import hashlib
 import time
 from typing import Any
@@ -94,6 +103,22 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
+
+
+@dataclass(frozen=True)
+class _DeckField:
+    """An external field with the deck's response data (:meth:`ThreeTermsFreeBoundaryModel._deck_response`).
+
+    The finite-beta rows' test functions combine the field with these deck arrays; they travel with the field as
+    one pytree argument of the compiled rows, not as constants of the programs
+    (:meth:`ThreeTermsFreeBoundaryModel.attach`).
+    """
+
+    field: Any
+    deck: Any
+
+
+jax.tree_util.register_dataclass(_DeckField, data_fields=["field", "deck"], meta_fields=[])
 
 
 def _fingerprint(*trees) -> str:
@@ -227,20 +252,20 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
 _MAP_GRID_RTOL = float(np.sqrt(np.finfo(float).eps))
 
 
-def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None):
+def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None, extend=False):
     """:func:`_normal_displacement_map_on` on a grid that resolves it: from four points per boundary harmonic in
     each direction (``4 mpol`` poloidal, ``4 ntor + 4`` per field period), doubled until a doubling changes the map
     by less than ``_MAP_GRID_RTOL`` of its largest entry.  The displacement times the direction field
     ``g = n / (n_R^2 + n_Z^2)`` is not band-limited, so the fit depends on the grid until it is resolved.
     ``ntheta, nzeta`` fix the grid instead (no convergence check)."""
     if ntheta is not None and nzeta is not None:
-        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction)
+        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction, extend)
     ntor, mpol = (np.shape(inp.rbc)[0] - 1) // 2, np.shape(inp.rbc)[1]
     nt, nz = 4 * mpol, 4 * ntor + 4
-    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
     while True:
         nt, nz = 2 * nt, 2 * nz
-        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
         change = np.max(np.abs(finer[0] - out[0])) / np.max(np.abs(finer[0]))
         out = finer
         if change <= _MAP_GRID_RTOL:
@@ -250,15 +275,23 @@ def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, 
                              f"{nt} x {nz})")
 
 
-def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
+def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction, extend=False):
     """Boundary coordinates as a normal displacement of ``inp``'s surface: ``(M, modes, x_scale)``.
 
     ``h(theta, zeta) = sum h_mn cos(m theta - n nfp zeta)`` over ``modes`` (those of
-    :func:`~vmex.core.optimize.pack_boundary`, then ``(0, 0)``) moves each boundary point along the surface
-    normal, within its ``phi = zeta`` plane: ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit
-    normal, so its normal displacement is ``h``.  Its truncated Fourier fit is linear in ``h``: the packed
-    boundary coordinates are ``x0 + M h``.  Tangential moves (relabellings ``theta -> theta + delta(theta,
-    zeta)``, which no interface condition sees) are thereby absent from the unknowns.
+    :func:`~vmex.core.optimize.pack_boundary`, with ``extend`` the next poloidal harmonic ``m_top + 1`` on the
+    same toroidal modes, then ``(0, 0)``) moves each boundary point along the surface normal, within its ``phi = zeta`` plane:
+    ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit normal, so its normal displacement is
+    ``h``, or along ``direction``.  Its truncated Fourier fit is linear in ``h``: the packed boundary
+    coordinates are ``x0 + M h``.
+
+    The harmonic ``m_top + 1`` has no coefficient of its own: through the poloidal variation of the transport
+    direction it moves the top coefficients ``m_top``.  Without it the ``B . n`` that the boundary's top modes
+    leave at ``m_top + 1`` is outside every row's reach and its size is set by the reference's labelling (the
+    known-answer benchmark at 8 x 8: 1.4e-3 of B.n's 1.6e-3 RMS); with it the least squares sees and lowers it
+    (vacuum, where the rows are the exact least squares).
+    The remaining tangential moves (relabellings ``theta -> theta + delta(theta, zeta)``, which no interface
+    condition sees) stay absent from the unknowns.
     """
     from .optimize import _dof_modes, pack_boundary
 
@@ -289,7 +322,9 @@ def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
     A_r = cos[keep_r].reshape(int(keep_r.sum()), -1).T
     A_z = sin[keep].reshape(int(keep.sum()), -1).T
     pinv_r, pinv_z = np.linalg.pinv(A_r), np.linalg.pinv(A_z)
-    modes = list(_dof_modes(inp, max_mode)) + [(0, 0)]
+    m_top, n_top = min(int(max_mode), mpol - 1), min(int(max_mode), ntor)
+    extra = [(m_top + 1, n) for n in range(-n_top, n_top + 1)] if extend else []
+    modes = list(_dof_modes(inp, max_mode)) + extra + [(0, 0)]
     zero = replace(inp, rbc=np.zeros_like(rbc), zbs=np.zeros_like(zbs))
     columns = []
     for m, n in modes:
@@ -392,7 +427,6 @@ def solve_free_boundary_three_terms(
     chunk: int = 8,
     bootstrap=None,
     bootstrap_helicity: int = 0,
-    bootstrap_weight: float = 100.0,
     previous=None,
     verbose: int = 0,
 ):
@@ -420,8 +454,8 @@ def solve_free_boundary_three_terms(
     from its boundary, Jacobian and model: neither new coils nor a repeat
     solve compile anything.  ``trial_ftol`` and ``chunk`` are
     :class:`ThreeTermsFreeBoundaryModel`'s.  ``bootstrap`` (kinetic
-    profiles), ``bootstrap_helicity`` and ``bootstrap_weight`` solve for a
-    Redl-self-consistent current profile together with the boundary.
+    profiles) and ``bootstrap_helicity`` solve for a Redl-self-consistent
+    current profile together with the boundary.
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates, then any bootstrap-current values), ``fun`` (the equations),
@@ -457,15 +491,31 @@ def solve_free_boundary_three_terms(
         model = ThreeTermsFreeBoundaryModel(
             inp, max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight)
+            bootstrap_helicity=bootstrap_helicity)
         x0 = None if initial_boundary is None else model.displacement_of(initial_boundary)
         jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
-    initial = model.boundary_residual(seed_state, seed_params, external_field)
-    # the warning's reference is the deck itself, also on a warm restart (whose start is ``previous``'s answer)
-    deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0, external_field)
+    # The starting residuals are reports (and the reference of the warning below): their programs compile and run
+    # on a background thread while the boundary is solved.  The warning's reference is the deck itself, also on a
+    # warm restart (whose start is ``previous``'s answer).
+    import threading
+
+    def reports():
+        initial = model.boundary_residual(seed_state, seed_params, external_field)
+        deck = initial if previous is None else model.boundary_residual(model.seed[0], model.params0,
+                                                                         external_field)
+        return initial, deck
+
+    report_box = []
+    reporter = threading.Thread(target=lambda: report_box.append(_try(reports)), name="vmex-initial-residual",
+                                daemon=True)
+    reporter.start()
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
                                verbose=verbose)
+    reporter.join()
+    if isinstance(report_box[0], BaseException):
+        raise report_box[0]
+    initial, deck = report_box[0]
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
     # From the rows' own state on its own rung (a restart skips the deck's lower rungs; an ``initial_state`` would
@@ -489,6 +539,52 @@ def solve_free_boundary_three_terms(
         njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
         input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
         boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
+
+
+def _surface_data(fixed, cfg, state, params, nphi, ntheta):
+    """:func:`~vmex.core.virtual_casing.surface_field_data_from_state` of a concrete state as one compiled program.
+
+    Eagerly, the field and surface assembly dispatch hundreds of small operations, each compiled on first use
+    (~15 s on a GPU before the first row); the program compiles once.  Its static fields (``nfp``, symmetry,
+    ``signgs``, convention) are those of the traced construction.
+    """
+    from . import implicit as im
+
+    static = {}
+
+    def arrays(state, params):
+        data = vc.surface_field_data_from_state(fixed, state, runtime=im.runtime_from_params(params, cfg),
+                                                nphi=nphi, ntheta=ntheta)
+        static.update(nfp=data.nfp, stellsym=data.stellsym, signgs=data.signgs,
+                      source_convention=data.source_convention)
+        return dict(gamma=data.gamma, B_total=data.B_total, normal=data.normal, area_vector=data.area_vector,
+                    theta=data.theta, phi=data.phi)
+
+    values = jax.jit(arrays)(state, params)
+    return vc.VmecSurfaceFieldData(**values, **static)
+
+
+def _certified(responses, report):
+    """``responses`` if every column's linear solve met its certificate, else a ``RuntimeError``.
+
+    The boundary Jacobian and the design gradients are built from these state responses; an uncertified one
+    would enter them silently.  ``RuntimeError`` is what a trial's failed linearization raises: the Newton
+    solve stops, and the single-stage problem rejects the trial.
+    """
+    converged = np.asarray(report.converged)
+    if not bool(np.all(converged)):
+        worst = float(np.max(np.asarray(report.residual_norm) / np.asarray(report.tolerance)))
+        raise RuntimeError(f"{int(np.sum(~converged))} of {converged.size} state responses of the boundary "
+                           f"Jacobian missed their certificate (worst residual {worst:.3g} x the tolerance)")
+    return responses
+
+
+def _try(function, *args):
+    """``function(*args)``, or the exception it raised (for a worker thread to hand back)."""
+    try:
+        return function(*args)
+    except BaseException as error:  # noqa: BLE001 -- re-raised by the caller
+        return error
 
 
 class ThreeTermsFreeBoundaryModel:
@@ -528,13 +624,12 @@ class ThreeTermsFreeBoundaryModel:
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    knot values (three inside the first surface, then one on every half-mesh
-    surface) after the boundary coordinates (``n_boundary`` of them), and the
-    rows gain one self-consistency row per knot, scaled by
-    ``bootstrap_weight`` (see :class:`~vmex.core.bootstrap.HalfMeshCurrent`;
-    ``ns <= 97``, a prescribed-current deck).  The current then follows the
-    equilibrium instead of being an input, and :meth:`bootstrap_residual`
-    reports how far it is from Redl's.  ``fixed_boundary=True`` (with
+    knot values (one on the axis, then one on every half-mesh surface) after
+    the boundary coordinates (``n_boundary`` of them), and the rows gain one self-consistency row per knot, in the interface rows' units
+    (the poloidal field of the current error over ``B0``; see
+    :class:`~vmex.core.bootstrap.HalfMeshCurrent`; a prescribed-current deck).
+    The current then follows the equilibrium instead of being an input, and
+    :meth:`bootstrap_residual` reports how far it is from Redl's.  ``fixed_boundary=True`` (with
     ``bootstrap``) holds the boundary at that of ``params`` and solves only the
     current: ``x`` is the current values alone, the rows are the bootstrap ones
     and no external field or virtual casing enters -- the fixed-boundary
@@ -543,7 +638,7 @@ class ThreeTermsFreeBoundaryModel:
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
                  device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0,
                  fixed_boundary=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
@@ -551,9 +646,9 @@ class ThreeTermsFreeBoundaryModel:
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
-        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
-                                                                       bootstrap_weight)
+        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity)
         self.fixed_boundary = bool(fixed_boundary)
+        self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 
         # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
         _, p_peak = _edge_pressure(fixed)
@@ -596,12 +691,12 @@ class ThreeTermsFreeBoundaryModel:
         if self.fixed_boundary:
             self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
         else:
-            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode)
+            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode,
+                                                                                        extend=self.vacuum)
             self.x0 = np.zeros(normal_map.shape[1])
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
-            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         self.chunk = int(chunk)
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
@@ -616,56 +711,95 @@ class ThreeTermsFreeBoundaryModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
+        self._warm_programs()
         seed = self.solve(self.params0)
         if seed is None:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
         self.seed = (state, mask)
+        # The seed boundary's field scale B0 (area-RMS |B|) scales the interface rows, and with its mean poloidal
+        # circumference the bootstrap rows (HalfMeshCurrent.set_unit): every row is a field over B0.
+        grid = interface_grid(fixed)
+        self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
+        surface = _surface_data(fixed, cfg, state, self.params0, self.nphi, self.ntheta)
+        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
+        self.B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
+        if self.bootstrap is not None:
+            gamma = np.asarray(surface.gamma)  # (3, nphi, ntheta) over one field period
+            length = float(np.mean(np.sum(np.linalg.norm(np.roll(gamma, -1, axis=2) - gamma, axis=0), axis=1)))
+            self.bootstrap.set_unit(length, self.B0)
+            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         if not self.fixed_boundary:
             # The boundary moves along the deck equilibrium's radial coordinate lines dX/ds at the edge (VMEC's
             # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
             # convention of the deck is carried to the free boundary without sliding (known-target benchmark,
             # deck 11 mm away: 8 x 8 field lines 1.23 -> 0.36 mm, K 1.9e-3 -> 3.8e-4).
-            sp = vc._state_field_spectra(fixed, state, im.runtime_from_params(self.params0, self.cfg))
-            xm, xn = np.asarray(sp["xm"]), np.asarray(sp["xn"])
-            ds = 1.0 / (int(sp["ns"]) - 1)
-            dr = (np.asarray(sp["rmnc"])[-1] - np.asarray(sp["rmnc"])[-2]) / ds
-            dz = (np.asarray(sp["zmns"])[-1] - np.asarray(sp["zmns"])[-2]) / ds
+            xm, xn, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, self.cfg.resolution))
+            ds = 1.0 / (rmnc.shape[0] - 1)
+            dr = (rmnc[-1] - rmnc[-2]) / ds
+            dz = (zmns[-1] - zmns[-2]) / ds
 
             def radial(T, Zg):
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
                 return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
 
-            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
+            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial, extend=self.vacuum)
             self._normal_map = jnp.asarray(normal_map)
-        if not self.fixed_boundary:
-            grid = interface_grid(fixed)
-            self.nphi, self.ntheta = int(nphi or grid[0]), int(ntheta or grid[1])
-            self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
-            self._interface_setup(state, self.nphi, self.ntheta, digits, self.quadrature)
         self._implicit_setup()
+        if not self.fixed_boundary:
+            self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
+            self._interface_setup(state, surface, self.nphi, self.ntheta, digits, self.quadrature)
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature):
-        """The interface rows, with the quadrature plan and the field scale ``B0`` of the seed ``state``."""
+    def _warm_programs(self):
+        """Compile the solve's largest programs on background threads while the seed equilibrium is solved.
+
+        The seed solve's Newton-refinement programs (:func:`~vmex.core.implicit.warm_refinement`) and the first
+        linearization's tangent programs (:func:`~vmex.core.implicit.warm_staged_tangent`) depend only on the
+        deck's structure, so they compile in parallel with the multigrid ladder (XLA compilation releases the
+        GIL).  :meth:`linearize` joins the tangent thread before its first tangent solve.  Cache warming only:
+        the same executables.
+        """
+        import threading
+
+        self._warm = None
+        im, cfg, params, chunk = self._im, self.cfg, self.params0, self.chunk
+        if not im._overlapping_compiles_pay():
+            return
+
+        def refinement():
+            try:
+                im.warm_refinement(cfg, params)
+            except Exception:  # cache warming only: the real calls compile on demand
+                pass
+
+        def tangents():
+            try:
+                im.warm_staged_tangent(cfg, params, chunk=chunk, certify_rtol=cfg.adjoint_tol)
+            except Exception:  # cache warming only
+                pass
+
+        threading.Thread(target=refinement, name="vmex-refine-warm", daemon=True).start()
+        self._warm = threading.Thread(target=tangents, name="vmex-tangent-warm", daemon=True)
+        self._warm.start()
+
+    def _interface_setup(self, state, surface, nphi, ntheta, digits, quadrature):
+        """The interface rows, with the quadrature plan of the seed ``state`` (its boundary data ``surface``)."""
         from .freeboundary import _vacuum_scalars
-        from .optimize import solve_equilibrium
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        runtime = im.runtime_from_params(self.params0, cfg)
-        surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = map(int, quadrature)
         if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
             precision, digits = None, None
         else:
             precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
         self.precision = precision
-        # A closed curve inside the coils for G_coil: the seed's magnetic axis.
-        axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
-        vacuum = self.vacuum
-        area = np.linalg.norm(np.asarray(surface.area_vector), axis=0)
-        B0 = float(np.sqrt(np.sum(area * np.sum(np.asarray(surface.B_total) ** 2, axis=0)) / np.sum(area)))
-        self.B0 = B0
+        # A closed curve inside the coils for G_coil: the seed's magnetic axis (its wout raxis_cc / zaxis_cs, read
+        # from the solved seed state; the circulation is the same on any loop that links the coils).
+        _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
+        n_axis = int(cfg.resolution.ntor) + 1
+        axis = _axis_loop(SimpleNamespace(raxis_cc=rmnc[0, :n_axis], zaxis_cs=zmns[0, :n_axis], nfp=nfp))
+        vacuum, B0 = self.vacuum, self.B0
         # Surface data are (nphi, ntheta) over one field period.
         phi, theta = np.meshgrid(np.linspace(0.0, 2.0 * np.pi / nfp, nphi, endpoint=False),
                                  np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False), indexing="ij")
@@ -688,9 +822,10 @@ class ThreeTermsFreeBoundaryModel:
         def interface_rows(state, params, field, moments=False):
             """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary).
 
-            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the transported ones,
+            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the deck-response rows,
             the robust start of :meth:`solve_boundary` (no field in the test functions).
             """
+            deck, field = (field.deck, field.field) if isinstance(field, _DeckField) else (None, field)
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
             G = jnp.abs(_vacuum_scalars(state, runtime)[1])
@@ -708,20 +843,68 @@ class ThreeTermsFreeBoundaryModel:
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
             if moments:
                 return jnp.concatenate([2.0 * test_sine.reshape(test_sine.shape[0], -1) @ (weight * Bn), current])
-            # test functions B.grad(cos(m theta - n nfp phi)) R0 / B0: a normal displacement h changes B . N by
-            # -|N| B_t . grad h (the surface divergence of h B_t), the plasma's own response left out
-            _, e_theta, e_phi = _surface_frame(jnp.ravel(params.rbc), jnp.ravel(params.zbs), xm, xn, phi, theta)
-            N = jnp.cross(e_theta, e_phi, axis=0)
-            N2 = jnp.sum(N * N, axis=0)
-            b_theta = jnp.sum(jnp.cross(B_out, e_phi, axis=0) * N, axis=0) / N2
-            b_phi = jnp.sum(jnp.cross(e_theta, B_out, axis=0) * N, axis=0) / N2
-            tests = (n_b * b_phi[None] - m_b * b_theta[None]) * test_sine * (length / B0)
-            return jnp.concatenate([tests.reshape(tests.shape[0], -1) @ (weight * Bn), current])
+            # test functions: the exact response of the pointwise sqrt(w) B.n / |B_in| to each boundary coordinate
+            # at the deck (plasma response included; _deck_response), for this field: R0 d r_deck / d h_k
+            if deck is None:
+                raise ValueError("the finite-beta rows need the deck's response: pass model.attach(field)")
+            (X0, n0, s0, Bp0), (dX, dn, ds, dBp) = deck
+            Bc0 = vc.external_B_cartesian(field, X0, phi_grid)
+            unit = jnp.eye(3)[:, :, None, None] * jnp.ones_like(X0)[None]
+            DBc = jax.vmap(lambda e: jax.jvp(lambda X: vc.external_B_cartesian(field, X, phi_grid), (X0,), (e,))[1])(unit)
+            base = Bc0 + Bp0
+            moved = jnp.einsum("iopq,kipq->kopq", DBc, dX) + dBp  # the field's change at the moving deck points
+            tests = (ds * jnp.sum(base * n0, axis=0)[None]
+                     + s0[None] * (jnp.sum(moved * n0[None], axis=1) + jnp.sum(base[None] * dn, axis=1)))
+            B_in = jnp.asarray(data.B_total)
+            r = (jnp.sqrt(weight) * Bn * B0 / jnp.linalg.norm(B_in, axis=0).ravel())
+            return jnp.concatenate([length * tests[:-1].reshape(tests.shape[0] - 1, -1) @ r, current])
 
         self.interface_rows = interface_rows
+        if not vacuum:
+            self.deck = self._deck_response(nphi, ntheta, digits, precision)
         self._terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
+
+    def attach(self, field, deck=None):
+        """``field`` with the deck's response data (``deck``, default :attr:`deck`) for the compiled rows.
+
+        The identity in vacuum (no deck data) and on a field that already carries them.
+        """
+        deck = self.deck if deck is None else deck
+        return field if deck is None or isinstance(field, _DeckField) else _DeckField(field, deck)
+
+    def _deck_response(self, nphi, ntheta, digits, precision):
+        """The finite-beta rows' test space: the deck's boundary data and their exact responses to ``h``.
+
+        The pointwise residual ``r = sqrt(w) B_out . n / |B_in|`` (``w`` the area weights) at the deck depends on
+        the boundary coordinates through the deck equilibrium (points, normal, weights, ``|B_in|`` and the
+        plasma's own field ``B_plasma``, all independent of the coils) and through the coil field at the moving
+        points.  Returned: those deck data ``(X, n, s, B_plasma)`` (``s = sqrt(w) / |B_in|``) and their implicit
+        tangents along each boundary coordinate (one block-factorized tangent solve at the seed state); the rows
+        combine them with the coil field and its gradient at the deck points.
+        """
+        im, cfg, fixed, nb = self._im, self.cfg, self.fixed, self.n_boundary
+        state, mask = self.seed
+        directions = jax.tree.map(lambda a: a[:nb], self.boundary_directions(self.params0, self.x0))
+        if self._warm is not None:  # its programs are this call's: wait instead of compiling them twice
+            self._warm.join()
+            self._warm = None
+
+        def geometry(state, params):
+            runtime = im.runtime_from_params(params, cfg)
+            data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+            interface = vc.PlasmaVacuumInterface.from_surface_data(data, p_edge=0.0, digits=digits,
+                                                                    precision=precision)
+            area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+            s = jnp.sqrt(area / jnp.sum(area)) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
+            return jnp.asarray(data.gamma), jnp.asarray(data.normal), s, interface.B_plasma
+
+        dz = self._tangents(self.params0, state, mask, directions)
+        primal = jax.jit(geometry)(state, self.params0)
+        tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
+            state, mask, self.params0, dz, directions)
+        return primal, tangent
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -740,17 +923,28 @@ class ThreeTermsFreeBoundaryModel:
         edge = im._edge_mask(cfg)
 
         def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
-            return im._implicit_evolved_tangent_multi_rhs(
-                params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
-                probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=cfg.jacobian_adjoint_tol, certify_maxiter=cfg.jacobian_adjoint_maxiter)[0]
+            """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
+
+            Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
+            forward refinement's compiled program, then the block solve and the GMRES corrector.  A column the
+            corrector and the refinement leave uncertified is an error (:func:`_certified`), never a silent
+            column of the Jacobian.  The columns are certified to the adjoint tolerance (``adjoint_tol``), not the
+            looser one for least-squares Jacobians: they are the boundary Jacobian of a square Newton solve and
+            the implicit-function-theorem design gradients, which must be exact.  The block-direct responses
+            usually meet it outright (the raw block system is the exact radial linearization)."""
+            return _certified(*im.staged_tangent_multi_rhs(
+                params, cfg, state, mask, batch, chunk=self.chunk,
+                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter))
 
         def push(fun, state, mask, params, dz_batch, params_batch):
-            """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
+            """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
 
             As upstream's implicit Jacobian: the state of a column is assembled from its projected response and
-            its parameters inside the map, so no batch of full states is ever built.
+            its parameters inside the map, so no batch of full states is ever built.  The columns are mapped
+            sequentially, not vectorized: a column's linearized rows hold the interface field on every surface
+            point at once (a coil Biot-Savart sum over all segments, the virtual-casing quadrature), and a
+            vectorized chunk of 8 multiplied that (LP QA 12 x 12: 9.6 GiB of temporaries, the solve's peak) for
+            no speed: a single column already fills the device.
             """
             frozen = jax.lax.stop_gradient(state)
             P = im._dof_projector(cfg, mask)
@@ -758,8 +952,11 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
+            # Two columns per step (vmex.core.loops): wider batches buy 7-18 % of the push at 3-5x its peak
+            # memory (LP QA beta 12 x 12, grid 48, 221 columns: 38.4 / 35.9 / 33.6 s per Jacobian at 2 / 4 / 8,
+            # 2.6 / 7.2 / 13.5 GiB), and a single column is the program XLA:GPU miscompiles.
             return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
-                               (dz_batch, params_batch), batch_size=self.chunk)
+                               (dz_batch, params_batch), batch_size=2)
 
         def predict(state, mask, dz_batch, dx, params):
             """First-order trial state: the anchor plus the responses times ``dx``, on the trial boundary."""
@@ -768,15 +965,27 @@ class ThreeTermsFreeBoundaryModel:
             z = jax.tree.map(lambda a, d: a + jnp.tensordot(dx, d, axes=1), P(frozen), dz_batch)
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
-        self._tangents = jax.jit(tangents)
+        self._tangents = tangents
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
+        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
             lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
+
+        def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
+            """``push_rows`` one whole chunk at a time: one executable for any number of columns."""
+            n = jax.tree.leaves(dz)[0].shape[0]
+            state, mask, params, dz, pb = im._canonical_arrays(cfg, (state, mask, params, im._padded(dz, self.chunk),
+                                                                     im._padded(pb, self.chunk)))
+            pieces = [push_rows(state, mask, params, jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], dz),
+                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments)
+                      for lo in range(0, jax.tree.leaves(dz)[0].shape[0], self.chunk)]
+            return jnp.concatenate(pieces)[:n]
+
+        self._push_rows = push_rows_padded
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
 
-        def pullback(fun, state, mask, params, cotangents, *args):
+        def pullback(fun, state, mask, params, cotangents, *args, factors=None):
             """``ImplicitParams`` gradients of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
@@ -786,7 +995,7 @@ class ThreeTermsFreeBoundaryModel:
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
-                                            probe_chunk_size=self.chunk)
+                                            probe_chunk_size=self.chunk, factors=factors)
             funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
             parts = []
             for f, c in zip(funs, blocks):
@@ -910,7 +1119,8 @@ class ThreeTermsFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments)), (state, mask, params_x, tight)
+        return (np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments)),
+                (state, mask, params_x, tight))
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -956,12 +1166,15 @@ class ThreeTermsFreeBoundaryModel:
         if extra is not None:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
+        if self._warm is not None:  # its programs are this call's: wait instead of compiling them twice
+            self._warm.join()
+            self._warm = None
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
         dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
-        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field,
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, self.attach(field),
                                                         moments=self._moments)).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
@@ -975,7 +1188,7 @@ class ThreeTermsFreeBoundaryModel:
     def rows_at(self, aux, field):
         """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve)."""
         state, _, params_x, _ = aux
-        return np.asarray(self._rows(state, params_x, field, moments=self._moments))
+        return np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments))
 
     def repeat(self, x, params, field, aux):
         """The rows at ``x`` solved again, to the deck's tolerance, from a second seed; ``None`` if that fails.
@@ -1007,7 +1220,7 @@ class ThreeTermsFreeBoundaryModel:
             ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
         return ok
 
-    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
         A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
@@ -1017,6 +1230,8 @@ class ThreeTermsFreeBoundaryModel:
         produces.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
+        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that has to be shortened
+        (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1032,6 +1247,7 @@ class ThreeTermsFreeBoundaryModel:
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
+        damped = False
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1077,6 +1293,11 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
+            if undamped and fresh and t < 1.0:
+                if accepted is not None:  # keep the shortened step's progress
+                    x, (r, aux), steps = x + t * p, accepted, steps + 1
+                damped = True
+                break
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
@@ -1105,22 +1326,29 @@ class ThreeTermsFreeBoundaryModel:
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
-                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
+                    converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
 
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
+
+        At finite beta Newton on the deck-response rows converges from the deck (LP QA 2.5 %, 8 x 8 and 12 x 12;
+        the qa6 seed with its initial coils, where moments-led rows that leave out the plasma response stalled).
+        Should a cold solve (no ``jacobian``) need to shorten a Newton step, it solves the plain sine moments of
+        ``B . n`` on the same modes from the start (no field in their test functions) and then the rows from the
+        moments' root; a warm solve (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes
+        the same route when Newton on the rows stalls.
         """
-        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        cold = jacobian is None and not (self.vacuum or self.fixed_boundary)
+        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                    undamped=cold)
         if out["converged"] or self.vacuum or self.fixed_boundary:
             return out
-        # The transported rows carry the field in their test functions, and far from the answer Newton on them
-        # can stall; the plain moments (the same boundary modes) converge from farther: solve them first, then
-        # the transported rows from there.
         if verbose:
-            print("Newton on the transported rows stalled: plain moments first", flush=True)
+            print(f"Newton on the deck-response rows {'needs damping' if out['damped'] else 'stalled'}: "
+                  "plain moments first", flush=True)
         self._moments = True
         try:
             start = self._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)
@@ -1229,10 +1457,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(params, z), (x,), (e,))[1])(eye))
 
-        def pullback(state, mask, params, x):
-            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
+        def pullback(state, mask, params, x, factors):
+            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
+
+            ``factors``: the block factors at ``state`` (:func:`~vmex.core.implicit.block_factors_at`, an
+            executable compiled once per config), not a second block assembly inside this program."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, factors=factors)
 
         self._pullback = jax.jit(pullback)
 
@@ -1245,11 +1476,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
+        # the deck's response data are an argument (model.attach), not constants of these programs
+        self._field_vjp = jax.jit(lambda state, params, x, lam, deck: jax.vjp(
+            lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx, deck: jax.jvp(
+            lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
+        self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-terms free boundary")
@@ -1265,16 +1498,28 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._cache[key]
         self.stats["trials"] += 1
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        anchor, starts, J = self._anchor, [None], None
-        if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
+        # Warm starts first, each with the anchor's Jacobian: its first-order boundary prediction, then its own
+        # boundary.  They are near the answer by construction, so Newton from them must not need damping; one that
+        # does is outside the Newton basin (a large design step) and hands over at once.  The last start is the
+        # cold solve from the deck, the same answer by any route (QH vacuum 12 x 12, single-stage step 1: the warm
+        # starts sat at cost 5e-3 and 6e-2 and crawled with damped steps for 990 s; the seed's cold solve from the
+        # deck had converged in 5 full steps).
+        starts = [(None, None)]
+        anchor = self._anchor
+        if anchor:
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
-            starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model.deck))
+            starts = [(anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["J_b"]),
+                      (anchor["b"], anchor["J_b"]), (None, None)]
         fit = None
-        for start in starts:
+        for start, J in starts:
             try:
-                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, max_nfev=self.boundary_max_nfev)
+                if J is None:  # cold: the full route (solve_boundary's damping lead-in at finite beta)
+                    fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev)
+                else:
+                    fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
+                                                      max_nfev=self.boundary_max_nfev, undamped=True)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
@@ -1305,6 +1550,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
+        if self._warm_threads[0] is not None:  # the response fallbacks: wait instead of compiling them twice
+            self._warm_threads[0].join()
 
         def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
@@ -1314,7 +1561,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux
             sol.update(aux=aux, state=state, mask=mask, params=params,
-                       rows=np.asarray(model._rows(state, params, field)),
+                       rows=np.asarray(model._rows(state, params, model.attach(field))),
                        values=np.asarray(self._rows(state, params, xj)))
             self.stats["linearizations"] += 1
             return J
@@ -1339,18 +1586,62 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             sol.update(x=polished["x"], aux=aux, state=state, mask=mask, params=params, rows=rows,
                        values=np.asarray(self._rows(state, params, xj)))
         J_b, J_p = J[:, :nb], J[:, nb:]
-        state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        if self._warm_threads[1] is not None:  # the pullback and direct Jacobian
+            self._warm_threads[1].join()
+        state, mask, params = model._im._canonical_arrays(model.cfg, (sol["state"], sol["mask"], sol["params"]))
+        factors = model._im.block_factors_at(model.cfg, params, state, mask)
+        params_bar = self._pullback(state, mask, params, xj, factors)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model.deck)) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=self._x(x).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         sol["gradients"] = gradients
         return gradients
+
+    def _warm_gradient_programs(self, x0):
+        """Compile the design gradient's programs on background threads while the seed design is solved.
+
+        Two daemon threads, from placeholder arguments of the model's structure (values do not enter a
+        compilation): the state-response fallbacks the plasma-parameter columns need (GMRES corrector and
+        refinement, :func:`~vmex.core.implicit.warm_staged_tangent`), joined before the first relinearization,
+        and the pullback through the equilibrium and the direct design Jacobian, joined before the first
+        pullback.  Cache warming only: the same executables; a failure leaves the real call to compile.
+        """
+        import threading
+
+        model = self.model
+        im, cfg, params0 = model._im, model.cfg, model.params0
+        if not im._overlapping_compiles_pay():
+            return None, None
+
+        def tangents():
+            try:
+                im.warm_staged_tangent(cfg, params0, chunk=model.chunk, certify_rtol=cfg.adjoint_tol,
+                                       certify_maxiter=cfg.adjoint_maxiter, fallbacks=True)
+            except Exception:  # cache warming only: the real calls compile on demand
+                pass
+
+        def gradient():
+            try:
+                state, mask, params = im._canonical_arrays(cfg, im._placeholder_arguments(cfg, params0))
+                arguments = (state, params, state, mask)
+                factors = im._zeros_like_structure(
+                    cfg, jax.eval_shape(lambda *a: im._refine_block_factor_core(*a, cfg), *arguments))
+                x = jnp.asarray(np.zeros_like(np.asarray(x0, dtype=float)))
+                self._pullback.lower(state, mask, params, x, factors).compile()
+                self._direct.lower(state, params, x).compile()
+            except Exception:  # cache warming only
+                pass
+
+        threads = tuple(threading.Thread(target=work, name=name, daemon=True)
+                        for work, name in ((tangents, "vmex-tangent-fallback-warm"), (gradient, "vmex-gradient-warm")))
+        for thread in threads:
+            thread.start()
+        return threads
 
     def _value(self, x):
         return float(self._record(x)["values"][0])

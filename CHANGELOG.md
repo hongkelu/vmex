@@ -7,6 +7,11 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (hongkelu/vmex)
 
+- Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot on every half-mesh surface at any `ns`
+  (was <= 97, VMEC2000's `ndatafmax`; echoes refit to 101 knots, `fit_aux_knots`), rows in the interface rows' units
+  (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.
+- Finite-beta three-terms rows test B.n against the deck's exact response (plasma included; `model.attach`): LP QA
+  2.5 % 12 x 12 ns 101 B.n 2.8e-4 to 1.1e-4, cold solve 641 to 330 s; first-order design gradients exact.
 - `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`):
   one fixed-boundary state per boundary (`freeze_m1`), a square Newton system for B.n, pressure balance and no sheet
   current (vacuum: least squares of B.n; LP QH 12 x 12: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm; a
@@ -174,24 +179,19 @@ query on the magnetic axis no longer returns NaN. Full notes in the release.
 
 ## 0.9.1 - 2026-09-16
 
-Optimization gradients compile on a machine that has a GPU (the host-callback
-pin now applies only within one platform; jax-ml/jax#40722), the coil examples
-install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio` defaults to
-`1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07
-one minor radius out on the QA wout, against 2.46e-02 before). Full notes in
-the GitHub release.
+Optimization gradients compile on a machine that has a GPU (the host-callback pin now applies only within one
+platform; jax-ml/jax#40722), the coil examples install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio`
+defaults to `1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07 one minor radius out on
+the QA wout, against 2.46e-02 before). Full notes in the GitHub release.
 
 ## 0.9.0 - 2026-09-15
 
-The optimization release. The two workflows users reported as slow and
-inconclusive — quasi-isodynamic boundary design and single-stage plasma-and-coil
-design — now converge and meet the targets they print: the refinement every
-trial pays is a Newton finish through one block factorization, the implicit
-adjoint is solved exactly through that same factorization, and the compiled
-lanes stopped recompiling. The exterior field reports the accuracy it achieved,
-every evaluation carries counters, and the CLI reads DESC inputs. It does not
-close cold compile (median wall per case 23.1 s against VMEC++'s 3.35 s in the
-independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
+The optimization release. The two workflows users reported as slow and inconclusive — quasi-isodynamic boundary design
+and single-stage plasma-and-coil design — now converge and meet the targets they print: the refinement every trial
+pays is a Newton finish through one block factorization, the implicit adjoint is solved exactly through that same
+factorization, and the compiled lanes stopped recompiling. The exterior field reports the accuracy it achieved, every
+evaluation carries counters, and the CLI reads DESC inputs. It does not close cold compile (median wall per case 23.1
+s against VMEC++'s 3.35 s in the independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
 
 PRs and full notes: the GitHub release (#300-#344, 36 merged since 0.8.1).
 

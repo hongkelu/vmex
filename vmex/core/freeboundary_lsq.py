@@ -757,8 +757,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_max_nfev=100,
-                  boundary_max_residual=None, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, **model_options):
         """Solve the seed design's free boundary (keywords as the Galerkin problem's)."""
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -771,7 +770,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual)
+                   boundary_max_nfev=boundary_max_nfev)
 
     def __init__(self, model, loss, x0, **options):
         from .implicit import _assemble, _dof_projector, _edge_mask, runtime_from_params

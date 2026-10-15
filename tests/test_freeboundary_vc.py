@@ -137,7 +137,6 @@ def test_unknown_boundary_condition_is_rejected():
 
 
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_rows_are_the_three_interface_conditions():
     """Normal row = B_out.n/|B|, sheet rows tangent, and together they are the whole jump."""
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False)
@@ -199,7 +198,6 @@ def _nestor(inp, field):
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_vacuum_free_boundary_agrees_with_nestor():
     """In vacuum the free boundary is a flux surface of the coil field alone: both methods find it.
 
@@ -262,7 +260,6 @@ _FINITE_BETA_LEAK = pytest.mark.xfail(strict=True, reason=(
 @needs_vc
 @pytest.mark.full
 @_FINITE_BETA_LEAK
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_finite_beta_free_boundary_removes_the_sheet_current():
     """LP QA at 0.5% beta with its fitted coils, through the solver's public option."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
@@ -278,7 +275,6 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monkeypatch):
     """Vacuum, LP QA at mpol 3: the rows are the h-gradient of the mean square of B_coil . n (exact Hessian as
     the Jacobian), Newton reaches them from the deck and from another start, and both land on one boundary."""
@@ -416,7 +412,6 @@ def test_problem_boundary_condition_dispatches_to_three_terms(monkeypatch):
 
 
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_three_terms_problem_gradients_match_resolved_differences():
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
@@ -547,7 +542,6 @@ def test_bootstrap_current_has_a_knot_per_surface_beyond_ndatafmax(tmp_path):
 @needs_vc
 @pytest.mark.full
 @_FINITE_BETA_LEAK
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_bootstrap_current_solved_with_the_free_boundary():
     """LP QA at 0.5% beta: boundary and Redl current in one solve, with exact columns for both."""
     from vmex.core import bootstrap as bs
@@ -590,7 +584,6 @@ def _fixed_boundary_bootstrap():
     return inp, profiles, model, model.solve_boundary(model.params0, None)
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_fixed_boundary_bootstrap_model_has_exact_columns():
     """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is Redl's, with exact Jacobian columns."""
     inp, profiles, model, out = _fixed_boundary_bootstrap()
@@ -606,7 +599,6 @@ def test_fixed_boundary_bootstrap_model_has_exact_columns():
 
 
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
     """ns = 101 with the bootstrap current in the solve (101 knot unknowns, beyond VMEC2000's ndatafmax): Redl's
     current, and Jacobian columns of the axis, a mid-radius and the last knot against re-solved differences."""
@@ -627,7 +619,6 @@ def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
 
 
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_fixed_boundary_bootstrap_model_matches_picard():
     """The Gauss-Newton current at a fixed boundary is the one the Picard loop converges to."""
     from vmex.core import bootstrap as bs
@@ -713,7 +704,6 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_finite_beta_rows_are_the_transported_normal_field_moments():
     """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are the area-weighted
     moments of B_out . n / B0 (coils + virtual casing) against R0 / B0 B_out . grad cos(m theta - n nfp phi) on
@@ -935,8 +925,33 @@ def _beta2p5_deck(mpol):
     return replace(inp, lfreeb=True, mgrid_file="essos_coils(direct)")
 
 
+@pytest.mark.parametrize("count", [0, 1, 2, 5])
+def test_map_columns_never_compiles_an_unbatched_column(count):
+    """_map_columns equals vmap for any column count (zero-size leaves included), and its loop steps over blocks
+    of two columns: XLA:GPU miscompiles these tangents for one column per program."""
+    def function(column):
+        return {"x": 2.0 * column[0] + column[1][0], "empty": column[1][1:]}
+
+    columns = (jnp.arange(count * 3.0).reshape(count, 3), jnp.arange(count * 1.0).reshape(count, 1))
+    out = jax.jit(lambda c: fvc._map_columns(function, c))(columns)
+    expected = jax.vmap(function)(columns)
+    np.testing.assert_array_equal(out["x"], expected["x"])
+    assert out["empty"].shape == (count, 0)
+    def scans(jaxpr):
+        for eqn in jaxpr.eqns:
+            if eqn.primitive.name == "scan":
+                yield eqn
+            for param in eqn.params.values():
+                inner = getattr(param, "jaxpr", param)
+                if hasattr(inner, "eqns"):
+                    yield from scans(inner)
+
+    scans = list(scans(jax.make_jaxpr(lambda c: fvc._map_columns(function, c))(columns).jaxpr))
+    assert len(scans) == 1 and fvc._COLUMNS_PER_STEP >= 2
+    assert {v.aval.shape[1] for v in scans[0].invars} == {fvc._COLUMNS_PER_STEP}
+
+
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 @pytest.mark.parametrize("moments", [False, True])
 @pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile
 @pytest.mark.parametrize("case", [

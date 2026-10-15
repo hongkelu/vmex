@@ -291,7 +291,9 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     for fit in fits:
         assert fit.success and fit.cost < 1e-18
         assert fit.boundary_residual.normal < fit.initial_boundary_residual.normal
-    np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-10)
+    # one boundary, to the solver's own step tolerance (newton_step_converged: sqrt(eps) R0 of normal displacement)
+    gap = fvc.displacement_rms(fits[1].x - fits[0].x, model.boundary_modes)
+    assert fvc.newton_step_converged(gap, 0.0, model.R0), gap
     for fit in fits:  # the reported equilibrium is the rows' state, re-solved tight on its own rung
         np.testing.assert_allclose(np.asarray(fit.equilibrium.solution.R_cos), np.asarray(fit.aux[0].R_cos),
                                    rtol=0, atol=1e-6)

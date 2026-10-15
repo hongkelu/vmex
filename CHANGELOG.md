@@ -11,10 +11,10 @@ revision it was measured at, and the pages that cite it.
   `(B_out - B_in) / B0` on Galerkin's deck-normal unknowns, `G = G_coil` and the bootstrap rows as equality
   constraints, exact Hessian (second-order adjoint) and exact design gradients; start-independent, FD-checked.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot on every half-mesh surface at any `ns`
-  (was capped at 97 by VMEC2000's `ndatafmax`; INDATA/WOUT echoes refit to 101 knots with a warning,
-  `vmex.core.input.fit_aux_knots`), and its rows in the interface rows' units (current error's poloidal field over
-  `|B|`) instead of `bootstrap_weight` (removed). qa4-beta 8 x 8 cold: stall (cost 1.7e-6) to 7 Newton evaluations;
-  scaled Jacobian cond 1.4e7 to 5.3e4.
+  (was <= 97, VMEC2000's `ndatafmax`; echoes refit to 101 knots, `fit_aux_knots`), rows in the interface rows' units
+  (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.
+- Finite-beta three-terms rows test B.n against the deck's exact response (plasma included; `model.attach`): LP QA
+  2.5 % 12 x 12 ns 101 B.n 2.8e-4 to 1.1e-4, cold solve 641 to 330 s; first-order design gradients exact.
 - `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`):
   one fixed-boundary state per boundary (`freeze_m1`), a square Newton system for B.n, pressure balance and no sheet
   current (vacuum: least squares of B.n; LP QH 12 x 12: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm; a

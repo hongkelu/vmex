@@ -161,6 +161,7 @@ def test_map_columns_pytrees_zero_size_leaves_and_errors():
     out = map_columns(lambda c: {"a": 2.0 * c[0], "empty": c[1]}, columns, batch_size=2)
     np.testing.assert_array_equal(out["a"], 2.0 * np.arange(5.0))
     assert out["empty"].shape == (5, 0)
+    assert map_columns(jnp.sin, jnp.zeros((0, 4))).shape == (0, 4)
     with pytest.raises(ValueError, match="batch_size"):
         map_columns(jnp.sin, jnp.zeros(3), batch_size=0)
     with pytest.raises(ValueError, match="batch_size"):

@@ -3,10 +3,8 @@ from __future__ import annotations
 """Pytest configuration.
 
 Allows running tests directly from the repo without requiring an editable
-install, silences XLA/absl C++ noise, disables jit globally (unit tests cover
-correctness on small arrays; compilation dominates runtime — tests that need
-the jit lane re-enable it explicitly), and gates ``full``-marked tests behind
-``RUN_FULL=1``.
+install, silences XLA/absl C++ noise, and gates ``full``-marked tests behind
+``RUN_FULL=1``.  Tests run jitted, as users do.
 """
 
 import hashlib
@@ -17,6 +15,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+import jax
 import pytest
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -33,6 +32,8 @@ if str(_ROOT) not in sys.path:
 # change the machine fingerprint (test_compat's macOS paths) would leave
 # directories in it.  Each pytest process gets a private, local cache
 # instead, removed at exit; CI's restored cache (below) still takes over.
+# JAX read ``JAX_COMPILATION_CACHE_DIR`` at the import above, so its config
+# is pointed at the private cache too (vmex keeps a directory it did not set).
 if not os.environ.get("VMEX_CI_COMPILATION_CACHE"):  # pragma: no cover - environment set-up
     import atexit
     import shutil
@@ -42,14 +43,7 @@ if not os.environ.get("VMEX_CI_COMPILATION_CACHE"):  # pragma: no cover - enviro
     atexit.register(shutil.rmtree, _PRIVATE_CACHE, True)
     os.environ["VMEX_COMPILATION_CACHE_DIR"] = _PRIVATE_CACHE
     os.environ["JAX_COMPILATION_CACHE_DIR"] = _PRIVATE_CACHE
-
-# Keep the test suite fast: avoid JAX compilation in unit tests.
-try:  # pragma: no cover
-    import jax
-
-    jax.config.update("jax_disable_jit", True)
-except Exception:  # pragma: no cover
-    pass
+    jax.config.update("jax_compilation_cache_dir", _PRIVATE_CACHE)
 
 
 def _open_ci_compilation_cache(root: Path) -> None:
@@ -214,21 +208,3 @@ def golden_dir() -> Path:
     return path
 
 
-@pytest.fixture(scope="module")
-def _module_jit_enabled():
-    """Run a whole module jitted (this conftest disables jit globally).
-
-    Solver-heavy modules opt in with
-    ``pytestmark = pytest.mark.usefixtures("_module_jit_enabled")`` — a
-    usefixtures mark is instantiated before same-scope fixtures declared in
-    the module, so module-scoped solve fixtures run jitted too.  Full solves
-    are 5-40x faster jitted (e.g. solovev ns=11: 26 s interpreted vs 3.5 s
-    cold / 0.03 s warm jitted); without this the suite's runtime depended on
-    which xdist worker had previously run a test that re-enabled jit.
-    """
-    import jax
-
-    prev = bool(jax.config.jax_disable_jit)
-    jax.config.update("jax_disable_jit", False)
-    yield
-    jax.config.update("jax_disable_jit", prev)

@@ -88,7 +88,6 @@ def test_unknown_boundary_condition_is_rejected():
 
 
 @needs_vc
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_rows_are_the_three_interface_conditions():
     """Normal row = B_out.n/|B|, sheet rows tangent, and together they are the whole jump."""
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False)
@@ -146,7 +145,6 @@ def _nestor(inp, field):
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_vacuum_free_boundary_agrees_with_nestor():
     """In vacuum the free boundary is a flux surface of the coil field alone: both methods find it.
 
@@ -194,7 +192,6 @@ def test_vacuum_free_boundary_agrees_with_nestor():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_finite_beta_free_boundary_removes_the_sheet_current():
     """LP QA at 0.5% beta with its fitted coils, through the solver's public option."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
@@ -233,7 +230,6 @@ def test_problem_boundary_condition_dispatches_to_three_term(monkeypatch):
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_three_term_problem_gradients_match_resolved_differences():
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
@@ -302,7 +298,6 @@ def test_bootstrap_current_profile_layout():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_bootstrap_current_solved_with_the_free_boundary():
     """LP QA at 0.5% beta: boundary and Redl current in one solve, with exact columns for both."""
     from vmex.core import bootstrap as bs
@@ -335,7 +330,6 @@ def test_bootstrap_current_solved_with_the_free_boundary():
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
 
 
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_fixed_boundary_bootstrap_model_matches_picard():
     """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is the Picard loop's, with exact columns."""
     from vmex.core import bootstrap as bs

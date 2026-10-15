@@ -2357,7 +2357,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     callbacks and the returned ``x``/``jac`` stay in the problem's units. A
     problem exposing ``accept_x`` (a
     :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
-    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`) must
+    :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`) must
     start at its accepted point, and each SLSQP major iterate is promoted with
     ``accept_x`` when its Jacobian is requested.
 
@@ -2562,7 +2562,7 @@ def minimize(
     units; ``problem.scales`` conditions SciPy internally. A problem exposing
     ``accept_x``, such as
     :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` or
-    :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`, promotes
+    :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`, promotes
     only accepted iterates and ``options["maxiter"]`` counts accepted steps.
     Besides SciPy's fields the result carries ``accepted_steps`` and
     ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,

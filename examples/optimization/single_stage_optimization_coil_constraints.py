@@ -106,7 +106,7 @@ BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, 
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
-# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermFreeBoundaryModel
+# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermsFreeBoundaryModel
 # bootstrap=, both arms), Redl-self-consistent on every half-grid surface, with I'(0) = 0 (a quasisymmetric bootstrap
 # current density vanishes on the axis with the trapped fraction, f_t ~ eps^(1/2)).
 BOOTSTRAP_IN_SOLVE = False
@@ -219,7 +219,7 @@ NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32              # toroidal x poloidal points of the B.n and clearance surfaces
-VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-term arm's virtual-casing grid
+VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-terms arm's virtual-casing grid
                                    # (quadrature 4 nfp 48 x 96)
 
 # ---- seeds, targets and restarts -------------------------------------------------------------------------------------
@@ -334,7 +334,7 @@ def bootstrap_input(inp, beta, device):
     """
     from vmex import optimize as opt
     from vmex.core.bootstrap import self_consistent_bootstrap
-    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+    from vmex.core.freeboundary_vc import ThreeTermsFreeBoundaryModel
 
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
@@ -383,9 +383,9 @@ def bootstrap_input(inp, beta, device):
                   f"Picard {picard.iterations} iterations (converged {picard.converged})", flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
-        model = ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+        model = ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
                                            fixed_boundary=True)
-        current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
+        current = model.solve_boundary(model.params0, None, max_nfev=30)
         state, _, params, _ = current["aux"]
         print(f"Redl current on its {current['x'].size} knots: max relative mismatch "
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
@@ -438,7 +438,7 @@ def vacuum_iota(inp):
 
     vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
                      ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
-    device = jax.devices()[0]  # pinned, as ThreeTermFreeBoundaryModel: unpinned, its certification ran on the host CPU
+    device = jax.devices()[0]  # pinned, as ThreeTermsFreeBoundaryModel: unpinned, its certification ran on the host CPU
     cfg = im.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
     base = im.params_from_input(vacuum, device=device)
     im.runtime_from_params(base, cfg)  # its setup, built here: run_setup cannot be traced inside a jit
@@ -801,7 +801,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
     The design variables are the boundary modes up to ``MAX_MODE`` (RBC(0,0) fixed), PHIEDGE (with ``FREE_PHIEDGE``),
     the coil currents and shapes, as in ``main``; the current is no design variable and no constraint row: every trial
     solves the fixed-boundary equilibrium together with a current that is Redl's on every half-grid surface
-    (``ThreeTermFreeBoundaryModel(fixed_boundary=True, bootstrap=)``, ``I'(0) = 0``). The objective and the
+    (``ThreeTermsFreeBoundaryModel(fixed_boundary=True, bootstrap=)``, ``I'(0) = 0``). The objective and the
     other rows are ``main``'s. A row ``h`` then has the design gradient
 
         dh/dp = dh/dp|_current - lambda^T dR/dp,   lambda = J_c (J_c^T J_c)^-1 dh/dc,
@@ -817,13 +817,12 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
     from vmex import optimize as opt
     from vmex.core import implicit as im
     from vmex.core import virtual_casing as vc
-    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+    from vmex.core.freeboundary_vc import ThreeTermsFreeBoundaryModel
     from vmex.core.optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
     checking = bool(args.check_gradient)  # central differences need every trial solved tight
-    model = ThreeTermFreeBoundaryModel(inp, bootstrap=redl_profiles(inp)[0], bootstrap_helicity=REDL_HELICITY,
+    model = ThreeTermsFreeBoundaryModel(inp, bootstrap=redl_profiles(inp)[0], bootstrap_helicity=REDL_HELICITY,
                                        fixed_boundary=True, chunk=args.chunk, trial_ftol=None if checking else 1e-11)
-    current_ftol = 1e-14 if checking else 1e-8
     fixed, nc = model.fixed, model.x0.size
     vary_phiedge = FREE_PHIEDGE
     phiedge0 = float(fixed.phiedge)
@@ -856,7 +855,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
 
     state0, _ = model.seed
     ctx0 = im.runtime_from_params(model.params0, model.cfg)
-    # A fixed singular quadrature (4 nfp nphi x 2 ntheta, the three-term arm's default): the planner's error estimate
+    # A fixed singular quadrature (4 nfp nphi x 2 ntheta, the three-terms arm's default): the planner's error estimate
     # alone can exhaust a GPU on an optimized boundary.
     precision = vc.plan_vc_precision(vc.surface_field_data_from_state(fixed, state0, runtime=ctx0,
                                                                       nphi=VC_GRID_BOOTSTRAP,
@@ -988,7 +987,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         params = plasma_params(model.params0, jnp.asarray(x))
         try:
             result = model.solve_boundary(params, None, x0=anchor.get("v"), jacobian=anchor.get("J_c"),
-                                          ftol=current_ftol, max_nfev=30)
+                                          max_nfev=30)
         except (vj.VmecError, RuntimeError) as error:
             print(f"[trial] failed: {str(error)[:300]}", flush=True)
             counters["failed"] += 1
@@ -1011,7 +1010,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         J, dz, batch, aux = model.linearize(sol["x"], sol["aux"], None, extra=extra)
         # polish the current with this Jacobian, and linearize again where it went if it gained
         polished = model.solve_boundary(plasma_params(model.params0, xj), None, x0=sol["x"], jacobian=J[:, :nc],
-                                        ftol=1e-10, max_nfev=10)
+                                        max_nfev=10)
         if 0.5 * polished["rows"] @ polished["rows"] < 0.9 * 0.5 * sol["rows"] @ sol["rows"]:
             sol.update(x=polished["x"], aux=polished["aux"])
             J, dz, batch, aux = model.linearize(sol["x"], sol["aux"], None, extra=extra)

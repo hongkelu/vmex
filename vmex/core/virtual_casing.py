@@ -101,6 +101,12 @@ except ImportError as _exc:  # pragma: no cover - exercised only when the dep is
 #: Vacuum permeability [T m / A] (VMEC2000 ``mu0`` convention).
 MU0 = 4.0e-7 * np.pi
 
+#: Accuracy (decimal digits of the plasma field relative to ``|B|``) the singular patches of the on-surface virtual
+#: casing are planned to.  Its error enters ``B_out . n`` directly, so it must stay an order below the interface
+#: residuals a free boundary reaches (finite beta: 2.4e-4 of ``|B|``, LP QA 2.5 %, 12 x 12): 5 digits.  Measured on
+#: that deck at 8 x 8 (``paper/runs/b23``): 4 digits move ``B.n / |B|`` pointwise by up to 1.4e-4, 5 and 6 agree.
+VC_DIGITS = 5
+
 __all__ = [
     "MU0",
     "VmecSurfaceFieldData",
@@ -195,8 +201,8 @@ def _get(wout, name):
 def surface_field_data_from_wout(
     wout,
     *,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -215,6 +221,9 @@ def surface_field_data_from_wout(
     - ``normal`` / ``area_vector`` = ``e_theta x e_phi`` (oriented outward),
 
     all in the package's structure-of-arrays layout ``(3, nphi, ntheta)``.
+    ``nphi`` and ``ntheta`` have no default: the grid that resolves a surface
+    and its field depends on their mode content (see
+    :func:`~vmex.core.freeboundary_vc.interface_grid`).
 
     The construction is validated by ``|B_total . n| / |B|`` ~ 1e-16 on a
     converged equilibrium (the VMEC free-boundary condition), see the module test.
@@ -533,8 +542,8 @@ def surface_field_data_from_state(
     state,
     *,
     runtime=None,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -575,8 +584,8 @@ def _carries_asymmetric_harmonics(state) -> bool:
 def surface_field_data_from_high_order(
     state,
     *,
-    nphi: int = 32,
-    ntheta: int = 32,
+    nphi: int,
+    ntheta: int,
     use_stellsym: bool = True,
 ) -> "VmecSurfaceFieldData":
     """Build virtual-casing surface data directly from a polished native state.
@@ -660,7 +669,7 @@ def surface_field_data_from_high_order(
 def plan_vc_precision(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = 4,
+    digits: int = VC_DIGITS,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -688,7 +697,7 @@ def plan_vc_precision(
 def plasma_field_on_boundary(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = 4,
+    digits: int = VC_DIGITS,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -1184,7 +1193,7 @@ class PlasmaVacuumInterface:
         surface_data: "VmecSurfaceFieldData",
         *,
         p_edge: float = 0.0,
-        digits: int = 4,
+        digits: int = VC_DIGITS,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,
@@ -1230,11 +1239,11 @@ class PlasmaVacuumInterface:
         cls,
         wout,
         *,
-        nphi: int = 32,
-        ntheta: int = 32,
+        nphi: int,
+        ntheta: int,
         s_index: int = -1,
         p_edge: float = 0.0,
-        digits: int = 4,
+        digits: int = VC_DIGITS,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,

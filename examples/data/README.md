@@ -19,7 +19,7 @@ examples, tests, and documentation.
   (nfp 2 rotating ellipse, R0 = 1 m, aspect 5) and the stage-two coils of
   the coil-constraint single-stage examples
   (`../optimization/single_stage_*_coil_constraints.py` and
-  `single_stage_free_boundary_optimization_three_term.py`), one coil file per
+  `single_stage_free_boundary_optimization_three_terms.py`), one coil file per
   `COIL_CASE` with `-` written `_`; `ESSOS_coils_ellipse5.json` is the default
   case's. The coils were fitted by `benchmarks/coil_constraints_fit_coils.py`.
 - `input.ncsx_c09r00_free_lowres` + `mgrid_ncsx_c09r00_small.nc`: second

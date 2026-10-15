@@ -7,13 +7,13 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (hongkelu/vmex)
 
-- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
-  solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no sheet
-  current (a finite-beta QA step: 265 to 74 s); `from_loss(..., field_from_parameters=, plasma_from_parameters=)`
-  optimizes PHIEDGE and the current profile. Derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or
-  O(ns) block factors (`structured`, 15.4 to 7.8 GiB at 8x8, NS 51). New: `ThreeTermFreeBoundaryModel`,
-  `solve_free_boundary(include_edge_in_convergence=True)`, `opt.axis_iota`, `opt.axis_field_strength`,
-  `opt.major_radius`, `VmecProblem.from_tuples(vary_phiedge=True)` and `plot_optimization_movie(frame_labels=)`.
+- `boundary_condition="three_terms"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`):
+  one fixed-boundary state per boundary (`freeze_m1`), a square Newton system for B.n, pressure balance and no sheet
+  current (vacuum: least squares of B.n; LP QH 12 x 12: B.n 4.9e-4 to 4.2e-5, field lines 21 to 1.2 mm; a
+  finite-beta QA step 265 to 74 s); `ThreeTermsFreeBoundaryModel`; `from_loss(..., field_from_parameters=,
+  plasma_from_parameters=)` optimizes PHIEDGE and the current. Derivatives: dense LU (`forward_dense_jax`) or O(ns)
+  block factors (`structured`, 15.4 to 7.8 GiB at 8x8). New: `solve_free_boundary(include_edge_in_convergence=True)`,
+  `opt.axis_iota`, `opt.axis_field_strength`, `opt.major_radius`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
 
 ## 0.11.10 - 2026-10-13
 

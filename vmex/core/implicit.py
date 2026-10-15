@@ -43,11 +43,19 @@ inherits the preconditioning for free.  The raw-force formulation
 (``formulation="raw"``) is kept for the informational with/without-
 preconditioner comparison in the tests.
 
-The m=1 constrained Z force is evaluated in its converged branch (zeroed —
-``residue.f90`` zeroes ``gcz(m=1)`` once ``fsqz < 1e-6``, which always holds
-at the fixed point), so the corresponding constrained combinations are *not*
-degrees of freedom: they are frozen at their converged values, exactly
-mirroring the forward solver's behavior near convergence.
+The constrained m=1 combination (``zcs_int``, the antisymmetric ``Z_sin(m=1,
++/-n)`` pair) is an angle gauge: ``residue.f90`` zeroes its force, so it is not
+a degree of freedom.  VMEC2000 releases that force until ``fsqz < 1e-6`` and
+then freezes the combination wherever the path left it, which makes the
+converged state depend on the start (1e-4..1e-3 in vacuum, ~1e-1 in lambda at
+finite beta).  VMEX fixes the gauge instead (:attr:`ImplicitConfig.freeze_m1`,
+``RunSetup.freeze_m1``, :func:`~vmex.core.residuals.pin_m1_gauge`): the host
+solves hold the combination at ``sqrt(s) * edge`` from the first iteration, so
+the state is a single-valued function of the parameters whatever the seed, and
+:func:`_assemble` carries the profile's boundary dependence, so the implicit
+derivative is the derivative of the re-solve map.  ``lasym`` runs keep
+VMEC2000's rule (the fixed gauge is verified as a relabelling for
+stellarator-symmetric runs only; docs/explanation/validation.md).
 
 Anchoring the fixed point
 -------------------------
@@ -87,9 +95,9 @@ naive re-solve FD is *not* a valid reference — it can sign-flip; use
 :func:`frozen_path_directional_fd`, which reproduces the adjoint to solver
 accuracy (full rationale on that function; ``tests/test_implicit_grad.py``).
 
-At a tight ``ftol``, with the state anchored as above, the difference that
-remains between the adjoint and a cold re-solve FD is the released m=1
-``Z_sin`` pair combination alone.  The linearization holds it at its
+With ``freeze_m1=False`` (VMEC2000's rule), at a tight ``ftol`` and the state
+anchored as above, the difference that remains between the adjoint and a cold
+re-solve FD is the frozen m=1 ``Z_sin`` pair combination alone.  The linearization holds it at its
 converged value.  Each cold solve instead freezes it wherever its own path
 left it, which moves it by about 0.5 per unit boundary change on
 ``li383_low_res``.  In the continuum this coordinate is an angle gauge, so
@@ -180,8 +188,8 @@ from .geometry import (
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .residuals import (
-    m1_physical_to_constrained, m1_residue_rotation, scalxc_scale_force,
-    zero_m1_z_force,
+    m1_physical_to_constrained, m1_residue_rotation, pin_m1_gauge,
+    scalxc_scale_force, zero_m1_z_force,
 )
 from .setup import RadialGrids, flux_profiles, interior_guess
 from .solver import (
@@ -350,12 +358,30 @@ class ImplicitConfig:
     #: 5e-07 against the frozen-path FD, for 14-26% of a forward solve and
     #: 9-14% of a value-and-gradient across the gradient decks.
     refine_tol: float = 1.0e-10
+    #: Fix the angle gauge of the constrained m=1 combination (default; see
+    #: :func:`vmex.core.residuals.pin_m1_gauge` and ``RunSetup.freeze_m1``):
+    #: the host solves hold it at ``sqrt(s) * edge`` from the first iteration,
+    #: so every solve of one boundary lands on one state whatever its seed,
+    #: and :func:`_assemble` carries that profile's boundary dependence, so
+    #: the implicit derivative is the derivative of the re-solve map.
+    #: ``False`` is VMEC2000's rule (the combination frozen wherever the
+    #: host's path left it): seeded and cold solves then differ along it.
+    freeze_m1: bool = True
     #: Largest ``(fsqr + fsqz + fsql) / ftol`` accepted for implicit
     #: differentiation when a trial exhausts its iteration budget.  The
     #: adjoint assumes ``F = 0``, so this is the same strict ``1e2`` bar as
-    #: every :mod:`vmex.core.optimize` entry point; the free-boundary config
-    #: tightens it to ``1.0``.
+    #: every :mod:`vmex.core.optimize` entry point (the three-terms free
+    #: boundary keeps it, and certifies by ``certify_refined`` as well).
     max_fsq_ratio: float = 1.0e2
+    #: Certified (status 0) only if the Newton refinement lands the state at
+    #: ``|F| <= refine_tol``; a refinement that stops above it is status 4.
+    #: Off by default, where the refinement is an accuracy gain over a state
+    #: the host solve already certified (``max_fsq_ratio``).  The three-terms
+    #: free boundary turns it on: its interface rows and their implicit
+    #: derivatives are taken at the refined state, and a refinement that
+    #: stopped in ``(refine_tol, _REFINE_FAR_STALL * refine_tol]`` (status 0
+    #: otherwise) would leave them at a state that is not the root.
+    certify_refined: bool = False
     #: seed repeated host solves from the last converged state of this config
     #: (optimization trials; the fixed point — hence the gradient — is
     #: unchanged, only the iteration count drops).  Makes the callback
@@ -393,6 +419,8 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
+    freeze_m1: bool | None = None,
+    certify_refined: bool = False,
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
 
@@ -400,6 +428,8 @@ def make_config(
     an iteration-limited solve still counts as derivative-certified (status 0
     of :func:`solve_implicit_status`); a converged solve always does.  The
     default ``1e2`` matches :func:`vmex.core.optimize.make_problem`.
+    ``certify_refined`` also requires the Newton refinement to reach
+    ``refine_tol`` (:attr:`ImplicitConfig.certify_refined`).
 
     ``device`` is the already-RESOLVED placement device (pass the result of
     :func:`vmex.core.device.resolve_implicit_device`, not a policy string) —
@@ -429,7 +459,11 @@ def make_config(
         adjoint_gcrot_m=int(adjoint_gcrot_m), adjoint_gcrot_k=int(adjoint_gcrot_k),
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
+        certify_refined=bool(certify_refined),
         hot_restart=bool(hot_restart), device=device,
+        # fixed boundary (incl. the three-terms interior): fixed gauge; VMEC + NESTOR free boundary and lasym:
+        # VMEC2000's rule
+        freeze_m1=(not (bool(inp.lfreeb) or bool(inp.lasym))) if freeze_m1 is None else bool(freeze_m1),
     ))
 
 
@@ -568,7 +602,7 @@ def _template_runtime(cfg: ImplicitConfig) -> SolverRuntime:
         return _device_pin(cfg, prepare_runtime(
             cfg.inp, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, lconm1=cfg.lconm1,
-            use_fft=False,
+            freeze_m1=cfg.freeze_m1, use_fft=False,
         ))
 
 
@@ -977,7 +1011,8 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
               P: Callable, edge_mask: SpectralState) -> SpectralState:
-    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``.
+    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``, with the
+    fixed m=1 gauge (``RunSetup.freeze_m1``) set from ``boundary(p)``.
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
@@ -994,6 +1029,9 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
+    if setup.freeze_m1 and setup.lconm1 and setup.lthreed:
+        # the fixed gauge follows the boundary (it equals ``frozen`` at the solved parameters)
+        out["Z_sin"] = pin_m1_gauge(out["Z_sin"], boundary["Z_sin"], modes=rt_p.modes)
     return SpectralState(**out)
 
 
@@ -1374,12 +1412,14 @@ _HOST_ERROR: list[VmecError] = []
 _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
     weakref.WeakKeyDictionary()
 
-# cfg -> (params-bytes key, refined state, stalled): one-entry memo mirroring
-# _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips the second
-# equilibrium solve also skips the second frozen-residual measurement.
-# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
+# cfg -> (params-bytes key, refined state, stalled, |F|): one-entry memo
+# mirroring _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips
+# the second equilibrium solve also skips the second frozen-residual
+# measurement.  ``stalled`` marks an anchor abandoned far from the root
+# (_REFINE_FAR_STALL); ``|F|`` is the refined state's force residual, measured
+# for ``certify_refined`` configs only (``nan`` otherwise).
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float]] = weakref.WeakKeyDictionary()
 
 # cfg -> whether its latest _refined_state call stopped at _REFINE_FAR_STALL.
 _ANCHOR_STALLED: dict[int, bool] = {}
@@ -1427,14 +1467,14 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
         # (VMEC2000 behaves the same way).
         run = lambda init: solve_multigrid(  # noqa: E731
             inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
-            lconm1=cfg.lconm1, raise_on_max_iterations=False,
+            lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
             initial_state=init, use_fft=False,
                 device=solver_device)
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, mode=cfg.mode,
-            lconm1=cfg.lconm1, initial_state=init, use_fft=False,
+            lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, initial_state=init, use_fft=False,
                 device=solver_device)
     # Seed ladder: perturbation prediction -> plain hot restart -> cold.
     # A bad warm seed must not fail the trial (only the initial guess is at
@@ -1549,7 +1589,11 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
             _LAST_REFINEMENT_CORRECTION[cfg] = correction
         else:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
-        hit = (key, refined, stalled)
+        residual = np.nan
+        if cfg.certify_refined:
+            residual = float(_tree_norm(residual_fn(cfg, refined, dof_mask)(
+                _dof_projector(cfg, dof_mask)(refined), params)))
+        hit = (key, refined, stalled, residual)
         _LAST_REFINED[cfg] = hit
     return hit[1]
 
@@ -1935,8 +1979,10 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
     """Status-returning host callback for optimization trial points.
 
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
-    when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
-    3 when the fixed-point anchor stalled far from the root.
+    when the iteration budget was exhausted above ``cfg.max_fsq_ratio``,
+    3 when the fixed-point anchor stalled far from the root, and 4 (with
+    ``cfg.certify_refined``) when the refinement stopped above
+    ``cfg.refine_tol``.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
     residual is the host solver's own, from before the fixed-point refinement
@@ -1989,6 +2035,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
+        if (status == 0 and cfg.certify_refined and np.isfinite(cfg.refine_tol)
+                and not (refined is not None and refined[0] == hit[0] and refined[3] <= cfg.refine_tol)):
+            status = 4  # the refinement missed refine_tol: the state is not the root
         if status != 0:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         return state, mask, np.int32(status), np.float64(fsq), np.float64(ratio)

@@ -818,8 +818,8 @@ class HalfMeshCurrent:
     ``s_j = (j - 1/2) / (ns - 1)``.  Its values there (A per unit ``s``) are the unknowns, and each surface
     has the row ``weight (I'(s_j) - I'_Redl(s_j)) / I'_ref / sqrt(ns - 1)``
     (:func:`redl_current_derivative`; ``I'_ref`` the largest starting value): a square block, so the
-    current is Redl's wherever the equilibrium is.  The three-term free boundary solves it together with
-    the boundary (``ThreeTermFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
+    current is Redl's wherever the equilibrium is.  The three-terms free boundary solves it together with
+    the boundary (``ThreeTermsFreeBoundaryModel(bootstrap=)``), :func:`self_consistent_bootstrap` with
     ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
 
     ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped

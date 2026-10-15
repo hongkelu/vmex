@@ -71,12 +71,13 @@ def test_exact_hessian_matches_gradient_differences(model_and_field):
 
 @pytest.mark.usefixtures("_module_jit_enabled")
 def test_solve_is_start_independent(model_and_field):
-    """Two starts (the deck, and a random displacement of it) reach the same boundary at finite beta,
+    """Two starts (the deck, and the deck shrunk by 1 %) reach the same boundary at finite beta,
     with a positive-definite reduced Hessian."""
     model, field = model_and_field
-    nb = model.n_boundary
-    start = model.x0.copy()
-    start[:nb] += 0.05 * model.x_scale[:nb] * np.random.default_rng(1).standard_normal(nb)
+    deck = model.fixed  # the deck's boundary shrunk by 1 % (every m >= 1 mode) as a displacement of it
+    m = np.arange(np.asarray(deck.rbc).shape[1])[None, :] >= 1
+    shrunk = replace(deck, rbc=np.where(m, 0.99, 1.0) * np.asarray(deck.rbc), zbs=np.where(m, 0.99, 1.0) * np.asarray(deck.zbs))
+    start = np.r_[model.displacement_of(shrunk), model.x0[model.n_boundary:]]
     ends = []
     for x0 in (None, start):
         out = model.solve_boundary(model.params0, field, x0=x0, max_iter=40)
@@ -145,7 +146,7 @@ def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
                                  **OPTIONS))
     model = problem.model
     m = model.n_constraint_rows
-    assert m == model.x0.size - model.n_boundary > 0
+    assert m == 1 + model.x0.size - model.n_boundary > 1  # the net-current row, then a row per current knot
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
     sol = problem._record(x0)

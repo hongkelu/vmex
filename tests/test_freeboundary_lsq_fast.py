@@ -65,7 +65,7 @@ def test_vacuum_rows_newton_with_exact_hessian():
         np.testing.assert_allclose(so_p["hvp"](V), so["H"][:3], rtol=1e-8, atol=1e-10 * np.max(np.abs(so["H"])))
     finally:
         model._hessian_columns = columns
-    assert model.hessian_chunk == 1 and calls[0] == 3 and len(calls) == 4
+    assert model.hessian_chunk == 2 and calls[0] == 3 and len(calls) == 3  # blocks of two, never one column
     accepted = []
     out = model.solve_boundary(model.params0, field, max_iter=60, verbose=2, callback=accepted.append)
     assert out["converged"], out["status"]

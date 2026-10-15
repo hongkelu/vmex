@@ -36,6 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from . import virtual_casing as vc
+from .loops import map_columns
 from .errors import TrialRejected
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
                               _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
@@ -133,7 +134,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     def __init__(self, inp: VmecInput, *, hessian_chunk=None, **options):
         super().__init__(inp, **options)
-        self.hessian_chunk = int(hessian_chunk or self.chunk)
+        self.hessian_chunk = max(2, int(hessian_chunk or self.chunk))  # >= 2 (vmex.core.loops)
         # The net-current row and the bootstrap rows (the last rows) are equality constraints of the free-boundary
         # solve, not least-squares rows: G = G_coil and the current is Redl's, whatever the rows' scale.
         self.n_constraint_rows = 0 if self.fixed_boundary else 1 + (0 if self.bootstrap is None
@@ -275,7 +276,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 return (jax.vmap(lambda d: tree_dot(d, wz))(basis_z)
                         + jax.vmap(lambda d: tree_dot(d, wp))(dp_basis))
 
-            return jax.lax.map(column, (dz_cols, dp_cols), batch_size=self.hessian_chunk)
+            return map_columns(column, (dz_cols, dp_cols), batch_size=self.hessian_chunk)
 
         def project(dp_basis, tree):
             return jax.vmap(lambda d: tree_dot(d, tree))(dp_basis)
@@ -351,7 +352,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             count = jax.tree.leaves(dz_cols)[0].shape[0]
             out, start = [], 0
             while start < count:
-                width = min(self.hessian_chunk, count)
+                width = max(2, min(self.hessian_chunk, count))  # >= 2: no one-tangent program (vmex.core.loops)
 
                 def take(a):  # this block's columns; the last block zero-padded to the width (one executable)
                     block = a[start:start + width]
@@ -365,9 +366,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                                                                  jax.tree.map(take, dz_cols),
                                                                  jax.tree.map(take, dp_cols), dz_b, dp_b))
                 except jax.errors.JaxRuntimeError as error:
-                    if "RESOURCE_EXHAUSTED" not in str(error) or width == 1:
+                    if "RESOURCE_EXHAUSTED" not in str(error) or width <= 2:
                         raise
-                    self.hessian_chunk = max(1, width // 2)
+                    self.hessian_chunk = max(2, width // 2)
                     continue
                 out.append(block[:count - start])
                 start += width

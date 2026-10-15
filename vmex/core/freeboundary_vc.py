@@ -23,7 +23,8 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
 - vacuum (no pressure, no plasma current): ``B_out = B_coil`` is an explicit function of the boundary, and the
   rows are the stationarity of the area-weighted mean square of ``B_coil . n`` in ``h``
   (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
-  Jacobian.  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
+  Jacobian.  ``h`` also has the poloidal harmonic ``m = mpol``, where the B.n that the top modes leave lies
+  (known-answer benchmark, 8 x 8: field lines 0.34 -> 0.10 mm).  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
   uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
 - finite beta: the same stationarity with the plasma's own response to ``h`` left out of the test functions:
   a normal displacement ``h`` changes ``B . N`` by ``-|N| B_t . grad h`` (``N`` the area normal, ``B_t`` the
@@ -228,20 +229,20 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
 _MAP_GRID_RTOL = float(np.sqrt(np.finfo(float).eps))
 
 
-def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None):
+def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, direction=None, extend=False):
     """:func:`_normal_displacement_map_on` on a grid that resolves it: from four points per boundary harmonic in
     each direction (``4 mpol`` poloidal, ``4 ntor + 4`` per field period), doubled until a doubling changes the map
     by less than ``_MAP_GRID_RTOL`` of its largest entry.  The displacement times the direction field
     ``g = n / (n_R^2 + n_Z^2)`` is not band-limited, so the fit depends on the grid until it is resolved.
     ``ntheta, nzeta`` fix the grid instead (no convergence check)."""
     if ntheta is not None and nzeta is not None:
-        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction)
+        return _normal_displacement_map_on(inp, max_mode, alpha, int(ntheta), int(nzeta), direction, extend)
     ntor, mpol = (np.shape(inp.rbc)[0] - 1) // 2, np.shape(inp.rbc)[1]
     nt, nz = 4 * mpol, 4 * ntor + 4
-    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+    out = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
     while True:
         nt, nz = 2 * nt, 2 * nz
-        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction)
+        finer = _normal_displacement_map_on(inp, max_mode, alpha, nt, nz, direction, extend)
         change = np.max(np.abs(finer[0] - out[0])) / np.max(np.abs(finer[0]))
         out = finer
         if change <= _MAP_GRID_RTOL:
@@ -251,15 +252,23 @@ def _normal_displacement_map(inp, max_mode, alpha=1.2, ntheta=None, nzeta=None, 
                              f"{nt} x {nz})")
 
 
-def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
+def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction, extend=False):
     """Boundary coordinates as a normal displacement of ``inp``'s surface: ``(M, modes, x_scale)``.
 
     ``h(theta, zeta) = sum h_mn cos(m theta - n nfp zeta)`` over ``modes`` (those of
-    :func:`~vmex.core.optimize.pack_boundary`, then ``(0, 0)``) moves each boundary point along the surface
-    normal, within its ``phi = zeta`` plane: ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit
-    normal, so its normal displacement is ``h``.  Its truncated Fourier fit is linear in ``h``: the packed
-    boundary coordinates are ``x0 + M h``.  Tangential moves (relabellings ``theta -> theta + delta(theta,
-    zeta)``, which no interface condition sees) are thereby absent from the unknowns.
+    :func:`~vmex.core.optimize.pack_boundary`, with ``extend`` the next poloidal harmonic ``m_top + 1`` on the
+    same toroidal modes, then ``(0, 0)``) moves each boundary point along the surface normal, within its ``phi = zeta`` plane:
+    ``(dR, dZ) = h (N_R, N_Z) / (N_R^2 + N_Z^2)`` with ``N`` the unit normal, so its normal displacement is
+    ``h``, or along ``direction``.  Its truncated Fourier fit is linear in ``h``: the packed boundary
+    coordinates are ``x0 + M h``.
+
+    The harmonic ``m_top + 1`` has no coefficient of its own: through the poloidal variation of the transport
+    direction it moves the top coefficients ``m_top``.  Without it the ``B . n`` that the boundary's top modes
+    leave at ``m_top + 1`` is outside every row's reach and its size is set by the reference's labelling (the
+    known-answer benchmark at 8 x 8: 1.4e-3 of B.n's 1.6e-3 RMS); with it the least squares sees and lowers it
+    (vacuum, where the rows are the exact least squares).
+    The remaining tangential moves (relabellings ``theta -> theta + delta(theta, zeta)``, which no interface
+    condition sees) stay absent from the unknowns.
     """
     from .optimize import _dof_modes, pack_boundary
 
@@ -290,7 +299,9 @@ def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction):
     A_r = cos[keep_r].reshape(int(keep_r.sum()), -1).T
     A_z = sin[keep].reshape(int(keep.sum()), -1).T
     pinv_r, pinv_z = np.linalg.pinv(A_r), np.linalg.pinv(A_z)
-    modes = list(_dof_modes(inp, max_mode)) + [(0, 0)]
+    m_top, n_top = min(int(max_mode), mpol - 1), min(int(max_mode), ntor)
+    extra = [(m_top + 1, n) for n in range(-n_top, n_top + 1)] if extend else []
+    modes = list(_dof_modes(inp, max_mode)) + extra + [(0, 0)]
     zero = replace(inp, rbc=np.zeros_like(rbc), zbs=np.zeros_like(zbs))
     columns = []
     for m, n in modes:
@@ -656,7 +667,8 @@ class ThreeTermsFreeBoundaryModel:
         if self.fixed_boundary:
             self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
         else:
-            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode)
+            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode,
+                                                                                        extend=self.vacuum)
             self.x0 = np.zeros(normal_map.shape[1])
         self.n_boundary = nb = self.x0.size
         if self.bootstrap is not None:
@@ -707,7 +719,7 @@ class ThreeTermsFreeBoundaryModel:
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
                 return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
 
-            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial)
+            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial, extend=self.vacuum)
             self._normal_map = jnp.asarray(normal_map)
         self._implicit_setup()
         if not self.fixed_boundary:
@@ -1134,7 +1146,7 @@ class ThreeTermsFreeBoundaryModel:
             ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
         return ok
 
-    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+    def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
         A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
@@ -1144,6 +1156,8 @@ class ThreeTermsFreeBoundaryModel:
         produces.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
+        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that has to be shortened
+        (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1159,6 +1173,7 @@ class ThreeTermsFreeBoundaryModel:
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
+        damped = False
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1204,6 +1219,11 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
+            if undamped and fresh and t < 1.0:
+                if accepted is not None:  # keep the shortened step's progress
+                    x, (r, aux), steps = x + t * p, accepted, steps + 1
+                damped = True
+                break
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
@@ -1232,22 +1252,33 @@ class ThreeTermsFreeBoundaryModel:
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
-                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
+                    converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
 
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
+
+        At finite beta the transported rows carry the field in their test functions, so their Newton basin is
+        narrow: far from the root the field's change along a step is a second-order term that the linearization
+        leaves out, and Newton on them stalls (LP QA 2.5 %, 12 x 12, 5 mm random start).  The plain sine moments
+        of ``B . n`` on the same modes have no field in their test functions and converge from farther.  A cold
+        solve (no ``jacobian``) therefore leaves the transported rows at their first Newton step that has to be
+        shortened, solves the plain moments from the start (the transported rows' steps can lead them astray),
+        and then the transported rows from the moments' root
+        (inside their basin: the two roots differ by the plasma's response in the test functions).  A warm solve
+        (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes the same route when Newton on
+        the transported rows stalls.
         """
-        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        cold = jacobian is None and not (self.vacuum or self.fixed_boundary)
+        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                    undamped=cold)
         if out["converged"] or self.vacuum or self.fixed_boundary:
             return out
-        # The transported rows carry the field in their test functions, and far from the answer Newton on them
-        # can stall; the plain moments (the same boundary modes) converge from farther: solve them first, then
-        # the transported rows from there.
         if verbose:
-            print("Newton on the transported rows stalled: plain moments first", flush=True)
+            print(f"Newton on the transported rows {'needs damping' if out['damped'] else 'stalled'}: "
+                  "plain moments first", flush=True)
         self._moments = True
         try:
             start = self._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)
@@ -1396,16 +1427,28 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._cache[key]
         self.stats["trials"] += 1
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        anchor, starts, J = self._anchor, [None], None
-        if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
+        # Warm starts first, each with the anchor's Jacobian: its first-order boundary prediction, then its own
+        # boundary.  They are near the answer by construction, so Newton from them must not need damping; one that
+        # does is outside the Newton basin (a large design step) and hands over at once.  The last start is the
+        # cold solve from the deck, the same answer by any route (QH vacuum 12 x 12, single-stage step 1: the warm
+        # starts sat at cost 5e-3 and 6e-2 and crawled with damped steps for 990 s; the seed's cold solve from the
+        # deck had converged in 5 full steps).
+        starts = [(None, None)]
+        anchor = self._anchor
+        if anchor:
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
-            starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
+            starts = [(anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["J_b"]),
+                      (anchor["b"], anchor["J_b"]), (None, None)]
         fit = None
-        for start in starts:
+        for start, J in starts:
             try:
-                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, max_nfev=self.boundary_max_nfev)
+                if J is None:  # cold: the full route (solve_boundary's damping lead-in at finite beta)
+                    fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev)
+                else:
+                    fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
+                                                      max_nfev=self.boundary_max_nfev, undamped=True)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start

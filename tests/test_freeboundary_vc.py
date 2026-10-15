@@ -252,7 +252,9 @@ def test_vacuum_free_boundary_agrees_with_nestor():
 _FINITE_BETA_LEAK = pytest.mark.xfail(strict=True, reason=(
     "known limitation: the finite-beta rows act on the boundary's modes (two below the interior's), and B.n "
     "outside them is not controlled (the solve warns); LP QA 0.5 % beta with its bundled coils at mpol 4 ends "
-    "at B.n 6.0e-3 (deck 6.0e-3), at mpol 6 1.15e-3 (deck 1.17e-3); see docs/explanation/validation.md"))
+    "at B.n 6.0e-3 (deck 6.0e-3), at mpol 6 1.15e-3 (deck 1.17e-3). At mpol 4 most of it (4.3e-3) lies outside "
+    "even the interior's modes: the mpol-4 truncation of the deck, whose B.n at 12 modes is 1.2e-3 (a 12-mode "
+    "re-solve of the mpol-4 deck reads 4.8e-3); see docs/explanation/validation.md"))
 
 
 @needs_vc
@@ -285,7 +287,9 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     for fit in fits:
         assert fit.success and fit.cost < 1e-18
         assert fit.boundary_residual.normal < fit.initial_boundary_residual.normal
-    np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-10)
+    # one boundary, to the solver's own step tolerance (newton_step_converged: sqrt(eps) R0 of normal displacement)
+    gap = fvc.displacement_rms(fits[1].x - fits[0].x, model.boundary_modes)
+    assert fvc.newton_step_converged(gap, 0.0, model.R0), gap
     for fit in fits:  # the reported equilibrium is the rows' state, re-solved tight on its own rung
         np.testing.assert_allclose(np.asarray(fit.equilibrium.solution.R_cos), np.asarray(fit.aux[0].R_cos),
                                    rtol=0, atol=1e-6)
@@ -437,23 +441,36 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
     # a boundary fit that did not converge is a failed trial, never a value (whatever its residual)
-    solve = problem.model.solve_boundary
-    problem.model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model = problem.model
+    solve, newton = model.solve_boundary, model._newton_boundary
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model._newton_boundary = lambda *args, **kwargs: dict(newton(*args, **kwargs), converged=False)
     failed = problem.stats["failed"]
     with pytest.raises(TrialRejected):
         problem.fun(x0 + 1.5e-3 * np.eye(2)[0])
     assert problem.stats["failed"] == failed + 1
-    calls = []  # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    # warm starts that need damping hand over to the cold solve from the deck, which finds the boundary
+    routes = []
 
-    def polish_stalls(*args, **kwargs):
-        calls.append(1)
-        return dict(solve(*args, **kwargs), converged=len(calls) == 1)
+    def warm_damped(*args, **kwargs):
+        if kwargs.get("jacobian") is None:  # the cold solve's own Newton
+            return newton(*args, **kwargs)
+        routes.append("warm")
+        return dict(newton(*args, **kwargs), converged=False, damped=True)
 
-    problem.model.solve_boundary = polish_stalls
+    def cold(*args, **kwargs):
+        routes.append("cold" if kwargs.get("jacobian") is None else "polish")
+        return solve(*args, **kwargs)
+
+    model._newton_boundary, model.solve_boundary = warm_damped, cold
+    problem.fun(x0 + 2e-3 * np.eye(2)[0])
+    assert routes == ["warm", "warm", "cold"]
+    model._newton_boundary = newton
+    # the trial's fit converges, the gradient's polish of it does not: no gradient either
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
     with pytest.raises(TrialRejected, match="polish"):
         problem.value_and_grad(x0 + 2.5e-3 * np.eye(2)[0])
-    problem.model.solve_boundary = solve
-
+    model.solve_boundary = solve
 
 def _lp_beta0p5_profiles(inp):
     """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""
@@ -740,8 +757,10 @@ def test_finite_beta_rows_are_the_transported_normal_field_moments():
 
 
 def test_finite_beta_newton_falls_back_on_the_plain_moments():
-    """Finite beta: when Newton on the transported rows stalls (here at a stationary point of the cost that is no
-    root), the plain moments are solved first and the transported rows from their answer."""
+    """Finite beta, cold solve: at the first Newton step on the transported rows that has to be shortened (here on
+    the way to a stationary point of the cost that is no root), the plain moments are solved from the start and the
+    transported rows from their answer; a warm solve (a given Jacobian) near the root stays on the transported
+    rows."""
 
     def rows(z, moments):
         return np.array([z[0] + 1.7693]) if moments else np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
@@ -751,9 +770,17 @@ def test_finite_beta_newton_falls_back_on_the_plain_moments():
 
     model = _stand_in(1, lambda z, tight=True: rows(z, model._moments), lambda z: jac(z, model._moments),
                       vacuum=False)
+    evaluated = []
+    evaluate = model.evaluate
+    model.evaluate = lambda z, *args, **kwargs: (evaluated.append((float(z[0]), model._moments)),
+                                                evaluate(z, *args, **kwargs))[1]
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
     assert out["converged"] and not model._moments
     np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
+    assert next(z for z, moments in evaluated if moments) == 0.0  # the moments start where the solve started
+    evaluated.clear()
+    warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6]), False))
+    assert warm["converged"] and not any(moments for _, moments in evaluated)
 
 
 class _Program:
@@ -943,3 +970,18 @@ def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
             rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
         fd = (rows[0] - rows[1]) / (2 * h)
         assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)
+
+
+def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
+    """Vacuum unknowns: the boundary modes, then m = mpol on every toroidal mode (it moves the top coefficients
+    through the poloidal variation of the transport direction), then (0, 0); the columns stay independent."""
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 4, 11)
+    top = max(inp.mpol - 1, inp.ntor)
+    M, modes, scale = fvc._normal_displacement_map(inp, top, extend=True)
+    M0, modes0, _ = fvc._normal_displacement_map(inp, top)
+    extra = [(inp.mpol, n) for n in range(-inp.ntor, inp.ntor + 1)]
+    assert modes == modes0[:-1] + extra + [(0, 0)] and M.shape == (M0.shape[0], M0.shape[1] + len(extra))
+    assert scale.size == len(modes)
+    s = np.linalg.svd(M, compute_uv=False)
+    assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
+    np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol

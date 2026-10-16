@@ -7,6 +7,9 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (hongkelu/vmex)
 
+- `opt.solve_equilibrium` raises `VmecConvergenceError` when the final stage stops at its iteration cap short of its
+  tolerance (was: returned the unconverged state silently; a QH evaluator re-solve ended at fsq 2.4e-8 against FTOL
+  1e-17 and was scored). `raise_on_max_iterations=False` is the explicit opt-out.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot on every half-mesh surface at any `ns`
   (was <= 97, VMEC2000's `ndatafmax`; echoes refit to 101 knots, `fit_aux_knots`), rows in the interface rows' units
   (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.

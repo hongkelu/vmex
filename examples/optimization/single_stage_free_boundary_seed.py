@@ -22,6 +22,7 @@ The seed is built in four stages, each to convergence:
    seed (``--seed-run``) at the root of its free-boundary equations.
 
 Vacuum (``--beta 0``) takes the same path with no pressure and no plasma field.
+The rotating ellipse is a QA start; QH and QI seeds need a starting shape matched to the configuration (future work).
 Stages 1-4 run here and write ``input.run`` (the deck), ``coils.initial.json``
 and ``seed_report.json`` (wall time and result of every stage) to ``--output``;
 then

@@ -147,3 +147,30 @@ def test_three_terms_chart_holds_no_seed_dependent_constant(seed):
     texts = [jax.jit(lambda x, c=c: c(x).gamma).lower(jnp.asarray(c.x0)).as_text() for c in charts]
     assert texts[0] == texts[1]
     np.testing.assert_allclose(charts[0].scales[:4], 0.05 * 1.3e5)  # current scales in A: relative x nominal
+
+
+def test_seed_interface_runs_the_virtual_casing_on_the_cpu(seed, monkeypatch):
+    """One seed gives one set of start coils: on the GPU the virtual-casing B_plasma differs by ~1e-14 between two
+    evaluations, which L-BFGS-B turned into start coils whose step-0 QS differed by 1 % (two builds of one Picard
+    result).  ``seed_interface`` computes it under the CPU device and returns arrays on the default device."""
+    from dataclasses import replace
+
+    import jax
+    import vmex as vj
+    from vmex import optimize as opt
+
+    deck = Path(__file__).resolve().parents[1] / "examples" / "data" / "input.LandremanPaul2021_QA_beta2p5_bootstrap"
+    inp = vj.VmecInput.from_file(str(deck)).change_resolution(mpol=3, ntor=3, ntheta=12, nzeta=16)
+    inp = replace(inp, lfreeb=False, ns_array=np.array([11]), niter_array=np.array([3000]),
+                  ftol_array=np.array([1e-10]))
+    wout = opt.solve_equilibrium(inp).wout
+    devices, from_wout = [], vj.PlasmaVacuumInterface.from_wout
+
+    def recorded(*args, **kwargs):
+        devices.append(jax.config.jax_default_device)
+        return from_wout(*args, **kwargs)
+
+    monkeypatch.setattr(vj.PlasmaVacuumInterface, "from_wout", staticmethod(recorded))
+    interface = seed.tt.seed_interface(wout, nphi=8, ntheta=8)
+    assert [getattr(d, "platform", None) for d in devices] == ["cpu"]
+    assert interface.B_plasma.shape == (3, 8, 8) and interface.B_plasma.devices() == {jax.devices()[0]}

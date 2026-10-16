@@ -750,6 +750,11 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     ``x0``'s surface, then the band is extended one mode at a time
     (:meth:`~ThreeTermsFreeBoundaryModel.with_band`), each band's Newton solve starting from the previous band's
     boundary (:meth:`~ThreeTermsFreeBoundaryModel.displacement_of`) and bootstrap current, up to ``model``'s band.
+    Newton on ``model``'s band and on each extended band ends when two fresh-Jacobian steps in a row have to be
+    shortened (``undamped``): from a point in the rows' Newton basin a refreshed Jacobian restores full steps, so
+    a second shortened one means the point is outside it -- a far start, or no root near (a minimum of
+    ``|rows|^2`` that is no root), which then costs two Jacobians and their backtracking instead of a crawl.
+    Band 1, the start of the continuation, takes damped steps.
     QA in vacuum, 12 x 12, from starts 2 cm and 4 cm from the answer: Newton on band 12 stalls, every band from 1
     to 12 converges from the previous one in full Newton steps (6-7 min in all), to the deck start's answer within
     4e-12 m.  A band that does not converge so ends the solve as a stall: ``converged=False``, with the last band
@@ -760,7 +765,8 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     converged answer is the root of ``model``'s rows, whatever the route.
     """
     started = time.perf_counter()
-    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                    undamped=True)
     bands = [(model.max_mode, bool(direct["converged"]), time.perf_counter() - started)]
     target, nfev, njev = model.max_mode, direct["nfev"], direct["njev"]
 
@@ -786,7 +792,8 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     while True:
         started = time.perf_counter()
         try:
-            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose)
+            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose,
+                                           undamped=current.max_mode > 1)
         except (VmecError, RuntimeError):  # no certified equilibrium on the way: the band does not converge
             fit = dict(converged=False, nfev=0, njev=0)
         bands.append((current.max_mode, bool(fit["converged"]), time.perf_counter() - started))
@@ -1527,17 +1534,21 @@ class ThreeTermsFreeBoundaryModel:
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
-        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
-        otherwise, and whenever a step fails, the Jacobian is refreshed at the current point.  Converged when the
-        Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance: round-off, or the
-        step that the rows' measured noise produces, measured once a fresh Newton step finds no descent: a second
+        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step; at finite
+        beta a first slower step updates it by Broyden's rank-1 secant correction instead (a fresh Jacobian costs
+        many row evaluations there), and a second slow step, or any failed one, refreshes it at the current point.
+        Converged when the Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance:
+        round-off, or the step that the rows' measured noise produces, measured once a fresh Newton step finds no descent: a second
         solve of the same boundary (:meth:`repeat`), and the rows' deviation from the Jacobian's linear model along
         the step at round-off length (noise that is reproducible but not smooth in the boundary); rows within twice
         that noise are zero to what they resolve.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
-        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that has to be shortened
-        (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.
+        ``undamped=True`` returns, not converged, when two fresh-Jacobian Newton steps in a row descend only once
+        shortened (with ``damped=True`` in the result): the refreshed Jacobian did not restore full steps, so the
+        point lies outside the rows' Newton basin (one shortened step is common on the way in from a far start:
+        QA and QI in vacuum, 12 x 12, from 5 mm).  A fresh step that does not descend at any length goes to the
+        noise test as without it.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1553,11 +1564,12 @@ class ThreeTermsFreeBoundaryModel:
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
-        damped = False
+        damped, updated = False, False  # updated: the kept Jacobian carries a Broyden update
+        shortened = False  # the last fresh-Jacobian step descended only once shortened
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
-                J, fresh, njev = np.asarray(J), True, njev + 1
+                J, fresh, njev, updated = np.asarray(J), True, njev + 1, False
                 if not got[1][3] and aux[3]:  # the rows of the tight state the Jacobian belongs to
                     r, got = self.rows_at(aux, field), (None, aux)
             p = _newton_step(J, r)
@@ -1599,11 +1611,12 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
-            if undamped and fresh and t < 1.0:
-                if accepted is not None:  # keep the shortened step's progress
-                    x, (r, aux), steps = x + t * p, accepted, steps + 1
-                damped = True
-                break
+            if fresh and accepted is not None:
+                # a refreshed Jacobian that again descends only along a shortened step: outside the Newton basin
+                if undamped and t < 1.0 and shortened:  # keep the shortened step's progress
+                    x, (r, aux), steps, damped = x + t * p, accepted, steps + 1, True
+                    break
+                shortened = t < 1.0
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
@@ -1644,9 +1657,19 @@ class ThreeTermsFreeBoundaryModel:
                 J = None
                 continue
             new_cost = 0.5 * float(accepted[0] @ accepted[0])
-            x, got, steps = x + t * p, accepted, steps + 1
-            r, aux = got
+            s, r_new = t * p, np.asarray(accepted[0])
+            x, got, steps = x + s, accepted, steps + 1
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
+            if slow and not updated and not self.vacuum:  # (vacuum: a Jacobian costs about one evaluation)
+                # Broyden's update (Broyden 1965) instead of a fresh Jacobian: the rank-1 correction that makes
+                # J reproduce the step's observed change of the rows (J_new s = r_new - r).  A Jacobian costs as
+                # much as many row evaluations at finite beta, so one secant step is tried first; a second slow
+                # step, or a failed one, refreshes the Jacobian as before.
+                J = J + np.outer(r_new - r - J @ s, s) / float(s @ s)
+                slow, updated = False, True
+            else:
+                updated = False
+            r, aux = got
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
                     converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
@@ -1771,8 +1794,17 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         moved = sum(np.any(np.asarray(a).reshape(-1, x0.size) != 0, axis=0) for a in jax.tree.leaves(tangent))
         self._plasma = np.flatnonzero(moved)
         eye = jnp.eye(x0.size)[self._plasma]
-        self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
-            lambda z: params_at(params, z), (x,), (e,))[1])(eye))
+
+        def mapped_params(x):
+            """The plasma map of the deck's parameters at ``x``, on fixed model coordinates.
+
+            The map is always applied to the deck's parameters (as :meth:`_solve` does), never to a trial's own
+            mapped ones: a map that depends on its input (a multiplicative pressure scale) would otherwise have its
+            derivative at a moved point scaled by the map itself.  The model coordinates overwrite the boundary
+            (and bootstrap current), so the derivative in ``x`` does not depend on which coordinates are used."""
+            return model.with_boundary(params_at(model.params0, x), jnp.asarray(model.x0))
+
+        self._plasma_directions = jax.jit(lambda x: jax.vmap(lambda e: jax.jvp(mapped_params, (x,), (e,))[1])(eye))
 
         def pullback(state, mask, params, x, factors):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
@@ -1788,7 +1820,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         def coordinates(params, b, x, params_bar):
             """``ImplicitParams`` cotangents onto the model coordinates ``b`` and onto ``x`` (plasma parameters)."""
             _, b_vjp = jax.vjp(lambda z: model.with_boundary(params, z), b)
-            _, x_vjp = jax.vjp(lambda z: params_at(params, z), x)
+            _, x_vjp = jax.vjp(mapped_params, x)
             return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
 
         self._coordinates = coordinates
@@ -1878,7 +1910,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self._warm_threads[0].join()
 
         def relinearize():
-            extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+            extra = self._plasma_directions(xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra,
                                                extra_scale=None if extra is None else self.scales[self._plasma])

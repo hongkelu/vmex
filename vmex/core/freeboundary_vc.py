@@ -1502,9 +1502,10 @@ class ThreeTermsFreeBoundaryModel:
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
-        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step;
-        otherwise, and whenever a step fails, the Jacobian is refreshed at the current point.  Converged when the
-        Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance: round-off, or the
+        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step; at finite
+        beta a first slower step updates it by Broyden's rank-1 secant correction instead (a fresh Jacobian costs
+        many row evaluations there), and a second slow step, or any failed one, refreshes it at the current point.
+        Converged when the Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance: round-off, or the
         step that the rows' measured noise produces, measured once a fresh Newton step finds no descent: a second
         solve of the same boundary (:meth:`repeat`), and the rows' deviation from the Jacobian's linear model along
         the step at round-off length (noise that is reproducible but not smooth in the boundary); rows within twice
@@ -1528,11 +1529,11 @@ class ThreeTermsFreeBoundaryModel:
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
-        damped = False
+        damped, updated = False, False  # updated: the kept Jacobian carries a Broyden update
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
-                J, fresh, njev = np.asarray(J), True, njev + 1
+                J, fresh, njev, updated = np.asarray(J), True, njev + 1, False
                 if not got[1][3] and aux[3]:  # the rows of the tight state the Jacobian belongs to
                     r, got = self.rows_at(aux, field), (None, aux)
             p = _newton_step(J, r)
@@ -1619,9 +1620,19 @@ class ThreeTermsFreeBoundaryModel:
                 J = None
                 continue
             new_cost = 0.5 * float(accepted[0] @ accepted[0])
-            x, got, steps = x + t * p, accepted, steps + 1
-            r, aux = got
+            s, r_new = t * p, np.asarray(accepted[0])
+            x, got, steps = x + s, accepted, steps + 1
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
+            if slow and not updated and not self.vacuum:  # (vacuum: a Jacobian costs about one evaluation)
+                # Broyden's update (Broyden 1965) instead of a fresh Jacobian: the rank-1 correction that makes
+                # J reproduce the step's observed change of the rows (J_new s = r_new - r).  A Jacobian costs as
+                # much as many row evaluations at finite beta, so one secant step is tried first; a second slow
+                # step, or a failed one, refreshes the Jacobian as before.
+                J = J + np.outer(r_new - r - J @ s, s) / float(s @ s)
+                slow, updated = False, True
+            else:
+                updated = False
+            r, aux = got
             fresh = False  # the Jacobian (if kept) is now of the previous point
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
                     converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))

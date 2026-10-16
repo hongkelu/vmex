@@ -19,6 +19,7 @@ variational-problem
 iteration
 interior-field
 nestor-vacuum
+three-terms-least-squares
 high-order-force-balance
 ```
 

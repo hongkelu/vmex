@@ -578,7 +578,9 @@ class FreeBoundaryProblem(FunctionProblem):
             ``three_terms_options`` (keywords of
             :meth:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem.from_loss`: the
             boundary solve's ``boundary_max_nfev``, and the
-            :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` keywords);
+            :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` keywords,
+            and ``method="least_squares"`` for
+            :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`);
             the other arguments are NESTOR's.
 
         Returns
@@ -590,11 +592,18 @@ class FreeBoundaryProblem(FunctionProblem):
         if boundary_condition == "three_terms":
             from .freeboundary_vc import ThreeTermsFreeBoundaryProblem
 
-            return ThreeTermsFreeBoundaryProblem.from_loss(
+            options = dict(three_terms_options or {})
+            method = options.pop("method", "galerkin")
+            if method == "least_squares":
+                from .freeboundary_lsq import LeastSquaresFreeBoundaryProblem as problem_class
+            elif method == "galerkin":
+                problem_class = ThreeTermsFreeBoundaryProblem
+            else:
+                raise ValueError(f"three_terms_options method must be 'galerkin' or 'least_squares', got {method!r}")
+            return problem_class.from_loss(
                 inp, loss, x0, field_from_parameters=field_from_parameters,
                 plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
-                quantities=quantities, parameter_quantities=parameter_quantities,
-                **dict(three_terms_options or {}))
+                quantities=quantities, parameter_quantities=parameter_quantities, **options)
         if boundary_condition != "nestor":
             raise ValueError(f"boundary_condition must be 'nestor' or 'three_terms', got {boundary_condition!r}")
         quantities = tuple(quantities)

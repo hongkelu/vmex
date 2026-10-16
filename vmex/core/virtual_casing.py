@@ -809,9 +809,12 @@ def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
     return out.reshape((-1,) + width)[:ntrg]
 
 
-def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
+                        remat=False):
     """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` (gradient of the single layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(3, ntrg)``."""
+    :func:`_far_field_sum`'s memory: ``(3, ntrg)``.  ``remat`` (the package's far-field checkpoint option, passed
+    by its singular quadratures under :class:`remat_scans`) is accepted and has no effect: the sum is always
+    checkpointed."""
     from virtual_casing_jax import integrals
 
     weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
@@ -821,9 +824,10 @@ def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, ta
     return _far_field_sum(lambda dx, w: integrals.laplace_fxd_u(dx, w[None]), Xt, block, ntrg, sources, (3,)).T
 
 
-def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
+                       remat=False):
     """``virtual_casing_jax.integrals.laplace_dx_u_eval`` (double layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(1, ntrg)``."""
+    :func:`_far_field_sum`'s memory: ``(1, ntrg)``.  ``remat`` as in :func:`_laplace_fxd_u_eval`."""
     from virtual_casing_jax import integrals
 
     weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
@@ -860,6 +864,29 @@ def _checkpointed_far_field():
                 integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval = _FAR_FIELD_USERS[1]
 
 
+_REMAT = [False]  # set by remat_scans while second-order programs are traced
+
+
+class remat_scans:
+    """Context: virtual-casing quadratures traced inside it checkpoint their chunk scans (``remat=True``).
+
+    A reverse pass through the quadrature otherwise keeps every source chunk's kernel intermediates
+    (``targets x sources`` per array: 22 GiB at 48 x 48 targets, 384 x 96 sources), which a second-order pass
+    (forward over reverse, the exact Hessian) cannot afford; checkpointed, each chunk is recomputed in the
+    reverse sweep and only its inputs are kept.  Values are unchanged.  Needs virtual_casing_jax with the
+    far-field ``remat`` option.
+    """
+
+    def __enter__(self):
+        self._saved = _REMAT[0]
+        _REMAT[0] = True
+        return self
+
+    def __exit__(self, *exc):
+        _REMAT[0] = self._saved
+        return False
+
+
 def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
     """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
 
@@ -888,7 +915,7 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
         setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
         patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
         orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
+        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype), remat=_REMAT[0])
     grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
     B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
     return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on

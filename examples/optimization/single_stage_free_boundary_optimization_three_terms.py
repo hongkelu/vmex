@@ -929,15 +929,38 @@ def parse_args(argv=None):
     return args
 
 
+def seed_interface(wout, nphi=37, ntheta=32):
+    """The refit's plasma-vacuum interface of ``wout`` (``nphi x ntheta`` points), its virtual casing on the CPU.
+
+    On the GPU the virtual-casing field ``B_plasma`` differs between two evaluations of one program in one process
+    by ~1e-14 relative (virtual_casing_jax's polar-patch scatter-adds run as GPU atomics, in no fixed order); L-BFGS-B
+    amplifies that into different coils (seen: step-0 QS 0.11798 vs 0.11697 from one Picard result).  XLA:CPU
+    computes it bit-identically, and the rest of the refit is bit-identical on either device; the interface's
+    arrays are moved back to the default device.
+    """
+    import dataclasses
+    import jax
+    import vmex as vj
+
+    with jax.default_device(jax.devices("cpu")[0]):
+        interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=nphi, ntheta=ntheta)
+    device = jax.devices()[0]
+    return dataclasses.replace(interface, **{
+        field.name: jax.device_put(getattr(interface, field.name), device) for field in dataclasses.fields(interface)
+        if isinstance(getattr(interface, field.name), jax.Array)})
+
+
 def fit_coils_to_plasma(coils, wout, inp):
-    """Coils whose field with the plasma's own is tangent to a fixed-boundary finite-beta seed."""
+    """Coils whose field with the plasma's own is tangent to a fixed-boundary finite-beta seed.
+
+    The same seed always gives the same coils (``seed_interface``).
+    """
     import jax
     import jax.numpy as jnp
     from essos.surfaces import surfacerzfourier_from_boundary
     from scipy.optimize import minimize
-    import vmex as vj
 
-    interface = vj.PlasmaVacuumInterface.from_wout(wout, nphi=37, ntheta=32)
+    interface = seed_interface(wout)
     surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), inp.nfp,
                                              nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
     x0 = jnp.asarray(coils.curves.dofs).ravel()

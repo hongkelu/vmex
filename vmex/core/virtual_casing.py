@@ -809,9 +809,12 @@ def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
     return out.reshape((-1,) + width)[:ntrg]
 
 
-def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
+                        remat=False):
     """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` (gradient of the single layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(3, ntrg)``."""
+    :func:`_far_field_sum`'s memory: ``(3, ntrg)``.  ``remat`` (the package's far-field checkpoint option, passed
+    by its singular quadratures under :class:`remat_scans`) is accepted and has no effect: the sum is always
+    checkpointed."""
     from virtual_casing_jax import integrals
 
     weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
@@ -821,9 +824,10 @@ def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, ta
     return _far_field_sum(lambda dx, w: integrals.laplace_fxd_u(dx, w[None]), Xt, block, ntrg, sources, (3,)).T
 
 
-def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
+                       remat=False):
     """``virtual_casing_jax.integrals.laplace_dx_u_eval`` (double layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(1, ntrg)``."""
+    :func:`_far_field_sum`'s memory: ``(1, ntrg)``.  ``remat`` as in :func:`_laplace_fxd_u_eval`."""
     from virtual_casing_jax import integrals
 
     weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)

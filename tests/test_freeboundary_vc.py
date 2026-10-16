@@ -162,6 +162,28 @@ def test_rows_are_the_three_interface_conditions():
     np.testing.assert_allclose(np.sum(weights), 1.0, rtol=1e-12)
     summary = fvc.summarize_boundary_residual(rows, weights)
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
+    assert summary.normal_max == pytest.approx(np.max(np.abs(rows[0]))) and summary.normal_max >= summary.normal
+    assert "pressure balance" in str(summary) and "sheet current" in str(summary)
+
+
+def test_vacuum_boundary_residual_is_b_dot_n_alone():
+    """In vacuum the only interface condition is B.n = 0 (the field outside is the coils'): one row,
+    B_coil . n / |B_in| on the boundary, reported as its area-weighted RMS and maximum, no pressure or sheet terms."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21),
+                  lfreeb=False)
+    eq = opt.solve_equilibrium(inp)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    rows, weights = fvc.boundary_residual(inp, eq.solution, field, runtime=eq.solver_context, nphi=16, ntheta=16)
+    data = vc.surface_field_data_from_state(inp, eq.solution, runtime=eq.solver_context, nphi=16, ntheta=16)
+    B_coil = np.asarray(vc.external_B_cartesian(field, jnp.asarray(data.gamma), jnp.asarray(data.phi)))
+    expected = np.sum(B_coil * np.asarray(data.normal), axis=0) / np.linalg.norm(np.asarray(data.B_total), axis=0)
+    assert rows.shape[0] == 1
+    np.testing.assert_allclose(rows[0], expected, rtol=1e-10, atol=1e-14)
+    summary = fvc.summarize_boundary_residual(rows, weights)
+    assert summary.pressure is None and summary.sheet_current is None
+    np.testing.assert_allclose(summary.normal, np.sqrt(np.sum(np.asarray(weights) * expected**2)), rtol=1e-12)
+    assert summary.normal_max == pytest.approx(np.max(np.abs(expected)))
+    assert str(summary).startswith("B.n/|B| RMS") and "pressure" not in str(summary)
 
 
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
@@ -221,7 +243,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     inp = replace(lp, rbc=nestor_deck.rbc, zbs=nestor_deck.zbs, raxis_c=nestor_deck.raxis_c,
                   zaxis_s=nestor_deck.zaxis_s)
     before = _residual(inp, nestor, field)
-    for name in ("normal", "pressure", "sheet_current"):   # the gate on the NESTOR result
+    for name in ("normal", "normal_max"):   # the gate on the NESTOR result (vacuum: B.n alone)
         np.testing.assert_allclose(getattr(reported, name), getattr(before, name), rtol=0.25)
     # The net-current row's reference: outside the plasma the toroidal circulation is the coils' alone, so a
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
@@ -232,7 +254,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     np.testing.assert_allclose(fits[1].x, fits[0].x, rtol=0, atol=1e-9)
     for fit in fits:
         after = _residual(inp, fit.equilibrium, field)
-        assert fit.success and after.normal < before.normal and after.sheet_current < before.sheet_current
+        assert fit.success and after.normal < before.normal and after.normal_max < before.normal_max
     walls = [fit.equilibrium.wout for fit in fits]
     for wall in walls:   # budget: NESTOR's own floor (~1.6 mm)
         assert _lcfs_distance(wall, nestor.wout) < 2e-3
@@ -336,7 +358,7 @@ def test_vacuum_free_boundary_is_the_least_squares_boundary_from_any_start(monke
     assert not any("did not lower B.n" in str(w.message) for w in caught)
     assert 0.0 < fits[0].normal_outside_modes <= fits[0].boundary_residual.normal
     # a solve that does not lower B.n says so, with the part outside the boundary's modes
-    monkeypatch.setattr(model, "boundary_residual", lambda *args: fvc.BoundaryResidual(1.0, 1.0, 1.0))
+    monkeypatch.setattr(model, "boundary_residual", lambda *args: fvc.BoundaryResidual(1.0, 1.0))
     with pytest.warns(RuntimeWarning, match="outside the boundary's"):
         fvc.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0])
 
@@ -438,7 +460,7 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)
-    assert problem.boundary_residual(x0).sheet_current < 1e-2
+    assert problem.boundary_residual(x0).normal < 1e-2 and problem.boundary_residual(x0).sheet_current is None
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]
         values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]

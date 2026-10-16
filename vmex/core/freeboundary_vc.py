@@ -99,16 +99,29 @@ from .profiles import MU0
 
 @dataclass(frozen=True)
 class BoundaryResidual:
-    """Area-weighted RMS of the three interface conditions, relative to ``|B_in|``.
+    """The interface conditions on a boundary, pointwise relative to ``|B|`` there.
 
-    ``normal`` is ``B_out . n / |B_in|``, ``pressure`` is
-    ``(|B_out|^2 - |B_in|^2 - 2 mu0 p) / (2 |B_in|^2)`` and ``sheet_current``
-    is ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.
+    ``normal`` is the area-weighted RMS of ``|B_out . n| / |B_in|`` over the boundary (``n`` the unit normal) and
+    ``normal_max`` its maximum; ``pressure`` is the area-weighted RMS of
+    ``(|B_out|^2 - |B_in|^2 - 2 mu0 p) / (2 |B_in|^2)`` and ``sheet_current`` that of
+    ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.  In vacuum (no plasma current or pressure) the field
+    outside is the external field alone and the only condition is ``B . n = 0``: ``pressure`` and
+    ``sheet_current`` are ``None``.  ``|B|`` is the interior field's (equal to the outside field's where the
+    conditions hold).  One definition for every code: DESC
+    prints a different normalization (the mean of ``|B . n|`` over ``B_s R0 a``, ``BoundaryError``), so
+    comparisons evaluate every code's boundary with this one.
     """
 
     normal: float
-    pressure: float
-    sheet_current: float
+    normal_max: float
+    pressure: float | None = None
+    sheet_current: float | None = None
+
+    def __str__(self) -> str:
+        text = f"B.n/|B| RMS {self.normal:.3e} max {self.normal_max:.3e}"
+        if self.pressure is not None:
+            text += f", pressure balance RMS {self.pressure:.3e}, sheet current RMS {self.sheet_current:.3e}"
+        return text
 
 
 @dataclass(frozen=True)
@@ -139,18 +152,15 @@ def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digit
     """Rows and weights of :func:`boundary_residual`, plus the boundary points ``(3, nphi, ntheta)``.
 
     ``precision=None`` with ``digits=None`` is the vacuum: no plasma current, so ``B_out`` is the external field
-    alone (no virtual casing, whose quadrature would only add its error).
+    alone (no virtual casing, whose quadrature would only add its error), and ``B . n = 0`` is the only
+    condition: one row, ``B_out . n / |B_in|``.
     """
     data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
     if digits is None:
-        B_in, normal = jnp.asarray(data.B_total), jnp.asarray(data.normal)
         B_out = vc.external_B_cartesian(external_field, jnp.asarray(data.gamma), jnp.asarray(data.phi))
         area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
-        B2 = jnp.sum(B_in**2, axis=0)
-        scale = jnp.sqrt(B2)
-        rows = [jnp.sum(B_out * normal, axis=0) / scale, (jnp.sum(B_out**2, axis=0) - B2) / (2.0 * B2),
-                jnp.cross(normal, B_out - B_in, axis=0) / scale]
-        return jnp.concatenate([rows[0][None], rows[1][None], rows[2]]), area / jnp.sum(area), data.gamma
+        normal = jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
+        return normal[None], area / jnp.sum(area), data.gamma
     interface = vc.PlasmaVacuumInterface.from_surface_data(
         data, p_edge=p_edge, digits=digits, precision=precision)
     B_in = jnp.asarray(data.B_total)
@@ -170,25 +180,41 @@ def boundary_residual(inp: VmecInput, state, external_field: Any, *, runtime=Non
 
     Returns ``(rows, weights)``: ``rows`` has shape ``(5, nphi, ntheta)`` with
     ``B_out . n``, the pressure-balance jump and the three Cartesian components
-    of ``n x (B_out - B_in)``, each scaled as in :class:`BoundaryResidual`;
+    of ``n x (B_out - B_in)``, each scaled as in :class:`BoundaryResidual` --
+    for a vacuum deck (no plasma current or pressure, :func:`_is_vacuum`) the
+    single row ``B_out . n / |B_in|`` with ``B_out`` the external field;
     ``weights`` are the area weights (summing to one).  Traceable in ``state``
     and the external-field parameters when ``precision`` is supplied (see
     :func:`~vmex.core.virtual_casing.plan_vc_precision`).
     """
+    if _is_vacuum(inp):
+        digits, precision = None, None
     rows, weights, _ = _interface_terms(inp, state, external_field, runtime=runtime, nphi=nphi,
                                         ntheta=ntheta, digits=digits, precision=precision, p_edge=p_edge)
     return rows, weights
 
 
 def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
-    """RMS of each condition from :func:`boundary_residual`'s output."""
+    """:class:`BoundaryResidual` of :func:`boundary_residual`'s output (one row in vacuum: ``B . n`` alone)."""
     rows, weights = np.asarray(rows), np.asarray(weights)
 
     def rms(value):
         return float(np.sqrt(np.sum(weights * value**2)))
 
-    return BoundaryResidual(normal=rms(rows[0]), pressure=rms(rows[1]),
-                            sheet_current=rms(np.linalg.norm(rows[2:], axis=0)))
+    normal = dict(normal=rms(rows[0]), normal_max=float(np.max(np.abs(rows[0]))))
+    if rows.shape[0] == 1:
+        return BoundaryResidual(**normal)
+    return BoundaryResidual(**normal, pressure=rms(rows[1]), sheet_current=rms(np.linalg.norm(rows[2:], axis=0)))
+
+
+def _is_vacuum(inp: VmecInput) -> bool:
+    """No pressure and no plasma current that the field can feel: ``B_out`` is the external field alone.
+
+    A current or pressure below the field's round-off (a WOUT restart's CURTOR 1e-12 A) is no plasma: it cannot
+    change B in double precision, so it must not select the finite-beta formulation.
+    """
+    return (int(inp.ncurr) == 1 and _plasma_below_roundoff(inp)
+            and (inp.ac is None or not np.any(np.asarray(inp.ac, dtype=float))))
 
 
 def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
@@ -697,6 +723,8 @@ def solve_free_boundary_three_terms(
         forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000), raise_on_max_iterations=True)
     final = model.boundary_residual(equilibrium.solution, params, external_field)
     outside = model.normal_outside_modes(equilibrium.solution, params, external_field)
+    if verbose:
+        print(f"free boundary on band {model.max_mode}: {final}", flush=True)
     if final.normal >= deck.normal:
         import warnings
 
@@ -901,11 +929,8 @@ class ThreeTermsFreeBoundaryModel:
         self.fixed_boundary = bool(fixed_boundary)
         self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 
-        # Vacuum: no pressure and no plasma current that the field can feel, so B_out is the coil field alone (no
-        # virtual casing).  A current or pressure below the field's round-off (a WOUT restart's CURTOR 1e-12 A) is
-        # no plasma: it cannot change B in double precision, so it must not select the finite-beta formulation.
-        self.vacuum = (bootstrap is None and int(fixed.ncurr) == 1 and _plasma_below_roundoff(fixed)
-                       and (fixed.ac is None or not np.any(np.asarray(fixed.ac, dtype=float))))
+        # Vacuum: B_out is the coil field alone, no virtual casing (_is_vacuum).
+        self.vacuum = bootstrap is None and _is_vacuum(fixed)
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if not self.fixed_boundary:  # the interface rows assume p(1) = 0, as the public solve does

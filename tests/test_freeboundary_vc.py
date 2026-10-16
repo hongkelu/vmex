@@ -516,7 +516,9 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     value, grad = problem.value_and_grad(xt)
     assert problem.model is not model and problem.stats["rereferences"] == 1
     assert [r["step"] for r in problem.references] == [0, 1] and problem.references[1]["deck"] is problem.model.fixed
-    np.testing.assert_allclose(np.r_[value, problem.constraint_values(xt)], before, rtol=1e-6)
+    # the deck's band of displacements is another truncation of the boundary: the same free boundary up to it
+    # (mpol 3: 1e-5, the major radius 11 um)
+    np.testing.assert_allclose(np.r_[value, problem.constraint_values(xt)], before, rtol=5e-5)
     jac = problem.constraint_jac(xt)
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]

@@ -13,7 +13,7 @@ revision it was measured at, and the pages that cite it.
 - `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
   (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.
-- Finite-beta rows test B.n against the deck's exact response: LP QA 2.5 % 12x12 B.n 2.8e-4 to 1.1e-4, 641 to 330 s.
+- Finite-beta rows test B.n against the deck's response (LP QA 2.5 % 12x12 B.n 2.8e-4->1.1e-4) on the interior's band (no gap); Newton stalls build the band up from m<=1.
 - Redl (bootstrap rows, `RedlBootstrapMismatch`) on the quasi-symmetric part of |B| (simsopt `RedlGeomBoozer`): smooth.
 - `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
   (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n

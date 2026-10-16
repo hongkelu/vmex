@@ -174,11 +174,12 @@ with the one VMEC + NESTOR leaves (NESTOR: 5.9e-4); with a deck 11 mm from a
 known answer, field lines stay within 0.10 mm of the surface from 8 modes,
 0.2 mm at 6 and 0.5 mm at 4. A fixed-boundary design with its fitted coils, or
 a VMEC + NESTOR result, makes a good deck; a reference-free free boundary
-needs the least-squares formulation (a separate option). A solve that does not
-lower `B . n` below the deck's warns, with `normal_outside_modes`, the part its
-rows cannot reach. The edge pressure must vanish, and `virtual-casing-jax`
-must be installed for finite beta. The reported `equilibrium` is re-solved to a
-final force residual of 1e-17 (timings: {doc}`/explanation/validation`).
+needs the least-squares formulation (a separate option). A solve that does not lower `B . n` below the
+deck's warns, with `normal_outside_modes`, the part its rows cannot reach. The boundary keeps the
+interior's modes, `max(mpol - 1, ntor)`; where Newton stalls on them, the band is built up from `m <= 1`
+one mode at a time, and a stall is reported (`success=False`, `fit.band` the last band that converged).
+The edge pressure must vanish, and `virtual-casing-jax` must be installed for finite beta. The reported
+`equilibrium` is re-solved to a final force residual of 1e-17 (timings: {doc}`/explanation/validation`).
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 exposes the grid and quadrature controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few

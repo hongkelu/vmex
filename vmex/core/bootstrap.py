@@ -20,12 +20,18 @@ Buller & Drevlak, Phys. Plasmas 29, 082501 (2022).
 - :class:`KineticProfiles` / :func:`profile_value_and_dds` — polynomial
   ``ne/Te/Ti/Zeff`` profiles in ``s`` (lowest order first, simsopt
   ``ProfilePolynomial`` convention), value + analytic d/ds via Horner.
-- :func:`redl_geometry_from_wout` — parity lane mirroring simsopt
-  ``RedlGeomVmec.__call__`` (half-mesh interpolation of
-  ``iotas/bvco/buco/gmnc/bmnc``, cosine synthesis of ``|B|``/``sqrt(g)``).
-- :func:`redl_geometry_from_state` — traceable lane on
-  ``(SpectralState, SolverRuntime)`` using the solver's half-mesh internal
-  grid; iota/G/I from ``_iotas_half``/``surface_currents``.
+- Redl's geometry, as the bootstrap rows and :class:`RedlBootstrapMismatch`
+  use it: the quasi-symmetric part of ``|B|`` (Boozer angles, simsopt
+  ``RedlGeomBoozer``), from a state (:func:`_qs_profile_geometry`) or a wout
+  (:func:`redl_qs_geometry_from_wout`); smooth in the equilibrium.
+- :func:`redl_geometry_from_wout` — the full field, simsopt
+  ``RedlGeomVmec.__call__`` parity check only (tests and validation): half-mesh
+  interpolation of ``iotas/bvco/buco/gmnc/bmnc``, cosine synthesis of
+  ``|B|``/``sqrt(g)``.
+- :func:`redl_geometry_from_state` — the full field's geometry on
+  ``(SpectralState, SolverRuntime)`` (the solver's half-mesh internal grid;
+  iota/G/I from ``_iotas_half``/``surface_currents``), for geometry outputs;
+  no Redl current path uses it.
 - :func:`vmec_j_dot_B` / :func:`vmec_j_dot_B_from_wout` — equilibrium
   ``<J.B>`` via the MHD identity (validated against the Zenodo
   ``convertSfincsToVmecCurrentProfile`` script and the wout ``jdotb``):
@@ -87,6 +93,7 @@ __all__ = [
     "RedlGeometry",
     "redl_geometry_from_wout",
     "redl_geometry_from_state",
+    "redl_qs_geometry_from_wout",
     "j_dot_B_redl",
     "vmec_j_dot_B",
     "vmec_j_dot_B_from_wout",
@@ -591,18 +598,10 @@ def _mirror_rows(values: Array, *, lasym: bool) -> Array:
 
 
 def _qs_boozer_harmonics(state: SpectralState, rt: SolverRuntime, helicity_n: int, hm: _HalfMeshFields):
-    """The quasi-symmetric part of ``|B|`` on every half-mesh surface: ``B_QS(chi) = sum_m c_m cos(m chi) + s_m
-    sin(m chi)``, ``chi = theta_B - N zeta_B`` (Boozer angles, ``N = nfp * helicity_n``), ``m = 0 .. ntheta1 / 2``.
-
-    The Boozer angles come from the solver's own half-mesh grid (no Boozer transform's mode tables):
-    ``theta_B = theta + lambda + iota nu``, ``zeta_B = zeta + nu``, ``nu = (w - I lambda) / (G + iota I)`` with
-    ``dw/dtheta = B_theta - I``, ``dw/dzeta = B_zeta - G`` (booz_xform's construction), the antiderivatives taken
-    spectrally on the grid (FFT), and ``c_m, s_m`` are the Boozer-angle averages of ``|B| cos(m chi)``,
-    ``|B| sin(m chi)`` evaluated on the VMEC grid with the angle map's Jacobian.  Memory and time are those of a
-    few FFTs of the field grid per surface."""
+    """The quasi-symmetric part of ``|B|`` on every half-mesh surface of a state (:func:`_qs_harmonics` of the
+    solver's half-mesh grid: lambda's derivatives in the wout convention, the covariant ``B``, ``|B|``)."""
     setup = rt.setup
     lasym = bool(setup.lasym)
-    nfp = int(rt.resolution.nfp)
     geometry, _, _, fields, _ = _field_chain(state, rt)
     s = jnp.asarray(setup.s_full)
     root = jnp.sqrt(0.5 * (s[1:] + s[:-1]))[:, None, None]
@@ -612,12 +611,24 @@ def _qs_boozer_harmonics(state: SpectralState, rt: SolverRuntime, helicity_n: in
         even, odd = jnp.asarray(even), jnp.asarray(odd)
         return 0.5 * (even[1:] + even[:-1] + root * (odd[1:] + odd[:-1]))
 
-    # lambda's derivatives in the wout convention (theta* = theta + lambda), the covariant B, |B|
     lam_t = _mirror_rows(half(geometry.dlambda_dtheta_even, geometry.dlambda_dtheta_odd) * scale, lasym=lasym)
     lam_z = _mirror_rows(half(geometry.dlambda_dzeta_even, geometry.dlambda_dzeta_odd) * scale, lasym=lasym)
     b_t = _mirror_rows(jnp.asarray(fields.bsubu)[1:], lasym=lasym)
     b_z = _mirror_rows(jnp.asarray(fields.bsubv)[1:], lasym=lasym)
-    modB = hm.bmag
+    return _qs_harmonics(lam_t, lam_z, b_t, b_z, hm.bmag, hm.iota, int(rt.resolution.nfp), helicity_n)
+
+
+def _qs_harmonics(lam_t, lam_z, b_t, b_z, modB, iota, nfp: int, helicity_n: int):
+    """The quasi-symmetric part of ``|B|``: ``B_QS(chi) = sum_m c_m cos(m chi) + s_m sin(m chi)``,
+    ``chi = theta_B - N zeta_B`` (Boozer angles, ``N = nfp * helicity_n``), ``m = 0 .. ntheta / 2``, from
+    ``(nsurf, ntheta, nzeta)`` grids over ``theta in [0, 2 pi)`` x ``zeta in [0, 2 pi / nfp)`` of
+    ``d(lambda)/d(theta, zeta)`` (``theta* = theta + lambda``), the covariant ``B_theta, B_zeta`` and ``|B|``.
+
+    No Boozer transform's mode tables: ``theta_B = theta + lambda + iota nu``, ``zeta_B = zeta + nu``,
+    ``nu = (w - I lambda) / (G + iota I)`` with ``dw/dtheta = B_theta - I``, ``dw/dzeta = B_zeta - G``
+    (booz_xform's construction), the antiderivatives taken spectrally (FFT); ``c_m, s_m`` are the
+    Boozer-angle averages of ``|B| cos(m chi)``, ``|B| sin(m chi)``, evaluated with the angle map's Jacobian.
+    Memory and time are those of a few FFTs of the field grid per surface."""
     nsurf, nt, nz = modB.shape
     m = np.fft.fftfreq(nt, 1.0 / nt)[:, None]
     n = nfp * np.fft.fftfreq(nz, 1.0 / nz)[None, :]  # physical toroidal mode numbers
@@ -631,7 +642,7 @@ def _qs_boozer_harmonics(state: SpectralState, rt: SolverRuntime, helicity_n: in
 
     I_g, G_g = jnp.mean(b_t, axis=(1, 2)), jnp.mean(b_z, axis=(1, 2))
     lam_hat = antiderivative(lam_t, lam_z)
-    nu_hat = (antiderivative(b_t, b_z) - I_g[:, None, None] * lam_hat) / (G_g + hm.iota * I_g)[:, None, None]
+    nu_hat = (antiderivative(b_t, b_z) - I_g[:, None, None] * lam_hat) / (G_g + iota * I_g)[:, None, None]
 
     # the Boozer-angle projection on a finer grid (the fields' trigonometric interpolants): cos(m chi) of the
     # grid's poloidal band times |B| J is not resolved by the field grid itself (on Solovev's 18-point grid it
@@ -648,11 +659,11 @@ def _qs_boozer_harmonics(state: SpectralState, rt: SolverRuntime, helicity_n: in
 
     lam, nu, B = synth(lam_f), synth(nu_f), synth(B_f)
     lt, lz, nt_, nz_ = synth(mf * lam_f), synth(nf * lam_f), synth(mf * nu_f), synth(nf * nu_f)
-    iota = hm.iota[:, None, None]
+    io = jnp.asarray(iota)[:, None, None]
     theta = jnp.asarray(2 * np.pi * np.arange(NT) / NT)[None, :, None]
     zeta = jnp.asarray(2 * np.pi * np.arange(NZ) / (NZ * nfp))[None, None, :]
-    chi = theta + lam + iota * nu - nfp * int(helicity_n) * (zeta + nu)
-    jac = (1.0 + lt + iota * nt_) * (1.0 + nz_) - (lz + iota * nz_) * nt_
+    chi = theta + lam + io * nu - nfp * int(helicity_n) * (zeta + nu)
+    jac = (1.0 + lt + io * nt_) * (1.0 + nz_) - (lz + io * nz_) * nt_
     weight = B * jac
     orders = np.arange(nt // 2 + 1)
 
@@ -689,17 +700,28 @@ def _trig_extremum(c, sn, m, chi, sign, *, newton_steps: int = 8, candidates: in
 
 
 def _qs_profile_geometry(state: SpectralState, rt: SolverRuntime, helicity_n: int, hm: _HalfMeshFields, *,
-                         n_lambda: int) -> RedlGeometry:
+                         n_lambda: int, surfaces=None) -> RedlGeometry:
     """Redl's geometry from the quasi-symmetric part of ``|B|`` (:func:`_qs_boozer_harmonics`) on every half-mesh
-    surface, as simsopt's ``RedlGeomBoozer`` builds it: ``f_t``, ``<B^2>``, ``<1/B>`` with the Boozer weight
-    ``1/B^2``, and ``B_max``/``B_min`` of the one-dimensional profile, refined (:func:`_trig_extremum`).  The
-    profile has one maximum and one minimum a surface where the full field on the solver grid had up to eight
-    nearly equal local maxima (LP QA 2.5 %), whose switching made the bootstrap rows non-smooth in the boundary.
-
-    ``chi`` is sampled at ``QS_PROFILE_OVERSAMPLE`` times the poloidal grid; ``iota``, ``G``, ``I`` are the
-    half-mesh values."""
+    surface, or interpolated (harmonics and ``iota``, ``G``, ``I``, linearly in ``s``) onto ``surfaces``: see
+    :func:`_qs_geometry`.  The profile has one maximum and one minimum a surface where the full field on the
+    solver grid had up to eight nearly equal local maxima (LP QA 2.5 %), whose switching made the bootstrap rows
+    non-smooth in the boundary."""
     c, sn, m = _qs_boozer_harmonics(state, rt, helicity_n, hm)
-    nchi = QS_PROFILE_OVERSAMPLE * int(hm.bmag.shape[1])
+    iota, G, I = hm.iota, hm.G, hm.I  # noqa: E741 - Boozer I
+    if surfaces is not None:
+        surfaces = _as_1d(surfaces)
+        c, sn, iota, G, I = (_interp_half_grid(a, surfaces, hm.s_half) for a in (c, sn, iota, G, I))  # noqa: E741
+    return _qs_geometry(c, sn, m, int(hm.bmag.shape[1]), iota=iota, G=G, I=I,
+                        surfaces=hm.s_half if surfaces is None else surfaces, psi_edge=-hm.phi_edge, nfp=hm.nfp,
+                        n_lambda=n_lambda)
+
+
+def _qs_geometry(c, sn, m, ntheta: int, *, iota, G, I, surfaces, psi_edge, nfp, n_lambda) -> RedlGeometry:  # noqa: E741
+    """Redl's geometry of the quasi-symmetric profiles ``B(chi) = sum c_m cos(m chi) + s_m sin(m chi)``, as
+    simsopt's ``RedlGeomBoozer`` builds it: ``f_t``, ``<B^2>``, ``<1/B>`` with the Boozer weight ``1/B^2`` on
+    ``QS_PROFILE_OVERSAMPLE * ntheta`` samples of ``chi``, and ``B_max``/``B_min`` refined
+    (:func:`_trig_extremum`), the former bounding f_t's ``lambda`` range."""
+    nchi = QS_PROFILE_OVERSAMPLE * int(ntheta)
     chi = jnp.asarray(2 * np.pi * np.arange(nchi) / nchi, dtype=c.dtype)
     phase = m[:, None] * chi[None, :]
     B = c @ jnp.cos(phase) + sn @ jnp.sin(phase)  # (nsurf, nchi)
@@ -711,9 +733,59 @@ def _qs_profile_geometry(state: SpectralState, rt: SolverRuntime, helicity_n: in
     Bmin = jax.vmap(lambda a, b: _trig_extremum(a, b, m, chi, -1.0))(c, sn)
     f_t = _trapped_fraction_integral(B, w, Vp, fsa_B2, Bmax, n_lambda)
     return RedlGeometry(
-        surfaces=hm.s_half, iota=hm.iota, G=hm.G, I=hm.I, R=(hm.G + hm.iota * hm.I) * fsa_1overB,
+        surfaces=surfaces, iota=iota, G=G, I=I, R=(G + iota * I) * fsa_1overB,
         epsilon=(Bmax - Bmin) / (Bmax + Bmin), f_t=f_t, fsa_B2=fsa_B2, fsa_1overB=fsa_1overB, Bmin=Bmin,
-        Bmax=Bmax, psi_edge=-hm.phi_edge, nfp=hm.nfp)
+        Bmax=Bmax, psi_edge=psi_edge, nfp=nfp)
+
+
+def redl_qs_geometry_from_wout(wout, surfaces, helicity_n: int, *, ntheta: int = 64, nphi: int = 65,
+                               n_lambda: int = N_LAMBDA) -> RedlGeometry:
+    """:func:`_qs_geometry` from a wout dataset (the bootstrap rows' definition, wout lane): the half-mesh
+    tables ``lmns``, ``bsubumnc``, ``bsubvmnc``, ``bmnc`` (and their LASYM partners) and ``iotas/bvco/buco``
+    interpolated linearly onto ``surfaces``, synthesized on ``ntheta x nphi`` points of one field period, then
+    :func:`_qs_harmonics`.  :func:`redl_geometry_from_wout` (the full field) is simsopt ``RedlGeomVmec``'s parity
+    check only."""
+    if isinstance(wout, (str, Path)):
+        wout = read_wout(wout)
+    wout = getattr(wout, "wout", wout)
+    lasym = bool(getattr(wout, "lasym", False))
+    surfaces = _as_1d(surfaces)
+    nfp = int(wout.nfp)
+    iotas = _as_1d(np.asarray(wout.iotas, dtype=float))
+    ns = int(iotas.shape[0])
+    s_half = _half_grid(ns, iotas.dtype)
+
+    def half(values):
+        return _interp_half_grid(values[1:], surfaces, s_half)
+
+    theta = jnp.linspace(0.0, 2.0 * jnp.pi, int(ntheta), endpoint=False)
+    phi = jnp.linspace(0.0, 2.0 * jnp.pi / nfp, int(nphi), endpoint=False)
+
+    def tables(names, xm_name, xn_name):
+        xm = _as_1d(np.asarray(getattr(wout, xm_name), dtype=float))
+        xn = _as_1d(np.asarray(getattr(wout, xn_name), dtype=float))
+        angle = theta[:, None, None] * xm[None, None, :] - phi[None, :, None] * xn[None, None, :]
+        rows = {k: half(_mode_matrix(wout, k, ns=ns, mn=int(xm.size))) for k in names}
+        return xm, xn, jnp.cos(angle), jnp.sin(angle), rows
+
+    xm, xn, cos_a, sin_a, lam = tables(("lmns",) + (("lmnc",) if lasym else ()), "xm", "xn")
+    synth = functools.partial(jnp.einsum, "sm,tpm->stp")
+    lam_t = synth(lam["lmns"] * xm, cos_a)
+    lam_z = synth(-lam["lmns"] * xn, cos_a)
+    if lasym:
+        lam_t, lam_z = lam_t - synth(lam["lmnc"] * xm, sin_a), lam_z + synth(lam["lmnc"] * xn, sin_a)
+    names = ("bmnc", "bsubumnc", "bsubvmnc") + (("bmns", "bsubumns", "bsubvmns") if lasym else ())
+    xm, xn, cos_a, sin_a, nyq = tables(names, "xm_nyq", "xn_nyq")
+    modB, b_t, b_z = (synth(nyq[k], cos_a) for k in ("bmnc", "bsubumnc", "bsubvmnc"))
+    if lasym:
+        modB, b_t, b_z = (a + synth(nyq[k], sin_a)
+                          for a, k in zip((modB, b_t, b_z), ("bmns", "bsubumns", "bsubvmns")))
+    iota = half(iotas)
+    c, sn, m = _qs_harmonics(lam_t, lam_z, b_t, b_z, modB, iota, nfp, redl_helicity(helicity_n))
+    psi_edge = -_as_1d(np.asarray(wout.phi, dtype=float))[-1] / (2.0 * jnp.pi)
+    return _qs_geometry(c, sn, m, int(ntheta), iota=iota, G=half(_as_1d(np.asarray(wout.bvco, dtype=float))),
+                        I=half(_as_1d(np.asarray(wout.buco, dtype=float))), surfaces=surfaces, psi_edge=psi_edge,
+                        nfp=nfp, n_lambda=n_lambda)
 
 
 def redl_geometry_from_state(
@@ -1272,8 +1344,8 @@ class RedlBootstrapMismatch:
     :class:`~vmex.core.optimize.QuasisymmetryRatioResidual`:
 
     - :meth:`J`/:meth:`residuals` (wout lane, FD-only): ``Jr`` from
-      :func:`redl_geometry_from_wout`, ``Jv`` from the wout ``jdotb``
-      (jxbforce.f) interpolated onto ``surfaces`` — simsopt parity.
+      :func:`redl_qs_geometry_from_wout`, ``Jv`` from the wout ``jdotb``
+      (jxbforce.f) interpolated onto ``surfaces``.
     - :meth:`residuals_state` (traceable lane): one
       :func:`_half_mesh_fields` pass feeds both the Redl geometry and the
       MHD-identity ``Jv``, so the term composes with
@@ -1323,8 +1395,8 @@ class RedlBootstrapMismatch:
         if isinstance(wout, (str, Path)):
             wout = read_wout(wout)
         surfaces = _as_1d(self.surfaces)
-        geom = redl_geometry_from_wout(wout, surfaces, ntheta=self.ntheta,
-                                       nphi=self.nphi, n_lambda=self.n_lambda)
+        geom = redl_qs_geometry_from_wout(wout, surfaces, self.helicity_n, ntheta=self.ntheta,
+                                          nphi=self.nphi, n_lambda=self.n_lambda)
         jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n)
         s_full = jnp.linspace(0.0, 1.0, int(wout.ns))
         jv = jnp.interp(surfaces, s_full,
@@ -1357,7 +1429,7 @@ class RedlBootstrapMismatch:
     def residuals_state(self, state: SpectralState, rt: SolverRuntime) -> jnp.ndarray:
         """Traceable residual vector (implicit lane; ``sum(r**2) = total_state``).
 
-        Same ``R_j`` with ``Jr`` from :func:`redl_geometry_from_state` and
+        Same ``R_j`` with ``Jr`` from :func:`_qs_profile_geometry` and
         ``Jv`` from :func:`vmec_j_dot_B` — one shared field-chain pass.
         Agrees with :meth:`residuals` at discretization level (solver
         internal grid + the identity ``Jv`` vs the 64x65 wout synthesis +
@@ -1365,7 +1437,7 @@ class RedlBootstrapMismatch:
         """
         surfaces = _as_1d(self.surfaces)
         hm = _half_mesh_fields(state, rt)
-        geom = _geometry_from_half(hm, surfaces, n_lambda=self.n_lambda)
+        geom = _qs_profile_geometry(state, rt, self.helicity_n, hm, n_lambda=self.n_lambda, surfaces=surfaces)
         jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n)
         jv = _jv_from_half(hm, surfaces)
         return self._residual_vector(jv, jr)

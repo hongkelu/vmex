@@ -8,10 +8,10 @@ revision it was measured at, and the pages that cite it.
 ## Unreleased (hongkelu/vmex)
 
 - `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
-- Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot on every half-mesh surface at any `ns`
-  (was <= 97, VMEC2000's `ndatafmax`; echoes refit to 101 knots, `fit_aux_knots`), rows in the interface rows' units
-  (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.
+- Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns` (was <= 97;
+  echoes refit to 101 knots), rows in interface units (`bootstrap_weight` removed); qa4-beta 8x8: stall to 7 evaluations.
 - Finite-beta rows test B.n against the deck's exact response: LP QA 2.5 % 12x12 B.n 2.8e-4 to 1.1e-4, 641 to 330 s.
+- Redl (bootstrap rows, `RedlBootstrapMismatch`) on the quasi-symmetric part of |B| (simsopt `RedlGeomBoozer`): smooth.
 - `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
   (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
   4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:

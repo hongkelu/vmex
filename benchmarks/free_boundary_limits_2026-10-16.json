@@ -182,31 +182,6 @@
    0.00037
   ]
  },
- "trust_region_51": {
-  "case": "QA vacuum (LP QA with 30 coils), three-terms free boundary",
-  "sources": [
-   "runs/galfix/tr/out/galerkin__qa_vac__m12__r5/report.json",
-   "runs/galfix/tr/out/galerkin__qa_vac__m16__r20/report.json",
-   "runs/BLOCKERS.md"
-  ],
-  "before_vmex_commit": "4fddc021",
-  "before": {
-   "M12 2 cm/m start": "stalls at cost 2.4e-3",
-   "M16 2 cm/m start": "stalls at cost 6.6e-3"
-  },
-  "after": {
-   "M12 5 mm start": {
-    "steps": 9,
-    "jacobians": 6,
-    "seconds": 343
-   },
-   "M16 2 cm/m start": {
-    "steps": 27,
-    "jacobians": 20,
-    "seconds": 2069
-   }
-  }
- },
  "vacuum_cross_code": {
   "case": "vacuum decks with fitted coils, deck start; LCFS distance from the harness's labelling-free metric (16 planes per period, symmetrized)",
   "sources": [
@@ -264,6 +239,86 @@
   }
  },
  "bootstrap_routes": {
-  "in_solve_redl_b19": "QA 2.5 % + Redl 12x12 seed: Newton on the coupled rows stalls at 1.7e-6; weakest directions boundary modes m 9-10, condition number 2.4e7 (runs/BLOCKERS.md, 10-15 13:20)"
+  "in_solve_redl_b19_after_53": {
+   "case": "QA 2.5 % Redl 12x12 seed, main with #53",
+   "sources": [
+    "runs/robust/b19j/b19_jcol.log",
+    "runs/robust/b19j/b19_nonlin_new.log"
+   ],
+   "column_checks_best_step_relative": {
+    "bootstrap rows": {
+     "columns": 17,
+     "median": 1.4e-07,
+     "max": 0.037
+    },
+    "interface rows": {
+     "columns": 17,
+     "median": 3.9e-06,
+     "max": 0.00036
+    }
+   },
+   "scaled_jacobian_condition": 16310000.0,
+   "first_step_interface_rows": {
+    "t 1": {
+     "actual": 0.00318,
+     "linear": 0.0
+    },
+    "t 1/16": {
+     "actual": 0.00291,
+     "linear": 0.002911,
+     "deviation": 2.72e-05
+    }
+   }
+  }
+ },
+ "band_and_continuation_54": {
+  "source": "hongkelu/vmex PR #54 (merged 4af2e7e5); runs/galfix band-continuation cells, independent evaluator conv_eval_fast.py at ns 101",
+  "band": "max(mpol - 1, ntor) in vacuum and at finite beta (was two fewer at finite beta)",
+  "band_limited_Bn_P_K_12x12": {
+   "QH 2.5 %": {
+    "band 10": [
+     0.000702,
+     0.000548,
+     0.000702
+    ],
+    "band 12": [
+     0.000574,
+     0.000348,
+     0.000569
+    ]
+   },
+   "QI 2.5 %": {
+    "band 10": [
+     0.002497,
+     0.000429,
+     0.00182
+    ],
+    "band 12": [
+     0.002336,
+     0.000318,
+     0.0017
+    ]
+   }
+  },
+  "finite_beta_extra_wall_time_percent": [
+   13,
+   32
+  ],
+  "boundary_coordinates": {
+   "band 10": 221,
+   "band 12": 288
+  },
+  "fallback_qa_vac_12x12": {
+   "2 cm start": {
+    "continuation_s": 1145,
+    "trust_region_s": 4134,
+    "continuation_to_deck_answer_m": 3e-12
+   },
+   "4 cm start": {
+    "continuation_s": 1103,
+    "trust_region": "not converged after 5240 s (cost 4.8e-6)"
+   }
+  },
+  "open_case": "QH 1 % 12x12 from the deck: continuation converges bands 1-8, band 9 stalls at cost 1.4e-8; reported converged=False, band 8"
  }
 }

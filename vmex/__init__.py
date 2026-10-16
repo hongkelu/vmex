@@ -28,7 +28,10 @@ links to the module that documents it.
   Jacobian and gradients for any coils without recompiling (optimizers);
   :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`
   (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``) —
-  single-stage optimization on it
+  single-stage optimization on it; ``method="least_squares"``:
+  :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel` /
+  :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`, the
+  reference-free least-squares free boundary
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -255,6 +258,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "boundary_residual": (".core.freeboundary_vc", "boundary_residual"),
     "ThreeTermsFreeBoundaryModel": (".core.freeboundary_vc", "ThreeTermsFreeBoundaryModel"),
     "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_vc", "ThreeTermsFreeBoundaryProblem"),
+    "LeastSquaresFreeBoundaryModel": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryModel"),
+    "LeastSquaresFreeBoundaryProblem": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryProblem"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),

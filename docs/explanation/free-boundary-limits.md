@@ -36,9 +36,13 @@ displacement of the deck's boundary along the deck equilibrium's radial lines.
 ## Vacuum
 
 In vacuum the free boundary is judged by B.n alone: there is no pressure, and
-the sheet current follows from the field. NESTOR (VMEC's free boundary) is a
-valid vacuum reference at any M. Its last closed flux surface approaches the
-three-terms one as M grows (max / RMS):
+the sheet current follows from the field. Distances between last closed flux
+surfaces, max / RMS:
+
+- **QA.** NESTOR (VMEC's free boundary) agrees with DESC to 0.75-1.7 mm RMS at
+  M 5-8. The three-terms surface is 0.03-0.05 mm RMS from DESC.
+- **QH.** NESTOR is 7-22 mm RMS away at M 8-12, while three-terms is 0.43 mm
+  RMS from DESC at M 8. DESC, not NESTOR, is the QH vacuum reference.
 
 | case | M | three-terms to DESC | NESTOR to DESC | three-terms to NESTOR |
 |---|---|---|---|---|
@@ -136,13 +140,21 @@ reported as not converged, with its fsq.
 
 ## Bootstrap current: two routes
 
-Production finite-beta runs, like simsopt and DESC, make the current profile a
-design variable and add a bootstrap-mismatch constraint: Redl for QA and QH,
-DKX for quasi-isodynamic fields. Solving Redl inside the free-boundary Newton is
-still available, but it is not the default. On a seed that is far from
-quasisymmetric it is fragile, even with a correct Jacobian. On the QA 2.5 %
-Redl 12x12 seed, the coupled system's weakest directions (boundary modes m = 9
-and 10) have a condition number of 2.4e7, and Newton stalls at 1.7e-6.
+- **Production route.** Finite-beta runs, like simsopt and DESC, make the
+  current profile a design variable and add a bootstrap-mismatch constraint:
+  Redl for QA and QH, DKX for quasi-isodynamic fields.
+- **In-solve route.** Solving Redl inside the free-boundary Newton is still
+  available, but it is not the default, because it is fragile on a seed that
+  is far from quasisymmetric. The QA 2.5 % Redl 12x12 seed (on main after #53)
+  shows why:
+  - The Jacobian is correct. Its bootstrap-row columns agree with central
+    differences to a median of 1.4e-7 over 17 columns, and its interface-row
+    columns to a median of 3.9e-6.
+  - The coupled system is near-singular: the scaled Jacobian's condition
+    number is 1.6e7.
+  - The first Newton step lands where the interface rows are nonlinear. At
+    the full step, those rows are 3.2e-3 against a linear prediction of 0. At
+    1/16 of the step they still follow the model to 2.7e-5.
 
 ## Unconverged states raise
 
@@ -151,19 +163,32 @@ its ladder stops at the iteration cap short of its tolerance (#50). It used to
 return the unconverged state silently. `raise_on_max_iterations=False` is the
 explicit opt-out for a caller that checks `result` itself.
 
-## Trust region where Newton stalls
+## The boundary's band, and continuation where Newton stalls
 
-The boundary Newton solve continues in a trust region from the point where
-plain Newton stalls (#51). This converges starts that used to stall. On QA in
-vacuum, before this change, a start perturbed by 2 cm per metre stalled at
-cost 2.4e-3 at M 12 and at 6.6e-3 at M 16.
+- **Band.** The boundary carries the interior's band, max(mpol − 1, ntor), in
+  vacuum and at finite beta (#54). Before #54 it had two fewer modes at finite
+  beta. At 12x12 the band-limited B.n / pressure jump / sheet current improve
+  from band 10 to band 12:
+  - QH 2.5 %: 7.02 / 5.48 / 7.02e-4 to 5.74 / 3.48 / 5.69e-4.
+  - QI 2.5 %: 2.497e-3 / 4.29e-4 / 1.82e-3 to 2.336e-3 / 3.18e-4 / 1.70e-3.
 
-With the trust region:
+  The larger band (288 boundary coordinates instead of 221) costs 13-32 % more
+  wall time at finite beta.
+- **Continuation.** Newton runs on the full band first, so a start in its basin
+  costs what it did before. If Newton stalls, the band is built up from
+  m ≤ 1, one mode at a time, each band warm-started from the previous one.
+  - A stall on the way returns `converged=False`, and `band` gives the last
+    band that converged. A stall is never returned as an answer.
+  - The band used is reported as `fit.band`.
+- **No trust region.** Continuation replaces the trust region of #51, chosen by
+  measurement on QA vacuum 12x12 far starts. From 2 cm, continuation reaches
+  the deck's answer to 3e-12 m:
 
-| start | M | steps | Jacobians | time |
-|---|---|---|---|---|
-| 5 mm (max) | 12 | 9 | 6 | 343 s |
-| 2 cm per metre | 16 | 27 | 20 | 2069 s |
+  | start | continuation | trust region (#51) |
+  |---|---|---|
+  | 2 cm | 1145 s | 4134 s |
+  | 4 cm | 1103 s | not converged after 5240 s |
 
-Far starts converge, but slowly. Starting from a deck close to the answer is
-still the fast path.
+- **Open case.** QH 1 % at 12x12 from the deck does not converge on any route.
+  Continuation reaches band 8 and stalls at band 9, at cost 1.4e-8. The result
+  is reported as `converged=False` with band 8.

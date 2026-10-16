@@ -924,6 +924,10 @@ class ThreeTermsFreeBoundaryModel:
         from .bootstrap import HalfMeshCurrent
 
         self._im = im
+        # the deck and options this model was built from (rereferenced: the same model on another deck)
+        self._source = (inp, dict(nphi=nphi, ntheta=ntheta, digits=digits, chunk=chunk, device=device,
+                                  trial_ftol=trial_ftol, quadrature=quadrature, bootstrap=bootstrap,
+                                  bootstrap_helicity=bootstrap_helicity, fixed_boundary=fixed_boundary))
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity)
         self.fixed_boundary = bool(fixed_boundary)
@@ -1052,6 +1056,29 @@ class ThreeTermsFreeBoundaryModel:
         other.deck, other._warm = None, None
         other.__dict__.pop("_row_noise", None)  # the rows' measured noise is that of a band's own rows
         other._set_band(max_mode)
+        return other
+
+    def rereferenced(self, x):
+        """This model with the boundary at coordinates ``x`` as its deck, on the same band, grid and options.
+
+        The coordinates belong to the deck: a boundary far from it is described along radial lines and in a
+        theta labelling that are the deck's, not its own, and Newton from the deck may not reach it (vacuum QA
+        single stage, step 30 after the coils moved up to 31 cm: the cold solve from the original deck fails,
+        from the step's own boundary it converges).  The new model's ``x0`` (zero displacement) is that boundary,
+        with the bootstrap current values of ``x``.
+        """
+        if self.fixed_boundary:
+            raise ValueError("a fixed-boundary model has no boundary to re-reference")
+        inp, options = self._source
+        boundary = self.with_boundary(self.params0, jnp.asarray(x))
+        rbc, zbs = np.asarray(boundary.rbc), np.asarray(boundary.zbs)
+        if rbc.shape != np.shape(inp.rbc):  # the deck's own arrays: the band's modes in their places
+            raise ValueError(f"boundary arrays {rbc.shape} do not match the deck's {np.shape(inp.rbc)}")
+        other = ThreeTermsFreeBoundaryModel(replace(inp, rbc=rbc, zbs=zbs), max_mode=self.max_mode, **options)
+        nb = self.n_boundary
+        if other.n_boundary != nb or other.x0.size != np.size(x):
+            raise ValueError("the re-referenced model has other coordinates")
+        other.x0 = np.r_[other.x0[:nb], np.asarray(x, dtype=float)[nb:]]
         return other
 
     def _warm_programs(self):
@@ -1764,11 +1791,31 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_max_nfev, seed_fit=None):
-        from .implicit import runtime_from_params
-
-        self.model, self.field = model, field_from_parameters
+        self.field = field_from_parameters
         self.boundary_max_nfev = int(boundary_max_nfev)
         x0 = np.asarray(x0, dtype=float)
+        self._functions = (loss, tuple(quantities), tuple(parameter_quantities), plasma_from_parameters)
+        self._bind(model, x0)
+        self._cache, self._anchor = {}, {}
+        self.references = [dict(step=0, trial=0, deck=model.fixed)]  # the deck of each step on (_rereference)
+        self._warm_threads = self._warm_gradient_programs(x0)
+        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
+        if seed_fit is not None and seed_fit["converged"]:  # the seed's free boundary, already solved
+            self.stats["trials"] += 1
+            self._store(x0, seed_fit)
+        if self._solve(x0) is None:
+            raise VmecError("the seed design has no three-terms free boundary")
+        self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
+        super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
+                         metadata={"holder": {"failed_trials": 0}})
+
+    def _bind(self, model, x0):
+        """The programs of the rows and their design gradients on ``model`` (and its deck's coordinates)."""
+        from .implicit import runtime_from_params
+
+        loss, quantities, parameter_quantities, plasma_from_parameters = self._functions
+        field_from_parameters = self.field
+        self.model = model
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
 
         def seed_params_at(x):
@@ -1830,17 +1877,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), x)[1](lam)[0])
         self._field_jvp = jax.jit(lambda state, params, x, dx, deck: jax.jvp(
             lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), (x,), (dx,))[1])
-        self._cache, self._anchor = {}, {}
-        self._warm_threads = self._warm_gradient_programs(x0)
-        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
-        if seed_fit is not None and seed_fit["converged"]:  # the seed's free boundary, already solved
-            self.stats["trials"] += 1
-            self._store(x0, seed_fit)
-        if self._solve(x0) is None:
-            raise VmecError("the seed design has no three-terms free boundary")
-        self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
-        super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
-                         metadata={"holder": {"failed_trials": 0}})
 
     def _solve(self, x):
         """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``."""
@@ -1879,11 +1915,50 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 fit = None
                 continue
             break
+        if fit is None and anchor:
+            fit = self._rereference(x, anchor)
         if fit is None:
             self.stats["failed"] += 1
             self._cache[key] = None
             return None
         return self._store(x, fit)
+
+    _BOUND = ("model", "_params_at", "_rows", "_plasma", "_plasma_directions", "_pullback", "_coordinates",
+              "_direct", "_field_vjp", "_field_jvp")
+
+    def _rereference(self, x, anchor):
+        """The trial at ``x`` on a new deck, the anchor's boundary, when the current deck reaches it from no start.
+
+        The deck fixes the coordinates (radial lines, theta labelling) and the cold start; a design that has
+        moved far from it -- coils several cm away after tens of steps -- may have a free boundary that Newton
+        from the deck no longer reaches although it exists.  The anchor's boundary, the latest linearized
+        solution, is near it by construction.  The new deck is kept when the trial converges on it (the anchor
+        and the uncertified trials, whose coordinates were the old deck's, are dropped; ``references`` records
+        the step and deck of every change, the deck a cold re-solve of the later steps starts from); otherwise
+        the trial fails on the old deck.
+        """
+        old = {name: self.__dict__[name] for name in self._BOUND}
+        try:
+            model = self.model.rereferenced(anchor["b"])
+        except (VmecError, RuntimeError):
+            return None
+        self._bind(model, x)
+        fit = None
+        try:
+            fit = model.solve_boundary(self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x)),
+                                       max_nfev=self.boundary_max_nfev)
+        except (VmecError, RuntimeError):
+            pass
+        if fit is None or not fit["converged"]:
+            if fit is not None:
+                self.stats["boundary_evaluations"] += fit["nfev"]
+            self.__dict__.update(old)
+            return None
+        self.stats["rereferences"] = self.stats.get("rereferences", 0) + 1
+        self.references.append(dict(step=self.accepted_step, trial=self.stats["trials"], deck=model.fixed))
+        self._anchor = {}
+        self._cache = {k: v for k, v in self._cache.items() if v is not None and "gradients" in v}
+        return fit
 
     def _store(self, x, fit):
         """Cache the converged ``fit`` as the trial at ``x``."""

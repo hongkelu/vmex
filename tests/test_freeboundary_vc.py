@@ -31,7 +31,7 @@ import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_vc as fvc  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
-from vmex.core.errors import TrialRejected  # noqa: E402
+from vmex.core.errors import TrialRejected, VmecError  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
 needs_vc = pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax")
@@ -473,6 +473,12 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     solve, newton = model.solve_boundary, model._newton_boundary
     model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
     model._newton_boundary = lambda *args, **kwargs: dict(newton(*args, **kwargs), converged=False)
+    rereferenced = model.rereferenced
+
+    def no_deck(b):
+        raise VmecError("no other deck")
+
+    model.rereferenced = no_deck
     failed = problem.stats["failed"]
     with pytest.raises(TrialRejected):
         problem.fun(x0 + 1.5e-3 * np.eye(2)[0])
@@ -499,6 +505,27 @@ def test_three_terms_problem_gradients_match_resolved_differences():
     with pytest.raises(TrialRejected, match="polish"):
         problem.value_and_grad(x0 + 2.5e-3 * np.eye(2)[0])
     model.solve_boundary = solve
+    # a design the deck reaches from no start: its trial is solved on the anchor's boundary as a new deck, and
+    # the new deck's values and gradients are the free boundary's (the same up to the theta labelling)
+    xt = x0 + 1e-3 * np.eye(2)[1]
+    before = np.r_[problem.fun(xt), problem.constraint_values(xt)]
+    problem._cache.pop(xt.tobytes())
+    model.rereferenced = rereferenced
+    model.solve_boundary = lambda *args, **kwargs: dict(solve(*args, **kwargs), converged=False)
+    model._newton_boundary = lambda *args, **kwargs: dict(newton(*args, **kwargs), converged=False)
+    value, grad = problem.value_and_grad(xt)
+    assert problem.model is not model and problem.stats["rereferences"] == 1
+    assert [r["step"] for r in problem.references] == [0, 1] and problem.references[1]["deck"] is problem.model.fixed
+    # the deck's band of displacements is another truncation of the boundary: the same free boundary up to it
+    # (mpol 3: 1e-5, the major radius 11 um)
+    np.testing.assert_allclose(np.r_[value, problem.constraint_values(xt)], before, rtol=5e-5)
+    jac = problem.constraint_jac(xt)
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        values = [np.r_[problem.fun(xt + s * e), problem.constraint_values(xt + s * e)] for s in (1, -1)]
+        fd = (values[0] - values[1]) / (2 * h)
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
+    assert problem.stats["rereferences"] == 1  # the new deck reaches its neighbours
 
 
 @needs_vc

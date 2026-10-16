@@ -179,7 +179,7 @@ deck's warns, with `normal_outside_modes`, the part its rows cannot reach. The b
 interior's modes, `max(mpol - 1, ntor)`; where Newton stalls on them, the band is built up from `m <= 1`
 one mode at a time, and a stall is reported (`success=False`, `fit.band` the last band that converged).
 The edge pressure must vanish, and `virtual-casing-jax` must be installed for finite beta. The reported
-`equilibrium` is re-solved to a final force residual of 1e-17 (timings: {doc}`/explanation/validation`).
+`equilibrium` is re-solved to fsq 1e-17 ({doc}`/explanation/validation`; limits: {doc}`/explanation/free-boundary-limits`).
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 exposes the grid and quadrature controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few

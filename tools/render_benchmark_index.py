@@ -76,6 +76,7 @@ GENERATORS: tuple[tuple[str, str], ...] = (
     ("benchmarks/mirror_*.json", ""),
     ("benchmarks/cache_entry_scaling_*.json", ""),
     ("benchmarks/desc_native_vs_lifted_*.json", ""),
+    ("benchmarks/free_boundary_limits_*.json", ""),
     ("benchmarks/fresh_decks_vs_vmec2000_*.json", ""),
     ("benchmarks/review_*.json", ""),
     # Measured by the external analytical benchmark; the record names its commit.

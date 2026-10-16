@@ -5,7 +5,8 @@ This page states what the three-terms free boundary does today
 stops, with the measurement behind each statement. "LP QA 2.5 %" is the
 Landreman-Paul QA design at 2.5 % beta with its fitted coils. Distances are
 between last closed flux surfaces: point to curve, on 6 toroidal planes per
-half field period.
+half field period. Every number on this page, with its case, its source run and
+the vmex revision it ran on, is in `benchmarks/free_boundary_limits_2026-10-16.json`.
 
 ## Labelling and start independence
 
@@ -109,6 +110,11 @@ reported as not converged, with its fsq.
   2.5e-4 of B_max − B_min, so B_max, and with it the trapped fraction, jumps as
   the boundary moves. The quasi-symmetric part has one maximum on every
   surface.
+- **Exact derivatives.** With the quasi-symmetric part, the bootstrap rows'
+  Jacobian columns along the boundary agree with central differences to
+  1.8e-8 to 8.7e-3 relative (median 2.4e-5, 33 columns) at the converged LP
+  QA 2.5 % 8x8 point. With the full |B| they were 17 % to 99 % off. The
+  design gradient of QS agrees with finite differences to 6e-5 to 4e-4.
 - **Effect on the results.** The trapped fraction changes by −0.4 % to −1.7 %,
   and the bootstrap current dI/ds by at most 1.0 % relative. The full-field
   Redl geometry stays available as the parity check against simsopt.

@@ -1,0 +1,210 @@
+{
+ "schema": "vmex.free-boundary-limits/1",
+ "measurement_date": "2026-10-16",
+ "provenance": "Hand-collected from the project's run records (paths relative to the project's paper/ directory, not part of this repository); each section names its source files and the vmex revision it ran on.",
+ "page": "docs/explanation/free-boundary-limits.md",
+ "labelling": {
+  "case": "LP QA 2.5 % with fitted coils, three-terms free boundary, ns 51",
+  "vmex_commit": "1ef9b079",
+  "sources": [
+   "runs/galfix/deckdep/dd_orig.npz",
+   "runs/galfix/deckdep/dd_relab.npz",
+   "runs/galfix/deckdep/dd12_orig.npz",
+   "runs/galfix/deckdep/dd12_relab.npz",
+   "runs/galfix/deckdep/dd14_orig.npz",
+   "runs/galfix/deckdep/dd_p4init.json",
+   "runs/galfix/ddist.py (point to polyline, 6 planes per half period)"
+  ],
+  "start_independence_8x8": {
+   "start": "deck perturbed by 4 cm",
+   "lcfs_distance_mm": 0.0,
+   "qs_deck_start": 3.56465619e-05,
+   "qs_perturbed_start": 3.564656269e-05
+  },
+  "relabelled_deck_lcfs_mm": {
+   "8x8": {
+    "rms": 0.18,
+    "max": 0.54
+   },
+   "12x12": {
+    "rms": 0.1,
+    "max": 0.24
+   }
+  },
+  "resolution_change_lcfs_mm": {
+   "8_to_12": {
+    "rms": 0.88,
+    "max": 2.24
+   },
+   "12_to_14": {
+    "rms": 0.34,
+    "max": 0.89
+   }
+  }
+ },
+ "qs_resolution": {
+  "vacuum": {
+   "case": "QA vacuum single-stage design, 30 coils (Gil et al. point 30-F14, our optimum)",
+   "vmex_commit": "29dd6c0f",
+   "source": "runs/g2auglag/HANDOFF.md",
+   "M": [
+    12,
+    14,
+    16,
+    18,
+    20
+   ],
+   "qs": [
+    4.411e-07,
+    5.304e-07,
+    5.875e-07,
+    5.926e-07,
+    5.898e-07
+   ]
+  },
+  "finite_beta": {
+   "case": "LP QA 2.5 %, deck start, ns 51",
+   "source": "runs/galfix/deckdep/qs101.json",
+   "M": [
+    8,
+    10,
+    12,
+    14
+   ],
+   "qs": [
+    3.5647e-05,
+    0.0001107,
+    0.000215655,
+    0.00023516
+   ],
+   "reevaluated_mn16_ns101": [
+    5.987e-05,
+    0.0001211,
+    0.00022134,
+    0.00024154
+   ]
+  }
+ },
+ "local_force_error": {
+  "measure": "<|J x B - grad p|>_surface / <|grad p|>_volume",
+  "vmex_commit": "1ef9b079",
+  "source": "runs/force/SUMMARY.md",
+  "lp_qa_2p5_mpol12": {
+   "s": [
+    0.26,
+    0.5,
+    0.76
+   ],
+   "vmex_ns51": [
+    0.031,
+    0.031,
+    0.046
+   ],
+   "vmec2000_ns51": [
+    0.031,
+    0.031,
+    0.046
+   ],
+   "vmex_ns201": [
+    0.011,
+    0.019,
+    0.03
+   ],
+   "desc_L24_M12": [
+    0.00014,
+    0.00012,
+    0.00015
+   ]
+  },
+  "vmex_vs_vmec2000": "under 1 % on every deck tested",
+  "first_surfaces": "2 to 5 on the first 2-3 surfaces at every resolution"
+ },
+ "qh_fixed_boundary_descent_floor": {
+  "case": "QH vacuum deck, ns 16/31/51, ftol 1e-17 on the last stage, 40000 iterations",
+  "vmex_commit": "cdc989ce",
+  "sources": [
+   "runs/galfix/speed/res_mpol_ntor.json",
+   "runs/galfix/speed/v2k/v2k_qhvac16.out"
+  ],
+  "converges": {
+   "mpol 12, ntor 12": 3858,
+   "mpol 12, ntor 16": 3868
+  },
+  "stalls_fsq": {
+   "mpol 13": 5.1e-12,
+   "mpol 14": 2.9e-12,
+   "mpol 16, ntor 12": 1.5e-11
+  },
+  "mpol13_ns": {
+   "51": 5.1e-12,
+   "101": 1.7e-11,
+   "151": 1.4e-12
+  },
+  "gmres_2d_preconditioner_mpol13": 2.26e-13,
+  "vmec2000_mpol16": "stalls the same way"
+ },
+ "redl": {
+  "pull_requests": [
+   52,
+   53
+  ],
+  "case": "LP QA 2.5 %, 8x8",
+  "sources": [
+   "runs/lsq/qs/qs_ft.log",
+   "runs/lsq/dbg/jcol_xstar.log",
+   "runs/lsq/dbg/qsfd_e3e-3_d0.json",
+   "runs/lsq/dbg/qsfd_e3e-3_d1.json"
+  ],
+  "full_field_bmax_local_maxima_per_surface": [
+   2,
+   8
+  ],
+  "gap_over_bmax_minus_bmin": [
+   0.021,
+   0.00025
+  ],
+  "qs_geometry_maxima_per_surface": 1,
+  "trapped_fraction_change_percent": [
+   -0.4,
+   -1.7
+  ],
+  "bootstrap_dIds_change_max_relative": 0.009731,
+  "jacobian_check_vmex_commit": "af6a3466 (main 5c539ad3 with #53, plus an LSQ branch)",
+  "bootstrap_row_columns_vs_central_differences_relative": {
+   "min": 1.78e-08,
+   "median": 2.43e-05,
+   "max": 0.00865,
+   "columns": 33
+  },
+  "before_53": "boundary columns 17-99 % off central differences near the converged point (runs/BLOCKERS.md)",
+  "design_gradient_qs_vs_fd_relative_eps3e-3": [
+   5.8e-05,
+   0.00037
+  ]
+ },
+ "trust_region_51": {
+  "case": "QA vacuum (LP QA with 30 coils), three-terms free boundary",
+  "sources": [
+   "runs/galfix/tr/out/galerkin__qa_vac__m12__r5/report.json",
+   "runs/galfix/tr/out/galerkin__qa_vac__m16__r20/report.json",
+   "runs/BLOCKERS.md"
+  ],
+  "before_vmex_commit": "4fddc021",
+  "before": {
+   "M12 2 cm/m start": "stalls at cost 2.4e-3",
+   "M16 2 cm/m start": "stalls at cost 6.6e-3"
+  },
+  "after": {
+   "M12 5 mm start": {
+    "steps": 9,
+    "jacobians": 6,
+    "seconds": 343
+   },
+   "M16 2 cm/m start": {
+    "steps": 27,
+    "jacobians": 20,
+    "seconds": 2069
+   }
+  }
+ }
+}

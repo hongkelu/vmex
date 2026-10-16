@@ -840,7 +840,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         :meth:`_exact_gradients` needs at the answer (every Hessian column and the plasma directions' mixed
         columns): the design gradient then reuses it instead of linearizing again."""
         xj = jnp.asarray(np.asarray(x, dtype=float))
-        self.model.certificate_extra = ((lambda params: self._plasma_directions(params, xj)) if self._plasma.size
+        self.model.certificate_extra = ((lambda params: self._plasma_directions(xj)) if self._plasma.size
                                         else (lambda params: None))
         try:
             return super()._solve(x)
@@ -866,7 +866,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         """
         model, xj = self.model, jnp.asarray(x)
         field = self.field(xj)
-        extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+        extra = self._plasma_directions(xj) if self._plasma.size else None
         so = model.second_order(sol["x"], sol["aux"], field, extra=extra)
         state, mask, params, _ = so["aux"]
         nb = model.x0.size

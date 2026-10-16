@@ -1795,16 +1795,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._plasma = np.flatnonzero(moved)
         eye = jnp.eye(x0.size)[self._plasma]
 
-        def trial_params(b, x):
-            """A trial's ``ImplicitParams``: the map of the deck's parameters at ``x``, on the model coordinates ``b``.
+        def mapped_params(x):
+            """The plasma map of the deck's parameters at ``x``, on fixed model coordinates.
 
             The map is always applied to the deck's parameters (as :meth:`_solve` does), never to a trial's own
             mapped ones: a map that depends on its input (a multiplicative pressure scale) would otherwise have its
-            derivative at a moved point scaled by the map itself."""
-            return model.with_boundary(params_at(model.params0, x), b)
+            derivative at a moved point scaled by the map itself.  The model coordinates overwrite the boundary
+            (and bootstrap current), so the derivative in ``x`` does not depend on which coordinates are used."""
+            return model.with_boundary(params_at(model.params0, x), jnp.asarray(model.x0))
 
-        self._plasma_directions = jax.jit(lambda b, x: jax.vmap(lambda e: jax.jvp(
-            lambda z: trial_params(b, z), (x,), (e,))[1])(eye))
+        self._plasma_directions = jax.jit(lambda x: jax.vmap(lambda e: jax.jvp(mapped_params, (x,), (e,))[1])(eye))
 
         def pullback(state, mask, params, x, factors):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
@@ -1820,7 +1820,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         def coordinates(params, b, x, params_bar):
             """``ImplicitParams`` cotangents onto the model coordinates ``b`` and onto ``x`` (plasma parameters)."""
             _, b_vjp = jax.vjp(lambda z: model.with_boundary(params, z), b)
-            _, x_vjp = jax.vjp(lambda z: trial_params(b, z), x)
+            _, x_vjp = jax.vjp(mapped_params, x)
             return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
 
         self._coordinates = coordinates
@@ -1910,7 +1910,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self._warm_threads[0].join()
 
         def relinearize():
-            extra = self._plasma_directions(jnp.asarray(sol["x"]), xj) if self._plasma.size else None
+            extra = self._plasma_directions(xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra,
                                                extra_scale=None if extra is None else self.scales[self._plasma])

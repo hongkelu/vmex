@@ -459,7 +459,9 @@ def vacuum_iota(inp):
     from vmex.core import implicit as im
     from vmex.core.statephysics import _iotas_half
 
-    vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
+    # PHIEDGE 1 Wb: a vacuum transform does not depend on the flux, and the deck's PHIEDGE baked into the row's
+    # programs would make their compilation-cache keys seed-dependent
+    vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series", phiedge=1.0,
                      ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
     # the model's device (the GPU when present); unpinned, its certification ran on the host CPU
     device = jax.devices()[0]
@@ -703,17 +705,17 @@ class DirectCoilField:
 class CoilChart:
     """Design vector -> ESSOS coils and plasma parameters: ``FreeBoundaryProblem``'s ``field_from_parameters``.
 
-    ``x`` holds, in order: with ``phiedge`` (the deck's PHIEDGE in Wb) a relative
-    PHIEDGE change, PHIEDGE = phiedge * (1 + x[0]); with ``plasma_current`` (the
-    deck's leading ``k`` AC coefficients, or AC_AUX_F spline values when
-    ``plasma_current_spline``, then CURTOR in A; ``ncurr = 1``) ``k + 1``
-    additive changes of those values in units of the largest nominal shape value
-    and of ``abs(CURTOR)``; relative changes of the selected base-coil currents
-    (``current[i] = nominal[i] * (1 + x[k])``); and additive changes of every
-    base coil's Cartesian Fourier coefficients in metres. ``x0 = 0`` is the
-    nominal state. Calling the chart gives the :class:`DirectCoilField` of
-    ``coils_from_x(x)``; ``plasma_params_at`` is ``FreeBoundaryProblem``'s
-    ``plasma_from_parameters``. ``scales`` holds one coordinate scale per entry of ``x``.
+    ``x`` holds absolute values, in order: with ``phiedge`` (the deck's PHIEDGE in Wb) PHIEDGE; with
+    ``plasma_current`` (the deck's leading ``k`` AC coefficients, or AC_AUX_F spline values when
+    ``plasma_current_spline``, then CURTOR in A; ``ncurr = 1``) those ``k + 1`` values; the currents of the
+    selected base coils in A; and every base coil's Cartesian Fourier coefficients in metres.  ``x0`` is the
+    nominal state.  The nominal values live in ``x0``, not in the maps: a jitted function of the chart then holds
+    no seed-dependent constant, so its persistent compilation cache entry serves every seed (with the nominal
+    coefficients inside the maps, every new coil set recompiled the design gradient's pullback, 160-180 s).
+    ``scales`` are given relative to the nominal values (PHIEDGE, the selected currents), in units of the largest
+    nominal shape value and of ``abs(CURTOR)`` (the current profile) and in metres (the coils); ``self.scales``
+    are those in ``x``'s units.  Calling the chart gives the :class:`DirectCoilField` of ``coils_from_x(x)``;
+    ``plasma_params_at`` is ``FreeBoundaryProblem``'s ``plasma_from_parameters``.
     """
 
     def __init__(self, coils, *, current_dofs, scales, phiedge=None, plasma_current=None, plasma_current_spline=False):
@@ -749,18 +751,29 @@ class CoilChart:
                 raise ValueError("plasma_current needs finite values, a nonzero shape value and a nonzero CURTOR")
         self._coil0 = self.nphiedge + self.nplasma
         self.size = self._coil0 + len(self.current_dofs) + self.coefficients.size
-        self.x0 = np.zeros(self.size)
+        free = np.zeros(len(self.currents), dtype=bool)
+        free[list(self.current_dofs)] = True
+        # the fixed currents only (zero where the design sets them): a constant of the maps independent of the seed
+        # whenever every current is free
+        self._fixed_currents = np.where(free, 0.0, self.currents)
+        self.x0 = np.r_[[self.phiedge] * self.nphiedge,
+                        [] if self.plasma_current is None else self.plasma_current,
+                        self.currents[list(self.current_dofs)], self.coefficients.ravel()]
         order = (self.coefficients.shape[2] - 1) // 2
         modes = ["constant"] + [f"{kind}({k})" for k in range(1, order + 1) for kind in ("sin", "cos")]
-        self.dof_names = tuple(["phiedge/nominal"] * self.nphiedge
-                               + [f"plasma_current[{j}]/unit" for j in range(self.nplasma - 1)]
-                               + ["curtor/nominal"] * bool(self.nplasma)
-                               + [f"current[{i}]/nominal" for i in self.current_dofs]
+        self.dof_names = tuple(["phiedge"] * self.nphiedge
+                               + [f"plasma_current[{j}]" for j in range(self.nplasma - 1)]
+                               + ["curtor"] * bool(self.nplasma)
+                               + [f"current[{i}]" for i in self.current_dofs]
                                + [f"coil[{i}].{axis}.{mode}" for i in range(len(self.currents))
                                   for axis in "xyz" for mode in modes])
-        self.scales = np.asarray(scales, dtype=float)
-        if self.scales.shape != self.x0.shape or not np.all(np.isfinite(self.scales)) or np.any(self.scales <= 0):
+        scales = np.asarray(scales, dtype=float)
+        if scales.shape != self.x0.shape or not np.all(np.isfinite(scales)) or np.any(scales <= 0):
             raise ValueError("one positive finite scale per coordinate required")
+        units = np.r_[[abs(self.phiedge or 0.0)] * self.nphiedge,
+                      [] if self.plasma_current is None else self.plasma_current_units,
+                      np.abs(self.currents[list(self.current_dofs)]), np.ones(self.coefficients.size)]
+        self.scales = scales * units
 
     def phiedge_at(self, x):
         """PHIEDGE [Wb] at ``x``; only for a chart built with ``phiedge``."""
@@ -768,7 +781,7 @@ class CoilChart:
 
         if self.phiedge is None:
             raise ValueError("this chart does not vary PHIEDGE")
-        return self.phiedge * (1.0 + jnp.asarray(x)[0])
+        return jnp.asarray(x)[0]
 
     def plasma_params_at(self, params, x):
         """``params`` (``ImplicitParams``) with the PHIEDGE and current profile of ``x``."""
@@ -778,7 +791,7 @@ class CoilChart:
         if self.phiedge is not None:
             params = replace(params, phiedge=self.phiedge_at(x))
         if self.plasma_current is not None:
-            values = jnp.asarray(self.plasma_current) + x[self.nphiedge:self._coil0] * self.plasma_current_units
+            values = x[self.nphiedge:self._coil0]
             name = "ac_aux_f" if self.plasma_current_spline else "ac"
             profile = getattr(params, name).at[: self.nplasma - 1].set(values[:-1])
             params = replace(params, curtor=values[-1], **{name: profile})
@@ -789,9 +802,9 @@ class CoilChart:
         import jax.numpy as jnp
 
         x = jnp.asarray(x)
-        currents = jnp.asarray(self.currents)
+        currents = jnp.asarray(self._fixed_currents)
         for local, base in enumerate(self.current_dofs):
-            currents = currents.at[base].add(x[self._coil0 + local] * self.currents[base])
+            currents = currents.at[base].set(x[self._coil0 + local])
         return currents
 
     def coils_from_x(self, x):
@@ -800,8 +813,7 @@ class CoilChart:
         from essos.coils import Coils, Curves
 
         x = jnp.asarray(x)
-        raw = jnp.asarray(self.coefficients) + x[self._coil0 + len(self.current_dofs):].reshape(
-            self.coefficients.shape)
+        raw = x[self._coil0 + len(self.current_dofs):].reshape(self.coefficients.shape)
         return Coils(Curves(raw, self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
 
     def __call__(self, x):

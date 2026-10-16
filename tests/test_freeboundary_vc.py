@@ -1087,3 +1087,34 @@ def test_finite_beta_design_gradients_for_random_profiles(seed):
         floor = 1e-3 * np.max(np.abs(exact), axis=1)  # a component far below its row's size is not resolved
         np.testing.assert_array_less(np.abs(exact[:, k] - fd), 2e-2 * np.maximum(np.abs(fd), floor) + 1e-12,
                                      err_msg=f"design coordinate {k} (seed {seed})")
+
+
+def test_deck_response_cache_round_trip_and_keys(tmp_path, monkeypatch):
+    """The deck-response cache: a stored entry comes back exactly; the key changes with any input (array bytes,
+    dataclass fields, containers) and a damaged or missing entry is a miss; with the compilation cache off there
+    is no cache at all."""
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "1")
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE_DIR", str(tmp_path))
+    rng = np.random.default_rng(1)
+    value = (tuple(jnp.asarray(rng.standard_normal((3, 4))) for _ in range(4)),
+             tuple(jnp.asarray(rng.standard_normal((2, 3, 4))) for _ in range(4)))
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
+    key = fvc._digest("deck-response", inp, 48, value)
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)
+    back = fvc._deck_cache_load(key)
+    for a, b in zip(jax.tree.leaves(back), jax.tree.leaves(value)):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    bumped = np.asarray(inp.rbc).copy()
+    bumped[0, 1] += 1e-15
+    assert fvc._digest("deck-response", replace(inp, rbc=bumped), 48, value) != key
+    assert fvc._digest("deck-response", replace(inp, phiedge=inp.phiedge * (1 + 1e-15)), 48, value) != key
+    assert fvc._digest("deck-response", inp, 64, value) != key
+    assert fvc._digest("deck-response", inp, 48, value) == key and len(fvc._source_digest()) == 64
+    fvc._deck_cache_path(key).write_bytes(b"damaged")
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value[0])  # not a deck response (4 leaves): not stored
+    assert fvc._deck_cache_load(key) is None
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "0")
+    assert fvc._deck_cache_path(key) is None and fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)  # no cache: a no-op

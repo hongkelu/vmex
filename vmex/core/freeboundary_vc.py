@@ -224,6 +224,112 @@ def _check_edge_pressure(inp: VmecInput) -> None:
                          "boundary pressure must vanish")
 
 
+def _digest_into(h, obj):
+    """Feed ``obj`` to the hash ``h``: arrays by dtype, shape and bytes; containers and dataclasses by content."""
+    import dataclasses
+
+    if obj is None or isinstance(obj, (bool, int, float, complex, str, bytes)):
+        h.update(repr((type(obj).__name__, obj)).encode())
+    elif isinstance(obj, (np.ndarray, jax.Array, np.generic)):
+        a = np.ascontiguousarray(np.asarray(obj))
+        h.update(repr((a.dtype.str, a.shape)).encode())
+        h.update(a.tobytes())
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        h.update(type(obj).__qualname__.encode())
+        for f in dataclasses.fields(obj):
+            h.update(f.name.encode())
+            _digest_into(h, getattr(obj, f.name))
+    elif isinstance(obj, dict):
+        for k in sorted(obj, key=repr):
+            _digest_into(h, k)
+            _digest_into(h, obj[k])
+    elif isinstance(obj, (list, tuple)):
+        h.update(f"{type(obj).__name__}{len(obj)}".encode())
+        for item in obj:
+            _digest_into(h, item)
+    else:
+        leaves, treedef = jax.tree.flatten(obj)
+        if leaves and not (len(leaves) == 1 and leaves[0] is obj):
+            h.update(repr(treedef).encode())
+            for leaf in leaves:
+                _digest_into(h, leaf)
+        elif hasattr(obj, "__dict__"):
+            h.update(type(obj).__qualname__.encode())
+            _digest_into(h, dict(vars(obj)))
+        else:
+            h.update(repr(obj).encode())
+
+
+def _digest(*objects) -> str:
+    """A content hash of ``objects`` (:func:`_digest_into`)."""
+    h = hashlib.sha256()
+    for obj in objects:
+        _digest_into(h, obj)
+    return h.hexdigest()
+
+
+_SOURCE_DIGEST: list[str] = []
+
+
+def _source_digest() -> str:
+    """A hash of the vmex package's Python sources, so cached data never outlive the code that made them."""
+    if not _SOURCE_DIGEST:
+        import pathlib
+
+        h = hashlib.sha256()
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for path in sorted(root.rglob("*.py")):
+            h.update(str(path.relative_to(root)).encode())
+            h.update(path.read_bytes())
+        _SOURCE_DIGEST.append(h.hexdigest())
+    return _SOURCE_DIGEST[0]
+
+
+def _deck_cache_path(key: str):
+    """``<persistent compilation cache>/deck_response/<key>.npz``, or ``None`` when that cache is off."""
+    import pathlib
+
+    from .. import _compat
+
+    root = _compat._default_compilation_cache_dir()
+    return None if root is None else pathlib.Path(root) / "deck_response" / f"{key}.npz"
+
+
+def _deck_cache_load(key: str):
+    """The cached ``(primal, tangent)`` deck response of ``key`` (each four arrays), or ``None``."""
+    path = _deck_cache_path(key)
+    if path is None or not path.exists():
+        return None
+    try:
+        with np.load(path) as data:
+            leaves = [jnp.asarray(data[f"a{i}"]) for i in range(8)]
+    except (OSError, KeyError, ValueError):  # a damaged entry is a miss
+        return None
+    return tuple(leaves[:4]), tuple(leaves[4:])
+
+
+def _deck_cache_store(key: str, value) -> None:
+    """Write ``value`` atomically (a private temporary file renamed into place); a failed write is no error."""
+    import contextlib
+    import os
+    import tempfile
+
+    path = _deck_cache_path(key)
+    leaves = jax.tree.leaves(value)
+    if path is None or len(leaves) != 8:
+        return
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                np.savez(f, **{f"a{i}": np.asarray(a) for i, a in enumerate(leaves)})
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
 def _axis_loop(wout):
     """Points ``(3, n)``, tangent and spacing of the magnetic axis of ``wout``: a closed curve inside the coils."""
     phi = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
@@ -910,6 +1016,13 @@ class ThreeTermsFreeBoundaryModel:
     def _deck_response(self, nphi, ntheta, digits, precision):
         """The finite-beta rows' test space: the deck's boundary data and their exact responses to ``h``.
 
+        They depend on the deck alone (its equilibrium and boundary coordinates, the grid, the virtual-casing
+        precision), not on the coils, so they are kept on disk next to the persistent compilation cache
+        (:func:`_deck_cache_load`): a model built again on the same deck -- a single-stage restart, a benchmark
+        cell, a second start -- reads them instead of paying the tangent solve and the virtual-casing push
+        (96-175 s at 12 x 12, VC64).  The key hashes every input, the seed state's bytes and the vmex sources,
+        so a changed deck, resolution or code never reuses an entry.
+
         The pointwise residual ``r = sqrt(w) B_out . n / |B_in|`` (``w`` the area weights) at the deck depends on
         the boundary coordinates through the deck equilibrium (points, normal, weights, ``|B_in|`` and the
         plasma's own field ``B_plasma``, all independent of the coils) and through the coil field at the moving
@@ -933,10 +1046,17 @@ class ThreeTermsFreeBoundaryModel:
             s = jnp.sqrt(area / jnp.sum(area)) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
             return jnp.asarray(data.gamma), jnp.asarray(data.normal), s, interface.B_plasma
 
+        key = _digest("deck-response", fixed, nphi, ntheta, digits, precision, self.max_mode, self.boundary_modes,
+                      self._x_ref, self._normal_map, state, mask, directions, _source_digest(), jax.__version__,
+                      jax.devices()[0].device_kind)
+        cached = _deck_cache_load(key)
+        if cached is not None:
+            return cached
         dz = self._tangents(self.params0, state, mask, directions)
         primal = jax.jit(geometry)(state, self.params0)
         tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
             state, mask, self.params0, dz, directions)
+        _deck_cache_store(key, (primal, tangent))
         return primal, tangent
 
     def _implicit_setup(self):

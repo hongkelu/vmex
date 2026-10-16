@@ -593,19 +593,16 @@ def current_from_wout(inp, w):
     return inp
 
 
-def restart_input(run, current):
-    """A finished run's ``input.run`` with its final WOUT's PHIEDGE and, if the run varied it (``current``), its
-    current profile (``--restart``).
+def restart_input(run):
+    """A finished run's ``input.run`` with its final WOUT's PHIEDGE and current (``--restart``).
 
     The boundary stays the deck's: it is only the initial condition of the free-boundary solve, so a restart (or a
-    cold re-solve of saved coils) solves from the same start as the run did. A run without current keeps the deck's
-    zero current (its WOUT's CTOR is round-off, ~1e-12 A, which changes the solve's path).
+    cold re-solve of saved coils) solves from the same start as the run did.
     """
     import vmex as vj
 
     inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
-    inp = replace(inp, phiedge=float(w.phi[-1]), lfreeb=False)
-    return current_from_wout(inp, w) if current else inp
+    return current_from_wout(replace(inp, phiedge=float(w.phi[-1]), lfreeb=False), w)
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -1134,7 +1131,7 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None or args.seed_run is not None:
-        inp = (restart_input(args.restart, args.bootstrap) if args.restart is not None
+        inp = (restart_input(args.restart) if args.restart is not None
                else replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False))
         if args.modes:  # re-grid the run's deck; otherwise its resolution is the run's
             inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=GRID[0], nzeta=GRID[1])

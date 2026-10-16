@@ -631,10 +631,12 @@ def resize_coils(coils, order, n_segments):
 
 
 def scale_coil_currents(coils, rbtor):
-    """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``.
+    """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``, sign included.
 
     mu0 I / 2 pi is the mean of R B_phi on the loop R = R0, Z = 0, with R0 the
-    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)).
+    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)). The sign matters: coils whose
+    toroidal field opposes the deck's (its PHIEDGE and RBTOR) satisfy B.n = 0 on the
+    same boundary, but with B_in = -B_out, a sheet current of twice |B| (K = 2).
     """
     import jax
     import jax.numpy as jnp
@@ -644,7 +646,7 @@ def scale_coil_currents(coils, rbtor):
     r0, phi = RADIUS_TARGET, np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
     points = jnp.asarray(r0 * np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1))
     field = np.asarray(jax.vmap(BiotSavart(coils).B)(points))
-    linked = abs(r0 * float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1])))
+    linked = r0 * float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1]))
     return Coils(coils.curves, coils.dofs_currents_raw * (rbtor / linked), currents_scale=coils.currents_scale)
 
 
@@ -1176,7 +1178,7 @@ def main(argv=None):
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
-        coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
+        coils = scale_coil_currents(coils, float(fixed.wout.rbtor))
         if args.beta > 0 and not args.no_coil_fit:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))

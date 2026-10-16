@@ -7,7 +7,8 @@ script's docstring), limits and seeds. The design variables are the boundary
 modes up to ``MAX_MODE`` (RBC(0,0) fixed), the coil currents (``FREE_COIL_CURRENTS``,
 no bounds) and shapes and, at ``--beta`` > 0 with ``FREE_PHIEDGE``, PHIEDGE; with ``--bootstrap`` also
 the current spline values and CURTOR. Every trial solves the fixed-boundary
-equilibrium, and SLSQP minimizes
+equilibrium, and the optimizer (``--optimizer``: SLSQP, default, or the
+augmented Lagrangian ``opt.minimize(method="AUGLAG")``) minimizes
 
     J = (1/2) |r|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
 
@@ -53,7 +54,7 @@ It needs ESSOS (``pip install "vmex[coils]"``), virtual casing for ``--beta``
     COIL_CASE=qi python single_stage_optimization_coil_constraints.py --steps 5 --output runs/fixed-qi
 
 Outputs in ``--output``: ``input.run``, ``coils.initial.json``, one
-``metrics.jsonl`` line per SLSQP iteration, ``coils.stepN.json`` /
+``metrics.jsonl`` line per accepted step (with AUGLAG its progress), ``coils.stepN.json`` /
 ``wout.stepN.nc`` every ``--save-every`` iterations, and the final
 ``coils.json``, ``wout.nc`` and ``summary.json`` (with the endpoint
 diagnostics). Continue a run with ``--restart <run>``, or with ``--coils`` and
@@ -217,6 +218,9 @@ ESS_ALPHA = 1.2
 BOUNDARY_STEP = 0.1 if SEED is None else 0.02
 NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
+# augmented-Lagrangian progress logged with each step (opt.minimize(method="AUGLAG")'s intermediate result)
+AUGLAG_LOG_KEYS = ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
+                   "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32              # toroidal x poloidal points of the B.n and clearance surfaces
 VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-terms arm's virtual-casing grid
@@ -782,6 +786,38 @@ def coil_inequalities(coils):
                             (m['min_speed'] - MIN_SPEED) / LENGTH_LIMIT))
 
 
+def coil_point_rows(coils):
+    """``coil_inequalities`` with the peak curvature and the coil-coil and self distances as rows at every point.
+
+    The same feasible set, but smooth rows: a max or min over points switches its active point between steps,
+    which a quadratic model cannot follow (an augmented Lagrangian's trust region then collapses at an active
+    peak).  Distances are those of the base coils' segments; their symmetry copies repeat them.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed, curvature = jnp.linalg.norm(base.gamma_dash, axis=-1), base.curvature
+    points = resampled(coils, DISTANCE_POINTS).gamma
+    nbase, n = curvature.shape[0], points.shape[1]
+    others = jnp.arange(points.shape[0])
+    inter = jnp.concatenate([jnp.min(jnp.where(
+        (others == b)[:, None], jnp.inf,
+        jax.lax.map(lambda q, b=b: jnp.min(segment_distances(points[b], q), axis=1), points)), axis=0)
+        for b in range(nbase)])
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+    own = jnp.concatenate([jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+                           for b in range(nbase)])
+    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+                            ((CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT).ravel(),
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (inter - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (own - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - MIN_SPEED) / LENGTH_LIMIT))
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -970,10 +1006,10 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         """``coil_inequalities`` and the scaled coil-to-plasma clearance of the design vector ``x``."""
         coils, surface = coils_from_x(x), surface_from_x(x)
         clearance = surface_distance(coils, surface)
-        return jnp.concatenate([coil_inequalities(coils), jnp.atleast_1d(
+        return jnp.concatenate([coil_point_rows(coils), jnp.atleast_1d(
             (clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_SURFACE_DISTANCE_LIMIT)])
 
-    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(jax.jacrev(coil_rows))
+    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(jax.jacfwd(coil_rows))  # point rows: forward
 
     cache, anchor = {}, {}
     counters = dict(trials=0, failed=0, evaluations=0, linearizations=0)
@@ -1078,8 +1114,9 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
         deck = im.input_with_params(fixed, sol["params"])
         vj.write_wout(str(out / f"wout{tag}.nc"), opt.solve_equilibrium(deck, initial_state=sol["state"]).wout)
 
-    def log_step(u):
-        """SLSQP callback: log the accepted point to ``metrics.jsonl`` and save every ``--save-every`` steps."""
+    def log_step(u, info=None):
+        """Optimizer callback: log the accepted point to ``metrics.jsonl`` (with ``info``, the augmented
+        Lagrangian's state) and save every ``--save-every`` steps."""
         x = x0 + scales * np.asarray(u, dtype=float)
         sol = solve(x)
         if sol is None:
@@ -1106,6 +1143,8 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                    beta=float(opt.volume_average_beta(state, ctx)), **counters,
                    step_seconds=now - last["time"], elapsed_seconds=now - started,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
+        if info is not None:
+            row.update({key: float(info[key]) for key in AUGLAG_LOG_KEYS})
         for k in counters:
             counters[k] = 0
         with open(out / "metrics.jsonl", "a") as stream:
@@ -1143,19 +1182,37 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                       flush=True)
         return
     u, stop = last["u"], dict(message="", success=False)
-    while last["step"] <= args.steps:
-        before = last["step"]
-        try:
-            result = minimize(objective, u, jac=objective_gradient, method="SLSQP", constraints=constraints,
-                              callback=log_step, options=dict(maxiter=args.steps + 1 - before, ftol=OPTIMIZER_FTOL))
-            stop = dict(message=str(result.message), success=bool(result.success))
-            break
-        except Rejected:
-            print("[slsqp] trial rejected: restarting from the accepted point", flush=True)
-            u = last["u"]
-            if last["step"] == before:
-                stop = dict(message="trial rejected before any progress", success=False)
+    if args.optimizer == "auglag":  # a rejected equilibrium is a rejected trial (NaN rows), not a -1 row
+        from scipy.optimize import NonlinearConstraint
+
+        def checked(u):
+            try:
+                return objective(u)
+            except Rejected as error:
+                raise opt.TrialRejected("no certified equilibrium") from error
+
+        rows = [NonlinearConstraint(lambda u: (np.full(nrows, np.nan) if solve(x0 + scales * u) is None
+                                               else plasma_values(u)), 0.0, np.inf, jac=plasma_jacobian),
+                NonlinearConstraint(constraints[1]["fun"], 0.0, np.inf, jac=constraints[1]["jac"])]
+        result = opt.minimize(opt.FunctionProblem.from_functions(u, fun=checked, grad=objective_gradient),
+                              method="AUGLAG", constraints=rows, options=dict(maxiter=args.steps),
+                              callback=lambda intermediate_result: log_step(intermediate_result.x,
+                                                                            intermediate_result))
+        stop = dict(message=str(result.message), success=bool(result.success))
+    else:
+        while last["step"] <= args.steps:
+            before = last["step"]
+            try:
+                result = minimize(objective, u, jac=objective_gradient, method="SLSQP", constraints=constraints,
+                                  callback=log_step, options=dict(maxiter=args.steps + 1 - before, ftol=OPTIMIZER_FTOL))
+                stop = dict(message=str(result.message), success=bool(result.success))
                 break
+            except Rejected:
+                print("[slsqp] trial rejected: restarting from the accepted point", flush=True)
+                u = last["u"]
+                if last["step"] == before:
+                    stop = dict(message="trial rejected before any progress", success=False)
+                    break
     x = x0 + scales * last["u"]
     save("", x)
     coils = coils_from_x(jnp.asarray(x))
@@ -1171,7 +1228,9 @@ def parse_args(argv=None):
     """The command-line arguments; ``--restart`` takes its coils from the run."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
+    parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations (AUGLAG: accepted steps)")
+    parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
+                        help="SLSQP, or the augmented Lagrangian of the same objective and rows")
     parser.add_argument("--device", choices=("gpu", "cpu"), default="gpu", help="device of the equilibrium solves")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial ESSOS coils (default: the case's)")
     parser.add_argument("--beta", type=float, default=0.0,
@@ -1379,7 +1438,7 @@ def main(argv=None):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         _, _, surface, coils = objects_from_x(x)
         clearance = surface_distance(coils, surface)
-        rows = [coil_inequalities(coils),
+        rows = [coil_point_rows(coils),
                 jnp.atleast_1d((clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
                                / COIL_SURFACE_DISTANCE_LIMIT),
                 # At finite beta the normal-field limit is on the total field: plasma_groups.
@@ -1392,7 +1451,7 @@ def main(argv=None):
     # One adjoint per plasma row: the gradient of w . rows at a unit w, the forward solve reused.
     group_grads = [jax.jit(jax.grad(lambda u, w, g=g: jnp.vdot(w, plasma_constraint(u, (g,)))))
                    for g in plasma_groups]
-    coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
+    coil_rows_jac = jax.jit(jax.jacfwd(coil_rows))  # point rows: forward
 
     def half_target(u):
         """(1/2) |r|^2 of the target residual at the scaled coordinates ``u``."""
@@ -1438,8 +1497,8 @@ def main(argv=None):
 
     last = dict(time=time.monotonic(), step=0)
 
-    def log_step(u):
-        """Log the point ``u`` to ``metrics.jsonl``."""
+    def log_step(u, info=None):
+        """Log the point ``u`` to ``metrics.jsonl`` (with ``info``, the augmented Lagrangian's state)."""
         u = np.asarray(u, dtype=float)
         value, _ = objective(u)
         x = x0 + scales * u
@@ -1467,6 +1526,8 @@ def main(argv=None):
                    phiedge=float(phiedge_at(x)),
                    beta=float(opt.volume_average_beta(state, ctx)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started)
+        if info is not None:
+            row.update({key: float(info[key]) for key in AUGLAG_LOG_KEYS})
         if args.beta > 0:
             row.update(total_normal_field_rms=float(total_normal_field_rms(coils, state, ctx)),
                        rbtor_ratio=float(rbtor_ratio(state, ctx, coils)))
@@ -1493,11 +1554,11 @@ def main(argv=None):
         objects_from_x(jnp.asarray(x))[3].to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), plasma_problem.equilibrium_from_x(x[:n_boundary]).wout)
 
-    def checkpoint(u):
-        """SLSQP callback: ``log_step`` and, every ``--save-every`` steps, ``save``."""
+    def checkpoint(u, info=None):
+        """Optimizer callback: ``log_step`` and, every ``--save-every`` steps, ``save``."""
         # SLSQP can accept a point whose equilibrium re-solve fails; log that and keep optimizing.
         try:
-            log_step(u)
+            log_step(u, info)
         except RuntimeError as error:
             last.update(time=time.monotonic(), step=last["step"] + 1)
             print(f"[step {last['step'] - 1}] not logged: {error}", flush=True)
@@ -1513,8 +1574,19 @@ def main(argv=None):
     constraints = [dict(type="ineq", fun=plasma_values, jac=plasma_jacobian),
                    dict(type="ineq", fun=lambda u: np.asarray(coil_rows_jit(jnp.asarray(u))),
                         jac=lambda u: np.asarray(coil_rows_jac(jnp.asarray(u))))]
-    result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
-                      constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
+    if args.optimizer == "auglag":  # the same objective and rows through opt.minimize's augmented Lagrangian
+        from scipy.optimize import NonlinearConstraint
+
+        # the raw plasma rows: a failed equilibrium is NaN, which AUGLAG rejects (SLSQP's -1 reads as a mild violation)
+        rows = [NonlinearConstraint(lambda u: np.asarray(plasma_rows_jit(jnp.asarray(np.asarray(u, dtype=float)))),
+                                    0.0, np.inf, jac=plasma_jacobian),
+                NonlinearConstraint(constraints[1]["fun"], 0.0, np.inf, jac=constraints[1]["jac"])]
+        result = opt.minimize(opt.FunctionProblem.from_functions(u0, value_and_grad=objective), method="AUGLAG",
+                              constraints=rows, options=dict(maxiter=args.steps),
+                              callback=lambda intermediate_result: checkpoint(intermediate_result.x, intermediate_result))
+    else:
+        result = minimize(objective, u0, jac=True, method="SLSQP", callback=checkpoint,
+                          constraints=constraints, options={"maxiter": args.steps, "ftol": OPTIMIZER_FTOL})
     x = x0 + scales * result.x
     coils = objects_from_x(jnp.asarray(x))[3]
     coils.to_json(str(out / "coils.json"))

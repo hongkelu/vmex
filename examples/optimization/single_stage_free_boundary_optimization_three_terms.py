@@ -1,43 +1,94 @@
 #!/usr/bin/env python
-r"""Free-boundary single-stage coil optimization on sheet-current-free equilibria.
+r"""Single-stage coil optimization on sheet-current-free free-boundary equilibria.
 
-The free arm of ``single_stage_free_boundary_optimization_coil_constraints.py``
-with its equilibrium replaced: every trial is the free boundary that satisfies
-all three plasma-vacuum interface conditions (B.n = 0, pressure balance and no
-sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves
-the tangential field jump free.
+What it solves
+--------------
+Coil shapes and currents (and PHIEDGE, and with ``--bootstrap`` the plasma
+current) are optimized for a quasisymmetric (QA, QH) or quasi-isodynamic (QI)
+plasma. Every trial equilibrium is the free boundary that satisfies all three
+plasma-vacuum interface conditions, B.n = 0, pressure balance and no sheet
+current (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``,
+:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`). Trial
+boundaries are warm-started, design gradients come from the implicit function
+theorem of the boundary fit, and nothing recompiles when the coils or the
+plasma parameters change. The loss is (1/2) |r|^2 of the target residual r
+(quasisymmetry of ``HELICITY``, or the constructed QI residual). Every physics
+and engineering limit is a hard inequality, one row per surface, field line
+or coil point:
 
-The cases (``COIL_CASE``; the case table is in that script's docstring), the
-design variables (coil shapes, PHIEDGE and, with ``--bootstrap``, the current
-spline values and CURTOR), the loss, the constraint rows and their bounds, and
-the run directory are that script's. The exception is ``BOOTSTRAP_IN_SOLVE``
-(Redl): then the current is solved with the boundary, Redl's on every half-grid
-surface, and neither its values nor the bootstrap-mismatch row enter the
-optimization.
+- plasma rows: |iota| >= ``IOTA_FLOOR`` (``IOTA_EDGE``: also at the edge),
+  the major radius at ``RADIUS_TARGET``, the axis |B| at ``B0``, and where the
+  case sets them the mirror ratio <= ``MIRROR_LIMIT``, |iota| <=
+  ``IOTA_CEILING``, the boundary's vacuum |iota| >= ``VACUUM_IOTA_FLOOR``,
+  PHIEDGE^2 DMerc >= ``MERCIER_FLOOR``, the ballooning eigenvalue <=
+  ``BALLOONING_LIMIT`` and the bootstrap mismatch <= ``REDL_TOLERANCE``;
+  then the coil-to-plasma clearance and the aspect band;
+- coil rows (``coil_point_rows``): coil length (and with
+  ``TOTAL_LENGTH_LIMIT`` their sum), curvature, mean squared curvature,
+  coil-coil and self distance, speed and, with ``FORCE_LIMIT``, the force per
+  unit length.
 
-The coil currents are design variables too (``FREE_COIL_CURRENTS``, no bounds),
-with a row holding the axis |B| at ``B0``, and where the case sets
-``VACUUM_IOTA_FLOOR`` a row floors the vacuum |iota| of the plasma boundary
-(``vacuum_iota``).
+Cases
+-----
+``COIL_CASE`` selects the case: ``ellipse5`` (default), ``ellipse5-beta7``,
+``qa3``, ``qh``, ``qi``, ``qa4-beta[-tok]``, ``qi6-beta[-tok]``, ``qh4-beta``
+and ``lpqa`` (the Landreman-Paul precise QA of Gil et al. 2026, coils from
+``--coils``). The constants of the "cases" block below are ellipse5's; each
+case block overrides them, and ``COIL_CASE_OVERRIDES`` (a JSON dict, e.g.
+``'{"BOOTSTRAP_IN_SOLVE": false, "IOTA_CEILING": null}'``) overrides any of
+them last. The finite-beta cases take ``--beta`` and ``--bootstrap``: the
+bootstrap current is Redl's for QA and QH and DKX's for QI. With
+``BOOTSTRAP_IN_SOLVE`` (Redl) the current is solved with every equilibrium,
+Redl-consistent on every half-grid surface; otherwise its spline values and
+CURTOR are design variables and a mismatch row holds it near Redl's.
 
-The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
-(:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`): warm-started
-trial boundaries and design gradients by the implicit function theorem of the
-boundary fit, without recompiling when the coils or plasma parameters change.
+Optimizers
+----------
+``--optimizer auglag`` is ``opt.minimize(..., method="AUGLAG")``, an augmented
+Lagrangian with a trust region; a rejected trial shrinks the region and one
+call runs ``--steps`` accepted steps. ``--optimizer slsqp`` (default) is
+SciPy's SLSQP; a rejected trial ends its call, which restarts from the last
+accepted point until ``--steps`` are accepted.
 
-    COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_terms.py --beta 0.025 --bootstrap \
-        --modes 8 8 --ns 51 --output runs/three-terms-qa4
+Outputs
+-------
+In ``--output`` (a new directory): ``input.run`` (the deck that defines the
+problem) and ``coils.initial.json``; per accepted step a ``metrics.jsonl``
+row (target residual ``qa``, iota, constraint values, coil metrics, the
+interface residuals ``bn``, ``pressure_balance`` and ``sheet_current``,
+trial counts, timings and peak GPU memory), and every ``--save-every`` steps
+``coils.stepN.json``, ``wout.stepN.nc`` and, once the free boundary has been
+re-referenced, ``input.stepN.ref`` (the deck boundary of that step); with
+AUGLAG ``auglag_state.npz`` (multipliers, penalty, trust radius, curvature)
+after every step; and at the end ``coils.json``, ``wout.nc`` (plus
+``input.ref``) and ``summary.json``.
 
-``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
-``metrics.jsonl`` adds the three interface residuals (``bn``,
-``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
-counts and the peak GPU memory.
+Restart and verification
+------------------------
+``--restart DIR`` continues a run from its ``input.run``, ``coils.json`` and
+``wout.nc``: the deck is the problem, the WOUT's PHIEDGE (and design current)
+the start of the design vector. If ``DIR/input.ref`` exists its boundary is
+the deck boundary; for an older run without one, ``--reference-from-wout``
+takes the WOUT's LCFS instead. With ``auglag_state.npz`` an AUGLAG run
+continues with its multipliers, penalty and trust region. ``--seed-run DIR``
+instead starts a new run from another run's ``input.run`` and
+``coils.initial.json``, skipping the seed's bootstrap ramp and coil fit.
+``--steps 0`` only evaluates the start: e.g.
+``--restart DIR --reference-from-wout --steps 0 --modes 16 16`` re-solves a
+run's final coils cold at higher resolution.
 
-After a run, ``benchmarks/three_terms_highres.py`` re-solves the final coils at
-another resolution and exports them, ``benchmarks/three_terms_postprocess.py``
-re-solves the final boundary densely for the WOUT figures and alpha losses, and
-``benchmarks/coil_constraints_evolution_gifs.py`` draws the coils and LCFS of
-the saved steps.
+    COIL_CASE=qi python single_stage_free_boundary_optimization_three_terms.py --modes 12 12 --vc-grid 64 \
+        --trial-forward-ftol 1e-15 --optimizer auglag --steps 200 --output runs/qi
+    COIL_CASE=qa4-beta COIL_CASE_OVERRIDES='{"BOOTSTRAP_IN_SOLVE": false}' \
+        python single_stage_free_boundary_optimization_three_terms.py --beta 0.025 --bootstrap \
+        --modes 8 8 --ns 51 --vc-grid 48 --trial-forward-ftol 1e-15 --optimizer auglag --output runs/qa4
+
+It needs ESSOS (``vmex[coils]``), virtual casing (``vmex[freeb]``), DKX
+(``vmex[kinetic]``) for the QI bootstrap, and a GPU. After a run,
+``benchmarks/three_terms_highres.py`` re-solves the final coils at another
+resolution, ``benchmarks/three_terms_postprocess.py`` re-solves the final
+boundary densely for the WOUT figures and alpha losses, and
+``benchmarks/coil_constraints_evolution_gifs.py`` draws the saved steps.
 """
 
 import argparse
@@ -128,6 +179,24 @@ COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
 COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m, to the current plasma boundary
 # Interior margins of the sampled constraints; endpoint checks use the limits.
 CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5, 0.001
+TOTAL_LENGTH_LIMIT = None          # m, set: a row on the SUM of the base-coil lengths, besides LENGTH_LIMIT on each
+COIL_QUADRATURE = None             # set: points per coil of every coil row (published coil metrics use 1024)
+# Coil force per unit length |I t x B| (N/m) at every point of each base coil: the field of all other coils
+# (symmetry copies included) plus the regularized self field of a circular conductor of radius CONDUCTOR_RADIUS (m)
+# (Hurwitz, Landreman & Antonsen 2023; SIMSOPT's coil_force). None: no force rows.
+FORCE_LIMIT, FORCE_MARGIN, CONDUCTOR_RADIUS = None, 0.0, None
+# Set (T): forces in the normalization of Gil et al. (2026): currents scaled so that the coils' mean |B| on the
+# seed deck's boundary (half a field period, FORCE_NORMALIZE_GRID = (nphi, ntheta) points, their metric's grid) is
+# FORCE_B_REF, i.e. forces x (FORCE_B_REF / <|B|>)^2. None: forces at the coils' own currents.
+FORCE_B_REF, FORCE_NORMALIZE_GRID = None, (32, 32)
+# Ideal-MHD stability rows, one per surface or field line (None: off). MERCIER_FLOOR: PHIEDGE^2 DMerc (> 0 stable)
+# on every full-mesh surface with s in [STABILITY_MIN_S, 1) is held above it (the finite-difference DMerc is a
+# cancellation of large terms near the axis; VMEC2000 drops its first surfaces). BALLOONING_LIMIT: the infinite-n
+# ideal-ballooning eigenvalue (> 0 unstable; vmex.core.stability, the COBRA analogue) of every sampled field line on
+# the BALLOONING_S surfaces is held below it.
+MERCIER_FLOOR, STABILITY_MIN_S = None, 0.2
+BALLOONING_LIMIT, BALLOONING_S = None, (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)
+BALLOONING_LINES = dict(zeta0s=tuple(np.linspace(-np.pi / 2, np.pi / 2, 5)), npoints=97, nturns=3.0)
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -154,7 +223,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_') if CASE != 'qh4-beta' else 'qh'}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
-    COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
+    COIL_FIT_MAXITER = 3000  # a converged refit: a loose one leaves B.n/|B| ~3e-3, too far for the first free solve
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
     # The total iota floor bounds the half-mesh surfaces and the edge; R0 is held to 1 mm.
     IOTA_EDGE, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
@@ -175,8 +244,28 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+elif CASE == "lpqa":
+    # Vacuum benchmark of Gil et al. (2026) on the Landreman-Paul precise QA (nfp 2, A 6) at R0 = 1 m: their coil
+    # thresholds at R0 = 10.1266 m scaled down; start coils from --coils (4 per half period). Their published
+    # constraints of a point go in COIL_CASE_OVERRIDES.
+    _scale = 10.1266
+    INPUT_FILE, COILS_FILE = DATA / "input.LandremanPaul2021_QA_lowres", None
+    COIL_ORDER, COIL_QUADRATURE = 16, 1024
+    LENGTH_LIMIT, TOTAL_LENGTH_LIMIT = 6.5, 182.2 / _scale
+    CURVATURE_LIMIT, MSC_LIMIT = 0.5 * _scale, 0.05 * _scale**2
+    COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 1.0 / _scale, 1.5 / _scale
+    IOTA_FLOOR, ASPECT_RANGE = 0.41, (5.9, 6.1)
+    FORCE_B_REF = 0.2271
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
+# COIL_CASE_OVERRIDES: JSON dict of case constants to override, e.g. '{"FORCE_LIMIT": 12031.56, "ASPECT_RANGE":
+# [5.99, 6.01]}' (lists become tuples), applied before the derived values below.
+for _key, _value in json.loads(os.environ.get("COIL_CASE_OVERRIDES") or "{}").items():
+    if _key not in globals() or not _key.isupper():
+        raise ValueError(f"unknown case constant {_key!r} in COIL_CASE_OVERRIDES")
+    globals()[_key] = tuple(_value) if isinstance(_value, list) else _value
+if FORCE_LIMIT is not None and CONDUCTOR_RADIUS is None:
+    raise ValueError("FORCE_LIMIT needs CONDUCTOR_RADIUS")
 if CASE.endswith("-tok"):
     # A circular tokamak with a 1% helical ripple b / a, as vmex examples/data/input.minimal_seed_nfp*.
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
@@ -193,10 +282,14 @@ if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
-CURVATURE_POINTS = max(512, 64 * COIL_ORDER)  # quadrature points per coil of the length and curvature rows
-DISTANCE_POINTS = max(128, 16 * COIL_ORDER)   # quadrature points per coil of the distance rows
+CURVATURE_POINTS = COIL_QUADRATURE or max(512, 64 * COIL_ORDER)  # points per coil: length and curvature rows
+DISTANCE_POINTS = COIL_QUADRATURE or max(128, 16 * COIL_ORDER)   # points per coil: distance rows
+FORCE_POINTS = COIL_QUADRATURE or CURVATURE_POINTS               # points per coil: force rows
 SURFACE_GRID = (61, 64)                       # (nphi, ntheta) of the plasma surface in the clearance row
 SELF_CLEARANCE = 1e-6                         # m: numerical nonintersection guard
+# augmented-Lagrangian progress logged with each step (opt.minimize(method="AUGLAG")'s intermediate result)
+AUGLAG_LOG_KEYS = ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
+                   "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")
 
 
 # ---- seeds, targets and restarts -------------------------------------------------------------------------------------
@@ -281,7 +374,8 @@ def redl_surfaces():
 
 
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch (None
+    for a field that is not quasisymmetric, ``REDL_HELICITY`` None: Redl does not apply there; QI uses DKX)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
     r0 = float(inp.rbc[inp.ntor, 0])
@@ -291,6 +385,8 @@ def redl_profiles(inp):
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
+    if REDL_HELICITY is None:
+        return profiles, None
     return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
@@ -355,12 +451,17 @@ def bootstrap_input(inp, beta, device):
         betas = []
         picard = picard_at(inp, PICARD_ITERATIONS)
         profiles, redl = redl_profiles(inp)
-        inp = picard.input
+        inp, equilibrium = picard.input, picard.equilibrium
+    if BOOTSTRAP_MODEL == "dkx":  # Redl does not apply (no quasisymmetry): DKX's Picard loop sets the current below
+        for stage_beta in betas:  # at the deck's zero CURTOR
+            inp, equilibrium = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
+        profiles, redl = redl_profiles(inp)
+        betas = []
     for stage, stage_beta in enumerate(betas, 1):
         inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
-        inp = picard.input
+        inp, equilibrium = picard.input, picard.equilibrium
         if stages > 1:
             print(f"bootstrap ramp {stage}/{stages}: beta {stage_beta:.4f}, CURTOR = "
                   f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
@@ -375,15 +476,15 @@ def bootstrap_input(inp, beta, device):
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
         inp = model.bootstrap.deck_with(model.fixed, current["x"])
     elif BOOTSTRAP_MODEL == "dkx":
-        inp = dkx_current(inp, picard.equilibrium, device)
+        inp = dkx_current(inp, equilibrium, device)
     else:
         inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
-    fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
+    fixed = opt.solve_equilibrium(inp, initial_state=equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
     w, state, runtime = fixed.wout, fixed.state, fixed.runtime
-    print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
-          f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
-          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = "
+    print(f"{BOOTSTRAP_MODEL} seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, CURTOR = {float(inp.curtor):.1f} A"
+          + (f", Redl mismatch = {float(redl.total(w)):.3e}" if redl is not None else "")
+          + f"; <beta> = {float(w.betatotal):.4%}, iota = "
           f"{float(min_abs_iota(state, runtime)):.4f}..{float(max_abs_iota(state, runtime)):.4f}"
           f", edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed, redl
@@ -542,16 +643,6 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
-def boundary_from_wout(inp, wout):
-    """``inp`` with the boundary of ``wout``'s last surface, truncated to its resolution."""
-    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
-    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
-                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
-        if m < inp.mpol and abs(n) <= inp.ntor:
-            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
-    return replace(inp, rbc=rbc, zbs=zbs)
-
-
 def current_from_wout(inp, w):
     """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
     prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
@@ -566,12 +657,27 @@ def current_from_wout(inp, w):
     return inp
 
 
-def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current (``--restart``)."""
+def restart_input(run, reference_from_wout=False):
+    """A finished run's own deck ``input.run``, unchanged, and its final WOUT (``--restart``).
+
+    The deck defines the problem (its boundary is only the solve's initial condition; its labelling and response
+    data come from it), so a restart, or a cold re-solve of saved coils, solves the run's very problem: the WOUT's
+    PHIEDGE (and a design current) enter as the design vector's start, never as deck values.
+    """
     import vmex as vj
 
-    inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
-    return current_from_wout(replace(boundary_from_wout(inp, w), phiedge=float(w.phi[-1]), lfreeb=False), w)
+    inp, w = replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False), vj.read_wout(run / "wout.nc")
+    if (run / "input.ref").exists():  # the run re-referenced its free boundary: its latest deck boundary
+        ref = vj.VmecInput.from_file(run / "input.ref")
+        inp = replace(inp, rbc=ref.rbc, zbs=ref.zbs)
+    elif reference_from_wout:  # the WOUT's own LCFS as the deck boundary (a run saved before input.ref)
+        rbc, zbs, ntor = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs)), int(inp.ntor)
+        for m, n, r, z in zip(np.asarray(w.xm).astype(int), np.rint(np.asarray(w.xn) / int(w.nfp)).astype(int),
+                              np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
+            if m < rbc.shape[1] and abs(n) <= ntor:
+                rbc[n + ntor, m], zbs[n + ntor, m] = r, z
+        inp = replace(inp, rbc=rbc, zbs=zbs)
+    return inp, w
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -590,10 +696,12 @@ def resize_coils(coils, order, n_segments):
 
 
 def scale_coil_currents(coils, rbtor):
-    """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``.
+    """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``, sign included.
 
     mu0 I / 2 pi is the mean of R B_phi on the loop R = R0, Z = 0, with R0 the
-    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)).
+    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)). The sign matters: coils whose
+    toroidal field opposes the deck's (its PHIEDGE and RBTOR) satisfy B.n = 0 on the
+    same boundary, but with B_in = -B_out, a sheet current of twice |B| (K = 2).
     """
     import jax
     import jax.numpy as jnp
@@ -603,7 +711,7 @@ def scale_coil_currents(coils, rbtor):
     r0, phi = RADIUS_TARGET, np.linspace(0.0, 2.0 * np.pi, 256, endpoint=False)
     points = jnp.asarray(r0 * np.stack([np.cos(phi), np.sin(phi), np.zeros_like(phi)], axis=-1))
     field = np.asarray(jax.vmap(BiotSavart(coils).B)(points))
-    linked = abs(r0 * float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1])))
+    linked = r0 * float(np.mean(-np.sin(phi) * field[:, 0] + np.cos(phi) * field[:, 1]))
     return Coils(coils.curves, coils.dofs_currents_raw * (rbtor / linked), currents_scale=coils.currents_scale)
 
 
@@ -677,8 +785,7 @@ class CoilChart:
     ``plasma_current_spline``, then CURTOR in A; ``ncurr = 1``) those ``k + 1`` values; the currents of the
     selected base coils in A; and every base coil's Cartesian Fourier coefficients in metres.  ``x0`` is the
     nominal state.  The nominal values live in ``x0``, not in the maps: a jitted function of the chart then holds
-    no seed-dependent constant, so its persistent compilation cache entry serves every seed (with the nominal
-    coefficients inside the maps, every new coil set recompiled the design gradient's pullback, 160-180 s).
+    no seed-dependent constant, so one persistent compilation cache entry serves every seed.
     ``scales`` are given relative to the nominal values (PHIEDGE, the selected currents), in units of the largest
     nominal shape value and of ``abs(CURTOR)`` (the current profile) and in metres (the coils); ``self.scales``
     are those in ``x``'s units.  Calling the chart gives the :class:`DirectCoilField` of ``coils_from_x(x)``;
@@ -829,65 +936,178 @@ def segment_distances(a, b):
 
 def separations(points):
     """Minimum intercoil and nonadjacent self-segment distance, all symmetry copies."""
-    import jax
     import jax.numpy as jnp
+    from vmex.core.loops import map_columns
 
     pairs = jnp.asarray([(i, j) for i in range(len(points)) for j in range(i + 1, len(points))])
-    inter = jax.lax.map(lambda ij: jnp.min(segment_distances(points[ij[0]], points[ij[1]])), pairs)
+    inter = map_columns(lambda ij: jnp.min(segment_distances(points[ij[0]], points[ij[1]])), pairs)
     n = points.shape[1]
     diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
     nonadjacent = jnp.minimum(diff, n - diff) > 1
-    own = jax.lax.map(lambda p: jnp.min(jnp.where(nonadjacent, segment_distances(p, p), jnp.inf)), points)
+    own = map_columns(lambda p: jnp.min(jnp.where(nonadjacent, segment_distances(p, p), jnp.inf)), points)
     return jnp.min(inter), jnp.min(own)
 
 
-def coil_metrics(coils):
-    """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks."""
+def force_normalization_points(inp):
+    """Points of ``inp``'s boundary on which the coils' mean |B| is ``FORCE_B_REF`` (None without it).
+
+    Half a field period, as the published force metric (Gil et al. 2026): ``FORCE_NORMALIZE_GRID`` = (nphi, ntheta),
+    phi at cell centres of [0, pi / nfp), theta on [0, 2 pi) from 0.
+    """
+    if FORCE_B_REF is None:
+        return None
+    nphi, ntheta = FORCE_NORMALIZE_GRID
+    phi = (np.arange(nphi) + 0.5) * np.pi / (inp.nfp * nphi)
+    theta = np.arange(ntheta) * 2 * np.pi / ntheta
+    rbc, zbs = np.asarray(inp.rbc), np.asarray(inp.zbs)  # (2 ntor + 1, mpol)
+    n = np.arange(rbc.shape[0]) - (rbc.shape[0] - 1) // 2
+    m = np.arange(rbc.shape[1])
+    angle = (m[None, None, None, :] * theta[None, :, None, None]
+             - n[None, None, :, None] * inp.nfp * phi[:, None, None, None])
+    r = np.sum(rbc * np.cos(angle), axis=(2, 3))
+    z = np.sum(zbs * np.sin(angle), axis=(2, 3))
+    return np.stack([r * np.cos(phi)[:, None], r * np.sin(phi)[:, None], z], axis=-1).reshape(-1, 3)
+
+
+def coil_forces(coils, normalization_points):
+    """|I t x B| (N/m) at the ``FORCE_POINTS`` points of each base coil: (base coils, points).
+
+    B is the Biot-Savart field of every other coil (symmetry copies included) plus the coil's own regularized field
+    (ESSOS ``B_regularized_pure``, circular conductor of radius ``CONDUCTOR_RADIUS``). With ``normalization_points``
+    the forces are scaled by (``FORCE_B_REF`` / mean |B| of the coils on those points)^2.
+    """
+    import jax
+    import jax.numpy as jnp
+    from essos.fields import BiotSavart_from_gamma
+    from essos.objective_functions import B_regularized_pure, regularization_circ
+
+    full = resampled(coils, FORCE_POINTS)
+    g, gd, gdd = full.gamma, full.gamma_dash, full.gamma_dashdash
+    currents = jnp.asarray(coils.currents)
+    n_total, n_base = g.shape[0], coils.dofs_curves.shape[0]
+    reg = regularization_circ(CONDUCTOR_RADIUS)
+
+    def force(i):
+        others = jnp.asarray([[j for j in range(n_total) if j != k] for k in range(n_base)])[i]
+        mutual = BiotSavart_from_gamma(g[others], gd[others], gdd[others], currents[others])
+        own = B_regularized_pure(g[i], gd[i], gdd[i], full.quadpoints, currents[i], reg)
+        b = jax.vmap(mutual.B)(g[i]) + own
+        tangent = gd[i] / jnp.linalg.norm(gd[i], axis=1)[:, None]
+        return jnp.linalg.norm(jnp.cross(currents[i] * tangent, b), axis=1)
+
+    forces = jnp.stack([force(i) for i in range(n_base)])
+    if normalization_points is None:
+        return forces
+    field = BiotSavart_from_gamma(g, gd, gdd, currents)
+    mean_b = jnp.mean(jnp.linalg.norm(jax.vmap(field.B)(jnp.asarray(normalization_points)), axis=1))
+    return forces * (FORCE_B_REF / mean_b) ** 2
+
+
+def coil_metrics(coils, normalization_points=None):
+    """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks (and the peak force)."""
     import jax.numpy as jnp
 
     base = resampled(coils, CURVATURE_POINTS, symmetric=False)
     speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
     curvature = base.curvature
     cc, own = separations(resampled(coils, DISTANCE_POINTS).gamma)
-    return dict(length=base.length, peak=jnp.max(curvature, axis=1),
-                msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
-                coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
+    metrics = dict(length=base.length, peak=jnp.max(curvature, axis=1),
+                   msc=jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1),
+                   coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
+    if FORCE_LIMIT is not None:
+        metrics["max_force"] = jnp.max(coil_forces(coils, normalization_points), axis=1)
+    return metrics
 
 
-def coil_inequalities(coils):
-    """Scaled coil-engineering rows, c >= 0 feasible: length, curvature, MSC, distances, speed."""
+def length_rows(length):
+    """Scaled length rows: each coil, and with ``TOTAL_LENGTH_LIMIT`` first their sum."""
     import jax.numpy as jnp
 
-    m = coil_metrics(coils)
-    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - m["length"]) / LENGTH_LIMIT,
+    rows = (LENGTH_LIMIT - LENGTH_MARGIN - length) / LENGTH_LIMIT
+    if TOTAL_LENGTH_LIMIT is None:
+        return rows
+    total = (TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(length)) / TOTAL_LENGTH_LIMIT
+    return jnp.concatenate((jnp.atleast_1d(total), rows))
+
+
+def coil_inequalities(coils, normalization_points=None):
+    """Scaled coil-engineering rows, c >= 0 feasible: length, curvature, MSC, distances, speed (and peak force)."""
+    import jax.numpy as jnp
+
+    m = coil_metrics(coils, normalization_points)
+    force = (((FORCE_LIMIT - FORCE_MARGIN - m["max_force"]) / FORCE_LIMIT,) if FORCE_LIMIT is not None else ())
+    return jnp.concatenate((length_rows(m["length"]),
                             (CURVATURE_LIMIT - CURVATURE_MARGIN - m["peak"]) / CURVATURE_LIMIT,
                             (MSC_LIMIT - MSC_MARGIN - m["msc"]) / MSC_LIMIT,
                             jnp.atleast_1d((m["coil_distance"] - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN)
                                            / COIL_DISTANCE_LIMIT),
                             jnp.atleast_1d((m["self_distance"] - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT),
-                            (m["min_speed"] - 1e-4) / LENGTH_LIMIT))
+                            (m["min_speed"] - 1e-4) / LENGTH_LIMIT, *force))
+
+
+def coil_point_rows(coils, normalization_points=None):
+    """``coil_inequalities`` with the curvature, the coil-coil and self distances and the force as rows at every point.
+
+    The same feasible set, but smooth rows: a max or min over points switches its active point between steps,
+    which a quadratic model cannot follow (an augmented Lagrangian's trust region then collapses at an active
+    peak).  Distances are those of the base coils' segments; their symmetry copies repeat them.
+    """
+    import jax.numpy as jnp
+    from vmex.core.loops import map_columns
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed, curvature = jnp.linalg.norm(base.gamma_dash, axis=-1), base.curvature
+    points = resampled(coils, DISTANCE_POINTS).gamma
+    nbase, n = curvature.shape[0], points.shape[1]
+    others = jnp.arange(points.shape[0])
+    inter = jnp.concatenate([jnp.min(jnp.where(
+        (others == b)[:, None], jnp.inf,
+        map_columns(lambda q, b=b: jnp.min(segment_distances(points[b], q), axis=1), points)), axis=0)
+        for b in range(nbase)])
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+    own = jnp.concatenate([jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+                           for b in range(nbase)])
+    force = (((FORCE_LIMIT - FORCE_MARGIN - coil_forces(coils, normalization_points)) / FORCE_LIMIT).ravel(),
+             ) if FORCE_LIMIT is not None else ()
+    return jnp.concatenate((length_rows(base.length),
+                            ((CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT).ravel(),
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (inter - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (own - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT, *force))
 
 
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
-    import jax
     import jax.numpy as jnp
+    from vmex.core.loops import map_columns
 
     points = resampled(coils, DISTANCE_POINTS).gamma
     targets = surface.gamma.reshape(-1, 3)
     # Mapping bounds memory and preserves exact differentiation of the active min.
-    return jnp.min(jax.lax.map(lambda p: jnp.sqrt(jnp.min(jnp.sum((p - targets)**2, axis=1)) + 1e-30),
+    return jnp.min(map_columns(lambda p: jnp.sqrt(jnp.min(jnp.sum((p - targets)**2, axis=1)) + 1e-30),
                                points.reshape(-1, 3)))
 
 
-def coil_constraint(coils_from_x):
-    """Pure-coil rows require no equilibrium solves or adjoint right-hand sides."""
+def coil_constraint(coils_from_x, normalization_points, columns):
+    """Pure-coil rows require no equilibrium solves or adjoint right-hand sides.
+
+    Thousands of point rows and a few hundred coordinates: the Jacobian is forward-mode, ``columns`` tangents at a
+    time (one batch of every tangent through the dense point-to-point distances would not fit in memory).
+    """
     import jax
     import jax.numpy as jnp
     from scipy.optimize import NonlinearConstraint
+    from vmex.core.loops import map_columns
 
-    fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    jac = jax.jit(jax.jacrev(fun))
+    def rows(x):
+        return coil_point_rows(coils_from_x(x), normalization_points)
+
+    fun = jax.jit(rows)
+    jac = jax.jit(lambda x: map_columns(lambda e: jax.jvp(rows, (x,), (e,))[1], jnp.eye(x.size, dtype=x.dtype),
+                                        batch_size=columns).T)
     return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                jac=lambda x: np.asarray(jac(jnp.asarray(x))))
 
@@ -897,7 +1117,9 @@ def parse_args(argv=None):
     """Command-line options; ``--restart`` and ``--seed-run`` replace ``--coils`` by their run's coils."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
+    parser.add_argument("--steps", type=int, default=100, help="accepted optimizer steps")
+    parser.add_argument("--optimizer", choices=("slsqp", "auglag"), default="slsqp",
+                        help="SLSQP, or the augmented Lagrangian of the same loss and rows")
     parser.add_argument("--coils", type=Path, default=COILS_FILE, help="initial coils (default: the case's COILS_FILE)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1, help="save coils and WOUT every this many steps")
@@ -906,6 +1128,9 @@ def parse_args(argv=None):
     parser.add_argument("--beta", type=float, default=0.0, help="seed beta (BETA_DEFINITION: <beta> or betaxis)")
     parser.add_argument("--bootstrap", action="store_true", help="self-consistent bootstrap current (needs --beta > 0)")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
+    parser.add_argument("--reference-from-wout", action="store_true",
+                        help="--restart: the deck boundary is the restart WOUT's LCFS when the run has no input.ref "
+                             "(a run saved before re-referencing; the cold solve from a far deck may not converge)")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -933,8 +1158,8 @@ def seed_interface(wout, nphi=37, ntheta=32):
     """The refit's plasma-vacuum interface of ``wout`` (``nphi x ntheta`` points), its virtual casing on the CPU.
 
     On the GPU the virtual-casing field ``B_plasma`` differs between two evaluations of one program in one process
-    by ~1e-14 relative (virtual_casing_jax's polar-patch scatter-adds run as GPU atomics, in no fixed order); L-BFGS-B
-    amplifies that into different coils (seen: step-0 QS 0.11798 vs 0.11697 from one Picard result).  XLA:CPU
+    by ~1e-14 relative (virtual_casing_jax's polar-patch scatter-adds run as GPU atomics, in no fixed order), and
+    L-BFGS-B amplifies that into visibly different coils (a step-0 QS differing in the third digit).  XLA:CPU
     computes it bit-identically, and the rest of the refit is bit-identical on either device; the interface's
     arrays are moved back to the default device.
     """
@@ -964,6 +1189,7 @@ def fit_coils_to_plasma(coils, wout, inp):
     surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), inp.nfp,
                                              nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
     x0 = jnp.asarray(coils.curves.dofs).ravel()
+    normalization_points = force_normalization_points(inp)
 
     def coils_from_u(u):
         return coils.with_dofs(jnp.concatenate((x0 + COIL_STEP * u, coils.dofs_currents)))
@@ -973,7 +1199,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 
     def objective(u):
         new = coils_from_u(u)
-        rows = jnp.concatenate([coil_inequalities(new), jnp.atleast_1d(
+        rows = jnp.concatenate([coil_inequalities(new, normalization_points), jnp.atleast_1d(
             (surface_distance(new, surface) - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
             / COIL_SURFACE_DISTANCE_LIMIT)])
         return (0.5 * (normal_field_rms(new) / COIL_FIT_NORMAL_SCALE)**2
@@ -991,7 +1217,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 
 def main(argv=None):
-    """Build the seed, the coils and the three-terms problem, then run SLSQP and save the run."""
+    """Build the seed, the coils and the three-terms problem, run the optimizer and save the run."""
     global RESOLUTION
     args = parse_args(argv)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
@@ -1013,14 +1239,20 @@ def main(argv=None):
 
     started = time.monotonic()
     mpol, ntor, _ = RESOLUTION
-    inp, redl = seed_input(), None
+    inp, redl, restart_wout = seed_input(), None, None
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
-    if args.restart is not None:
-        inp = restart_input(args.restart)
-        redl = redl_profiles(inp)[1] if args.bootstrap else None
-    elif args.seed_run is not None:
-        inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+    if args.restart is not None or args.seed_run is not None:
+        inp, restart_wout = (restart_input(args.restart, args.reference_from_wout) if args.restart is not None
+                             else (replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False),
+                                   None))
+        if args.modes:  # re-grid the run's deck; otherwise its resolution is the run's
+            inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=GRID[0], nzeta=GRID[1])
+        if args.ns:
+            inp = replace(inp, ns_array=np.array([args.ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]),
+                          niter_array=np.asarray(inp.niter_array)[-1:])
+        RESOLUTION = (int(inp.mpol), int(inp.ntor), int(np.asarray(inp.ns_array)[-1]))
+        mpol, ntor, _ = RESOLUTION
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
@@ -1029,13 +1261,14 @@ def main(argv=None):
     current_in_solve = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if current_in_solve else None
     redl = None if current_in_solve else redl
+    mismatch_row = args.bootstrap and not current_in_solve  # Redl's or DKX's mismatch, held by the optimizer
     if args.max_iterations:  # again: a seed-run or restart deck replaced inp
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
-        coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
+        coils = scale_coil_currents(coils, float(fixed.wout.rbtor))
         if args.beta > 0 and not args.no_coil_fit:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
@@ -1049,11 +1282,34 @@ def main(argv=None):
     chart = CoilChart(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
+    if restart_wout is not None:  # the run's last design: PHIEDGE (and a design current) start where it stopped
+        if FREE_PHIEDGE:
+            chart.x0[0] = float(restart_wout.phi[-1])
+        if current is not None:
+            last = current_from_wout(inp, restart_wout)
+            chart.x0[chart.nphiedge:chart._coil0] = np.r_[np.asarray(last.ac_aux_f)[:current.size - 1], last.curtor]
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
-    ceiling = (max_abs_iota,) if IOTA_CEILING else ()
+    # iota floors and ceiling hold on every surface, one row each: a minimum over surfaces switches surface where two
+    # are nearly equal, and no optimizer's linearization of it holds across that switch (the same feasible set)
+    ceiling = (abs_iota,) if IOTA_CEILING else ()
     vacuum = vacuum_iota(inp)
-    vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
+    vacuum_floor = (vacuum,) if VACUUM_IOTA_FLOOR else ()
+    # stability rows, one per surface (Mercier) or sampled field line (ballooning), as the iota rows
+    phiedge2 = float(inp.phiedge) ** 2
+    s_full = np.linspace(0.0, 1.0, int(RESOLUTION[2]))
+    mercier_surfaces = np.flatnonzero((s_full >= STABILITY_MIN_S) & (s_full < 1.0))
+    ballooning_surfaces = [min(max(round(s * (RESOLUTION[2] - 1)), 2), RESOLUTION[2] - 2) for s in BALLOONING_S]
+
+    def mercier(state, runtime):
+        return phiedge2 * opt.d_merc_state(state, runtime)[mercier_surfaces]
+
+    def ballooning(state, runtime):
+        from vmex.core.stability import ballooning_lambda
+        return ballooning_lambda(state, runtime, s_indices=ballooning_surfaces, **BALLOONING_LINES).ravel()
+
+    stability = (*((mercier,) if MERCIER_FLOOR is not None else ()),
+                 *((ballooning,) if BALLOONING_LIMIT is not None else ()))
 
     def boundary_surface(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
@@ -1075,8 +1331,8 @@ def main(argv=None):
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
-        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
-                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
+        quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
+                    *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
         parameter_quantities=(clearance, aspect), boundary_condition="three_terms",
         three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
@@ -1086,54 +1342,107 @@ def main(argv=None):
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
 
+    state0, params0 = problem.state(problem.x0)  # the per-surface rows' counts
+    runtime0 = im.runtime_from_params(params0, model.cfg)
+    n_iota = int(np.size(abs_iota(state0, runtime0)))
+    n_vacuum = int(np.size(vacuum(state0, runtime0))) if vacuum_floor else 0
+    n_mercier = mercier_surfaces.size if MERCIER_FLOOR is not None else 0
+    n_ballooning = int(np.size(ballooning(state0, runtime0))) if BALLOONING_LIMIT is not None else 0
+    mercier_unit = float(np.max(np.abs(mercier(state0, runtime0)))) if n_mercier else 1.0
+    ballooning_unit = float(np.max(np.abs(ballooning(state0, runtime0)))) if n_ballooning else 1.0
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = int(redl is not None)
+    nredl = int(mismatch_row)
     lower, upper, row_scales = zip(
-        (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
+        *[(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR)] * n_iota,
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
-        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
+        *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] * n_iota if ceiling else []),
+        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] * n_vacuum if vacuum_floor else []),
+        # stability rows in units of their largest magnitude at the start
+        *[(MERCIER_FLOOR, np.inf, mercier_unit)] * n_mercier,
+        *[(-np.inf, BALLOONING_LIMIT, ballooning_unit)] * n_ballooning,
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
-    coil_rows = coil_constraint(chart.coils_from_x)
+    normalization_points = force_normalization_points(inp)
+    coil_rows = coil_constraint(chart.coils_from_x, normalization_points, args.chunk)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
+    # wall time per kind of work since the last logged step: trial values (equilibrium solves), objective gradients
+    # (accepted-point solve + pullback), plasma-row values and Jacobians, coil-row values and Jacobians
+    timers = dict.fromkeys(("objective_values", "objective_gradients", "plasma_rows", "plasma_jacobian",
+                            "coil_rows", "coil_jacobian"), 0.0)
+
+    def timed(key, function):
+        def call(*args, **kwargs):
+            begin = time.monotonic()
+            try:
+                return function(*args, **kwargs)
+            finally:
+                timers[key] += time.monotonic() - begin
+        return call
+
+    problem.fun, problem.value_and_grad = timed("objective_values", problem.fun), timed(
+        "objective_gradients", problem.value_and_grad)
+    for constraint, kind in zip(constraints, ("plasma", "coil")):
+        constraint.fun, constraint.jac = timed(f"{kind}_rows", constraint.fun), timed(f"{kind}_jacobian",
+                                                                                         constraint.jac)
 
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
+        if len(getattr(problem, "references", ())) > 1:  # the deck boundary the step was solved on (re-referenced)
+            deck = problem.model.fixed
+            replace(inp, rbc=deck.rbc, zbs=deck.zbs).to_indata(out / f"input{tag}.ref")
 
+    coil_metrics_at = jax.jit(lambda x: coil_metrics(chart.coils_from_x(x), normalization_points))
     last = dict(time=time.monotonic())
 
-    def log_step():
+    def log_step(intermediate_result=None):
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
         res = problem.boundary_residual(x)
         now = time.monotonic()
         state_x, params_x = problem.state(x)
-        runtime_x = im.runtime_from_params(params_x, model.cfg)
+        runtime_x = im.runtime_from_params(params_x, problem.model.cfg)
         vac = np.asarray(vacuum(state_x, runtime_x))
-        redl_row = 3 + len(mirror) + len(ceiling) + len(vacuum_floor)
-        # "qa" holds the target residual of every case (QA, QH or QI), kept for compatibility
-        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[0]),
+        stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
+        redl_row = stability_row + n_mercier + n_ballooning
+        coils_m = {key: np.asarray(value) for key, value in coil_metrics_at(jnp.asarray(x)).items()}
+        # "qa" is the target residual of every case (QA, QH or QI): the postprocessing scripts read that key
+        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[:n_iota].min()),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
-                   major_radius_m=float(h[1]), b_axis_t=float(h[2]),
+                   major_radius_m=float(h[n_iota]), b_axis_t=float(h[n_iota + 1]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
                    **({"redl_mismatch": float(h[redl_row])} if nredl else {}),
-                   **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
+                   **({"mercier_min": float(h[stability_row:stability_row + n_mercier].min())} if n_mercier else {}),
+                   **({"ballooning_max": float(h[stability_row + n_mercier:redl_row].max())} if n_ballooning else {}),
+                   coil_total_length=float(coils_m["length"].sum()), coil_max_length=float(coils_m["length"].max()),
+                   coil_max_curvature=float(coils_m["peak"].max()), coil_max_msc=float(coils_m["msc"].max()),
+                   coil_coil_distance=float(coils_m["coil_distance"]),
+                   **({"coil_max_force": float(coils_m["max_force"].max())} if FORCE_LIMIT is not None else {}),
+                   **({"redl_max_relative": problem.model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
+                   seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
+        if intermediate_result is not None:
+            # the augmented Lagrangian's state, saved atomically so that --restart continues this very run
+            state = dict(intermediate_result["state"])
+            state["row_B"] = np.asarray(state["row_B"]).reshape(len(state["row_keys"]), *np.shape(x) * 2)
+            np.savez(out / "auglag_state.tmp.npz", **state)
+            os.replace(out / "auglag_state.tmp.npz", out / "auglag_state.npz")
+            # its progress (the max violation is in scaled row units)
+            row.update({key: float(intermediate_result[key]) for key in AUGLAG_LOG_KEYS})
         last.update(time=now)
+        timers.update(dict.fromkeys(timers, 0.0))
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
@@ -1142,27 +1451,50 @@ def main(argv=None):
               f"clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
+              + (f"PHIEDGE^2 DMerc min={row['mercier_min']:+.3e} " if n_mercier else "")
+              + (f"ballooning max={row['ballooning_max']:+.2e} " if n_ballooning else "")
+              + (f"force={row['coil_max_force']:.2f} " if FORCE_LIMIT is not None else "")
+              + f"cc={row['coil_coil_distance']:.5f} kappa={row['coil_max_curvature']:.4f} "
+              f"msc={row['coil_max_msc']:.4f} L={row['coil_total_length']:.5f} "
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if current_in_solve else "")
+              + (f"penalty={row['penalty']:.1e} violation={row['max_violation']:.1e} "
+                 if intermediate_result is not None else "")
               + f"{res} {row['step_seconds']:.1f}s "
+              f"[{', '.join(f'{key} {value:.0f}' for key, value in row['seconds'].items())}] "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
     log_step()
-    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
-        before = problem.accepted_step
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                              callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
-        if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
-                or problem.accepted_step >= args.steps):
-            break
+    if args.steps == 0:  # an evaluation (e.g. --restart: a cold re-solve of saved coils), no optimizer
+        return
+    if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
+        # a restart of an augmented-Lagrangian run continues it (multipliers, penalty, radius, curvature, counters)
+        state_file = None if args.restart is None else args.restart / "auglag_state.npz"
+        resume = {"resume": dict(np.load(state_file))} if state_file is not None and state_file.exists() else {}
+        if resume:
+            print(f"[auglag] continuing the run of {state_file}: penalty {float(resume['resume']['penalty']):g}, "
+                  f"radius {float(resume['resume']['trust_radius']):.3g}", flush=True)
+        result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
+                              callback=lambda intermediate_result: log_step(intermediate_result),
+                              options=dict(maxiter=args.steps, **resume))
+    else:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+        while True:
+            before = problem.accepted_step
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                                  callback=lambda x: log_step(),
+                                  options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+            if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
+                    or problem.accepted_step >= args.steps):
+                break
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=result.stop_reason,
                    failed_trials=problem.metadata["holder"]["failed_trials"],
-                   elapsed_seconds=time.monotonic() - started)
+                   elapsed_seconds=time.monotonic() - started,
+                   **({key: np.asarray(result[key]).tolist() for key in ("multipliers", "penalty", "max_violation")}
+                      if args.optimizer == "auglag" else {}))
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))
 

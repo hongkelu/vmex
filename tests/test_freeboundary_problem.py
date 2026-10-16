@@ -396,28 +396,30 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
         assert len(refresh_events) == 1 and refresh_events[0]["reason"] == "cost"
 
 
+@pytest.mark.parametrize("method", ["SLSQP", "AUGLAG"])
 @pytest.mark.parametrize("budget", [1, 5])
-def test_shared_minimize_promotes_only_certified_points(scalar, budget):
+def test_shared_minimize_promotes_only_certified_points(scalar, budget, method):
     p, stats, *_ = scalar
     p.enable_matrix_free()
     initial = p.fun(p.x0)
     seen = []
-    result = opt.minimize(p, method="SLSQP", callback=lambda x: seen.append(x.copy()),
+    result = opt.minimize(p, method=method, callback=lambda x: seen.append(x.copy()),
                           constraints=p.nonlinear_constraint([-1e6, -1e6], [1e6, 1e6]),
-                          options={"maxiter": budget, "ftol": 1e-10})
+                          options={"maxiter": budget, **({"ftol": 1e-10} if method == "SLSQP" else {})})
     assert 0 < p.accepted_step == len(seen) <= budget
     np.testing.assert_array_equal(p.accepted.parameters, result.x)
     assert p.fun(result.x) < initial and len(stats["seeds"]) == 1
 
 
-def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
+@pytest.mark.parametrize("method", ["SLSQP", "AUGLAG"])
+def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar, method):
     p, stats, *_ = scalar
     p.enable_matrix_free()
     anchor = p.accepted
     stats["fail"] = True
-    result = opt.minimize(p, method="SLSQP", callback=lambda x: pytest.fail("failed trial promoted"),
+    result = opt.minimize(p, method=method, callback=lambda x: pytest.fail("failed trial promoted"),
                           options={"maxiter": 20})
-    assert not result.success
+    assert not result.success and (method == "SLSQP" or result.stop_reason == "no_progress")
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
 

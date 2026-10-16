@@ -19,9 +19,10 @@ revision it was measured at, and the pages that cite it.
   (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
   4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:
   dense LU (`forward_dense_jax`) or O(ns) block factors (`structured`, 15.4->7.8 GiB at 8x8); PHIEDGE, current via
-  `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)`; new `opt.axis_iota`/`axis_field_strength`/
+  `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)` (SLSQP or `method="AUGLAG"`); new `opt.axis_iota`/`axis_field_strength`/
   `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
 - Example `single_stage_free_boundary_seed.py` (ellipse -> coils -> seed); free-boundary limits measured in the docs.
+- `minimize(method="AUGLAG")` (PHR augmented Lagrangian, exact `resume`); free boundary re-referenced when the deck fails.
 
 ## 0.11.10 - 2026-10-13
 

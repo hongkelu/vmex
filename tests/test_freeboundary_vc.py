@@ -1173,6 +1173,15 @@ def test_trust_region_handles_noise_loose_trials_reused_jacobians_and_its_budget
     far.evaluate = lambda z, params, field, tight=False: None
     with pytest.raises(RuntimeError, match="no certified equilibrium"):
         far._trust_region_boundary(None, None, x0=np.array([2.4, 1.0]))
+    # loose rows at the root are re-solved tight before convergence is declared; without a tight equilibrium a
+    # loose trial that no longer descends is no answer
+    at_root = _stand_in(2, lambda x, tight=True: exact(x), jac)
+    at_root.cfg, at_root.cfg_trial = "deck", "trial"
+    at_root.evaluate = lambda z, params, field, tight=False: (exact(z), (z, None, None, tight))
+    out = at_root._trust_region_boundary(None, None, x0=np.array([1.0, 2.0]))
+    assert out["converged"] and out["aux"][3]
+    at_root.evaluate = lambda z, params, field, tight=False: None if tight else (exact(z), (z, None, None, False))
+    assert not at_root._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]))["converged"]
     # scale: boundary displacement over R0, a current part relative to the current's RMS
     current = _stand_in(2, lambda x, tight=True: exact(x), jac)
     current.n_boundary, current.boundary_modes = 1, [(0, 0)]

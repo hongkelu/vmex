@@ -463,9 +463,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                               callback=None, verbose=0, jacobian=None):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
-        With constraint rows (the bootstrap current's, :attr:`n_constraint_rows`) the cost is the interface rows'
-        and every trial is restored onto ``r_c = 0`` by chord Newton steps in the current coordinates; the steps
-        live in the null space of the constraints' Jacobian too, with the Lagrangian Hessian.
+        With constraint rows (the net current's and the bootstrap current's, :attr:`n_constraint_rows`) the cost
+        is the interface rows' and the method is SQP: every step is the constraint rows' least-norm Newton step plus
+        a trust-region step in their Jacobian's null space with the Lagrangian Hessian, and trials are judged by the
+        l1 merit function; converged only where the constraint rows hold to ``sqrt(FTOL)``.
         Every iterate is a tight equilibrium.  The step solves the trust-region subproblem exactly, in the
         eigenbasis of the scaled reduced model (indefinite ones included).  Models, cheapest first: Gauss-Newton ``J^T J`` from one Jacobian, then BFGS updates with
         the exact adjoint gradient (one block factorization a step); where a quasi-Newton model fails (a step
@@ -507,42 +508,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         # its fields to about sqrt(FTOL) relative, so the rows are restored to that level, not further.
         tol_c = float(np.sqrt(self.cfg.ftol))
 
-        def restore(x, got, J):
-            """Chord Newton on the constraint rows with ``J``'s rows of them, to ``max |r_c| <= sqrt(FTOL)``:
-            ``(x, got, reached)``, the last point where ``|r_c|`` fell.  The unknowns of a step are the current
-            coordinates (the bootstrap rows are square in them) and one boundary direction, the scaled gradient
-            of the net-current row (the least boundary motion that moves G); a step that does not lower ``|r_c|``
-            is halved."""
-            nonlocal nfev
-            if not m or got is None:
-                return x, got, got is not None
-            nb = self.n_boundary
-            u = S[:nb] * (J[k, :nb] * S[:nb])  # the net-current row's steepest boundary direction (scaled metric)
-            A = np.column_stack([J[k:, :nb] @ u, J[k:, nb:x.size] * S[None, nb:]])
-            for _ in range(10):
-                rc = got[0][k:]
-                if np.max(np.abs(rc)) <= tol_c:
-                    return x, got, True
-                z = np.linalg.solve(A, -rc)
-                step = np.r_[z[0] * u, S[nb:] * z[1:]]
-                for _ in range(10):  # halving until |r_c| falls
-                    got_new = self.evaluate(x + step, params, field, tight=True)
-                    nfev += 1
-                    if got_new is not None and np.linalg.norm(got_new[0][k:]) < np.linalg.norm(rc):
-                        break
-                    step = 0.5 * step
-                else:
-                    return x, got, False
-                x, got = x + step, got_new
-            return x, got, False
+        def violation(rows):  # the constraint rows' l1 norm (the merit function's penalty term)
+            return float(np.sum(np.abs(rows[k:])))
 
-        if m and np.max(np.abs(r[k:])) > tol_c:  # the start onto the constraints (a Jacobian each try)
-            for _ in range(5):
-                x, (r, aux), reached = restore(x, (r, aux), self.linearize(x, aux, field)[0])
-                if reached:
-                    break
-            else:
-                raise RuntimeError("the start could not be restored onto the constraint rows")
+        penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
         noise, state_prev = 0.0, aux[0]  # the cost's measured repeatability; a state of another boundary
@@ -597,9 +566,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             gs_prev, x_prev = gs_f, x.copy()
             cost = cost_of(r)
             # the null space of the constraint rows (their Jacobian from the last model) and the Lagrangian's gradient
-            N, gs, Hg, _, _ = self._reduced(x, gs_f, so["J"][k:, :x.size] * S[None] if m else None)
+            N, gs, Hg, nu, Jc = self._reduced(x, gs_f, so["J"][k:, :x.size] * S[None] if m else None)
             Hs = H_full + Hg
             N_full = N
+            # SQP: every step is the constraint rows' Newton step p (least norm, scaled) plus a null-space step;
+            # trials are judged by the l1 merit cost + penalty |r_c|_1, exact for any penalty above max |nu|
+            # (Nocedal & Wright, Theorem 17.3; the factor 2 is their margin), so no restoration is needed
+            p = np.zeros(x.size) if not m else -np.linalg.lstsq(Jc, r[k:], rcond=None)[0]
+            penalty = max(penalty, 2.0 * float(np.max(np.abs(nu)))) if m else 0.0
+            merit = cost_of(r) + penalty * violation(r)
             if fresh and "H" in so:  # every column of the exact Hessian (an optimizer's certificate)
                 Hs = S[:, None] * so["H"] * S[None] + Hg
             elif fresh:
@@ -609,14 +584,20 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # Eisenstat-Walker choice for superlinear convergence); the trust-region steps below are then
                 # exact in it.  The eigenpairs of the tridiagonal certify convergence on the subspace.
                 N, gq_norm_first = self._krylov_model(so, N, GN, Hg, S, gs, gq_norm_first)
-            Hr, gr = (self._krylov_T if fresh and "H" not in so else N.T @ Hs @ N), N.T @ gs
+            if fresh and "H" not in so:
+                Hp = (S * so["hvp"]((S * p)[None])[0] + (Hg @ p if np.ndim(Hg) else 0.0)) if np.any(p) else 0.0 * p
+            else:
+                Hp = Hs @ p
+            Hr, gr = (self._krylov_T if fresh and "H" not in so else N.T @ Hs @ N), N.T @ (gs + Hp)
+            gain_p = -(float(gs_f @ p) + 0.5 * float(p @ Hp)) + penalty * violation(r)  # p's predicted merit gain
             w, Q = np.linalg.eigh(Hr)
             gq = Q.T @ gr
             w_gn = np.linalg.eigvalsh(N.T @ GN @ N)
             decrement = float(np.sum(gq**2 / w)) if w[0] > 0 else np.inf
             # the Newton step, and the step the rows' measured noise alone produces (same model): the shared
             # convergence test (newton_step_converged) compares their sizes in metres
-            step_n = S * (N @ (Q @ (-gq / w))) if w[0] > 0 else None
+            step_n = S * (p + N @ (Q @ (-gq / w))) if w[0] > 0 else None
+            feasible = not m or float(np.max(np.abs(r[k:]))) <= tol_c
             step_noise = None
             if step_n is not None and noise_rows is not None:
                 g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))
@@ -627,7 +608,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                             float(np.linalg.norm(so["g"] - so["g_adjoint"]) / max(np.linalg.norm(so["g"]), 1e-300))
                             if fresh else np.nan, so["asymmetry"] if fresh else np.nan, time.perf_counter() - started])
             if verbose:
-                print(f"{model} {it}: cost {cost:.10e} |g_r| {history[-1][1]:.2e} "
+                print(f"{model} {it}: cost {cost:.10e} " + (f"|r_c| {np.max(np.abs(r[k:])):.1e} " if m else "")
+                      + f"|g_r| {history[-1][1]:.2e} "
                       f"eig(H_r) [{w[0]:.2e}, {w[-1]:.2e}] "
                       f"eig(JtJ_r) [{w_gn[0]:.2e}, {w_gn[-1]:.2e}] decrement/cost {decrement / (2 * cost):.2e} "
                       + (f"g-g_adj {history[-1][7]:.1e} asym {so['asymmetry']:.1e} adj {so['adjoint']:.1e} " if fresh else "")
@@ -641,11 +623,17 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 top = np.argsort(-np.abs(v))[:6]
                 print("  weakest:", " ".join(f"{labels[k]}:{v[k]:+.2f}" for k in top), flush=True)
             floor = noise  # gains below the cost's repeatability are not resolved by the equilibria
-            if step_n is not None and self._step_converged(step_n, step_noise, x):
+            if step_n is not None and feasible and self._step_converged(step_n, step_noise, x):
                 if not fresh:  # certify with the exact Hessian
                     need = "exact"
                     continue
                 converged, status = True, "converged"
+                break
+            if fresh and w[0] > 0 and feasible and 0.5 * decrement <= floor:
+                # the exact model's whole remaining gain is below the cost's measured repeatability: the minimum is
+                # located to the equilibria's noise, and further steps only move along it (LP QA 2.5 % 8x8 with the
+                # Redl current: ten more exact models without a resolved gain)
+                converged, status = True, "converged: gain below the cost's repeatability"
                 break
             newton = np.linalg.norm(gq / w) if w[0] > 0 else np.inf
             if radius is None:
@@ -666,35 +654,40 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         mid = 0.5 * (lo + hi)
                         lo, hi = (mid, hi) if np.linalg.norm(gq / (w + shift + np.exp(mid))) > radius else (lo, mid)
                     z = -gq / (w + shift + np.exp(hi))
-                return N @ (Q @ z), -(gq @ z + 0.5 * np.sum(w * z * z))
+                return p + N @ (Q @ z), gain_p - (gq @ z + 0.5 * np.sum(w * z * z))
 
             def trial(x_try):
-                """The trial restored onto the constraints and its rows, or ``(x_try, None)`` without equilibrium."""
-                x_try, got, reached = restore(x_try, self.evaluate(x_try, params, field, tight=True), so["J"])
-                return x_try, (got if reached else None)
+                """The trial and its rows, or ``(x_try, None)`` without equilibrium."""
+                return x_try, self.evaluate(x_try, params, field, tight=True)
+
+            def merit_of(rows):
+                return cost_of(rows) + penalty * violation(rows)
 
             accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
             for attempt in range(12):
                 step, predicted = model_step(radius)
                 x_new, got = trial(x + S * step)
                 nfev += 1
-                cost_new = np.inf if got is None else cost_of(got[0])
+                cost_new = np.inf if got is None else merit_of(got[0])
                 evaluated = evaluated or got is not None
-                rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
+                rho = (merit - cost_new) / predicted if predicted > 0 else -np.inf
                 length = np.linalg.norm(step)
                 if verbose:
                     print(f"  step {attempt}: |s| {length:.2e} (radius {radius:.2e}, Newton {newton:.2e}) cost "
-                          f"{cost_new:.10e} predicted {predicted:.2e} actual {cost - cost_new:.2e} rho {rho:.3f} "
+                          f"{cost_new:.10e} predicted {predicted:.2e} actual {merit - cost_new:.2e} rho {rho:.3f} "
                           f"({time.perf_counter() - started:.0f} s)", flush=True)
                 if got is not None and rho <= 0.75:
                     # a step that is not "very successful" by the radius update's own test: a second-order
                     # correction from the residual at the trial point with the Jacobian at hand, x_t - (J N)^+ r_t
                     JN = so["J"][:k, :x.size] @ (S[:, None] * N_full)
-                    corrected, got2 = trial(x_new + S * (N_full @ -np.linalg.lstsq(JN, got[0][:k], rcond=None)[0]))
+                    soc = N_full @ -np.linalg.lstsq(JN, got[0][:k], rcond=None)[0]
+                    if m:  # and the constraint rows' Newton step from the trial
+                        soc = soc - np.linalg.lstsq(Jc, got[0][k:], rcond=None)[0]
+                    corrected, got2 = trial(x_new + S * soc)
                     nfev += 1
-                    if got2 is not None and cost_of(got2[0]) < cost_new:
-                        x_new, got, cost_new = corrected, got2, cost_of(got2[0])
-                        rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
+                    if got2 is not None and merit_of(got2[0]) < cost_new:
+                        x_new, got, cost_new = corrected, got2, merit_of(got2[0])
+                        rho = (merit - cost_new) / predicted if predicted > 0 else -np.inf
                         if verbose:
                             print(f"  second-order correction: cost {cost_new:.10e} rho {rho:.3f}", flush=True)
                 tiny = predicted <= floor  # below the cost's repeatability: accept a non-increase
@@ -709,14 +702,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         step2, predicted2 = model_step(radius)
                         x_try, got_try = trial(x + S * step2)
                         nfev += 1
-                        if got_try is None or cost_of(got_try[0]) >= cost_new:
+                        if got_try is None or merit_of(got_try[0]) >= cost_new:
                             break
-                        x_new, got, cost_new, length = x_try, got_try, cost_of(got_try[0]), np.linalg.norm(step2)
+                        x_new, got, cost_new, length = x_try, got_try, merit_of(got_try[0]), np.linalg.norm(step2)
                         if verbose:
                             print(f"  extended: |s| {length:.2e} cost {cost_new:.10e} predicted {predicted2:.2e}",
                                   flush=True)
                         radius = 2.0 * radius
-                if rho > 0.1 or (tiny and cost_new <= cost):
+                if rho > 0.1 or (tiny and cost_new <= merit):
                     state_prev = aux[0]
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
@@ -731,7 +724,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise
-                converged = bool(w[0] > 0) and evaluated  # trials without equilibria are no noise floor
+                converged = bool(w[0] > 0) and evaluated and feasible  # trials without equilibria are no noise floor
                 status = ("converged: noise floor" if converged else "stalled: no acceptable step") + \
                     f" (predicted gain {0.5 * decrement / cost:.1e} of the cost)"
                 break

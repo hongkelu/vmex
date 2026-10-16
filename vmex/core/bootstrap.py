@@ -165,15 +165,27 @@ jax.tree_util.register_dataclass(
 # ===========================================================================
 
 
-def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8) -> Array:
+EXTREMUM_CANDIDATES = 4  # grid local extrema refined per surface (see _interpolant_extremum)
+
+
+def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8,
+                          candidates: int = EXTREMUM_CANDIDATES) -> Array:
     """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
 
     ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant
-    from the grid extremum find the continuous one; its location is held fixed when differentiating, so
-    the derivative is that of the interpolant's extremum (envelope theorem) -- continuous where the
-    grid extremum jumps between points, unlike a hard grid ``max``.
+    from the grid's local extrema find the continuous ones; the largest refined value is the extremum.  Its
+    location is held fixed when differentiating, so the derivative is that of the interpolant's extremum
+    (envelope theorem).
 
-    ``newton_steps``: Newton converges quadratically from the grid extremum; the Redl current derivative it
+    ``candidates``: the number of grid local extrema (largest ``sign * B`` first) refined.  Refining only the grid
+    extremum made the value discontinuous: where two local maxima of the interpolant are nearly equal, the grid
+    extremum can sit in the lower one's cell, and the value jumped by their difference when it switched
+    (LP QA 0.5 % and 2.5 % with the Redl rows in the solve: a 1e-6 boundary step moved the current rows by 5e-6,
+    and the solve stalled there).  With every candidate refined the extremum is continuous unless more than
+    ``candidates`` local extrema are within the grid's interpolation gap of the largest; the LP QA cases have
+    two, so four leave a margin at four times the cost of one (8 Newton steps on ``ntheta * nzeta`` terms).
+
+    ``newton_steps``: Newton converges quadratically from a grid extremum; the Redl current derivative it
     feeds moved (relative to its largest value) by 6e-6 / 4e-9 / 4e-16 after 1 / 2 / 4 steps on qa4-beta and
     2e-4 / 8e-6 / 3e-13 on qa6 (8 x 8, ns 51, against 16 steps), so 8 steps (8e-16) reach round-off with margin;
     a converged step is a no-op.
@@ -183,6 +195,7 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8) ->
     kt = jnp.asarray(np.fft.fftfreq(nt, 1.0 / nt), dtype=modB.dtype)[:, None]
     kz = jnp.asarray(np.fft.fftfreq(nz, 1.0 / nz), dtype=modB.dtype)[None, :]
     cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
+    count = min(int(candidates), nt * nz)
 
     def value_grad_hess(Fs, t, z):
         terms = Fs * jnp.exp(1j * (kt * t + kz * z))
@@ -192,8 +205,7 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8) ->
                                  [jnp.sum(kt * kz * terms), jnp.sum(kz * kz * terms)]]))
         return b, g, h
 
-    def locate(Fs, Bs):
-        idx = jnp.argmax(sign * Bs)
+    def refine(Fs, idx):
         t = 2 * jnp.pi * (idx // nz) / nt
         z = 2 * jnp.pi * (idx % nz) / nz
         for _ in range(newton_steps):
@@ -204,7 +216,21 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8) ->
             t, z = t + step[0], z + step[1]
         return t, z
 
-    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB.reshape(nsurf, -1)))
+    def locate(Fs, Bs):
+        signed = sign * Bs
+        local = jnp.ones_like(signed, dtype=bool)  # >= its eight periodic neighbours
+        for dt in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dt or dz:
+                    local &= signed >= jnp.roll(signed, (dt, dz), axis=(0, 1))
+        masked = jnp.where(local, signed, -jnp.inf).reshape(-1)
+        top, idx = jax.lax.top_k(masked, count)
+        t, z = jax.vmap(lambda i: refine(Fs, i))(idx)
+        refined = jax.vmap(lambda a, b: sign * value_grad_hess(Fs, a, b)[0])(t, z)
+        best = jnp.argmax(jnp.where(jnp.isfinite(top), refined, -jnp.inf))
+        return t[best], z[best]
+
+    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB))
     value = jax.vmap(lambda Fs, a, b: value_grad_hess(Fs, a, b)[0])(F, t, z)
     grid = sign * jnp.max(sign * modB.reshape(nsurf, -1), axis=1)
     return sign * jnp.maximum(sign * value, sign * grid)  # never inside the grid extremum

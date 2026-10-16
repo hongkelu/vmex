@@ -724,7 +724,7 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 @needs_vc
 def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
-    """Finite beta: the boundary keeps two modes fewer than the interior, and the rows are R0 T0^T r then the
+    """Finite beta: the boundary's band is the interior's, and the rows are R0 T0^T r then the
     net-current row, with r = sqrt(w) B_out . n / |B_in| (coils + virtual casing) on the grid and T0 the response
     of the deck's r to each boundary coordinate (here three columns, by central differences of re-solved
     equilibria; on a GPU also the guard against miscompiled column maps).  The rows'
@@ -734,7 +734,7 @@ def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     nfp, n = int(inp.nfp), 16
     model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
-    assert not model.vacuum and model.max_mode == max(inp.mpol - 1, inp.ntor) - fvc._BOUNDARY_MODE_GAP
+    assert not model.vacuum and model.max_mode == model.top_band == max(inp.mpol - 1, inp.ntor)
     state, mask = model.seed
     x0, nb, step = np.asarray(model.x0), model.n_boundary, 1e-6
 
@@ -794,6 +794,24 @@ def test_trust_region_ends_not_converged_at_a_minimum_that_is_no_root():
     warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6])))
     assert warm["converged"]
     np.testing.assert_allclose(warm["x"][0], -1.7692923542386314, atol=1e-7)  # the root, to the step tolerance
+
+
+def test_trust_region_stops_at_once_at_a_minimum_that_is_no_root():
+    """At the cubic's non-root minimum (above) with noisy rows: once the gradient J^T r is down to that of the rows'
+    noise while the row is far above it, the trust region stops there (``nonroot``), not converged, instead of
+    crawling on to its evaluation budget."""
+
+    def rows(z):
+        return np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
+
+    def jac(z):
+        return np.array([[3.0 * z[0] ** 2 - 2.0]])
+
+    model = _stand_in(1, lambda z, tight=True: rows(z), jac, vacuum=False,
+                      repeat=lambda z, params, field, aux: rows(z) + 1e-6)
+    out = model._trust_region_boundary(None, None, x0=np.array([0.0]), max_nfev=200, verbose=1)
+    assert not out["converged"] and out["nonroot"] and out["nfev"] < 40
+    np.testing.assert_allclose(out["x"][0], np.sqrt(2.0 / 3.0), atol=1e-3)
 
 
 class _Program:
@@ -1187,3 +1205,47 @@ def test_trust_region_handles_noise_loose_trials_reused_jacobians_and_its_budget
     current.n_boundary, current.boundary_modes = 1, [(0, 0)]
     np.testing.assert_allclose(current._trust_scale(np.array([0.0, 4.0])), [1.0, 1.0 / 4.0])
     np.testing.assert_allclose(current._trust_scale(np.array([0.0, 0.0])), [1.0, 1.0])
+
+
+@needs_vc
+def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_stalls(monkeypatch):
+    """The band continuation: where Newton on the model's band converges it is that solve; where it stalls
+    (forced here), the band is built up from band 1, each band from the previous band's boundary, to the same
+    root; where a band stalls on the way and the trust region on the model's band does too, it is a stall (not
+    converged) that reports the last converged band."""
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    n = 16
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * int(inp.nfp) * n, 2 * n))
+    target = model.max_mode
+    assert target == model.top_band > 2
+    direct_model, direct = fvc.solve_band_continuation(model, model.params0, field)
+    assert direct_model is model and direct["converged"] and direct["band"] == direct["target"] == target
+    assert [b[:2] for b in direct["bands"]] == [(target, True)]
+
+    newton = fvc.ThreeTermsFreeBoundaryModel._newton_boundary
+    calls = []
+
+    def stalling(bands):
+        def patched(self, params, field, *, x0=None, **kwargs):
+            calls.append(self.max_mode)
+            if self.max_mode in bands and (self.max_mode != target or calls.count(target) == 1):
+                return dict(converged=False, nfev=1, njev=0, x=np.asarray(self.x0 if x0 is None else x0),
+                            jacobian=None)
+            return newton(self, params, field, x0=x0, **kwargs)
+        return patched
+
+    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_newton_boundary", stalling({target}))
+    built_model, built = fvc.solve_band_continuation(model, model.params0, field, x0=0.5 * direct["x"])
+    assert built["converged"] and built["band"] == built_model.max_mode == target and built_model is model
+    assert [b[:2] for b in built["bands"]] == [(target, False)] + [(b, True) for b in range(1, target + 1)]
+    for a, b in zip((built["aux"][2].rbc, built["aux"][2].zbs), (direct["aux"][2].rbc, direct["aux"][2].zbs)):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), atol=1e-9)
+
+    calls.clear()
+    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_newton_boundary", stalling({target, 2}))
+    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_trust_region_boundary",
+                        lambda self, *a, **k: dict(converged=False, nfev=1, njev=0))
+    lower_model, lower = fvc.solve_band_continuation(model, model.params0, field)
+    assert not lower["converged"] and lower["band"] == lower_model.max_mode == 1 and lower["target"] == target
+    assert [b[:2] for b in lower["bands"]] == [(target, False), (1, True), (2, False), (target, False)]

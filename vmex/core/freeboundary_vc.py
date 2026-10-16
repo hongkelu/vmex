@@ -39,8 +39,13 @@ left free) makes the answer depend on the start or the fit crawl.  ``initial_bou
   boundary (1.25e-4); a cold solve from the deck 330 s against 815 s.  Test functions taken at the solution
   itself would make the rows the exact least squares, whose design derivatives need the second derivatives
   of the equilibrium; the deck's are fixed, so the rows' derivatives are first derivatives (coil direction:
-  the implicit derivative matches central differences to 5e-5).  The boundary keeps two modes fewer than the
-  interior (``_BOUNDARY_MODE_GAP``: the interior's edge field is least accurate in its top modes).
+  the implicit derivative matches central differences to 5e-5).
+
+The boundary's band is the interior's, ``max(mpol - 1, ntor)``, in vacuum and at finite beta.  Two modes fewer
+(the fixed-boundary convention) scored worse under an independent ns-101 evaluation at 2.5 % beta, 12 x 12 (band
+12 against 10, band-limited B.n / pressure jump / sheet current: QH -18 / -36 / -19 %, QI -6 / -26 / -6 %), and
+its Newton solve stalled where band 12's converges (a QA seed with Redl current).  Where Newton on the band
+stalls, the band is built up from ``m <= 1`` one mode at a time (:func:`solve_band_continuation`).
 
 Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
 pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
@@ -636,7 +641,10 @@ def solve_free_boundary_three_terms(
     (converged), ``input`` (the free boundary, and the current, as a
     fixed-boundary deck), ``equilibrium`` (solved to a final force residual of
     ``1e-17``, see ``_REPORT_FTOL``), ``model``, ``aux`` (``(state, mask,
-    params, tight)``, for ``previous=``), ``boundary_residual`` and
+    params, tight)``, for ``previous=``), ``band`` (the boundary's band, ``max_mode``, default
+    :attr:`ThreeTermsFreeBoundaryModel.top_band`; a cold solve that stalls on it continues in the band,
+    :func:`solve_band_continuation`, and a stall reports the last band that converged) and ``bands``
+    (each band solve's ``(max_mode, converged, seconds)``), ``boundary_residual`` and
     ``initial_boundary_residual`` (:class:`BoundaryResidual` of the reported
     equilibrium, and at the start) and ``normal_outside_modes``
     (:meth:`ThreeTermsFreeBoundaryModel.normal_outside_modes`).  A solve that
@@ -680,8 +688,12 @@ def solve_free_boundary_three_terms(
     reporter = threading.Thread(target=lambda: report_box.append(_try(reports)), name="vmex-initial-residual",
                                 daemon=True)
     reporter.start()
-    out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
-                               verbose=verbose)
+    if previous is None:  # by continuation in the band where Newton stalls (solve_band_continuation)
+        model, out = solve_band_continuation(model, model.params0, external_field, x0=x0, max_nfev=max_nfev,
+                                             verbose=verbose)
+    else:
+        out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
+                                   verbose=verbose)
     reporter.join()
     if isinstance(report_box[0], BaseException):
         raise report_box[0]
@@ -707,8 +719,88 @@ def solve_free_boundary_three_terms(
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
         njev=out["njev"], success=bool(out["converged"]), message=f"{out['accepted']} Newton steps",
+        band=model.max_mode, bands=out.get("bands"),
         input=boundary, equilibrium=equilibrium, model=model, aux=out["aux"],
         boundary_residual=final, normal_outside_modes=outside, initial_boundary_residual=initial)
+
+
+def solve_band_continuation(model, params, field, *, x0=None, max_nfev=60, verbose=0):
+    """The free boundary on ``model``'s band, by continuation in the band where Newton stalls: ``(model, fit)``.
+
+    Newton with backtracking on ``model``'s band from ``x0`` comes first
+    (:meth:`~ThreeTermsFreeBoundaryModel._newton_boundary`): where it converges this is that solve, at its cost.
+    Where it stalls, the band is built up from the lowest one (the poloidal modes ``m <= 1``): the band-1 boundary
+    is solved from ``x0``'s surface (:meth:`~ThreeTermsFreeBoundaryModel.solve_boundary`), then the band is
+    extended one mode at a time (:meth:`~ThreeTermsFreeBoundaryModel.with_band`), each band's Newton solve
+    starting from the previous band's boundary (:meth:`~ThreeTermsFreeBoundaryModel.displacement_of`) and
+    bootstrap current, up to ``model``'s band (QH at 1 % beta, 12 x 12: Newton on band 12 stalls at cost 3.7e-6
+    and the trust region crawls at 3.5e-9; bands 1 to 12 each converge from the previous one).  Where a band
+    stalls on the way, the trust region (:meth:`~ThreeTermsFreeBoundaryModel._trust_region_boundary`) continues
+    on ``model``'s band from where its Newton solve stopped (a far start, whose Jacobian there can be indefinite).
+    A boundary that none of these converges is a stall: ``converged=False``, with the last band that did converge
+    (``fit["band"]``, its model and fit; ``model``'s own fit when none did).  Returned: the model of the answer's
+    band and its fit, with ``fit["band"]`` that band, ``fit["target"]`` ``model``'s band and ``fit["bands"]``
+    each solve's ``(max_mode, converged, seconds)``.  Every band's rows are the square equations of the module
+    docstring on that band, so a converged answer is the root of ``model``'s rows on its band, whatever the route.
+    """
+    started = time.perf_counter()
+    direct = model._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)
+    bands = [(model.max_mode, bool(direct["converged"]), time.perf_counter() - started)]
+    target, nfev, njev = model.max_mode, direct["nfev"], direct["njev"]
+
+    def result(answer, fit, converged):
+        if verbose:
+            print(f"band {answer.max_mode} of {target} ({'converged' if converged else 'stalled'}): " + ", ".join(
+                f"{band} {'converged' if ok else 'stalled'} {seconds:.0f} s" for band, ok, seconds in bands),
+                flush=True)
+        return answer, dict(fit, converged=converged, nfev=nfev, njev=njev, band=answer.max_mode, target=target,
+                            bands=bands)
+
+    if direct["converged"]:
+        return result(model, direct, True)
+    reached, reached_fit = None, None  # the last band the continuation converged
+    if target > 1:
+        started = time.perf_counter()
+        lowest = model.with_band(1)
+        start = None
+        if x0 is not None:  # x0's surface on the lowest band's coordinates
+            surface = model.with_boundary(model.params0, jnp.asarray(x0))
+            start = lowest.displacement_of(SimpleNamespace(rbc=np.asarray(surface.rbc), zbs=np.asarray(surface.zbs)))
+            start[lowest.n_boundary:] = np.asarray(x0)[model.n_boundary:]
+        if verbose:
+            print(f"band {target} stalled: continuation from band 1", flush=True)
+        fit = lowest.solve_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose)
+        bands.append((1, bool(fit["converged"]), time.perf_counter() - started))
+        nfev, njev = nfev + fit["nfev"], njev + fit["njev"]
+        current = lowest
+        while fit["converged"]:
+            reached, reached_fit = current, fit
+            if current.max_mode == target:
+                return result(current, fit, True)
+            started = time.perf_counter()
+            wider = model if current.max_mode + 1 == target else current.with_band(current.max_mode + 1)
+            boundary = fit["aux"][2]
+            start = wider.displacement_of(SimpleNamespace(rbc=np.asarray(boundary.rbc), zbs=np.asarray(boundary.zbs)))
+            start[wider.n_boundary:] = fit["x"][current.n_boundary:]
+            if verbose:
+                print(f"band {wider.max_mode}: from band {current.max_mode}'s boundary", flush=True)
+            try:
+                fit = wider._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose)
+            except (VmecError, RuntimeError):  # no certified equilibrium on the way: the band does not converge
+                fit = dict(converged=False, nfev=0, njev=0)
+            bands.append((wider.max_mode, bool(fit["converged"]), time.perf_counter() - started))
+            nfev, njev = nfev + fit["nfev"], njev + fit["njev"]
+            current = wider
+    started = time.perf_counter()
+    if verbose:
+        print(f"band continuation stalled: the trust region on band {target}", flush=True)
+    final = model._trust_region_boundary(params, field, x0=direct["x"], jacobian=direct["jacobian"],
+                                         max_nfev=max_nfev, verbose=verbose)
+    bands.append((target, bool(final["converged"]), time.perf_counter() - started))
+    nfev, njev = nfev + final["nfev"], njev + final["njev"]
+    if final["converged"] or reached is None:
+        return result(model, final, bool(final["converged"]))
+    return result(reached, reached_fit, False)
 
 
 def _surface_data(fixed, cfg, state, params, nphi, ntheta):
@@ -771,7 +863,9 @@ class ThreeTermsFreeBoundaryModel:
     carry a pressure jump.
 
     Coordinates: ``x`` is the displacement ``h`` of the deck's boundary on
-    its modes up to ``max_mode`` (``x0 = 0`` the deck; ``x_scale`` their ESS
+    its modes up to ``max_mode`` (default ``top_band``, the interior's
+    ``max(mpol - 1, ntor)``; :meth:`with_band` the same deck on another band)
+    (``x0 = 0`` the deck; ``x_scale`` their ESS
     scales; :meth:`displacement_of` the coordinates of another surface),
     ``params`` an ``ImplicitParams`` (``params0`` the deck's) whose boundary
     ``with_boundary(params, x)`` replaces.  The rows are the square
@@ -815,7 +909,6 @@ class ThreeTermsFreeBoundaryModel:
                  fixed_boundary=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
-        from .optimize import boundary_arrays_from_x, pack_boundary
 
         self._im = im
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
@@ -834,13 +927,9 @@ class ThreeTermsFreeBoundaryModel:
             _check_edge_pressure(fixed)
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
-        # At finite beta the boundary keeps fewer modes than the interior (the fixed-boundary convention, mpol - 2
-        # and ntor - 2): the interface conditions use the interior's field at the edge, least accurate in its top
-        # modes, and a boundary that uses them fits that error (LP QA beta 2.5 %: interior/boundary 12/12 B.n
-        # 4.1e-4, 16/12 1.6e-4) and gains a near-null direction there.  In vacuum the conditions need only the coils.
-        top = max(fixed.mpol - 1, fixed.ntor)
-        top = top if self.vacuum else max(top - _BOUNDARY_MODE_GAP, 1)
-        self.max_mode = int(top if max_mode is None else max_mode)
+        # The band of boundary modes: ``max_mode``, by default the interior's (``top_band``).
+        self.top_band = int(max(fixed.mpol - 1, fixed.ntor))
+        self.max_mode = int(self.top_band if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
         # Hot-restarted solves are exact: the m=1 angle gauge is fixed (implicit.ImplicitConfig.freeze_m1), so
         # the state is a single-valued function of the boundary whatever the seed, and the implicit Jacobian is
@@ -860,33 +949,8 @@ class ThreeTermsFreeBoundaryModel:
             im._template_runtime(self.cfg_trial)
         self.params0 = im.params_from_input(fixed, device=device)
         im._template_runtime(cfg)
-        # Boundary coordinates: the normal displacement h of the deck's surface (see _normal_displacement_map):
-        # one function for the one normal condition, no tangential (relabelling) directions among the unknowns.
-        x_ref = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         self.R0 = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])  # the length scale of the convergence test
-        if self.fixed_boundary:
-            self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
-        else:
-            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(fixed, self.max_mode,
-                                                                                        extend=self.vacuum)
-            self.x0 = np.zeros(normal_map.shape[1])
-        self.n_boundary = nb = self.x0.size
-        if self.bootstrap is not None:
-            self.x0 = np.r_[self.x0, self.bootstrap.x0]
         self.chunk = int(chunk)
-        self._linearization = None
-        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
-        self._x_ref = jnp.asarray(x_ref)
-        self._normal_map = None if normal_map is None else jnp.asarray(normal_map)
-
-        def with_boundary(params, x):
-            if not self.fixed_boundary:
-                rbc, zbs = boundary_arrays_from_x(fixed, self._x_ref + self._normal_map @ x[:nb], self.max_mode,
-                                                  vary_major_radius=True)
-                params = replace(params, rbc=rbc, zbs=zbs)
-            return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
-
-        self.with_boundary = with_boundary
         self._warm_programs()
         seed = self.solve(self.params0)
         if seed is None:
@@ -904,7 +968,8 @@ class ThreeTermsFreeBoundaryModel:
             gamma = np.asarray(surface.gamma)  # (3, nphi, ntheta) over one field period
             length = float(np.mean(np.sum(np.linalg.norm(np.roll(gamma, -1, axis=2) - gamma, axis=0), axis=1)))
             self.bootstrap.set_unit(length, self.B0)
-            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
+        self._radial = None
+        self.precision = None
         if not self.fixed_boundary:
             # The boundary moves along the deck equilibrium's radial coordinate lines dX/ds at the edge (VMEC's
             # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
@@ -919,12 +984,65 @@ class ThreeTermsFreeBoundaryModel:
                 a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
                 return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
 
-            normal_map, _, _ = _normal_displacement_map(fixed, self.max_mode, direction=radial, extend=self.vacuum)
-            self._normal_map = jnp.asarray(normal_map)
+            self._radial = radial
+            self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
+            self.digits = digits
+            # the virtual-casing plan of the deck's surface, for every band (_set_band)
+            if not self.vacuum:
+                self.precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=self.quadrature[0],
+                                                      quad_np=self.quadrature[1])
+        self._set_band(self.max_mode)
+
+    def _set_band(self, max_mode):
+        """The boundary coordinates on the modes up to ``max_mode`` and the rows of that band.
+
+        Everything else -- the deck's equilibrium, field scale, grid and virtual-casing plan -- belongs to the
+        deck and is shared by every band (:meth:`with_band`).
+        """
+        from .optimize import boundary_arrays_from_x, pack_boundary
+
+        fixed = self.fixed
+        self.max_mode = int(max_mode)
+        # Boundary coordinates: the normal displacement h of the deck's surface (see _normal_displacement_map):
+        # one function for the one normal condition, no tangential (relabelling) directions among the unknowns.
+        x_ref = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
+        if self.fixed_boundary:
+            self.x0, self.x_scale, normal_map = x_ref[:0], x_ref[:0], None
+        else:
+            normal_map, self.boundary_modes, self.x_scale = _normal_displacement_map(
+                fixed, self.max_mode, direction=self._radial, extend=self.vacuum)
+            self.x0 = np.zeros(normal_map.shape[1])
+        self.n_boundary = nb = self.x0.size
+        if self.bootstrap is not None:
+            self.x0 = np.r_[self.x0, self.bootstrap.x0]
+        self._linearization = None
+        self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
+        self._x_ref = jnp.asarray(x_ref)
+        self._normal_map = None if normal_map is None else jnp.asarray(normal_map)
+
+        def with_boundary(params, x):
+            if not self.fixed_boundary:
+                rbc, zbs = boundary_arrays_from_x(fixed, self._x_ref + self._normal_map @ x[:nb], self.max_mode,
+                                                  vary_major_radius=True)
+                params = replace(params, rbc=rbc, zbs=zbs)
+            return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
+
+        self.with_boundary = with_boundary
+        if self.bootstrap is not None:
+            self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         self._implicit_setup()
         if not self.fixed_boundary:
-            self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
-            self._interface_setup(state, surface, self.nphi, self.ntheta, digits, self.quadrature)
+            self._interface_setup(self.seed[0], self.nphi, self.ntheta, self.digits)
+
+    def with_band(self, max_mode):
+        """The same deck's model on the boundary modes up to ``max_mode``, without solving the deck again."""
+        import copy
+
+        other = copy.copy(self)
+        other.deck, other._warm = None, None
+        other.__dict__.pop("_row_noise", None)  # the rows' measured noise is that of a band's own rows
+        other._set_band(max_mode)
+        return other
 
     def _warm_programs(self):
         """Compile the solve's largest programs on background threads while the seed equilibrium is solved.
@@ -958,18 +1076,15 @@ class ThreeTermsFreeBoundaryModel:
         self._warm = threading.Thread(target=tangents, name="vmex-tangent-warm", daemon=True)
         self._warm.start()
 
-    def _interface_setup(self, state, surface, nphi, ntheta, digits, quadrature):
-        """The interface rows, with the quadrature plan of the seed ``state`` (its boundary data ``surface``)."""
+    def _interface_setup(self, state, nphi, ntheta, digits):
+        """The interface rows, with the quadrature plan of the seed ``state`` (:attr:`precision`)."""
         from .freeboundary import _vacuum_scalars
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        quad_nt, quad_np = map(int, quadrature)
-        if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
-            precision, digits = None, None
-        else:
-            precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        self.precision = precision
+        precision = self.precision  # None in vacuum: the coils' field alone, no virtual-casing quadrature
+        if self.vacuum:
+            digits = None
         # A closed curve inside the coils for G_coil: the seed's magnetic axis (its wout raxis_cc / zaxis_cs, read
         # from the solved seed state; the circulation is the same on any loop that links the coils).
         _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
@@ -1545,7 +1660,11 @@ class ThreeTermsFreeBoundaryModel:
         :func:`newton_step_converged`'s tolerance: round-off, or the step that the rows' measured noise
         (:meth:`repeat`, measured once a fresh Jacobian's step at round-off length finds no descent) produces.
         A singular Jacobian, or no descent at round-off length beyond that noise, is a stall (``converged=False``):
-        a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial points solved to
+        a minimum of ``|rows|^2`` that is no root is never reported as converged.  Such a minimum ends the solve as
+        soon as a fresh Jacobian at a tight point shows it, without crawling toward it: the gradient ``J^T r`` (in
+        the region's coordinates) is no larger than that of the rows' noise (measured once, :meth:`repeat`) while
+        the rows exceed twice the noise (``nonroot=True`` in the result; QH at 1 % beta, 12 x 12, band 12: the
+        region crawled at cost 3.4987e-9, 1e-14 a step).  Trial points solved to
         ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
@@ -1564,6 +1683,8 @@ class ThreeTermsFreeBoundaryModel:
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
         radius = None  # the trust region's radius (relative; :meth:`_trust_scale`)
         noise_at = None  # the point the rows' noise was last measured at
+        nonroot = False  # stopped at a minimum of |rows|^2 that is no root
+        previous_gradient = None  # (x, J^T r) at the last tight point with a fresh Jacobian
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1595,6 +1716,33 @@ class ThreeTermsFreeBoundaryModel:
                 continue
             cost = 0.5 * float(r @ r)
             scale = self._trust_scale(x)
+            if fresh and got[1][3]:
+                # The step to the minimum of |rows|^2: its gradient g = J^T r over its curvature along the last step
+                # (a secant of g between two tight points; region coordinates).  Once that step is converged while
+                # the rows stay above twice their noise (measured once, :meth:`repeat`), this is a minimum of
+                # |rows|^2 that is no root: stop, instead of crawling into it.
+                gradient = J.T @ r / scale
+                if previous_gradient is not None:
+                    secant = (x - previous_gradient[0]) * scale
+                    curvature = float((gradient - previous_gradient[1]) @ secant / (secant @ secant))
+                    if curvature > 0.0:
+                        if noise is None and noise_at is None and nfev < max_nfev:
+                            again = self.repeat(x, params, field, aux)
+                            nfev += 1
+                            noise_at = x
+                            if again is not None:
+                                noise = again - r
+                                noises["rows"] = noise
+                        to_minimum = -gradient / curvature / scale
+                        if (noise is not None and np.linalg.norm(r) > 2.0 * np.linalg.norm(noise)
+                                and self._step_converged(to_minimum, _newton_step(J, noise), x)):
+                            nonroot = True
+                            if verbose:
+                                print(f"Newton stalled: no free boundary in this band from this start, a minimum of "
+                                      f"|rows|^2 that is no root (cost {cost:.6e}, the rows' noise "
+                                      f"{np.linalg.norm(noise):.2e})", flush=True)
+                            break
+                previous_gradient = (x, gradient)
             if radius is None:  # the first Newton step's own length: the trust region starts where Newton points
                 radius = float(np.linalg.norm(scale * p))
             q, bounded = _trust_region_step(J, r, scale, radius)
@@ -1668,7 +1816,8 @@ class ThreeTermsFreeBoundaryModel:
             if verbose:
                 print(f"Newton stalled: {nfev} evaluations without convergence", flush=True)
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
-                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
+                    converged=converged, nonroot=nonroot,
+                    noise=None if noise is None else float(np.linalg.norm(noise)))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
@@ -1694,8 +1843,6 @@ class ThreeTermsFreeBoundaryModel:
         return final
 
 
-#: Boundary modes fewer than the interior's at finite beta (see ThreeTermsFreeBoundaryModel).
-_BOUNDARY_MODE_GAP = 2
 
 #: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves ~1 % in
 #: QS ~ 1e-6 (the boundary solve's own states are Newton-refined and need no such tolerance).
@@ -1751,13 +1898,25 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
         model = ThreeTermsFreeBoundaryModel(inp, **model_options)
+        seed_fit = None
+        if not model.fixed_boundary:
+            # the seed design's free boundary, by band continuation where the direct solve stalls
+            # (solve_band_continuation); a stall below the band leaves the seed without a free boundary
+            x = jnp.asarray(x0, dtype=float)
+            params = model.params0 if plasma_from_parameters is None else plasma_from_parameters(model.params0, x)
+            solved, seed_fit = solve_band_continuation(model, params, field_from_parameters(x),
+                                                       max_nfev=boundary_max_nfev)
+            if not seed_fit["converged"]:
+                raise VmecError(f"the seed design has no three-terms free boundary on band {model.max_mode} (the "
+                                f"band continuation stalled after band {seed_fit['band']})")
+            model = solved
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_max_nfev=boundary_max_nfev)
+                   boundary_max_nfev=boundary_max_nfev, seed_fit=seed_fit)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_max_nfev):
+                 parameter_quantities, boundary_max_nfev, seed_fit=None):
         from .implicit import runtime_from_params
 
         self.model, self.field = model, field_from_parameters
@@ -1818,6 +1977,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._cache, self._anchor = {}, {}
         self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
+        if seed_fit is not None and seed_fit["converged"]:  # the seed's free boundary, already solved
+            self.stats["trials"] += 1
+            self._store(x0, seed_fit)
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-terms free boundary")
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
@@ -1865,11 +2027,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self.stats["failed"] += 1
             self._cache[key] = None
             return None
+        return self._store(x, fit)
+
+    def _store(self, x, fit):
+        """Cache the converged ``fit`` as the trial at ``x``."""
         self.stats["boundary_evaluations"] += fit["nfev"]
         state, mask, params_b, _ = fit["aux"]
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b,
-                                values=np.asarray(self._rows(state, params_b, jnp.asarray(x))))
-        return self._cache[key]
+        self._cache[x.tobytes()] = entry = dict(fit, state=state, mask=mask, params=params_b,
+                                                values=np.asarray(self._rows(state, params_b, jnp.asarray(x))))
+        return entry
 
     def _record(self, x):
         sol = self._solve(self._x(x))

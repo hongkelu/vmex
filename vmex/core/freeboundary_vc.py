@@ -330,6 +330,16 @@ def _deck_cache_store(key: str, value) -> None:
                 os.unlink(tmp)
 
 
+def _deck_cached(key: str, compute):
+    """The cached deck response of ``key``, or ``compute()`` stored under it."""
+    cached = _deck_cache_load(key)
+    if cached is not None:
+        return cached
+    value = compute()
+    _deck_cache_store(key, value)
+    return value
+
+
 def _axis_loop(wout):
     """Points ``(3, n)``, tangent and spacing of the magnetic axis of ``wout``: a closed curve inside the coils."""
     phi = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
@@ -1049,15 +1059,15 @@ class ThreeTermsFreeBoundaryModel:
         key = _digest("deck-response", fixed, nphi, ntheta, digits, precision, self.max_mode, self.boundary_modes,
                       self._x_ref, self._normal_map, state, mask, directions, _source_digest(), jax.__version__,
                       jax.devices()[0].device_kind)
-        cached = _deck_cache_load(key)
-        if cached is not None:
-            return cached
-        dz = self._tangents(self.params0, state, mask, directions)
-        primal = jax.jit(geometry)(state, self.params0)
-        tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
-            state, mask, self.params0, dz, directions)
-        _deck_cache_store(key, (primal, tangent))
-        return primal, tangent
+
+        def compute():
+            dz = self._tangents(self.params0, state, mask, directions)
+            primal = jax.jit(geometry)(state, self.params0)
+            tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
+                state, mask, self.params0, dz, directions)
+            return primal, tangent
+
+        return _deck_cached(key, compute)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""

@@ -1115,6 +1115,26 @@ def test_deck_response_cache_round_trip_and_keys(tmp_path, monkeypatch):
     assert fvc._deck_cache_load(key) is None
     fvc._deck_cache_store(key, value[0])  # not a deck response (4 leaves): not stored
     assert fvc._deck_cache_load(key) is None
+    calls = []
+    fresh = fvc._digest("another deck")
+    first = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    again = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    assert calls == [1] and len(jax.tree.leaves(first)) == len(jax.tree.leaves(again)) == 8
+    # every kind of input enters the key: mappings, registered pytrees, plain objects, anything else by repr
+    assert fvc._digest({"a": 1}) != fvc._digest({"a": 2}) and fvc._digest({"a": 1, "b": 2}) == fvc._digest({"b": 2, "a": 1})
+    from vmex.core.implicit import params_from_input
+    params = params_from_input(inp)
+    assert fvc._digest(params) != fvc._digest(replace(params, phiedge=params.phiedge + 1.0))
+    from types import SimpleNamespace
+    assert fvc._digest(SimpleNamespace(a=1)) != fvc._digest(SimpleNamespace(a=2))
+    assert fvc._digest(slice(1, 2)) != fvc._digest(slice(1, 3))
+
+    class Pair:  # a registered pytree that is no dataclass
+        def __init__(self, a, b):
+            self.a, self.b = a, b
+
+    jax.tree_util.register_pytree_node(Pair, lambda p: ((p.a, p.b), None), lambda _, c: Pair(*c))
+    assert fvc._digest(Pair(jnp.ones(2), 1.0)) != fvc._digest(Pair(jnp.ones(2), 2.0))
     monkeypatch.setenv("VMEX_COMPILATION_CACHE", "0")
     assert fvc._deck_cache_path(key) is None and fvc._deck_cache_load(key) is None
     fvc._deck_cache_store(key, value)  # no cache: a no-op

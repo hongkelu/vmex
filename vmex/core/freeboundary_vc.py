@@ -750,6 +750,11 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     ``x0``'s surface, then the band is extended one mode at a time
     (:meth:`~ThreeTermsFreeBoundaryModel.with_band`), each band's Newton solve starting from the previous band's
     boundary (:meth:`~ThreeTermsFreeBoundaryModel.displacement_of`) and bootstrap current, up to ``model``'s band.
+    Newton on ``model``'s band and on each extended band ends when two fresh-Jacobian steps in a row have to be
+    shortened (``undamped``): from a point in the rows' Newton basin a refreshed Jacobian restores full steps, so
+    a second shortened one means the point is outside it -- a far start, or no root near (a minimum of
+    ``|rows|^2`` that is no root), which then costs two Jacobians and their backtracking instead of a crawl.
+    Band 1, the start of the continuation, takes damped steps.
     QA in vacuum, 12 x 12, from starts 2 cm and 4 cm from the answer: Newton on band 12 stalls, every band from 1
     to 12 converges from the previous one in full Newton steps (6-7 min in all), to the deck start's answer within
     4e-12 m.  A band that does not converge so ends the solve as a stall: ``converged=False``, with the last band
@@ -760,7 +765,8 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     converged answer is the root of ``model``'s rows, whatever the route.
     """
     started = time.perf_counter()
-    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                    undamped=True)
     bands = [(model.max_mode, bool(direct["converged"]), time.perf_counter() - started)]
     target, nfev, njev = model.max_mode, direct["nfev"], direct["njev"]
 
@@ -786,7 +792,8 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     while True:
         started = time.perf_counter()
         try:
-            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose)
+            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose,
+                                           undamped=current.max_mode > 1)
         except (VmecError, RuntimeError):  # no certified equilibrium on the way: the band does not converge
             fit = dict(converged=False, nfev=0, njev=0)
         bands.append((current.max_mode, bool(fit["converged"]), time.perf_counter() - started))
@@ -1536,8 +1543,11 @@ class ThreeTermsFreeBoundaryModel:
         that noise are zero to what they resolve.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
-        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that has to be shortened
-        (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.
+        ``undamped=True`` returns, not converged, when two fresh-Jacobian Newton steps in a row descend only once
+        shortened (with ``damped=True`` in the result): the refreshed Jacobian did not restore full steps, so the
+        point lies outside the rows' Newton basin (one shortened step is common on the way in from a far start:
+        QA and QI in vacuum, 12 x 12, from 5 mm).  A fresh step that does not descend at any length goes to the
+        noise test as without it.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1554,6 +1564,7 @@ class ThreeTermsFreeBoundaryModel:
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
         damped = False
+        shortened = False  # the last fresh-Jacobian step descended only once shortened
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1599,11 +1610,12 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
-            if undamped and fresh and t < 1.0:
-                if accepted is not None:  # keep the shortened step's progress
-                    x, (r, aux), steps = x + t * p, accepted, steps + 1
-                damped = True
-                break
+            if fresh and accepted is not None:
+                # a refreshed Jacobian that again descends only along a shortened step: outside the Newton basin
+                if undamped and t < 1.0 and shortened:  # keep the shortened step's progress
+                    x, (r, aux), steps, damped = x + t * p, accepted, steps + 1, True
+                    break
+                shortened = t < 1.0
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)

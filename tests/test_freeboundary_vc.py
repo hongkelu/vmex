@@ -1013,6 +1013,7 @@ def test_a_plasma_below_the_fields_round_off_is_vacuum():
     assert fvc._edge_pressure(p)[1] > 0.0 and not fvc._plasma_below_roundoff(p)
     tiny = replace(p, pres_scale=1e-40)
     assert fvc._edge_pressure(tiny)[1] > 0.0 and fvc._plasma_below_roundoff(tiny)
+    assert not fvc._plasma_below_roundoff(replace(lp, zbs=np.zeros_like(lp.zbs)))  # no cross section: no field scale
 
 
 @pytest.mark.full

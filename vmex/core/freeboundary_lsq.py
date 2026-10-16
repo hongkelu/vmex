@@ -512,7 +512,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             """The merit function's penalty term: the constraint rows' l1 norm beyond sqrt(FTOL) -- below it they
             are the equilibria's noise (a trial solved from another state moves them by ~1e-9 with the Redl rows,
             which the penalty would otherwise weigh against gains of 1e-12)."""
-            return float(np.sum(np.maximum(np.abs(rows[k:]) - tol_c, 0.0)))
+            return float(np.sum(np.maximum(np.abs(rows[k:]) - resolved_c(), 0.0)))
+
+        def resolved_c():
+            """The constraint rows' resolution: sqrt(FTOL), or their measured repeatability where larger (fresh
+            solves move the Redl rows by ~1e-8 a row at 8x8, which the merit would otherwise count as violation)."""
+            return max(tol_c, 0.0 if noise_rows is None or not m else float(np.max(np.abs(noise_rows[k:]))))
 
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
@@ -605,7 +610,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             # the Newton step, and the step the rows' measured noise alone produces (same model): the shared
             # convergence test (newton_step_converged) compares their sizes in metres
             step_n = S * (p + N @ (Q @ (-gq / w))) if w[0] > 0 else None
-            feasible = not m or float(np.max(np.abs(r[k:]))) <= tol_c
+            feasible = not m or float(np.max(np.abs(r[k:]))) <= resolved_c()
             step_noise = None
             if step_n is not None and noise_rows is not None:
                 g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))
@@ -620,7 +625,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       + f"|g_r| {history[-1][1]:.2e} "
                       f"eig(H_r) [{w[0]:.2e}, {w[-1]:.2e}] "
                       f"eig(JtJ_r) [{w_gn[0]:.2e}, {w_gn[-1]:.2e}] decrement/cost {decrement / (2 * cost):.2e} "
-                      + (f"g-g_adj {history[-1][7]:.1e} asym {so['asymmetry']:.1e} adj {so['adjoint']:.1e} " if fresh else "")
+                      + (f"g-g_adj {history[-1][7]:.1e} asym {so['asymmetry']:.1e} adj {so['adjoint']:.1e} "
+                         f"noise {noise:.1e} r_c resolved {resolved_c():.1e} " if fresh else "")
                       + f"Newton step moves <= {moved:.1e} m "
                       + ("times " + " ".join(f"{k} {v:.1f}" for k, v in so["seconds"].items()) + " s " if fresh else "")
                       + f"({history[-1][-1]:.0f} s)", flush=True)
@@ -692,7 +698,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 if verbose:
                     print(f"  step {attempt}: |s| {length:.2e} (radius {radius:.2e}, Newton {newton:.2e}) cost "
                           f"{cost_new:.10e} predicted {predicted:.2e} actual {merit - cost_new:.2e} rho {rho:.3f} "
-                          f"({time.perf_counter() - started:.0f} s)", flush=True)
+                          + (f"[cost {cost_of(got[0]):.10e} penalty {penalty:.1e} violation {violation(got[0]):.1e}] "
+                             if m and got is not None else "")
+                          + f"({time.perf_counter() - started:.0f} s)", flush=True)
                 if got is not None and rho <= 0.75:
                     # a step that is not "very successful" by the radius update's own test: a second-order
                     # correction from the residual at the trial point with the Jacobian at hand, x_t - (J N)^+ r_t

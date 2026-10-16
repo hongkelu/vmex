@@ -1,43 +1,94 @@
 #!/usr/bin/env python
-r"""Free-boundary single-stage coil optimization on sheet-current-free equilibria.
+r"""Single-stage coil optimization on sheet-current-free free-boundary equilibria.
 
-The free arm of ``single_stage_free_boundary_optimization_coil_constraints.py``
-with its equilibrium replaced: every trial is the free boundary that satisfies
-all three plasma-vacuum interface conditions (B.n = 0, pressure balance and no
-sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves
-the tangential field jump free.
+What it solves
+--------------
+Coil shapes and currents (and PHIEDGE, and with ``--bootstrap`` the plasma
+current) are optimized for a quasisymmetric (QA, QH) or quasi-isodynamic (QI)
+plasma. Every trial equilibrium is the free boundary that satisfies all three
+plasma-vacuum interface conditions, B.n = 0, pressure balance and no sheet
+current (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``,
+:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`). Trial
+boundaries are warm-started, design gradients come from the implicit function
+theorem of the boundary fit, and nothing recompiles when the coils or the
+plasma parameters change. The loss is (1/2) |r|^2 of the target residual r
+(quasisymmetry of ``HELICITY``, or the constructed QI residual). Every physics
+and engineering limit is a hard inequality, one row per surface, field line
+or coil point:
 
-The cases (``COIL_CASE``; the case table is in that script's docstring), the
-design variables (coil shapes, PHIEDGE and, with ``--bootstrap``, the current
-spline values and CURTOR), the loss, the constraint rows and their bounds, and
-the run directory are that script's. The exception is ``BOOTSTRAP_IN_SOLVE``
-(Redl): then the current is solved with the boundary, Redl's on every half-grid
-surface, and neither its values nor the bootstrap-mismatch row enter the
-optimization.
+- plasma rows: |iota| >= ``IOTA_FLOOR`` (``IOTA_EDGE``: also at the edge),
+  the major radius at ``RADIUS_TARGET``, the axis |B| at ``B0``, and where the
+  case sets them the mirror ratio <= ``MIRROR_LIMIT``, |iota| <=
+  ``IOTA_CEILING``, the boundary's vacuum |iota| >= ``VACUUM_IOTA_FLOOR``,
+  PHIEDGE^2 DMerc >= ``MERCIER_FLOOR``, the ballooning eigenvalue <=
+  ``BALLOONING_LIMIT`` and the bootstrap mismatch <= ``REDL_TOLERANCE``;
+  then the coil-to-plasma clearance and the aspect band;
+- coil rows (``coil_point_rows``): coil length (and with
+  ``TOTAL_LENGTH_LIMIT`` their sum), curvature, mean squared curvature,
+  coil-coil and self distance, speed and, with ``FORCE_LIMIT``, the force per
+  unit length.
 
-The coil currents are design variables too (``FREE_COIL_CURRENTS``, no bounds),
-with a row holding the axis |B| at ``B0``, and where the case sets
-``VACUUM_IOTA_FLOOR`` a row floors the vacuum |iota| of the plasma boundary
-(``vacuum_iota``).
+Cases
+-----
+``COIL_CASE`` selects the case: ``ellipse5`` (default), ``ellipse5-beta7``,
+``qa3``, ``qh``, ``qi``, ``qa4-beta[-tok]``, ``qi6-beta[-tok]``, ``qh4-beta``
+and ``lpqa`` (the Landreman-Paul precise QA of Gil et al. 2026, coils from
+``--coils``). The constants of the "cases" block below are ellipse5's; each
+case block overrides them, and ``COIL_CASE_OVERRIDES`` (a JSON dict, e.g.
+``'{"BOOTSTRAP_IN_SOLVE": false, "IOTA_CEILING": null}'``) overrides any of
+them last. The finite-beta cases take ``--beta`` and ``--bootstrap``: the
+bootstrap current is Redl's for QA and QH and DKX's for QI. With
+``BOOTSTRAP_IN_SOLVE`` (Redl) the current is solved with every equilibrium,
+Redl-consistent on every half-grid surface; otherwise its spline values and
+CURTOR are design variables and a mismatch row holds it near Redl's.
 
-The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
-(:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`): warm-started
-trial boundaries and design gradients by the implicit function theorem of the
-boundary fit, without recompiling when the coils or plasma parameters change.
+Optimizers
+----------
+``--optimizer auglag`` is ``opt.minimize(..., method="AUGLAG")``, an augmented
+Lagrangian with a trust region; a rejected trial shrinks the region and one
+call runs ``--steps`` accepted steps. ``--optimizer slsqp`` (default) is
+SciPy's SLSQP; a rejected trial ends its call, which restarts from the last
+accepted point until ``--steps`` are accepted.
 
-    COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_terms.py --beta 0.025 --bootstrap \
-        --modes 8 8 --ns 51 --output runs/three-terms-qa4
+Outputs
+-------
+In ``--output`` (a new directory): ``input.run`` (the deck that defines the
+problem) and ``coils.initial.json``; per accepted step a ``metrics.jsonl``
+row (target residual ``qa``, iota, constraint values, coil metrics, the
+interface residuals ``bn``, ``pressure_balance`` and ``sheet_current``,
+trial counts, timings and peak GPU memory), and every ``--save-every`` steps
+``coils.stepN.json``, ``wout.stepN.nc`` and, once the free boundary has been
+re-referenced, ``input.stepN.ref`` (the deck boundary of that step); with
+AUGLAG ``auglag_state.npz`` (multipliers, penalty, trust radius, curvature)
+after every step; and at the end ``coils.json``, ``wout.nc`` (plus
+``input.ref``) and ``summary.json``.
 
-``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
-``metrics.jsonl`` adds the three interface residuals (``bn``,
-``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
-counts and the peak GPU memory.
+Restart and verification
+------------------------
+``--restart DIR`` continues a run from its ``input.run``, ``coils.json`` and
+``wout.nc``: the deck is the problem, the WOUT's PHIEDGE (and design current)
+the start of the design vector. If ``DIR/input.ref`` exists its boundary is
+the deck boundary; for an older run without one, ``--reference-from-wout``
+takes the WOUT's LCFS instead. With ``auglag_state.npz`` an AUGLAG run
+continues with its multipliers, penalty and trust region. ``--seed-run DIR``
+instead starts a new run from another run's ``input.run`` and
+``coils.initial.json``, skipping the seed's bootstrap ramp and coil fit.
+``--steps 0`` only evaluates the start: e.g.
+``--restart DIR --reference-from-wout --steps 0 --modes 16 16`` re-solves a
+run's final coils cold at higher resolution.
 
-After a run, ``benchmarks/three_terms_highres.py`` re-solves the final coils at
-another resolution and exports them, ``benchmarks/three_terms_postprocess.py``
-re-solves the final boundary densely for the WOUT figures and alpha losses, and
-``benchmarks/coil_constraints_evolution_gifs.py`` draws the coils and LCFS of
-the saved steps.
+    COIL_CASE=qi python single_stage_free_boundary_optimization_three_terms.py --modes 12 12 --vc-grid 64 \
+        --trial-forward-ftol 1e-15 --optimizer auglag --steps 200 --output runs/qi
+    COIL_CASE=qa4-beta COIL_CASE_OVERRIDES='{"BOOTSTRAP_IN_SOLVE": false}' \
+        python single_stage_free_boundary_optimization_three_terms.py --beta 0.025 --bootstrap \
+        --modes 8 8 --ns 51 --vc-grid 48 --trial-forward-ftol 1e-15 --optimizer auglag --output runs/qa4
+
+It needs ESSOS (``vmex[coils]``), virtual casing (``vmex[freeb]``), DKX
+(``vmex[kinetic]``) for the QI bootstrap, and a GPU. After a run,
+``benchmarks/three_terms_highres.py`` re-solves the final coils at another
+resolution, ``benchmarks/three_terms_postprocess.py`` re-solves the final
+boundary densely for the WOUT figures and alpha losses, and
+``benchmarks/coil_constraints_evolution_gifs.py`` draws the saved steps.
 """
 
 import argparse
@@ -172,7 +223,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     COILS_FILE = DATA / f"ESSOS_coils_{CASE.replace('-', '_') if CASE != 'qh4-beta' else 'qh'}.json"
     # (1.8, 2.5, 1.2): mid-range of Wechsung et al. (2022), Jorge et al. (2023) and Wiedman et al. (2024)
     COIL_ORDER, COIL_LIMIT_FACTORS = 12, (1.8, 2.5, 1.2)
-    COIL_FIT_MAXITER = 3000  # at 200 the qa4-beta refit left B.n/|B| ~3e-3 and the first free solve could fail
+    COIL_FIT_MAXITER = 3000  # a converged refit: a loose one leaves B.n/|B| ~3e-3, too far for the first free solve
     PICARD_ITERATIONS, PICARD_RELAX, BOOTSTRAP_BETA_STEP = 30, 0.5, 0.005
     # The total iota floor bounds the half-mesh surfaces and the edge; R0 is held to 1 mm.
     IOTA_EDGE, RADIUS_TOLERANCE, RADIUS_MARGIN = True, 1e-3, 1e-4
@@ -236,6 +287,9 @@ DISTANCE_POINTS = COIL_QUADRATURE or max(128, 16 * COIL_ORDER)   # points per co
 FORCE_POINTS = COIL_QUADRATURE or CURVATURE_POINTS               # points per coil: force rows
 SURFACE_GRID = (61, 64)                       # (nphi, ntheta) of the plasma surface in the clearance row
 SELF_CLEARANCE = 1e-6                         # m: numerical nonintersection guard
+# augmented-Lagrangian progress logged with each step (opt.minimize(method="AUGLAG")'s intermediate result)
+AUGLAG_LOG_KEYS = ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
+                   "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")
 
 
 # ---- seeds, targets and restarts -------------------------------------------------------------------------------------
@@ -731,8 +785,7 @@ class CoilChart:
     ``plasma_current_spline``, then CURTOR in A; ``ncurr = 1``) those ``k + 1`` values; the currents of the
     selected base coils in A; and every base coil's Cartesian Fourier coefficients in metres.  ``x0`` is the
     nominal state.  The nominal values live in ``x0``, not in the maps: a jitted function of the chart then holds
-    no seed-dependent constant, so its persistent compilation cache entry serves every seed (with the nominal
-    coefficients inside the maps, every new coil set recompiled the design gradient's pullback, 160-180 s).
+    no seed-dependent constant, so one persistent compilation cache entry serves every seed.
     ``scales`` are given relative to the nominal values (PHIEDGE, the selected currents), in units of the largest
     nominal shape value and of ``abs(CURTOR)`` (the current profile) and in metres (the coils); ``self.scales``
     are those in ``x``'s units.  Calling the chart gives the :class:`DirectCoilField` of ``coils_from_x(x)``;
@@ -1105,8 +1158,8 @@ def seed_interface(wout, nphi=37, ntheta=32):
     """The refit's plasma-vacuum interface of ``wout`` (``nphi x ntheta`` points), its virtual casing on the CPU.
 
     On the GPU the virtual-casing field ``B_plasma`` differs between two evaluations of one program in one process
-    by ~1e-14 relative (virtual_casing_jax's polar-patch scatter-adds run as GPU atomics, in no fixed order); L-BFGS-B
-    amplifies that into different coils (seen: step-0 QS 0.11798 vs 0.11697 from one Picard result).  XLA:CPU
+    by ~1e-14 relative (virtual_casing_jax's polar-patch scatter-adds run as GPU atomics, in no fixed order), and
+    L-BFGS-B amplifies that into visibly different coils (a step-0 QS differing in the third digit).  XLA:CPU
     computes it bit-identically, and the rest of the refit is bit-identical on either device; the interface's
     arrays are moved back to the default device.
     """
@@ -1164,7 +1217,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 
 
 def main(argv=None):
-    """Build the seed, the coils and the three-terms problem, then run SLSQP and save the run."""
+    """Build the seed, the coils and the three-terms problem, run the optimizer and save the run."""
     global RESOLUTION
     args = parse_args(argv)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
@@ -1358,7 +1411,7 @@ def main(argv=None):
         stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
         redl_row = stability_row + n_mercier + n_ballooning
         coils_m = {key: np.asarray(value) for key, value in coil_metrics_at(jnp.asarray(x)).items()}
-        # "qa" holds the target residual of every case (QA, QH or QI), kept for compatibility
+        # "qa" is the target residual of every case (QA, QH or QI): the postprocessing scripts read that key
         row = dict(step=problem.accepted_step, qa=2 * problem.fun(x), min_abs_iota=float(h[:n_iota].min()),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
@@ -1380,15 +1433,14 @@ def main(argv=None):
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        if intermediate_result is not None:  # the run's own state, so that --restart continues this very run
+        if intermediate_result is not None:
+            # the augmented Lagrangian's state, saved atomically so that --restart continues this very run
             state = dict(intermediate_result["state"])
             state["row_B"] = np.asarray(state["row_B"]).reshape(len(state["row_keys"]), *np.shape(x) * 2)
             np.savez(out / "auglag_state.tmp.npz", **state)
             os.replace(out / "auglag_state.tmp.npz", out / "auglag_state.npz")
-        if intermediate_result is not None:  # augmented Lagrangian state (the max violation is in scaled row units)
-            row.update({key: float(intermediate_result[key]) for key in
-                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
-                         "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
+            # its progress (the max violation is in scaled row units)
+            row.update({key: float(intermediate_result[key]) for key in AUGLAG_LOG_KEYS})
         last.update(time=now)
         timers.update(dict.fromkeys(timers, 0.0))
         with open(out / "metrics.jsonl", "a") as stream:
@@ -1417,25 +1469,25 @@ def main(argv=None):
     log_step()
     if args.steps == 0:  # an evaluation (e.g. --restart: a cold re-solve of saved coils), no optimizer
         return
-    # a restart of an augmented-Lagrangian run continues it (multipliers, penalty, radius, curvature, counters)
-    state_file = None if args.restart is None else args.restart / "auglag_state.npz"
-    resume = ({"resume": dict(np.load(state_file))} if args.optimizer == "auglag" and state_file is not None
-              and state_file.exists() else {})
-    if resume:
-        print(f"[auglag] continuing the run of {state_file}: penalty {float(resume['resume']['penalty']):g}, "
-              f"radius {float(resume['resume']['trust_radius']):.3g}", flush=True)
     if args.optimizer == "auglag":  # rejected trials shrink its trust region; one call runs to the step budget
+        # a restart of an augmented-Lagrangian run continues it (multipliers, penalty, radius, curvature, counters)
+        state_file = None if args.restart is None else args.restart / "auglag_state.npz"
+        resume = {"resume": dict(np.load(state_file))} if state_file is not None and state_file.exists() else {}
+        if resume:
+            print(f"[auglag] continuing the run of {state_file}: penalty {float(resume['resume']['penalty']):g}, "
+                  f"radius {float(resume['resume']['trust_radius']):.3g}", flush=True)
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
                               options=dict(maxiter=args.steps, **resume))
-    while args.optimizer == "slsqp":  # a rejected trial ends an SLSQP call; restart it from the accepted point
-        before = problem.accepted_step
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                              callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
-        if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
-                or problem.accepted_step >= args.steps):
-            break
+    else:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+        while True:
+            before = problem.accepted_step
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                                  callback=lambda x: log_step(),
+                                  options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+            if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
+                    or problem.accepted_step >= args.steps):
+                break
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=result.stop_reason,

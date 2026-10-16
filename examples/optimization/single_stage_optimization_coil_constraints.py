@@ -7,7 +7,8 @@ script's docstring), limits and seeds. The design variables are the boundary
 modes up to ``MAX_MODE`` (RBC(0,0) fixed), the coil currents (``FREE_COIL_CURRENTS``,
 no bounds) and shapes and, at ``--beta`` > 0 with ``FREE_PHIEDGE``, PHIEDGE; with ``--bootstrap`` also
 the current spline values and CURTOR. Every trial solves the fixed-boundary
-equilibrium, and SLSQP minimizes
+equilibrium, and the optimizer (``--optimizer``: SLSQP, default, or the
+augmented Lagrangian ``opt.minimize(method="AUGLAG")``) minimizes
 
     J = (1/2) |r|^2 + (1/2) NORMAL_FIELD_WEIGHT rms(B.n/|B|)^2
 
@@ -53,7 +54,7 @@ It needs ESSOS (``pip install "vmex[coils]"``), virtual casing for ``--beta``
     COIL_CASE=qi python single_stage_optimization_coil_constraints.py --steps 5 --output runs/fixed-qi
 
 Outputs in ``--output``: ``input.run``, ``coils.initial.json``, one
-``metrics.jsonl`` line per SLSQP iteration, ``coils.stepN.json`` /
+``metrics.jsonl`` line per accepted step (with AUGLAG its progress), ``coils.stepN.json`` /
 ``wout.stepN.nc`` every ``--save-every`` iterations, and the final
 ``coils.json``, ``wout.nc`` and ``summary.json`` (with the endpoint
 diagnostics). Continue a run with ``--restart <run>``, or with ``--coils`` and
@@ -217,6 +218,9 @@ ESS_ALPHA = 1.2
 BOUNDARY_STEP = 0.1 if SEED is None else 0.02
 NORMAL_FIELD_WEIGHT = 1.0e3
 OPTIMIZER_FTOL = 1e-10
+# augmented-Lagrangian progress logged with each step (opt.minimize(method="AUGLAG")'s intermediate result)
+AUGLAG_LOG_KEYS = ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
+                   "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")
 VC_DIGITS = 4                      # significant digits of the virtual-casing plasma field
 NPHI, NTHETA = 37, 32              # toroidal x poloidal points of the B.n and clearance surfaces
 VC_GRID_BOOTSTRAP = 48             # BOOTSTRAP_IN_SOLVE: the three-terms arm's virtual-casing grid
@@ -1140,9 +1144,7 @@ def run_bootstrap_in_solve(args, inp, coils0, out, started):
                    step_seconds=now - last["time"], elapsed_seconds=now - started,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if info is not None:
-            row.update({key: float(info[key]) for key in
-                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
-                         "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
+            row.update({key: float(info[key]) for key in AUGLAG_LOG_KEYS})
         for k in counters:
             counters[k] = 0
         with open(out / "metrics.jsonl", "a") as stream:
@@ -1525,9 +1527,7 @@ def main(argv=None):
                    beta=float(opt.volume_average_beta(state, ctx)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started)
         if info is not None:
-            row.update({key: float(info[key]) for key in
-                        ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
-                         "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
+            row.update({key: float(info[key]) for key in AUGLAG_LOG_KEYS})
         if args.beta > 0:
             row.update(total_normal_field_rms=float(total_normal_field_rms(coils, state, ctx)),
                        rbtor_ratio=float(rbtor_ratio(state, ctx, coils)))

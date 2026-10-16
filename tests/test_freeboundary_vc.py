@@ -998,3 +998,32 @@ def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
     s = np.linalg.svd(M, compute_uv=False)
     assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
     np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol
+
+
+def test_a_plasma_below_the_fields_round_off_is_vacuum():
+    """A current or pressure whose field is below the round-off of the deck's toroidal field cannot change B in
+    double precision, so it is no plasma: a WOUT restart's CURTOR 1.86e-12 A (G2, LP QA 12 x 12) selected the
+    finite-beta formulation (221 instead of 313 boundary coordinates, QS 3.19e-7 instead of 5.07e-7)."""
+    lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 11), curtor=0.0, pres_scale=0.0)
+    assert fvc._plasma_below_roundoff(lp)
+    assert fvc._plasma_below_roundoff(replace(lp, curtor=1.8634724839594607e-12))
+    assert fvc._plasma_below_roundoff(replace(lp, curtor=-1.8634724839594607e-12))
+    assert not fvc._plasma_below_roundoff(replace(lp, curtor=1e-3))  # a milliampere is a plasma current
+    p = replace(lp, pres_scale=1.0, am=np.r_[1.0, -1.0, np.zeros(19)])  # 1 Pa on the axis: a plasma pressure
+    assert fvc._edge_pressure(p)[1] > 0.0 and not fvc._plasma_below_roundoff(p)
+    tiny = replace(p, pres_scale=1e-40)
+    assert fvc._edge_pressure(tiny)[1] > 0.0 and fvc._plasma_below_roundoff(tiny)
+    assert not fvc._plasma_below_roundoff(replace(lp, zbs=np.zeros_like(lp.zbs)))  # no cross section: no field scale
+
+
+@pytest.mark.full
+def test_round_off_current_keeps_the_vacuum_formulation():
+    """CURTOR 0 and a round-off CURTOR give the same model: the vacuum rows and the same boundary unknowns."""
+    lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 11), phiedge=-0.025, curtor=0.0,
+                 am=np.zeros(21), pres_scale=0.0)
+    zero = fvc.ThreeTermsFreeBoundaryModel(lp)
+    roundoff = fvc.ThreeTermsFreeBoundaryModel(replace(lp, curtor=1.8634724839594607e-12))
+    assert zero.vacuum and roundoff.vacuum
+    assert (zero.max_mode, zero.n_boundary, zero.boundary_modes) == (
+        roundoff.max_mode, roundoff.n_boundary, roundoff.boundary_modes)
+    assert not fvc.ThreeTermsFreeBoundaryModel(replace(lp, curtor=1e3)).vacuum

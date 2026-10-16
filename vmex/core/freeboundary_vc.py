@@ -89,6 +89,7 @@ from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
 from .loops import map_columns
 from .problem import FunctionProblem
+from .profiles import MU0
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,26 @@ def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
     p = np.asarray(pressure(inp.pmass_type, inp.am, inp.am_aux_s, inp.am_aux_f, np.linspace(0.0, 1.0, 101),
                             pres_scale=inp.pres_scale, bloat=inp.bloat, spres_ped=inp.spres_ped))
     return float(p[-1]), float(np.max(np.abs(p)))
+
+
+def _plasma_below_roundoff(inp: VmecInput) -> bool:
+    """Whether the plasma terms of ``inp`` (its total current ``CURTOR`` and its peak pressure) are below the
+    round-off of its magnetic field, so that they cannot change ``B`` in double precision.
+
+    The field's scale is the deck's toroidal field ``B_t = |PHIEDGE| / A`` (``A`` the area of the boundary's
+    ``phi = 0`` cross section, minor radius ``a = sqrt(A / pi)``); the current's field at the edge is
+    ``mu0 |I| / (2 pi a)`` and the pressure's is ``sqrt(2 mu0 p)``.  Each must be at most ``eps B_t``, machine
+    epsilon: below that adding it to ``B_t`` leaves ``B_t`` unchanged, so it is zero for the solver.
+    """
+    rbc, zbs = np.asarray(inp.rbc, dtype=float), np.asarray(inp.zbs, dtype=float)
+    m = np.arange(rbc.shape[1])
+    area = abs(np.pi * np.sum(m * rbc.sum(axis=0) * zbs.sum(axis=0)))  # |closed integral of R dZ| at phi = 0
+    if not area > 0.0:
+        return False
+    B_t, eps = abs(float(inp.phiedge)) / area, float(np.finfo(float).eps)
+    B_current = MU0 * abs(float(inp.curtor)) / (2.0 * np.pi * np.sqrt(area / np.pi))
+    B_pressure = np.sqrt(2.0 * MU0 * _edge_pressure(inp)[1])
+    return bool(B_current <= eps * B_t and B_pressure <= eps * B_t)
 
 
 def _axis_loop(wout):
@@ -650,9 +671,10 @@ class ThreeTermsFreeBoundaryModel:
         self.fixed_boundary = bool(fixed_boundary)
         self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 
-        # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
-        _, p_peak = _edge_pressure(fixed)
-        self.vacuum = (bootstrap is None and p_peak == 0.0 and int(fixed.ncurr) == 1 and float(fixed.curtor) == 0.0
+        # Vacuum: no pressure and no plasma current that the field can feel, so B_out is the coil field alone (no
+        # virtual casing).  A current or pressure below the field's round-off (a WOUT restart's CURTOR 1e-12 A) is
+        # no plasma: it cannot change B in double precision, so it must not select the finite-beta formulation.
+        self.vacuum = (bootstrap is None and int(fixed.ncurr) == 1 and _plasma_below_roundoff(fixed)
                        and (fixed.ac is None or not np.any(np.asarray(fixed.ac, dtype=float))))
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")

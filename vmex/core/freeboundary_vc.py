@@ -722,11 +722,11 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     ``x0``'s surface, then the band is extended one mode at a time
     (:meth:`~ThreeTermsFreeBoundaryModel.with_band`), each band's Newton solve starting from the previous band's
     boundary (:meth:`~ThreeTermsFreeBoundaryModel.displacement_of`) and bootstrap current, up to ``model``'s band.
-    Newton on ``model``'s band and on each extended band ends at its first fresh-Jacobian step that has to be
-    shortened (``undamped``): from a point in the rows' Newton basin the full steps converge, so a shortened step
-    means the point is outside it -- a far start, or no root near (a minimum of ``|rows|^2`` that is no root),
-    which then costs one Jacobian and its backtracking instead of a crawl.  Band 1, the start of the
-    continuation, takes damped steps.
+    Newton on ``model``'s band and on each extended band ends when two fresh-Jacobian steps in a row have to be
+    shortened (``undamped``): from a point in the rows' Newton basin a refreshed Jacobian restores full steps, so
+    a second shortened one means the point is outside it -- a far start, or no root near (a minimum of
+    ``|rows|^2`` that is no root), which then costs two Jacobians and their backtracking instead of a crawl.
+    Band 1, the start of the continuation, takes damped steps.
     QA in vacuum, 12 x 12, from starts 2 cm and 4 cm from the answer: Newton on band 12 stalls, every band from 1
     to 12 converges from the previous one in full Newton steps (6-7 min in all), to the deck start's answer within
     4e-12 m.  A band that does not converge so ends the solve as a stall: ``converged=False``, with the last band

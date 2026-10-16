@@ -955,7 +955,7 @@ class ThreeTermsFreeBoundaryModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch):
+        def tangents(params, state, mask, batch, column_scales=None):
             """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
 
             Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
@@ -964,10 +964,12 @@ class ThreeTermsFreeBoundaryModel:
             column of the Jacobian.  The columns are certified to the adjoint tolerance (``adjoint_tol``), not the
             looser one for least-squares Jacobians: they are the boundary Jacobian of a square Newton solve and
             the implicit-function-theorem design gradients, which must be exact.  The block-direct responses
-            usually meet it outright (the raw block system is the exact radial linearization)."""
+            usually meet it outright (the raw block system is the exact radial linearization).  ``column_scales``:
+            the columns' units, in which they are certified against the largest right-hand side
+            (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`)."""
             return _certified(*im.staged_tangent_multi_rhs(
                 params, cfg, state, mask, batch, chunk=self.chunk,
-                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter))
+                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter, column_scales=column_scales))
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
@@ -1160,7 +1162,7 @@ class ThreeTermsFreeBoundaryModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
-    def linearize(self, x, aux, field, extra=None):
+    def linearize(self, x, aux, field, extra=None, extra_scale=None):
         """Columns of the rows along the model coordinates and the ``extra`` parameter tangents.
 
         The model coordinates are the boundary, then the bootstrap current.  A trial state is first solved to
@@ -1203,7 +1205,12 @@ class ThreeTermsFreeBoundaryModel:
             self._warm.join()
             self._warm = None
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        # every column in the units the Newton solve and the design use (x_scale; extra_scale for the extra
+        # directions): the tangent certificate then holds them to one absolute accuracy in those units
+        n_extra = 0 if extra is None else jax.tree.leaves(extra)[0].shape[0]
+        units = np.r_[np.asarray(self.x_scale, dtype=float),
+                      np.ones(n_extra) if extra_scale is None else np.asarray(extra_scale, dtype=float)]
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), units)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
@@ -1589,7 +1596,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
-                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra,
+                                               extra_scale=None if extra is None else self.scales[self._plasma])
             except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
                 raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux

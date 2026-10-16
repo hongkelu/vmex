@@ -4146,11 +4146,15 @@ def _least_squares_implicit(
             state = jax.device_put(state, home)
         result = dataclasses.replace(hit[1], state=state)
         ns = int(np.shape(result.state.R_cos)[0])
-        runtime = prepare_runtime(
-            result_input,
-            resolution_from_input(result_input, ns=ns),
-        )
-        _, residuals, _ = evaluate_forces(result.state, runtime)
+        # The refined state lives on the problem's device (cfg.device, the CPU by default for this launch-bound
+        # path); the runtime of its force evaluation must be built there too, not on JAX's default device (a GPU
+        # when one is present), or the evaluation mixes devices.
+        with imp._device_context(cfg):
+            runtime = prepare_runtime(
+                result_input,
+                resolution_from_input(result_input, ns=ns),
+            )
+            _, residuals, _ = evaluate_forces(result.state, runtime)
         result = dataclasses.replace(
             result, fsqr=float(residuals.fsqr), fsqz=float(residuals.fsqz),
             fsql=float(residuals.fsql))

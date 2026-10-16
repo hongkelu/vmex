@@ -542,12 +542,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     so = dict(J=J, r=r_lin, g=J[:, :x.size].T @ r_lin, aux=aux, asymmetry=np.nan, adjoint=np.nan,
                               g_adjoint=J[:, :x.size].T @ r_lin, seconds={})
                     H_full = None
-                r, aux = so["r"], so["aux"]
+                # the derivatives come from the linearization's refined state; the cost compared with trials stays
+                # the evaluated one (same solver path as the trials: the refined state's rows differ by the
+                # equilibria's noise, 1e-3 of the cost at 8x8 with the Redl rows, which no trial could beat)
+                aux = so["aux"]
                 Js = so["J"][:k, :x.size] * S[None]
                 GN = Js.T @ Js
                 if H_full is None:
                     H_full = GN
-                gs_f = S * (so["g_f"] if "g_f" in so else so["J"][:k, :x.size].T @ r[:k])
+                gs_f = S * (so["g_f"] if "g_f" in so else so["J"][:k, :x.size].T @ so["r"][:k])
                 model, need = ("exact" if need == "exact" else "gauss_newton"), None
             else:  # quasi-Newton: BFGS updates of the last model with the exact (adjoint) gradient
                 shift = None if not m else np.r_[np.zeros(k), -r[k:]]  # the interface cost's gradient

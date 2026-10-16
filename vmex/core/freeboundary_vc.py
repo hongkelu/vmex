@@ -579,9 +579,17 @@ def solve_free_boundary_three_terms(
     bootstrap=None,
     bootstrap_helicity: int | None = None,
     previous=None,
+    method: str = "galerkin",
     verbose: int = 0,
 ):
     """Free-boundary equilibrium of ``inp`` (the interface conditions of the module docstring).
+
+    ``method`` chooses the formulation: ``"galerkin"`` (default; described below: the square system on the
+    deck's normal displacement, with the deck as the labelling reference) or ``"least_squares"``
+    (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`: the boundary coefficients with the
+    deck's labelling, the area-weighted least squares of the conditions on the grid, exact second derivatives,
+    the bootstrap current's rows as equality constraints).  Galerkin is the faster.  Both take the keywords
+    below and return the same result.
 
     ``inp`` is a free-boundary deck (``PHIEDGE``, profiles, and the external
     field through ``external_field``, ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``).
@@ -631,6 +639,16 @@ def solve_free_boundary_three_terms(
     from .implicit import input_with_params
     from .optimize import solve_equilibrium
 
+    if method == "least_squares":
+        from .freeboundary_lsq import solve_free_boundary_least_squares
+
+        return solve_free_boundary_least_squares(
+            inp, external_field=external_field, mgrid_path=mgrid_path, initial_boundary=initial_boundary,
+            max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, max_nfev=max_nfev, quadrature=quadrature,
+            trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
+            previous=previous, verbose=verbose)
+    if method != "galerkin":
+        raise ValueError(f"method must be 'galerkin' or 'least_squares', got {method!r}")
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
     _check_edge_pressure(inp)

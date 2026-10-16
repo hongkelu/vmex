@@ -7,6 +7,9 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (hongkelu/vmex)
 
+- `solve_free_boundary_three_terms(method="least_squares")` (`vmex.core.freeboundary_lsq`): least squares of the jump
+  `(B_out - B_in) / B0` on Galerkin's deck-normal unknowns, `G = G_coil` and the bootstrap rows as equality
+  constraints, exact Hessian (second-order adjoint) and exact design gradients; start-independent, FD-checked.
 - `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
   (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.
@@ -194,7 +197,3 @@ evaluation carries counters, and the CLI reads DESC inputs. It does not close co
 s against VMEC++'s 3.35 s in the independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
 
 PRs and full notes: the GitHub release (#300-#344, 36 merged since 0.8.1).
-
-## 0.8.1 - 2026-09-02
-
-The cold-start performance release (#227-#234). Full notes in the release.

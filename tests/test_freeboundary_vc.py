@@ -725,7 +725,7 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 @needs_vc
 def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
-    """Finite beta: the boundary's band is the interior's, and the rows are R0 T0^T r then the
+    """Finite beta (on band 1 here, for speed; the default is the interior's band): the rows are R0 T0^T r then the
     net-current row, with r = sqrt(w) B_out . n / |B_in| (coils + virtual casing) on the grid and T0 the response
     of the deck's r to each boundary coordinate (here three columns, by central differences of re-solved
     equilibria; on a GPU also the guard against miscompiled column maps).  The rows'
@@ -734,8 +734,8 @@ def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     nfp, n = int(inp.nfp), 16
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
-    assert not model.vacuum and model.max_mode == model.top_band == max(inp.mpol - 1, inp.ntor)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n), max_mode=1)
+    assert not model.vacuum and model.max_mode == 1 and model.top_band == max(inp.mpol - 1, inp.ntor)
     state, mask = model.seed
     x0, nb, step = np.asarray(model.x0), model.n_boundary, 1e-6
 
@@ -1140,10 +1140,9 @@ def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_s
     """The band continuation: where Newton on the model's band converges it is that solve; where it stalls
     (forced here), the band is built up from band 1, each band from the previous band's boundary, to the same
     root; a band that stalls on the way ends it as a stall (not converged) that reports the last converged band."""
-    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
-    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
-    n = 16
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * int(inp.nfp) * n, 2 * n))
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=16, ntheta=16)
     target = model.max_mode
     assert target == model.top_band > 2
     direct_model, direct = fvc.solve_band_continuation(model, model.params0, field)

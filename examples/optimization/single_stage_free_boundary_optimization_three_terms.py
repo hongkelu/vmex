@@ -320,7 +320,8 @@ def redl_surfaces():
 
 
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch (None
+    for a field that is not quasisymmetric, ``REDL_HELICITY`` None: Redl does not apply there; QI uses DKX)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
     r0 = float(inp.rbc[inp.ntor, 0])
@@ -330,6 +331,8 @@ def redl_profiles(inp):
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
     profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
                                t0 * np.array([1.0, -1.0]))
+    if REDL_HELICITY is None:
+        return profiles, None
     return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
@@ -394,12 +397,17 @@ def bootstrap_input(inp, beta, device):
         betas = []
         picard = picard_at(inp, PICARD_ITERATIONS)
         profiles, redl = redl_profiles(inp)
-        inp = picard.input
+        inp, equilibrium = picard.input, picard.equilibrium
+    if BOOTSTRAP_MODEL == "dkx":  # Redl does not apply (no quasisymmetry): DKX's Picard loop sets the current below
+        for stage_beta in betas:  # at the deck's zero CURTOR
+            inp, equilibrium = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
+        profiles, redl = redl_profiles(inp)
+        betas = []
     for stage, stage_beta in enumerate(betas, 1):
         inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
-        inp = picard.input
+        inp, equilibrium = picard.input, picard.equilibrium
         if stages > 1:
             print(f"bootstrap ramp {stage}/{stages}: beta {stage_beta:.4f}, CURTOR = "
                   f"{float(inp.curtor):.1f} A, Picard {picard.iterations} iterations (converged {picard.converged})",
@@ -414,15 +422,15 @@ def bootstrap_input(inp, beta, device):
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
         inp = model.bootstrap.deck_with(model.fixed, current["x"])
     elif BOOTSTRAP_MODEL == "dkx":
-        inp = dkx_current(inp, picard.equilibrium, device)
+        inp = dkx_current(inp, equilibrium, device)
     else:
         inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
-    fixed = opt.solve_equilibrium(inp, initial_state=picard.equilibrium.state, device=device,
+    fixed = opt.solve_equilibrium(inp, initial_state=equilibrium.state, device=device,
                                   raise_on_max_iterations=True, polish_force_balance=False)
     w, state, runtime = fixed.wout, fixed.state, fixed.runtime
-    print(f"Redl seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, Picard {picard.iterations} iterations "
-          f"(converged {picard.converged}), CURTOR = {float(inp.curtor):.1f} A, mismatch = "
-          f"{float(redl.total(w)):.3e}; <beta> = {float(w.betatotal):.4%}, iota = "
+    print(f"{BOOTSTRAP_MODEL} seed: n0 = {n0:.4e} 1/m^3, T0 = {t0:.1f} eV, CURTOR = {float(inp.curtor):.1f} A"
+          + (f", Redl mismatch = {float(redl.total(w)):.3e}" if redl is not None else "")
+          + f"; <beta> = {float(w.betatotal):.4%}, iota = "
           f"{float(min_abs_iota(state, runtime)):.4f}..{float(max_abs_iota(state, runtime)):.4f}"
           f", edge R B_phi = {abs(float(w.rbtor)):.5f} T m")
     return inp, fixed, redl
@@ -1161,6 +1169,7 @@ def main(argv=None):
     current_in_solve = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if current_in_solve else None
     redl = None if current_in_solve else redl
+    mismatch_row = args.bootstrap and not current_in_solve  # Redl's or DKX's mismatch, held by the optimizer
     if args.max_iterations:  # again: a seed-run or restart deck replaced inp
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
@@ -1231,7 +1240,7 @@ def main(argv=None):
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
-                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else [])),
+                    *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
         parameter_quantities=(clearance, aspect), boundary_condition="three_terms",
         three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
@@ -1251,7 +1260,7 @@ def main(argv=None):
     ballooning_unit = float(np.max(np.abs(ballooning(state0, runtime0)))) if n_ballooning else 1.0
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = int(redl is not None)
+    nredl = int(mismatch_row)
     lower, upper, row_scales = zip(
         *[(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR)] * n_iota,
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),

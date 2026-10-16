@@ -472,7 +472,7 @@ def lasym_eq():
     fixture's contract; carrying ``bmns``/``gmns`` is.
     """
     equilibrium = opt.solve_equilibrium(
-        VmecInput.from_file(DATA_DIR / "input.up_down_asymmetric_tokamak"))
+        VmecInput.from_file(DATA_DIR / "input.up_down_asymmetric_tokamak"), raise_on_max_iterations=False)
     assert bool(equilibrium.wout.lasym)
     return equilibrium
 

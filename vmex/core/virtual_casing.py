@@ -50,8 +50,10 @@ remains available without it; virtual-casing solver paths raise a clear error.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import operator
+import threading
 from typing import Any
 
 import numpy as np
@@ -764,11 +766,98 @@ def plasma_field_on_boundary(
         kwargs["quad_np"] = int(quad_np)
     if precision is not None:
         kwargs["precision"] = precision
-    if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
-        return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
-    if hasattr(field, "B_plasma_on_surface"):
-        return field.B_plasma_on_surface(**kwargs)
-    return field._vc.compute_internal_B(field.B_total, **kwargs)
+    with _checkpointed_far_field():
+        if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
+            return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
+        if hasattr(field, "B_plasma_on_surface"):
+            return field.B_plasma_on_surface(**kwargs)
+        return field._vc.compute_internal_B(field.B_total, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Far-field quadrature whose reverse pass keeps no source-target kernel
+# ---------------------------------------------------------------------------
+
+def _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size):
+    """Sources ``(nsrc, 3)`` padded to source chunks, targets ``(ntrg, 3)`` padded to target chunks."""
+    from virtual_casing_jax import integrals
+
+    Xs, Xt = integrals._flatten_soa(X_src, "X_src").T, integrals._flatten_soa(X_trg, "X_trg").T
+    chunk = int(chunk_size) if chunk_size is not None and int(chunk_size) > 0 else Xs.shape[0]
+    block = (int(target_chunk_size) if target_chunk_size is not None and int(target_chunk_size) > 0
+             else GRADED_TARGET_BATCH)
+    Xs, pad = integrals._pad_to_multiple(Xs, 0, chunk)
+    return Xs, pad, chunk, integrals._pad_to_multiple(Xt, 0, block)[0], block, Xt.shape[0]
+
+
+def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
+    """``sum_sources kernel(Xt - Xs, ...)`` per target: a loop over target blocks (:func:`~vmex.core.loops.map_columns`,
+    two blocks a step), each checkpointed, of a scan
+    over source chunks, each checkpointed.  The reverse pass keeps one block's inputs, not the dense source-target
+    kernel (``nsrc x ntrg x 3`` doubles per intermediate: 22 GiB for the interface rows' pullback at 8 x 8 VC48,
+    LP QA; past 40 GB for a QH or QI deck).  Per target the sum runs in the package's order (each source chunk
+    summed, then accumulated), so the values are the package's."""
+
+    @jax.checkpoint
+    def target_block(targets, sources):
+        def chunk(total, part):
+            return total + jnp.sum(kernel(targets[:, None, :] - part[0][None], *part[1:]), axis=1), None
+
+        return jax.lax.scan(jax.checkpoint(chunk), jnp.zeros((targets.shape[0],) + width, targets.dtype), sources)[0]
+
+    out = map_columns(lambda targets: target_block(targets, sources), Xt.reshape((-1, block, 3)))
+    return out.reshape((-1,) + width)[:ntrg]
+
+
+def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` (gradient of the single layer, direct quadrature) with
+    :func:`_far_field_sum`'s memory: ``(3, ntrg)``."""
+    from virtual_casing_jax import integrals
+
+    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
+    Xs, pad, chunk, Xt, block, ntrg = _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size)
+    weights = jnp.pad(weights, (0, pad))
+    sources = (Xs.reshape((-1, chunk, 3)), weights.reshape((-1, chunk)))
+    return _far_field_sum(lambda dx, w: integrals.laplace_fxd_u(dx, w[None]), Xt, block, ntrg, sources, (3,)).T
+
+
+def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+    """``virtual_casing_jax.integrals.laplace_dx_u_eval`` (double layer, direct quadrature) with
+    :func:`_far_field_sum`'s memory: ``(1, ntrg)``."""
+    from virtual_casing_jax import integrals
+
+    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
+    Xs, pad, chunk, Xt, block, ntrg = _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size)
+    normals = jnp.pad(integrals._flatten_soa(n_src, "n_src").T, ((0, pad), (0, 0)))
+    weights = jnp.pad(weights, (0, pad))
+    sources = (Xs.reshape((-1, chunk, 3)), normals.reshape((-1, chunk, 3)), weights.reshape((-1, chunk)))
+    return _far_field_sum(lambda dx, n, w: integrals.laplace_dx_u(dx, n[None], w[None]), Xt, block, ntrg,
+                          sources, ())[None]
+
+
+_FAR_FIELD_LOCK = threading.RLock()
+_FAR_FIELD_USERS = [0, None]  # active contexts, the package's own functions while replaced
+
+
+@contextlib.contextmanager
+def _checkpointed_far_field():
+    """While VMEX traces a virtual-casing evaluation, the package's direct far-field quadratures are
+    :func:`_laplace_fxd_u_eval` / :func:`_laplace_dx_u_eval`: the same sums, with a reverse pass that keeps no
+    source-target kernel.  Reference-counted (programs are traced from several threads); restored on exit."""
+    from virtual_casing_jax import integrals
+
+    with _FAR_FIELD_LOCK:
+        if _FAR_FIELD_USERS[0] == 0:
+            _FAR_FIELD_USERS[1] = (integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval)
+            integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval = _laplace_fxd_u_eval, _laplace_dx_u_eval
+        _FAR_FIELD_USERS[0] += 1
+    try:
+        yield
+    finally:
+        with _FAR_FIELD_LOCK:
+            _FAR_FIELD_USERS[0] -= 1
+            if _FAR_FIELD_USERS[0] == 0:
+                integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval = _FAR_FIELD_USERS[1]
 
 
 _REMAT = [False]  # set by remat_scans while second-order programs are traced

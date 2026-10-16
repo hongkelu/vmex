@@ -122,6 +122,9 @@ def test_nonzero_edge_pressure_is_rejected():
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
     with pytest.raises(ValueError, match="edge pressure"):
         fvc.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
+    # the model too (and so the single-stage problem built on it): its rows have no sheet current either
+    with pytest.raises(ValueError, match="edge pressure"):
+        fvc.ThreeTermsFreeBoundaryModel(inp)
 
 
 def test_asymmetric_boundary_is_rejected():
@@ -998,3 +1001,140 @@ def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
     s = np.linalg.svd(M, compute_uv=False)
     assert s[-1] > 1e-6 * s[0]  # an independent direction per unknown
     np.testing.assert_allclose(M[:, :M0.shape[1] - 1], M0[:, :-1], atol=1e-7 * np.abs(M0).max())  # each map to its grid's rtol
+
+
+def test_a_plasma_below_the_fields_round_off_is_vacuum():
+    """A current or pressure whose field is below the round-off of the deck's toroidal field cannot change B in
+    double precision, so it is no plasma: a WOUT restart's CURTOR 1.86e-12 A (G2, LP QA 12 x 12) selected the
+    finite-beta formulation (221 instead of 313 boundary coordinates, QS 3.19e-7 instead of 5.07e-7)."""
+    lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 11), curtor=0.0, pres_scale=0.0)
+    assert fvc._plasma_below_roundoff(lp)
+    assert fvc._plasma_below_roundoff(replace(lp, curtor=1.8634724839594607e-12))
+    assert fvc._plasma_below_roundoff(replace(lp, curtor=-1.8634724839594607e-12))
+    assert not fvc._plasma_below_roundoff(replace(lp, curtor=1e-3))  # a milliampere is a plasma current
+    p = replace(lp, pres_scale=1.0, am=np.r_[1.0, -1.0, np.zeros(19)])  # 1 Pa on the axis: a plasma pressure
+    assert fvc._edge_pressure(p)[1] > 0.0 and not fvc._plasma_below_roundoff(p)
+    tiny = replace(p, pres_scale=1e-40)
+    assert fvc._edge_pressure(tiny)[1] > 0.0 and fvc._plasma_below_roundoff(tiny)
+    assert not fvc._plasma_below_roundoff(replace(lp, zbs=np.zeros_like(lp.zbs)))  # no cross section: no field scale
+
+
+@pytest.mark.full
+def test_round_off_current_keeps_the_vacuum_formulation():
+    """CURTOR 0 and a round-off CURTOR give the same model: the vacuum rows and the same boundary unknowns."""
+    lp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 11), phiedge=-0.025, curtor=0.0,
+                 am=np.zeros(21), pres_scale=0.0)
+    zero = fvc.ThreeTermsFreeBoundaryModel(lp)
+    roundoff = fvc.ThreeTermsFreeBoundaryModel(replace(lp, curtor=1.8634724839594607e-12))
+    assert zero.vacuum and roundoff.vacuum
+    assert (zero.max_mode, zero.n_boundary, zero.boundary_modes) == (
+        roundoff.max_mode, roundoff.n_boundary, roundoff.boundary_modes)
+    assert not fvc.ThreeTermsFreeBoundaryModel(replace(lp, curtor=1e3)).vacuum
+
+
+@needs_vc
+@pytest.mark.full  # about 6 min per draw on a CPU runner
+@pytest.mark.parametrize("seed", [0, 1])
+def test_finite_beta_design_gradients_for_random_profiles(seed):
+    """Design gradients of the finite-beta free boundary for random pressure and current profiles.
+
+    LP QA at 0.5 % beta with its fitted coils (mpol 3, ns 11, 16 x 16 grids). The pressure is
+    ``p0 (1 - s)(1 + a1 s + a2 s^2)`` (zero at the edge) and the current a power series in ``I'(s)``, with
+    coefficients drawn from ``seed``. The design moves the coil currents, PRES_SCALE, AM[1], AC[0], AC[1] and
+    CURTOR. Implicit-function gradients of the aspect ratio, iota at the edge and the major radius are compared
+    with central differences of re-solved free boundaries of the same problem. The GPU sweep behind this test
+    (8 x 8, QA/QH/QI decks, peaked, broad and edge-current profiles, the Redl current in the solve) agrees to
+    1e-4 or better at its best step, limited by the re-solves' noise.
+    """
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+    from vmex.core.implicit import iota_edge
+
+    rng = np.random.default_rng(seed)
+    deck = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
+    a1, a2 = rng.uniform(-0.5, 0.5, 2)
+    am = np.zeros_like(np.asarray(deck.am, dtype=float))
+    am[:4] = float(deck.am[0]) * np.convolve([1.0, -1.0], [1.0, a1, a2])  # p(1) = 0
+    ac = np.zeros_like(np.asarray(deck.ac, dtype=float))
+    ac[:3] = rng.uniform(-1.0, 1.0, 3) + np.array([1.5, 0.0, 0.0])  # I'(0) > 0: a monotonic enclosed current
+    deck = replace(deck, am=am, pcurr_type="power_series", ac=ac, ac_aux_s=None, ac_aux_f=None,
+                   curtor=float(deck.curtor) * rng.uniform(0.5, 1.0))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    plasma = (("pres_scale", None), ("am", 1), ("ac", 0), ("ac", 1), ("curtor", None))
+    scale = [abs(float(getattr(deck, f) if i is None else np.asarray(getattr(deck, f))[i])) for f, i in plasma]
+
+    def plasma_at(params, x):
+        changes = {}
+        for k, ((name, i), s) in enumerate(zip(plasma, scale)):
+            value = changes.get(name, getattr(params, name))
+            changes[name] = value + x[1 + k] * s if i is None else value.at[i].add(x[1 + k] * s)
+        return replace(params, **changes)
+
+    n = 1 + len(plasma)
+    problem = FreeBoundaryProblem.from_loss(
+        deck, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(n),
+        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[0])),
+        plasma_from_parameters=plasma_at, quantities=(iota_edge, opt.major_radius),
+        boundary_condition="three_terms",
+        three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80))
+    x0 = problem.x0
+    _, grad = problem.value_and_grad(x0)
+    exact = np.vstack([grad, problem.constraint_jac(x0)])
+    h = 3e-3
+    for k in range(n):
+        e = h * np.eye(n)[k]
+        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        fd = (values[0] - values[1]) / (2 * h)
+        floor = 1e-3 * np.max(np.abs(exact), axis=1)  # a component far below its row's size is not resolved
+        np.testing.assert_array_less(np.abs(exact[:, k] - fd), 2e-2 * np.maximum(np.abs(fd), floor) + 1e-12,
+                                     err_msg=f"design coordinate {k} (seed {seed})")
+
+
+def test_deck_response_cache_round_trip_and_keys(tmp_path, monkeypatch):
+    """The deck-response cache: a stored entry comes back exactly; the key changes with any input (array bytes,
+    dataclass fields, containers) and a damaged or missing entry is a miss; with the compilation cache off there
+    is no cache at all."""
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "1")
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE_DIR", str(tmp_path))
+    rng = np.random.default_rng(1)
+    value = (tuple(jnp.asarray(rng.standard_normal((3, 4))) for _ in range(4)),
+             tuple(jnp.asarray(rng.standard_normal((2, 3, 4))) for _ in range(4)))
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
+    key = fvc._digest("deck-response", inp, 48, value)
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)
+    back = fvc._deck_cache_load(key)
+    for a, b in zip(jax.tree.leaves(back), jax.tree.leaves(value)):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    bumped = np.asarray(inp.rbc).copy()
+    bumped[0, 1] += 1e-15
+    assert fvc._digest("deck-response", replace(inp, rbc=bumped), 48, value) != key
+    assert fvc._digest("deck-response", replace(inp, phiedge=inp.phiedge * (1 + 1e-15)), 48, value) != key
+    assert fvc._digest("deck-response", inp, 64, value) != key
+    assert fvc._digest("deck-response", inp, 48, value) == key and len(fvc._source_digest()) == 64
+    fvc._deck_cache_path(key).write_bytes(b"damaged")
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value[0])  # not a deck response (4 leaves): not stored
+    assert fvc._deck_cache_load(key) is None
+    calls = []
+    fresh = fvc._digest("another deck")
+    first = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    again = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    assert calls == [1] and len(jax.tree.leaves(first)) == len(jax.tree.leaves(again)) == 8
+    # every kind of input enters the key: mappings, registered pytrees, plain objects, anything else by repr
+    assert fvc._digest({"a": 1}) != fvc._digest({"a": 2}) and fvc._digest({"a": 1, "b": 2}) == fvc._digest({"b": 2, "a": 1})
+    from vmex.core.implicit import params_from_input
+    params = params_from_input(inp)
+    assert fvc._digest(params) != fvc._digest(replace(params, phiedge=params.phiedge + 1.0))
+    from types import SimpleNamespace
+    assert fvc._digest(SimpleNamespace(a=1)) != fvc._digest(SimpleNamespace(a=2))
+    assert fvc._digest(slice(1, 2)) != fvc._digest(slice(1, 3))
+
+    class Pair:  # a registered pytree that is no dataclass
+        def __init__(self, a, b):
+            self.a, self.b = a, b
+
+    jax.tree_util.register_pytree_node(Pair, lambda p: ((p.a, p.b), None), lambda _, c: Pair(*c))
+    assert fvc._digest(Pair(jnp.ones(2), 1.0)) != fvc._digest(Pair(jnp.ones(2), 2.0))
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "0")
+    assert fvc._deck_cache_path(key) is None and fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)  # no cache: a no-op

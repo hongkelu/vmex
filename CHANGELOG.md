@@ -10,18 +10,18 @@ revision it was measured at, and the pages that cite it.
 - `solve_free_boundary_three_terms(method="least_squares")` (`vmex.core.freeboundary_lsq`): least squares of the jump
   `(B_out - B_in) / B0` on Galerkin's deck-normal unknowns, `G = G_coil` and the bootstrap rows as equality
   constraints, exact Hessian (second-order adjoint) and exact design gradients; start-independent, FD-checked.
+- `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot on every half-mesh surface at any `ns`
   (was <= 97, VMEC2000's `ndatafmax`; echoes refit to 101 knots, `fit_aux_knots`), rows in the interface rows' units
   (`bootstrap_weight` removed). qa4-beta 8 x 8 cold: stall (1.7e-6) to 7 Newton evaluations; cond 1.4e7 to 5.3e4.
-- Finite-beta three-terms rows test B.n against the deck's exact response (plasma included; `model.attach`): LP QA
-  2.5 % 12 x 12 ns 101 B.n 2.8e-4 to 1.1e-4, cold solve 641 to 330 s; first-order design gradients exact.
+- Finite-beta rows test B.n against the deck's exact response: LP QA 2.5 % 12x12 B.n 2.8e-4 to 1.1e-4, 641 to 330 s.
 - `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
   (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
   4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:
   dense LU (`forward_dense_jax`) or O(ns) block factors (`structured`, 15.4->7.8 GiB at 8x8); PHIEDGE, current via
   `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)`; new `opt.axis_iota`/`axis_field_strength`/
   `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
-- Example `single_stage_free_boundary_seed.py`: rotating ellipse -> finite-beta coils -> free-boundary seed.
+- Example `single_stage_free_boundary_seed.py`: rotating ellipse -> finite-beta coils -> seed.
 
 ## 0.11.10 - 2026-10-13
 

@@ -89,6 +89,7 @@ from .errors import TrialRejected, VmecConvergenceError, VmecError
 from .input import VmecInput
 from .loops import map_columns
 from .problem import FunctionProblem
+from .profiles import MU0
 
 
 @dataclass(frozen=True)
@@ -192,6 +193,151 @@ def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
     p = np.asarray(pressure(inp.pmass_type, inp.am, inp.am_aux_s, inp.am_aux_f, np.linspace(0.0, 1.0, 101),
                             pres_scale=inp.pres_scale, bloat=inp.bloat, spres_ped=inp.spres_ped))
     return float(p[-1]), float(np.max(np.abs(p)))
+
+
+def _plasma_below_roundoff(inp: VmecInput) -> bool:
+    """Whether the plasma terms of ``inp`` (its total current ``CURTOR`` and its peak pressure) are below the
+    round-off of its magnetic field, so that they cannot change ``B`` in double precision.
+
+    The field's scale is the deck's toroidal field ``B_t = |PHIEDGE| / A`` (``A`` the area of the boundary's
+    ``phi = 0`` cross section, minor radius ``a = sqrt(A / pi)``); the current's field at the edge is
+    ``mu0 |I| / (2 pi a)`` and the pressure's is ``sqrt(2 mu0 p)``.  Each must be at most ``eps B_t``, machine
+    epsilon: below that adding it to ``B_t`` leaves ``B_t`` unchanged, so it is zero for the solver.
+    """
+    rbc, zbs = np.asarray(inp.rbc, dtype=float), np.asarray(inp.zbs, dtype=float)
+    m = np.arange(rbc.shape[1])
+    area = abs(np.pi * np.sum(m * rbc.sum(axis=0) * zbs.sum(axis=0)))  # |closed integral of R dZ| at phi = 0
+    if not area > 0.0:
+        return False
+    B_t, eps = abs(float(inp.phiedge)) / area, float(np.finfo(float).eps)
+    B_current = MU0 * abs(float(inp.curtor)) / (2.0 * np.pi * np.sqrt(area / np.pi))
+    B_pressure = np.sqrt(2.0 * MU0 * _edge_pressure(inp)[1])
+    return bool(B_current <= eps * B_t and B_pressure <= eps * B_t)
+
+
+def _check_edge_pressure(inp: VmecInput) -> None:
+    """Reject a deck whose pressure does not vanish at the boundary: without a sheet current the interface
+    conditions (module docstring) need ``p(1) = 0`` (to ``1e-8`` of the peak pressure)."""
+    p_edge, p_max = _edge_pressure(inp)
+    if abs(p_edge) > 1e-8 * p_max:
+        raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
+                         "boundary pressure must vanish")
+
+
+def _digest_into(h, obj):
+    """Feed ``obj`` to the hash ``h``: arrays by dtype, shape and bytes; containers and dataclasses by content."""
+    import dataclasses
+
+    if obj is None or isinstance(obj, (bool, int, float, complex, str, bytes)):
+        h.update(repr((type(obj).__name__, obj)).encode())
+    elif isinstance(obj, (np.ndarray, jax.Array, np.generic)):
+        a = np.ascontiguousarray(np.asarray(obj))
+        h.update(repr((a.dtype.str, a.shape)).encode())
+        h.update(a.tobytes())
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        h.update(type(obj).__qualname__.encode())
+        for f in dataclasses.fields(obj):
+            h.update(f.name.encode())
+            _digest_into(h, getattr(obj, f.name))
+    elif isinstance(obj, dict):
+        for k in sorted(obj, key=repr):
+            _digest_into(h, k)
+            _digest_into(h, obj[k])
+    elif isinstance(obj, (list, tuple)):
+        h.update(f"{type(obj).__name__}{len(obj)}".encode())
+        for item in obj:
+            _digest_into(h, item)
+    else:
+        leaves, treedef = jax.tree.flatten(obj)
+        if leaves and not (len(leaves) == 1 and leaves[0] is obj):
+            h.update(repr(treedef).encode())
+            for leaf in leaves:
+                _digest_into(h, leaf)
+        elif hasattr(obj, "__dict__"):
+            h.update(type(obj).__qualname__.encode())
+            _digest_into(h, dict(vars(obj)))
+        else:
+            h.update(repr(obj).encode())
+
+
+def _digest(*objects) -> str:
+    """A content hash of ``objects`` (:func:`_digest_into`)."""
+    h = hashlib.sha256()
+    for obj in objects:
+        _digest_into(h, obj)
+    return h.hexdigest()
+
+
+_SOURCE_DIGEST: list[str] = []
+
+
+def _source_digest() -> str:
+    """A hash of the vmex package's Python sources, so cached data never outlive the code that made them."""
+    if not _SOURCE_DIGEST:
+        import pathlib
+
+        h = hashlib.sha256()
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for path in sorted(root.rglob("*.py")):
+            h.update(str(path.relative_to(root)).encode())
+            h.update(path.read_bytes())
+        _SOURCE_DIGEST.append(h.hexdigest())
+    return _SOURCE_DIGEST[0]
+
+
+def _deck_cache_path(key: str):
+    """``<persistent compilation cache>/deck_response/<key>.npz``, or ``None`` when that cache is off."""
+    import pathlib
+
+    from .. import _compat
+
+    root = _compat._default_compilation_cache_dir()
+    return None if root is None else pathlib.Path(root) / "deck_response" / f"{key}.npz"
+
+
+def _deck_cache_load(key: str):
+    """The cached ``(primal, tangent)`` deck response of ``key`` (each four arrays), or ``None``."""
+    path = _deck_cache_path(key)
+    if path is None or not path.exists():
+        return None
+    try:
+        with np.load(path) as data:
+            leaves = [jnp.asarray(data[f"a{i}"]) for i in range(8)]
+    except (OSError, KeyError, ValueError):  # a damaged entry is a miss
+        return None
+    return tuple(leaves[:4]), tuple(leaves[4:])
+
+
+def _deck_cache_store(key: str, value) -> None:
+    """Write ``value`` atomically (a private temporary file renamed into place); a failed write is no error."""
+    import contextlib
+    import os
+    import tempfile
+
+    path = _deck_cache_path(key)
+    leaves = jax.tree.leaves(value)
+    if path is None or len(leaves) != 8:
+        return
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                np.savez(f, **{f"a{i}": np.asarray(a) for i, a in enumerate(leaves)})
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+def _deck_cached(key: str, compute):
+    """The cached deck response of ``key``, or ``compute()`` stored under it."""
+    cached = _deck_cache_load(key)
+    if cached is not None:
+        return cached
+    value = compute()
+    _deck_cache_store(key, value)
+    return value
 
 
 def _axis_loop(wout):
@@ -496,10 +642,7 @@ def solve_free_boundary_three_terms(
         raise ValueError(f"method must be 'galerkin' or 'least_squares', got {method!r}")
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
-    p_edge, p_max = _edge_pressure(inp)
-    if abs(p_edge) > 1e-8 * p_max:
-        raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
-                         "boundary pressure must vanish")
+    _check_edge_pressure(inp)
     if external_field is None:
         external_field = _external_field_from_input(inp, mgrid_path)
     if previous is not None:
@@ -613,7 +756,10 @@ class ThreeTermsFreeBoundaryModel:
     as traced :class:`~vmex.core.implicit.ImplicitParams`, and the external
     field enters the compiled interface rows as an argument: neither new coils
     nor new plasma parameters recompile anything, which is what an optimizer
-    that solves the free boundary at every step needs.
+    that solves the free boundary at every step needs.  As in
+    :func:`solve_free_boundary_three_terms`, a deck whose pressure does not
+    vanish at the boundary is rejected: the rows have no sheet current to
+    carry a pressure jump.
 
     Coordinates: ``x`` is the displacement ``h`` of the deck's boundary on
     its modes up to ``max_mode`` (``x0 = 0`` the deck; ``x_scale`` their ESS
@@ -668,12 +814,15 @@ class ThreeTermsFreeBoundaryModel:
         self.fixed_boundary = bool(fixed_boundary)
         self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 
-        # Vacuum: no pressure and no plasma current, so B_out is the coil field alone (no virtual casing).
-        _, p_peak = _edge_pressure(fixed)
-        self.vacuum = (bootstrap is None and p_peak == 0.0 and int(fixed.ncurr) == 1 and float(fixed.curtor) == 0.0
+        # Vacuum: no pressure and no plasma current that the field can feel, so B_out is the coil field alone (no
+        # virtual casing).  A current or pressure below the field's round-off (a WOUT restart's CURTOR 1e-12 A) is
+        # no plasma: it cannot change B in double precision, so it must not select the finite-beta formulation.
+        self.vacuum = (bootstrap is None and int(fixed.ncurr) == 1 and _plasma_below_roundoff(fixed)
                        and (fixed.ac is None or not np.any(np.asarray(fixed.ac, dtype=float))))
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
+        if not self.fixed_boundary:  # the interface rows assume p(1) = 0, as the public solve does
+            _check_edge_pressure(fixed)
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
         # At finite beta the boundary keeps fewer modes than the interior (the fixed-boundary convention, mpol - 2
@@ -895,6 +1044,13 @@ class ThreeTermsFreeBoundaryModel:
     def _deck_response(self, nphi, ntheta, digits, precision):
         """The finite-beta rows' test space: the deck's boundary data and their exact responses to ``h``.
 
+        They depend on the deck alone (its equilibrium and boundary coordinates, the grid, the virtual-casing
+        precision), not on the coils, so they are kept on disk next to the persistent compilation cache
+        (:func:`_deck_cache_load`): a model built again on the same deck -- a single-stage restart, a benchmark
+        cell, a second start -- reads them instead of paying the tangent solve and the virtual-casing push
+        (96-175 s at 12 x 12, VC64).  The key hashes every input, the seed state's bytes and the vmex sources,
+        so a changed deck, resolution or code never reuses an entry.
+
         The pointwise residual ``r = sqrt(w) B_out . n / |B_in|`` (``w`` the area weights) at the deck depends on
         the boundary coordinates through the deck equilibrium (points, normal, weights, ``|B_in|`` and the
         plasma's own field ``B_plasma``, all independent of the coils) and through the coil field at the moving
@@ -918,11 +1074,18 @@ class ThreeTermsFreeBoundaryModel:
             s = jnp.sqrt(area / jnp.sum(area)) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
             return jnp.asarray(data.gamma), jnp.asarray(data.normal), s, interface.B_plasma
 
-        dz = self._tangents(self.params0, state, mask, directions)
-        primal = jax.jit(geometry)(state, self.params0)
-        tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
-            state, mask, self.params0, dz, directions)
-        return primal, tangent
+        key = _digest("deck-response", fixed, nphi, ntheta, digits, precision, self.max_mode, self.boundary_modes,
+                      self._x_ref, self._normal_map, state, mask, directions, _source_digest(), jax.__version__,
+                      jax.devices()[0].device_kind)
+
+        def compute():
+            dz = self._tangents(self.params0, state, mask, directions)
+            primal = jax.jit(geometry)(state, self.params0)
+            tangent = jax.jit(lambda st, mk, prm, d, b: self.push(geometry, st, mk, prm, d, b))(
+                state, mask, self.params0, dz, directions)
+            return primal, tangent
+
+        return _deck_cached(key, compute)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -940,7 +1103,7 @@ class ThreeTermsFreeBoundaryModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch):
+        def tangents(params, state, mask, batch, column_scales=None):
             """Projected state responses to the stacked parameter tangents: one block factorization, chunked.
 
             Staged programs (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`): the factors from the
@@ -949,10 +1112,12 @@ class ThreeTermsFreeBoundaryModel:
             column of the Jacobian.  The columns are certified to the adjoint tolerance (``adjoint_tol``), not the
             looser one for least-squares Jacobians: they are the boundary Jacobian of a square Newton solve and
             the implicit-function-theorem design gradients, which must be exact.  The block-direct responses
-            usually meet it outright (the raw block system is the exact radial linearization)."""
+            usually meet it outright (the raw block system is the exact radial linearization).  ``column_scales``:
+            the columns' units, in which they are certified against the largest right-hand side
+            (:func:`~vmex.core.implicit.staged_tangent_multi_rhs`)."""
             return _certified(*im.staged_tangent_multi_rhs(
                 params, cfg, state, mask, batch, chunk=self.chunk,
-                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter))
+                certify_rtol=cfg.adjoint_tol, certify_maxiter=cfg.adjoint_maxiter, column_scales=column_scales))
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, one at a time.
@@ -1145,7 +1310,7 @@ class ThreeTermsFreeBoundaryModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
-    def linearize(self, x, aux, field, extra=None):
+    def linearize(self, x, aux, field, extra=None, extra_scale=None):
         """Columns of the rows along the model coordinates and the ``extra`` parameter tangents.
 
         The model coordinates are the boundary, then the bootstrap current.  A trial state is first solved to
@@ -1188,7 +1353,12 @@ class ThreeTermsFreeBoundaryModel:
             self._warm.join()
             self._warm = None
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        # every column in the units the Newton solve and the design use (x_scale; extra_scale for the extra
+        # directions): the tangent certificate then holds them to one absolute accuracy in those units
+        n_extra = 0 if extra is None else jax.tree.leaves(extra)[0].shape[0]
+        units = np.r_[np.asarray(self.x_scale, dtype=float),
+                      np.ones(n_extra) if extra_scale is None else np.asarray(extra_scale, dtype=float)]
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), units)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
@@ -1574,7 +1744,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         def relinearize():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
-                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
+                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra,
+                                               extra_scale=None if extra is None else self.scales[self._plasma])
             except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
                 raise TrialRejected(str(error)) from error
             state, mask, params, _ = aux

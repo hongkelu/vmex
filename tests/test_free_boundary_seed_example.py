@@ -125,3 +125,25 @@ def test_fit_penalty_rows_match_the_geometry(seed):
     np.testing.assert_allclose(rows[2 * n + n * p:2 * n + 2 * n * p], scaled(others, tt.COIL_DISTANCE_LIMIT).ravel(),
                                atol=1e-12)
     assert np.min(gap) <= distance + 1e-3  # the offset is in-plane: the 3-D gap is at most the offset
+
+
+def test_three_terms_chart_holds_no_seed_dependent_constant(seed):
+    """The three-terms example's CoilChart keeps its nominal values in ``x0``: two coil sets lower to the same
+    program (one persistent-cache entry for every seed), and ``x0`` is the nominal coils."""
+    import jax
+    import jax.numpy as jnp
+    from essos.coils import Coils
+
+    tt = seed.tt
+    charts = []
+    for distance in (0.3, 0.35):
+        coils = seed.offset_coils(_ellipse(), n_coils=4, order=4, distance=distance)
+        coils = Coils(coils.curves, jnp.full(4, 1.0e5 * (1 + distance)))
+        chart = tt.CoilChart(coils, current_dofs=(0, 1, 2, 3), scales=np.full(4 + 4 * 3 * 9, 0.05))
+        np.testing.assert_allclose(np.asarray(chart(jnp.asarray(chart.x0)).gamma), np.asarray(coils.gamma),
+                                   atol=1e-14)
+        np.testing.assert_allclose(np.asarray(chart.base_currents_at(chart.x0)), np.asarray(coils.dofs_currents_raw))
+        charts.append(chart)
+    texts = [jax.jit(lambda x, c=c: c(x).gamma).lower(jnp.asarray(c.x0)).as_text() for c in charts]
+    assert texts[0] == texts[1]
+    np.testing.assert_allclose(charts[0].scales[:4], 0.05 * 1.3e5)  # current scales in A: relative x nominal

@@ -458,7 +458,7 @@ def solve_equilibrium(
     inp: VmecInput,
     *,
     initial_state: SpectralState | None = None,
-    raise_on_max_iterations: bool = False,
+    raise_on_max_iterations: bool = True,
     verbose: bool = False,
     forward_ftol: float | None = None,
     forward_max_iterations: int | None = None,
@@ -468,10 +468,11 @@ def solve_equilibrium(
     """Converge ``inp`` with the core multigrid solver -> :class:`Equilibrium`.
 
     ``verbose=True`` prints the VMEC iteration table, including the current
-    iteration count and force residuals.  ``raise_on_max_iterations=False``
-    by default: during optimization a
-    NITER-exhausted trial state is still a usable (penalized) sample —
-    VMEC2000 behaves the same way.  Extra keywords go to
+    iteration count and force residuals.  A ladder whose final stage stops
+    at its iteration cap short of its tolerance raises
+    (:class:`~vmex.core.errors.VmecConvergenceError`): an unconverged state is
+    never returned as an equilibrium.  ``raise_on_max_iterations=False`` is
+    the explicit opt-out for a caller that checks ``result`` itself.  Extra keywords go to
     :func:`vmex.core.multigrid.solve_multigrid`. ``forward_ftol`` and
     ``forward_max_iterations`` replace the input ladder's final tolerance and
     iteration cap, using the same names as the optimization problem API.
@@ -3843,11 +3844,15 @@ def _least_squares_implicit(
         result_input = input_from_x(x)
         result = dataclasses.replace(hit[1], state=refined[1])
         ns = int(np.shape(result.state.R_cos)[0])
-        runtime = prepare_runtime(
-            result_input,
-            resolution_from_input(result_input, ns=ns),
-        )
-        _, residuals, _ = evaluate_forces(result.state, runtime)
+        # The refined state lives on the problem's device (cfg.device, the CPU by default for this launch-bound
+        # path); the runtime of its force evaluation must be built there too, not on JAX's default device (a GPU
+        # when one is present), or the evaluation mixes devices.
+        with imp._device_context(cfg):
+            runtime = prepare_runtime(
+                result_input,
+                resolution_from_input(result_input, ns=ns),
+            )
+            _, residuals, _ = evaluate_forces(result.state, runtime)
         result = dataclasses.replace(
             result, fsqr=float(residuals.fsqr), fsqz=float(residuals.fsqz),
             fsql=float(residuals.fsql))

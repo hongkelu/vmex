@@ -659,7 +659,8 @@ def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable) -> Array:
     pos = np.asarray([index[(1, j)] for j in range(1, ntor + 1)], dtype=int)
     neg = np.asarray([index[(1, -j)] for j in range(1, ntor + 1)], dtype=int)
     ns = int(Z_sin.shape[0])
-    profile = jnp.sqrt(jnp.linspace(0.0, 1.0, ns, dtype=Z_sin.dtype))[:, None]
+    # a constant of the static ns: host numpy, so an eager call (the solver's stage setup) compiles no program
+    profile = jnp.asarray(np.sqrt(np.linspace(0.0, 1.0, ns)), dtype=Z_sin.dtype)[:, None]
     edge = jnp.asarray(edge_Z_sin)
     shift = profile * (0.5 * (edge[pos] - edge[neg]))[None, :] - 0.5 * (Z_sin[:, pos] - Z_sin[:, neg])
     return Z_sin.at[:, pos].add(shift).at[:, neg].add(-shift)

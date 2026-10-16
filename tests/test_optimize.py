@@ -1626,6 +1626,9 @@ def test_subproblem_ladder_compiles_once():
             # compile once per process on first use; whether an earlier test
             # on the same xdist worker already paid them is order-dependent.
             name = re.match(r"Compiling jit\((\w+)\)", record.getMessage())
+            self.names = getattr(self, "names", [])
+            if name and not (hasattr(jax.numpy, name[1]) or hasattr(jax.lax, name[1])):
+                self.names.append(name[1])
             self.count += bool(name) and not (
                 hasattr(jax.numpy, name[1]) or hasattr(jax.lax, name[1]))
 
@@ -1654,7 +1657,7 @@ def test_subproblem_ladder_compiles_once():
 
     assert compiles_after_second_rung == compiles_after_first_rung, (
         "the second ladder rung recompiled: "
-        f"{compiles_after_second_rung - compiles_after_first_rung} programs")
+        f"{compiles_after_second_rung - compiles_after_first_rung} programs: {counter.names}")
 
 
 def test_eager_state_objective_gradient_compiles_once():

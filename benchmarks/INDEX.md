@@ -12,8 +12,8 @@ uncited records are reachable through git history: link them with a
 permalink (`https://github.com/uwplasma/vmex/blob/<commit>/benchmarks/...`)
 rather than keeping the file.
 
-37 committed artifacts: 32 standalone records and 1 grouped directory holding
-5 files. 33 of the 33 entries below are cited by a page, a test or another
+38 committed artifacts: 33 standalone records and 1 grouped directory holding
+5 files. 34 of the 34 entries below are cited by a page, a test or another
 script; 0 are cited by nothing.
 
 `commit` is the revision recorded inside the artifact (short form) and
@@ -32,6 +32,7 @@ hand rather than by a script in this tree.
 | `benchmarks/desc_native_vs_lifted_2026-09-03.json` |  | `82a424da` | 2026-09-03 | `docs/explanation/validation.md`, `tests/test_profile_workflows.py` |
 | `benchmarks/device_cache_reload_m4.json` | `benchmarks/device_cache_reload.py` | `a9a11a3b` | 2026-08-29 | `docs/howto/run-on-gpu.md` |
 | `benchmarks/essos_cross_code.json` |  |  | 2026-10-11 | `README.md`, `benchmarks/make_essos_cross_code_figures.py`, `docs/_static/figures/figures.json` |
+| `benchmarks/exact_equilibria.json` |  |  | 2026-10-10 | `benchmarks/make_exact_equilibria_figure.py`, `docs/_static/figures/figures.json`, `docs/explanation/validation.md` |
 | `benchmarks/extender_ab_20260923.json` | `benchmarks/extender_ab.py` |  | 2026-09-23 | `docs/explanation/nestor-vacuum.rst` |
 | `benchmarks/free_boundary_limits_2026-10-16.json` |  |  | 2026-10-16 | `docs/explanation/free-boundary-limits.md` |
 | `benchmarks/freeboundary_multigrid.json` | `benchmarks/run_freeboundary_multigrid.py` | `b0cc789e` |  | `docs/reference/performance.rst`, `tests/test_performance_docs.py` |

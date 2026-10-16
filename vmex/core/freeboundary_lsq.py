@@ -142,19 +142,18 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
 
-    def _interface_setup(self, state, surface, nphi, ntheta, digits, quadrature):
-        """The least-squares rows, with the quadrature plan of the seed ``state`` (none in vacuum)."""
+    def _interface_setup(self, state, nphi, ntheta, digits):
+        """The least-squares rows, with the base model's virtual-casing plan of the deck's surface
+        (:attr:`precision`, planned once for every band; none in vacuum)."""
         from .freeboundary import _vacuum_scalars
         from types import SimpleNamespace
 
         im, cfg, fixed = self._im, self.cfg, self.fixed
         nfp = int(fixed.nfp)
-        quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
-        if self.vacuum:  # the coils' field alone: no virtual-casing quadrature to plan
+        if self.vacuum:  # the coils' field alone: no virtual-casing quadrature
             precision, digits = None, None
         else:
-            precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        self.precision = precision
+            precision = self.precision
         _, _, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, cfg.resolution))
         n_axis = int(cfg.resolution.ntor) + 1
         axis_points, axis_tangent, axis_dphi = _axis_loop(

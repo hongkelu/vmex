@@ -81,6 +81,7 @@ def _stand_in(n, rows, jac, *, vacuum=True, repeat=None):
     model.vacuum, model.fixed_boundary = vacuum, False
     model.x0, model.x_scale, model.n_boundary, model.R0 = np.zeros(n), np.ones(n), n, 1.0
     model.boundary_modes = [(1, 0)] * (n - 1) + [(0, 0)]
+    model.max_mode = 1  # the lowest band: no band continuation below it
     model.cfg = model.cfg_trial = None
     model.evaluate = lambda z, params, field, tight=False: (rows(z, True), (z, None, None, True))
     model.linearize = lambda z, aux, field, extra=None: (jac(z), None, None, (z, None, None, True))
@@ -693,8 +694,7 @@ def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys
     out = model.solve_boundary(None, None, x0=np.array([1.2]), verbose=1)  # 1.2 fails, 0.9 = 0.75 x 1.2 is solved
     assert not out["converged"] and abs(out["x"][0]) < 0.9
     assert "Newton stalled" in capsys.readouterr().out
-    # a singular Jacobian (given, then fresh) has no Newton step: refreshed, then the trust region, which stalls
-    # at the stationary point (its step exists, but descends nowhere)
+    # a singular Jacobian (given, then fresh) has no Newton step: refreshed, then a stall
     out = model.solve_boundary(None, None, x0=np.array([0.0]), jacobian=np.zeros((1, 1)), verbose=1)
     assert not out["converged"] and out["njev"] <= 2 and "singular Jacobian" in capsys.readouterr().out
     model.evaluate = lambda z, params, field, tight=False: None
@@ -775,10 +775,10 @@ def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
     np.testing.assert_allclose(along, central, rtol=1e-6, atol=1e-9 * np.abs(along).max())
 
 
-def test_trust_region_ends_not_converged_at_a_minimum_that_is_no_root():
+def test_newton_ends_not_converged_at_a_minimum_that_is_no_root():
     """``z^3 - 2 z + 2`` from ``z = 0``: Newton cycles (0 -> 1 -> 0) and ``|rows|^2`` has a local minimum at
-    ``z = sqrt(2/3)`` where the row is 0.91, not zero.  The trust region descends into that minimum and stops there
-    as a stall (``converged=False``, the row not zero): a minimum of ``|rows|^2`` is never returned as the answer.
+    ``z = sqrt(2/3)`` where the row is 0.91, not zero.  The damped Newton steps end there as a stall
+    (``converged=False``, the row not zero): a minimum of ``|rows|^2`` is never returned as the answer.
     From inside the basin of the root (``z = -1.6``, a warm Jacobian) the same solve converges to the root."""
 
     def rows(z):
@@ -789,29 +789,10 @@ def test_trust_region_ends_not_converged_at_a_minimum_that_is_no_root():
 
     model = _stand_in(1, lambda z, tight=True: rows(z), jac, vacuum=False)
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
-    assert not out["converged"] and abs(float(out["rows"][0])) > 0.5
-    np.testing.assert_allclose(out["x"][0], np.sqrt(2.0 / 3.0), atol=1e-3)
+    assert not out["converged"] and abs(float(out["rows"][0])) > 0.5 and out["band"] is None
     warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6])))
     assert warm["converged"]
     np.testing.assert_allclose(warm["x"][0], -1.7692923542386314, atol=1e-7)  # the root, to the step tolerance
-
-
-def test_trust_region_stops_at_once_at_a_minimum_that_is_no_root():
-    """At the cubic's non-root minimum (above) with noisy rows: once the gradient J^T r is down to that of the rows'
-    noise while the row is far above it, the trust region stops there (``nonroot``), not converged, instead of
-    crawling on to its evaluation budget."""
-
-    def rows(z):
-        return np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
-
-    def jac(z):
-        return np.array([[3.0 * z[0] ** 2 - 2.0]])
-
-    model = _stand_in(1, lambda z, tight=True: rows(z), jac, vacuum=False,
-                      repeat=lambda z, params, field, aux: rows(z) + 1e-6)
-    out = model._trust_region_boundary(None, None, x0=np.array([0.0]), max_nfev=200, verbose=1)
-    assert not out["converged"] and out["nonroot"] and out["nfev"] < 40
-    np.testing.assert_allclose(out["x"][0], np.sqrt(2.0 / 3.0), atol=1e-3)
 
 
 class _Program:
@@ -1153,66 +1134,11 @@ def test_deck_response_cache_round_trip_and_keys(tmp_path, monkeypatch):
     fvc._deck_cache_store(key, value)  # no cache: a no-op
 
 
-def test_trust_region_handles_noise_loose_trials_reused_jacobians_and_its_budget(capsys):
-    """The trust region on its own (``_trust_region_boundary``): converges on rows with evaluation noise (the
-    noise measured where a fresh step no longer descends; rows within twice that noise are a root); from a reused
-    Jacobian, which it refreshes on failure; with loose trial rows, which it re-solves tight before judging
-    convergence; backs off a start without an equilibrium; and reports a spent evaluation budget as a stall.  Its
-    scale gives a bootstrap-current part the size of the current."""
-
-    def draw(x):
-        return np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)
-
-    def exact(x):
-        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
-
-    def jac(x):
-        return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
-
-    noisy = _stand_in(2, lambda x, tight=True: exact(x) + 1e-6 * draw(x), jac,
-                      repeat=lambda x, params, field, aux: exact(x) - 1e-6 * draw(x))
-    out = noisy._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]))
-    assert out["converged"] and out["noise"] > 0.0
-    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
-    reused = noisy._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]), jacobian=jac(np.array([0.5, 1.0])))
-    assert reused["converged"] and reused["njev"] >= 1
-    # loose trial rows (noise 1e-3) until the step no longer descends, then tight ones
-    loose = _stand_in(2, lambda x, tight=True: exact(x), jac)
-    loose.cfg, loose.cfg_trial = "deck", "trial"
-    loose.evaluate = lambda z, params, field, tight=False: (exact(z) + (0.0 if tight else 1e-3 * draw(z)),
-                                                            (z, None, None, tight))
-    out = loose._trust_region_boundary(None, None, x0=np.array([1.0 + 1e-4, 2.0]))
-    assert out["converged"] and out["aux"][3]
-    # a start without an equilibrium backs off toward the deck; a budget of 3 evaluations is a stall
-    far = _stand_in(2, lambda x, tight=True: exact(x), jac)
-    far.evaluate = lambda z, params, field, tight=False: (None if abs(z[0]) > 2.0 else (exact(z), (z, None, None, True)))
-    out = far._trust_region_boundary(None, None, x0=np.array([2.4, 1.0]), max_nfev=3, verbose=1)
-    assert not out["converged"] and "evaluations without convergence" in capsys.readouterr().out
-    far.evaluate = lambda z, params, field, tight=False: None
-    with pytest.raises(RuntimeError, match="no certified equilibrium"):
-        far._trust_region_boundary(None, None, x0=np.array([2.4, 1.0]))
-    # loose rows at the root are re-solved tight before convergence is declared; without a tight equilibrium a
-    # loose trial that no longer descends is no answer
-    at_root = _stand_in(2, lambda x, tight=True: exact(x), jac)
-    at_root.cfg, at_root.cfg_trial = "deck", "trial"
-    at_root.evaluate = lambda z, params, field, tight=False: (exact(z), (z, None, None, tight))
-    out = at_root._trust_region_boundary(None, None, x0=np.array([1.0, 2.0]))
-    assert out["converged"] and out["aux"][3]
-    at_root.evaluate = lambda z, params, field, tight=False: None if tight else (exact(z), (z, None, None, False))
-    assert not at_root._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]))["converged"]
-    # scale: boundary displacement over R0, a current part relative to the current's RMS
-    current = _stand_in(2, lambda x, tight=True: exact(x), jac)
-    current.n_boundary, current.boundary_modes = 1, [(0, 0)]
-    np.testing.assert_allclose(current._trust_scale(np.array([0.0, 4.0])), [1.0, 1.0 / 4.0])
-    np.testing.assert_allclose(current._trust_scale(np.array([0.0, 0.0])), [1.0, 1.0])
-
-
 @needs_vc
 def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_stalls(monkeypatch):
     """The band continuation: where Newton on the model's band converges it is that solve; where it stalls
     (forced here), the band is built up from band 1, each band from the previous band's boundary, to the same
-    root; where a band stalls on the way and the trust region on the model's band does too, it is a stall (not
-    converged) that reports the last converged band."""
+    root; a band that stalls on the way ends it as a stall (not converged) that reports the last converged band."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     n = 16
@@ -1244,8 +1170,9 @@ def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_s
 
     calls.clear()
     monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_newton_boundary", stalling({target, 2}))
-    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_trust_region_boundary",
-                        lambda self, *a, **k: dict(converged=False, nfev=1, njev=0))
     lower_model, lower = fvc.solve_band_continuation(model, model.params0, field)
     assert not lower["converged"] and lower["band"] == lower_model.max_mode == 1 and lower["target"] == target
-    assert [b[:2] for b in lower["bands"]] == [(target, False), (1, True), (2, False), (target, False)]
+    assert [b[:2] for b in lower["bands"]] == [(target, False), (1, True), (2, False)]
+    calls.clear()
+    stalled = model.solve_boundary(model.params0, field)  # this band's Newton result, reported as a stall
+    assert not stalled["converged"] and stalled["band"] == 1 and stalled["x"].size == model.x0.size

@@ -206,5 +206,64 @@
     "seconds": 2069
    }
   }
+ },
+ "vacuum_cross_code": {
+  "case": "vacuum decks with fitted coils, deck start; LCFS distance from the harness's labelling-free metric (16 planes per period, symmetrized)",
+  "sources": [
+   "runs/robust/out/{galerkin,desc,nestor}__{case}__m{M}__deck/wout.nc",
+   "runs/robust/geometry.py (surface_distance_mm)"
+  ],
+  "vmex_commit": "1ef9b079 (Galerkin), vmex-galfix branch (NESTOR); DESC 0.17.3+35",
+  "lcfs_mm_max_rms": {
+   "qa_vac": {
+    "M5": {
+     "galerkin_desc": [
+      0.18,
+      0.05
+     ],
+     "nestor_desc": [
+      5.42,
+      1.74
+     ]
+    },
+    "M8": {
+     "galerkin_desc": [
+      0.08,
+      0.03
+     ],
+     "nestor_desc": [
+      2.68,
+      0.75
+     ]
+    },
+    "M12": {
+     "galerkin_nestor": [
+      1.19,
+      0.32
+     ]
+    }
+   },
+   "qh_vac": {
+    "M8": {
+     "galerkin_desc": [
+      1.59,
+      0.43
+     ],
+     "nestor_desc": [
+      53.25,
+      21.93
+     ]
+    },
+    "M12": {
+     "galerkin_nestor": [
+      19.67,
+      6.98
+     ]
+    }
+   }
+  }
+ },
+ "bootstrap_routes": {
+  "in_solve_redl_b19": "QA 2.5 % + Redl 12x12 seed: Newton on the coupled rows stalls at 1.7e-6; weakest directions boundary modes m 9-10, condition number 2.4e7 (runs/BLOCKERS.md, 10-15 13:20)"
  }
 }

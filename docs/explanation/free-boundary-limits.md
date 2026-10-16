@@ -33,6 +33,21 @@ displacement of the deck's boundary along the deck equilibrium's radial lines.
   | 8 to 12 | 0.88 mm | 2.2 mm |
   | 12 to 14 | 0.34 mm | 0.89 mm |
 
+## Vacuum
+
+In vacuum the free boundary is judged by B.n alone: there is no pressure, and
+the sheet current follows from the field. NESTOR (VMEC's free boundary) is a
+valid vacuum reference at any M. Its last closed flux surface approaches the
+three-terms one as M grows (max / RMS):
+
+| case | M | three-terms to DESC | NESTOR to DESC | three-terms to NESTOR |
+|---|---|---|---|---|
+| QA | 5 | 0.18 / 0.05 mm | 5.4 / 1.7 mm | |
+| QA | 8 | 0.08 / 0.03 mm | 2.7 / 0.75 mm | |
+| QA | 12 | | | 1.2 / 0.32 mm |
+| QH | 8 | 1.6 / 0.43 mm | 53 / 22 mm | |
+| QH | 12 | | | 20 / 7.0 mm |
+
 ## Resolution convergence of QS
 
 - **Vacuum.** QS (the quasisymmetry residual) converges by M = 16. On a QA
@@ -118,6 +133,16 @@ reported as not converged, with its fsq.
 - **Effect on the results.** The trapped fraction changes by −0.4 % to −1.7 %,
   and the bootstrap current dI/ds by at most 1.0 % relative. The full-field
   Redl geometry stays available as the parity check against simsopt.
+
+## Bootstrap current: two routes
+
+Production finite-beta runs, like simsopt and DESC, make the current profile a
+design variable and add a bootstrap-mismatch constraint: Redl for QA and QH,
+DKX for quasi-isodynamic fields. Solving Redl inside the free-boundary Newton is
+still available, but it is not the default. On a seed that is far from
+quasisymmetric it is fragile, even with a correct Jacobian. On the QA 2.5 %
+Redl 12x12 seed, the coupled system's weakest directions (boundary modes m = 9
+and 10) have a condition number of 2.4e7, and Newton stalls at 1.7e-6.
 
 ## Unconverged states raise
 

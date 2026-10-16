@@ -1336,7 +1336,7 @@ def main(argv=None):
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
-                   bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
+                   bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
@@ -1367,7 +1367,7 @@ def main(argv=None):
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if current_in_solve else "")
               + (f"penalty={row['penalty']:.1e} violation={row['max_violation']:.1e} "
                  if intermediate_result is not None else "")
-              + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "
+              + f"{res} {row['step_seconds']:.1f}s "
               f"[{', '.join(f'{key} {value:.0f}' for key, value in row['seconds'].items())}] "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)

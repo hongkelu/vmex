@@ -129,21 +129,19 @@ coil_field = vj.MgridField.from_coils(coils, order=3)   # ESSOS coils
 
 ## Three-terms free boundary (no sheet current)
 
-NESTOR makes the boundary a flux surface of the vacuum field and balances only
-`|B|` across it, so a VMEC/NESTOR equilibrium may carry an edge sheet current
-`K` (a jump in the direction of the tangential field). Different such states
-can solve the same deck, and the solve can leave the one whose coils were fitted
-to it. `boundary_condition="three_terms"` instead solves for the boundary on
-which all three interface conditions hold, with the plasma's own field from
-virtual casing (Conlin et al. 2024, arXiv:2412.05680):
-`B_out . n = 0`, `|B_out|^2 = |B_in|^2 + 2 mu0 p`, and `n x (B_out - B_in) = 0`.
-The unknown is the displacement of the deck's boundary along the deck
-equilibrium's radial lines, and the equations are square: in vacuum (coil
-field alone, no virtual casing) the least-squares stationarity of `B . n`,
-at finite beta the same with the plasma's response left out of the test
-functions, plus one net-current row; Newton's method drives them to round-off,
-with exact implicit derivatives. Pressure balance and sheet current follow and
-are reported. The answer does not depend on where the solve starts:
+NESTOR makes the boundary a flux surface of the vacuum field and balances only `|B|` across it, so a VMEC/NESTOR
+equilibrium may carry an edge sheet current `K` (a jump in the direction of the tangential field). Different such
+states can solve the same deck, and the solve can leave the one whose coils were fitted to it.
+`boundary_condition="three_terms"` instead solves for the boundary on which all three interface conditions hold,
+with the plasma's own field from virtual casing (Conlin et al. 2024, arXiv:2412.05680): `B_out . n = 0`, `|B_out|^2
+= |B_in|^2 + 2 mu0 p`, and `n x (B_out - B_in) = 0`. The unknown is the displacement of the deck's boundary along
+the deck equilibrium's radial lines, and the equations are square: in vacuum (coil field alone, no virtual casing)
+the least-squares stationarity of `B . n`, at finite beta the same with the plasma's response left out of the test
+functions, plus one net-current row; Newton's method drives them to round-off, with exact implicit derivatives.
+Reported (`fit.boundary_residual`): B.n as the area-weighted RMS and the maximum of `|B_out . n| / |B_in|` over the
+boundary; at finite beta also pressure balance and sheet current; in vacuum B.n alone. DESC prints another
+normalization (mean `|B . n|` over `B_s R0 a`); our comparisons evaluate every code's boundary with this one. The
+answer does not depend on where the solve starts:
 
 ```python
 import vmex as vj

@@ -315,7 +315,7 @@ def score(modes, out, name, eq, extra, inp=None):
                                                          ntheta=VC_GRID, precision=plan))
     q = np.asarray(opt.QuasisymmetryRatioResidual(QA_SURFACES, 1, 0).residuals_state(eq.solution, eq.solver_context))
     nfp = int(inp.nfp)
-    row = dict(method=name, modes=modes, ns=NS, force_fsq=float(w.fsqr + w.fsqz + w.fsql), bn=res.normal,
+    row = dict(method=name, modes=modes, ns=NS, force_fsq=float(w.fsqr + w.fsqz + w.fsql), bn=res.normal, bn_max=res.normal_max,
                pressure_balance=res.pressure, sheet_current=res.sheet_current, qa=float(q @ q),
                iota_axis=float(abs(np.asarray(w.iotaf)[0])), iota_edge=float(abs(np.asarray(w.iotaf)[-1])),
                aspect=float(w.aspect), volume_m3=float(w.volume_p),

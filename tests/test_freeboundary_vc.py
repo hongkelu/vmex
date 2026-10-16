@@ -1280,3 +1280,9 @@ def test_rereference_failures_keep_the_deck():
     assert problem._rereference(np.zeros(2), dict(b=np.zeros(3))) is None
     assert all(problem.__dict__[name] is bound[name] for name in problem._BOUND) and problem.model is deck
     assert problem.stats["boundary_evaluations"] == 4 and problem.references == []
+
+    def raises(*args, **kwargs):
+        raise VmecError("no certified equilibrium")
+
+    other.solve_boundary = raises  # an uncertified equilibrium on the new deck: the same failure
+    assert problem._rereference(np.zeros(2), dict(b=np.zeros(3))) is None and problem.model is deck

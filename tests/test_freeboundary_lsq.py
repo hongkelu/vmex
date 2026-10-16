@@ -139,7 +139,7 @@ def test_bootstrap_rows_are_constraints_with_exact_design_gradients():
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.major_radius,), boundary_condition="three_terms",
         three_terms_options=dict(method="least_squares", boundary_max_nfev=40, bootstrap=_lp_beta0p5_profiles(inp),
-                                 **OPTIONS))
+                                 bootstrap_helicity=0, **OPTIONS))
     model = problem.model
     m = model.n_constraint_rows
     assert m == 1 + model.x0.size - model.n_boundary > 1  # the net-current row, then a row per current knot

@@ -927,7 +927,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
                                       nphi: int | None = None, ntheta: int | None = None, digits: int = 4,
                                       max_nfev: int = 60, quadrature: tuple[int, int] | None = None,
                                       trial_ftol: float | None = None, chunk: int = 8, bootstrap=None,
-                                      bootstrap_helicity: int = 0, previous=None,
+                                      bootstrap_helicity: int | None = None, previous=None,
                                       verbose: int = 0):
     """:func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` with ``method="least_squares"``.
 

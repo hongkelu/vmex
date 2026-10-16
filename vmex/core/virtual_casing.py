@@ -791,7 +791,8 @@ def _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size):
 
 
 def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
-    """``sum_sources kernel(Xt - Xs, ...)`` per target: a loop over target blocks, each checkpointed, of a scan
+    """``sum_sources kernel(Xt - Xs, ...)`` per target: a loop over target blocks (:func:`~vmex.core.loops.map_columns`,
+    two blocks a step), each checkpointed, of a scan
     over source chunks, each checkpointed.  The reverse pass keeps one block's inputs, not the dense source-target
     kernel (``nsrc x ntrg x 3`` doubles per intermediate: 22 GiB for the interface rows' pullback at 8 x 8 VC48,
     LP QA; past 40 GB for a QH or QI deck).  Per target the sum runs in the package's order (each source chunk
@@ -804,7 +805,7 @@ def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
 
         return jax.lax.scan(jax.checkpoint(chunk), jnp.zeros((targets.shape[0],) + width, targets.dtype), sources)[0]
 
-    out = jax.lax.map(lambda targets: target_block(targets, sources), Xt.reshape((-1, block, 3)))
+    out = map_columns(lambda targets: target_block(targets, sources), Xt.reshape((-1, block, 3)))
     return out.reshape((-1,) + width)[:ntrg]
 
 

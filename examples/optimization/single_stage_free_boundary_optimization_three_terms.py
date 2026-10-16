@@ -596,15 +596,15 @@ def current_from_wout(inp, w):
 
 
 def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's PHIEDGE and current (``--restart``).
+    """A finished run's own deck ``input.run``, unchanged, and its final WOUT (``--restart``).
 
-    The boundary stays the deck's: it is only the initial condition of the free-boundary solve, so a restart (or a
-    cold re-solve of saved coils) solves from the same start as the run did.
+    The deck defines the problem (its boundary is only the solve's initial condition; its labelling and response
+    data come from it), so a restart, or a cold re-solve of saved coils, solves the run's very problem: the WOUT's
+    PHIEDGE (and a design current) enter as the design vector's start, never as deck values.
     """
     import vmex as vj
 
-    inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
-    return current_from_wout(replace(inp, phiedge=float(w.phi[-1]), lfreeb=False), w)
+    return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False), vj.read_wout(run / "wout.nc")
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -1139,12 +1139,13 @@ def main(argv=None):
 
     started = time.monotonic()
     mpol, ntor, _ = RESOLUTION
-    inp, redl = seed_input(), None
+    inp, redl, restart_wout = seed_input(), None, None
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None or args.seed_run is not None:
-        inp = (restart_input(args.restart) if args.restart is not None
-               else replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False))
+        inp, restart_wout = (restart_input(args.restart) if args.restart is not None
+                             else (replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False),
+                                   None))
         if args.modes:  # re-grid the run's deck; otherwise its resolution is the run's
             inp = inp.change_resolution(mpol=mpol, ntor=ntor, ntheta=GRID[0], nzeta=GRID[1])
         if args.ns:
@@ -1180,6 +1181,12 @@ def main(argv=None):
     chart = CoilChart(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
+    if restart_wout is not None:  # the run's last design: PHIEDGE (and a design current) start where it stopped
+        if FREE_PHIEDGE:
+            chart.x0[0] = float(restart_wout.phi[-1])
+        if current is not None:
+            last = current_from_wout(inp, restart_wout)
+            chart.x0[chart.nphiedge:chart._coil0] = np.r_[np.asarray(last.ac_aux_f)[:current.size - 1], last.curtor]
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     # iota floors and ceiling hold on every surface, one row each: a minimum over surfaces switches surface where two

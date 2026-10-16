@@ -603,7 +603,7 @@ def current_from_wout(inp, w):
     return inp
 
 
-def restart_input(run):
+def restart_input(run, reference_from_wout=False):
     """A finished run's own deck ``input.run``, unchanged, and its final WOUT (``--restart``).
 
     The deck defines the problem (its boundary is only the solve's initial condition; its labelling and response
@@ -612,7 +612,18 @@ def restart_input(run):
     """
     import vmex as vj
 
-    return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False), vj.read_wout(run / "wout.nc")
+    inp, w = replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False), vj.read_wout(run / "wout.nc")
+    if (run / "input.ref").exists():  # the run re-referenced its free boundary: its latest deck boundary
+        ref = vj.VmecInput.from_file(run / "input.ref")
+        inp = replace(inp, rbc=ref.rbc, zbs=ref.zbs)
+    elif reference_from_wout:  # the WOUT's own LCFS as the deck boundary (a run saved before input.ref)
+        rbc, zbs, ntor = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs)), int(inp.ntor)
+        for m, n, r, z in zip(np.asarray(w.xm).astype(int), np.rint(np.asarray(w.xn) / int(w.nfp)).astype(int),
+                              np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
+            if m < rbc.shape[1] and abs(n) <= ntor:
+                rbc[n + ntor, m], zbs[n + ntor, m] = r, z
+        inp = replace(inp, rbc=rbc, zbs=zbs)
+    return inp, w
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -1064,6 +1075,9 @@ def parse_args(argv=None):
     parser.add_argument("--beta", type=float, default=0.0, help="seed beta (BETA_DEFINITION: <beta> or betaxis)")
     parser.add_argument("--bootstrap", action="store_true", help="self-consistent bootstrap current (needs --beta > 0)")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
+    parser.add_argument("--reference-from-wout", action="store_true",
+                        help="--restart: the deck boundary is the restart WOUT's LCFS when the run has no input.ref "
+                             "(a run saved before re-referencing; the cold solve from a far deck may not converge)")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -1153,7 +1167,7 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None or args.seed_run is not None:
-        inp, restart_wout = (restart_input(args.restart) if args.restart is not None
+        inp, restart_wout = (restart_input(args.restart, args.reference_from_wout) if args.restart is not None
                              else (replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False),
                                    None))
         if args.modes:  # re-grid the run's deck; otherwise its resolution is the run's
@@ -1303,6 +1317,9 @@ def main(argv=None):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
+        if len(getattr(problem, "references", ())) > 1:  # the deck boundary the step was solved on (re-referenced)
+            deck = problem.model.fixed
+            replace(inp, rbc=deck.rbc, zbs=deck.zbs).to_indata(out / f"input{tag}.ref")
 
     coil_metrics_at = jax.jit(lambda x: coil_metrics(chart.coils_from_x(x), normalization_points))
     last = dict(time=time.monotonic())
@@ -1313,7 +1330,7 @@ def main(argv=None):
         res = problem.boundary_residual(x)
         now = time.monotonic()
         state_x, params_x = problem.state(x)
-        runtime_x = im.runtime_from_params(params_x, model.cfg)
+        runtime_x = im.runtime_from_params(params_x, problem.model.cfg)
         vac = np.asarray(vacuum(state_x, runtime_x))
         stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
         redl_row = stability_row + n_mercier + n_ballooning
@@ -1332,7 +1349,7 @@ def main(argv=None):
                    coil_max_curvature=float(coils_m["peak"].max()), coil_max_msc=float(coils_m["msc"].max()),
                    coil_coil_distance=float(coils_m["coil_distance"]),
                    **({"coil_max_force": float(coils_m["max_force"].max())} if FORCE_LIMIT is not None else {}),
-                   **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
+                   **({"redl_max_relative": problem.model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,

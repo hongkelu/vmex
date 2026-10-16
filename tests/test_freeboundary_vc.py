@@ -527,6 +527,30 @@ def test_three_terms_problem_gradients_match_resolved_differences():
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
     assert problem.stats["rereferences"] == 1  # the new deck reaches its neighbours
 
+
+@needs_vc
+def test_three_terms_problem_plasma_map_gradient_at_moved_point():
+    """A plasma map that scales its input (PHIEDGE * (1 + x)) is differentiated at the deck's parameters: the
+    design gradient at a moved point x = 0.05 matches re-solved central differences (differentiating the map at
+    the trial's own, already scaled, parameters gave exactly 1.05 times the differences)."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: coils,
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.major_radius,), boundary_condition="three_terms",
+        three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80))
+    x1, h = np.array([0.05]), 2e-3
+    value, grad = problem.value_and_grad(x1)
+    jac = problem.constraint_jac(x1)
+    values = [np.r_[problem.fun(x1 + s * h), problem.constraint_values(x1 + s * h)] for s in (1, -1)]
+    fd = (values[0] - values[1]) / (2 * h)
+    np.testing.assert_allclose(np.r_[grad[0], jac[:, 0]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
+
+
 def _lp_beta0p5_profiles(inp):
     """Landreman--Buller--Drevlak kinetic profiles whose 2 e n T is the LP QA 0.5% deck's pressure."""
     from vmex.core import bootstrap as bs

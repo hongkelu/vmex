@@ -195,6 +195,13 @@ def test_problem_entry_and_finite_beta_rows():
     beta = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 13)
     model = lsq.LeastSquaresFreeBoundaryModel(replace(beta, lfreeb=False), **grid)
     assert not model.vacuum
+    # the rows' virtual-casing plan is the base model's (planned once for every band, #54): the plan the least-squares
+    # model made itself before, from the deck's surface with the model's digits and quadrature
+    surface = fvc._surface_data(model.fixed, model.cfg, model.seed[0], model.params0, grid["nphi"], grid["ntheta"])
+    planned = vc.plan_vc_precision(surface, digits=model.digits, quad_nt=grid["quadrature"][0],
+                                   quad_np=grid["quadrature"][1])
+    for name in ("quad_nt", "quad_np", "patch_dim0", "patch_idx"):
+        assert np.array_equal(np.asarray(getattr(model.precision, name)), np.asarray(getattr(planned, name))), name
     rows, aux = model.evaluate(np.array(model.x0), model.params0,
                                _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json"), tight=True)
     assert np.all(np.isfinite(rows)) and rows.size == 3 * 16 * 16 + model.n_constraint_rows

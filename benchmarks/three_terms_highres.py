@@ -225,7 +225,7 @@ def lcfs_mm(wa, wb):
 
 report = dict(run=str(args.run), modes=[mpol, ntor], ns=args.ns, boundary_coordinates=int(model.x0.size),
               seconds=round(seconds), nfev=out["nfev"], njev=out["njev"], fsq=float(w.fsqr + w.fsqz + w.fsql),
-              normal=res.normal, pressure=res.pressure, sheet_current=res.sheet_current, qa=float(q @ q),
+              normal=res.normal, normal_max=res.normal_max, pressure=res.pressure, sheet_current=res.sheet_current, qa=float(q @ q),
               min_abs_iota=float(min_abs_iota(eq.solution, eq.solver_context)),
               iota_axis=float(abs(axis_iota(eq.solution, eq.solver_context))), iota_edge=float(abs(np.asarray(w.iotaf)[-1])),
               aspect=float(w.aspect), lcfs_mm_vs_run=lcfs_mm(w, vj.read_wout(str(args.run / "wout.nc"))),

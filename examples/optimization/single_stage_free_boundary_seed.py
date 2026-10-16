@@ -405,10 +405,11 @@ def scaled_to_axis_field(inp, coils, profiles, vc_grid, trial_ftol):
                      ac=np.asarray(inp.ac, dtype=float) * factor)
     coils = Coils(coils.curves, coils.dofs_currents_raw * factor, currents_scale=coils.currents_scale)
     report = dict(nfev=int(result.nfev), b_axis=b_axis, factor=factor, seconds=time.monotonic() - started,
-                  normal=result.boundary_residual.normal, pressure=result.boundary_residual.pressure,
+                  normal=result.boundary_residual.normal, normal_max=result.boundary_residual.normal_max,
+                  pressure=result.boundary_residual.pressure,
                   sheet_current=result.boundary_residual.sheet_current)
-    print(f"[stage 4] free boundary in {report['seconds']:.0f} s ({result.nfev} evaluations): B.n "
-          f"{report['normal']:.2e}, axis |B| {b_axis:.5f} T -> fields x {factor:.5f}", flush=True)
+    print(f"[stage 4] free boundary in {report['seconds']:.0f} s ({result.nfev} evaluations): "
+          f"{result.boundary_residual}, axis |B| {b_axis:.5f} T -> fields x {factor:.5f}", flush=True)
     return scaled, coils, report
 
 

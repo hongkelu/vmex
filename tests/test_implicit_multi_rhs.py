@@ -678,3 +678,64 @@ def test_overlapping_compiles_follow_the_cpu_affinity(monkeypatch):
     monkeypatch.delattr(os, "sched_getaffinity", raising=False)
     monkeypatch.setattr(os, "cpu_count", lambda: 1)
     assert not im._overlapping_compiles_pay()
+
+
+def test_staged_tangent_group_scale_accepts_a_near_null_column():
+    """A column whose right-hand side is tiny next to the others' (the pressure direction here: ||b|| 1e-6 against
+    3.7 for the boundary one, in the same units) is certified at the Jacobian's absolute accuracy: a response off
+    by 1e-10 of the largest right-hand side, which its own relative test rejects (and sent to the GMRES
+    corrector), is accepted, while one off by more than that tolerance is still rejected.  With
+    ``column_scales`` the staged solve gives the same responses as without."""
+    inp, cfg, p0 = _small_solovev_setup()
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    tangent_batch = jax.tree.map(lambda *x: jnp.stack(x), dataclasses.replace(
+        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
+        zero, pres_scale=jnp.ones_like(zero.pres_scale)))
+    params, x_star, dof_mask = im._canonical_arrays(cfg, (p0, state, mask))
+    factors = im.block_factors_at(cfg, p0, state, mask)
+    piece = im._canonical_arrays(cfg, tangent_batch)
+    initial = im._staged_tangent_initial(params, x_star, dof_mask, factors, piece, cfg, 2)
+    norms = np.asarray(im._staged_rhs_norms(params, x_star, dof_mask, factors, piece, cfg, 2))
+    assert norms[1] < 1e-5 * norms[0]
+    rtol = 1e-8
+
+    def verdicts(error, scale):
+        # column 1 off by ``error`` x column 0's response: a raw residual of error x ||b_0||
+        shifted = jax.tree.map(lambda a: a.at[1].add(error * a[0]), initial)
+        _, accepted = im._staged_tangent_check(params, x_star, dof_mask, factors, piece, shifted,
+                                               im._canonical_arrays(cfg, jnp.asarray(scale)), cfg, 2, rtol)
+        return np.asarray(accepted)
+
+    assert verdicts(1e-10, [0.0, 0.0]).tolist() == [True, False]  # own ||b||: rejected
+    assert verdicts(1e-10, [norms[0]] * 2).tolist() == [True, True]  # the group's ||b||: accepted
+    assert verdicts(1e-5, [norms[0]] * 2).tolist() == [True, False]  # beyond the group's tolerance: rejected
+    own, _ = im.staged_tangent_multi_rhs(p0, cfg, state, mask, tangent_batch, chunk=2, certify_rtol=rtol,
+                                         certify_maxiter=5)
+    grouped, report = im.staged_tangent_multi_rhs(p0, cfg, state, mask, tangent_batch, chunk=2, certify_rtol=rtol,
+                                                  certify_maxiter=5, column_scales=[1.0, 1.0])
+    assert np.all(np.asarray(report.converged))
+    assert _relative_difference(grouped, own) < 1e-12
+
+
+def test_staged_tangent_column_scales_put_the_columns_in_one_unit():
+    """The certificate scale is the largest right-hand side in the columns' units, converted back to each
+    column's: the same boundary direction in metres and in micrometres (scales 1 and 1e6) is the same column in
+    those units, so neither is loosened; in raw units the micrometre column would be held to the metre one's."""
+    inp, cfg, p0 = _small_solovev_setup()
+    state, mask = im.solve_implicit_with_aux(p0, cfg)
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    tangent_batch = jax.tree.map(lambda *x: jnp.stack(x), dataclasses.replace(
+        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
+        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1e-6)))
+    params, x_star, dof_mask = im._canonical_arrays(cfg, (p0, state, mask))
+    factors = im.block_factors_at(cfg, p0, state, mask)
+    params, x_star, dof_mask, pieces, chunk = im._staged_chunks(cfg, p0, state, mask, tangent_batch, 2)
+    norms = np.asarray(im._staged_rhs_norms(params, x_star, dof_mask, factors, pieces[0], cfg, chunk))
+    np.testing.assert_allclose(norms[1], 1e-6 * norms[0], rtol=1e-10)
+    scaled = np.asarray(im._group_scales(cfg, params, x_star, dof_mask, factors, pieces, chunk, 2, [1.0, 1e6])[0])
+    np.testing.assert_allclose(scaled, norms, rtol=1e-10)  # consistent units: each column at its own size
+    raw = np.asarray(im._group_scales(cfg, params, x_star, dof_mask, factors, pieces, chunk, 2, [1.0, 1.0])[0])
+    np.testing.assert_allclose(raw, [norms[0], norms[0]], rtol=1e-10)
+    with pytest.raises(ValueError, match="column_scales"):
+        im._group_scales(cfg, params, x_star, dof_mask, factors, pieces, chunk, 2, [1.0, 0.0])

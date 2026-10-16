@@ -472,7 +472,7 @@ def lasym_eq():
     fixture's contract; carrying ``bmns``/``gmns`` is.
     """
     equilibrium = opt.solve_equilibrium(
-        VmecInput.from_file(DATA_DIR / "input.up_down_asymmetric_tokamak"))
+        VmecInput.from_file(DATA_DIR / "input.up_down_asymmetric_tokamak"), raise_on_max_iterations=False)
     assert bool(equilibrium.wout.lasym)
     return equilibrium
 
@@ -921,9 +921,11 @@ def test_half_mesh_picard_makes_the_current_redls():
     assert result.converged and result.input.pcurr_type == "line_segment_ip"
     assert np.size(result.input.ac_aux_s) == 24 + 2
     state, rt = result.equilibrium.solution, result.equilibrium.solver_context
-    # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
+    # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends (Redl on the
+    # quasi-symmetric part of |B|, the rows' geometry; this coarse QA is 7 % from it on the full field)
     hm = bs._half_mesh_fields(state, rt)
-    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA), 0)[0])
+    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._qs_profile_geometry(state, rt, 0, hm, n_lambda=bs.N_LAMBDA),
+                                    0)[0])
     jv = np.asarray(bs._jv_from_half(hm, hm.s_half))
     s = np.asarray(hm.s_half)
     inner = (s > 0.1) & (s < 0.9)
@@ -935,8 +937,7 @@ def test_current_derivative_of_any_jdotb_is_redls_for_redl(eq):
     profiles = _paper_profiles(1e20, 2e3)
     s, redl = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
     hm = bs._half_mesh_fields(eq.state, eq.runtime)
-    jr = bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA,
-                                                           refine_extrema=True), 0)[0]
+    jr = bs.j_dot_B_redl(profiles, bs._qs_profile_geometry(eq.state, eq.runtime, 0, hm, n_lambda=bs.N_LAMBDA), 0)[0]
     s2, generic = bs.current_derivative(jr, eq.state, eq.runtime)
     np.testing.assert_array_equal(np.asarray(s), np.asarray(s2))
     np.testing.assert_allclose(np.asarray(generic), np.asarray(redl), rtol=1e-12, atol=1e-9 * np.max(np.abs(redl)))
@@ -991,3 +992,60 @@ def test_near_axis_redl_mean_is_the_converged_integral_of_the_ratio():
         mean = float(bs.near_axis_redl_mean(profiles, 0, geom, jr))
         assert mean == pytest.approx(float(bs.near_axis_redl_mean(profiles, 0, geom, jr, 256)), abs=1e-10)
         assert low < mean < high
+
+
+@pytest.mark.parametrize("helicity_n", [None, 2, -2, 0.5, True])
+def test_redl_refuses_a_field_that_is_not_qa_or_qh(helicity_n):
+    """Redl's model is for quasi-symmetric fields: helicity 0 (QA) or +/-1 (QH), required; a QI field (no
+    helicity) or any other value is refused, by the formula and by the in-solve current block alike."""
+    geom = bs.RedlGeometry(
+        surfaces=jnp.array([0.25]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
+        R=jnp.array([6.0]), epsilon=jnp.array([0.1]), f_t=jnp.array([0.3]), fsa_B2=jnp.array([1.0]),
+        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.9]), Bmax=jnp.array([1.1]), psi_edge=jnp.asarray(-0.5), nfp=2)
+    profiles = _paper_profiles(1e20, 2e3)
+    with pytest.raises(ValueError, match="QA .*QH|QI"):
+        bs.j_dot_B_redl(profiles, geom, helicity_n)
+    with pytest.raises(ValueError, match="QA .*QH|QI"):
+        bs.HalfMeshCurrent(None, profiles, helicity_n)  # refused before the deck is read
+    for ok in bs.REDL_HELICITIES:
+        assert np.all(np.isfinite(np.asarray(bs.j_dot_B_redl(profiles, geom, ok)[0])))
+
+
+def test_quasi_symmetric_geometry_of_an_axisymmetric_field_is_the_full_fields(eq):
+    """Axisymmetric (Solovev): all of |B| is quasi-symmetric (n = 0 in Boozer angles), so the Redl geometry from
+    the Boozer-angle profile (:func:`bs._qs_profile_geometry`) is the full field's on the solver grid: f_t,
+    <B^2>, <1/B>, B_max and B_min are coordinate invariants of the surface's |B| distribution."""
+    hm = bs._half_mesh_fields(eq.state, eq.runtime)
+    qs = bs._qs_profile_geometry(eq.state, eq.runtime, 0, hm, n_lambda=bs.N_LAMBDA)
+    full = bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA, refine_extrema=True)
+    # the reference is the full field on the solver's own grid (Solovev: 18 poloidal points), accurate to ~1e-5
+    # in the averages and 1e-4 in the edge B_min of its interpolant
+    for name, rtol in (("f_t", 5e-5), ("fsa_B2", 2e-5), ("fsa_1overB", 2e-5), ("R", 2e-5), ("Bmax", 1e-5),
+                       ("Bmin", 3e-4)):
+        np.testing.assert_allclose(np.asarray(getattr(qs, name)), np.asarray(getattr(full, name)), rtol=rtol,
+                                   err_msg=name)
+    c, sn, m = bs._qs_boozer_harmonics(eq.state, eq.runtime, 0, hm)
+    assert float(np.max(np.abs(np.asarray(sn)))) < 1e-12 * float(np.max(np.abs(np.asarray(c))))  # symmetric
+
+
+def test_quasi_symmetric_redl_current_derivative_is_smooth(eq):
+    """The Redl rows' derivative (forward mode, two tangents a program) against central differences of the
+    rows along the same state directions: the quasi-symmetric profile's extrema are refined and unique."""
+    profiles = _paper_profiles(1e20, 2e3)
+    state, rt = eq.state, eq.runtime
+
+    def rows(st):
+        return bs.redl_current_derivative(profiles, 0, st, rt)[1]
+
+    leaves, tree = jax.tree_util.tree_flatten(state)
+    rng = np.random.default_rng(3)
+    tangents = [jax.tree_util.tree_unflatten(tree, [jnp.asarray(rng.standard_normal(np.shape(a)) * 1e-3 * (
+        np.max(np.abs(np.asarray(a))) + 1e-30)) for a in leaves]) for _ in range(2)]
+    stacked = jax.tree_util.tree_map(lambda *a: jnp.stack(a), *tangents)
+    jvps = np.asarray(jax.vmap(lambda t: jax.jvp(rows, (state,), (t,))[1])(stacked))
+    h = 1e-5  # central differences: the edge row's error is ~1.4e3 h^2 of the largest row (its curvature)
+    for t, jvp in zip(tangents, jvps):
+        plus = rows(jax.tree_util.tree_map(lambda a, b: a + h * b, state, t))
+        minus = rows(jax.tree_util.tree_map(lambda a, b: a - h * b, state, t))
+        fd = (np.asarray(plus) - np.asarray(minus)) / (2 * h)
+        np.testing.assert_allclose(jvp, fd, rtol=1e-5, atol=1e-6 * np.max(np.abs(fd)))

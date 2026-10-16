@@ -222,7 +222,7 @@ if CASE.endswith("-tok"):
     # Same sign as the bootstrap current it hands over to (negative for the (1, -1) QH), so the blend
     # never passes through zero current, where the seed has no transform.
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else -6.0e4 if CASE.startswith("qh4-beta") else 6.0e4
-REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
+REDL_HELICITY = None if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt); QI: none, Redl refuses
 # SLSQP's first step has an identity Hessian, so it grows with the target residual, which starts near 1 for
 # a QH or QI seed (|q| ~ 1.6) against ~0.3 for a QA one; their design coordinates are scaled down, as the
 # coil-constraints script's fixed arm scales its seeded boundary steps (0.1 -> 0.02).

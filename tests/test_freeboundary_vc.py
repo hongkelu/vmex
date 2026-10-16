@@ -78,7 +78,7 @@ def _stand_in(n, rows, jac, *, vacuum=True, repeat=None):
 
     ``repeat`` gives the rows of a second solve of the same point (default: the same rows, no noise)."""
     model = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
-    model.vacuum, model.fixed_boundary, model._moments = vacuum, False, False
+    model.vacuum, model.fixed_boundary = vacuum, False
     model.x0, model.x_scale, model.n_boundary, model.R0 = np.zeros(n), np.ones(n), n, 1.0
     model.boundary_modes = [(1, 0)] * (n - 1) + [(0, 0)]
     model.cfg = model.cfg_trial = None
@@ -385,10 +385,12 @@ def test_newton_stops_at_the_noise_of_the_rows():
             assert out["njev"] <= 6
             # the noise is measured only where it limits the step, then kept for the model's later solves
             assert (out["noise"] is None) == (noise < 1e-8)
-    # a repeat that lands on the same rows: no noise, so a step that does not descend is a stall
+    # a repeat that lands on the same rows sees no noise; the rows' deviation from the Jacobian's linear model,
+    # which does not fall with the step's length, does, and the step is judged against it
     model = _stand_in(2, lambda x, tight=True: exact(x) + 1e-6 * draw(x), jac)
     out = model.solve_boundary(None, None, x0=np.array([1.3, 1.7]))
-    assert not out["converged"] and out["noise"] == 0.0
+    assert out["converged"] and out["noise"] > 0.0
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
 
 
 def test_unknown_problem_boundary_condition_is_rejected():
@@ -565,7 +567,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles,
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles, bootstrap_helicity=0,
                                               quadrature=(4 * int(inp.nfp) * 48, 96))
     model = fit.model
     state, mask, params, _ = fit.aux
@@ -596,7 +598,7 @@ def _fixed_boundary_bootstrap():
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=0, fixed_boundary=True)
     return inp, profiles, model, model.solve_boundary(model.params0, None)
 
 
@@ -620,7 +622,8 @@ def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
     current, and Jacobian columns of the axis, a mid-radius and the last knot against re-solved differences."""
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([40000]))
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), fixed_boundary=True)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), bootstrap_helicity=0,
+                                            fixed_boundary=True)
     out = model.solve_boundary(model.params0, None)
     assert out["converged"] and model.x0.size == 101
     state, _, params, _ = out["aux"]
@@ -691,9 +694,10 @@ def test_newton_backs_off_a_start_without_equilibrium_and_reports_a_stall(capsys
     out = model.solve_boundary(None, None, x0=np.array([1.2]), verbose=1)  # 1.2 fails, 0.9 = 0.75 x 1.2 is solved
     assert not out["converged"] and abs(out["x"][0]) < 0.9
     assert "Newton stalled" in capsys.readouterr().out
-    # a singular Jacobian (given, then fresh) has no Newton step: refreshed, then a stall
+    # a singular Jacobian (given, then fresh) has no Newton step: refreshed, then the trust region, which stalls
+    # at the stationary point (its step exists, but descends nowhere)
     out = model.solve_boundary(None, None, x0=np.array([0.0]), jacobian=np.zeros((1, 1)), verbose=1)
-    assert not out["converged"] and out["njev"] == 1 and "singular Jacobian" in capsys.readouterr().out
+    assert not out["converged"] and out["njev"] <= 2 and "singular Jacobian" in capsys.readouterr().out
     model.evaluate = lambda z, params, field, tight=False: None
     with pytest.raises(RuntimeError, match="no certified equilibrium"):
         model.solve_boundary(None, None, x0=np.array([1.2]))
@@ -772,31 +776,25 @@ def test_finite_beta_rows_test_b_dot_n_against_the_decks_response():
     np.testing.assert_allclose(along, central, rtol=1e-6, atol=1e-9 * np.abs(along).max())
 
 
-def test_finite_beta_newton_falls_back_on_the_plain_moments():
-    """Finite beta, cold solve: at the first Newton step on the deck-response rows that has to be shortened (here on
-    the way to a stationary point of the cost that is no root), the plain moments are solved from the start and the
-    deck-response rows from their answer; a warm solve (a given Jacobian) near the root stays on the deck-response
-    rows."""
+def test_trust_region_ends_not_converged_at_a_minimum_that_is_no_root():
+    """``z^3 - 2 z + 2`` from ``z = 0``: Newton cycles (0 -> 1 -> 0) and ``|rows|^2`` has a local minimum at
+    ``z = sqrt(2/3)`` where the row is 0.91, not zero.  The trust region descends into that minimum and stops there
+    as a stall (``converged=False``, the row not zero): a minimum of ``|rows|^2`` is never returned as the answer.
+    From inside the basin of the root (``z = -1.6``, a warm Jacobian) the same solve converges to the root."""
 
-    def rows(z, moments):
-        return np.array([z[0] + 1.7693]) if moments else np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
+    def rows(z):
+        return np.array([z[0] ** 3 - 2.0 * z[0] + 2.0])
 
-    def jac(z, moments):
-        return np.array([[1.0]]) if moments else np.array([[3.0 * z[0] ** 2 - 2.0]])
+    def jac(z):
+        return np.array([[3.0 * z[0] ** 2 - 2.0]])
 
-    model = _stand_in(1, lambda z, tight=True: rows(z, model._moments), lambda z: jac(z, model._moments),
-                      vacuum=False)
-    evaluated = []
-    evaluate = model.evaluate
-    model.evaluate = lambda z, *args, **kwargs: (evaluated.append((float(z[0]), model._moments)),
-                                                evaluate(z, *args, **kwargs))[1]
+    model = _stand_in(1, lambda z, tight=True: rows(z), jac, vacuum=False)
     out = model.solve_boundary(None, None, x0=np.array([0.0]), verbose=1)
-    assert out["converged"] and not model._moments
-    np.testing.assert_allclose(out["x"][0] ** 3 - 2.0 * out["x"][0] + 2.0, 0.0, atol=1e-12)
-    assert next(z for z, moments in evaluated if moments) == 0.0  # the moments start where the solve started
-    evaluated.clear()
-    warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6]), False))
-    assert warm["converged"] and not any(moments for _, moments in evaluated)
+    assert not out["converged"] and abs(float(out["rows"][0])) > 0.5
+    np.testing.assert_allclose(out["x"][0], np.sqrt(2.0 / 3.0), atol=1e-3)
+    warm = model.solve_boundary(None, None, x0=np.array([-1.6]), jacobian=jac(np.array([-1.6])))
+    assert warm["converged"]
+    np.testing.assert_allclose(warm["x"][0], -1.7692923542386314, atol=1e-7)  # the root, to the step tolerance
 
 
 class _Program:
@@ -955,16 +953,15 @@ def _beta2p5_deck(mpol):
 
 
 @needs_vc
-@pytest.mark.parametrize("moments", [False, True])
 @pytest.mark.full  # minutes per case on a CPU runner; the production case is the GPU guard of the miscompile
 @pytest.mark.parametrize("case", [
     "small",
-    # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (plain moments 55-84 % off)
+    # the size at which XLA:GPU miscompiled a bare lax.map over the push's columns (columns 55-84 % off)
     "production",
 ])
-def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
-    """Finite beta, both row types (transported, plain moments): every Jacobian column pushed by the model is
-    the central difference of tightly re-solved rows."""
+def test_finite_beta_jacobian_columns_match_resolved_differences(case):
+    """Finite beta: every Jacobian column pushed by the model is the central difference of tightly re-solved
+    rows."""
     if case == "small":
         inp, n = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), 16
         field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
@@ -973,7 +970,6 @@ def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
         field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta2p5_bootstrap.json")
     nfp = int(inp.nfp)
     model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=n, ntheta=n, quadrature=(4 * nfp * n, 2 * n))
-    model._moments = moments
     x0 = np.zeros(model.x0.size)
     _, aux = model.evaluate(x0, model.params0, field, tight=True)
     J = np.asarray(model.linearize(x0, aux, field)[0])
@@ -983,9 +979,9 @@ def test_finite_beta_jacobian_columns_match_resolved_differences(case, moments):
         for sign in (1, -1):
             params = model.with_boundary(model.params0, jnp.asarray(x0 + sign * h * np.eye(x0.size)[k]))
             state, _ = model.solve(params, seed=aux[0], tight=True)
-            rows.append(np.asarray(model._rows(state, params, field, moments=moments)))
+            rows.append(np.asarray(model._rows(state, params, model.attach(field))))
         fd = (rows[0] - rows[1]) / (2 * h)
-        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), (moments, k)
+        assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd), k
 
 
 def test_vacuum_displacement_includes_the_next_poloidal_harmonic():
@@ -1087,3 +1083,108 @@ def test_finite_beta_design_gradients_for_random_profiles(seed):
         floor = 1e-3 * np.max(np.abs(exact), axis=1)  # a component far below its row's size is not resolved
         np.testing.assert_array_less(np.abs(exact[:, k] - fd), 2e-2 * np.maximum(np.abs(fd), floor) + 1e-12,
                                      err_msg=f"design coordinate {k} (seed {seed})")
+
+
+def test_deck_response_cache_round_trip_and_keys(tmp_path, monkeypatch):
+    """The deck-response cache: a stored entry comes back exactly; the key changes with any input (array bytes,
+    dataclass fields, containers) and a damaged or missing entry is a miss; with the compilation cache off there
+    is no cache at all."""
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "1")
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE_DIR", str(tmp_path))
+    rng = np.random.default_rng(1)
+    value = (tuple(jnp.asarray(rng.standard_normal((3, 4))) for _ in range(4)),
+             tuple(jnp.asarray(rng.standard_normal((2, 3, 4))) for _ in range(4)))
+    inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
+    key = fvc._digest("deck-response", inp, 48, value)
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)
+    back = fvc._deck_cache_load(key)
+    for a, b in zip(jax.tree.leaves(back), jax.tree.leaves(value)):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    bumped = np.asarray(inp.rbc).copy()
+    bumped[0, 1] += 1e-15
+    assert fvc._digest("deck-response", replace(inp, rbc=bumped), 48, value) != key
+    assert fvc._digest("deck-response", replace(inp, phiedge=inp.phiedge * (1 + 1e-15)), 48, value) != key
+    assert fvc._digest("deck-response", inp, 64, value) != key
+    assert fvc._digest("deck-response", inp, 48, value) == key and len(fvc._source_digest()) == 64
+    fvc._deck_cache_path(key).write_bytes(b"damaged")
+    assert fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value[0])  # not a deck response (4 leaves): not stored
+    assert fvc._deck_cache_load(key) is None
+    calls = []
+    fresh = fvc._digest("another deck")
+    first = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    again = fvc._deck_cached(fresh, lambda: calls.append(1) or value)
+    assert calls == [1] and len(jax.tree.leaves(first)) == len(jax.tree.leaves(again)) == 8
+    # every kind of input enters the key: mappings, registered pytrees, plain objects, anything else by repr
+    assert fvc._digest({"a": 1}) != fvc._digest({"a": 2}) and fvc._digest({"a": 1, "b": 2}) == fvc._digest({"b": 2, "a": 1})
+    from vmex.core.implicit import params_from_input
+    params = params_from_input(inp)
+    assert fvc._digest(params) != fvc._digest(replace(params, phiedge=params.phiedge + 1.0))
+    from types import SimpleNamespace
+    assert fvc._digest(SimpleNamespace(a=1)) != fvc._digest(SimpleNamespace(a=2))
+    assert fvc._digest(slice(1, 2)) != fvc._digest(slice(1, 3))
+
+    class Pair:  # a registered pytree that is no dataclass
+        def __init__(self, a, b):
+            self.a, self.b = a, b
+
+    jax.tree_util.register_pytree_node(Pair, lambda p: ((p.a, p.b), None), lambda _, c: Pair(*c))
+    assert fvc._digest(Pair(jnp.ones(2), 1.0)) != fvc._digest(Pair(jnp.ones(2), 2.0))
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE", "0")
+    assert fvc._deck_cache_path(key) is None and fvc._deck_cache_load(key) is None
+    fvc._deck_cache_store(key, value)  # no cache: a no-op
+
+
+def test_trust_region_handles_noise_loose_trials_reused_jacobians_and_its_budget(capsys):
+    """The trust region on its own (``_trust_region_boundary``): converges on rows with evaluation noise (the
+    noise measured where a fresh step no longer descends; rows within twice that noise are a root); from a reused
+    Jacobian, which it refreshes on failure; with loose trial rows, which it re-solves tight before judging
+    convergence; backs off a start without an equilibrium; and reports a spent evaluation budget as a stall.  Its
+    scale gives a bootstrap-current part the size of the current."""
+
+    def draw(x):
+        return np.random.default_rng(np.frombuffer(np.asarray(x, dtype=float).tobytes(), dtype=np.uint32)).normal(size=2)
+
+    def exact(x):
+        return np.array([x[0] ** 2 + x[1] - 3.0, x[0] - x[1] ** 3 + 7.0])
+
+    def jac(x):
+        return np.array([[2.0 * x[0], 1.0], [1.0, -3.0 * x[1] ** 2]])
+
+    noisy = _stand_in(2, lambda x, tight=True: exact(x) + 1e-6 * draw(x), jac,
+                      repeat=lambda x, params, field, aux: exact(x) - 1e-6 * draw(x))
+    out = noisy._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]))
+    assert out["converged"] and out["noise"] > 0.0
+    np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
+    reused = noisy._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]), jacobian=jac(np.array([0.5, 1.0])))
+    assert reused["converged"] and reused["njev"] >= 1
+    # loose trial rows (noise 1e-3) until the step no longer descends, then tight ones
+    loose = _stand_in(2, lambda x, tight=True: exact(x), jac)
+    loose.cfg, loose.cfg_trial = "deck", "trial"
+    loose.evaluate = lambda z, params, field, tight=False: (exact(z) + (0.0 if tight else 1e-3 * draw(z)),
+                                                            (z, None, None, tight))
+    out = loose._trust_region_boundary(None, None, x0=np.array([1.0 + 1e-4, 2.0]))
+    assert out["converged"] and out["aux"][3]
+    # a start without an equilibrium backs off toward the deck; a budget of 3 evaluations is a stall
+    far = _stand_in(2, lambda x, tight=True: exact(x), jac)
+    far.evaluate = lambda z, params, field, tight=False: (None if abs(z[0]) > 2.0 else (exact(z), (z, None, None, True)))
+    out = far._trust_region_boundary(None, None, x0=np.array([2.4, 1.0]), max_nfev=3, verbose=1)
+    assert not out["converged"] and "evaluations without convergence" in capsys.readouterr().out
+    far.evaluate = lambda z, params, field, tight=False: None
+    with pytest.raises(RuntimeError, match="no certified equilibrium"):
+        far._trust_region_boundary(None, None, x0=np.array([2.4, 1.0]))
+    # loose rows at the root are re-solved tight before convergence is declared; without a tight equilibrium a
+    # loose trial that no longer descends is no answer
+    at_root = _stand_in(2, lambda x, tight=True: exact(x), jac)
+    at_root.cfg, at_root.cfg_trial = "deck", "trial"
+    at_root.evaluate = lambda z, params, field, tight=False: (exact(z), (z, None, None, tight))
+    out = at_root._trust_region_boundary(None, None, x0=np.array([1.0, 2.0]))
+    assert out["converged"] and out["aux"][3]
+    at_root.evaluate = lambda z, params, field, tight=False: None if tight else (exact(z), (z, None, None, False))
+    assert not at_root._trust_region_boundary(None, None, x0=np.array([1.3, 1.7]))["converged"]
+    # scale: boundary displacement over R0, a current part relative to the current's RMS
+    current = _stand_in(2, lambda x, tight=True: exact(x), jac)
+    current.n_boundary, current.boundary_modes = 1, [(0, 0)]
+    np.testing.assert_allclose(current._trust_scale(np.array([0.0, 4.0])), [1.0, 1.0 / 4.0])
+    np.testing.assert_allclose(current._trust_scale(np.array([0.0, 0.0])), [1.0, 1.0])

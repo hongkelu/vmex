@@ -458,7 +458,7 @@ def solve_equilibrium(
     inp: VmecInput,
     *,
     initial_state: SpectralState | None = None,
-    raise_on_max_iterations: bool = False,
+    raise_on_max_iterations: bool = True,
     verbose: bool = False,
     forward_ftol: float | None = None,
     forward_max_iterations: int | None = None,
@@ -468,10 +468,11 @@ def solve_equilibrium(
     """Converge ``inp`` with the core multigrid solver -> :class:`Equilibrium`.
 
     ``verbose=True`` prints the VMEC iteration table, including the current
-    iteration count and force residuals.  ``raise_on_max_iterations=False``
-    by default: during optimization a
-    NITER-exhausted trial state is still a usable (penalized) sample —
-    VMEC2000 behaves the same way.  Extra keywords go to
+    iteration count and force residuals.  A ladder whose final stage stops
+    at its iteration cap short of its tolerance raises
+    (:class:`~vmex.core.errors.VmecConvergenceError`): an unconverged state is
+    never returned as an equilibrium.  ``raise_on_max_iterations=False`` is
+    the explicit opt-out for a caller that checks ``result`` itself.  Extra keywords go to
     :func:`vmex.core.multigrid.solve_multigrid`. ``forward_ftol`` and
     ``forward_max_iterations`` replace the input ladder's final tolerance and
     iteration cap, using the same names as the optimization problem API.

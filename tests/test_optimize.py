@@ -1780,3 +1780,18 @@ def test_report_targets_prints_one_verdict_line(capsys, monkeypatch):
     out = capsys.readouterr().out.splitlines()
     assert out == ["Targets met.", "Targets NOT met: beta 0.02 below 0.025.",
                    "Targets NOT met: aspect 6.5 above 6.3; min |iota| 0.4 below 0.42."]
+
+
+def test_solve_equilibrium_raises_at_its_iteration_cap():
+    """An equilibrium is never returned unconverged by default: a ladder whose last stage stops at NITER short of
+    FTOL raises; ``raise_on_max_iterations=False`` is the explicit opt-out (the result then says it did not
+    converge)."""
+    from vmex.core.errors import VmecConvergenceError
+
+    path = Path(__file__).resolve().parents[1] / "examples" / "data" / "input.solovev"
+    inp = dataclasses.replace(VmecInput.from_file(path), ns_array=np.array([11]), ftol_array=np.array([1e-30]),
+                              niter_array=np.array([30]))
+    with pytest.raises(VmecConvergenceError):
+        opt.solve_equilibrium(inp)
+    eq = opt.solve_equilibrium(inp, raise_on_max_iterations=False)
+    assert float(eq.wout.fsqr + eq.wout.fsqz + eq.wout.fsql) > 1e-30

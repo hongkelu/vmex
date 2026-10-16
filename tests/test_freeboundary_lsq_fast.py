@@ -111,6 +111,9 @@ class _ToyModel(lsq.LeastSquaresFreeBoundaryModel):
             return None
         return np.asarray(self.rows_fn(jnp.asarray(x))), (np.array(x), None, np.array(x), None)
 
+    def repeat(self, x, params, field, aux):  # deterministic rows: no noise
+        return np.asarray(self.rows_fn(jnp.asarray(x)))
+
     def _rows(self, state, params, field):
         return np.asarray(self.rows_fn(jnp.asarray(state)))
 

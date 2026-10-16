@@ -517,7 +517,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
-        noise, state_prev = 0.0, aux[0]  # the cost's measured repeatability; a state of another boundary
+        noise = 0.0  # the cost's measured repeatability
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
         for it in range(int(max_iter)):
@@ -562,13 +562,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     H_full = H_full - np.outer(Bs, Bs) / float(step_s @ Bs) + np.outer(y, y) / sy
                 model = "quasi-Newton"
             fresh = model == "exact"
-            if fresh:  # the cost's repeatability here: the same boundary re-solved from another seed
-                again = self.evaluate(x, params, field, seed=state_prev, tight=True)
+            if fresh:  # the cost's repeatability here: the same boundary solved again from a second seed, the
+                # solver's memos cleared (ThreeTermsFreeBoundaryModel.repeat; a hot restart would return the same
+                # state: LP QA 2.5 % 8x8 Redl measured 1e-13 that way against 1.2e-9 between fresh solves)
+                again = self.repeat(x, params, self._bundle(field), aux)
                 nfev += 1
                 if again is not None:
-                    noise = max(noise, abs(cost_of(again[0]) - cost_of(r)))
-                    if noise_rows is None or np.linalg.norm(again[0] - r) > np.linalg.norm(noise_rows):
-                        noise_rows = again[0] - r
+                    noise = max(noise, abs(cost_of(again) - cost_of(r)))
+                    if noise_rows is None or np.linalg.norm(again - r) > np.linalg.norm(noise_rows):
+                        noise_rows = again - r
             gs_prev, x_prev = gs_f, x.copy()
             cost = cost_of(r)
             # the null space of the constraint rows (their Jacobian from the last model) and the Lagrangian's gradient
@@ -725,7 +727,6 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                                   flush=True)
                         radius = 2.0 * radius
                 if rho > 0.1 or (tiny and cost_new <= merit):
-                    state_prev = aux[0]
                     gained = merit - cost_new
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:

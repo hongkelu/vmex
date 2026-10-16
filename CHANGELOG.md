@@ -7,6 +7,8 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (hongkelu/vmex)
 
+- Three-terms boundary band = the interior's `max(mpol-1, ntor)` at finite beta too (no 2-mode gap: QH/QI 2.5 % 12x12
+  ns101 B.n -18/-6 %); where Newton stalls the band is built up from m <= 1 (QA vac 4 cm start 18 min, was >87); no trust region.
 - `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
   (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.

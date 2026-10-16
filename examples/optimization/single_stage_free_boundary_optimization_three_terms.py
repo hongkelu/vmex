@@ -1268,6 +1268,25 @@ def main(argv=None):
     normalization_points = force_normalization_points(inp)
     coil_rows = coil_constraint(chart.coils_from_x, normalization_points, args.chunk)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
+    # wall time per kind of work since the last logged step: trial values (equilibrium solves), objective gradients
+    # (accepted-point solve + pullback), plasma-row values and Jacobians, coil-row values and Jacobians
+    timers = dict.fromkeys(("objective_values", "objective_gradients", "plasma_rows", "plasma_jacobian",
+                            "coil_rows", "coil_jacobian"), 0.0)
+
+    def timed(key, function):
+        def call(*args, **kwargs):
+            begin = time.monotonic()
+            try:
+                return function(*args, **kwargs)
+            finally:
+                timers[key] += time.monotonic() - begin
+        return call
+
+    problem.fun, problem.value_and_grad = timed("objective_values", problem.fun), timed(
+        "objective_gradients", problem.value_and_grad)
+    for constraint, kind in zip(constraints, ("plasma", "coil")):
+        constraint.fun, constraint.jac = timed(f"{kind}_rows", constraint.fun), timed(f"{kind}_jacobian",
+                                                                                         constraint.jac)
 
     def save(tag):
         x = problem.accepted.parameters
@@ -1308,6 +1327,7 @@ def main(argv=None):
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
+                   seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if intermediate_result is not None:  # the run's own state, so that --restart continues this very run
             state = dict(intermediate_result["state"])
@@ -1319,6 +1339,7 @@ def main(argv=None):
                         ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
                          "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")})
         last.update(time=now)
+        timers.update(dict.fromkeys(timers, 0.0))
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
@@ -1336,6 +1357,7 @@ def main(argv=None):
               + (f"penalty={row['penalty']:.1e} violation={row['max_violation']:.1e} "
                  if intermediate_result is not None else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "
+              f"[{', '.join(f'{key} {value:.0f}' for key, value in row['seconds'].items())}] "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:

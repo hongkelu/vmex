@@ -178,7 +178,8 @@ needs the least-squares formulation (a separate option). A solve that does not
 lower `B . n` below the deck's warns, with `normal_outside_modes`, the part its
 rows cannot reach. The edge pressure must vanish, and `virtual-casing-jax`
 must be installed for finite beta. The reported `equilibrium` is re-solved to a
-final force residual of 1e-17 (timings: {doc}`/explanation/validation`).
+final force residual of 1e-17 (timings: {doc}`/explanation/validation`;
+measured limits: {doc}`/explanation/free-boundary-limits`).
 {func}`vmex.core.freeboundary_vc.solve_free_boundary_three_terms`
 exposes the grid and quadrature controls, and its `previous=`
 restarts from an earlier result (after a coil change, say) in a few

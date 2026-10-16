@@ -18,7 +18,7 @@ revision it was measured at, and the pages that cite it.
   dense LU (`forward_dense_jax`) or O(ns) block factors (`structured`, 15.4->7.8 GiB at 8x8); PHIEDGE, current via
   `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)`; new `opt.axis_iota`/`axis_field_strength`/
   `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
-- Example `single_stage_free_boundary_seed.py`: rotating ellipse -> finite-beta coils -> seed.
+- Example `single_stage_free_boundary_seed.py` (ellipse -> coils -> seed); free-boundary limits measured in the docs.
 
 ## 0.11.10 - 2026-10-13
 

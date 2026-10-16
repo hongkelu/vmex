@@ -508,8 +508,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         # its fields to about sqrt(FTOL) relative, so the rows are restored to that level, not further.
         tol_c = float(np.sqrt(self.cfg.ftol))
 
-        def violation(rows):  # the constraint rows' l1 norm (the merit function's penalty term)
-            return float(np.sum(np.abs(rows[k:])))
+        def violation(rows):
+            """The merit function's penalty term: the constraint rows' l1 norm beyond sqrt(FTOL) -- below it they
+            are the equilibria's noise (a trial solved from another state moves them by ~1e-9 with the Redl rows,
+            which the penalty would otherwise weigh against gains of 1e-12)."""
+            return float(np.sum(np.maximum(np.abs(rows[k:]) - tol_c, 0.0)))
 
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None

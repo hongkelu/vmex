@@ -1249,3 +1249,34 @@ def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_s
     calls.clear()
     stalled = model.solve_boundary(model.params0, field)  # this band's Newton result, reported as a stall
     assert not stalled["converged"] and stalled["band"] == 1 and stalled["x"].size == model.x0.size
+
+
+def test_rereference_failures_keep_the_deck():
+    """A deck that cannot be re-referenced, or a new deck on which the trial does not converge, leaves the problem
+    on its deck: the trial fails and nothing of the new model remains."""
+    fixed = fvc.ThreeTermsFreeBoundaryModel.__new__(fvc.ThreeTermsFreeBoundaryModel)
+    fixed.fixed_boundary = True
+    with pytest.raises(ValueError, match="no boundary to re-reference"):
+        fixed.rereferenced(np.zeros(1))
+
+    problem = fvc.ThreeTermsFreeBoundaryProblem.__new__(fvc.ThreeTermsFreeBoundaryProblem)
+    deck = type("Deck", (), {})()
+    problem.__dict__.update({name: object() for name in problem._BOUND}, model=deck, boundary_max_nfev=5,
+                            field=lambda x: None, stats=dict(boundary_evaluations=0), references=[])
+    bound = dict((name, problem.__dict__[name]) for name in problem._BOUND)
+
+    def no_deck(b):
+        raise VmecError("no equilibrium on that boundary")
+
+    deck.rereferenced = no_deck
+    assert problem._rereference(np.zeros(2), dict(b=np.zeros(3))) is None
+    other = type("Other", (), {"solve_boundary": lambda self, *a, **k: dict(converged=False, nfev=4)})()
+    deck.rereferenced = lambda b: other
+
+    def bind(model, x):
+        problem.model, problem._params_at = model, lambda x: None
+
+    problem._bind = bind
+    assert problem._rereference(np.zeros(2), dict(b=np.zeros(3))) is None
+    assert all(problem.__dict__[name] is bound[name] for name in problem._BOUND) and problem.model is deck
+    assert problem.stats["boundary_evaluations"] == 4 and problem.references == []

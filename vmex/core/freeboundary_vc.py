@@ -1071,13 +1071,9 @@ class ThreeTermsFreeBoundaryModel:
             raise ValueError("a fixed-boundary model has no boundary to re-reference")
         inp, options = self._source
         boundary = self.with_boundary(self.params0, jnp.asarray(x))
-        rbc, zbs = np.asarray(boundary.rbc), np.asarray(boundary.zbs)
-        if rbc.shape != np.shape(inp.rbc):  # the deck's own arrays: the band's modes in their places
-            raise ValueError(f"boundary arrays {rbc.shape} do not match the deck's {np.shape(inp.rbc)}")
+        rbc, zbs = np.asarray(boundary.rbc), np.asarray(boundary.zbs)  # the deck's arrays, the band's modes set
         other = ThreeTermsFreeBoundaryModel(replace(inp, rbc=rbc, zbs=zbs), max_mode=self.max_mode, **options)
         nb = self.n_boundary
-        if other.n_boundary != nb or other.x0.size != np.size(x):
-            raise ValueError("the re-referenced model has other coordinates")
         other.x0 = np.r_[other.x0[:nb], np.asarray(x, dtype=float)[nb:]]
         return other
 

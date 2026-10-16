@@ -215,6 +215,15 @@ def _plasma_below_roundoff(inp: VmecInput) -> bool:
     return bool(B_current <= eps * B_t and B_pressure <= eps * B_t)
 
 
+def _check_edge_pressure(inp: VmecInput) -> None:
+    """Reject a deck whose pressure does not vanish at the boundary: without a sheet current the interface
+    conditions (module docstring) need ``p(1) = 0`` (to ``1e-8`` of the peak pressure)."""
+    p_edge, p_max = _edge_pressure(inp)
+    if abs(p_edge) > 1e-8 * p_max:
+        raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
+                         "boundary pressure must vanish")
+
+
 def _axis_loop(wout):
     """Points ``(3, n)``, tangent and spacing of the magnetic axis of ``wout``: a closed curve inside the coils."""
     phi = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
@@ -499,10 +508,7 @@ def solve_free_boundary_three_terms(
 
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
-    p_edge, p_max = _edge_pressure(inp)
-    if abs(p_edge) > 1e-8 * p_max:
-        raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
-                         "boundary pressure must vanish")
+    _check_edge_pressure(inp)
     if external_field is None:
         external_field = _external_field_from_input(inp, mgrid_path)
     if previous is not None:
@@ -616,7 +622,10 @@ class ThreeTermsFreeBoundaryModel:
     as traced :class:`~vmex.core.implicit.ImplicitParams`, and the external
     field enters the compiled interface rows as an argument: neither new coils
     nor new plasma parameters recompile anything, which is what an optimizer
-    that solves the free boundary at every step needs.
+    that solves the free boundary at every step needs.  As in
+    :func:`solve_free_boundary_three_terms`, a deck whose pressure does not
+    vanish at the boundary is rejected: the rows have no sheet current to
+    carry a pressure jump.
 
     Coordinates: ``x`` is the displacement ``h`` of the deck's boundary on
     its modes up to ``max_mode`` (``x0 = 0`` the deck; ``x_scale`` their ESS
@@ -678,6 +687,8 @@ class ThreeTermsFreeBoundaryModel:
                        and (fixed.ac is None or not np.any(np.asarray(fixed.ac, dtype=float))))
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
+        if not self.fixed_boundary:  # the interface rows assume p(1) = 0, as the public solve does
+            _check_edge_pressure(fixed)
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
         # At finite beta the boundary keeps fewer modes than the interior (the fixed-boundary convention, mpol - 2

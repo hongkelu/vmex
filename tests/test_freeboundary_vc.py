@@ -122,6 +122,9 @@ def test_nonzero_edge_pressure_is_rejected():
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
     with pytest.raises(ValueError, match="edge pressure"):
         fvc.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
+    # the model too (and so the single-stage problem built on it): its rows have no sheet current either
+    with pytest.raises(ValueError, match="edge pressure"):
+        fvc.ThreeTermsFreeBoundaryModel(inp)
 
 
 def test_asymmetric_boundary_is_rejected():
@@ -1027,3 +1030,60 @@ def test_round_off_current_keeps_the_vacuum_formulation():
     assert (zero.max_mode, zero.n_boundary, zero.boundary_modes) == (
         roundoff.max_mode, roundoff.n_boundary, roundoff.boundary_modes)
     assert not fvc.ThreeTermsFreeBoundaryModel(replace(lp, curtor=1e3)).vacuum
+
+
+@needs_vc
+@pytest.mark.full  # about 6 min per draw on a CPU runner
+@pytest.mark.parametrize("seed", [0, 1])
+def test_finite_beta_design_gradients_for_random_profiles(seed):
+    """Design gradients of the finite-beta free boundary for random pressure and current profiles.
+
+    LP QA at 0.5 % beta with its fitted coils (mpol 3, ns 11, 16 x 16 grids). The pressure is
+    ``p0 (1 - s)(1 + a1 s + a2 s^2)`` (zero at the edge) and the current a power series in ``I'(s)``, with
+    coefficients drawn from ``seed``. The design moves the coil currents, PRES_SCALE, AM[1], AC[0], AC[1] and
+    CURTOR. Implicit-function gradients of the aspect ratio, iota at the edge and the major radius are compared
+    with central differences of re-solved free boundaries of the same problem. The GPU sweep behind this test
+    (8 x 8, QA/QH/QI decks, peaked, broad and edge-current profiles, the Redl current in the solve) agrees to
+    1e-4 or better at its best step, limited by the re-solves' noise.
+    """
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+    from vmex.core.implicit import iota_edge
+
+    rng = np.random.default_rng(seed)
+    deck = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11)
+    a1, a2 = rng.uniform(-0.5, 0.5, 2)
+    am = np.zeros_like(np.asarray(deck.am, dtype=float))
+    am[:4] = float(deck.am[0]) * np.convolve([1.0, -1.0], [1.0, a1, a2])  # p(1) = 0
+    ac = np.zeros_like(np.asarray(deck.ac, dtype=float))
+    ac[:3] = rng.uniform(-1.0, 1.0, 3) + np.array([1.5, 0.0, 0.0])  # I'(0) > 0: a monotonic enclosed current
+    deck = replace(deck, am=am, pcurr_type="power_series", ac=ac, ac_aux_s=None, ac_aux_f=None,
+                   curtor=float(deck.curtor) * rng.uniform(0.5, 1.0))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    plasma = (("pres_scale", None), ("am", 1), ("ac", 0), ("ac", 1), ("curtor", None))
+    scale = [abs(float(getattr(deck, f) if i is None else np.asarray(getattr(deck, f))[i])) for f, i in plasma]
+
+    def plasma_at(params, x):
+        changes = {}
+        for k, ((name, i), s) in enumerate(zip(plasma, scale)):
+            value = changes.get(name, getattr(params, name))
+            changes[name] = value + x[1 + k] * s if i is None else value.at[i].add(x[1 + k] * s)
+        return replace(params, **changes)
+
+    n = 1 + len(plasma)
+    problem = FreeBoundaryProblem.from_loss(
+        deck, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(n),
+        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[0])),
+        plasma_from_parameters=plasma_at, quantities=(iota_edge, opt.major_radius),
+        boundary_condition="three_terms",
+        three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80))
+    x0 = problem.x0
+    _, grad = problem.value_and_grad(x0)
+    exact = np.vstack([grad, problem.constraint_jac(x0)])
+    h = 3e-3
+    for k in range(n):
+        e = h * np.eye(n)[k]
+        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        fd = (values[0] - values[1]) / (2 * h)
+        floor = 1e-3 * np.max(np.abs(exact), axis=1)  # a component far below its row's size is not resolved
+        np.testing.assert_array_less(np.abs(exact[:, k] - fd), 2e-2 * np.maximum(np.abs(fd), floor) + 1e-12,
+                                     err_msg=f"design coordinate {k} (seed {seed})")

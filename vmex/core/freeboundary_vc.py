@@ -511,6 +511,33 @@ def newton_step_converged(step_rms: float, noise_rms: float, scale: float) -> bo
     return bool(step_rms <= max(float(noise_rms), float(np.sqrt(np.finfo(float).eps)) * float(scale)))
 
 
+def _trust_region_step(J, r, scale, radius):
+    """``(p, bounded)``: the minimizer of ``|J p + r|`` over ``|scale * p| <= radius`` and whether the bound is
+    active.  Exact through the SVD of ``A = J diag(1/scale)``: ``q(lam) = -V diag(s / (s^2 + lam)) U^T r``
+    (``q = scale * p``), the Newton step at ``lam = 0`` when it fits, otherwise the ``lam > 0`` with
+    ``|q(lam)| = radius`` (``|q|`` decreases with ``lam``; bisection in ``log lam`` to round-off).
+    """
+    J, r, scale = (np.asarray(a, dtype=float) for a in (J, r, scale))
+    U, s, Vt = np.linalg.svd(J / scale[None, :], full_matrices=False)
+    b = U.T @ r
+
+    def q(lam):
+        return -(Vt.T @ (s * b / (s * s + lam)))
+
+    if s[-1] > 0.0 and np.linalg.norm(q(0.0)) <= radius:
+        return q(0.0) / scale, False
+    lo, hi = 0.0, float(np.linalg.norm(s * b)) / radius  # |q(hi)| <= |A^T r| / hi = radius
+    for _ in range(200):
+        mid = np.sqrt(lo * hi) if lo > 0.0 else hi * 1e-12
+        if np.linalg.norm(q(mid)) > radius:
+            lo = mid
+        else:
+            hi = mid
+        if lo > 0.0 and hi - lo <= 4.0 * np.finfo(float).eps * hi:
+            break
+    return q(hi) / scale, True
+
+
 def _newton_step(J, r):
     """The Newton step ``-J^-1 r`` of the square system, or ``None`` when ``J`` is numerically singular.
 
@@ -960,20 +987,13 @@ class ThreeTermsFreeBoundaryModel:
         # B.n/B0 is a dimensionless moment of B.n/B0 (as are the finite-beta rows, with the same factor).
         length = float(np.asarray(fixed.rbc)[int(fixed.ntor), 0])
         phi_grid = jnp.asarray(phi[:, 0])
-        m_b = jnp.asarray([m for m, _ in self.boundary_modes[:-1]], dtype=float)[:, None, None]
-        n_b = jnp.asarray([n * nfp for _, n in self.boundary_modes[:-1]], dtype=float)[:, None, None]
-        test_sine = jnp.sin(m_b * theta[None] - n_b * phi[None])  # boundary modes but (0, 0): B.n is odd
         if vacuum:
             # The boundary arrays are linear in x: their derivatives along x.
             boundary = jax.jacfwd(lambda x: self.with_boundary(self.params0, x))(jnp.asarray(self.x0))
             to_x = (boundary.rbc.reshape(-1, self.x0.size), boundary.zbs.reshape(-1, self.x0.size))
 
-        def interface_rows(state, params, field, moments=False):
-            """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary).
-
-            ``moments=True`` (finite beta): plain sine moments of ``B_out . n`` instead of the deck-response rows,
-            the robust start of :meth:`solve_boundary` (no field in the test functions).
-            """
+        def interface_rows(state, params, field):
+            """The interface rows of the module docstring at ``state`` (solved on ``params``' boundary)."""
             deck, field = (field.deck, field.field) if isinstance(field, _DeckField) else (None, field)
             runtime = im.runtime_from_params(params, cfg)
             G_coil = jnp.abs(_net_current(field, *axis))
@@ -990,8 +1010,6 @@ class ThreeTermsFreeBoundaryModel:
             B_out = vc.PlasmaVacuumInterface.from_surface_data(
                 data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
             Bn = (jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / B0).ravel()
-            if moments:
-                return jnp.concatenate([2.0 * test_sine.reshape(test_sine.shape[0], -1) @ (weight * Bn), current])
             # test functions: the exact response of the pointwise sqrt(w) B.n / |B_in| to each boundary coordinate
             # at the deck (plasma response included; _deck_response), for this field: R0 d r_deck / d h_k
             if deck is None:
@@ -1073,15 +1091,14 @@ class ThreeTermsFreeBoundaryModel:
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
         im, cfg = self._im, self.cfg
 
-        def rows(state, params, field, moments=False):
-            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field, moments)]
+        def rows(state, params, field):
+            parts = [] if self.fixed_boundary else [self.interface_rows(state, params, field)]
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, im.runtime_from_params(params, cfg), params))
             return jnp.concatenate(parts)
 
         self.rows = rows
-        self._rows = jax.jit(rows, static_argnames="moments")
-        self._moments = False  # solve_boundary's robust start (finite beta) uses the plain moments
+        self._rows = jax.jit(rows)
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
@@ -1132,16 +1149,16 @@ class ThreeTermsFreeBoundaryModel:
 
         self._tangents = tangents
         self.push = push
-        push_rows = jax.jit(lambda state, mask, params, dz, pb, field, moments=False: push(
-            lambda s, p: rows(s, p, field, moments), state, mask, params, dz, pb), static_argnames="moments")
+        push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
+            lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
 
-        def push_rows_padded(state, mask, params, dz, pb, field, moments=False):
+        def push_rows_padded(state, mask, params, dz, pb, field):
             """``push_rows`` one whole chunk at a time: one executable for any number of columns."""
             n = jax.tree.leaves(dz)[0].shape[0]
             state, mask, params, dz, pb = im._canonical_arrays(cfg, (state, mask, params, im._padded(dz, self.chunk),
                                                                      im._padded(pb, self.chunk)))
             pieces = [push_rows(state, mask, params, jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], dz),
-                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field, moments=moments)
+                                jax.tree.map(lambda a, lo=lo: a[lo:lo + self.chunk], pb), field)
                       for lo in range(0, jax.tree.leaves(dz)[0].shape[0], self.chunk)]
             return jnp.concatenate(pieces)[:n]
 
@@ -1284,7 +1301,7 @@ class ThreeTermsFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return (np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments)),
+        return (np.asarray(self._rows(state, params_x, self.attach(field))),
                 (state, mask, params_x, tight))
 
     def boundary_directions(self, params, x):
@@ -1303,7 +1320,7 @@ class ThreeTermsFreeBoundaryModel:
         for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
-        key = _fingerprint(x, params_x, field) + ("moments" if self._moments else "")
+        key = _fingerprint(x, params_x, field)
         extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
         if last is not None and last[0] == key and extra_key in (None, last[1]):
@@ -1344,8 +1361,7 @@ class ThreeTermsFreeBoundaryModel:
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
-        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, self.attach(field),
-                                                        moments=self._moments)).T
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, self.attach(field))).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
@@ -1358,7 +1374,7 @@ class ThreeTermsFreeBoundaryModel:
     def rows_at(self, aux, field):
         """The rows of a solved ``aux = (state, mask, params, tight)`` (no solve)."""
         state, _, params_x, _ = aux
-        return np.asarray(self._rows(state, params_x, self.attach(field), moments=self._moments))
+        return np.asarray(self._rows(state, params_x, self.attach(field)))
 
     def repeat(self, x, params, field, aux):
         """The rows at ``x`` solved again, to the deck's tolerance, from a second seed; ``None`` if that fails.
@@ -1390,6 +1406,19 @@ class ThreeTermsFreeBoundaryModel:
             ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
         return ok
 
+    def _trust_scale(self, x):
+        """Per-coordinate scale ``S`` of the trust region: ``|S p|^2`` is the step's squared RMS boundary
+        displacement over ``R0^2`` plus its bootstrap-current part's squared RMS over that of ``x`` -- the
+        relative sizes :meth:`_step_converged` judges, so the region has no unit of its own."""
+        nb = self.n_boundary
+        weight = np.array([1.0 if (int(m), int(n)) == (0, 0) else 0.5 for m, n in (self.boundary_modes if nb else ())])
+        scale = np.sqrt(weight) / self.R0
+        if np.size(x) > nb:  # the bootstrap current: RMS of its knot values relative to the current's
+            current = np.asarray(x[nb:], dtype=float)
+            size = float(np.sqrt(np.mean(np.square(current))))
+            scale = np.r_[scale, np.full(current.size, 1.0 / (np.sqrt(current.size) * (size if size > 0.0 else 1.0)))]
+        return scale
+
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
@@ -1416,7 +1445,7 @@ class ThreeTermsFreeBoundaryModel:
         J, fresh, slow, nfev, njev, steps, started = jacobian, False, False, 1, 0, 0, time.perf_counter()
         # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
         noises = self.__dict__.setdefault("_row_noise", {})
-        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get(self._moments)
+        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
         damped = False
         while nfev < max_nfev:
             if J is None:
@@ -1483,7 +1512,7 @@ class ThreeTermsFreeBoundaryModel:
                         if again is not None:
                             noise = again - r if noise is None or (np.linalg.norm(again - r)
                                                                    > np.linalg.norm(noise)) else noise
-                            noises[self._moments] = noise
+                            noises["rows"] = noise
                             converged = self._step_converged(p, _newton_step(J, noise), x)
                     if not converged and verbose:
                         print(f"Newton stalled: cost {cost:.6e}, step not within the rows' noise", flush=True)
@@ -1498,35 +1527,170 @@ class ThreeTermsFreeBoundaryModel:
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
                     converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
 
+    def _trust_region_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+        """The boundary where the square rows vanish: Newton steps in a trust region.
+
+        Each step is the trust-region step of the Jacobian, the minimizer of ``|J p + r|`` over
+        ``|S p| <= radius`` (:func:`_trust_region_step`), with ``S`` the coordinates' relative scale
+        (:meth:`_trust_scale`: boundary displacement in units of ``R0``).  When the Newton step fits it is that
+        step, so convergence is quadratic and the answer is the rows' root.  The radius starts at the first
+        Newton step's length and follows the ratio ``rho`` of the actual to the predicted reduction of
+        ``|rows|^2`` (More 1978; Nocedal and Wright, ch. 4): quartered below 1/4, doubled above 3/4 for a bounded
+        step; a trial without a certified equilibrium has ``rho = -1``.  Far from the root -- an indefinite
+        Jacobian (the vacuum rows' Hessian at a 2 cm start: 12 negative eigenvalues, a Newton step of 129 mm),
+        an optimizer's large design step -- this keeps every step inside the region where the rows' linear model
+        holds, instead of shortening a step that points the wrong way.  A given ``jacobian`` (of a nearby point)
+        is reused while its steps reduce the rows ten-fold; otherwise, and whenever its step fails, the Jacobian
+        is refreshed.  Converged when the Newton step at a tight evaluation is within
+        :func:`newton_step_converged`'s tolerance: round-off, or the step that the rows' measured noise
+        (:meth:`repeat`, measured once a fresh Jacobian's step at round-off length finds no descent) produces.
+        A singular Jacobian, or no descent at round-off length beyond that noise, is a stall (``converged=False``):
+        a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial points solved to
+        ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
+        """
+        x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
+        got = self.evaluate(x, params, field)
+        for fraction in (0.75, 0.5, 0.25, 0.0):  # a far start may have no equilibrium: back off toward the deck
+            if got is not None or not np.any(x):  # (this only moves the start, never the answer)
+                break
+            x = fraction * x
+            got = self.evaluate(x, params, field)
+        if got is None:
+            raise RuntimeError("the starting boundary has no certified equilibrium")
+        r, aux = got
+        J, fresh, nfev, njev, steps, started = jacobian, False, 1, 0, 0, time.perf_counter()
+        # the rows' measured noise (a vector of row differences), kept by the model for later solves of its rows
+        noises = self.__dict__.setdefault("_row_noise", {})
+        converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
+        radius = None  # the trust region's radius (relative; :meth:`_trust_scale`)
+        noise_at = None  # the point the rows' noise was last measured at
+        while nfev < max_nfev:
+            if J is None:
+                J, _, _, aux = self.linearize(x, aux, field)
+                J, fresh, njev = np.asarray(J), True, njev + 1
+                if not got[1][3] and aux[3]:  # the rows of the tight state the Jacobian belongs to
+                    r, got = self.rows_at(aux, field), (None, aux)
+            p = _newton_step(J, r)
+            if p is None:  # singular Jacobian: no Newton step
+                if not fresh:
+                    J = None
+                    continue
+                if verbose:
+                    print("Newton stalled: singular Jacobian", flush=True)
+                break
+            # the step of a Jacobian at this point or a nearby one (the previous point, ``previous=``, the
+            # single-stage anchor) is the distance to the root to first order
+            if self._step_converged(p, None if noise is None else _newton_step(J, noise), x):
+                if got[1][3]:  # converged: the last step leaves an error O(|p|^2), kept if it does not raise the rows
+                    converged, final = True, self.evaluate(x + p, params, field, tight=True)
+                    nfev += 1
+                    if final is not None and final[0] @ final[0] <= r @ r:
+                        x, (r, aux), steps = x + p, final, steps + 1
+                    break
+                tight, got = True, self.evaluate(x, params, field, tight=True)  # converge on tight rows only
+                nfev += 1
+                if got is None:
+                    break
+                r, aux = got
+                continue
+            cost = 0.5 * float(r @ r)
+            scale = self._trust_scale(x)
+            if radius is None:  # the first Newton step's own length: the trust region starts where Newton points
+                radius = float(np.linalg.norm(scale * p))
+            q, bounded = _trust_region_step(J, r, scale, radius)
+            predicted = cost - 0.5 * float(np.sum((r + J @ q) ** 2))
+            trial = self.evaluate(x + q, params, field, tight=tight)
+            nfev += 1
+            new_cost = np.inf if trial is None else 0.5 * float(trial[0] @ trial[0])
+            rho = (cost - new_cost) / predicted if predicted > 0.0 and np.isfinite(new_cost) else -1.0
+            accepted = trial if rho > 1e-4 else None
+            deviation = None if trial is None else np.asarray(trial[0]) - (r + J @ q)
+            if verbose:
+                print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}"
+                      f"{f' (trust region {radius:.3g})' if bounded else ''}: rho {rho:.3g}, cost {cost:.6e} -> "
+                      f"{new_cost:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
+            # the radius follows how well the model predicted the rows (More 1978; Nocedal and Wright, Alg. 4.1):
+            # a quarter of the step below 1/4, doubled above 3/4 for a bounded step
+            length = float(np.linalg.norm(scale * q))
+            if rho < 0.25:
+                radius = 0.25 * length
+            elif rho > 0.75 and bounded:
+                radius = 2.0 * radius
+            if accepted is None:
+                if not fresh:  # a reused Jacobian's step: refresh it at this point
+                    J = None
+                    continue
+                if not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
+                    tight, J, got = True, None, self.evaluate(x, params, field, tight=True)
+                    nfev += 1
+                    if got is None:  # no certified equilibrium at the deck's tolerance
+                        break
+                    r, aux = got
+                    continue
+                # a fresh Jacobian's step found no descent: the rows' noise (a cost that no step length moves), or
+                # a model to trust less.  The noise is measured once (a second solve of this boundary) and the
+                # Newton step judged against it, as at the top of the loop; within it, this point is the root.
+                if noise_at is not x and got[1][3] and nfev < max_nfev:  # measured here once
+                    again = self.repeat(x, params, field, aux)
+                    nfev += 1
+                    noise_at = x
+                    if again is not None:
+                        if noise is None or np.linalg.norm(again - r) > np.linalg.norm(noise):
+                            noise = again - r
+                            noises["rows"] = noise
+                        if self._step_converged(p, _newton_step(J, noise), x):
+                            converged = True
+                            break
+                if not self._step_converged(q, None, x):
+                    continue  # a shorter step of the same Jacobian
+                # at round-off length the linear model's second-order error is below round-off, so the trial's
+                # deviation from it is the rows' noise
+                if deviation is not None and (noise is None or np.linalg.norm(deviation) > np.linalg.norm(noise)):
+                    noise = deviation
+                    noises["rows"] = noise
+                    if self._step_converged(p, _newton_step(J, noise), x):
+                        converged = True
+                        break
+                # rows no larger than the noise are zero to what the rows resolve: a noise sample is the difference of
+                # two solves of the rows, each carrying an independent draw, so up to twice one draw
+                if noise is not None and np.linalg.norm(r) <= 2.0 * np.linalg.norm(noise):
+                    converged = True
+                    break
+                if verbose:  # no descent at round-off length beyond the noise: a minimum of |rows|^2, no root
+                    print(f"Newton stalled: cost {cost:.6e}, step not within the rows' noise", flush=True)
+                break
+            x, got, steps = x + q, accepted, steps + 1
+            r, aux = got
+            if new_cost > 1e-2 * cost:  # slower than a 10x residual reduction a step: refresh the Jacobian
+                J = None
+            fresh = False  # a kept Jacobian is now of the previous point
+        else:  # the evaluation budget ran out
+            if verbose:
+                print(f"Newton stalled: {nfev} evaluations without convergence", flush=True)
+        return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
+                    converged=converged, noise=None if noise is None else float(np.linalg.norm(noise)))
+
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the reference surface).
 
         See :meth:`_newton_boundary`; returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask,
         params, tight), ``nfev``, ``njev``, ``accepted`` (steps) and ``converged``.
 
-        At finite beta Newton on the deck-response rows converges from the deck (LP QA 2.5 %, 8 x 8 and 12 x 12;
-        the qa6 seed with its initial coils, where moments-led rows that leave out the plasma response stalled).
-        Should a cold solve (no ``jacobian``) need to shorten a Newton step, it solves the plain sine moments of
-        ``B . n`` on the same modes from the start (no field in their test functions) and then the rows from the
-        moments' root; a warm solve (a ``jacobian`` of a nearby point: a restart, an optimizer's trial) takes
-        the same route when Newton on the rows stalls.
+        Newton with backtracking (:meth:`_newton_boundary`) first: from a start in its basin it converges in a few
+        full steps.  When it stalls -- a far start, where the Jacobian can be indefinite (the vacuum rows' Hessian
+        at a 2 cm start: 12 negative eigenvalues, a Newton step of 129 mm) and every shortening of the Newton step
+        points the wrong way -- the trust region (:meth:`_trust_region_boundary`) continues from the point it
+        reached, with its Jacobian.
         """
-        cold = jacobian is None and not (self.vacuum or self.fixed_boundary)
-        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
-                                    undamped=cold)
-        if out["converged"] or self.vacuum or self.fixed_boundary:
+        out = self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        if out["converged"]:
             return out
         if verbose:
-            print(f"Newton on the deck-response rows {'needs damping' if out['damped'] else 'stalled'}: "
-                  "plain moments first", flush=True)
-        self._moments = True
-        try:
-            start = self._newton_boundary(params, field, x0=x0, max_nfev=max_nfev, verbose=verbose)
-        finally:
-            self._moments = False
-        final = self._newton_boundary(params, field, x0=start["x"], max_nfev=max_nfev, verbose=verbose)
+            print("Newton stalled: the trust region from its last point", flush=True)
+        final = self._trust_region_boundary(params, field, x0=out["x"], jacobian=out["jacobian"], max_nfev=max_nfev,
+                                            verbose=verbose)
         for key in ("nfev", "njev"):
-            final[key] += out[key] + start[key]
+            final[key] += out[key]
         return final
 
 

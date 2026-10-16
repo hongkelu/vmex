@@ -1518,9 +1518,11 @@ class ThreeTermsFreeBoundaryModel:
         that noise are zero to what they resolve.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
         (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
         points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
-        ``undamped=True`` returns, not converged, at the first fresh-Jacobian Newton step that descends only once
-        shortened (with ``damped=True`` in the result): the point lies outside the rows' Newton basin.  A fresh step
-        that does not descend at any length goes to the noise test as without it.
+        ``undamped=True`` returns, not converged, when two fresh-Jacobian Newton steps in a row descend only once
+        shortened (with ``damped=True`` in the result): the refreshed Jacobian did not restore full steps, so the
+        point lies outside the rows' Newton basin (one shortened step is common on the way in from a far start:
+        QA and QI in vacuum, 12 x 12, from 5 mm).  A fresh step that does not descend at any length goes to the
+        noise test as without it.
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1537,6 +1539,7 @@ class ThreeTermsFreeBoundaryModel:
         noises = self.__dict__.setdefault("_row_noise", {})
         converged, tight, noise = False, self.cfg_trial is self.cfg, noises.get("rows")
         damped = False
+        shortened = False  # the last fresh-Jacobian step descended only once shortened
         while nfev < max_nfev:
             if J is None:
                 J, _, _, aux = self.linearize(x, aux, field)
@@ -1582,9 +1585,12 @@ class ThreeTermsFreeBoundaryModel:
                 new = np.inf if accepted is None else 0.5 * float(accepted[0] @ accepted[0])
                 print(f"Newton step {steps + 1}{' (fresh J)' if fresh else ''}: t {t:.3g}, cost {cost:.6e} -> "
                       f"{new:.6e} ({time.perf_counter() - started:.1f} s)", flush=True)
-            if undamped and fresh and t < 1.0 and accepted is not None:  # keep the shortened step's progress
-                x, (r, aux), steps, damped = x + t * p, accepted, steps + 1, True
-                break
+            if fresh and accepted is not None:
+                # a refreshed Jacobian that again descends only along a shortened step: outside the Newton basin
+                if undamped and t < 1.0 and shortened:  # keep the shortened step's progress
+                    x, (r, aux), steps, damped = x + t * p, accepted, steps + 1, True
+                    break
+                shortened = t < 1.0
             if accepted is None:
                 if fresh and not tight:  # the trials' looser force tolerance is the rows' noise: solve them tight
                     tight, J, got = True, None, self.evaluate(x, params, field, tight=True)

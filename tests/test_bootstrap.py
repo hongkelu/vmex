@@ -994,6 +994,23 @@ def test_near_axis_redl_mean_is_the_converged_integral_of_the_ratio():
         assert low < mean < high
 
 
+def test_interpolant_extremum_is_the_larger_of_two_near_equal_maxima():
+    """Two local maxima, the higher one between grid points and the lower one on a grid point (whose grid value is
+    the grid maximum): the extremum is the higher one's, 1 + delta + 0.1, and it is continuous in delta -- refining
+    only from the grid maximum returned the lower one, 1 - delta + 0.1 (a jump of 2 delta)."""
+    nt, nz = 9, 5  # odd nt: the maxima half a turn apart sit half a cell from each other's grid phase
+    t = 2 * np.pi * np.arange(nt)[:, None] / nt
+    z = 2 * np.pi * np.arange(nz)[None, :] / nz
+    phase = np.pi / nt  # the higher maximum half a cell off the grid
+    for delta in (1e-2, 1e-3):
+        u = t - phase
+        modB = jnp.asarray((np.cos(2 * u) + delta * np.cos(u) + 0.1 * np.cos(z))[None])
+        assert np.unravel_index(int(np.argmax(modB[0])), (nt, nz))[0] == 5  # the lower maximum's grid point
+        np.testing.assert_allclose(float(bs._interpolant_extremum(modB, 1.0)[0]), 1.1 + delta, rtol=0, atol=1e-13)
+        assert float(bs._interpolant_extremum(modB, 1.0, candidates=1)[0]) < 1.1 - 0.5 * delta  # the old jump
+        # the minimum, cos u = -delta / 4: -1 - delta^2 / 8 - 0.1
+        np.testing.assert_allclose(float(bs._interpolant_extremum(modB, -1.0)[0]), -1.1 - delta ** 2 / 8,
+                                   rtol=0, atol=1e-13)
 @pytest.mark.parametrize("helicity_n", [None, 2, -2, 0.5, True])
 def test_redl_refuses_a_field_that_is_not_qa_or_qh(helicity_n):
     """Redl's model is for quasi-symmetric fields: helicity 0 (QA) or +/-1 (QH), required; a QI field (no

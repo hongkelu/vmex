@@ -726,9 +726,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         radius = 2.0 * radius
                 if rho > 0.1 or (tiny and cost_new <= merit):
                     state_prev = aux[0]
+                    gained = merit - cost_new
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
                         callback(np.asarray(x).copy())
+                    if fresh and noise > 0 and gained <= noise and feasible:
+                        # the exact model's step gained no more than the cost's measured repeatability: what is
+                        # left is below what the equilibria resolve (LP QA 2.5 % 8x8 Redl: seven more cycles of
+                        # 1e-10 gains against a repeatability of 1e-9)
+                        converged, status = True, "converged: gain below the cost's repeatability"
                     if rho < 0.25 and not tiny:  # a poor model: the next better one at the new point
                         need = "exact" if model == "gauss_newton" else "gauss_newton"
                     break

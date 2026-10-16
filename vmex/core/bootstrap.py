@@ -599,6 +599,23 @@ def trapped_fraction_from_state(
 # ===========================================================================
 
 
+REDL_HELICITIES = (0, 1, -1)  # QA, QH: the quasi-symmetries Redl's fit (and simsopt's j_dot_B_Redl) covers
+
+
+def redl_helicity(helicity_n) -> int:
+    """``helicity_n`` checked for Redl's model: 0 (quasi-axisymmetry) or +/-1 (quasi-helical symmetry, units of
+    ``nfp``).  Redl's formulae assume a quasi-symmetric field (the isomorphism ``iota -> iota - N``); a
+    quasi-isodynamic or otherwise non-quasi-symmetric field has no such helicity and is refused, as is a missing
+    one (no default: a QI deck must not silently take the QA isomorphism)."""
+    if helicity_n is None:
+        raise ValueError("Redl's bootstrap model needs the field's quasi-symmetry helicity_n: 0 (QA) or +/-1 (QH); "
+                         "it is not valid for quasi-isodynamic (QI) or other non-quasi-symmetric fields")
+    if isinstance(helicity_n, bool) or int(helicity_n) != helicity_n or int(helicity_n) not in REDL_HELICITIES:
+        raise ValueError(f"helicity_n={helicity_n!r}: Redl's bootstrap model covers QA (0) and QH (+/-1) only, "
+                         "not quasi-isodynamic (QI) or other non-quasi-symmetric fields")
+    return int(helicity_n)
+
+
 def j_dot_B_redl(
     profiles: KineticProfiles,
     geom: RedlGeometry,
@@ -616,7 +633,8 @@ def j_dot_B_redl(
     the geometry lanes) is used unshifted.
 
     ``helicity_n`` is 0 for quasi-axisymmetry, +/-1 for quasi-helical
-    symmetry.  ``Te/Ti`` are clamped at 1 eV and ``ne`` at 1e17 1/m^3
+    symmetry; anything else (a quasi-isodynamic field) is refused
+    (:func:`redl_helicity`).  ``Te/Ti`` are clamped at 1 eV and ``ne`` at 1e17 1/m^3
     (belt-and-suspenders against sampling s -> 1 where the profiles vanish
     and the collisionality blows up).
 
@@ -641,7 +659,7 @@ def j_dot_B_redl(
     ln_Lambda_ii = 30.0 - jnp.log(Zeff_s ** 3 * jnp.sqrt(ni_s) / (Ti_s ** 1.5))
 
     # Sauter eqs. (18b)-(18c) with the isomorphism substitution iota -> iota - N:
-    helicity_N = int(geom.nfp) * int(helicity_n)
+    helicity_N = int(geom.nfp) * redl_helicity(helicity_n)
     iota_N = geom.iota - helicity_N
     geometry_factor = jnp.abs(geom.R / iota_N)
     nu_e = (geometry_factor * (6.921e-18) * ne_s * Zeff_s * ln_Lambda_e
@@ -879,6 +897,7 @@ class HalfMeshCurrent:
     def __init__(self, deck, profiles, helicity_n):
         from .profiles import current
 
+        helicity_n = redl_helicity(helicity_n)  # QA or QH only, before any work
         if int(deck.ncurr) != 1:
             raise ValueError("a bootstrap current needs a prescribed current profile (ncurr = 1)")
         ns = int(np.asarray(deck.ns_array)[-1])
@@ -895,7 +914,7 @@ class HalfMeshCurrent:
         # d CURTOR / d v: the unknown knots' trapezoid weights (CURTOR is linear in v), the edge value included
         self.weights = np.asarray(jax.grad(lambda v: self.current(self.values(v), 1.0))(jnp.ones(slope.size)))
         self.unit = None
-        self.profiles, self.helicity_n = profiles, int(helicity_n)
+        self.profiles, self.helicity_n = profiles, redl_helicity(helicity_n)
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
         self.deck = dataclasses.replace(deck, pcurr_type="line_segment_ip", ac_aux_s=self.knots,
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
@@ -1102,7 +1121,7 @@ class RedlBootstrapMismatch:
         n_lambda: int = N_LAMBDA,
     ):
         self.profiles = profiles
-        self.helicity_n = int(helicity_n)
+        self.helicity_n = redl_helicity(helicity_n)
         self.surfaces = np.atleast_1d(np.asarray(
             np.linspace(0.05, 0.95, 16) if surfaces is None else surfaces,
             dtype=float))

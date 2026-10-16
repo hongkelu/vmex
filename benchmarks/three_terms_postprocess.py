@@ -28,7 +28,7 @@ if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa
 # None: the constructed QI residual
 HELICITY = (1, -1) if CASE == "qh" or CASE.startswith("qh4-beta") else None if CASE.startswith("qi") else (1, 0)
 IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include opt.axis_iota and edge
-REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
+REDL_HELICITY = None if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt); QI: none, Redl refuses
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)

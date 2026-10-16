@@ -991,3 +991,20 @@ def test_near_axis_redl_mean_is_the_converged_integral_of_the_ratio():
         mean = float(bs.near_axis_redl_mean(profiles, 0, geom, jr))
         assert mean == pytest.approx(float(bs.near_axis_redl_mean(profiles, 0, geom, jr, 256)), abs=1e-10)
         assert low < mean < high
+
+
+@pytest.mark.parametrize("helicity_n", [None, 2, -2, 0.5, True])
+def test_redl_refuses_a_field_that_is_not_qa_or_qh(helicity_n):
+    """Redl's model is for quasi-symmetric fields: helicity 0 (QA) or +/-1 (QH), required; a QI field (no
+    helicity) or any other value is refused, by the formula and by the in-solve current block alike."""
+    geom = bs.RedlGeometry(
+        surfaces=jnp.array([0.25]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
+        R=jnp.array([6.0]), epsilon=jnp.array([0.1]), f_t=jnp.array([0.3]), fsa_B2=jnp.array([1.0]),
+        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.9]), Bmax=jnp.array([1.1]), psi_edge=jnp.asarray(-0.5), nfp=2)
+    profiles = _paper_profiles(1e20, 2e3)
+    with pytest.raises(ValueError, match="QA .*QH|QI"):
+        bs.j_dot_B_redl(profiles, geom, helicity_n)
+    with pytest.raises(ValueError, match="QA .*QH|QI"):
+        bs.HalfMeshCurrent(None, profiles, helicity_n)  # refused before the deck is read
+    for ok in bs.REDL_HELICITIES:
+        assert np.all(np.isfinite(np.asarray(bs.j_dot_B_redl(profiles, geom, ok)[0])))

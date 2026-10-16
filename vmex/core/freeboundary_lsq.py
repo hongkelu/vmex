@@ -672,6 +672,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
             for attempt in range(12):
                 step, predicted = model_step(radius)
+                if feasible and self._step_converged(S * step, step_noise, x):
+                    # a trial step the rows' noise (or round-off) already accounts for carries no information:
+                    # an evaluation there only returns the same state (LP QA 2.5 % 8x8 Redl: steps shrunk to 1e-9
+                    # were "accepted" at rho 1 and the solve cycled for 30 models)
+                    if fresh:
+                        converged, status = True, "converged: trial steps below the rows' noise"
+                    else:
+                        need = "exact"
+                    break
                 x_new, got = trial(x + S * step)
                 nfev += 1
                 cost_new = np.inf if got is None else merit_of(got[0])
@@ -728,6 +737,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     break
                 if tiny:  # the exact model's gain is below the cost's repeatability: nothing left to resolve
                     break
+            if converged:
+                break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise
                 converged = bool(w[0] > 0) and evaluated and feasible  # trials without equilibria are no noise floor

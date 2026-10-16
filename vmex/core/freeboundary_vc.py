@@ -599,7 +599,7 @@ def solve_free_boundary_three_terms(
     trial_ftol: float | None = None,
     chunk: int = 8,
     bootstrap=None,
-    bootstrap_helicity: int = 0,
+    bootstrap_helicity: int | None = None,
     previous=None,
     verbose: int = 0,
 ):
@@ -627,7 +627,8 @@ def solve_free_boundary_three_terms(
     from its boundary, Jacobian and model: neither new coils nor a repeat
     solve compile anything.  ``trial_ftol`` and ``chunk`` are
     :class:`ThreeTermsFreeBoundaryModel`'s.  ``bootstrap`` (kinetic
-    profiles) and ``bootstrap_helicity`` solve for a Redl-self-consistent
+    profiles) and ``bootstrap_helicity`` (required with it: 0 for QA, +/-1 for QH;
+    Redl's model is refused for QI fields) solve for a Redl-self-consistent
     current profile together with the boundary.
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
@@ -795,7 +796,8 @@ class ThreeTermsFreeBoundaryModel:
     ``chunk`` bounds the Jacobian columns per batch.
 
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
-    ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
+    ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model, required: 0 for QA, +/-1 for QH;
+    QI and other non-quasi-symmetric fields are refused) makes the
     current profile Redl's bootstrap current in the same solve: ``x`` gains its
     knot values (one on the axis, then one on every half-mesh surface) after
     the boundary coordinates (``n_boundary`` of them), and the rows gain one self-consistency row per knot, in the interface rows' units
@@ -811,7 +813,7 @@ class ThreeTermsFreeBoundaryModel:
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
                  device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0,
+                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=None,
                  fixed_boundary=False):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent

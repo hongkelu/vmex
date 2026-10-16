@@ -22,15 +22,7 @@ revision it was measured at, and the pages that cite it.
   `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)` (SLSQP or `method="AUGLAG"`); new `opt.axis_iota`/`axis_field_strength`/
   `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
 - Example `single_stage_free_boundary_seed.py` (ellipse -> coils -> seed); free-boundary limits measured in the docs.
-- `minimize(problem, method="AUGLAG")`: PHR augmented Lagrangian with a trust-region quasi-Newton inner solver
-  (damped BFGS of the objective and of each active row, exact penalty curvature); crosses infeasible designs, a
-  rejected trial shrinks the radius instead of ending the run, and `options["resume"]` continues a run split over
-  allocations exactly.
-- Three-terms single stage re-references its free boundary: a trial the deck reaches from no start is solved on
-  the latest linearized boundary as the new deck (`ThreeTermsFreeBoundaryModel.rereferenced`,
-  `problem.references`); the driver saves each step's deck (`input.stepN.ref`) and restarts from it
-  (`--reference-from-wout` for older runs). Vacuum QA step 39 (coils moved up to 31 cm): the cold restart from the
-  original deck failed, from the step's own LCFS it converged.
+- `minimize(method="AUGLAG")` (PHR augmented Lagrangian, exact `resume`); free boundary re-referenced when the deck fails.
 
 ## 0.11.10 - 2026-10-13
 

@@ -568,7 +568,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles,
+    fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, bootstrap=profiles, bootstrap_helicity=0,
                                               quadrature=(4 * int(inp.nfp) * 48, 96))
     model = fit.model
     state, mask, params, _ = fit.aux
@@ -599,7 +599,7 @@ def _fixed_boundary_bootstrap():
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, fixed_boundary=True)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=0, fixed_boundary=True)
     return inp, profiles, model, model.solve_boundary(model.params0, None)
 
 
@@ -623,7 +623,8 @@ def test_fixed_boundary_bootstrap_model_at_ns_101_has_exact_knot_columns():
     current, and Jacobian columns of the axis, a mid-radius and the last knot against re-solved differences."""
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 101), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([40000]))
-    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), fixed_boundary=True)
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, bootstrap=_lp_beta0p5_profiles(inp), bootstrap_helicity=0,
+                                            fixed_boundary=True)
     out = model.solve_boundary(model.params0, None)
     assert out["converged"] and model.x0.size == 101
     state, _, params, _ = out["aux"]

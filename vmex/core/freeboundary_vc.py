@@ -1757,7 +1757,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, **model_options):
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, boundary_start=None,
+                  **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermsFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -1765,6 +1766,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         the accepted point's first-order prediction with its Jacobian (refreshed when it no longer converges
         fast), to at most ``boundary_max_nfev`` evaluations; a fit that does not converge within them is no free
         boundary: the trial tries its next start, or fails.
+
+        ``boundary_start`` (anything with ``rbc`` and ``zbs``, e.g. a saved step's LCFS) is where the seed's solve
+        starts, :meth:`ThreeTermsFreeBoundaryModel.displacement_of` it on the deck, instead of the deck's own
+        boundary.  The deck still defines the problem: a restart on the run's deck from its step's boundary
+        starts near that step's root (the fit measures along the normal, the coordinates along the deck's radial
+        lines) and solves the run's very equations.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
@@ -1780,7 +1787,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             # (solve_band_continuation); a stall below the band leaves the seed without a free boundary
             x = jnp.asarray(x0, dtype=float)
             params = model.params0 if plasma_from_parameters is None else plasma_from_parameters(model.params0, x)
-            solved, seed_fit = solve_band_continuation(model, params, field_from_parameters(x),
+            start = None if boundary_start is None else model.displacement_of(boundary_start)
+            solved, seed_fit = solve_band_continuation(model, params, field_from_parameters(x), x0=start,
                                                        max_nfev=boundary_max_nfev)
             if not seed_fit["converged"]:
                 raise VmecError(f"the seed design has no three-terms free boundary on band {model.max_mode} (the "

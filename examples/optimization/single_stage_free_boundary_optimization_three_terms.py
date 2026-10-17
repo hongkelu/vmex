@@ -98,6 +98,7 @@ import math
 import os
 from pathlib import Path
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -671,13 +672,19 @@ def restart_input(run, reference_from_wout=False):
         ref = vj.VmecInput.from_file(run / "input.ref")
         inp = replace(inp, rbc=ref.rbc, zbs=ref.zbs)
     elif reference_from_wout:  # the WOUT's own LCFS as the deck boundary (a run saved before input.ref)
-        rbc, zbs, ntor = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs)), int(inp.ntor)
-        for m, n, r, z in zip(np.asarray(w.xm).astype(int), np.rint(np.asarray(w.xn) / int(w.nfp)).astype(int),
-                              np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
-            if m < rbc.shape[1] and abs(n) <= ntor:
-                rbc[n + ntor, m], zbs[n + ntor, m] = r, z
-        inp = replace(inp, rbc=rbc, zbs=zbs)
+        lcfs = wout_boundary(w, inp)
+        inp = replace(inp, rbc=lcfs.rbc, zbs=lcfs.zbs)
     return inp, w
+
+
+def wout_boundary(w, inp):
+    """The LCFS of WOUT ``w`` as ``inp``-shaped ``rbc``, ``zbs`` arrays (modes beyond ``inp``'s dropped)."""
+    rbc, zbs, ntor = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs)), int(inp.ntor)
+    for m, n, r, z in zip(np.asarray(w.xm).astype(int), np.rint(np.asarray(w.xn) / int(w.nfp)).astype(int),
+                          np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
+        if m < rbc.shape[1] and abs(n) <= ntor:
+            rbc[n + ntor, m], zbs[n + ntor, m] = r, z
+    return SimpleNamespace(rbc=rbc, zbs=zbs)
 
 
 def with_coarse_rung(inp, ns=13, max_iterations=60000):
@@ -1357,7 +1364,11 @@ def main(argv=None):
         three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY))
+                                bootstrap_helicity=REDL_HELICITY,
+                                # a restart on the run's own deck starts its seed solve at the saved step's
+                                # boundary, that step's root
+                                boundary_start=wout_boundary(restart_wout, inp)
+                                if restart_wout is not None and not args.reference_from_wout else None))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

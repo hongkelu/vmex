@@ -88,3 +88,12 @@ def test_early_stop_keys_implicit_configs(window):
     stopped = im._canonical_config(replace(cfg, early_stop=EarlyStop(target=1e-12, window=window)))
     assert im._canonical_config(cfg) is not stopped
     assert im._canonical_config(replace(cfg, early_stop=EarlyStop(target=1e-12, window=window))) is stopped
+
+
+def test_trial_config_stops_early_at_the_accepted_residual():
+    from vmex.core import freeboundary_vc as fvc
+
+    inp = VmecInput.from_file(str(DECK))
+    cfg = fvc._trial_config(inp, 1e-11, jax.devices()[0])
+    assert cfg.ftol == max(1e-11, float(np.asarray(inp.ftol_array)[-1]))
+    assert cfg.early_stop == EarlyStop(target=cfg.max_fsq_ratio * cfg.ftol, window=fvc._TRIAL_RATE_WINDOW)

@@ -1526,6 +1526,7 @@ def main(argv=None):
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
     nredl = int(mismatch_row)
+    nout = int(bool(BN_OUTSIDE_LIMIT))  # the B.n-outside-the-modes row, last
     lower, upper, row_scales = zip(
         *[(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR)] * n_iota,
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
@@ -1602,7 +1603,9 @@ def main(argv=None):
                    **({"coil_max_force": float(coils_m["max_force"].max())} if FORCE_LIMIT is not None else {}),
                    **({"redl_max_relative": problem.model.bootstrap_residual(*problem.state(x))}
                       if current_in_solve else {}),
-                   coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
+                   # the parameter quantities end the rows: clearance, aspect (and the B.n outside the modes)
+                   coil_surface_distance_m=float(h[-2 - nout]), aspect=float(h[-1 - nout]),
+                   **({"bn_outside_modes": float(h[-1])} if nout else {}),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
@@ -1630,6 +1633,7 @@ def main(argv=None):
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"PHIEDGE^2 DMerc min={row['mercier_min']:+.3e} " if n_mercier else "")
               + (f"ballooning max={row['ballooning_max']:+.2e} " if n_ballooning else "")
+              + (f"B.n outside modes={row['bn_outside_modes']:.2e} " if nout else "")
               + (f"force={row['coil_max_force']:.2f} " if FORCE_LIMIT is not None else "")
               + f"cc={row['coil_coil_distance']:.5f} kappa={row['coil_max_curvature']:.4f} "
               f"msc={row['coil_max_msc']:.4f} L={row['coil_total_length']:.5f} "

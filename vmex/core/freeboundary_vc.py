@@ -1904,8 +1904,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         def part(f, with_x):
             if isinstance(f, _NormalOutsideModes):  # needs the model (its modes and interface): this one's
                 def outside(state, params, x):
-                    return jnp.atleast_1d(model.normal_outside(state, runtime_from_params(params, model.cfg),
-                                                               field_from_parameters(x)))
+                    # traced with checkpointed quadrature scans: its reverse pass (the design gradient) would
+                    # otherwise keep every source chunk's kernel intermediates (62 GiB at 48 x 48); values unchanged
+                    with vc.remat_scans():
+                        return jnp.atleast_1d(model.normal_outside(state, runtime_from_params(params, model.cfg),
+                                                                   field_from_parameters(x)))
                 outside.__name__ = "normal_outside_modes"
                 return outside
 

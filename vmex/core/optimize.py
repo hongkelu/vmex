@@ -2521,8 +2521,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     grows tenfold after an inner loop that moved unless the violation fell to half (or below 1e-6 row units).
 
     The penalty grows only while the violation stays above ``feasibility`` (option, row units, default
-    ``1e-4``); below a tenth of it the penalty returns tenfold per multiplier update toward its starting value, so
-    a large penalty, whose kinks cut the steps short, does not outlive the infeasibility that raised it.
+    ``1e-4``); below a tenth of it the penalty returns to its starting value at the next multiplier update, so a
+    large penalty, whose kinks cut the steps short, does not outlive the infeasibility that raised it.
 
     An inner loop ends at a projected-gradient tolerance (a tenth of the previous loop's), after ten accepted
     steps, when the trust radius collapses, or when the violation doubles past one row unit (a run-away, not the
@@ -2601,8 +2601,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             measure = rows.violation(v)
             if s.inner > 0 and measure > max(0.5 * s.previous, feasibility):
                 s.penalty = min(10.0 * s.penalty, 1e12)
-            elif measure <= 0.1 * feasibility:
-                s.penalty = max(0.1 * s.penalty, _AL_PENALTY)
+            elif measure <= 0.1 * feasibility:  # feasible: the penalty that is left only cuts steps short
+                s.penalty = _AL_PENALTY
             s.multipliers = np.clip(slope, -1e12, 1e12)
             s.stalls = s.stalls + 1 if s.inner == 0 and s.radius < _AL_MIN_RADIUS else 0
             if s.stalls >= 3:  # no decrease at any radius from three fresh starts

@@ -1324,6 +1324,21 @@ class ThreeTermsFreeBoundaryModel:
 
         self.pullback = pullback
 
+        def adjoint(state, mask, params, state_bars, params_bars, factors=None):
+            """Rows' ``ImplicitParams`` gradients from their state and direct parameter cotangents.
+
+            :meth:`pullback` in two programs: the rows' cotangents ``(state_bars, params_bars)`` of each function's
+            own reverse pass (stacked, any number of functions), then this program, the block adjoint through the
+            equilibrium shared by every row, ``params_bar + back(state_bar)`` per row.  The same arithmetic as
+            :meth:`pullback`, whose single program holds one copy of the adjoint per function.
+            """
+            frozen = jax.lax.stop_gradient(state)
+            back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
+                                            probe_chunk_size=self.chunk, factors=factors)
+            return map_columns(lambda row: jax.tree.map(jnp.add, row[1], back(row[0])[0]), (state_bars, params_bars))
+
+        self.adjoint = adjoint
+
     def displacement_of(self, boundary, ntheta=96, nzeta=48):
         """Coordinates ``x`` (normal displacement of the reference surface) closest to ``boundary``'s surface.
 
@@ -1855,15 +1870,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._plasma_directions = jax.jit(lambda x: jax.vmap(lambda e: jax.jvp(mapped_params, (x,), (e,))[1])(eye))
 
-        def pullback(state, mask, params, x, factors):
-            """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
+        def cotangents(f):
+            """The program of ``f``'s rows' cotangents ``(state_bar, params_bar)``: its own reverse pass only."""
+            def program(state, params, x):
+                frozen = jax.lax.stop_gradient(state)
+                _, vjp = jax.vjp(lambda s, p: f(s, p, x), frozen, params)
+                return map_columns(vjp, jnp.eye(jax.eval_shape(f, state, params, x).size))  # see vmex.core.loops
+            return jax.jit(program)
 
-            ``factors``: the block factors at ``state`` (:func:`~vmex.core.implicit.block_factors_at`, an
-            executable compiled once per config), not a second block assembly inside this program."""
-            sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, factors=factors)
-
-        self._pullback = jax.jit(pullback)
+        # One small program per function and one for the block adjoint they share (model.adjoint), not one program
+        # with a copy of the adjoint per function: they compile in parallel (_warm_gradient_programs), and the
+        # adjoint's executable depends only on the config and the row count.
+        self._cotangents = tuple(cotangents(f) for f in parts)
+        self._adjoint = jax.jit(lambda state, mask, params, state_bars, params_bars, factors: model.adjoint(
+            state, mask, params, state_bars, params_bars, factors=factors))
 
         @jax.jit
         def coordinates(params, b, x, params_bar):
@@ -1925,8 +1945,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return None
         return self._store(x, fit)
 
-    _BOUND = ("model", "_params_at", "_rows", "_plasma", "_plasma_directions", "_pullback", "_coordinates",
-              "_direct", "_field_vjp", "_field_jvp")
+    _BOUND = ("model", "_params_at", "_rows", "_plasma", "_plasma_directions", "_cotangents", "_adjoint",
+              "_coordinates", "_direct", "_field_vjp", "_field_jvp")
 
     def _rereference(self, x, anchor):
         """The trial at ``x`` on a new deck, the anchor's boundary, when the current deck reaches it from no start.
@@ -2036,16 +2056,28 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         sol["gradients"] = gradients
         return gradients
 
+    def _pullback(self, state, mask, params, x, factors):
+        """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only.
+
+        ``factors``: the block factors at ``state`` (:func:`~vmex.core.implicit.block_factors_at`, an executable
+        compiled once per config), not a second block assembly inside these programs.
+        """
+        pieces = [program(state, params, x) for program in self._cotangents]
+        state_bars, params_bars = jax.tree.map(lambda *a: jnp.concatenate(a), *pieces)
+        return self._adjoint(state, mask, params, state_bars, params_bars, factors)
+
     def _warm_gradient_programs(self, x0):
         """Compile the design gradient's programs on background threads while the seed design is solved.
 
         Two daemon threads, from placeholder arguments of the model's structure (values do not enter a
         compilation): the state-response fallbacks the plasma-parameter columns need (GMRES corrector and
         refinement, :func:`~vmex.core.implicit.warm_staged_tangent`), joined before the first relinearization,
-        and the pullback through the equilibrium and the direct design Jacobian, joined before the first
-        pullback.  Cache warming only: the same executables; a failure leaves the real call to compile.
+        and the pullback through the equilibrium (each function's cotangent program and the shared adjoint, compiled
+        in parallel) and the direct design Jacobian, joined before the first pullback.  Cache warming only: the
+        same executables; a failure leaves the real call to compile.
         """
         import threading
+        from concurrent.futures import ThreadPoolExecutor
 
         model = self.model
         im, cfg, params0 = model._im, model.cfg, model.params0
@@ -2066,8 +2098,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 factors = im._zeros_like_structure(
                     cfg, jax.eval_shape(lambda *a: im._refine_block_factor_core(*a, cfg), *arguments))
                 x = jnp.asarray(np.zeros_like(np.asarray(x0, dtype=float)))
-                self._pullback.lower(state, mask, params, x, factors).compile()
-                self._direct.lower(state, params, x).compile()
+                pieces = [jax.eval_shape(program, state, params, x) for program in self._cotangents]
+                bars = jax.tree.map(lambda *a: jax.ShapeDtypeStruct((sum(b.shape[0] for b in a),) + a[0].shape[1:],
+                                                                    a[0].dtype), *pieces)
+                programs = [lambda program=program: program.lower(state, params, x).compile()
+                            for program in self._cotangents]
+                programs += [lambda: self._adjoint.lower(state, mask, params, *bars, factors).compile(),
+                             lambda: self._direct.lower(state, params, x).compile()]
+                with ThreadPoolExecutor(max_workers=len(programs)) as pool:  # XLA compiles release the GIL
+                    for done in [pool.submit(compile_) for compile_ in programs]:
+                        done.result()
             except Exception:  # cache warming only
                 pass
 

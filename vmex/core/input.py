@@ -567,6 +567,18 @@ def fit_aux_knots(aux_s, aux_f, name: str = "profile") -> tuple[np.ndarray, np.n
     a time, the knot where the piecewise-linear interpolant of the kept ones is furthest from the profile's
     value (values unchanged at the kept knots).  It warns with the largest deviation at a dropped knot, relative
     to the largest value.  A profile within the limit is returned as it is.
+
+    Parameters
+    ----------
+    aux_s, aux_f:
+        The knots and their values.
+    name:
+        The profile's name in the warning.
+
+    Returns
+    -------
+    tuple
+        ``(aux_s, aux_f)`` with at most :data:`NDATAFMAX` entries.
     """
     s, f = np.asarray(aux_s, dtype=float), np.asarray(aux_f, dtype=float)
     if s.size <= NDATAFMAX:

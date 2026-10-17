@@ -55,7 +55,7 @@ from .preconditioner_2d import Prec2DConfig
 from .printing import emit_flushed
 from .restart import restart_state, skip_ladder_rungs
 from .solver import (
-    SolveResult, SpectralState, _finalize, _loop_driver_config,
+    EarlyStop, SolveResult, SpectralState, _finalize, _loop_driver_config,
     _prefetch_block_lane,
     _polish_solve_result, _release_used_lane_executables, _result_from_carry,
     _resolve_force_balance_polish, _solve_stage, _resolve_use_fft,
@@ -283,6 +283,7 @@ def solve_multigrid(
     prefetch_compile: bool = False,
     polish_force_balance: bool | str = False,
     polish_config: Any = None,
+    early_stop: EarlyStop | None = None,
 ) -> SolveResult:
     """Fixed-boundary multigrid solve over the ``NS_ARRAY`` ladder.
 
@@ -324,6 +325,10 @@ def solve_multigrid(
     ``jacobian_retries`` applies the same bounded best-checkpoint/``DELT``
     recovery as :func:`vmex.core.solver.solve` independently at each stage;
     zero preserves VMEC2000's immediate fatal stop after 75 resets.
+    ``early_stop`` (:class:`~vmex.core.solver.EarlyStop`) ends the final stage
+    once it cannot converge within its ``NITER``; the earlier stages always
+    run to their own tolerance or budget, so the seed of the final stage does
+    not depend on it.
     If the first requested grid still has an invalid initial Jacobian after
     its magnetic-axis re-guess, ``coarse_grid_retry=True`` retries the ladder
     once with an automatic ``ns=3``, ``ftol=1e-4`` stage prepended.  This is
@@ -518,6 +523,7 @@ def solve_multigrid(
                 residual_continuation=residual_continuation,
                 use_fft=stage_use_fft,
                 emit_legend=first_executed,
+                early_stop=None if np.any(ns_arr[igrid + 1:] >= nsval) else early_stop,
             )
         # Join the prefetches before any cache release below: a mid-compile
         # jax.clear_caches() on another thread is the one interaction the
@@ -570,6 +576,7 @@ def solve_multigrid(
                 prefetch_compile=prefetch_compile,
                 polish_force_balance=polish,
                 polish_config=polish_config,
+                early_stop=early_stop,
             )
         last_stage = not np.any(ns_arr[igrid + 1:] >= nsval)
         if ier not in (SUCCESSFUL_TERM_FLAG, MORE_ITER_FLAG) or (

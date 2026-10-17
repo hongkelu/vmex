@@ -192,7 +192,7 @@ from .residuals import (
 )
 from .setup import RadialGrids, flux_profiles, interior_guess
 from .solver import (
-    SolveResult, SolverRuntime, SpectralState, _constraint_baselines,
+    EarlyStop, SolveResult, SolverRuntime, SpectralState, _constraint_baselines,
     _force_to_state, _initial_state, _physical_coefficients,
     _static_tables, evaluate_forces, prepare_runtime, resolution_from_input,
     solve,
@@ -396,6 +396,11 @@ class ImplicitConfig:
     #: gradient evaluated outside such a context creates its constants on
     #: JAX's default device and mixes devices with the committed state.
     device: Any = None
+    #: End the final multigrid stage of a host solve once its force residual
+    #: cannot reach the tolerance within the budget
+    #: (:class:`~vmex.core.solver.EarlyStop`); ``None`` runs every solve to
+    #: its tolerance or budget.
+    early_stop: EarlyStop | None = None
 
 
 def make_config(
@@ -1474,7 +1479,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 niter_array=niter_arr[first:ns_arr.size], mode=cfg.mode,
                 lconm1=cfg.lconm1, freeze_m1=cfg.freeze_m1, raise_on_max_iterations=False,
                 initial_state=init, use_fft=False,
-                device=solver_device,
+                device=solver_device, early_stop=cfg.early_stop,
                 # an optimization's configs (hot restart) compile every rung of
                 # their first ladder in parallel; later ladders find them built
                 prefetch_compile=bool(cfg.hot_restart) and _overlapping_compiles_pay())

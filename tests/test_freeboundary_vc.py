@@ -440,6 +440,34 @@ def test_problem_boundary_condition_dispatches_to_three_terms(monkeypatch):
     assert kwargs["quantities"] == (len,) and kwargs["nphi"] == 16
 
 
+def test_problem_method_selects_the_free_boundary(monkeypatch):
+    """``method=`` names the free boundary in one word: Galerkin and least squares are the three-terms problems
+    (their keywords in ``three_terms_options``), NESTOR the VMEC one; a contradicting ``boundary_condition`` or
+    ``three_terms_options`` method is refused, as is an unknown method."""
+    from vmex.core import freeboundary_lsq as fls
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    calls = []
+    for cls in (fvc.ThreeTermsFreeBoundaryProblem, fls.LeastSquaresFreeBoundaryProblem):
+        monkeypatch.setattr(cls, "from_loss", classmethod(lambda cls, *args, **kwargs: calls.append(cls) or cls))
+    inp, loss, field = _deck("input.LandremanPaul2021_QA_lowres", 3, 11), (lambda s, r, x: 0.0), (lambda x: None)
+
+    def build(deck=inp, **kwargs):
+        return FreeBoundaryProblem.from_loss(deck, loss, np.zeros(1), field_from_parameters=field, **kwargs)
+
+    assert build(method="galerkin", three_terms_options=dict(nphi=16)) is fvc.ThreeTermsFreeBoundaryProblem
+    assert build(method="least_squares", boundary_condition="three_terms") is fls.LeastSquaresFreeBoundaryProblem
+    with pytest.raises(ValueError, match="input must enable free-boundary"):  # NESTOR's own checks: its route
+        build(replace(inp, lfreeb=False), method="nestor")
+    with pytest.raises(ValueError, match="solves boundary_condition='three_terms'"):
+        build(method="galerkin", boundary_condition="nestor")
+    with pytest.raises(ValueError, match="disagrees"):
+        build(method="galerkin", three_terms_options=dict(method="least_squares"))
+    with pytest.raises(ValueError, match="method must be"):
+        build(method="vmec")
+    assert calls == [fvc.ThreeTermsFreeBoundaryProblem, fls.LeastSquaresFreeBoundaryProblem]
+
+
 @needs_vc
 def test_three_terms_problem_seed_starts_at_boundary_start(monkeypatch):
     """``boundary_start`` (a restart's saved boundary) is where the seed's solve starts on the deck: the start is

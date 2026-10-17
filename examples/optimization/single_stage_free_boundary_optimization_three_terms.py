@@ -7,8 +7,9 @@ Coil shapes and currents (and PHIEDGE, and with ``--bootstrap`` the plasma
 current) are optimized for a quasisymmetric (QA, QH) or quasi-isodynamic (QI)
 plasma. Every trial equilibrium is the free boundary that satisfies all three
 plasma-vacuum interface conditions, B.n = 0, pressure balance and no sheet
-current (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``,
-:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`). Trial
+current (``FreeBoundaryProblem.from_loss(..., method="galerkin")``,
+:class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`; ``--free-boundary least_squares`` solves the
+same conditions by least squares, ``--free-boundary nestor`` is classical VMEC + NESTOR, B.n = 0 only). Trial
 boundaries are warm-started, design gradients come from the implicit function
 theorem of the boundary fit, and nothing recompiles when the coils or the
 plasma parameters change. The loss is (1/2) |r|^2 of the target residual r
@@ -1158,6 +1159,8 @@ def parse_args(argv=None):
                              "(a run saved before re-referencing; the cold solve from a far deck may not converge)")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
+    parser.add_argument("--free-boundary", choices=("galerkin", "least_squares", "nestor"), default="galerkin",
+                        help="free-boundary method: the three-terms Galerkin or least-squares solve, or VMEC + NESTOR")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
     parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
     parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
@@ -1355,26 +1358,55 @@ def main(argv=None):
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
+    nestor = args.free_boundary == "nestor"
+    if nestor and current_in_solve:
+        raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
+                         "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")
+    three_terms = {} if nestor else dict(three_terms_options=dict(
+        nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+        quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
+        trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+        # a Galerkin restart on the run's own deck starts its seed solve at the saved step's boundary, near that
+        # step's root (least squares solves its seed at its first trial, from the deck)
+        **({"boundary_start": wout_boundary(restart_wout, inp)} if args.free_boundary == "galerkin"
+           and restart_wout is not None and not args.reference_from_wout else {})))
     problem = opt.FreeBoundaryProblem.from_loss(
-        inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
+        replace(inp, lfreeb=True) if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
-        parameter_quantities=(clearance, aspect), boundary_condition="three_terms",
-        three_terms_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
-                                quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
-                                trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY,
-                                # a restart on the run's own deck starts its seed solve at the saved step's
-                                # boundary, that step's root
-                                boundary_start=wout_boundary(restart_wout, inp)
-                                if restart_wout is not None and not args.reference_from_wout else None))
-    model = problem.model
-    print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
-          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
+        parameter_quantities=(clearance, aspect), method=args.free_boundary, **three_terms)
+    if nestor:
+        print(f"[model] VMEC + NESTOR, {chart.size} design coordinates; built in {time.monotonic() - started:.0f} s",
+              flush=True)
+    else:
+        model = problem.model
+        print(f"[model] {args.free_boundary}: {model.n_boundary} boundary and {model.x0.size - model.n_boundary} "
+              f"bootstrap-current coordinates, {chart.size} design coordinates; built in "
+              f"{time.monotonic() - started:.0f} s", flush=True)
 
-    state0, params0 = problem.state(problem.x0)  # the per-surface rows' counts
-    runtime0 = im.runtime_from_params(params0, model.cfg)
+    def state_runtime(x):
+        """The equilibrium of design ``x``: ``(state, runtime)``."""
+        if nestor:
+            equilibrium = problem.equilibrium_from_x(x)
+            return equilibrium.state, equilibrium.runtime
+        state, params = problem.state(x)
+        return state, im.runtime_from_params(params, problem.model.cfg)
+
+    def interface_residual(x):
+        """B.n, the pressure jump and the sheet current of design ``x`` (``BoundaryResidual``); for NESTOR the same
+        three-terms evaluation of its equilibrium (vmex.core.freeboundary_vc.boundary_residual), not NESTOR's own."""
+        if not nestor:
+            return problem.boundary_residual(x)
+        from vmex.core import freeboundary_vc as fvc
+
+        equilibrium = problem.equilibrium_from_x(x)
+        rows, weights = fvc.boundary_residual(replace(equilibrium.inp, lfreeb=False), equilibrium.state,
+                                              chart(jnp.asarray(x)), runtime=equilibrium.runtime,
+                                              nphi=args.vc_grid, ntheta=args.vc_grid)
+        return fvc.summarize_boundary_residual(np.asarray(rows), np.asarray(weights))
+
+    state0, runtime0 = state_runtime(problem.accepted.parameters)  # the per-surface rows' counts
     n_iota = int(np.size(abs_iota(state0, runtime0)))
     n_vacuum = int(np.size(vacuum(state0, runtime0))) if vacuum_floor else 0
     n_mercier = mercier_surfaces.size if MERCIER_FLOOR is not None else 0
@@ -1434,10 +1466,9 @@ def main(argv=None):
     def log_step(intermediate_result=None):
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
-        res = problem.boundary_residual(x)
+        res = interface_residual(x)
         now = time.monotonic()
-        state_x, params_x = problem.state(x)
-        runtime_x = im.runtime_from_params(params_x, problem.model.cfg)
+        state_x, runtime_x = state_runtime(x)
         vac = np.asarray(vacuum(state_x, runtime_x))
         stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
         redl_row = stability_row + n_mercier + n_ballooning
@@ -1456,12 +1487,13 @@ def main(argv=None):
                    coil_max_curvature=float(coils_m["peak"].max()), coil_max_msc=float(coils_m["msc"].max()),
                    coil_coil_distance=float(coils_m["coil_distance"]),
                    **({"coil_max_force": float(coils_m["max_force"].max())} if FORCE_LIMIT is not None else {}),
-                   **({"redl_max_relative": problem.model.bootstrap_residual(state_x, params_x)} if current_in_solve else {}),
+                   **({"redl_max_relative": problem.model.bootstrap_residual(*problem.state(x))}
+                      if current_in_solve else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
-                   step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
+                   step_seconds=now - last["time"], elapsed_seconds=now - started, **getattr(problem, "stats", {}),
                    seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if intermediate_result is not None:

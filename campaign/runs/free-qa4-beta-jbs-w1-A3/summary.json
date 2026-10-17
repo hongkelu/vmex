@@ -1,0 +1,8 @@
+{
+  "accepted_steps": 1000,
+  "success": false,
+  "message": "accepted_step_budget_reached",
+  "stop_reason": "accepted_step_budget_reached",
+  "failed_trials": 4,
+  "elapsed_seconds": 258562.58279701695
+}

@@ -1368,7 +1368,10 @@ def main(argv=None):
     if nestor and current_in_solve:
         raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
                          "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")
-    three_terms = dict(root_residual_atol=NESTOR_ROOT_TOLERANCE, solver_options=dict(
+    # NESTOR's one ordinary solve starts from the deck's fixed-boundary equilibrium (a cold free-boundary start at
+    # finite beta can flip the initial Jacobian), as the coil-constraints driver's free arm does
+    three_terms = dict(restart_from=opt.solve_equilibrium(inp, device="gpu", raise_on_max_iterations=True).state,
+                       root_residual_atol=NESTOR_ROOT_TOLERANCE, solver_options=dict(
         device="gpu", ftol=EQUILIBRIUM_FTOL, edge_force_tolerance=NESTOR_EDGE_FORCE_TOLERANCE,
         max_iterations=int(np.asarray(inp.niter_array)[-1]), **NESTOR_ADJOINT)) if nestor else dict(three_terms_options=dict(
         nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,

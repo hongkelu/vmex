@@ -1423,7 +1423,9 @@ def main(argv=None):
         from vmex.core import freeboundary_vc as fvc, virtual_casing as vc
 
         state, runtime = state_runtime(x)
-        if "plan" not in common_plan:  # (vacuum: no virtual casing, boundary_residual ignores the plan)
+        if "plan" not in common_plan and fvc._is_vacuum(inp):  # no virtual casing: the coils' field alone
+            common_plan["plan"] = None
+        if "plan" not in common_plan:
             data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=args.vc_grid,
                                                     ntheta=args.vc_grid)
             quad_nt, quad_np = args.quadrature or fvc.interface_quadrature(int(inp.nfp), args.vc_grid, args.vc_grid)

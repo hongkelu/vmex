@@ -1132,6 +1132,36 @@ def coil_point_rows(coils, normalization_points=None):
                             (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT, *force))
 
 
+def coil_row_resolution(coils):
+    """How finely the coil rows resolve their own limits (row units), per kind: the largest change of any coil's
+    worst row of that kind when the rows' quadrature doubles.  Length and MSC are integrals (round-off); the
+    per-point curvature and speed rows resolve their limits to ~1e-4 (the active point moving between quadrature
+    points); the coil-coil distance, a minimum over chords, to its chords' sagitta (~4e-3 at 192 points); the
+    self-clearance guard excludes index-nonadjacent points, so its change is no resolution at all."""
+    global CURVATURE_POINTS, DISTANCE_POINTS
+    import jax.numpy as jnp
+
+    kinds = ("length", "curvature", "msc", "coil_distance", "self_clearance", "speed")
+
+    def worst(rows, nbase, ncurv, ndist):
+        k, out = 0, {}
+        for kind, (size, per) in zip(kinds, ((nbase, 1), (nbase * ncurv, ncurv), (nbase, 1), (nbase * ndist, ndist),
+                                             (nbase * ndist, ndist), (nbase, 1))):
+            out[kind] = jnp.min(rows[k:k + size].reshape(nbase, per), axis=1)
+            k += size
+        return out
+
+    nbase = resampled(coils, 8, symmetric=False).curvature.shape[0]
+    saved = CURVATURE_POINTS, DISTANCE_POINTS
+    try:
+        coarse = worst(coil_point_rows(coils), nbase, CURVATURE_POINTS, DISTANCE_POINTS)
+        CURVATURE_POINTS, DISTANCE_POINTS = 2 * saved[0], 2 * saved[1]
+        fine = worst(coil_point_rows(coils), nbase, CURVATURE_POINTS, DISTANCE_POINTS)
+    finally:
+        CURVATURE_POINTS, DISTANCE_POINTS = saved
+    return {kind: float(jnp.max(jnp.abs(fine[kind] - coarse[kind]))) for kind in kinds}
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax.numpy as jnp
@@ -1614,9 +1644,18 @@ def main(argv=None):
         if resume:
             print(f"[auglag] continuing the run of {state_file}: penalty {float(resume['resume']['penalty']):g}, "
                   f"radius {float(resume['resume']['trust_radius']):.3g}", flush=True)
+        # feasible to the coil rows' own resolution: below it a violation is the per-point rows' discretization,
+        # and a penalty raised by it never comes back (qac8-al 10-17: penalty 1e4 at violation 2e-6, radius 2e-3)
+        from vmex.core.optimize import _AL_FEASIBILITY
+        resolution = coil_row_resolution(chart.coils_from_x(jnp.asarray(problem.accepted.parameters)))
+        feasibility = max(resolution["curvature"], resolution["speed"], _AL_FEASIBILITY)
+        print(f"[auglag] feasibility {feasibility:.1e}: the per-point curvature / speed rows' resolution "
+              f"({CURVATURE_POINTS} points vs twice as many: {resolution['curvature']:.1e} / "
+              f"{resolution['speed']:.1e}); coil-coil distance rows resolve only {resolution['coil_distance']:.1e} "
+              f"at {DISTANCE_POINTS} points", flush=True)
         result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
                               callback=lambda intermediate_result: log_step(intermediate_result),
-                              options=dict(maxiter=args.steps, **resume))
+                              options=dict(maxiter=args.steps, feasibility=feasibility, **resume))
     else:  # a rejected trial ends an SLSQP call; restart it from the accepted point
         while True:
             before = problem.accepted_step

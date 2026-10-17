@@ -2355,12 +2355,12 @@ _AL_PENALTY = 10.0  # starting penalty: with F(start) = 1, a violation of one ro
 _AL_RADIUS, _AL_MAX_RADIUS = 0.1, 100.0  # starting and largest trust radius
 _AL_MIN_RADIUS = 1e-8 * _AL_RADIUS  # a shorter step only resolves the evaluations' noise
 _AL_INNER_STEPS = 10  # accepted steps per multiplier update
-# The violation (row units) at which the penalty stops growing and starts returning to _AL_PENALTY. Rows that hold a
-# limit at every point (a coil's curvature at each quadrature point) move their nearly active neighbours across the
-# limit by ~1e-5 as the active point moves: a penalty driven up by that never comes back, and its kinks then cut every
-# step short (vacuum QA, 10-17: 1e6 at violation 1e-9, steps of 2e-4 for 300 steps). The multipliers, not the penalty,
-# take such a violation to zero (stationarity still needs 1e-6).
-_AL_FEASIBILITY = 1e-4
+# The one constraint tolerance (row units): a point is feasible, for the stopping test and for the penalty schedule,
+# when its largest violation is at most this. The penalty grows only above it and returns to _AL_PENALTY below it:
+# rows that hold a limit at every point (a coil's curvature at each quadrature point) move their nearly active
+# neighbours across the limit as the active point moves, and a penalty driven up by that excursion that never came
+# back cut every later step short with its kinks (vacuum QA, 10-17: penalty 1e6, steps of 2e-4 for 300 steps).
+_AL_FEASIBILITY = 1e-6
 
 
 def _phr(v, multipliers, penalty, equality):
@@ -2518,11 +2518,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     Outer iterations minimize ``F(u) + sum_k psi(v_k(u))`` approximately at fixed multipliers ``lambda`` and
     penalty ``rho`` (``F = f / |f(start)|``, the scale clipped to 1e-12..1e12; ``v`` the rows' violations,
     :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set ``lambda = max(lambda + rho v, 0)``. The penalty
-    grows tenfold after an inner loop that moved unless the violation fell to half (or below 1e-6 row units).
-
-    The penalty grows only while the violation stays above ``feasibility`` (option, row units, default
-    ``1e-4``); below a tenth of it the penalty returns to its starting value at the next multiplier update, so a
-    large penalty, whose kinks cut the steps short, does not outlive the infeasibility that raised it.
+    grows tenfold after an inner loop that moved unless the violation fell to half or to ``feasibility`` (option,
+    row units, default ``1e-6``, also the stopping test's), and returns to its starting value at the first
+    multiplier update at a feasible point, so a large penalty, whose kinks cut the steps short, does not outlive
+    the infeasibility that raised it.
 
     An inner loop ends at a projected-gradient tolerance (a tenth of the previous loop's), after ten accepted
     steps, when the trust radius collapses, or when the violation doubles past one row unit (a run-away, not the
@@ -2601,13 +2600,13 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             measure = rows.violation(v)
             if s.inner > 0 and measure > max(0.5 * s.previous, feasibility):
                 s.penalty = min(10.0 * s.penalty, 1e12)
-            elif measure <= 0.1 * feasibility:  # feasible: the penalty that is left only cuts steps short
+            elif measure <= feasibility:  # feasible: the penalty that is left only cuts steps short
                 s.penalty = _AL_PENALTY
             s.multipliers = np.clip(slope, -1e12, 1e12)
             s.stalls = s.stalls + 1 if s.inner == 0 and s.radius < _AL_MIN_RADIUS else 0
             if s.stalls >= 3:  # no decrease at any radius from three fresh starts
                 note()
-                stationary = solved and rows.violation(v) <= 1e-6
+                stationary = solved and rows.violation(v) <= feasibility
                 return stationary, None if stationary else "no_progress", "no decrease of the augmented Lagrangian found"
             s.previous, s.tolerance, s.inner, s.outer = measure, 0.1 * s.tolerance, 0, s.outer + 1
             s.entry = rows.violation(v)

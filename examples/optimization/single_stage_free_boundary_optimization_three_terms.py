@@ -1414,14 +1414,22 @@ def main(argv=None):
         state, params = problem.state(x)
         return state, im.runtime_from_params(params, problem.model.cfg)
 
+    common_plan = {}  # the common evaluation's virtual-casing plan: planned once, on the first (seed) surface
+
     def common_residual(x):
         """B.n, the pressure jump and the sheet current of design ``x``'s equilibrium by one evaluation for every
-        method (vmex.core.freeboundary_vc.boundary_residual on an --vc-grid grid): the methods' comparison."""
-        from vmex.core import freeboundary_vc as fvc
+        method (vmex.core.freeboundary_vc.boundary_residual on an --vc-grid grid, the rows' fixed singular
+        quadrature): the methods' comparison."""
+        from vmex.core import freeboundary_vc as fvc, virtual_casing as vc
 
         state, runtime = state_runtime(x)
+        if "plan" not in common_plan:  # (vacuum: no virtual casing, boundary_residual ignores the plan)
+            data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=args.vc_grid,
+                                                    ntheta=args.vc_grid)
+            quad_nt, quad_np = args.quadrature or fvc.interface_quadrature(int(inp.nfp), args.vc_grid, args.vc_grid)
+            common_plan["plan"] = vc.plan_vc_precision(data, quad_nt=quad_nt, quad_np=quad_np)
         rows, weights = fvc.boundary_residual(inp, state, chart(jnp.asarray(x)), runtime=runtime,
-                                              nphi=args.vc_grid, ntheta=args.vc_grid)
+                                              nphi=args.vc_grid, ntheta=args.vc_grid, precision=common_plan["plan"])
         return fvc.summarize_boundary_residual(np.asarray(rows), np.asarray(weights))
 
     def interface_residual(x):

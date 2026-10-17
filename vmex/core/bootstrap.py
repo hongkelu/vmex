@@ -109,9 +109,8 @@ ELEMENTARY_CHARGE = 1.602176634e-19
 
 #: Gauss-Legendre order for the trapped-fraction lambda quadrature, shared by
 #: every entry point so the geometry lanes and the objective agree by default.
-#: Converged: the Redl current derivative (:func:`redl_current_derivative`) on
-#: the half mesh is within 8e-14 (qa4-beta) / 4e-14 (qa6) of 256 nodes, relative
-#: to its largest value (32 nodes: 2e-11 / 1e-11; 8 x 8, ns 51, 2.5 % beta).
+#: At 64 nodes the Redl current derivative (:func:`redl_current_derivative`)
+#: is converged to round-off.
 N_LAMBDA = 64
 
 
@@ -172,78 +171,7 @@ jax.tree_util.register_dataclass(
 # ===========================================================================
 
 
-EXTREMUM_CANDIDATES = 4  # grid local extrema refined per surface (see _interpolant_extremum)
-
-
-def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 8,
-                          candidates: int = EXTREMUM_CANDIDATES) -> Array:
-    """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
-
-    ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant
-    from the grid's local extrema find the continuous ones; the largest refined value is the extremum.  Its
-    location is held fixed when differentiating, so the derivative is that of the interpolant's extremum
-    (envelope theorem).
-
-    ``candidates``: the number of grid local extrema (largest ``sign * B`` first) refined.  Refining only the grid
-    extremum made the value discontinuous: where two local maxima of the interpolant are nearly equal, the grid
-    extremum can sit in the lower one's cell, and the value jumped by their difference when it switched
-    (LP QA 0.5 % and 2.5 % with the Redl rows in the solve: a 1e-6 boundary step moved the current rows by 5e-6,
-    and the solve stalled there).  With every candidate refined the extremum is continuous unless more than
-    ``candidates`` local extrema are within the grid's interpolation gap of the largest; the LP QA cases have
-    two, so four leave a margin at four times the cost of one (8 Newton steps on ``ntheta * nzeta`` terms).
-
-    ``newton_steps``: Newton converges quadratically from a grid extremum; the Redl current derivative it
-    feeds moved (relative to its largest value) by 6e-6 / 4e-9 / 4e-16 after 1 / 2 / 4 steps on qa4-beta and
-    2e-4 / 8e-6 / 3e-13 on qa6 (8 x 8, ns 51, against 16 steps), so 8 steps (8e-16) reach round-off with margin;
-    a converged step is a no-op.
-    """
-    nsurf, nt, nz = modB.shape
-    F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
-    kt = jnp.asarray(np.fft.fftfreq(nt, 1.0 / nt), dtype=modB.dtype)[:, None]
-    kz = jnp.asarray(np.fft.fftfreq(nz, 1.0 / nz), dtype=modB.dtype)[None, :]
-    cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
-    count = min(int(candidates), nt * nz)
-
-    def value_grad_hess(Fs, t, z):
-        terms = Fs * jnp.exp(1j * (kt * t + kz * z))
-        b = jnp.real(jnp.sum(terms))
-        g = jnp.real(jnp.stack([jnp.sum(1j * kt * terms), jnp.sum(1j * kz * terms)]))
-        h = -jnp.real(jnp.array([[jnp.sum(kt * kt * terms), jnp.sum(kt * kz * terms)],
-                                 [jnp.sum(kt * kz * terms), jnp.sum(kz * kz * terms)]]))
-        return b, g, h
-
-    def refine(Fs, idx):
-        t = 2 * jnp.pi * (idx // nz) / nt
-        z = 2 * jnp.pi * (idx % nz) / nz
-        for _ in range(newton_steps):
-            _, g, h = value_grad_hess(Fs, t, z)
-            step = -jnp.linalg.solve(h, g)
-            ok = jnp.all(jnp.isfinite(step)) & (jnp.linalg.det(h) > 0) & (sign * h[0, 0] < 0)
-            step = jnp.where(ok, jnp.clip(step, -cell, cell), 0.0)
-            t, z = t + step[0], z + step[1]
-        return t, z
-
-    def locate(Fs, Bs):
-        signed = sign * Bs
-        local = jnp.ones_like(signed, dtype=bool)  # >= its eight periodic neighbours
-        for dt in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                if dt or dz:
-                    local &= signed >= jnp.roll(signed, (dt, dz), axis=(0, 1))
-        masked = jnp.where(local, signed, -jnp.inf).reshape(-1)
-        top, idx = jax.lax.top_k(masked, count)
-        t, z = jax.vmap(lambda i: refine(Fs, i))(idx)
-        refined = jax.vmap(lambda a, b: sign * value_grad_hess(Fs, a, b)[0])(t, z)
-        best = jnp.argmax(jnp.where(jnp.isfinite(top), refined, -jnp.inf))
-        return t[best], z[best]
-
-    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB))
-    value = jax.vmap(lambda Fs, a, b: value_grad_hess(Fs, a, b)[0])(F, t, z)
-    grid = sign * jnp.max(sign * modB.reshape(nsurf, -1), axis=1)
-    return sign * jnp.maximum(sign * value, sign * grid)  # never inside the grid extremum
-
-
-def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAMBDA, refine_extrema: bool = False):
+def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAMBDA):
     r"""Effective trapped fraction and flux-surface averages per surface.
 
     ``f_t = 1 - (3/4) <B^2> \int_0^{1/Bmax} lambda dlambda / <sqrt(1 - lambda B)>``
@@ -263,11 +191,6 @@ def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAM
         length ``nsurf`` (same tuple as simsopt).  ``Bmin/Bmax`` are hard grid
         extrema: piecewise-smooth gradients, adequate for trust-region least
         squares (same stance as :func:`vmex.core.optimize.mirror_ratio`).
-        ``refine_extrema`` takes them from the grid's trigonometric
-        interpolant instead (:func:`_interpolant_extremum`): continuous
-        derivatives, which a Newton solve of per-surface rows needs near the
-        axis, where ``|B|`` barely varies on a surface and the grid extremum
-        jumps between points.
     """
     modB = jnp.asarray(modB)
     sqrtg = jnp.asarray(sqrtg)
@@ -278,11 +201,8 @@ def compute_trapped_fraction(modB: Array, sqrtg: Array, *, n_lambda: int = N_LAM
     Vp = jnp.mean(w, axis=(1, 2))
     fsa_B2 = jnp.mean(modB * modB * w, axis=(1, 2)) / Vp
     fsa_1overB = jnp.mean(w / modB, axis=(1, 2)) / Vp
-    if refine_extrema:
-        Bmax, Bmin = _interpolant_extremum(modB, 1.0), _interpolant_extremum(modB, -1.0)
-    else:
-        Bmax = jnp.max(modB, axis=(1, 2))
-        Bmin = jnp.min(modB, axis=(1, 2))
+    Bmax = jnp.max(modB, axis=(1, 2))
+    Bmin = jnp.min(modB, axis=(1, 2))
     epsilon = (Bmax - Bmin) / (Bmax + Bmin)
     f_t = _trapped_fraction_integral(modB, w, Vp, fsa_B2, Bmax, n_lambda)
     return Bmin, Bmax, epsilon, fsa_B2, fsa_1overB, f_t
@@ -564,8 +484,7 @@ def _half_mesh_fields(state: SpectralState, rt: SolverRuntime) -> _HalfMeshField
         nfp=nfp)
 
 
-def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int,
-                        refine_extrema: bool = False) -> RedlGeometry:
+def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int) -> RedlGeometry:
     """Interpolate half-mesh fields onto ``surfaces`` -> :class:`RedlGeometry`."""
     iota = _interp_half_grid(hm.iota, surfaces, hm.s_half)
     G = _interp_half_grid(hm.G, surfaces, hm.s_half)
@@ -574,7 +493,7 @@ def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int,
     sqrtg = _interp_half_grid(hm.w, surfaces, hm.s_half)
 
     Bmin, Bmax, epsilon, fsa_B2, fsa_1overB, f_t = compute_trapped_fraction(
-        modB, sqrtg, n_lambda=n_lambda, refine_extrema=refine_extrema)
+        modB, sqrtg, n_lambda=n_lambda)
     R = (G + iota * I) * fsa_1overB
     return RedlGeometry(
         surfaces=surfaces, iota=iota, G=G, I=I, R=R, epsilon=epsilon, f_t=f_t,
@@ -582,10 +501,10 @@ def _geometry_from_half(hm: _HalfMeshFields, surfaces, *, n_lambda: int,
         psi_edge=-hm.phi_edge, nfp=hm.nfp)
 
 
-QS_PROFILE_OVERSAMPLE = 4  # chi samples per poloidal grid point for f_t (see _qs_profile_geometry; 2 / 4 / 8
-# agree to 2e-9 in f_t at LP QA 2.5 %)
-QS_BOOZER_OVERSAMPLE = 2  # field-grid refinement of the Boozer-angle projection (see _qs_boozer_harmonics)
-# (2, 4, 8 agree to 4e-14 in f_t at LP QA 2.5 % 8x8 and 12x12 and to 1e-9 on Solovev; 1 aliases a coarse grid)
+#: ``chi`` samples per poloidal grid point of the quasi-symmetric profile's averages (:func:`_qs_geometry`).
+QS_PROFILE_OVERSAMPLE = 4
+#: Refinement of the field grid for the Boozer-angle projection (:func:`_qs_harmonics`); 1 aliases a coarse grid.
+QS_BOOZER_OVERSAMPLE = 2
 
 
 def _upsample_spectrum(F: Array, *, factor: int) -> Array:
@@ -671,8 +590,7 @@ def _qs_harmonics(lam_t, lam_z, b_t, b_z, modB, iota, nfp: int, helicity_n: int)
     nu_hat = (antiderivative(b_t, b_z) - I_g[:, None, None] * lam_hat) / (G_g + iota * I_g)[:, None, None]
 
     # the Boozer-angle projection on a finer grid (the fields' trigonometric interpolants): cos(m chi) of the
-    # grid's poloidal band times |B| J is not resolved by the field grid itself (on Solovev's 18-point grid it
-    # aliased the top harmonics to 1e-2 of c_1 and B_max by 2 %)
+    # grid's poloidal band times |B| J is not resolved by the field grid itself, which aliases the top harmonics
     P = QS_BOOZER_OVERSAMPLE
     up = functools.partial(_upsample_spectrum, factor=P)
     lam_f, nu_f, B_f = up(lam_hat), up(nu_hat), up(jnp.fft.fft2(modB, axes=(1, 2)))
@@ -705,7 +623,7 @@ def _qs_harmonics(lam_t, lam_z, b_t, b_z, modB, iota, nfp: int, helicity_n: int)
 def _trig_extremum(c, sn, m, chi, sign, *, newton_steps: int = 8, candidates: int = 4):
     """``sign * max(sign * B)`` of ``B(chi) = sum c_m cos(m chi) + s_m sin(m chi)`` (one surface): Newton from the
     ``candidates`` largest local extrema of the samples ``chi``, the largest refined value; the location is held
-    when differentiating (envelope theorem).  QS profiles have one maximum and one minimum a surface (LP QA 2.5 %),
+    when differentiating (envelope theorem).  A quasi-symmetric profile has one maximum and one minimum a surface,
     so the candidates are margin."""
     cs, ss = jax.lax.stop_gradient(c), jax.lax.stop_gradient(sn)
     phase = m[:, None] * chi[None, :]
@@ -729,9 +647,9 @@ def _qs_profile_geometry(state: SpectralState, rt: SolverRuntime, helicity_n: in
                          n_lambda: int, surfaces=None) -> RedlGeometry:
     """Redl's geometry from the quasi-symmetric part of ``|B|`` (:func:`_qs_boozer_harmonics`) on every half-mesh
     surface, or interpolated (harmonics and ``iota``, ``G``, ``I``, linearly in ``s``) onto ``surfaces``: see
-    :func:`_qs_geometry`.  The profile has one maximum and one minimum a surface where the full field on the
-    solver grid had up to eight nearly equal local maxima (LP QA 2.5 %), whose switching made the bootstrap rows
-    non-smooth in the boundary."""
+    :func:`_qs_geometry`.  The profile has one maximum and one minimum a surface, where the full field on the
+    solver grid can have several nearly equal local maxima, whose switching makes rows built on it non-smooth in
+    the boundary."""
     c, sn, m = _qs_boozer_harmonics(state, rt, helicity_n, hm)
     iota, G, I = hm.iota, hm.G, hm.I  # noqa: E741 - Boozer I
     if surfaces is not None:
@@ -770,7 +688,31 @@ def redl_qs_geometry_from_wout(wout, surfaces, helicity_n: int, *, ntheta: int =
     tables ``lmns``, ``bsubumnc``, ``bsubvmnc``, ``bmnc`` (and their LASYM partners) and ``iotas/bvco/buco``
     interpolated linearly onto ``surfaces``, synthesized on ``ntheta x nphi`` points of one field period, then
     :func:`_qs_harmonics`.  :func:`redl_geometry_from_wout` (the full field) is simsopt ``RedlGeomVmec``'s parity
-    check only."""
+    check only.
+
+    Parameters
+    ----------
+    wout:
+        A wout path or dataset.
+    surfaces:
+        Normalized toroidal flux values to evaluate on.
+    helicity_n:
+        Quasi-symmetry helicity, 0 (QA) or +/-1 (QH) (:func:`redl_helicity`).
+    ntheta, nphi:
+        Synthesis grid over one field period.
+    n_lambda:
+        Gauss-Legendre order of the trapped-fraction integral.
+
+    Returns
+    -------
+    RedlGeometry
+        The geometry on ``surfaces``.
+
+    Raises
+    ------
+    ValueError
+        If ``helicity_n`` is not that of QA or QH.
+    """
     if isinstance(wout, (str, Path)):
         wout = read_wout(wout)
     wout = getattr(wout, "wout", wout)
@@ -878,7 +820,23 @@ def redl_helicity(helicity_n) -> int:
     """``helicity_n`` checked for Redl's model: 0 (quasi-axisymmetry) or +/-1 (quasi-helical symmetry, units of
     ``nfp``).  Redl's formulae assume a quasi-symmetric field (the isomorphism ``iota -> iota - N``); a
     quasi-isodynamic or otherwise non-quasi-symmetric field has no such helicity and is refused, as is a missing
-    one (no default: a QI deck must not silently take the QA isomorphism)."""
+    one (no default: a QI deck must not silently take the QA isomorphism).
+
+    Parameters
+    ----------
+    helicity_n:
+        The requested helicity.
+
+    Returns
+    -------
+    int
+        ``helicity_n`` as an integer.
+
+    Raises
+    ------
+    ValueError
+        If ``helicity_n`` is missing or not 0, 1 or -1.
+    """
     if helicity_n is None:
         raise ValueError("Redl's bootstrap model needs the field's quasi-symmetry helicity_n: 0 (QA) or +/-1 (QH); "
                          "it is not valid for quasi-isodynamic (QI) or other non-quasi-symmetric fields")
@@ -1057,6 +1015,22 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
     difference of two such derivatives also sees a current that alternates from surface to surface.
     Traceable in ``(state, rt)``, smooth: Redl's geometry is that of the quasi-symmetric part of ``|B|``
     (:func:`_qs_profile_geometry`).
+
+    Parameters
+    ----------
+    profiles:
+        Kinetic profiles of Redl's formula.
+    helicity_n:
+        Quasi-symmetry helicity, 0 (QA) or +/-1 (QH).
+    state, rt:
+        A solved state and its runtime.
+    n_lambda:
+        Gauss-Legendre order of the trapped-fraction integral.
+
+    Returns
+    -------
+    tuple
+        ``(s, dI/ds)``: the half-mesh surfaces and the current derivative there [A].
     """
     return _redl_current_derivative(profiles, helicity_n, state, rt, n_lambda=n_lambda)[:2]
 
@@ -1066,9 +1040,8 @@ def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMB
 
     The geometry is the quasi-symmetric part of ``|B|`` (:func:`_qs_profile_geometry`, simsopt's
     ``RedlGeomBoozer`` definition): smooth in the equilibrium, unlike the full field's ``B_max`` on the solver
-    grid, whose nearly equal local maxima switch (LP QA 2.5 %: up to eight a surface, 2.5e-4 apart relative to
-    ``B_max - B_min``).  The Redl current differs from the full-field one by the field's symmetry breaking
-    (LP QA 2.5 % 8x8: 1 % of ``dI/ds``, 0.8 % of the total)."""
+    grid, whose nearly equal local maxima switch.  The Redl current differs from the full-field one by the
+    field's symmetry breaking."""
     hm = _half_mesh_fields(state, rt)
     geom = _qs_profile_geometry(state, rt, redl_helicity(helicity_n), hm, n_lambda=n_lambda)
     jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
@@ -1083,6 +1056,22 @@ def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlG
     flux-surface averages at their ``s_1`` values, while the kinetic profiles are evaluated at ``s``.  The
     banana-regime current follows ``s^(1/4)`` until the electron collisionality ``nu*_e ~ eps^(-3/2)``
     turns it into a collisional decay towards the axis.
+
+    Parameters
+    ----------
+    profiles, helicity_n:
+        As for :func:`j_dot_B_redl`.
+    geom:
+        Redl's geometry; its first surface is ``s_1``.
+    j_dot_b:
+        Redl's ``<J.B>`` on ``geom``'s surfaces.
+    x:
+        Fractions of ``s_1``.
+
+    Returns
+    -------
+    Array
+        The ratio at every ``x``.
     """
     x = jnp.asarray(x)
 
@@ -1096,8 +1085,8 @@ def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlG
     return j_dot_B_redl(profiles, near, helicity_n)[0] / jnp.asarray(j_dot_b)[0]
 
 
-#: Gauss-Legendre nodes of :func:`near_axis_redl_mean` in ``t = x^(1/4)``: within 2e-12 of 1024 nodes in the
-#: banana regime (16 nodes: 1e-8), 1e-15 when collisional.
+#: Gauss-Legendre nodes of :func:`near_axis_redl_mean` in ``t = x^(1/4)``, converged to round-off in the banana
+#: and collisional regimes.
 N_AXIS = 32
 
 
@@ -1106,6 +1095,18 @@ def near_axis_redl_mean(profiles: KineticProfiles, helicity_n: int, geom: RedlGe
     """The mean of :func:`near_axis_redl_ratio` over ``0 < s < s_1``: ``int_0^1 ratio(x) dx``.
 
     Gauss-Legendre in ``t = x^(1/4)`` (``dx = 4 t^3 dt``), where the banana-regime ``x^(1/4)`` is smooth.
+
+    Parameters
+    ----------
+    profiles, helicity_n, geom, j_dot_b:
+        As for :func:`near_axis_redl_ratio`.
+    n_nodes:
+        Gauss-Legendre nodes.
+
+    Returns
+    -------
+    Array
+        The mean ratio (a scalar).
     """
     nodes, weights = np.polynomial.legendre.leggauss(int(n_nodes))
     t = 0.5 * (nodes + 1.0)
@@ -1118,6 +1119,18 @@ def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tupl
 
     :func:`redl_current_derivative` for any bootstrap model, e.g. a kinetic ``<J.B>``
     interpolated onto the half-mesh surfaces.  Traceable in ``(state, rt)``.
+
+    Parameters
+    ----------
+    j_dot_b:
+        The target ``<J.B>`` on the ``ns - 1`` half-mesh surfaces.
+    state, rt:
+        A solved state and its runtime.
+
+    Returns
+    -------
+    tuple
+        ``(s, dI/ds)``: the half-mesh surfaces and the current derivative there [A].
     """
     hm = _half_mesh_fields(state, rt)
     return hm.s_half, _current_derivative(hm, jnp.asarray(j_dot_b))
@@ -1149,10 +1162,8 @@ class HalfMeshCurrent:
     interface rows) is the toroidal current whose poloidal field on the boundary is ``B0``.  A current error is thus
     measured by the field it carries over ``|B|``, as ``B . n / B0`` and the net-current row ``(G - G_coil) /
     G_coil`` are.  The square Newton solve of the free boundary does not depend on the scale (its root is where every
-    row vanishes).  The former rows ``100 (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (``I'_ref`` the deck's largest
-    ``I'``) weighed the current ~100 times the interface rows, so the Newton Jacobian's conditioning and the merit
-    function hung on a tuned number and on the starting current (qa4-beta 8 x 8: scaled Jacobian cond 1.4e7, cold
-    solve stalled; in these units 5.3e4, the boundary block's own, and 7 Newton evaluations).
+    row vanishes), but its conditioning and merit function do: in these units the current block is conditioned
+    like the boundary block, with no tuned weight and no dependence on the starting current.
 
     Inside the first surface VMEC sees the current only through the enclosed current at ``s_1`` (its current
     profile is sampled at the half-mesh surfaces), so the first segment carries exactly the enclosed current of
@@ -1161,10 +1172,8 @@ class HalfMeshCurrent:
     ``R = 4/5`` for the banana-regime ``s^(1/4)``, less where the collisionality diverges towards the axis).
     The knot at ``s = 0`` is the unknown that does so, with the row ``I'(0) - (2 R - 1) I'_Redl(s_1)``: its
     value is that of the straight segment with this integral, not the current density on the axis (which
-    vanishes with the trapped fraction).  Fixed knots inside ``s_1`` instead (formerly at ``s_1 / 64, s_1 / 16,
-    s_1 / 4``) left the piecewise-linear integral 4.1 % (qa4-beta) and 4.6 % (qa6) below the model's (8 x 8,
-    ns 51, 2.5 % beta; there ``R`` = 0.767 and 0.751, and the first segment carries 0.35 % of CURTOR).  The edge knot continues
-    the last two linearly (it only enters CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input
+    vanishes with the trapped fraction).  Fixed knots inside ``s_1`` would instead leave the piecewise-linear
+    integral short of the model's.  The edge knot continues the last two linearly (it only enters CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input
     on this profile, starting from its own current (``x0``, the initial condition only).
 
     The knot count ``ns + 1`` is not bound by VMEC2000's ``ndatafmax`` (101): VMEX's profiles have any length.
@@ -1175,7 +1184,7 @@ class HalfMeshCurrent:
     def __init__(self, deck, profiles, helicity_n):
         from .profiles import current
 
-        helicity_n = redl_helicity(helicity_n)  # QA or QH only, before any work
+        self.helicity_n = redl_helicity(helicity_n)  # QA or QH only, before any work
         if int(deck.ncurr) != 1:
             raise ValueError("a bootstrap current needs a prescribed current profile (ncurr = 1)")
         ns = int(np.asarray(deck.ns_array)[-1])
@@ -1192,7 +1201,7 @@ class HalfMeshCurrent:
         # d CURTOR / d v: the unknown knots' trapezoid weights (CURTOR is linear in v), the edge value included
         self.weights = np.asarray(jax.grad(lambda v: self.current(self.values(v), 1.0))(jnp.ones(slope.size)))
         self.unit = None
-        self.profiles, self.helicity_n = profiles, redl_helicity(helicity_n)
+        self.profiles = profiles
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
         self.deck = dataclasses.replace(deck, pcurr_type="line_segment_ip", ac_aux_s=self.knots,
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
@@ -1204,12 +1213,15 @@ class HalfMeshCurrent:
         if not (np.isfinite(self.unit) and self.unit > 0):
             raise ValueError(f"the current unit must be positive and finite, got {self.unit}")
 
+    def _require_unit(self) -> float:
+        if self.unit is None:
+            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
+        return self.unit
+
     @property
     def x_scale(self):
         """The coordinates' scale: :attr:`unit` (set by :meth:`set_unit`) on every knot."""
-        if self.unit is None:
-            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
-        return np.full(self.x0.size, self.unit)
+        return np.full(self.x0.size, self._require_unit())
 
     def values(self, v):
         """Every knot value from the unknowns ``v`` (the axis knot's, then the half-mesh ones)."""
@@ -1240,9 +1252,7 @@ class HalfMeshCurrent:
 
     def rows(self, state, runtime, params):
         """The self-consistency rows ``sqrt(w_j) (I' - I'_Redl) / unit`` (traceable)."""
-        if self.unit is None:
-            raise ValueError("the current unit is not set (HalfMeshCurrent.set_unit)")
-        return jnp.asarray(np.sqrt(self.weights) / self.unit) * self.mismatch(state, runtime, params)[0]
+        return jnp.asarray(np.sqrt(self.weights) / self._require_unit()) * self.mismatch(state, runtime, params)[0]
 
 
 def vmec_j_dot_B(
@@ -1590,7 +1600,7 @@ def self_consistent_bootstrap(
     switches to ``ncurr=1`` + ``power_series``.
 
     ``profile="half_mesh"`` instead iterates a :class:`HalfMeshCurrent`
-    (a knot on every half-mesh surface, ``I'(0) = 0``): each step sets
+    (a knot on every half-mesh surface and on the axis): each step sets
     ``I'`` there to :func:`redl_current_derivative` of the last equilibrium
     (under-relaxed), with no fit and no ``s_eval``; ``delta`` is the same
     relative error, on the half-mesh surfaces.  ``input`` is then on that

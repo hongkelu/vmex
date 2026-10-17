@@ -196,10 +196,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return jnp.concatenate([jump, current])
 
         self.interface_rows = interface_rows
-        self._terms = jax.jit(lambda state, params, field: _interface_terms(
+        terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field.field if isinstance(field, _Bundle) else field,
             runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
+        # every caller's state and parameters on the model's device: a caller's parameters may sit on the default
+        # (GPU) device while the solve's state is on the model's (a CPU model on a GPU machine)
+        self._terms = lambda state, params, field: terms(*jax.device_put((state, params), cfg.device), field)
 
     def evaluate(self, x, params, field, seed=None, tight=False):
         """:meth:`ThreeTermsFreeBoundaryModel.evaluate` with the run's constants bundled with ``field``."""
@@ -834,9 +837,14 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
             return jax.jvp(grad_x, (P(frozen), params), (P(dz_mu), dp_mu))[1]
 
         def constraint_field_jacobian(state, params, x):
-            """``d r_c / dx`` through the field at a fixed equilibrium (the net-current row's G_coil)."""
-            return jax.jacfwd(lambda xx: model.rows(state, params, field_from_parameters(xx))[
-                -model.n_constraint_rows:])(x)
+            """``d r_c / dx`` through the field at a fixed equilibrium (the net-current row's G_coil).
+
+            One linearization, its tangent pushed for two design directions at a time (``map_columns``): ``jacfwd``
+            carried every design direction through the whole rows (the interface field on the grid included) at
+            once -- 16 GiB for a QI A8 2.5 % design (357 directions) -- to keep only the constraint rows."""
+            _, push = jax.linearize(lambda xx: model.rows(state, params, field_from_parameters(xx))[
+                -model.n_constraint_rows:], x)
+            return map_columns(push, jnp.eye(x.size, dtype=x.dtype)).T
 
         self._coil_mixed = jax.jit(coil_mixed)
         self._constraint_field_jacobian = jax.jit(constraint_field_jacobian)

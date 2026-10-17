@@ -1967,7 +1967,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
 
         self._coordinates = coordinates
-        self._direct = jax.jit(jax.jacrev(rows, argnums=2))
+        # the direct x-Jacobian part by part: one reverse pass vmapped over all rows would replicate every part's
+        # backward program (a virtual-casing quantity's, 0.85 GiB) once per row of every other part (56 GiB)
+        def direct(state, params, x):
+            return jnp.concatenate([jax.jacrev(f, argnums=2)(state, params, x).reshape(-1, x.size) for f in parts])
+
+        self._direct = jax.jit(direct)
         # the deck's response data are an argument (model.attach), not constants of these programs
         self._field_vjp = jax.jit(lambda state, params, x, lam, deck: jax.vjp(
             lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), x)[1](lam)[0])

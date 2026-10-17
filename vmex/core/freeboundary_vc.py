@@ -1881,6 +1881,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # One small program per function and one for the block adjoint they share (model.adjoint), not one program
         # with a copy of the adjoint per function: they compile in parallel (_warm_gradient_programs), and the
         # adjoint's executable depends only on the config and the row count.
+        self._parts = parts  # (state, params, x) -> rows, one function per row block, in row order
         self._cotangents = tuple(cotangents(f) for f in parts)
         self._adjoint = jax.jit(lambda state, mask, params, state_bars, params_bars, factors: model.adjoint(
             state, mask, params, state_bars, params_bars, factors=factors))
@@ -1945,8 +1946,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return None
         return self._store(x, fit)
 
-    _BOUND = ("model", "_params_at", "_rows", "_plasma", "_plasma_directions", "_cotangents", "_adjoint",
-              "_coordinates", "_direct", "_field_vjp", "_field_jvp")
+    _BOUND = ("model", "_params_at", "_rows", "_plasma", "_plasma_directions", "_parts", "_cotangents",
+              "_adjoint", "_coordinates", "_direct", "_field_vjp", "_field_jvp")
 
     def _rereference(self, x, anchor):
         """The trial at ``x`` on a new deck, the anchor's boundary, when the current deck reaches it from no start.

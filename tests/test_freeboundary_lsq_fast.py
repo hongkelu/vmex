@@ -127,7 +127,7 @@ class _ToyModel(lsq.LeastSquaresFreeBoundaryModel):
     def second_order(self, x, aux, field, extra=None, columns=True):
         J, r = self.linearize(x, aux, field)[0], self._rows(x, None, None)
         k, S = r.size - 1, np.asarray(self.x_scale)
-        nu = self._reduced(x, S * (J[:k].T @ r[:k]), J[k:] * S[None])[3]
+        nu = self._reduced(S * (J[:k].T @ r[:k]), J[k:] * S[None])[2]
         shift = np.r_[np.zeros(k), nu - r[k:]]
         H = np.asarray(self.hess_fn(jnp.asarray(x), jnp.asarray(shift)))
         out = dict(J=J, r=r, g=J.T @ (r + shift), g_adjoint=J.T @ (r + shift), aux=aux, shift=shift,
@@ -160,8 +160,8 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
     out = model._newton(None, None, x0=start, max_iter=200)
     assert out["converged"], out["status"]
     with pytest.raises(RuntimeError, match="dependent"):
-        model._reduced(np.zeros(4), np.zeros(4), np.ones((2, 4)))
-    assert model._reduced(np.zeros(4), np.ones(4), None)[0].shape == (4, 4)
+        model._reduced(np.zeros(4), np.ones((2, 4)))
+    assert model._reduced(np.ones(4), None)[0].shape == (4, 4)
 
 
 def test_problem_entry_and_finite_beta_rows():
@@ -195,8 +195,8 @@ def test_problem_entry_and_finite_beta_rows():
     beta = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 13)
     model = lsq.LeastSquaresFreeBoundaryModel(replace(beta, lfreeb=False), **grid)
     assert not model.vacuum
-    # the rows' virtual-casing plan is the base model's (planned once for every band, #54): the plan the least-squares
-    # model made itself before, from the deck's surface with the model's digits and quadrature
+    # the rows' virtual-casing plan is the base model's (planned once for every band): the plan of the deck's
+    # surface with the model's digits and quadrature
     surface = fvc._surface_data(model.fixed, model.cfg, model.seed[0], model.params0, grid["nphi"], grid["ntheta"])
     planned = vc.plan_vc_precision(surface, digits=model.digits, quad_nt=grid["quadrature"][0],
                                    quad_np=grid["quadrature"][1])

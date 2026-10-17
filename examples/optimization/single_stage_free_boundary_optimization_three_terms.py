@@ -684,6 +684,12 @@ def restart_input(run, reference_from_wout=False):
     return inp, w
 
 
+def restart_boundary(run, w, inp):
+    """Where a restart's seed solve starts: the saved step's own coordinates (``boundary.npy``, its root on the run's
+    deck) when saved, else the WOUT's LCFS (fitted on the deck)."""
+    return np.load(run / "boundary.npy") if (run / "boundary.npy").exists() else wout_boundary(w, inp)
+
+
 def wout_boundary(w, inp):
     """The LCFS of WOUT ``w`` as ``inp``-shaped ``rbc``, ``zbs`` arrays (modes beyond ``inp``'s dropped)."""
     rbc, zbs, ntor = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs)), int(inp.ntor)
@@ -1379,7 +1385,7 @@ def main(argv=None):
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
         # a Galerkin restart on the run's own deck starts its seed solve at the saved step's boundary, near that
         # step's root (least squares solves its seed at its first trial, from the deck)
-        **({"boundary_start": wout_boundary(restart_wout, inp)} if args.free_boundary == "galerkin"
+        **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)} if args.free_boundary == "galerkin"
            and restart_wout is not None and not args.reference_from_wout else {})))
     problem = opt.FreeBoundaryProblem.from_loss(
         replace(inp, lfreeb=True, mgrid_file="direct ESSOS field") if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
@@ -1489,6 +1495,8 @@ def main(argv=None):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
+        if hasattr(problem, "boundary_coordinates"):  # the step's root on its deck: an exact restart's start
+            np.save(out / f"boundary{tag}.npy", problem.boundary_coordinates(x))
         if len(getattr(problem, "references", ())) > 1:  # the deck boundary the step was solved on (re-referenced)
             deck = problem.model.fixed
             replace(inp, rbc=deck.rbc, zbs=deck.zbs).to_indata(out / f"input{tag}.ref")

@@ -738,10 +738,14 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     ``x0``'s surface, then the band is extended one mode at a time
     (:meth:`~ThreeTermsFreeBoundaryModel.with_band`), each band's Newton solve starting from the previous band's
     boundary (:meth:`~ThreeTermsFreeBoundaryModel.displacement_of`) and bootstrap current, up to ``model``'s band.
-    Newton on ``model``'s band and on each extended band ends when two fresh-Jacobian steps in a row have to be
-    shortened (``undamped``): from a point in the rows' Newton basin a refreshed Jacobian restores full steps, so
-    a second shortened one means the point is outside it -- a far start, or no root near (a minimum of
-    ``|rows|^2`` that is no root), which then costs two Jacobians and their backtracking instead of a crawl.
+    Every band's Newton backtracks freely (not ``undamped``): the rows are ill-conditioned (condition 1e5 on
+    finite-beta QA/QH at 12x12, a soft near-resonant (m, n) = (3, 1) boundary harmonic), so from a start inside the
+    basin Newton may need shortened steps for several fresh Jacobians before full steps return (a 12x12 re-solve
+    of an 8x8 QA root at 2.5 %: t = 1/64..1/4 for 8 fresh Jacobians, then quadratic to 1e-19); the two-shortened-
+    steps rule declared such seeds without a free boundary.  Damped Newton still ends as a stall at a fresh step
+    without descent (a minimum of ``|rows|^2`` that is no root), so nothing but a root is reported as converged.
+    Optimizer trials keep the rule (:meth:`ThreeTermsFreeBoundaryModel.solve_boundary` with
+    ``continuation=False``): a trial that fails fast only shortens the optimizer's step.
     Band 1, the start of the continuation, takes damped steps.  A band that does not converge ends the solve as a
     stall: ``converged=False``, with the last band that converged (``fit["band"]``, its model and fit; ``None`` and ``model``'s Newton result when none did).
     Each fit has ``band``, ``target`` (``model``'s band), ``bands`` (each solve's ``(max_mode, converged,
@@ -750,8 +754,7 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     converged answer is the root of ``model``'s rows, whatever the route.
     """
     started = time.perf_counter()
-    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
-                                    undamped=True)
+    direct = model._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
     bands = [(model.max_mode, bool(direct["converged"]), time.perf_counter() - started)]
     target, nfev, njev = model.max_mode, direct["nfev"], direct["njev"]
 
@@ -777,8 +780,7 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     while True:
         started = time.perf_counter()
         try:
-            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose,
-                                           undamped=current.max_mode > 1)
+            fit = current._newton_boundary(params, field, x0=start, max_nfev=max_nfev, verbose=verbose)
         except (VmecError, RuntimeError):  # no certified equilibrium on the way: the band does not converge
             fit = dict(converged=False, nfev=0, njev=0)
         bands.append((current.max_mode, bool(fit["converged"]), time.perf_counter() - started))

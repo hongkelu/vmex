@@ -1341,6 +1341,26 @@ def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_s
     assert not trial["converged"] and calls == [target]
 
 
+def test_band_continuation_newton_damps_and_trials_do_not(monkeypatch):
+    """Seeds and re-solves (the band continuation) let Newton backtrack freely on every band: ill-conditioned rows
+    may need shortened steps inside the basin.  Optimizer trials (Newton alone) keep the fail-fast rule."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    model = fvc.ThreeTermsFreeBoundaryModel(inp, nphi=16, ntheta=16)
+    seen = []
+
+    def stall(self, params, field, *, x0=None, undamped=False, **kwargs):
+        seen.append((self.max_mode, undamped))
+        return dict(converged=False, nfev=1, njev=0, x=np.asarray(self.x0 if x0 is None else x0), jacobian=None)
+
+    monkeypatch.setattr(fvc.ThreeTermsFreeBoundaryModel, "_newton_boundary", stall)
+    fvc.solve_band_continuation(model, model.params0, field)
+    assert seen and not any(undamped for _, undamped in seen)
+    seen.clear()
+    model.solve_boundary(model.params0, field, continuation=False)
+    assert seen == [(model.max_mode, True)]
+
+
 def test_rereference_failures_keep_the_deck():
     """A deck that cannot be re-referenced, or a new deck on which the trial does not converge, leaves the problem
     on its deck: the trial fails and nothing of the new model remains."""

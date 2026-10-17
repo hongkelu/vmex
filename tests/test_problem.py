@@ -1185,6 +1185,33 @@ def test_augmented_lagrangian_resume_continues_the_run():
                      options=dict(resume=first.state))
 
 
+def test_augmented_lagrangian_penalty_returns_once_feasible():
+    """A penalty far above what the violation needs (a resumed run's 1e6, raised by an infeasibility long gone)
+    returns toward its starting value once the run is feasible, and the run still ends at the constrained minimum;
+    a violation below ``feasibility`` never raises it."""
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    def rosenbrock(x):
+        return (float((1-x[0])**2 + 100*(x[1]-x[0]**2)**2),
+                np.array([-2*(1-x[0]) - 400*x[0]*(x[1]-x[0]**2), 200*(x[1]-x[0]**2)]))
+
+    disk = NonlinearConstraint(lambda x: np.array([x@x]), -np.inf, 1.5, jac=lambda x: 2*x[None])
+
+    def run(x0, steps, **options):
+        p = opt.FunctionProblem.from_functions(x0, scales=np.array([.5, 2.]), value_and_grad=rosenbrock)
+        return opt.minimize(p, method="AUGLAG", constraints=disk, options=dict(maxiter=steps, **options))
+
+    reference = run(np.array([-1.2, 1.]), 300)
+    first = run(np.array([-1.2, 1.]), 8)  # mid-run, its penalty then raised as if by an earlier infeasibility
+    second = run(first.x, 300, resume=dict(first.state, penalty=1e6))
+    assert second.success and second.max_violation <= 1e-8 and second.penalty == 10.0
+    np.testing.assert_allclose(second.x, reference.x, atol=1e-6)
+    loose = run(np.array([-1.2, 1.]), 300, feasibility=1.0)  # every violation here is below 1: no growth
+    assert loose.success and loose.penalty <= 10.0
+    np.testing.assert_allclose(loose.x, reference.x, atol=1e-6)
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

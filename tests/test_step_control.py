@@ -232,7 +232,7 @@ def _install_fake_loop(monkeypatch, rt, calls, *, failures: int):
     def fake_run_loop(state0, loop_rt, *, mode, ijacob, verbose, emit,
                       time_step0, nstep,
                       use_fft=False, emit_banner=True, emit_legend=True,
-                      initial_xcdot=None, initial_residuals=None):
+                      initial_xcdot=None, initial_residuals=None, early_stop=None):
         n = len(calls)
         calls.append(dict(
             state={

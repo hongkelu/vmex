@@ -680,6 +680,24 @@ def restart_input(run, reference_from_wout=False):
     return inp, w
 
 
+def with_coarse_rung(inp, ns=13, max_iterations=60000):
+    """``inp`` prepared for a deck whose boundary is a step's shaped LCFS: a coarse radial rung before a single
+    fine one, and a final-rung iteration budget of at least ``max_iterations``.
+
+    From a strongly shaped boundary a single fine grid can fail to start (the initial Jacobian changes sign), and
+    plain descent on the fine grid can need about twice the usual budget before the Newton refinement takes over.
+    The solve stops at its tolerance, so a larger budget costs nothing where it is not needed; the final grid and
+    tolerance, and so the equilibrium, are unchanged.
+    """
+    niter = np.asarray(inp.niter_array).copy()
+    niter[-1] = max(int(niter[-1]), int(max_iterations))
+    inp = replace(inp, niter_array=niter)
+    if np.size(inp.ns_array) != 1 or int(np.asarray(inp.ns_array)[0]) <= ns:
+        return inp
+    return replace(inp, ns_array=np.r_[ns, np.asarray(inp.ns_array)], ftol_array=np.r_[1e-8, np.asarray(inp.ftol_array)],
+                   niter_array=np.r_[5000, niter])
+
+
 # ---- coils and their field -------------------------------------------------------------------------------------------
 def resize_coils(coils, order, n_segments):
     """Zero-pad higher Fourier modes without changing the curves or currents."""
@@ -1251,6 +1269,8 @@ def main(argv=None):
         if args.ns:
             inp = replace(inp, ns_array=np.array([args.ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]),
                           niter_array=np.asarray(inp.niter_array)[-1:])
+        if args.restart is not None and (args.reference_from_wout or (args.restart / "input.ref").exists()):
+            inp = with_coarse_rung(inp)
         RESOLUTION = (int(inp.mpol), int(inp.ntor), int(np.asarray(inp.ns_array)[-1]))
         mpol, ntor, _ = RESOLUTION
         redl = redl_profiles(inp)[1] if args.bootstrap else None

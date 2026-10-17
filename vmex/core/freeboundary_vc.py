@@ -1844,6 +1844,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             def value(state, params, x):
                 runtime = runtime_from_params(params, model.cfg)
                 return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
+            value.__name__ = getattr(f, "__name__", "row")  # names its programs in compile logs
             return value
 
         parts = (part(loss, True), *(part(f, False) for f in quantities),
@@ -1876,6 +1877,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 frozen = jax.lax.stop_gradient(state)
                 _, vjp = jax.vjp(lambda s, p: f(s, p, x), frozen, params)
                 return map_columns(vjp, jnp.eye(jax.eval_shape(f, state, params, x).size))  # see vmex.core.loops
+            program.__name__ = f"cotangents_{f.__name__}"
             return jax.jit(program)
 
         # One small program per function and one for the block adjoint they share (model.adjoint), not one program

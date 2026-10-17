@@ -1411,18 +1411,20 @@ def main(argv=None):
         state, params = problem.state(x)
         return state, im.runtime_from_params(params, problem.model.cfg)
 
-    def interface_residual(x):
-        """B.n, the pressure jump and the sheet current of design ``x`` (``BoundaryResidual``); for NESTOR the same
-        three-terms evaluation of its equilibrium (vmex.core.freeboundary_vc.boundary_residual), not NESTOR's own."""
-        if not nestor:
-            return problem.boundary_residual(x)
+    def common_residual(x):
+        """B.n, the pressure jump and the sheet current of design ``x``'s equilibrium by one evaluation for every
+        method (vmex.core.freeboundary_vc.boundary_residual on an --vc-grid grid): the methods' comparison."""
         from vmex.core import freeboundary_vc as fvc
 
-        equilibrium = problem.equilibrium_from_x(x)
-        rows, weights = fvc.boundary_residual(replace(equilibrium.inp, lfreeb=False), equilibrium.state,
-                                              chart(jnp.asarray(x)), runtime=equilibrium.runtime,
+        state, runtime = state_runtime(x)
+        rows, weights = fvc.boundary_residual(inp, state, chart(jnp.asarray(x)), runtime=runtime,
                                               nphi=args.vc_grid, ntheta=args.vc_grid)
         return fvc.summarize_boundary_residual(np.asarray(rows), np.asarray(weights))
+
+    def interface_residual(x):
+        """The method's own report of the interface conditions (``BoundaryResidual``); NESTOR has none of its own
+        three terms, so the common evaluation."""
+        return common_residual(x) if nestor else problem.boundary_residual(x)
 
     state0, runtime0 = state_runtime(problem.accepted.parameters)  # the per-surface rows' counts
     n_iota = int(np.size(abs_iota(state0, runtime0)))
@@ -1511,6 +1513,8 @@ def main(argv=None):
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
+                   **({} if nestor else dict(zip(("bn_common", "bn_common_max"), (lambda c: (c.normal, c.normal_max))(
+                       common_residual(x))))),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **getattr(problem, "stats", {}),
                    seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)

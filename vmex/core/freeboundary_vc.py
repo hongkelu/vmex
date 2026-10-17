@@ -10,70 +10,42 @@ At a free boundary ``S`` without a sheet current the plasma-vacuum interface con
 with ``B_out = B_coil + B_plasma`` and ``B_plasma`` the plasma's own field from the virtual-casing principle
 (:mod:`vmex.core.virtual_casing`).  Two curl- and divergence-free fields outside ``S`` with the same normal
 component and the same net poloidal current ``G`` are equal, so (1) and ``G_plasma = G_coil`` imply (2) and (3)
-when the edge pressure vanishes (a nonzero edge pressure needs a sheet current and is rejected).
+when the edge pressure vanishes (a nonzero edge pressure needs a sheet current and is rejected).  (2) and (3) are
+therefore reported (:func:`boundary_residual`), not fitted.
 
 The unknown is the displacement ``h(theta, zeta)`` of the deck's boundary along the deck equilibrium's radial
-coordinate lines, measured normal to the surface (one function on the deck's boundary modes;
-:func:`_normal_displacement_map`).  The deck fixes the boundary's poloidal labelling: at finite resolution the
-labelling decides how well the truncated series represents the surface, and a labelling taken from the start (or
-left free) makes the answer depend on the start or the fit crawl.  ``initial_boundary`` only sets the starting
-``h``.  The equations are square in ``h``, with the net poloidal current row ``G_plasma = G_coil`` for the
-``(0, 0)`` mode:
+coordinate lines, measured normal to the surface (:func:`_normal_displacement_map`).  The deck fixes the
+boundary's poloidal labelling, so the answer does not depend on the start; ``initial_boundary`` only sets the
+starting ``h``.  The equations are square in ``h``, with the row ``G_plasma = G_coil`` for the ``(0, 0)`` mode:
 
 - vacuum (no pressure, no plasma current): ``B_out = B_coil`` is an explicit function of the boundary, and the
   rows are the stationarity of the area-weighted mean square of ``B_coil . n`` in ``h``
-  (:func:`_mean_square_normal_field`): the least-squares free boundary, with its exact Hessian as the Newton
-  Jacobian.  ``h`` also has the poloidal harmonic ``m = mpol``, where the B.n that the top modes leave lies
-  (known-answer benchmark, 8 x 8: field lines 0.34 -> 0.10 mm).  A projection of ``B . n`` onto the boundary modes instead leaves the residual outside them
-  uncontrolled (LP QH 12 x 12: B.n 4.9e-4, above the deck's 1.8e-4; least squares 4.2e-5);
-- finite beta: Petrov-Galerkin rows ``R0 T0^T r = 0`` for the pointwise residual ``r = sqrt(w) B_out . n /
-  |B_in|`` (``w`` the area weights, ``B_out`` coils plus virtual casing), with the test functions ``T0`` the exact
-  response of the DECK's ``r`` to each boundary coordinate but ``(0, 0)``, the plasma's own response included
-  (:meth:`ThreeTermsFreeBoundaryModel._deck_response`; the coil field and its gradient at the deck's points
-  enter them, so their dependence on the coils is explicit).  Test functions that leave the plasma response out
-  (the moments of ``B_out . n`` against ``B_out . grad cos(m theta - n nfp phi)``, the first variation of the
-  mean square of ``B . n`` with the field frozen) are weakest on the near-resonant modes, where the plasma
-  responds most, and left B.n there: LP QA at 2.5 % beta, 12 x 12, ns 101, evaluated by a 16-mode ns-101
-  re-solve, B.n / pressure jump / sheet current 2.82e-4 / 2.5e-5 / 2.85e-4 ((4,1) and (5,1) harmonics 1.1e-4 and
-  0.9e-4) against 1.11e-4 / 1.7e-5 / 1.10e-4 with the deck's response, within 0.17 mm of the least-squares
-  boundary (1.25e-4); a cold solve from the deck 330 s against 815 s.  Test functions taken at the solution
-  itself would make the rows the exact least squares, whose design derivatives need the second derivatives
-  of the equilibrium; the deck's are fixed, so the rows' derivatives are first derivatives (coil direction:
-  the implicit derivative matches central differences to 5e-5).
+  (:func:`_mean_square_normal_field`), with its exact Hessian as the Newton Jacobian.  ``h`` also carries the
+  poloidal harmonic ``m = mpol``, where the ``B . n`` left by the top boundary modes lies;
+- finite beta: Petrov-Galerkin rows ``T0^T r = 0`` for the pointwise residual ``r = sqrt(w) B_out . n / |B_in|``
+  (``w`` the area weights), whose test functions ``T0`` are the exact response of the deck's ``r`` to each
+  boundary coordinate, the plasma's own response included (:meth:`ThreeTermsFreeBoundaryModel._deck_response`).
+  Test functions without the plasma response are weakest on the near-resonant modes, where the plasma responds
+  most; test functions at the solution itself would make the design derivatives need second derivatives of the
+  equilibrium.
 
-The boundary's band is the interior's, ``max(mpol - 1, ntor)``, in vacuum and at finite beta.  Two modes fewer
-(the fixed-boundary convention) scored worse under an independent ns-101 evaluation at 2.5 % beta, 12 x 12 (band
-12 against 10, band-limited B.n / pressure jump / sheet current: QH -18 / -36 / -19 %, QI -6 / -26 / -6 %), and
-its Newton solve stalled where band 12's converges (a QA seed with Redl current).  Where Newton on the band
-stalls, the band is built up from ``m <= 1`` one mode at a time (:func:`solve_band_continuation`).
-
-Two curl- and divergence-free fields with the same normal component and the same ``G`` are equal, so the
-pressure balance (2) and the sheet current (3) follow and are reported (:func:`boundary_residual`), not fitted.
-
-Every trial boundary is a fixed-boundary equilibrium (Newton-refined; :mod:`vmex.core.implicit`), so the rows
-and their exact implicit derivatives are smooth functions of the boundary, the coils and the plasma parameters.
-VMEC2000 counterpart: none; this replaces NESTOR (``vacuum.f`` and its callees, :mod:`vmex.core.vacuum`) as the
-free-boundary condition.
+The boundary's band is the interior's, ``max(mpol - 1, ntor)``.  Where Newton on the band stalls, the band is
+built up from ``m <= 1`` one mode at a time (:func:`solve_band_continuation`).  Every trial boundary is a
+fixed-boundary equilibrium (Newton-refined; :mod:`vmex.core.implicit`), so the rows and their implicit derivatives
+are smooth functions of the boundary, the external field and the plasma parameters.  VMEC2000 counterpart: none;
+this replaces NESTOR (:mod:`vmex.core.vacuum`) as the free-boundary condition.
 
 Entry points, from the most to the least packaged:
 
-- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = THREE_TERMS``
-  (``vmex input.case``, :func:`~vmex.core.multigrid.solve_file`), the CLI flag
-  ``--boundary-condition three-terms``, or
-  ``solve_free_boundary_multigrid(..., boundary_condition="three_terms")``;
-- :func:`solve_free_boundary_three_terms`: one solve with every control, and
-  ``previous=`` to restart from an earlier result after the coils change;
-- ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
-  (:class:`ThreeTermsFreeBoundaryProblem`): single-stage optimization, a loss
-  and constraint rows of coils and plasma parameters at their free boundary,
-  for :func:`vmex.core.optimize.minimize`;
-- :class:`ThreeTermsFreeBoundaryModel`: the residual, its Jacobian, state
-  tangents and pullbacks for one deck and any external field or plasma
-  parameters, without recompiling -- the pieces an optimizer needs;
-- :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
-  check a NESTOR result.
-
-The names keep ``three_terms`` (the three interface conditions above) for compatibility.
+- a free-boundary deck with ``!@VMEX BOUNDARY_CONDITION = THREE_TERMS`` (``vmex input.case``), the CLI flag
+  ``--boundary-condition three-terms``, or ``solve_free_boundary_multigrid(..., boundary_condition="three_terms")``;
+- :func:`solve_free_boundary_three_terms`: one solve with every control, and ``previous=`` to restart after the
+  external field changes;
+- ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")`` (:class:`ThreeTermsFreeBoundaryProblem`):
+  single-stage optimization of a loss and constraint rows of coils and plasma parameters at their free boundary;
+- :class:`ThreeTermsFreeBoundaryModel`: the rows, their Jacobian, state tangents and pullbacks for one deck and
+  any external field or plasma parameters, without recompiling;
+- :func:`boundary_residual`: the three conditions on any equilibrium, e.g. a NESTOR result.
 """
 
 from __future__ import annotations
@@ -210,8 +182,8 @@ def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
 def _is_vacuum(inp: VmecInput) -> bool:
     """No pressure and no plasma current that the field can feel: ``B_out`` is the external field alone.
 
-    A current or pressure below the field's round-off (a WOUT restart's CURTOR 1e-12 A) is no plasma: it cannot
-    change B in double precision, so it must not select the finite-beta formulation.
+    A current or pressure below the field's round-off (a CURTOR of 1e-12 A read back from a WOUT) cannot change
+    ``B`` in double precision, so it does not select the finite-beta formulation.
     """
     return (int(inp.ncurr) == 1 and _plasma_below_roundoff(inp)
             and (inp.ac is None or not np.any(np.asarray(inp.ac, dtype=float))))
@@ -424,8 +396,7 @@ def _mean_square_normal_field(rmnc, zmns, xm, xn, phi, theta, phi_grid, field):
 
 #: Relative change of the displacement map under a doubled grid at which its grid counts as converged: the map's
 #: error then moves a boundary displacement ``h`` by less than ``sqrt(eps) |h|``, below the Newton step tolerance
-#: (:func:`newton_step_converged`).  LP QA 8 x 8 / 12 x 12 decks (``paper/runs/b23``): 64 x 32 -> 128 x 64 changes
-#: the map by 1.8e-7 / 1.1e-4, 128 x 64 -> 256 x 128 by 9e-14 / 1.2e-12.
+#: (:func:`newton_step_converged`).
 _MAP_GRID_RTOL = float(np.sqrt(np.finfo(float).eps))
 
 
@@ -464,9 +435,7 @@ def _normal_displacement_map_on(inp, max_mode, alpha, ntheta, nzeta, direction, 
 
     The harmonic ``m_top + 1`` has no coefficient of its own: through the poloidal variation of the transport
     direction it moves the top coefficients ``m_top``.  Without it the ``B . n`` that the boundary's top modes
-    leave at ``m_top + 1`` is outside every row's reach and its size is set by the reference's labelling (the
-    known-answer benchmark at 8 x 8: 1.4e-3 of B.n's 1.6e-3 RMS); with it the least squares sees and lowers it
-    (vacuum, where the rows are the exact least squares).
+    leave at ``m_top + 1`` is outside every row's reach; with it the vacuum least squares sees and lowers it.
     The remaining tangential moves (relabellings ``theta -> theta + delta(theta, zeta)``, which no interface
     condition sees) stay absent from the unknowns.
     """
@@ -560,12 +529,9 @@ def _newton_step(J, r):
 
 #: Surface grid points per field period, in each direction, per harmonic of the deck's interior (``mpol``,
 #: ``ntor``).  The rows integrate products of band-limited fields (edge field, geometry, test functions), which
-#: needs more than 2 points per harmonic to be alias-free; 4 gives margin.  Measured on LP QA at 2.5 % beta
-#: (``paper/runs/b23``): 4 instead of 6 points per harmonic move the free boundary by 0.41 um at 8 x 8 and 26 nm
-#: at 12 x 12, with B.n unchanged: far below the boundary's dependence on the interior ``ns`` (~1 mm), and no
-#: larger than the effect of the virtual-casing accuracy (``VC_DIGITS`` 4 -> 5: 0.4-1.0 um).  The reported pressure-balance RMS moves by
-#: ~1 % at 8 x 8 because the report is integrated on the same grid; final numbers come from an independent,
-#: converged evaluation, not from the solver's own report.
+#: needs more than 2 points per harmonic to be alias-free; 4 gives margin (the boundary then moves by far less
+#: than its dependence on the interior ``ns``).  The solver's own residual report shares this grid; report final
+#: numbers from an independent, converged evaluation.
 _GRID_POINTS_PER_HARMONIC = 4
 
 
@@ -581,8 +547,8 @@ def interface_grid(inp) -> tuple[int, int]:
 
 def interface_quadrature(nfp: int, nphi: int, ntheta: int) -> tuple[int, int]:
     """The virtual-casing singular quadrature ``(quad_nt, quad_np)`` for an ``nphi x ntheta`` field-period grid:
-    ``(4 nfp nphi, 2 ntheta)``.  With ``quad_np = ntheta`` the tangential plasma field is off by ~3e-4 ``|B|`` on
-    the LP QA 2.5 % beta boundary; planning the quadrature from its own error estimate instead can exhaust a GPU on
+    ``(4 nfp nphi, 2 ntheta)``.  A coarser ``quad_np = ntheta`` leaves an error of order ``1e-4 |B|`` in the
+    tangential plasma field; planning the quadrature from its own error estimate instead can exhaust GPU memory on
     a strongly shaped boundary.  The default of :class:`ThreeTermsFreeBoundaryModel`.
     """
     return 4 * int(nfp) * int(nphi), 2 * int(ntheta)
@@ -608,56 +574,63 @@ def solve_free_boundary_three_terms(
     method: str = "galerkin",
     verbose: int = 0,
 ):
-    """Free-boundary equilibrium of ``inp`` (the interface conditions of the module docstring).
+    """Free-boundary equilibrium of ``inp`` by the interface conditions of the module docstring.
 
-    ``method`` chooses the formulation: ``"galerkin"`` (default; described below: the square system on the
-    deck's normal displacement, with the deck as the labelling reference) or ``"least_squares"``
-    (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`: the boundary coefficients with the
-    deck's labelling, the area-weighted least squares of the conditions on the grid, exact second derivatives,
-    the bootstrap current's rows as equality constraints).  Galerkin is the faster.  Both take the keywords
-    below and return the same result.
+    The free boundary is the deck's boundary displaced along the deck equilibrium's radial lines
+    (:class:`ThreeTermsFreeBoundaryModel`); the deck fixes the labelling, so the answer does not depend on the start.
+    Every trial is a fixed-boundary equilibrium on the deck's ``NS_ARRAY`` ladder at fixed toroidal flux, pressure
+    and current (or iota).
 
-    ``inp`` is a free-boundary deck (``PHIEDGE``, profiles, and the external
-    field through ``external_field``, ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``).
-    The free boundary is the deck's boundary displaced along the deck
-    equilibrium's radial lines (:class:`ThreeTermsFreeBoundaryModel`): the deck is the fixed reference of
-    the boundary's labelling, so the solution does not depend on where the
-    solve starts; ``initial_boundary`` (another surface) only sets the starting
-    displacement.  Every trial is a fixed-boundary equilibrium on the deck's
-    ``NS_ARRAY`` ladder at fixed toroidal flux, pressure and current or iota.
-    ``external_field`` is anything
-    :func:`~vmex.core.virtual_casing.external_B_cartesian` accepts (an
-    :class:`~vmex.core.mgrid.MgridField`, a ``xyz -> B`` callable such as an
-    ESSOS Biot-Savart field, or a coil field with ``b_cyl``).
+    Parameters
+    ----------
+    inp:
+        Free-boundary deck: ``PHIEDGE``, profiles, and the external field through ``external_field``,
+        ``mgrid_path`` or ``MGRID_FILE``/``EXTCUR``.  The edge pressure must vanish; ``lasym`` must be false.
+    external_field:
+        Anything :func:`~vmex.core.virtual_casing.external_B_cartesian` accepts: an
+        :class:`~vmex.core.mgrid.MgridField`, an ``xyz -> B`` callable (e.g. an ESSOS Biot-Savart field) or an
+        object with ``b_cyl``.
+    mgrid_path:
+        An mgrid file, when ``external_field`` is not given.
+    initial_boundary:
+        Another surface to start from (only the starting displacement; default the deck's boundary).
+    max_mode:
+        The boundary's band (default :attr:`ThreeTermsFreeBoundaryModel.top_band`).
+    nphi, ntheta:
+        The rows' grid over one field period (default :func:`interface_grid`).
+    digits, quadrature:
+        Accuracy of the virtual-casing singular patches, planned once on the deck, and the singular quadrature
+        ``(quad_nt, quad_np)`` (default :func:`interface_quadrature`).
+    max_nfev:
+        Most row evaluations of the Newton solve.
+    trial_ftol, chunk:
+        As for :class:`ThreeTermsFreeBoundaryModel`.
+    bootstrap, bootstrap_helicity:
+        Kinetic profiles and the quasi-symmetry helicity (0 for QA, +/-1 for QH; required with ``bootstrap``) to
+        solve a Redl-self-consistent current with the boundary.  Redl's model is refused for QI fields.
+    previous:
+        An earlier result for the same deck (typically before a change of the external field): the solve starts
+        from its boundary, Jacobian and model, and compiles nothing new.
+    method:
+        ``"galerkin"`` (the square system above, the faster) or ``"least_squares"``
+        (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`, the same keywords and result).
+    verbose:
+        Print progress when nonzero.
 
-    The equations (module docstring) are Newton-solved on an ``nphi x ntheta``
-    grid over one field period (default :func:`interface_grid`), with the
-    virtual-casing singular quadrature ``quadrature`` (default
-    :func:`interface_quadrature`) and its singular patches planned once on
-    the deck to ``digits``, to at most ``max_nfev`` evaluations.  ``previous``, an
-    earlier result for the same deck (typically before a coil change), starts
-    from its boundary, Jacobian and model: neither new coils nor a repeat
-    solve compile anything.  ``trial_ftol`` and ``chunk`` are
-    :class:`ThreeTermsFreeBoundaryModel`'s.  ``bootstrap`` (kinetic
-    profiles) and ``bootstrap_helicity`` (required with it: 0 for QA, +/-1 for QH;
-    Redl's model is refused for QI fields) solve for a Redl-self-consistent
-    current profile together with the boundary.
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        ``x`` (boundary coordinates, then any bootstrap-current values), ``fun`` (the rows), ``jac``, ``cost``,
+        ``nfev``, ``njev``, ``success``; ``input`` (the free boundary, and the current, as a fixed-boundary deck);
+        ``equilibrium`` (solved to ``_REPORT_FTOL``); ``model`` and ``aux`` (for ``previous=``); ``band`` and
+        ``bands`` (each band solve's ``(max_mode, converged, seconds)``, :func:`solve_band_continuation`);
+        ``boundary_residual`` and ``initial_boundary_residual`` (:class:`BoundaryResidual` at the end and at the
+        start) and ``normal_outside_modes`` (:meth:`ThreeTermsFreeBoundaryModel.normal_outside_modes`).
 
-    Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
-    coordinates, then any bootstrap-current values), ``fun`` (the equations),
-    ``jac`` (the last Jacobian), ``cost``, ``nfev``, ``njev``, ``success``
-    (converged), ``input`` (the free boundary, and the current, as a
-    fixed-boundary deck), ``equilibrium`` (solved to a final force residual of
-    ``1e-17``, see ``_REPORT_FTOL``), ``model``, ``aux`` (``(state, mask,
-    params, tight)``, for ``previous=``), ``band`` (the boundary's band, ``max_mode``, default
-    :attr:`ThreeTermsFreeBoundaryModel.top_band`; where Newton stalls on it the band is built up,
-    :func:`solve_band_continuation`, and a stall reports the last band that converged) and ``bands``
-    (each band solve's ``(max_mode, converged, seconds)``), ``boundary_residual`` and
-    ``initial_boundary_residual`` (:class:`BoundaryResidual` of the reported
-    equilibrium, and at the start) and ``normal_outside_modes``
-    (:meth:`ThreeTermsFreeBoundaryModel.normal_outside_modes`).  A solve that
-    does not lower ``B . n`` below the deck's warns (``RuntimeWarning``) with
-    that out-of-band part.
+    Warns
+    -----
+    RuntimeWarning
+        When the solve does not lower ``B . n`` below the deck's, with the part outside the boundary's modes.
     """
     from scipy.optimize import OptimizeResult
 
@@ -714,10 +687,8 @@ def solve_free_boundary_three_terms(
     initial, deck = report_box[0]
     state, _, params, _ = out["aux"]
     boundary = input_with_params(model.fixed, params)
-    # From the rows' own state on its own rung (a restart skips the deck's lower rungs; an ``initial_state`` would
-    # seed the first rung and climb the ladder again: LP QA 2.5 %, 8 x 8, CURTOR x 0.99, that climb hit the
-    # iteration cap at fsq 1e-4 after 545 s and was returned, QS 1.12e-4 against the rows' 1.71e-5), and an
-    # equilibrium that does not reach the tolerance is an error, not a result.
+    # Restart from the rows' own state on its final rung (re-climbing the deck's ns ladder from an initial state
+    # can stall short of the tolerance); an equilibrium that does not reach the tolerance is an error.
     equilibrium = solve_equilibrium(
         boundary, restart_from=state, forward_ftol=min(_REPORT_FTOL, float(np.asarray(boundary.ftol_array)[-1])),
         forward_max_iterations=max(int(np.asarray(boundary.niter_array)[-1]), 200000), raise_on_max_iterations=True)
@@ -754,11 +725,8 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     shortened (``undamped``): from a point in the rows' Newton basin a refreshed Jacobian restores full steps, so
     a second shortened one means the point is outside it -- a far start, or no root near (a minimum of
     ``|rows|^2`` that is no root), which then costs two Jacobians and their backtracking instead of a crawl.
-    Band 1, the start of the continuation, takes damped steps.
-    QA in vacuum, 12 x 12, from starts 2 cm and 4 cm from the answer: Newton on band 12 stalls, every band from 1
-    to 12 converges from the previous one in full Newton steps (6-7 min in all), to the deck start's answer within
-    4e-12 m.  A band that does not converge so ends the solve as a stall: ``converged=False``, with the last band
-    that converged (``fit["band"]``, its model and fit; ``None`` and ``model``'s Newton result when none did).
+    Band 1, the start of the continuation, takes damped steps.  A band that does not converge ends the solve as a
+    stall: ``converged=False``, with the last band that converged (``fit["band"]``, its model and fit; ``None`` and ``model``'s Newton result when none did).
     Each fit has ``band``, ``target`` (``model``'s band), ``bands`` (each solve's ``(max_mode, converged,
     seconds)``), ``direct`` (the Newton result on ``model``'s band) and the evaluation and Jacobian counts of
     the whole route.  Every band's rows are the square equations of the module docstring on that band, so a
@@ -815,11 +783,30 @@ def solve_band_continuation(model, params, field, *, x0=None, jacobian=None, max
     return result(reached, reached_fit, reached.max_mode, False)
 
 
+def _radial_direction(state, resolution):
+    """The edge's radial coordinate direction ``dX/ds`` as a function ``(theta, zeta) -> (dR, dZ)``.
+
+    The boundary moves along the deck equilibrium's radial coordinate lines, not along the surface normal: VMEC's
+    nested surfaces share their theta labelling along these lines, so the deck's labelling carries over to the free
+    boundary without sliding.
+    """
+    xm, xn, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, resolution))
+    ds = 1.0 / (rmnc.shape[0] - 1)
+    dr = (rmnc[-1] - rmnc[-2]) / ds
+    dz = (zmns[-1] - zmns[-2]) / ds
+
+    def radial(T, Zg):
+        a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
+        return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
+
+    return radial
+
+
 def _surface_data(fixed, cfg, state, params, nphi, ntheta):
     """:func:`~vmex.core.virtual_casing.surface_field_data_from_state` of a concrete state as one compiled program.
 
     Eagerly, the field and surface assembly dispatch hundreds of small operations, each compiled on first use
-    (~15 s on a GPU before the first row); the program compiles once.  Its static fields (``nfp``, symmetry,
+    (seconds on a GPU before the first row); the program compiles once.  Its static fields (``nfp``, symmetry,
     ``signgs``, convention) are those of the traced construction.
     """
     from . import implicit as im
@@ -864,56 +851,57 @@ def _try(function, *args):
 class ThreeTermsFreeBoundaryModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
-    The fixed-boundary equilibria and their derivatives come from
-    :mod:`vmex.core.implicit`, with the boundary, PHIEDGE and current profile
-    as traced :class:`~vmex.core.implicit.ImplicitParams`, and the external
-    field enters the compiled interface rows as an argument: neither new coils
-    nor new plasma parameters recompile anything, which is what an optimizer
-    that solves the free boundary at every step needs.  As in
-    :func:`solve_free_boundary_three_terms`, a deck whose pressure does not
-    vanish at the boundary is rejected: the rows have no sheet current to
-    carry a pressure jump.
+    The fixed-boundary equilibria and their derivatives come from :mod:`vmex.core.implicit`, with the boundary,
+    PHIEDGE and current profile as traced :class:`~vmex.core.implicit.ImplicitParams`; the external field enters
+    the compiled rows as an argument, so neither a new field nor new plasma parameters recompile anything.  The
+    rows are the square equations of the module docstring, with the quadrature plan and the field scale ``B0``
+    fixed on the deck.
 
-    Coordinates: ``x`` is the displacement ``h`` of the deck's boundary on
-    its modes up to ``max_mode`` (default ``top_band``, the interior's
-    ``max(mpol - 1, ntor)``; :meth:`with_band` the same deck on another band)
-    (``x0 = 0`` the deck; ``x_scale`` their ESS
-    scales; :meth:`displacement_of` the coordinates of another surface),
-    ``params`` an ``ImplicitParams`` (``params0`` the deck's) whose boundary
-    ``with_boundary(params, x)`` replaces.  The rows are the square
-    equations of the module docstring, with the quadrature plan and the field
-    scale ``B0`` fixed on the deck (``seed``: its ``(state, mask)``).
+    Parameters
+    ----------
+    inp:
+        The deck.  Its pressure must vanish at the boundary (the rows carry no sheet current).
+    max_mode:
+        The boundary's band (default :attr:`top_band`, the interior's ``max(mpol - 1, ntor)``).
+    nphi, ntheta:
+        The rows' grid over one field period (default :func:`interface_grid`).
+    digits:
+        Accuracy the virtual-casing singular patches are planned to.
+    chunk:
+        Most Jacobian columns per batch.
+    device:
+        JAX device of the equilibria (default the first).
+    trial_ftol:
+        A looser force tolerance for trial boundaries; a state is re-solved to the deck's before it is
+        differentiated.
+    quadrature:
+        The virtual-casing singular quadrature ``(quad_nt, quad_np)`` (default :func:`interface_quadrature`;
+        ``quad_nt`` a multiple of ``nfp * nphi``).
+    bootstrap, bootstrap_helicity:
+        :class:`~vmex.core.bootstrap.KineticProfiles` and the quasi-symmetry helicity (0 for QA, +/-1 for QH;
+        non-quasi-symmetric fields are refused): the current profile becomes Redl's bootstrap current in the same
+        solve.  ``x`` then gains the current's knot values (one on the axis, then one per half-mesh surface) after
+        the ``n_boundary`` boundary coordinates, and the rows gain one self-consistency row per knot
+        (:class:`~vmex.core.bootstrap.HalfMeshCurrent`).
+    fixed_boundary:
+        With ``bootstrap``: hold the boundary and solve only the current (no external field, no virtual casing).
 
-    Methods: :meth:`solve_boundary` (the free boundary, cold or warm),
-    :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
-    and the state responses), :meth:`push` (forward-mode columns of other
-    functions of the equilibrium), :meth:`pullback` (their reverse-mode
-    gradients), :meth:`boundary_residual`, :meth:`bootstrap_residual` and
-    :meth:`solve`; ``rows(state, params, field)`` (and its interface part
-    ``interface_rows``) are the traceable rows themselves.
+    Attributes
+    ----------
+    x0, x_scale:
+        The deck's coordinates (zero displacement) and their scales.  ``x`` is the displacement of the deck's
+        boundary on the band's modes (:attr:`boundary_modes`), then any current values.
+    params0, seed:
+        The deck's ``ImplicitParams`` and its equilibrium ``(state, mask)``.
+    with_boundary:
+        ``with_boundary(params, x)``: ``params`` with the boundary (and current) of ``x``.
+    rows:
+        ``rows(state, params, field)``, the traceable rows (``interface_rows`` their interface part).
 
-    ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
-    force residual (each is re-solved to the deck's before it is
-    differentiated).  ``nphi x ntheta`` is the rows' grid over one field period (default
-    :func:`interface_grid`); ``quadrature = (quad_nt, quad_np)`` is the virtual-casing singular quadrature
-    (default :func:`interface_quadrature`; ``quad_nt`` a multiple of ``nfp * nphi``) and ``digits`` the accuracy
-    its singular patches are planned to (default :data:`~vmex.core.virtual_casing.VC_DIGITS`).
-    ``chunk`` bounds the Jacobian columns per batch.
-
-    ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
-    ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model, required: 0 for QA, +/-1 for QH;
-    QI and other non-quasi-symmetric fields are refused) makes the
-    current profile Redl's bootstrap current in the same solve: ``x`` gains its
-    knot values (one on the axis, then one on every half-mesh surface) after
-    the boundary coordinates (``n_boundary`` of them), and the rows gain one self-consistency row per knot, in the interface rows' units
-    (the poloidal field of the current error over ``B0``; see
-    :class:`~vmex.core.bootstrap.HalfMeshCurrent`; a prescribed-current deck).
-    The current then follows the equilibrium instead of being an input, and
-    :meth:`bootstrap_residual` reports how far it is from Redl's.  ``fixed_boundary=True`` (with
-    ``bootstrap``) holds the boundary at that of ``params`` and solves only the
-    current: ``x`` is the current values alone, the rows are the bootstrap ones
-    and no external field or virtual casing enters -- the fixed-boundary
-    single stage's equilibrium, with the same Jacobians and pullbacks.
+    Methods: :meth:`solve_boundary` (the free boundary, cold or warm), :meth:`evaluate` (rows at a boundary),
+    :meth:`linearize` (their Jacobian and state responses), :meth:`push` and :meth:`pullback` (forward and reverse
+    derivatives of other functions of the equilibrium), :meth:`with_band`, :meth:`rereferenced`,
+    :meth:`displacement_of`, :meth:`boundary_residual`, :meth:`bootstrap_residual` and :meth:`solve`.
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
@@ -985,20 +973,7 @@ class ThreeTermsFreeBoundaryModel:
         self._radial = None
         self.precision = None
         if not self.fixed_boundary:
-            # The boundary moves along the deck equilibrium's radial coordinate lines dX/ds at the edge (VMEC's
-            # nested surfaces share their theta labelling along them), not along the surface normal: the labelling
-            # convention of the deck is carried to the free boundary without sliding (known-target benchmark,
-            # deck 11 mm away: 8 x 8 field lines 1.23 -> 0.36 mm, K 1.9e-3 -> 3.8e-4).
-            xm, xn, rmnc, zmns = map(np.asarray, vc._state_geometry_spectra(state, self.cfg.resolution))
-            ds = 1.0 / (rmnc.shape[0] - 1)
-            dr = (rmnc[-1] - rmnc[-2]) / ds
-            dz = (zmns[-1] - zmns[-2]) / ds
-
-            def radial(T, Zg):
-                a = xm[:, None, None] * T[None] - xn[:, None, None] * Zg[None]
-                return np.tensordot(dr, np.cos(a), axes=1), np.tensordot(dz, np.sin(a), axes=1)
-
-            self._radial = radial
+            self._radial = _radial_direction(state, self.cfg.resolution)
             self.quadrature = tuple(map(int, quadrature or interface_quadrature(fixed.nfp, self.nphi, self.ntheta)))
             self.digits = digits
             # the virtual-casing plan of the deck's surface, for every band (_set_band)
@@ -1061,11 +1036,9 @@ class ThreeTermsFreeBoundaryModel:
     def rereferenced(self, x):
         """This model with the boundary at coordinates ``x`` as its deck, on the same band, grid and options.
 
-        The coordinates belong to the deck: a boundary far from it is described along radial lines and in a
-        theta labelling that are the deck's, not its own, and Newton from the deck may not reach it (vacuum QA
-        single stage, step 30 after the coils moved up to 31 cm: the cold solve from the original deck fails,
-        from the step's own boundary it converges).  The new model's ``x0`` (zero displacement) is that boundary,
-        with the bootstrap current values of ``x``.
+        The coordinates belong to the deck: a boundary far from it is described along the deck's radial lines and
+        in the deck's theta labelling, and Newton from the deck may not reach it.  The new model's ``x0`` (zero
+        displacement) is that boundary, with the bootstrap current values of ``x``.
         """
         if self.fixed_boundary:
             raise ValueError("a fixed-boundary model has no boundary to re-reference")
@@ -1194,9 +1167,8 @@ class ThreeTermsFreeBoundaryModel:
 
         They depend on the deck alone (its equilibrium and boundary coordinates, the grid, the virtual-casing
         precision), not on the coils, so they are kept on disk next to the persistent compilation cache
-        (:func:`_deck_cache_load`): a model built again on the same deck -- a single-stage restart, a benchmark
-        cell, a second start -- reads them instead of paying the tangent solve and the virtual-casing push
-        (96-175 s at 12 x 12, VC64).  The key hashes every input, the seed state's bytes and the vmex sources,
+        (:func:`_deck_cache_load`): a model built again on the same deck (a restart, a second start) reads them
+        instead of repeating the tangent solve and the virtual-casing push.  The key hashes every input, the seed state's bytes and the vmex sources,
         so a changed deck, resolution or code never reuses an entry.
 
         The pointwise residual ``r = sqrt(w) B_out . n / |B_in|`` (``w`` the area weights) at the deck depends on
@@ -1271,10 +1243,9 @@ class ThreeTermsFreeBoundaryModel:
 
             As upstream's implicit Jacobian: the state of a column is assembled from its projected response and
             its parameters inside the map, so no batch of full states is ever built.  The columns are mapped
-            sequentially, not vectorized: a column's linearized rows hold the interface field on every surface
-            point at once (a coil Biot-Savart sum over all segments, the virtual-casing quadrature), and a
-            vectorized chunk of 8 multiplied that (LP QA 12 x 12: 9.6 GiB of temporaries, the solve's peak) for
-            no speed: a single column already fills the device.
+            in small batches, not vectorized over the chunk: a column's linearized rows hold the interface field on
+            every surface point at once (a coil Biot-Savart sum over all segments, the virtual-casing quadrature),
+            so a vectorized chunk multiplies the peak memory for no speed.
             """
             frozen = jax.lax.stop_gradient(state)
             P = im._dof_projector(cfg, mask)
@@ -1282,9 +1253,8 @@ class ThreeTermsFreeBoundaryModel:
             def at(z, prm):
                 return fun(im._assemble(z, im.runtime_from_params(prm, cfg), frozen, P, edge), prm)
 
-            # Two columns per step (vmex.core.loops): wider batches buy 7-18 % of the push at 3-5x its peak
-            # memory (LP QA beta 12 x 12, grid 48, 221 columns: 38.4 / 35.9 / 33.6 s per Jacobian at 2 / 4 / 8,
-            # 2.6 / 7.2 / 13.5 GiB), and a single column is the program XLA:GPU miscompiles.
+            # Two columns per step (vmex.core.loops): wider batches are a little faster at several times the peak
+            # memory, and a single column is a program XLA:GPU miscompiles.
             return map_columns(lambda a: jax.jvp(at, (P(frozen), params), (P(a[0]), a[1]))[1],
                                (dz_batch, params_batch), batch_size=2)
 
@@ -1557,21 +1527,20 @@ class ThreeTermsFreeBoundaryModel:
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The boundary where the square rows vanish: Newton steps with backtracking.
 
-        A given ``jacobian`` (of a nearby point) is reused while it reduces the residual ten-fold a step; at finite
-        beta a first slower step updates it by Broyden's rank-1 secant correction instead (a fresh Jacobian costs
-        many row evaluations there), and a second slow step, or any failed one, refreshes it at the current point.
-        Converged when the Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance:
-        round-off, or the step that the rows' measured noise produces, measured once a fresh Newton step finds no descent: a second
-        solve of the same boundary (:meth:`repeat`), and the rows' deviation from the Jacobian's linear model along
-        the step at round-off length (noise that is reproducible but not smooth in the boundary); rows within twice
-        that noise are zero to what they resolve.  A singular Jacobian, or a fresh step with no descent that is larger than that, is a stall
-        (``converged=False``): a minimum of ``|rows|^2`` that is no root is never reported as converged.  Trial
-        points solved to ``trial_ftol`` are re-solved to the deck's tolerance before convergence is tested.
-        ``undamped=True`` returns, not converged, when two fresh-Jacobian Newton steps in a row descend only once
-        shortened (with ``damped=True`` in the result): the refreshed Jacobian did not restore full steps, so the
-        point lies outside the rows' Newton basin (one shortened step is common on the way in from a far start:
-        QA and QI in vacuum, 12 x 12, from 5 mm).  A fresh step that does not descend at any length goes to the
-        noise test as without it.
+        Jacobian: a given ``jacobian`` (of a nearby point) is reused while each step reduces the rows ten-fold.  At
+        finite beta, where a fresh Jacobian costs many row evaluations, a first slower step updates it by Broyden's
+        rank-1 secant correction; a second slow step, or a failed one, refreshes it at the current point.
+
+        Convergence: the Newton step at a tight evaluation is within :func:`newton_step_converged`'s tolerance --
+        round-off, or the step the rows' measured noise produces.  The noise is measured once a fresh Newton step
+        finds no descent (:meth:`_measure_noise`).  A singular Jacobian, or a fresh step without descent that is
+        larger than the noise's, is a stall (``converged=False``): a minimum of ``|rows|^2`` that is no root is never
+        reported as converged.  Trial points solved to ``trial_ftol`` are re-solved to the deck's tolerance before
+        convergence is tested.
+
+        ``undamped=True`` stops, not converged and with ``damped=True``, when two fresh-Jacobian steps in a row
+        descend only once shortened: a refreshed Jacobian that does not restore full steps means the point is
+        outside the rows' Newton basin.  (One shortened step is common on the way in from a far start.)
         """
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         got = self.evaluate(x, params, field)
@@ -1649,31 +1618,12 @@ class ThreeTermsFreeBoundaryModel:
                     r, aux = got
                     continue
                 if fresh:  # no descent along a fresh Newton step: the rows' noise, or a stall
-                    if got[1][3] and nfev < max_nfev:
-                        again = self.repeat(x, params, field, aux)
-                        nfev += 1
-                        if again is not None:
-                            noise = again - r if noise is None or (np.linalg.norm(again - r)
-                                                                   > np.linalg.norm(noise)) else noise
+                    if got[1][3]:
+                        noise, converged, used = self._measure_noise(x, p, r, J, aux, params, field, noise,
+                                                                     max_nfev - nfev)
+                        nfev += used
+                        if noise is not None:
                             noises["rows"] = noise
-                            converged = self._step_converged(p, _newton_step(J, noise), x)
-                    if not converged and got[1][3] and nfev < max_nfev:
-                        # Noise that a second solve of the same boundary does not show (reproducible, but not
-                        # smooth in the boundary): along the step at round-off length the linear model's
-                        # second-order error is below round-off, so the rows' deviation from it is their noise.
-                        nb = self.n_boundary
-                        length = displacement_rms(p[:nb], self.boundary_modes) if nb else 0.0
-                        q = p * (np.sqrt(np.finfo(float).eps) * self.R0 / length) if length > 0.0 else 0.0 * p
-                        trial = self.evaluate(x + q, params, field, tight=True)
-                        nfev += 1
-                        if trial is not None:
-                            deviation = np.asarray(trial[0]) - (r + J @ q)
-                            if noise is None or np.linalg.norm(deviation) > np.linalg.norm(noise):
-                                noise = deviation
-                                noises["rows"] = noise
-                            # rows within twice the noise (a difference of two draws) are zero to what they resolve
-                            converged = (self._step_converged(p, _newton_step(J, noise), x)
-                                         or np.linalg.norm(r) <= 2.0 * np.linalg.norm(noise))
                     if not converged and verbose:
                         print(f"Newton stalled: cost {cost:.6e}, step not within the rows' noise", flush=True)
                     break
@@ -1697,6 +1647,38 @@ class ThreeTermsFreeBoundaryModel:
         return dict(x=x, rows=np.asarray(r), jacobian=J, aux=aux, nfev=nfev, njev=njev, accepted=steps,
                     converged=converged, damped=damped, noise=None if noise is None else float(np.linalg.norm(noise)))
 
+    def _measure_noise(self, x, p, r, J, aux, params, field, noise, budget):
+        """The rows' noise at a tight point ``x`` where the fresh Newton step ``p`` finds no descent.
+
+        Two measurements, each kept when larger than the noise so far: the rows of the same boundary solved again
+        from a second seed (:meth:`repeat`), and, for noise that is reproducible but not smooth in the boundary,
+        the rows' deviation from the Jacobian's linear model along ``p`` at round-off length (where the model's
+        second-order error is below round-off).  Converged when ``p`` is within the noise's step, or the rows are
+        within twice the noise (a difference of two draws).  Returns ``(noise, converged, evaluations)``; at most
+        ``budget`` evaluations.
+        """
+        converged, used = False, 0
+        if used < budget:
+            again = self.repeat(x, params, field, aux)
+            used += 1
+            if again is not None:
+                noise = again - r if noise is None or (np.linalg.norm(again - r)
+                                                       > np.linalg.norm(noise)) else noise
+                converged = self._step_converged(p, _newton_step(J, noise), x)
+        if not converged and used < budget:
+            nb = self.n_boundary
+            length = displacement_rms(p[:nb], self.boundary_modes) if nb else 0.0
+            q = p * (np.sqrt(np.finfo(float).eps) * self.R0 / length) if length > 0.0 else 0.0 * p
+            trial = self.evaluate(x + q, params, field, tight=True)
+            used += 1
+            if trial is not None:
+                deviation = np.asarray(trial[0]) - (r + J @ q)
+                if noise is None or np.linalg.norm(deviation) > np.linalg.norm(noise):
+                    noise = deviation
+                converged = (self._step_converged(p, _newton_step(J, noise), x)
+                             or np.linalg.norm(r) <= 2.0 * np.linalg.norm(noise))
+        return noise, converged, used
+
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
         """The free boundary for ``params`` and ``field`` on this model's band, from ``x0`` (default: the reference
         surface): :func:`solve_band_continuation`, Newton with backtracking (:meth:`_newton_boundary`) and, where it
@@ -1714,10 +1696,9 @@ class ThreeTermsFreeBoundaryModel:
                     target=fit["target"], bands=fit["bands"])
 
 
-#: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves ~1 % in
-#: QS ~ 1e-6 (the boundary solve's own states are Newton-refined and need no such tolerance).
+#: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves an
+#: error of order 1 % in a quasi-symmetry error near 1e-6 (the boundary solve's own states are Newton-refined).
 _REPORT_FTOL = 1e-17
-
 
 
 @dataclass(frozen=True)
@@ -1728,11 +1709,11 @@ class _AcceptedPoint:
 
 
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
-    """A scalar loss and constraint rows of a design ``x`` at its three-terms free boundary, for SLSQP.
+    """A scalar loss and constraint rows of a design ``x`` at its three-terms free boundary.
 
     Build with ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``
     (:meth:`~vmex.core.freeboundary_problem.FreeBoundaryProblem.from_loss`); pass it to
-    :func:`vmex.core.optimize.minimize`.  ``loss``, ``quantities``, ``parameter_quantities``,
+    :func:`vmex.core.optimize.minimize` (``method="SLSQP"`` or ``"AUGLAG"``).  ``loss``, ``quantities``, ``parameter_quantities``,
     ``field_from_parameters`` and ``plasma_from_parameters`` are as there.  Every trial is the K = 0 boundary
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsFreeBoundaryModel`), warm-started from the
     first-order prediction of the latest linearized solution; a trial without a certified solution, or whose
@@ -1745,8 +1726,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
     bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
     row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  Nothing recompiles
-    when ``x`` changes.  ``model`` is the :class:`ThreeTermsFreeBoundaryModel`; :meth:`boundary_residual` and
-    ``stats`` (counts of trials, failures, boundary evaluations and linearizations) report progress.
+    when ``x`` changes.
+
+    A trial that no start reaches on the current deck is solved on a new deck, the latest linearized boundary
+    (:meth:`ThreeTermsFreeBoundaryModel.rereferenced`), which is kept when the trial converges there.
+
+    Attributes: ``model`` (the current :class:`ThreeTermsFreeBoundaryModel`), ``references`` (the step, trial and
+    deck of every deck change, the first being the original deck), ``accepted`` and ``accepted_step`` (the latest
+    accepted design), and ``stats`` (counts of trials, failures, boundary evaluations, linearizations and
+    re-references).
     """
 
     @classmethod
@@ -1884,10 +1872,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
         # Warm starts first, each with the anchor's Jacobian: its first-order boundary prediction, then its own
         # boundary.  They are near the answer by construction, so Newton from them must not need damping; one that
-        # does is outside the Newton basin (a large design step) and hands over at once.  The last start is the
-        # cold solve from the deck, the same answer by any route (QH vacuum 12 x 12, single-stage step 1: the warm
-        # starts sat at cost 5e-3 and 6e-2 and crawled with damped steps for 990 s; the seed's cold solve from the
-        # deck had converged in 5 full steps).
+        # does is outside the Newton basin (a large design step) and hands over at once, instead of crawling with
+        # damped steps.  The last start is the cold solve from the deck: the same answer by any route.
         starts = [(None, None)]
         anchor = self._anchor
         if anchor:

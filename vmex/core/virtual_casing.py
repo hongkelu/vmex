@@ -105,8 +105,7 @@ MU0 = 4.0e-7 * np.pi
 
 #: Accuracy (decimal digits of the plasma field relative to ``|B|``) the singular patches of the on-surface virtual
 #: casing are planned to.  Its error enters ``B_out . n`` directly, so it must stay an order below the interface
-#: residuals a free boundary reaches (finite beta: 2.4e-4 of ``|B|``, LP QA 2.5 %, 12 x 12): 5 digits.  Measured on
-#: that deck at 8 x 8 (``paper/runs/b23``): 4 digits move ``B.n / |B|`` pointwise by up to 1.4e-4, 5 and 6 agree.
+#: residuals a finite-beta free boundary reaches (a few 1e-4 of ``|B|``): 5 digits.
 VC_DIGITS = 5
 
 __all__ = [
@@ -794,8 +793,8 @@ def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
     """``sum_sources kernel(Xt - Xs, ...)`` per target: a loop over target blocks (:func:`~vmex.core.loops.map_columns`,
     two blocks a step), each checkpointed, of a scan
     over source chunks, each checkpointed.  The reverse pass keeps one block's inputs, not the dense source-target
-    kernel (``nsrc x ntrg x 3`` doubles per intermediate: 22 GiB for the interface rows' pullback at 8 x 8 VC48,
-    LP QA; past 40 GB for a QH or QI deck).  Per target the sum runs in the package's order (each source chunk
+    kernel (``nsrc x ntrg x 3`` doubles per intermediate, tens of GiB for the interface rows' pullback).  Per
+    target the sum runs in the package's order (each source chunk
     summed, then accumulated), so the values are the package's."""
 
     @jax.checkpoint
@@ -871,7 +870,7 @@ class remat_scans:
     """Context: virtual-casing quadratures traced inside it checkpoint their chunk scans (``remat=True``).
 
     A reverse pass through the quadrature otherwise keeps every source chunk's kernel intermediates
-    (``targets x sources`` per array: 22 GiB at 48 x 48 targets, 384 x 96 sources), which a second-order pass
+    (``targets x sources`` per array), which a second-order pass
     (forward over reverse, the exact Hessian) cannot afford; checkpointed, each chunk is recomputed in the
     reverse sweep and only its inputs are kept.  Values are unchanged.  Needs virtual_casing_jax with the
     far-field ``remat`` option.
@@ -892,8 +891,7 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
 
     The package evaluates the two single-layer gradients in two passes over the same source-target
     kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
-    its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
-    round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
+    its singular patches are built once (the same values to round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
     """
     from virtual_casing_jax.integrals import curl_single_layer_gradient, laplace_fxd_u_eval_vec_singular
     from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
@@ -1172,8 +1170,8 @@ def _graded_sources(series, center, distance, nodes):
 
 
 #: Targets per step of the graded rule when the caller sets none.  Each target's graded sources are summed in
-#: blocks of 4096 (``layer_derivatives``), so 64 targets hold 64 x 4096 x 27 doubles (57 MB) at order 2.
-#: Measured (A100, 512 targets, gradient in the surface data): 755 ms one target at a time, 95 ms at 64.
+#: blocks of 4096 (``layer_derivatives``), so 64 targets hold 64 x 4096 x 27 doubles (57 MB) at order 2, while
+#: a batch that size still fills the device.
 GRADED_TARGET_BATCH = 64
 
 

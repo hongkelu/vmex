@@ -47,8 +47,7 @@ The constrained m=1 combination (``zcs_int``, the antisymmetric ``Z_sin(m=1,
 +/-n)`` pair) is an angle gauge: ``residue.f90`` zeroes its force, so it is not
 a degree of freedom.  VMEC2000 releases that force until ``fsqz < 1e-6`` and
 then freezes the combination wherever the path left it, which makes the
-converged state depend on the start (1e-4..1e-3 in vacuum, ~1e-1 in lambda at
-finite beta).  VMEX fixes the gauge instead (:attr:`ImplicitConfig.freeze_m1`,
+converged state depend on the start.  VMEX fixes the gauge instead (:attr:`ImplicitConfig.freeze_m1`,
 ``RunSetup.freeze_m1``, :func:`~vmex.core.residuals.pin_m1_gauge`): the host
 solves hold the combination at ``sqrt(s) * edge`` from the first iteration, so
 the state is a single-valued function of the parameters whatever the seed, and
@@ -2406,11 +2405,9 @@ def _raw_certified(cfg: ImplicitConfig, b, applied, rtol=None, scale=None):
     The adjoint acceptance (:func:`_adjoint_acceptance`) of ``max(||b||, scale)``.  ``scale`` is the largest
     right-hand side of the Jacobian the column belongs to, measured in the caller's scaled units
     (:func:`staged_tangent_multi_rhs`'s ``column_scales``): every column is then held to one absolute accuracy
-    in the units it is used in.  The bootstrap-current columns of the QA 2.5 % + Redl 8 x 8 seed have
-    ``||b|| ~ 2e-9 .. 1.3e-8`` per ampere and block-direct responses accurate to 6e-12 .. 2e-10 relative; their own
-    test (1e-10 relative) sent them to the GMRES corrector (up to its 9000-iteration cap, about 4 min of the
-    first design gradient), while on the scale of the boundary columns they feed the same Newton system with
-    they are accurate.  ``None``: the column's own ``||b||``.
+    in the units it is used in.  A column with a tiny right-hand side (a bootstrap-current knot next to the
+    boundary columns) would otherwise be held to its own relative test and sent to the GMRES corrector, though it
+    is accurate on the scale of the Newton system it feeds.  ``None``: the column's own ``||b||``.
     """
     defect = jax.tree.map(jnp.subtract, b, applied)
     b_norm = _tree_norm(b)
@@ -2764,12 +2761,9 @@ def _resolved_chunk_sizes(
 
 
 # Forward-mode probes vectorized together per surface in the colored band build:
-# 1024 // ns probes (20 at ns = 50, 10 at ns = 101) bounds the batch's memory.  The
-# batch's temporaries are the peak of a free-boundary solve: at 4096 // ns (81
-# probes at ns = 50) the build held 5.2 GiB at LP QA 8 x 8 and 7 GiB at 12 x 12;
-# at 1024 // ns it holds a quarter of that, and the build takes the same time
-# (the refinement that runs it: 1.1-2.4 s either way), since 20 full-operator
-# probes still fill the device.
+# 1024 // ns probes (20 at ns = 50, 10 at ns = 101) bound the batch's memory,
+# whose temporaries are the peak of a free-boundary solve; that many
+# full-operator probes still fill the device.
 _COLORED_PROBE_BUDGET = 1024
 
 
@@ -2937,8 +2931,7 @@ def _raw_block_system(
         # Rows 0 and 1 depend on VMEC's lambda-axis closure. All later rows share
         # one ordinary local kernel; a loop keeps the compile graph bounded in ns.
         # The body takes a vjp, so the loop carries a batch axis (vmex.core.loops):
-        # probe_chunk_size rows per step, the caller's probe batch.  Measured
-        # (A100, LP QA 8 x 8, ns 51): 874 ms one row at a time, 243 ms at 8 rows.
+        # probe_chunk_size rows per step, the caller's probe batch.
         axis_rows = jnp.arange(min(2, ns))
         axis_jacobians = map_columns(
             lambda row: row_jacobian(row, axis_closure=True), axis_rows, batch_size=None)
@@ -3164,8 +3157,8 @@ def _implicit_evolved_tangent_multi_rhs(
         )[1]
         return jax.tree.map(jnp.negative, value)
 
-    # The right-hand sides in chunks too: one batch of every direction holds a
-    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
+    # The right-hand sides in chunks too: one batch of every direction would
+    # hold a force linearization per direction at once.
     initial, _ = _raw_block_solve(
         system,
         map_columns(raw_rhs, tangent_batch,
@@ -3286,6 +3279,19 @@ def _staged_tangent_parts(params, cfg, x_star, dof_mask, factors):
     return frozen, blocks, z_star, raw_rhs, operator
 
 
+def _preconditioned_system(params, cfg, frozen, dof_mask, z_star):
+    """``(rhs(tangent), operator(value))`` of the preconditioned residual at ``z_star`` (the corrector's system)."""
+    residual = residual_fn(cfg, frozen, dof_mask)
+
+    def rhs(tangent):
+        return jax.tree.map(jnp.negative, jax.jvp(lambda prm: residual(z_star, prm), (params,), (tangent,))[1])
+
+    def operator(value):
+        return jax.jvp(lambda z: residual(z, params), (z_star,), (value,))[1]
+
+    return rhs, operator
+
+
 @functools.partial(jax.jit, static_argnames=("cfg", "chunk"))
 def _staged_tangent_initial(params, x_star, dof_mask, factors, tangent_batch, cfg, chunk):
     """Block-direct responses of :func:`_implicit_evolved_tangent_multi_rhs` from stored factors."""
@@ -3302,14 +3308,13 @@ def _staged_tangent_correct(params, x_star, dof_mask, factors, tangent_batch, in
                             certify_rtol, certify_maxiter):
     """The GMRES corrector and raw certificate of :func:`_implicit_evolved_tangent_multi_rhs`."""
     frozen, _, z_star, raw_rhs, operator = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
-    residual = residual_fn(cfg, frozen, dof_mask)
+    preconditioned_rhs, preconditioned = _preconditioned_system(params, cfg, frozen, dof_mask, z_star)
 
     def correct(args):
         tangent, x0, group_scale = args
-        rhs = jax.tree.map(jnp.negative, jax.jvp(lambda prm: residual(z_star, prm), (params,), (tangent,))[1])
+        rhs = preconditioned_rhs(tangent)
         solution, krylov = _adjoint_solve(
-            lambda value: jax.jvp(lambda z: residual(z, params), (z_star,), (value,))[1],
-            rhs, cfg, x0=x0, rtol=certify_rtol, max_restarts=certify_maxiter)
+            preconditioned, rhs, cfg, x0=x0, rtol=certify_rtol, max_restarts=certify_maxiter)
         raw_ok = _raw_certified(cfg, raw_rhs(tangent), operator(solution), certify_rtol, group_scale)
         return solution, _raw_certified_report(_linear_response_report(krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
 
@@ -3342,14 +3347,14 @@ def _staged_tangent_check(params, x_star, dof_mask, factors, tangent_batch, init
     the columns the corrector does not need.
     """
     frozen, _, z_star, raw_rhs, operator = _staged_tangent_parts(params, cfg, x_star, dof_mask, factors)
-    residual = residual_fn(cfg, frozen, dof_mask)
+    preconditioned_rhs, preconditioned = _preconditioned_system(params, cfg, frozen, dof_mask, z_star)
     rtol = cfg.adjoint_tol if certify_rtol is None else float(certify_rtol)
 
     def check(args):
         tangent, x0, group_scale = args
-        rhs = jax.tree.map(jnp.negative, jax.jvp(lambda prm: residual(z_star, prm), (params,), (tangent,))[1])
+        rhs = preconditioned_rhs(tangent)
         b_flat = ravel_pytree(_pin_concrete(cfg, rhs))[0]
-        applied = jax.jvp(lambda z: residual(z, params), (z_star,), (x0,))[1]
+        applied = preconditioned(x0)
         norm = _gmres_norm(b_flat - ravel_pytree(applied)[0])
         krylov = types.SimpleNamespace(residual_norm=norm, iterations=jnp.int32(0),
                                        converged=norm <= jnp.maximum(0.0, rtol * _gmres_norm(b_flat)))
@@ -3394,7 +3399,31 @@ def _staged_rhs_norms(params, x_star, dof_mask, factors, tangent_batch, cfg, chu
 
 def block_factors_at(cfg: ImplicitConfig, params: ImplicitParams, x_star: SpectralState,
                      dof_mask: SpectralState):
-    """Raw block factors at ``x_star`` (host-level) through :func:`_refine_block_factor_core`'s executable."""
+    """Raw block factors at a solved state, from the Newton refinement's executable.
+
+    Host-level (concrete inputs): the factors come from
+    :func:`_refine_block_factor_core`, the program the forward solve's
+    refinement already compiled for ``cfg``.
+
+    Parameters
+    ----------
+    cfg:
+        The implicit config.
+    params:
+        The parameters the state was solved at.
+    x_star:
+        The solved state.
+    dof_mask:
+        The degree-of-freedom mask returned with the state
+        (:func:`solve_implicit_with_aux`).
+
+    Returns
+    -------
+    tuple
+        ``(factors, row_scale, column_scale)``: the stored block LU factors and
+        the scalings of the packed system, as :func:`staged_tangent_multi_rhs`
+        and the block pullbacks take them.
+    """
     x_star, params, dof_mask = _canonical_arrays(cfg, (x_star, params, dof_mask))
     with _device_context(cfg):
         arguments = commit_to_single_device(tuple(
@@ -3411,7 +3440,7 @@ def _canonical_arrays(cfg: ImplicitConfig, tree: Any) -> Any:
     the ones the real calls find.  Without a ``cfg.device`` the leaves are
     committed to the one device they share (:func:`commit_to_single_device`,
     as the warm-ups' placeholders are): JAX keys an executable on commitment,
-    and an uncommitted real argument missed the warm-up's executable."""
+    and an uncommitted real argument would miss the warm-up's executable."""
     def canonical(leaf):
         if not isinstance(leaf, (jax.Array, np.ndarray)):
             return leaf
@@ -3488,6 +3517,34 @@ def staged_tangent_multi_rhs(
     largest scaled right-hand side (:func:`_group_scales`), so all columns of
     one Jacobian meet one absolute accuracy in the units the caller uses them
     in; ``None``: each column at its own right-hand side.
+
+    Parameters
+    ----------
+    params, cfg, x_star, dof_mask:
+        The parameters, config, solved state and its degree-of-freedom mask.
+    tangent_batch:
+        Parameter tangents stacked along a leading axis (one per column).
+    chunk:
+        Columns per compiled program; the last chunk is padded.
+    certify_rtol:
+        Relative tolerance of each column's certificate (``None``:
+        ``cfg.adjoint_tol``).
+    certify_maxiter:
+        GMRES restart budget of the corrector (``None``: the config's).
+    column_scales:
+        One positive scale per column, or ``None``.
+
+    Returns
+    -------
+    tuple
+        ``(responses, report)``: the state tangents stacked like
+        ``tangent_batch`` and a :class:`LinearResponseReport` with one entry per
+        column.
+
+    Raises
+    ------
+    ValueError
+        If ``column_scales`` does not hold one positive entry per column.
     """
     n = int(jax.tree.leaves(tangent_batch)[0].shape[0])
     rtol = None if certify_rtol is None else float(certify_rtol)
@@ -3569,6 +3626,13 @@ def warm_refinement(cfg: ImplicitConfig, params: ImplicitParams) -> None:
     real structure (:func:`_placeholder_arguments`) are lowered exactly as
     :func:`_refined_state` passes its own, so the later calls find the
     executables in JAX's caches; nothing runs.
+
+    Parameters
+    ----------
+    cfg:
+        The implicit config the solve will use.
+    params:
+        Parameters of the config's structure (their values do not matter).
     """
     state, mask, params = _placeholder_arguments(cfg, params)
     with _device_context(cfg):
@@ -3596,6 +3660,16 @@ def warm_staged_tangent(cfg: ImplicitConfig, params: ImplicitParams, *, chunk: i
     refinement (with ``certify_maxiter``), which a chunk needs when the block
     responses miss the check -- the single stage's plasma-parameter columns.
     The later real calls find the executables in JAX's caches; nothing runs.
+
+    Parameters
+    ----------
+    cfg, params:
+        The implicit config and parameters of its structure.
+    chunk, certify_rtol, certify_maxiter:
+        As the later :func:`staged_tangent_multi_rhs` calls pass them (they
+        are part of the compiled programs).
+    fallbacks:
+        Also compile the corrector and the refinement.
     """
     rtol = None if certify_rtol is None else float(certify_rtol)
     maxiter = None if certify_maxiter is None else int(certify_maxiter)

@@ -1708,7 +1708,9 @@ def _solve_free_boundary_stage(
         raise TypeError("include_edge_in_convergence must be bool")
     if edge_force_tolerance is not None and not include_edge_in_convergence:
         raise ValueError("edge_force_tolerance requires include_edge_in_convergence")
-    edge_tol = (float(rt.ftol) if edge_force_tolerance is None else float(edge_force_tolerance)) if include_edge_in_convergence else 0.0
+    edge_tol = 0.0
+    if include_edge_in_convergence:
+        edge_tol = float(rt.ftol) if edge_force_tolerance is None else float(edge_force_tolerance)
     if include_edge_in_convergence and (not np.isfinite(edge_tol) or edge_tol <= 0):
         raise ValueError("edge_force_tolerance must be finite and positive")
     rt = replace(rt, include_edge_in_convergence=include_edge_in_convergence,

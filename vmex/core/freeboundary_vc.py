@@ -1693,15 +1693,19 @@ class ThreeTermsFreeBoundaryModel:
                              or np.linalg.norm(r) <= 2.0 * np.linalg.norm(noise))
         return noise, converged, used
 
-    def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0):
+    def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, continuation=True):
         """The free boundary for ``params`` and ``field`` on this model's band, from ``x0`` (default: the reference
         surface): :func:`solve_band_continuation`, Newton with backtracking (:meth:`_newton_boundary`) and, where it
-        stalls, the band built up from ``m <= 1``.
+        stalls, the band built up from ``m <= 1``.  ``continuation=False`` is Newton alone (``undamped``): a stall
+        is returned at once, without the band continuation (an optimizer's trial, whose design has another start).
 
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` (steps), ``converged``, ``band`` (the last band that converged, ``None`` if none)
         and ``bands``; a stall (``converged=False``) returns this band's Newton result.
         """
+        if not continuation:
+            return self._newton_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                         undamped=True)
         model, fit = solve_band_continuation(self, params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev,
                                              verbose=verbose)
         if model is self:
@@ -1899,8 +1903,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         fit = None
         for start, J in starts:
             try:
-                if J is None:  # cold: the full route (Newton, then the band continuation where it stalls)
-                    fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev)
+                if J is None:  # cold: Newton from the deck (a trial that stalls there fails: the optimizer shortens
+                    # its step; the band continuation, tens of minutes at finite beta, is the seed's route only)
+                    fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev,
+                                                    continuation=False)
                 else:
                     fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
                                                       max_nfev=self.boundary_max_nfev, undamped=True)
@@ -1942,7 +1948,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         fit = None
         try:
             fit = model.solve_boundary(self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x)),
-                                       max_nfev=self.boundary_max_nfev)
+                                       max_nfev=self.boundary_max_nfev, continuation=False)
         except (VmecError, RuntimeError):
             pass
         if fit is None or not fit["converged"]:

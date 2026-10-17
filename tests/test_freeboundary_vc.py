@@ -1249,6 +1249,9 @@ def test_band_continuation_is_the_direct_solve_and_builds_the_band_up_where_it_s
     calls.clear()
     stalled = model.solve_boundary(model.params0, field)  # this band's Newton result, reported as a stall
     assert not stalled["converged"] and stalled["band"] == 1 and stalled["x"].size == model.x0.size
+    calls.clear()
+    trial = model.solve_boundary(model.params0, field, continuation=False)  # a trial: Newton alone, no band 1
+    assert not trial["converged"] and calls == [target]
 
 
 def test_rereference_failures_keep_the_deck():

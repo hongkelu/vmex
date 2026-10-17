@@ -220,10 +220,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         return self.solve_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None,
-                       max_iter=60, callback=None, verbose=0):
+                       max_iter=60, callback=None, verbose=0, continuation=True):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the deck's boundary).
 
-        :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``;
+        :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``; ``continuation``
+        (the Galerkin solve's band continuation) has no counterpart here: this solve is always its own Newton;
         ``jacobian`` (rows by coordinates, a nearby boundary's: an optimizer's previous trial) is the first
         Gauss-Newton model instead of a fresh linearization.
         """

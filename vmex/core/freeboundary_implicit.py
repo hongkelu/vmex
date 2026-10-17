@@ -274,8 +274,8 @@ def _vacuum_inputs(state: SpectralState, rt) -> tuple:
 
 
 #: Forward-mode columns of the NESTOR edge response, and Woodbury columns and
-#: rows of its coupling, evaluated together. At ns = 51 (8x8 modes) 16 builds
-#: the response in 3.8 s instead of 5.9 s for 8, with the same peak memory.
+#: rows of its coupling, evaluated together: wide enough to be fast, narrow
+#: enough that the temporaries stay small.
 _EDGE_RESPONSE_BATCH = 16
 
 
@@ -307,7 +307,7 @@ def _edge_response(cfg: FreeBoundaryImplicitConfig, params, field_parameters,
     def kernel(vector):
         return cfg.vacuum_program.bsq_edge(*unflatten(vector), field)
 
-    # In batches: one vmap over all ~400 columns needs a 6 GB temporary at ns = 51.
+    # In batches: one vmap over every column needs a temporary of all of them at once.
     columns = map_columns(lambda tangent: jax.jvp(kernel, (flat,), (tangent,))[1],
                           jnp.eye(flat.size, dtype=flat.dtype), batch_size=_EDGE_RESPONSE_BATCH)
     return jax.lax.stop_gradient((kernel(flat), jnp.moveaxis(columns, 0, -1), flat))

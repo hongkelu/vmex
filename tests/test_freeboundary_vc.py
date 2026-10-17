@@ -502,6 +502,11 @@ def test_three_terms_problem_seed_starts_at_boundary_start(monkeypatch):
     # is near the root, not on it
     assert np.linalg.norm(starts[1][:nb] - seed["x"][:nb]) < 0.5 * np.linalg.norm(seed["x"][:nb])
     np.testing.assert_allclose(warm.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
+    # the saved coordinates themselves (boundary_coordinates, the run's own deck): the start is the root
+    exact = build(cold.boundary_coordinates(np.zeros(1)))
+    np.testing.assert_array_equal(starts[2], seed["x"])
+    assert exact._record(np.zeros(1))["nfev"] <= warm._record(np.zeros(1))["nfev"]
+    np.testing.assert_allclose(exact.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-10)
 
 
 @needs_vc

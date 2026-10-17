@@ -1767,9 +1767,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         fast), to at most ``boundary_max_nfev`` evaluations; a fit that does not converge within them is no free
         boundary: the trial tries its next start, or fails.
 
-        ``boundary_start`` (anything with ``rbc`` and ``zbs``, e.g. a saved step's LCFS) is where the seed's solve
-        starts, :meth:`ThreeTermsFreeBoundaryModel.displacement_of` it on the deck, instead of the deck's own
-        boundary.  The deck still defines the problem: a restart on the run's deck from its step's boundary
+        ``boundary_start`` is where the seed's solve starts instead of the deck's own boundary: the deck model's
+        coordinates themselves (an array of ``x0``'s shape, e.g. a saved step's :meth:`boundary_coordinates` on the
+        same deck: that step's root), or anything with ``rbc`` and ``zbs`` (a saved step's LCFS), fitted on the deck
+        by :meth:`ThreeTermsFreeBoundaryModel.displacement_of`.  The deck still defines the problem: a restart on the run's deck from its step's boundary
         starts near that step's root (the fit measures along the normal, the coordinates along the deck's radial
         lines) and solves the run's very equations.
         """
@@ -1787,7 +1788,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             # (solve_band_continuation); a stall below the band leaves the seed without a free boundary
             x = jnp.asarray(x0, dtype=float)
             params = model.params0 if plasma_from_parameters is None else plasma_from_parameters(model.params0, x)
-            start = None if boundary_start is None else model.displacement_of(boundary_start)
+            if boundary_start is None:
+                start = None
+            elif isinstance(boundary_start, np.ndarray) and boundary_start.shape == np.shape(model.x0):
+                start = np.array(boundary_start, dtype=float)
+            else:
+                start = model.displacement_of(boundary_start)
             solved, seed_fit = solve_band_continuation(model, params, field_from_parameters(x), x0=start,
                                                        max_nfev=boundary_max_nfev)
             if not seed_fit["converged"]:
@@ -2125,6 +2131,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         """The three interface conditions at ``x``'s free boundary."""
         sol = self._record(x)
         return self.model.boundary_residual(sol["state"], sol["params"], self.field(jnp.asarray(x)))
+
+    def boundary_coordinates(self, x):
+        """The free boundary of design ``x`` in the deck model's coordinates (and current values): what
+        ``from_loss(boundary_start=)`` restarts from on the same deck."""
+        return np.array(self._record(x)["x"], dtype=float)
 
     def equilibrium_from_x(self, x):
         """The free-boundary equilibrium of ``x`` as an ``Equilibrium`` (fixed-boundary solve on its boundary)."""

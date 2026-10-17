@@ -90,8 +90,8 @@ def _prune_cache_entries(cache_dir: str, max_entries: int, max_bytes: int | None
     recent entries, costs 17.9 s, where a fixed 4,096 cap costs 19.0 s on any
     mature cache (a write scans 99 ms at 4,026 entries against 26 ms at 1,024).
     ``max_bytes`` also bounds the entries' total size (oldest dropped
-    first), the bound JAX's own cache enforced on every write before vmex
-    replaced it (:func:`_atomic_file_cache_class`); temporary files that a
+    first), the bound JAX's own cache enforces on every write and vmex's
+    (:func:`_atomic_file_cache_class`) enforces here; temporary files that a
     killed writer left behind are removed after an hour.
     Returns the number of entries removed.
     """
@@ -442,10 +442,9 @@ def _atomic_file_cache_class():
     ``jax_compilation_cache_max_size``) takes a directory-wide file lock on
     every read and write, and every write first globs the directory and
     stats every entry and its atime sidecar to decide on eviction.  On a
-    parallel filesystem (Lustre ``$SCRATCH``, NFS ``$HOME``) that is ~1 ms
-    per resident entry: a cold free-boundary solve writes ~700 entries into
-    a growing directory, and a write into a mature 4,000-entry cache costs
-    seconds.  This cache never scans: a write goes to a private temporary
+    parallel filesystem (Lustre ``$SCRATCH``, NFS ``$HOME``) that costs a
+    stat per resident entry, and a cold free-boundary solve writes hundreds
+    of entries.  This cache never scans: a write goes to a private temporary
     file renamed into place (atomic on POSIX filesystems, so concurrent
     writers of one key and readers never see a partial entry, without any
     lock), a hit refreshes the atime sidecar :func:`_prune_cache_entries`
@@ -536,10 +535,8 @@ def _prune_stale_machines(cache_dir: str, max_age: float = _CACHE_STALE_SECONDS)
     """Remove the sibling machine directories of ``cache_dir`` unused for ``max_age`` seconds.
 
     The entry bound (:func:`_prune_cache_entries`) holds per machine directory
-    only, and every new machine type -- or, while the fingerprint named the
-    host, every cluster node -- opens a directory of its own, so a shared cache
-    root grew without bound (120 GB in 83 directories on one project).  A
-    directory whose modification time (an entry written or removed) is older
+    only, and every new machine type or jax build opens a directory of its
+    own, so a shared cache root would grow without bound.  A directory whose modification time (an entry written or removed) is older
     than ``max_age`` belongs to a machine or a jax build no longer in use and
     is removed whole; one stat per sibling.  Only directories named like a
     fingerprint are touched.  Returns the number removed.

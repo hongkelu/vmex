@@ -640,16 +640,31 @@ def pin_m1_gauge(Z_sin: Array, edge_Z_sin: Array, *, modes: ModeTable) -> Array:
     antisymmetric ``Z_sin(m=1, +/-n)`` columns of the signed packing) are angle
     gauges: VMEC2000 zeroes their force once ``fsqz < 1e-6`` (``residue.f90``),
     so a converged state keeps whatever values the solver's path left there, and
-    two solves of one boundary from different starts converge (fsq 1e-17) to
-    states up to 1e-3 (vacuum) or 1e-1 (finite beta, in lambda) apart.  VMEX
+    two solves of one boundary from different starts converge to different
+    states.  VMEX
     fixes the gauge instead (``RunSetup.freeze_m1``, the default for
     stellarator-symmetric fixed-boundary solves): the force stays zeroed from the
     first iteration and the combinations are held at ``sqrt(s) * edge`` -- the
     ``profil3d.f`` interior guess -- so every solve of one boundary lands on one
     state.  Verified as a relabelling (gauges' surfaces, iota and Mercier terms
     converge together under refinement) for ``lasym = False``; ``lasym`` runs keep
-    VMEC2000's rule.  Returns ``Z_sin`` with those profiles (``ntor > 0``, the
-    columns exist only in 3-D); every other column is untouched.
+    VMEC2000's rule.
+
+    Parameters
+    ----------
+    Z_sin:
+        ``(ns, mn)`` signed-packing ``Z_sin`` coefficients of a state.
+    edge_Z_sin:
+        ``(mn,)`` boundary row that sets the profile's edge value.
+    modes:
+        The state's mode table.
+
+    Returns
+    -------
+    Array
+        ``Z_sin`` with the constrained combinations on ``sqrt(s) * edge``
+        (``ntor > 0``: the columns exist only in 3-D); every other column is
+        untouched.
     """
     m = np.asarray(modes.m, dtype=int)
     n = np.asarray(modes.n, dtype=int)

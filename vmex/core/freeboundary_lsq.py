@@ -196,10 +196,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return jnp.concatenate([jump, current])
 
         self.interface_rows = interface_rows
-        self._terms = jax.jit(lambda state, params, field: _interface_terms(
+        terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field.field if isinstance(field, _Bundle) else field,
             runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
+        # every caller's state and parameters on the model's device: a caller's parameters may sit on the default
+        # (GPU) device while the solve's state is on the model's (a CPU model on a GPU machine)
+        self._terms = lambda state, params, field: terms(*jax.device_put((state, params), cfg.device), field)
 
     def evaluate(self, x, params, field, seed=None, tight=False):
         """:meth:`ThreeTermsFreeBoundaryModel.evaluate` with the run's constants bundled with ``field``."""

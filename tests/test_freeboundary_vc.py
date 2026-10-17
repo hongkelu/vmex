@@ -599,6 +599,34 @@ def test_three_terms_problem_gradients_match_resolved_differences():
 
 
 @needs_vc
+def test_normal_outside_modes_quantity_value_and_gradient():
+    """``NORMAL_OUTSIDE_MODES`` as a parameter quantity: its value is the model's ``normal_outside_modes`` of the
+    trial and its design gradient (direct field term plus the moving boundary) matches re-solved differences."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    field = lambda x: replace(coils, currents=coils.currents * (1 + x[1]))  # noqa: E731
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2), field_from_parameters=field,
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        parameter_quantities=(fvc.NORMAL_OUTSIDE_MODES,), boundary_condition="three_terms",
+        three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80))
+    x0 = problem.x0
+    value = problem.constraint_values(x0)
+    sol = problem._record(x0)
+    np.testing.assert_allclose(value, [problem.model.normal_outside_modes(sol["state"], sol["params"], field(x0))],
+                               rtol=1e-10)
+    assert 0 < value[0] < 1e-2
+    jac = problem.constraint_jac(x0)
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        fd = (problem.constraint_values(x0 + e) - problem.constraint_values(x0 - e)) / (2 * h)
+        np.testing.assert_allclose(jac[:, k], fd, rtol=3e-2, atol=1e-9)
+    with pytest.raises(TypeError):
+        fvc.NORMAL_OUTSIDE_MODES(None, None, None)
+
+
 def test_three_terms_problem_plasma_map_gradient_at_moved_point():
     """A plasma map that scales its input (PHIEDGE * (1 + x)) is differentiated at the deck's parameters: the
     design gradient at a moved point x = 0.05 matches re-solved central differences (differentiating the map at

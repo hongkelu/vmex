@@ -1,0 +1,13 @@
+{
+  "accepted_steps": 300,
+  "message": "Iteration limit reached",
+  "success": false,
+  "elapsed_seconds": 51320.72920463234,
+  "endpoint": {
+    "beta": 0.025661129845639438,
+    "normal_field_rms": 0.0003152349606843055,
+    "normal_field_max": 0.0015648183895460358,
+    "coil_normal_field_rms": 0.026328381831332886,
+    "pressure_balance_rms": 0.006678537154301241
+  }
+}

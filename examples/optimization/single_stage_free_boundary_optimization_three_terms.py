@@ -289,6 +289,12 @@ DISTANCE_POINTS = COIL_QUADRATURE or max(128, 16 * COIL_ORDER)   # points per co
 FORCE_POINTS = COIL_QUADRATURE or CURVATURE_POINTS               # points per coil: force rows
 SURFACE_GRID = (61, 64)                       # (nphi, ntheta) of the plasma surface in the clearance row
 SELF_CLEARANCE = 1e-6                         # m: numerical nonintersection guard
+# --free-boundary nestor (VMEC + NESTOR, FreeBoundaryProblem): the settings of
+# single_stage_free_boundary_optimization_coil_constraints.py's free arm
+NESTOR_EDGE_FORCE_TOLERANCE = 1e-14  # VMEX fedge settles at ~2-5e-15 at 12x12 modes
+NESTOR_ROOT_TOLERANCE, NESTOR_ROOT_POLISH_STEPS = 2e-6, 30
+NESTOR_ROOT_POLISH_LADDER = (1e-12, 1e-10, 1e-9, 1e-8, 1e-7)  # the tightest polish target the start reaches
+NESTOR_ADJOINT = dict(adjoint_residual_rtol=1e-9, adjoint_dense_batch_size=32, adjoint_dense_max_dofs=40000)
 # augmented-Lagrangian progress logged with each step (opt.minimize(method="AUGLAG")'s intermediate result)
 AUGLAG_LOG_KEYS = ("penalty", "max_violation", "outer_iterations", "trust_radius", "ratio", "rejected_trials",
                    "step_norm", "predicted_decrease", "objective_decrease", "penalty_decrease", "damped")
@@ -1362,7 +1368,9 @@ def main(argv=None):
     if nestor and current_in_solve:
         raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
                          "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")
-    three_terms = {} if nestor else dict(three_terms_options=dict(
+    three_terms = dict(root_residual_atol=NESTOR_ROOT_TOLERANCE, solver_options=dict(
+        device="gpu", ftol=EQUILIBRIUM_FTOL, edge_force_tolerance=NESTOR_EDGE_FORCE_TOLERANCE,
+        max_iterations=int(np.asarray(inp.niter_array)[-1]), **NESTOR_ADJOINT)) if nestor else dict(three_terms_options=dict(
         nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
         quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
@@ -1371,12 +1379,22 @@ def main(argv=None):
         **({"boundary_start": wout_boundary(restart_wout, inp)} if args.free_boundary == "galerkin"
            and restart_wout is not None and not args.reference_from_wout else {})))
     problem = opt.FreeBoundaryProblem.from_loss(
-        replace(inp, lfreeb=True) if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
+        replace(inp, lfreeb=True, mgrid_file="direct ESSOS field") if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
         parameter_quantities=(clearance, aspect), method=args.free_boundary, **three_terms)
     if nestor:
+        # the coupled root residual's floor depends on the resolution: polish to the tightest target the start
+        # reaches, which later trials are then held to (transactional: a target not reached leaves the root)
+        for tolerance in NESTOR_ROOT_POLISH_LADDER:
+            try:
+                problem.enable_root_polishing(tolerance=tolerance, max_steps=NESTOR_ROOT_POLISH_STEPS)
+                break
+            except vj.VmecError as error:
+                if tolerance >= NESTOR_ROOT_POLISH_LADDER[-1]:
+                    raise
+                print(f"[polish] {tolerance:.0e} not reached ({error}); trying a looser target", flush=True)
         print(f"[model] VMEC + NESTOR, {chart.size} design coordinates; built in {time.monotonic() - started:.0f} s",
               flush=True)
     else:

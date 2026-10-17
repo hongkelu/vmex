@@ -536,7 +536,7 @@ def _newton_step(J, r):
 _GRID_POINTS_PER_HARMONIC = 4
 
 #: Iterations over which a trial solve's convergence rate is measured (:class:`~vmex.core.solver.EarlyStop`).
-_TRIAL_RATE_WINDOW = 1000
+_TRIAL_RATE_WINDOW = 2000
 
 
 def interface_grid(inp) -> tuple[int, int]:

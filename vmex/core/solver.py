@@ -168,7 +168,7 @@ __all__ = [
     "NS4", "SpectralState", "PreconditionerCache", "FunctDiagnostics",
     "SolverRuntime", "SolveResult", "Prec2DConfig", "resolution_from_input",
     "prepare_runtime", "evaluate_forces", "solve",
-    "hot_restart_state", "runtime_with_baselines",
+    "hot_restart_state", "runtime_with_baselines", "EarlyStop",
 ]
 
 Array = Any
@@ -184,6 +184,59 @@ BLOCK_SIZE = 10
 _TRAJ_COLS = 11
 
 _TWO_PI_SQ = (2.0 * np.pi) ** 2
+
+
+@dataclass(frozen=True)
+class EarlyStop:
+    """Stop a solve whose force residual cannot reach ``target`` within its iteration budget.
+
+    The CLI lane checks the best ``fsqr + fsqz + fsql`` so far, ``f(k)``, after every block from iteration
+    ``2 * window`` on.  Its decrease over the last ``window`` iterations is the rate
+    ``r = log(f(k - window) / f(k)) / window``; the solve stops when reaching ``target`` at that rate would take
+    more than ``margin`` times the iterations left, or when ``f`` did not decrease over the window.  A stopped
+    solve ends as one that exhausted its budget (``MORE_ITER_FLAG``).  A solve that reaches ``target`` within its
+    budget is stopped only if its rate later grows by more than ``margin``.
+
+    Parameters
+    ----------
+    target : float
+        Residual ``fsqr + fsqz + fsql`` that counts as reached.
+    window : int
+        Iterations over which the rate is measured.
+    margin : float
+        Factor on the iterations left that the projected iterations must exceed.
+    """
+
+    target: float
+    window: int = 1000
+    margin: float = 2.0
+
+    def exhausts_budget(self, iterations, best, max_iterations: int) -> bool:
+        """Whether the solve should stop.
+
+        Parameters
+        ----------
+        iterations : sequence of int
+            Increasing iteration counts of the checks so far, the last one the current iteration.
+        best : sequence of float
+            The best residual up to each of ``iterations``.
+        max_iterations : int
+            The iteration budget.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``target`` is out of reach within the budget.
+        """
+        k, f = int(iterations[-1]), float(best[-1])
+        if k < 2 * self.window or f <= self.target:
+            return False
+        earlier = max(int(np.searchsorted(iterations, k - self.window, side="right")) - 1, 0)
+        decrease = np.log(float(best[earlier]) / f)
+        if not decrease > 0.0:
+            return True
+        needed = np.log(f / self.target) * (k - int(iterations[earlier])) / decrease
+        return bool(needed > self.margin * (int(max_iterations) - k))
 
 
 def _select(mask: Array, new, old):
@@ -2390,7 +2443,8 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
               initial_xcdot: SpectralState | None = None,
               initial_residuals: (
                   tuple[float | Array, float | Array, float | Array] | None
-              ) = None) -> _LoopCarry:
+              ) = None,
+              early_stop: EarlyStop | None = None) -> _LoopCarry:
     """Run the iteration loop in the requested lane; return the final carry.
 
     ``emit_legend=False`` suppresses the ``BEGIN FORCE ITERATIONS`` legend
@@ -2399,6 +2453,8 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
     ``time_step0``/``nstep`` are the host loop-driver scalars
     (:func:`_loop_driver_config`) — kept out of ``rt`` so they never key a
     lane recompile.
+    ``early_stop`` (CLI lane only) ends a solve that cannot converge within its
+    budget (:class:`EarlyStop`).
     """
     carry = _initial_carry(
         state0, rt, ijacob=ijacob, time_step0=time_step0,
@@ -2435,6 +2491,8 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
         emit(screen_header(lasym=rt.resolution.lasym, lfreeb=False), end="")
 
     printed: set[int] = set()
+    checked: list[int] = []
+    best: list[float] = []
     emit_start = 1
     max_passes = int(rt.max_iterations) + 200
     lane = _block_lane_fft if use_fft else _block_lane
@@ -2489,6 +2547,15 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
                                      emit, nstep=nstep, start=emit_start)
         if done:
             break
+        if early_stop is not None:
+            fsq = float(carry.fsqr) + float(carry.fsqz) + float(carry.fsql)
+            checked.append(int(carry.iteration) - 1)
+            best.append(min(fsq, best[-1]) if best else fsq)
+            if early_stop.exhausts_budget(checked, best, int(rt.max_iterations)):
+                # the last completed iteration, as at the end of a budget
+                return replace(carry, iteration=carry.iteration - 1,
+                               done=jnp.asarray(True, dtype=carry.done.dtype),
+                               ier=jnp.asarray(MORE_ITER_FLAG, dtype=carry.ier.dtype))
     return carry
 
 
@@ -2512,7 +2579,8 @@ def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
                  emit_legend: bool = True,
                  residual_continuation: (
                      tuple[float | Array, float | Array, float | Array] | None
-                 ) = None) -> _LoopCarry:
+                 ) = None,
+                 early_stop: EarlyStop | None = None) -> _LoopCarry:
     """Run one solve at a fixed runtime, with the eqsolve.f axis-retry.
 
     ``state0=None`` starts from the runtime's ``profil3d.f`` interior guess.
@@ -2526,6 +2594,7 @@ def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
     zero velocity and half the preceding initial step, capped at 0.5.  The
     equilibrium equations and convergence test are unchanged; setting
     ``jacobian_retries=0`` preserves the exact VMEC2000 fatal-stop policy.
+    ``early_stop`` is passed to every loop (:func:`_run_loop`).
     Returns the final carry; the caller maps ``carry.ier`` to
     results/exceptions (:func:`_finalize`).
     """
@@ -2558,7 +2627,7 @@ def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
             verbose=verbose, emit=emit, use_fft=use_fft,
             time_step0=attempt_time_step0, nstep=nstep,
             emit_banner=emit_banner, emit_legend=emit_legend,
-            initial_residuals=attempt_residuals,
+            initial_residuals=attempt_residuals, early_stop=early_stop,
         )
 
         # eqsolve.f: on a first-iteration Jacobian sign change with
@@ -2595,6 +2664,7 @@ def _solve_stage(rt: SolverRuntime, state0: SpectralState | None, *,
                 initial_residuals=(
                     carry.fsqr, carry.fsqz, carry.fsql
                 ),
+                early_stop=early_stop,
             )
         return carry, attempt_rt
 

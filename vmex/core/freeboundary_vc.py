@@ -67,6 +67,7 @@ from .input import VmecInput
 from .loops import map_columns
 from .problem import FunctionProblem
 from .profiles import MU0
+from .solver import EarlyStop
 
 
 @dataclass(frozen=True)
@@ -534,6 +535,22 @@ def _newton_step(J, r):
 #: numbers from an independent, converged evaluation.
 _GRID_POINTS_PER_HARMONIC = 4
 
+#: Iterations over which a trial solve's convergence rate is measured (:class:`~vmex.core.solver.EarlyStop`).
+_TRIAL_RATE_WINDOW = 2000
+
+
+def _trial_config(fixed, trial_ftol, device):
+    """The implicit config of trial boundaries: final tolerance ``max(trial_ftol, FTOL)``, hot-restarted, and a solve
+    that cannot reach the residual it is accepted at (``max_fsq_ratio * ftol``) within its budget fails early
+    (:class:`~vmex.core.solver.EarlyStop`)."""
+    from . import implicit as im
+
+    ftols = np.array(fixed.ftol_array, dtype=float)
+    ftols[-1] = max(float(trial_ftol), ftols[-1])
+    loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
+    early_stop = EarlyStop(target=loose.max_fsq_ratio * loose.ftol, window=_TRIAL_RATE_WINDOW)
+    return im._canonical_config(replace(loose, device=device, early_stop=early_stop))
+
 
 def interface_grid(inp) -> tuple[int, int]:
     """``(nphi, ntheta)`` per field period of the interface rows of the deck ``inp``.
@@ -873,7 +890,8 @@ class ThreeTermsFreeBoundaryModel:
         JAX device of the equilibria (default the first).
     trial_ftol:
         A looser force tolerance for trial boundaries; a state is re-solved to the deck's before it is
-        differentiated.
+        differentiated.  A trial solve that cannot reach the residual it is accepted at within the deck's
+        ``NITER`` stops early (:class:`~vmex.core.solver.EarlyStop`).
     quadrature:
         The virtual-casing singular quadrature ``(quad_nt, quad_np)`` (default :func:`interface_quadrature`;
         ``quad_nt`` a multiple of ``nfp * nphi``).
@@ -942,12 +960,8 @@ class ThreeTermsFreeBoundaryModel:
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
         # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
-        self.cfg_trial = cfg
+        self.cfg_trial = cfg if trial_ftol is None else _trial_config(fixed, trial_ftol, device)
         if trial_ftol is not None:
-            ftols = np.array(fixed.ftol_array, dtype=float)
-            ftols[-1] = max(float(trial_ftol), ftols[-1])
-            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
-            self.cfg_trial = im._canonical_config(replace(loose, device=device))
             im._template_runtime(self.cfg_trial)
         self.params0 = im.params_from_input(fixed, device=device)
         im._template_runtime(cfg)

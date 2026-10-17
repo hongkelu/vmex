@@ -2355,6 +2355,12 @@ _AL_PENALTY = 10.0  # starting penalty: with F(start) = 1, a violation of one ro
 _AL_RADIUS, _AL_MAX_RADIUS = 0.1, 100.0  # starting and largest trust radius
 _AL_MIN_RADIUS = 1e-8 * _AL_RADIUS  # a shorter step only resolves the evaluations' noise
 _AL_INNER_STEPS = 10  # accepted steps per multiplier update
+# The violation (row units) at which the penalty stops growing and starts returning to _AL_PENALTY. Rows that hold a
+# limit at every point (a coil's curvature at each quadrature point) move their nearly active neighbours across the
+# limit by ~1e-5 as the active point moves: a penalty driven up by that never comes back, and its kinks then cut every
+# step short (vacuum QA, 10-17: 1e6 at violation 1e-9, steps of 2e-4 for 300 steps). The multipliers, not the penalty,
+# take such a violation to zero (stationarity still needs 1e-6).
+_AL_FEASIBILITY = 1e-4
 
 
 def _phr(v, multipliers, penalty, equality):
@@ -2514,6 +2520,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set ``lambda = max(lambda + rho v, 0)``. The penalty
     grows tenfold after an inner loop that moved unless the violation fell to half (or below 1e-6 row units).
 
+    The penalty grows only while the violation stays above ``feasibility`` (option, row units, default
+    ``1e-4``); below a tenth of it the penalty returns tenfold per multiplier update toward its starting value, so
+    a large penalty, whose kinks cut the steps short, does not outlive the infeasibility that raised it.
+
     An inner loop ends at a projected-gradient tolerance (a tenth of the previous loop's), after ten accepted
     steps, when the trust radius collapses, or when the violation doubles past one row unit (a run-away, not the
     small excursion of a nearly feasible start). Each step minimizes the model of
@@ -2538,7 +2548,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     u, lower, upper, row_lower, row_upper:
         Start and bounds (scaled coordinates); row bounds (row units, ``-inf``/``inf`` where open).
     options:
-        ``maxiter`` (accepted steps, default 100) and ``resume``, the ``report["state"]`` of an earlier call: the run
+        ``maxiter`` (accepted steps, default 100), ``feasibility`` (see above) and ``resume``, the
+        ``report["state"]`` of an earlier call: the run
         continues from its last accepted point with its scale, multipliers, penalty, radius, curvature and
         counters, so a run split over several calls (allocations) is one run.
     report:
@@ -2551,10 +2562,11 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     after three multiplier updates in a row without a step: stationary (success) if it is feasible and its trials
     were solved, ``"no_progress"`` if no trial could be evaluated.
     """
-    unknown = set(options) - {"maxiter", "resume"}
+    unknown = set(options) - {"maxiter", "resume", "feasibility"}
     if unknown:
-        raise ValueError(f"AUGLAG takes only maxiter (and a run's own resume state), not {sorted(unknown)}")
+        raise ValueError(f"AUGLAG takes only maxiter, feasibility and resume, not {sorted(unknown)}")
     budget = int(options.get("maxiter", 100))
+    feasibility = float(options.get("feasibility", _AL_FEASIBILITY))
     rows = _Rows(row_lower, row_upper)
     f, c, gf, J = linearize(u)
     v, A = rows.values(c), rows.jacobian(J)
@@ -2587,8 +2599,10 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
             # multiplier update; the penalty test is on the violation alone (a violation-complementarity measure
             # seldom halves in ten steps and drove the penalty to 1e12 at feasible points)
             measure = rows.violation(v)
-            if s.inner > 0 and measure > max(0.5 * s.previous, 1e-6):
+            if s.inner > 0 and measure > max(0.5 * s.previous, feasibility):
                 s.penalty = min(10.0 * s.penalty, 1e12)
+            elif measure <= 0.1 * feasibility:
+                s.penalty = max(0.1 * s.penalty, _AL_PENALTY)
             s.multipliers = np.clip(slope, -1e12, 1e12)
             s.stalls = s.stalls + 1 if s.inner == 0 and s.radius < _AL_MIN_RADIUS else 0
             if s.stalls >= 3:  # no decrease at any radius from three fresh starts

@@ -1166,9 +1166,25 @@ class ThreeTermsFreeBoundaryModel:
         self.interface_rows = interface_rows
         if not vacuum:
             self.deck = self._deck_response(nphi, ntheta, digits, precision)
-        self._terms = jax.jit(lambda state, params, field: _interface_terms(
-            fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
-            precision=precision, p_edge=0.0)[:2])
+        def normal_field(state, runtime, field):
+            """``(B_out . n / |B_in|, area weights)`` on the ``(nphi, ntheta)`` grid (traceable)."""
+            field = field.field if isinstance(field, _DeckField) else field
+            data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+            area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+            if vacuum:
+                B_out = vc.external_B_cartesian(field, jnp.asarray(data.gamma), jnp.asarray(data.phi))
+            else:
+                B_out = vc.PlasmaVacuumInterface.from_surface_data(
+                    data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
+            normal = jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
+            return normal, area / jnp.sum(area)
+
+        self._normal_field = normal_field
+        self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
+            fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
+            p_edge=0.0)[:2]
+        self._terms = jax.jit(lambda state, params, field: self._interface(
+            state, im.runtime_from_params(params, cfg), field))
 
     def attach(self, field, deck=None):
         """``field`` with the deck's response data (``deck``, default :attr:`deck`) for the compiled rows.
@@ -1418,16 +1434,28 @@ class ThreeTermsFreeBoundaryModel:
         The rows control ``B . n`` through the boundary's modes; what lies outside them (higher poloidal or
         toroidal harmonics) only resolution lowers.  Harmonics of the grid's FFT, in field periods.
         """
-        rows, weights = map(np.asarray, self._terms(state, params, field))
-        f = rows[0] * np.sqrt(weights * weights.size)  # mean of f^2 = the weighted mean square of B.n
-        power = np.abs(np.fft.fft2(f) / f.size) ** 2  # axes (phi, theta)
+        rows, weights = self._terms(state, params, field)
+        return float(self._outside_rms(jnp.asarray(rows)[0], jnp.asarray(weights)))
+
+    def normal_outside(self, state, runtime, field):
+        """Traceable :meth:`normal_outside_modes` of a state and its runtime: design-differentiable, the value of
+        the :data:`NORMAL_OUTSIDE_MODES` quantity of :class:`ThreeTermsFreeBoundaryProblem`.
+
+        Only ``B_out . n / |B_in|`` is evaluated, as the interface rows do (the coils' field in vacuum, plus the
+        plasma's by virtual casing at finite beta); the pressure-balance and sheet-current terms of
+        :meth:`boundary_residual` would add their own field evaluations (56 GiB in one program at 48 x 48)."""
+        return self._outside_rms(*self._normal_field(state, runtime, field))
+
+    def _outside_rms(self, normal, weights):
+        f = normal * jnp.sqrt(weights * weights.size)  # mean of f^2 = the weighted mean square of B.n
+        power = jnp.abs(jnp.fft.fft2(f) / f.size) ** 2  # axes (phi, theta)
         k_phi = np.fft.fftfreq(f.shape[0], 1.0 / f.shape[0]).astype(int)
         k_theta = np.fft.fftfreq(f.shape[1], 1.0 / f.shape[1]).astype(int)
-        inside = np.zeros(power.shape, dtype=bool)
+        inside = np.zeros(f.shape, dtype=bool)
         for m, n in self.boundary_modes:  # sin(m theta - n nfp phi) holds (-n, m) and (n, -m)
             inside |= (k_phi[:, None] == -n) & (k_theta[None, :] == m)
             inside |= (k_phi[:, None] == n) & (k_theta[None, :] == -m)
-        return float(np.sqrt(max(power[~inside].sum(), 0.0)))
+        return jnp.sqrt(jnp.sum(jnp.where(inside, 0.0, power)))
 
     def bootstrap_residual(self, state, params) -> float:
         """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
@@ -1743,6 +1771,23 @@ class _AcceptedPoint:
     parameters: np.ndarray
 
 
+class _NormalOutsideModes:
+    """The :data:`NORMAL_OUTSIDE_MODES` quantity (evaluated by the problem with its current model)."""
+
+    __name__ = "normal_outside_modes"
+
+    def __call__(self, *args):
+        raise TypeError("NORMAL_OUTSIDE_MODES is evaluated by ThreeTermsFreeBoundaryProblem, not called")
+
+
+#: A ``parameter_quantities`` entry of :meth:`ThreeTermsFreeBoundaryProblem.from_loss`: the RMS of ``B_out . n /
+#: |B_in|`` outside the boundary's modes (:meth:`ThreeTermsFreeBoundaryModel.normal_outside`), the part of the
+#: normal field the truncated boundary cannot cancel. The square rows zero ``B . n`` only on the boundary's modes,
+#: so an optimizer sees nothing of this part; bounding it keeps designs whose free boundary a finer boundary
+#: resolves (an unbounded run can drift to coils with no free boundary at higher resolution).
+NORMAL_OUTSIDE_MODES = _NormalOutsideModes()
+
+
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-terms free boundary.
 
@@ -1857,6 +1902,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._params_at = jax.jit(seed_params_at)
 
         def part(f, with_x):
+            if isinstance(f, _NormalOutsideModes):  # needs the model (its modes and interface): this one's
+                def outside(state, params, x):
+                    # traced with checkpointed quadrature scans: its reverse pass (the design gradient) would
+                    # otherwise keep every source chunk's kernel intermediates (62 GiB at 48 x 48); values unchanged
+                    with vc.remat_scans():
+                        return jnp.atleast_1d(model.normal_outside(state, runtime_from_params(params, model.cfg),
+                                                                   field_from_parameters(x)))
+                outside.__name__ = "normal_outside_modes"
+                return outside
+
             def value(state, params, x):
                 runtime = runtime_from_params(params, model.cfg)
                 return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
@@ -1912,7 +1967,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
 
         self._coordinates = coordinates
-        self._direct = jax.jit(jax.jacrev(rows, argnums=2))
+        # the direct x-Jacobian part by part: one reverse pass vmapped over all rows would replicate every part's
+        # backward program (a virtual-casing quantity's, 0.85 GiB) once per row of every other part (56 GiB)
+        def direct(state, params, x):
+            return jnp.concatenate([jax.jacrev(f, argnums=2)(state, params, x).reshape(-1, x.size) for f in parts])
+
+        self._direct = jax.jit(direct)
         # the deck's response data are an argument (model.attach), not constants of these programs
         self._field_vjp = jax.jit(lambda state, params, x, lam, deck: jax.vjp(
             lambda z: model.rows(state, params, model.attach(field_from_parameters(z), deck)), x)[1](lam)[0])

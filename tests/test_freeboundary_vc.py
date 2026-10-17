@@ -16,6 +16,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
+import types
 from typing import Any
 
 import numpy as np
@@ -437,6 +438,42 @@ def test_problem_boundary_condition_dispatches_to_three_terms(monkeypatch):
     (args, kwargs), = calls
     assert got == "problem" and args[:2] == (inp, loss) and kwargs["field_from_parameters"] is field
     assert kwargs["quantities"] == (len,) and kwargs["nphi"] == 16
+
+
+@needs_vc
+def test_three_terms_problem_seed_starts_at_boundary_start(monkeypatch):
+    """``boundary_start`` (a restart's saved boundary) is where the seed's solve starts on the deck: the start is
+    the deck displacement of that surface, and from the deck's own free boundary the solve starts near the root
+    and lands on the same one as the cold solve."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    starts, solve = [], fvc.solve_band_continuation
+
+    def recording(model, params, field, *, x0=None, **kwargs):
+        starts.append(x0)
+        return solve(model, params, field, x0=x0, **kwargs)
+
+    monkeypatch.setattr(fvc, "solve_band_continuation", recording)
+
+    def build(boundary_start=None):
+        return FreeBoundaryProblem.from_loss(
+            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+            field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[0])),
+            boundary_condition="three_terms", three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32),
+                                                       boundary_max_nfev=80, boundary_start=boundary_start))
+
+    cold = build()
+    seed = cold._record(np.zeros(1))  # the seed's free boundary, solved by from_loss
+    boundary = seed["aux"][2]  # its rbc, zbs on the deck
+    warm = build(types.SimpleNamespace(rbc=np.asarray(boundary.rbc), zbs=np.asarray(boundary.zbs)))
+    assert starts[0] is None and starts[1] is not None and np.any(starts[1])
+    nb = cold.model.n_boundary
+    # displacement_of measures along the surface normal, the coordinates along the deck's radial lines: the start
+    # is near the root, not on it
+    assert np.linalg.norm(starts[1][:nb] - seed["x"][:nb]) < 0.5 * np.linalg.norm(seed["x"][:nb])
+    np.testing.assert_allclose(warm.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
 
 
 @needs_vc

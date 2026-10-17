@@ -1770,7 +1770,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         ``boundary_start`` (anything with ``rbc`` and ``zbs``, e.g. a saved step's LCFS) is where the seed's solve
         starts, :meth:`ThreeTermsFreeBoundaryModel.displacement_of` it on the deck, instead of the deck's own
         boundary.  The deck still defines the problem: a restart on the run's deck from its step's boundary
-        starts at that step's root (up to the fit) and solves the run's very equations.
+        starts near that step's root (the fit measures along the normal, the coordinates along the deck's radial
+        lines) and solves the run's very equations.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:

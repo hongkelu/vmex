@@ -1457,6 +1457,21 @@ def main(argv=None):
                                               nphi=args.vc_grid, ntheta=args.vc_grid, precision=common_plan["plan"])
         return fvc.summarize_boundary_residual(np.asarray(rows), np.asarray(weights))
 
+    def common_bn(x):
+        """``bn_common`` / ``bn_common_max`` of a Galerkin or least-squares run: a diagnostic (the methods'
+        comparison) that never ends the run -- at 12 x 12 on an nfp-4 surface its quadrature alone can exceed the
+        GPU (17.4 GiB, a QI validation 10-17), which then reports NaN once logged."""
+        try:
+            c = common_residual(x)
+            return dict(bn_common=c.normal, bn_common_max=c.normal_max)
+        except jax.errors.JaxRuntimeError as error:
+            if "RESOURCE_EXHAUSTED" not in str(error):
+                raise
+            if not common_plan.get("oom"):
+                print(f"[bn_common] out of GPU memory at --vc-grid {args.vc_grid}: not evaluated", flush=True)
+                common_plan["oom"] = True
+            return dict(bn_common=float("nan"), bn_common_max=float("nan"))
+
     def interface_residual(x):
         """The method's own report of the interface conditions (``BoundaryResidual``); NESTOR has none of its own
         three terms, so the common evaluation."""
@@ -1551,8 +1566,7 @@ def main(argv=None):
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
-                   **({} if nestor else dict(zip(("bn_common", "bn_common_max"), (lambda c: (c.normal, c.normal_max))(
-                       common_residual(x))))),
+                   **({} if nestor else common_bn(x)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **getattr(problem, "stats", {}),
                    seconds={key: round(value, 1) for key, value in timers.items()},
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)

@@ -1542,8 +1542,9 @@ def main(argv=None):
                  if intermediate_result is not None else "")
               + f"{res} {row['step_seconds']:.1f}s "
               f"[{', '.join(f'{key} {value:.0f}' for key, value in row['seconds'].items())}] "
-              f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
-              f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
+              + (f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, " if "trials" in row
+                 else "(")  # the three-terms problems' trial counters; NESTOR keeps none
+              + f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 

@@ -91,6 +91,24 @@ def _stand_in(n, rows, jac, *, vacuum=True, repeat=None):
     return model
 
 
+def test_trust_region_step_is_newton_when_it_fits_and_beats_the_shortened_newton_step():
+    """The shortened step of an ill-conditioned square system: the trust-region (Levenberg-Marquardt) point of the
+    requested length in column-scaled coordinates, which minimizes the linear model better than ``t p``."""
+    rng = np.random.default_rng(3)
+    Q1, _ = np.linalg.qr(rng.standard_normal((6, 6)))
+    Q2, _ = np.linalg.qr(rng.standard_normal((6, 6)))
+    J = Q1 @ np.diag([10.0, 5.0, 2.0, 1.0, 0.5, 1e-5]) @ Q2.T  # one soft direction
+    r = rng.standard_normal(6)
+    p = -np.linalg.solve(J, r)
+    norms = np.linalg.norm(J, axis=0)
+    full = float(np.linalg.norm(p * norms))
+    np.testing.assert_allclose(fvc._trust_region_step(J, r, 2 * full), p, rtol=1e-10)
+    for t in (0.25, 1 / 16, 1 / 64):
+        q = fvc._trust_region_step(J, r, t * full)
+        np.testing.assert_allclose(np.linalg.norm(q * norms), t * full, rtol=1e-8)
+        assert np.linalg.norm(r + J @ q) < np.linalg.norm(r + J @ (t * p))
+
+
 def test_newton_convergence_test_is_a_step_in_metres():
     """Converged when the Newton step is within round-off of the coordinates (sqrt(eps) R0) or within the step of
     the measured row noise; the step's size is the RMS normal displacement; a singular Jacobian has no step."""

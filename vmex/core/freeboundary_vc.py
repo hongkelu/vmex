@@ -512,6 +512,36 @@ def newton_step_converged(step_rms: float, noise_rms: float, scale: float) -> bo
     return bool(step_rms <= max(float(noise_rms), float(np.sqrt(np.finfo(float).eps)) * float(scale)))
 
 
+def _trust_region_step(J, r, length):
+    """The Levenberg-Marquardt step ``-(J^T J + mu I)^-1 J^T r`` of length ``length`` (``mu = 0``: the Newton step,
+    when that is no longer), in the coordinates that scale ``J``'s columns to unit norm (as :func:`_newton_step`).
+
+    A shortened Newton step ``t p`` keeps the Newton direction, whose component along a soft direction of an
+    ill-conditioned ``J`` (a near-resonant boundary harmonic, ``sigma_min / sigma_max ~ 1e-5``) is amplified by
+    ``1 / sigma_min``: shortening it leaves that component dominant, and the trial boundaries leave the domain where
+    the equilibrium exists.  The step of the same length that minimizes the linear model ``|r + J p|`` (the
+    trust-region point) damps the soft directions first.  ``mu`` by bisection on ``log mu`` (``|p(mu)|`` decreases).
+    """
+    J, r = np.asarray(J, dtype=float), np.asarray(r, dtype=float)
+    norms = np.linalg.norm(J, axis=0)
+    U, S, Vt = np.linalg.svd(J / norms[None, :], full_matrices=False)
+    g = U.T @ r
+
+    def step(mu):
+        return -(Vt.T @ (S * g / (S * S + mu)))
+
+    full = step(0.0)
+    if np.linalg.norm(full) <= length:
+        return full / norms
+    lo, hi = np.log(S[-1] ** 2 * np.finfo(float).eps), np.log(S[0] ** 2)
+    while np.linalg.norm(step(np.exp(hi))) > length:
+        hi += np.log(4.0)
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if np.linalg.norm(step(np.exp(mid))) > length else (lo, mid)
+    return step(np.exp(hi)) / norms
+
+
 def _newton_step(J, r):
     """The Newton step ``-J^-1 r`` of the square system, or ``None`` when ``J`` is numerically singular.
 
@@ -1623,8 +1653,11 @@ class ThreeTermsFreeBoundaryModel:
                 continue
             cost = 0.5 * float(r @ r)
             t, accepted = 1.0, None
+            scaled_length = float(np.linalg.norm(p * np.linalg.norm(J, axis=0)))
             while t >= (1.0 / 64 if fresh else 1.0) and nfev < max_nfev:  # a reused J: its full step, or refresh
-                trial = self.evaluate(x + t * p, params, field, tight=tight)
+                # shortened: the trust-region step of that length, not t p (see _trust_region_step)
+                step = p if t == 1.0 else _trust_region_step(J, r, t * scaled_length)
+                trial = self.evaluate(x + step, params, field, tight=tight)
                 nfev += 1
                 if trial is not None and 0.5 * float(trial[0] @ trial[0]) < (1.0 - 1e-4 * t) * cost:
                     accepted = trial
@@ -1637,7 +1670,7 @@ class ThreeTermsFreeBoundaryModel:
             if fresh and accepted is not None:
                 # a refreshed Jacobian that again descends only along a shortened step: outside the Newton basin
                 if undamped and t < 1.0 and shortened:  # keep the shortened step's progress
-                    x, (r, aux), steps, damped = x + t * p, accepted, steps + 1, True
+                    x, (r, aux), steps, damped = x + step, accepted, steps + 1, True
                     break
                 shortened = t < 1.0
             if accepted is None:
@@ -1661,7 +1694,7 @@ class ThreeTermsFreeBoundaryModel:
                 J = None
                 continue
             new_cost = 0.5 * float(accepted[0] @ accepted[0])
-            s, r_new = t * p, np.asarray(accepted[0])
+            s, r_new = step, np.asarray(accepted[0])
             x, got, steps = x + s, accepted, steps + 1
             slow = new_cost > 1e-2 * cost  # slower than a 10x residual reduction a step (a chord method)
             if slow and not updated and not self.vacuum:  # (vacuum: a Jacobian costs about one evaluation)

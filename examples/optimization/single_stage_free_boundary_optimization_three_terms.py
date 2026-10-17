@@ -112,6 +112,10 @@ import numpy as np
 DATA = Path(__file__).resolve().parents[1] / "data"
 CASE = os.environ.get("COIL_CASE", "ellipse5")
 RESOLUTION = (8, 8, 51)            # MPOL, NTOR, NS of the optimization solves
+# set (e.g. (13, 25)): coarse radial grids every seed solve (the beta ramp, the bootstrap current) runs before the
+# final NS, as VMEC's NS_ARRAY ladder; the optimization deck keeps the single final grid. At 12 x 12 modes the QI A8
+# ellipse's beta ramp did not converge on the single grid (MORE ITERATIONS above <beta> 2 %, 60000 iterations).
+SEED_NS_LADDER = None
 GRID = (64, 64)                    # NTHETA, NZETA
 EQUILIBRIUM_FTOL = 1e-15
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
@@ -324,7 +328,18 @@ def seed_input():
         rbc[ntor, 1] = zbs[ntor, 1] = minor * np.sqrt(1.0 + ratio**2)
         rbc[ntor - 1, 1], zbs[ntor - 1, 1] = -ratio * minor, ratio * minor
         inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=np.pi * minor**2)
+    if SEED_NS_LADDER:  # coarse rungs to a loose tolerance, then the final grid
+        niter = int(np.asarray(inp.niter_array)[-1])
+        rungs = len(SEED_NS_LADDER)
+        return replace(inp, ns_array=np.r_[SEED_NS_LADDER, ns], ftol_array=np.r_[[1e-8] * rungs, EQUILIBRIUM_FTOL],
+                       niter_array=np.r_[[niter] * rungs, niter], lfreeb=False)
     return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]), lfreeb=False)
+
+
+def single_grid(inp):
+    """``inp`` on its final radial grid only (the optimization deck after a ``SEED_NS_LADDER`` seed)."""
+    return replace(inp, ns_array=np.asarray(inp.ns_array)[-1:], ftol_array=np.asarray(inp.ftol_array)[-1:],
+                   niter_array=np.asarray(inp.niter_array)[-1:])
 
 
 def target_residual():
@@ -1300,6 +1315,8 @@ def main(argv=None):
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
+    if args.restart is None and args.seed_run is None and SEED_NS_LADDER:  # the seed's ladder is not the run's grid
+        inp = single_grid(inp)
     current_in_solve = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if current_in_solve else None
     redl = None if current_in_solve else redl

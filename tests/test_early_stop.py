@@ -66,6 +66,7 @@ def test_unreachable_tolerance_stops_before_the_budget():
     result = _solve(1e-40, 4000, EarlyStop(target=1e-40, window=50))
     assert not result.converged
     assert result.iterations < 1000
+    assert np.all(result.fsq_history[:result.iterations, :3].sum(axis=1) > 0.0)
 
 
 def test_converging_solve_is_unchanged():

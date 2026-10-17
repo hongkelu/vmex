@@ -2552,7 +2552,9 @@ def _run_loop(state0: SpectralState, rt: SolverRuntime, *, mode: str,
             checked.append(int(carry.iteration) - 1)
             best.append(min(fsq, best[-1]) if best else fsq)
             if early_stop.exhausts_budget(checked, best, int(rt.max_iterations)):
-                return replace(carry, done=jnp.asarray(True, dtype=carry.done.dtype),
+                # the last completed iteration, as at the end of a budget
+                return replace(carry, iteration=carry.iteration - 1,
+                               done=jnp.asarray(True, dtype=carry.done.dtype),
                                ier=jnp.asarray(MORE_ITER_FLAG, dtype=carry.ier.dtype))
     return carry
 

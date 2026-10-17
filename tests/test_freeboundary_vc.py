@@ -955,6 +955,17 @@ class _Program:
         return self
 
 
+class _Cotangents(_Program):
+    """Stand-in cotangent program: ``rows`` rows of a (state, params) cotangent pair."""
+
+    def __init__(self, rows, fail=False):
+        super().__init__(fail)
+        self.rows = rows
+
+    def __call__(self, state, params, x):
+        return jnp.zeros((self.rows, 3)), jnp.zeros((self.rows, 2))
+
+
 class _Implicit:
     """Stand-in for :mod:`vmex.core.implicit` as the warm-up threads use it."""
 
@@ -985,21 +996,27 @@ class _Implicit:
 @pytest.mark.parametrize("fail", [False, True])
 def test_gradient_programs_compile_from_placeholders_on_background_threads(fail):
     """The problem starts two warm-up threads (response fallbacks; pullback and direct Jacobian) from placeholder
-    arguments; a failure in either is swallowed."""
+    arguments; a failure in either is swallowed.  The pullback's programs (each function's cotangents and the shared
+    adjoint, on the stacked rows) compile in parallel."""
     implicit = _Implicit(fail)
     implicit._placeholder_arguments = lambda cfg, params: (jnp.ones(3), jnp.ones(3), params)
     implicit._zeros_like_structure = lambda cfg, shapes: jax.tree.map(lambda a: jnp.zeros(a.shape, a.dtype), shapes)
     implicit._refine_block_factor_core = lambda z, params, frozen, mask, cfg: (z * params, frozen + mask)
     model = type("Model", (), {"_im": implicit, "params0": jnp.ones(3), "chunk": 2})()
     model.cfg = type("Cfg", (), {"adjoint_tol": 1e-11, "adjoint_maxiter": 300})()
-    problem = type("Problem", (), {"model": model, "_pullback": _Program(fail), "_direct": _Program(fail)})()
+    cotangents = (_Cotangents(1, fail), _Cotangents(5, fail))
+    problem = type("Problem", (), {"model": model, "_cotangents": cotangents, "_adjoint": _Program(fail),
+                                   "_direct": _Program(fail)})()
     threads = fvc.ThreeTermsFreeBoundaryProblem._warm_gradient_programs(problem, np.ones(4))
     for thread in threads:
         thread.join()
     if not fail:
         assert ("tangent", 2) in implicit.calls
-        (state, mask, params, x, factors), = problem._pullback.lowered
-        assert x.shape == (4,) and len(factors) == 2
+        for program in cotangents:
+            (state, params, x), = program.lowered
+            assert x.shape == (4,)
+        (state, mask, params, state_bars, params_bars, factors), = problem._adjoint.lowered
+        assert state_bars.shape == (6, 3) and params_bars.shape == (6, 2) and len(factors) == 2
         assert len(problem._direct.lowered) == 1
 
 

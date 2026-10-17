@@ -1166,6 +1166,20 @@ class ThreeTermsFreeBoundaryModel:
         self.interface_rows = interface_rows
         if not vacuum:
             self.deck = self._deck_response(nphi, ntheta, digits, precision)
+        def normal_field(state, runtime, field):
+            """``(B_out . n / |B_in|, area weights)`` on the ``(nphi, ntheta)`` grid (traceable)."""
+            field = field.field if isinstance(field, _DeckField) else field
+            data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+            area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
+            if vacuum:
+                B_out = vc.external_B_cartesian(field, jnp.asarray(data.gamma), jnp.asarray(data.phi))
+            else:
+                B_out = vc.PlasmaVacuumInterface.from_surface_data(
+                    data, p_edge=0.0, digits=digits, precision=precision).total_B_out(field)
+            normal = jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
+            return normal, area / jnp.sum(area)
+
+        self._normal_field = normal_field
         self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
             fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
             p_edge=0.0)[:2]
@@ -1425,9 +1439,12 @@ class ThreeTermsFreeBoundaryModel:
 
     def normal_outside(self, state, runtime, field):
         """Traceable :meth:`normal_outside_modes` of a state and its runtime: design-differentiable, the value of
-        the :data:`NORMAL_OUTSIDE_MODES` quantity of :class:`ThreeTermsFreeBoundaryProblem`."""
-        rows, weights = self._interface(state, runtime, field)
-        return self._outside_rms(rows[0], weights)
+        the :data:`NORMAL_OUTSIDE_MODES` quantity of :class:`ThreeTermsFreeBoundaryProblem`.
+
+        Only ``B_out . n / |B_in|`` is evaluated, as the interface rows do (the coils' field in vacuum, plus the
+        plasma's by virtual casing at finite beta); the pressure-balance and sheet-current terms of
+        :meth:`boundary_residual` would add their own field evaluations (56 GiB in one program at 48 x 48)."""
+        return self._outside_rms(*self._normal_field(state, runtime, field))
 
     def _outside_rms(self, normal, weights):
         f = normal * jnp.sqrt(weights * weights.size)  # mean of f^2 = the weighted mean square of B.n

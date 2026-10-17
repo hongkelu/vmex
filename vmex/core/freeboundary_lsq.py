@@ -196,6 +196,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return jnp.concatenate([jump, current])
 
         self.interface_rows = interface_rows
+        self._normal_field = self._make_normal_field(fixed, nphi, ntheta, digits, precision)
         terms = jax.jit(lambda state, params, field: _interface_terms(
             fixed, state, field.field if isinstance(field, _Bundle) else field,
             runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,

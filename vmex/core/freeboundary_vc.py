@@ -1166,8 +1166,20 @@ class ThreeTermsFreeBoundaryModel:
         self.interface_rows = interface_rows
         if not vacuum:
             self.deck = self._deck_response(nphi, ntheta, digits, precision)
+        self._normal_field = self._make_normal_field(fixed, nphi, ntheta, digits, precision)
+        self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
+            fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
+            p_edge=0.0)[:2]
+        self._terms = jax.jit(lambda state, params, field: self._interface(
+            state, im.runtime_from_params(params, cfg), field))
+
+    def _make_normal_field(self, fixed, nphi, ntheta, digits, precision):
+        """The traceable ``(B_out . n / |B_in|, area weights)`` of a state on the ``(nphi, ntheta)`` grid, as the
+        interface rows evaluate it: the coils' field in vacuum, plus the plasma's by virtual casing at finite beta
+        (:meth:`normal_outside`; both methods' interface setups install it)."""
+        vacuum = self.vacuum
+
         def normal_field(state, runtime, field):
-            """``(B_out . n / |B_in|, area weights)`` on the ``(nphi, ntheta)`` grid (traceable)."""
             field = field.field if isinstance(field, _DeckField) else field
             data = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
             area = jnp.linalg.norm(jnp.asarray(data.area_vector), axis=0)
@@ -1179,12 +1191,7 @@ class ThreeTermsFreeBoundaryModel:
             normal = jnp.sum(B_out * jnp.asarray(data.normal), axis=0) / jnp.linalg.norm(jnp.asarray(data.B_total), axis=0)
             return normal, area / jnp.sum(area)
 
-        self._normal_field = normal_field
-        self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
-            fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
-            p_edge=0.0)[:2]
-        self._terms = jax.jit(lambda state, params, field: self._interface(
-            state, im.runtime_from_params(params, cfg), field))
+        return normal_field
 
     def attach(self, field, deck=None):
         """``field`` with the deck's response data (``deck``, default :attr:`deck`) for the compiled rows.

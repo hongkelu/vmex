@@ -202,7 +202,7 @@ FORCE_B_REF, FORCE_NORMALIZE_GRID = None, (32, 32)
 # the BALLOONING_S surfaces is held below it.
 MERCIER_FLOOR, STABILITY_MIN_S = None, 0.2
 BALLOONING_LIMIT, BALLOONING_S = None, (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)
-# set (Galerkin): an upper bound on the RMS of B.n/|B| outside the boundary's modes, the part the truncated boundary
+# set (Galerkin, least squares): an upper bound on the RMS of B.n/|B| outside the boundary's modes, the part the truncated boundary
 # cannot cancel (fvc.NORMAL_OUTSIDE_MODES); unbounded, the 8x8 optimizer drifts to coils whose free boundary a 12x12
 # boundary does not reach (qac8 10-17: 8x8 B.n 2.8e-3/4.1e-3, no 12x12 root). The validation's B.n tolerance (5e-4)
 # is the natural value: what the 8x8 boundary leaves is what a finer one must still cancel.
@@ -1423,8 +1423,9 @@ def main(argv=None):
         return opt.aspect_ratio(state, runtime)
 
     nestor = args.free_boundary == "nestor"
-    if BN_OUTSIDE_LIMIT and args.free_boundary != "galerkin":
-        raise SystemExit("BN_OUTSIDE_LIMIT bounds the B.n outside the Galerkin boundary's modes: --free-boundary galerkin")
+    if BN_OUTSIDE_LIMIT and nestor:
+        raise SystemExit("BN_OUTSIDE_LIMIT bounds the B.n outside the boundary's modes: --free-boundary galerkin or "
+                         "least_squares")
     if nestor and current_in_solve:
         raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
                          "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")

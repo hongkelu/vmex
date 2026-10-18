@@ -44,6 +44,7 @@ from typing import Any
 
 import functools
 import threading
+import warnings
 
 import numpy as np
 
@@ -214,6 +215,37 @@ def _edge_fourier(state: SpectralState, rt: SolverRuntime):
     else:
         rmns = zmnc = None
     return rmnc, zmns, rmns, zmnc
+
+
+def _warn_outside_grid(state: SpectralState, rt: SolverRuntime, field: Any) -> None:
+    """VMEC2000 ``becoil.f`` warning when the boundary leaves the mgrid box.
+
+    Interpolation clamps R and Z to the table, so a boundary outside it sees
+    a constant edge field; VMEC2000 says so ("Plasma Boundary exceeded Vacuum
+    Grid Size" with the offending extremes), and so does VMEX.
+    """
+    if not all(hasattr(field, k) for k in ("rmin", "rmax", "zmin", "zmax")):
+        return
+    rmnc, zmns, rmns, zmnc = _edge_fourier(state, rt)
+    theta = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+    zeta = np.linspace(0.0, 2.0 * np.pi, 32, endpoint=False)
+    angle = (np.asarray(rt.modes.m)[:, None, None] * theta[None, :, None]
+             - np.asarray(rt.modes.n)[:, None, None] * zeta[None, None, :])
+    cos, sin = np.cos(angle), np.sin(angle)
+    R = np.tensordot(rmnc, cos, 1) + (0.0 if rmns is None else np.tensordot(rmns, sin, 1))
+    Z = np.tensordot(zmns, sin, 1) + (0.0 if zmnc is None else np.tensordot(zmnc, cos, 1))
+    out = [f"{name} {value:.4g} m is {abs(value - edge):.3g} m {side} {name}{'min' if side == 'below' else 'max'} = {edge:.4g} m"
+           for name, value, edge, side in (("R", R.min(), field.rmin, "below"), ("R", R.max(), field.rmax, "above"),
+                                           ("Z", Z.min(), field.zmin, "below"), ("Z", Z.max(), field.zmax, "above"))
+           if (value < edge if side == "below" else value > edge)]
+    if out:
+        warnings.warn(
+            "Plasma Boundary exceeded Vacuum Grid Size: " + "; ".join(out)
+            + f". The mgrid spans R in [{field.rmin:.4g}, {field.rmax:.4g}] m, Z in "
+            f"[{field.zmin:.4g}, {field.zmax:.4g}] m and is clamped at its edge outside "
+            "(VMEC2000 becoil.f), so the vacuum field there is wrong. Regenerate the mgrid "
+            "with a larger box, or check EXTCUR and PHIEDGE if the plasma grew unexpectedly.",
+            stacklevel=2)
 
 
 # ---------------------------------------------------------------------------
@@ -2239,6 +2271,7 @@ def _solve_free_boundary_stage(
                 prefetch_compile=prefetch_compile,
                 prefetch_device=prefetch_device,
             )
+        _warn_outside_grid(carry.state, rt_freeb if fb.turned_on else rt_fixed, external_field)
         if ier == MORE_ITER_FLAG and not error_on_no_convergence:
             result = _result_from_carry(carry, rt_freeb if fb.turned_on else rt_fixed)
             return _FreeBoundaryStageResult(

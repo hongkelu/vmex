@@ -773,6 +773,24 @@ def test_cli_missing_mgrid_fallback_warns(tmp_path):
     assert any("mgrid file not found" in msg for msg in messages)
 
 
+def test_boundary_outside_the_mgrid_box_warns_as_becoil_does():
+    """becoil.f clamps R, Z to the table and prints the VMEC2000 warning."""
+    import warnings
+    from dataclasses import replace
+
+    inp = VmecInput.from_file(DECK)
+    field = FB._external_field_from_input(inp, MGRID)
+    rt = prepare_runtime(inp, FB.free_boundary_resolution(inp, field))
+    state = _initial_state(rt.setup)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        FB._warn_outside_grid(state, rt, field)            # inside: silent
+        FB._warn_outside_grid(state, rt, object())         # untabulated field: no box
+    small = replace(field, rmax=float(field.rmin) + 0.01)
+    with pytest.warns(UserWarning, match=r"Plasma Boundary exceeded Vacuum Grid Size: R .* above Rmax"):
+        FB._warn_outside_grid(state, rt, small)
+
+
 def test_phiedge_with_wrong_sign_raises():
     """vacuum.f: a PHIEDGE opposing the external toroidal field stops the run (ier_flag 7)."""
     from vmex.core.errors import PHIEDGE_ERROR_FLAG, VmecError

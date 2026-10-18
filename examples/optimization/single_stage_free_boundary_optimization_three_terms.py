@@ -1285,10 +1285,13 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--tolerance-continuation", action=argparse.BooleanOptionalAction, default=True,
-                        help="--free-boundary least_squares with SLSQP: converge trial boundaries to a looser force "
-                        "tolerance while the steps' objective change exceeds what it resolves, tightening to the deck's "
-                        "FTOL as they shrink; the last design is re-solved at the deck's FTOL (ToleranceContinuation)")
+    parser.add_argument("--tolerance-continuation", action=argparse.BooleanOptionalAction, default=False,
+                        help="--free-boundary least_squares with SLSQP (opt-in): converge trial boundaries to a looser "
+                        "force tolerance while every plasma row's step change or slack exceeds what it resolves, "
+                        "tightening to the deck's FTOL as they shrink (ToleranceContinuation). Measured on QA/QH "
+                        "2.5 %% (10-18): no saving while Mercier/B.n rows are active (QA 286/261/209/257 s vs "
+                        "288/259/208 s); an objective-only rule saved ~40 %% per QA step but read the path's "
+                        "constraint rows wrong (Mercier min 8.37e-4 vs 9.44e-4 certified at FTOL 1e-6)")
     parser.add_argument("--full-precision", action="store_true",
                         help="--free-boundary least_squares: every boundary solved to the measured repeatability alone "
                         "(no a-priori floor), e.g. a validation re-solve (--restart R --steps 0); without it a run's "

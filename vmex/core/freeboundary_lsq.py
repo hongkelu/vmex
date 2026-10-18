@@ -1056,6 +1056,11 @@ class ToleranceContinuation:
     there (its rows move by at most the old level's resolution); the run ends at the deck's FTOL (:attr:`final`), its
     last design re-solved at full precision.  No constants: the levels come from measured changes, the resolution
     from the solve's own floor.
+
+    Opt-in (driver ``--tolerance-continuation``).  Measured on QA and QH at 2.5 % (10-18): while Mercier or B.n
+    rows are active their small slack keeps the deck's FTOL, so there is no saving (QA steps 286/261/209/257 s against
+    288/259/208 s).  An objective-only rule saved ~40 % per QA step (one exact Hessian a trial), but it read the
+    path's constraint rows wrong (at FTOL 1e-6 Mercier min 8.37e-4 against 9.44e-4 certified).
     """
 
     def __init__(self, final_ftol, level=None, tightened=False):

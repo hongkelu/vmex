@@ -52,7 +52,10 @@ def test_vacuum_rows_newton_with_exact_hessian():
     so_p = model.second_order(x, aux, field, columns=False)
     V = np.eye(x.size)[:3]
     calls = []
-    columns = model._hessian_columns
+    # the checkpointed program, as after a block of stored scans ran out of memory (the fallback order itself is
+    # test_hessian_falls_back_to_checkpointed_scans_then_narrower_blocks_on_device_memory)
+    model.hessian_remat = True
+    columns = model._hessian_columns_remat
 
     def short_of_memory(*args):
         calls.append(jax.tree.leaves(args[6])[0].shape[0])  # the block's width (dz_cols)
@@ -60,11 +63,11 @@ def test_vacuum_rows_newton_with_exact_hessian():
             raise jax.errors.JaxRuntimeError("RESOURCE_EXHAUSTED: out of memory (test)")
         return columns(*args)
 
-    model.hessian_chunk, model._hessian_columns = 4, short_of_memory
+    model.hessian_chunk, model._hessian_columns_remat = 4, short_of_memory
     try:
         np.testing.assert_allclose(so_p["hvp"](V), so["H"][:3], rtol=1e-8, atol=1e-10 * np.max(np.abs(so["H"])))
     finally:
-        model._hessian_columns = columns
+        model._hessian_columns_remat = columns
     assert model.hessian_chunk == 2 and calls[0] == 3 and len(calls) == 3  # blocks of two, never one column
     accepted = []
     out = model.solve_boundary(model.params0, field, max_iter=60, verbose=2, callback=accepted.append)

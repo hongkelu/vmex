@@ -129,7 +129,11 @@ def _trust_region_solution(w, gq, radius, newton):
     if newton <= radius:
         return -gq / w
     shift = max(0.0, -w[0])
-    lo = np.log(1e-300 + 1e-14 * max(abs(w[-1]), 1e-300))
+    # the bracket's lower end must lie below the model's smallest (shifted) eigenvalue, where |z| exceeds the radius:
+    # a bound relative to the largest one (1e-14 w_max) stopped short of the radius on models with near-null
+    # directions (condition number above 1e14, M 16: eigenvalues 3e-15 .. 53), returning a step far inside the
+    # radius, and the solve crawled along those directions at rho ~ 1 without the radius ever growing
+    lo = np.log(np.finfo(float).tiny)
     hi = np.log(np.linalg.norm(gq) / radius + abs(w[-1]) + 1e-300)
     for _ in range(200):
         mid = 0.5 * (lo + hi)

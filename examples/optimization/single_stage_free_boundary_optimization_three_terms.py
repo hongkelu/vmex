@@ -548,6 +548,14 @@ def vacuum_iota(inp):
     from vmex import optimize as opt
     from vmex.core import implicit as im
     from vmex.core.statephysics import _iotas_half
+    from vmex.core.freeboundary_vc import _is_vacuum
+
+    if _is_vacuum(inp):  # the plasma already is that boundary's vacuum equilibrium: its own transform, no second solve
+        def own_iota(state, runtime):
+            half = _iotas_half(state, runtime)[1:]
+            return jnp.abs(jnp.concatenate([opt.axis_iota(state, runtime)[None], half,
+                                            1.5 * half[-1:] - 0.5 * half[-2:-1]]))
+        return own_iota
 
     # PHIEDGE 1 Wb: a vacuum transform does not depend on the flux, and the deck's PHIEDGE baked into the row's
     # programs would make their compilation-cache keys seed-dependent
@@ -1584,7 +1592,11 @@ def main(argv=None):
         res = interface_residual(x)
         now = time.monotonic()
         state_x, runtime_x = state_runtime(x)
-        vac = np.asarray(vacuum(state_x, runtime_x))
+        try:  # a diagnostic here (the floor row, when set, is evaluated with the constraints): never ends the run
+            vac = np.asarray(vacuum(state_x, runtime_x))
+        except (vj.VmecError, RuntimeError) as error:  # its own cold vacuum solve (a Jacobian sign change at 12x12)
+            print(f"[vacuum iota] not evaluated at step {problem.accepted_step}: {str(error)[:120]}", flush=True)
+            vac = np.full(3, np.nan)
         stability_row = n_iota + 2 + len(mirror) + n_iota * len(ceiling) + n_vacuum * len(vacuum_floor)
         redl_row = stability_row + n_mercier + n_ballooning
         coils_m = {key: np.asarray(value) for key, value in coil_metrics_at(jnp.asarray(x)).items()}

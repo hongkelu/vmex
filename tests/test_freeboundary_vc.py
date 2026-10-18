@@ -500,6 +500,14 @@ def test_least_squares_problem_seed_starts_at_boundary_start(monkeypatch):
     warm = build(saved)
     np.testing.assert_array_equal(starts[0], saved)
     np.testing.assert_allclose(warm.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
+    # a surface (rbc, zbs) instead of coordinates, here the deck's boundary scaled about the axis: the start is its
+    # displacement of the reference surface, and the solve lands on the same root
+    rbc, zbs = np.array(inp.rbc, dtype=float), 1.01 * np.array(inp.zbs, dtype=float)
+    rbc[:, 1:] *= 1.01
+    starts.clear()
+    surface = build(types.SimpleNamespace(rbc=rbc, zbs=zbs))
+    assert starts[0] is not None and np.any(starts[0])
+    np.testing.assert_allclose(surface.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
 
 
 def test_three_terms_problem_seed_starts_at_boundary_start(monkeypatch):

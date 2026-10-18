@@ -496,8 +496,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         asymmetry=np.nan, adjoint=np.nan, seconds={})
         J, _, _, aux = self.linearize(x, aux, field)
         r_lin = np.asarray(self._rows(aux[0], aux[2], self._bundle(field)))
-        g = J[:, :x.size].T @ r_lin
-        return dict(J=J, r=r_lin, g=g, aux=aux, asymmetry=np.nan, adjoint=np.nan, g_adjoint=g, seconds={})
+        # the model's gradient is the exact (adjoint) one, as the quasi-Newton updates': at a least-squares minimum
+        # the rows do not vanish, so J^T r from the tangent Jacobian carries its error times |r|, which the soft
+        # modes' small curvature turns into steps far above what the rows resolve
+        g_f = self.gradient(x, aux, field, shift=shift)
+        return dict(J=J, r=r_lin, g=g_f, g_f=g_f, aux=aux, asymmetry=np.nan, adjoint=np.nan, g_adjoint=g_f, seconds={})
 
     def _newton(self, params, field, *, x0=None, max_iter=60, radius=None, callback=None, verbose=0, jacobian=None):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
@@ -543,7 +546,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return 0.5 * rows[:k] @ rows[:k]
 
         # The constraint rows are relative field (or current) mismatches; an equilibrium solved to FTOL determines
-        # its fields to about sqrt(FTOL) relative, so the rows are restored to that level, not further.
+        # its fields to about sqrt(FTOL) relative: the rows' resolution until their repeatability is measured.
         tol_c = float(np.sqrt(self.cfg.ftol))
 
         def violation(rows):
@@ -552,8 +555,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             return float(np.sum(np.maximum(np.abs(rows[k:]) - resolved_c(), 0.0)))
 
         def resolved_c():
-            """The constraint rows' resolution: sqrt(FTOL), or their measured repeatability where larger."""
-            return max(tol_c, 0.0 if noise_rows is None or not m else float(np.max(np.abs(noise_rows[k:]))))
+            """The constraint rows' resolution: their measured repeatability, sqrt(FTOL) before it is measured.
+
+            A band wider than the repeatability would leave the answer anywhere in it: restoring the rows inside
+            the band earns no merit, so the solve stops where its start's path entered the band."""
+            if noise_rows is None or not m:
+                return tol_c
+            return float(np.max(np.abs(noise_rows[k:])))
 
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
@@ -628,7 +636,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             # the Newton step, and the step the rows' measured noise alone produces (same model): the shared
             # convergence test (newton_step_converged) compares their sizes in metres
             step_n = S * (p + N @ (Q @ (-gq / w))) if w[0] > 0 else None
-            feasible = not m or float(np.max(np.abs(r[k:]))) <= resolved_c()
+            # feasible: the rows within their resolution, or their Newton step p below what the coordinates resolve
+            # (round-off: rows repeatable to the last digit are restored to that, not to zero)
+            feasible = not m or float(np.max(np.abs(r[k:]))) <= resolved_c() or self._step_converged(S * p, None, x)
             step_noise = None
             if step_n is not None and noise_rows is not None:
                 g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))

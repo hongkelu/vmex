@@ -1170,8 +1170,11 @@ class ThreeTermsFreeBoundaryModel:
         self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
             fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
             p_edge=0.0)[:2]
-        self._terms = jax.jit(lambda state, params, field: self._interface(
+        terms = jax.jit(lambda state, params, field: self._interface(
             state, im.runtime_from_params(params, cfg), field))
+        # every caller's state and parameters on the model's device (as the least-squares model's): a caller's
+        # parameters may sit on the default (GPU) device while the solve's state is on the model's
+        self._terms = lambda state, params, field: terms(*jax.device_put((state, params), cfg.device), field)
 
     def _make_normal_field(self, fixed, nphi, ntheta, digits, precision):
         """The traceable ``(B_out . n / |B_in|, area weights)`` of a state on the ``(nphi, ntheta)`` grid, as the

@@ -32,6 +32,7 @@ products in a preconditioned Lanczos subspace where they fail and to certify con
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, replace
 import time
 from typing import Any
@@ -182,7 +183,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
 
-    _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision")
+    _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision",
+                                                                                 "hessian_remat")
 
     @property
     def converged_ftol(self) -> float:
@@ -338,7 +340,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._tree_dot = tree_dot
         self._lagrange_parts = lagrange_parts
         self._multiplier = jax.jit(multiplier)
+        # Two programs of the same columns: the singular quadratures' scans stored, or checkpointed
+        # (vc.remat_scans: each chunk recomputed in the reverse sweep, the least memory).  Stored is faster (A100,
+        # 8x8, ns 51, 180 columns: QA 2.5 % 50.3 -> 40.2 s a Hessian, QH 2.5 % 82.1 -> 65.2 s; H the same to 2e-14)
+        # at a few GiB more (QH peak 3.9 -> 7.8 GiB): it is used until a block runs out of device memory
+        # (:attr:`hessian_remat`).  The flag is read when a program is traced, so each needs its own traced
+        # function (two jits of one function share its trace cache).
         self._hessian_columns = jax.jit(hessian_columns)
+        self._hessian_columns_remat = jax.jit(lambda *args: hessian_columns(*args))
+        self.hessian_remat = False
         self._project = jax.jit(project)
         self._last_second_order = None
 
@@ -416,15 +426,20 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         block = jnp.concatenate([block, jnp.zeros((width - block.shape[0],) + a.shape[1:], a.dtype)])
                     return block
 
+                remat = self.hessian_remat
+                program = self._hessian_columns_remat if remat else self._hessian_columns
                 try:
-                    with vc.remat_scans():
-                        block = np.asarray(self._hessian_columns(state, mask, params_x, field, shift_j, lam,
-                                                                 jax.tree.map(take, dz_cols),
-                                                                 jax.tree.map(take, dp_cols), dz_b, dp_b))
+                    with vc.remat_scans() if remat else contextlib.nullcontext():
+                        block = np.asarray(program(state, mask, params_x, field, shift_j, lam,
+                                                   jax.tree.map(take, dz_cols), jax.tree.map(take, dp_cols), dz_b,
+                                                   dp_b))
                 except jax.errors.JaxRuntimeError as error:
-                    if "RESOURCE_EXHAUSTED" not in str(error) or width <= 2:
+                    if "RESOURCE_EXHAUSTED" not in str(error) or (remat and width <= 2):
                         raise
-                    self.hessian_chunk = max(2, width // 2)
+                    if not remat:  # first the checkpointed scans (the same values), then narrower blocks
+                        self.hessian_remat = True
+                    else:
+                        self.hessian_chunk = max(2, width // 2)
                     continue
                 out.append(block[:count - start])
                 start += width

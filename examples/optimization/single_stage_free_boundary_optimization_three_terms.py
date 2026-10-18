@@ -38,7 +38,7 @@ and ``lpqa`` (the Landreman-Paul precise QA of Gil et al. 2026, coils from
 case block overrides them, and ``COIL_CASE_OVERRIDES`` (a JSON dict, e.g.
 ``'{"BOOTSTRAP_IN_SOLVE": false, "IOTA_CEILING": null}'``) overrides any of
 them last; ``COIL_POINT_ROWS``, ``PLASMA_SURFACE_ROWS``, ``SLSQP_RESUME_AFTER_REJECTION`` and
-``SEGMENT_SCALES`` false, with ``MERCIER_MARGIN`` 0.02, give the earlier campaign's (e3313c0f) formulation:
+``SEGMENT_SCALES`` false, with ``MERCIER_MARGIN`` 0.02 and ``REDL_GEOMETRY`` "full", give the earlier campaign's (e3313c0f) formulation:
 aggregate rows, identity-Hessian restarts. The finite-beta cases take ``--beta`` and ``--bootstrap``: the
 bootstrap current is Redl's for QA and QH and DKX's for QI. With
 ``BOOTSTRAP_IN_SOLVE`` (Redl) the current is solved with every equilibrium,
@@ -147,6 +147,10 @@ REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m,
 PRESSURE_SHAPE = (1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0)  # AM of p ~ (1 - s)(1 - s^5), the kinetic profiles' pressure
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+# Redl's geometry when the current is solved with the equilibrium (BOOTSTRAP_IN_SOLVE): "qs" the quasi-symmetric part
+# of |B| (simsopt's RedlGeomBoozer), "full" the full field on the solver grid, as the earlier campaign (e3313c0f).
+# They differ by the field's symmetry breaking: 10.6 % of CURTOR on the finite-beta QA campaign's step-0 boundary.
+REDL_GEOMETRY = "qs"
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
@@ -531,6 +535,7 @@ def bootstrap_input(inp, beta, device):
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
         model = ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+                                            bootstrap_geometry=REDL_GEOMETRY,
                                            fixed_boundary=True)
         current = model.solve_boundary(model.params0, None, max_nfev=30)
         state, _, params, _ = current["aux"]
@@ -1562,6 +1567,7 @@ def main(argv=None):
         quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
         **({"full_precision": True} if args.full_precision else {}),
+        bootstrap_geometry=REDL_GEOMETRY,
         # a restart on the run's own deck starts its seed solve at the saved step's boundary, near that step's root
         # (least squares too: its cold solve from the deck did not reach a far design's boundary, v8-qal-sl 10-17)
         **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)}

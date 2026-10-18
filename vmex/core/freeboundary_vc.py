@@ -905,6 +905,9 @@ class ThreeTermsFreeBoundaryModel:
         (:class:`~vmex.core.bootstrap.HalfMeshCurrent`).
     fixed_boundary:
         With ``bootstrap``: hold the boundary and solve only the current (no external field, no virtual casing).
+    bootstrap_geometry:
+        Redl's geometry, ``"qs"`` (default: the quasi-symmetric part of ``|B|``) or ``"full"`` (the full field on
+        the solver grid, as e3313c0f; :data:`~vmex.core.bootstrap.REDL_GEOMETRIES`).
 
     Attributes
     ----------
@@ -927,7 +930,7 @@ class ThreeTermsFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=None, ntheta=None, digits=vc.VC_DIGITS, chunk=8,
                  device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=None,
-                 fixed_boundary=False):
+                 fixed_boundary=False, bootstrap_geometry="qs"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
 
@@ -935,9 +938,11 @@ class ThreeTermsFreeBoundaryModel:
         # the deck and options this model was built from (rereferenced: the same model on another deck)
         self._source = (inp, dict(nphi=nphi, ntheta=ntheta, digits=digits, chunk=chunk, device=device,
                                   trial_ftol=trial_ftol, quadrature=quadrature, bootstrap=bootstrap,
-                                  bootstrap_helicity=bootstrap_helicity, fixed_boundary=fixed_boundary))
+                                  bootstrap_helicity=bootstrap_helicity, fixed_boundary=fixed_boundary,
+                                  bootstrap_geometry=bootstrap_geometry))
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
-        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity)
+        self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
+                                                                       bootstrap_geometry)
         self.fixed_boundary = bool(fixed_boundary)
         self.deck = None  # the finite-beta rows' deck response data (_interface_setup)
 

@@ -643,6 +643,72 @@ def _trig_extremum(c, sn, m, chi, sign, *, newton_steps: int = 8, candidates: in
     return sign * jnp.max(jnp.where(jnp.isfinite(top), sign * values, -jnp.inf))
 
 
+#: Redl's in-solve geometry (:func:`_redl_current_derivative`): ``"qs"`` the quasi-symmetric part of ``|B|``
+#: (:func:`_qs_profile_geometry`, simsopt's ``RedlGeomBoozer``; the default), ``"full"`` the full field on the
+#: solver grid (:func:`_full_field_geometry`, the definition before the QS geometry, e3313c0f).
+REDL_GEOMETRIES = ("qs", "full")
+
+
+def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) -> Array:
+    """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
+
+    ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant from the
+    grid extremum find the continuous one; its location is held fixed when differentiating (envelope theorem).
+    Where several nearly equal local maxima exist the grid extremum can switch between them, which makes the rows
+    non-smooth (the reason for :func:`_qs_profile_geometry`); kept as e3313c0f defined it for
+    :func:`_full_field_geometry`.
+    """
+    nsurf, nt, nz = modB.shape
+    F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
+    kt = jnp.asarray(np.fft.fftfreq(nt, 1.0 / nt), dtype=modB.dtype)[:, None]
+    kz = jnp.asarray(np.fft.fftfreq(nz, 1.0 / nz), dtype=modB.dtype)[None, :]
+
+    def value_grad_hess(Fs, t, z):
+        terms = Fs * jnp.exp(1j * (kt * t + kz * z))
+        b = jnp.real(jnp.sum(terms))
+        g = jnp.real(jnp.stack([jnp.sum(1j * kt * terms), jnp.sum(1j * kz * terms)]))
+        h = -jnp.real(jnp.array([[jnp.sum(kt * kt * terms), jnp.sum(kt * kz * terms)],
+                                 [jnp.sum(kt * kz * terms), jnp.sum(kz * kz * terms)]]))
+        return b, g, h
+
+    cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
+
+    def locate(Fs, Bs):
+        idx = jnp.argmax(sign * Bs)
+        t = 2 * jnp.pi * (idx // nz) / nt
+        z = 2 * jnp.pi * (idx % nz) / nz
+        for _ in range(newton_steps):
+            _, g, h = value_grad_hess(Fs, t, z)
+            step = -jnp.linalg.solve(h, g)
+            ok = jnp.all(jnp.isfinite(step)) & (jnp.linalg.det(h) > 0) & (sign * h[0, 0] < 0)
+            step = jnp.where(ok, jnp.clip(step, -cell, cell), 0.0)
+            t, z = t + step[0], z + step[1]
+        return t, z
+
+    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB.reshape(nsurf, -1)))
+    value = jax.vmap(lambda Fs, a, b: value_grad_hess(Fs, a, b)[0])(F, t, z)
+    grid = sign * jnp.max(sign * modB.reshape(nsurf, -1), axis=1)
+    return sign * jnp.maximum(sign * value, sign * grid)  # never inside the grid extremum
+
+
+def _full_field_geometry(hm: _HalfMeshFields, *, n_lambda: int) -> RedlGeometry:
+    """Redl's geometry from the full ``|B|`` on the solver's half-mesh grid (Jacobian weight ``|sqrt(g)|``), with
+    ``B_max`` / ``B_min`` of its trigonometric interpolant (:func:`_interpolant_extremum`): the in-solve definition
+    of e3313c0f, before the quasi-symmetric profile (:func:`_qs_profile_geometry`).  The two differ by the field's
+    symmetry breaking: on the finite-beta QA campaign's step-0 boundary (QS residual 0.12) the self-consistent
+    CURTOR by 10.6 %."""
+    modB, w = hm.bmag, jnp.abs(hm.w)
+    Vp = jnp.mean(w, axis=(1, 2))
+    fsa_B2 = jnp.mean(modB * modB * w, axis=(1, 2)) / Vp
+    fsa_1overB = jnp.mean(w / modB, axis=(1, 2)) / Vp
+    Bmax, Bmin = _interpolant_extremum(modB, 1.0), _interpolant_extremum(modB, -1.0)
+    f_t = _trapped_fraction_integral(modB, w, Vp, fsa_B2, Bmax, n_lambda)
+    return RedlGeometry(
+        surfaces=hm.s_half, iota=hm.iota, G=hm.G, I=hm.I, R=(hm.G + hm.iota * hm.I) * fsa_1overB,
+        epsilon=(Bmax - Bmin) / (Bmax + Bmin), f_t=f_t, fsa_B2=fsa_B2, fsa_1overB=fsa_1overB, Bmin=Bmin,
+        Bmax=Bmax, psi_edge=-hm.phi_edge, nfp=hm.nfp)
+
+
 def _qs_profile_geometry(state: SpectralState, rt: SolverRuntime, helicity_n: int, hm: _HalfMeshFields, *,
                          n_lambda: int, surfaces=None) -> RedlGeometry:
     """Redl's geometry from the quasi-symmetric part of ``|B|`` (:func:`_qs_boozer_harmonics`) on every half-mesh
@@ -1005,7 +1071,7 @@ def _jv_from_half(hm: _HalfMeshFields, surfaces) -> Array:
 
 
 def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: SpectralState, rt: SolverRuntime,
-                            *, n_lambda: int = N_LAMBDA) -> tuple[Array, Array]:
+                            *, n_lambda: int = N_LAMBDA, geometry: str = "qs") -> tuple[Array, Array]:
     """``(s, dI/ds)`` on the half mesh: the enclosed-current derivative [A] that makes ``<J.B>`` Redl's.
 
     The identity of :func:`vmec_j_dot_B`, ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` (``I`` the Boozer
@@ -1026,24 +1092,30 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
         A solved state and its runtime.
     n_lambda:
         Gauss-Legendre order of the trapped-fraction integral.
+    geometry:
+        Redl's geometry, one of :data:`REDL_GEOMETRIES`: ``"qs"`` (default) the quasi-symmetric part of ``|B|``,
+        ``"full"`` the full field on the solver grid (the earlier definition, to reproduce runs made with it).
 
     Returns
     -------
     tuple
         ``(s, dI/ds)``: the half-mesh surfaces and the current derivative there [A].
     """
-    return _redl_current_derivative(profiles, helicity_n, state, rt, n_lambda=n_lambda)[:2]
+    return _redl_current_derivative(profiles, helicity_n, state, rt, n_lambda=n_lambda, geometry=geometry)[:2]
 
 
-def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMBDA):
+def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMBDA, geometry="qs"):
     """:func:`redl_current_derivative`'s ``(s, dI/ds)``, with the Redl geometry and ``<J.B>`` behind them.
 
     The geometry is the quasi-symmetric part of ``|B|`` (:func:`_qs_profile_geometry`, simsopt's
     ``RedlGeomBoozer`` definition): smooth in the equilibrium, unlike the full field's ``B_max`` on the solver
     grid, whose nearly equal local maxima switch.  The Redl current differs from the full-field one by the
-    field's symmetry breaking."""
+    field's symmetry breaking.  ``geometry="full"``: the full field instead (:func:`_full_field_geometry`)."""
+    if geometry not in REDL_GEOMETRIES:
+        raise ValueError(f"Redl geometry must be one of {REDL_GEOMETRIES}, got {geometry!r}")
     hm = _half_mesh_fields(state, rt)
-    geom = _qs_profile_geometry(state, rt, redl_helicity(helicity_n), hm, n_lambda=n_lambda)
+    geom = (_full_field_geometry(hm, n_lambda=n_lambda) if geometry == "full"
+            else _qs_profile_geometry(state, rt, redl_helicity(helicity_n), hm, n_lambda=n_lambda))
     jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
     return hm.s_half, _current_derivative(hm, jr), geom, jr
 
@@ -1181,10 +1253,13 @@ class HalfMeshCurrent:
     knots, with a warning (:func:`~vmex.core.input.fit_aux_knots`).
     """
 
-    def __init__(self, deck, profiles, helicity_n):
+    def __init__(self, deck, profiles, helicity_n, geometry="qs"):
         from .profiles import current
 
         self.helicity_n = redl_helicity(helicity_n)  # QA or QH only, before any work
+        if geometry not in REDL_GEOMETRIES:
+            raise ValueError(f"Redl geometry must be one of {REDL_GEOMETRIES}, got {geometry!r}")
+        self.geometry = geometry  # Redl's geometry (_redl_current_derivative)
         if int(deck.ncurr) != 1:
             raise ValueError("a bootstrap current needs a prescribed current profile (ncurr = 1)")
         ns = int(np.asarray(deck.ns_array)[-1])
@@ -1241,7 +1316,8 @@ class HalfMeshCurrent:
 
     def target(self, state, runtime):
         """The axis knot's ``(2 R - 1) I'_Redl(s_1)``, then ``I'_Redl`` on the half-mesh surfaces (traceable)."""
-        _, target, geom, jr = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime)
+        _, target, geom, jr = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime,
+                                                       geometry=self.geometry)
         mean = near_axis_redl_mean(self.profiles, self.helicity_n, geom, jr)
         return jnp.concatenate([((2.0 * mean - 1.0) * target[0])[None], target])
 

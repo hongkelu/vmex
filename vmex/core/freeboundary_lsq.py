@@ -4,8 +4,14 @@ The second method of :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three
 ``method="galerkin"``, is the module :mod:`vmex.core.freeboundary_vc`'s square system on the deck's normal
 displacement).  It minimizes, subject to equality constraints, the area-weighted sum of squares on a grid of: in
 vacuum ``B_coil . n / B0``; at finite beta the jump ``(B_out - B_in) / B0`` (:func:`_jump_rows`: the normal
-field and the sheet current in one norm), with the interior edge field kept on VMEC's Galerkin band
-(:func:`_band_limited`).  ``G_plasma = G_coil`` (the net poloidal current) is a constraint.
+field and the sheet current in one norm), with the whole interior edge field (``interior_band=True``: only its part
+on VMEC's Galerkin band, :func:`_band_limited`).  ``G_plasma = G_coil`` (the net poloidal current) is a constraint.
+
+The jump is that of the whole interior field: the interface condition holds at every point of the boundary, and
+rows that see only the band let the solve leave its error outside the band, where no row looks.  On the old
+campaign's QA seed (2.5 %, 8x8, 10-18) the band-limited rows ended 2.3 mm (RMS) from the resolved (M 12) free
+boundary with an unfiltered jump of 2.1e-3; the full rows end 1.8 mm away with 1.7e-3, and lower pressure-balance
+and sheet-current terms (4.3e-4, 5.5e-4 against 6.3e-4, 7.3e-4).  At M 12 both agree to 0.13 mm.
 
 The unknowns are those of the Galerkin method: the displacement of the deck's boundary along its radial
 coordinate lines, one coefficient per boundary mode.  The boundary's Fourier coefficients themselves are not
@@ -98,15 +104,17 @@ class _Bundle:
 jax.tree_util.register_dataclass(_Bundle, data_fields=["field", "consts"], meta_fields=[])
 
 
-def _jump_rows(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, B0):
-    """``sqrt(area / A) (B_out - B_in) / B0`` (three Cartesian components a grid point), the interior edge field on
-    VMEC's Galerkin band (:func:`_band_limited`).  ``B_in . n = 0``, so its squares sum to the area mean of
+def _jump_rows(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, B0, band_limited=False):
+    """``sqrt(area / A) (B_out - B_in) / B0`` (three Cartesian components a grid point), with the whole interior edge
+    field, or with ``band_limited`` its part on VMEC's Galerkin band (:func:`_band_limited`).  ``B_in . n = 0``, so
+    its squares sum to the area mean of
     ``(B_out . n)^2 + |n x (B_out - B_in)|^2`` over ``B0^2``: the normal field and the sheet current in one norm,
     without relative weights.  With zero edge pressure the pressure balance ``|B_out| = |B_in|`` follows from
     ``B_out = B_in``, so it is not a row (it is reported, :meth:`LeastSquaresFreeBoundaryModel.boundary_residual`).
     """
-    data = _band_limited(vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta),
-                         int(inp.mpol), int(inp.ntor))
+    data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
+    if band_limited:
+        data = _band_limited(data, int(inp.mpol), int(inp.ntor))
     interface = vc.PlasmaVacuumInterface.from_surface_data(data, p_edge=0.0, digits=digits, precision=precision)
     jump = interface.total_B_out(external_field) - jnp.asarray(data.B_total)
     return (jnp.sqrt(interface.weights)[None] * jump / B0).ravel()
@@ -139,8 +147,13 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     ``hessian_chunk`` bounds the second-derivative columns per program call (default and least: 2).
     """
 
-    def __init__(self, inp: VmecInput, *, hessian_chunk=None, **options):
+    #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
+    interior_band = False
+
+    def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, **options):
+        self.interior_band = bool(interior_band)  # read when the rows are traced (set before the base builds them)
         super().__init__(inp, **options)
+        self._source[1]["interior_band"] = self.interior_band  # a re-referenced model is built with the same rows
         # Hessian columns a program call: by default two, the least vmex.core.loops allows; wider blocks take
         # several times the device memory for no speed.
         self.hessian_chunk = max(2, int(hessian_chunk or 2))
@@ -192,7 +205,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 bn = jnp.sum(B * jnp.asarray(data.normal), axis=0) / consts["B0"]
                 return jnp.concatenate([(jnp.sqrt(area / jnp.sum(area)) * bn).ravel(), current])
             jump = _jump_rows(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits,
-                              precision=precision, B0=consts["B0"])
+                              precision=precision, B0=consts["B0"], band_limited=self.interior_band)
             return jnp.concatenate([jump, current])
 
         self.interface_rows = interface_rows

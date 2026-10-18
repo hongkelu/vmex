@@ -37,7 +37,9 @@ and ``lpqa`` (the Landreman-Paul precise QA of Gil et al. 2026, coils from
 ``--coils``). The constants of the "cases" block below are ellipse5's; each
 case block overrides them, and ``COIL_CASE_OVERRIDES`` (a JSON dict, e.g.
 ``'{"BOOTSTRAP_IN_SOLVE": false, "IOTA_CEILING": null}'``) overrides any of
-them last. The finite-beta cases take ``--beta`` and ``--bootstrap``: the
+them last; ``COIL_POINT_ROWS``, ``PLASMA_SURFACE_ROWS``, ``SLSQP_RESUME_AFTER_REJECTION`` and
+``SEGMENT_SCALES`` false, with ``MERCIER_MARGIN`` 0.02, give the earlier campaign's (e3313c0f) formulation:
+aggregate rows, identity-Hessian restarts. The finite-beta cases take ``--beta`` and ``--bootstrap``: the
 bootstrap current is Redl's for QA and QH and DKX's for QI. With
 ``BOOTSTRAP_IN_SOLVE`` (Redl) the current is solved with every equilibrium,
 Redl-consistent on every half-grid surface; otherwise its spline values and
@@ -205,7 +207,29 @@ FORCE_B_REF, FORCE_NORMALIZE_GRID = None, (32, 32)
 # ideal-ballooning eigenvalue (> 0 unstable; vmex.core.stability, the COBRA analogue) of every sampled field line on
 # the BALLOONING_S surfaces is held below it.
 MERCIER_FLOOR, STABILITY_MIN_S = None, 0.2
+# added to MERCIER_FLOOR, in the Mercier rows' units: SLSQP holds a row only to its tolerance, and a margin keeps DMerc
+# strictly positive (the earlier campaign, e3313c0f: 0.02 on its one min-DMerc row)
+MERCIER_MARGIN = 0.0
 BALLOONING_LIMIT, BALLOONING_S = None, (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)
+# The earlier campaign's formulation (e3313c0f, "three-terms 1"): each switch False reproduces one of its choices, so
+# that a run differs from it only in the free-boundary solve.
+# - COIL_POINT_ROWS: False gives one coil row per coil and kind, the max or min over its points (coil_inequalities),
+#   instead of one per point (coil_point_rows): the same feasible set, nonsmooth where the active point switches.
+# - PLASMA_SURFACE_ROWS: False gives one row per plasma quantity -- min |iota|, max |iota|, min vacuum |iota| and min
+#   DMerc itself (unit 1, bound MERCIER_FLOOR + MERCIER_MARGIN) over the same surfaces -- instead of one per surface,
+#   with PHIEDGE^2 DMerc in units of its largest start magnitude. Ballooning stays per field line (the campaign had
+#   no ballooning row).
+# - SLSQP_RESUME_AFTER_REJECTION: False restarts SLSQP after a rejected trial from the accepted point with an
+#   identity Hessian, as the campaign's process did, instead of continuing its quasi-Newton state. The saved state is
+#   then deleted, so a --restart from that point also starts from the identity.
+# - SEGMENT_SCALES: False makes a --restart keep the design-coordinate scales of the run it continues (its
+#   scales.npy). Otherwise the scales come from the restart's own start, and the coil-current scales follow the
+#   restart's currents. Keeping them gives a chain of 2 h segments the coordinates of the campaign's single process,
+#   whose chart was fixed at its seed.
+COIL_POINT_ROWS = True
+PLASMA_SURFACE_ROWS = True
+SLSQP_RESUME_AFTER_REJECTION = True
+SEGMENT_SCALES = True
 # set (Galerkin, least squares): an upper bound on the RMS of B.n/|B| outside the boundary's modes, the part the truncated boundary
 # cannot cancel (fvc.NORMAL_OUTSIDE_MODES); unbounded, the 8x8 optimizer drifts to coils whose free boundary a 12x12
 # boundary does not reach (qac8 10-17: 8x8 B.n 2.8e-3/4.1e-3, no 12x12 root). The validation's B.n tolerance (5e-4)
@@ -1242,6 +1266,8 @@ def coil_constraint(coils_from_x, normalization_points, columns):
     from vmex.core.loops import map_columns
 
     def rows(x):
+        if not COIL_POINT_ROWS:  # one row per coil and kind (a max / min over points), as the earlier campaign
+            return coil_inequalities(coils_from_x(x), normalization_points)
         return coil_point_rows(coils_from_x(x), normalization_points)
 
     fun = jax.jit(rows)
@@ -1449,6 +1475,15 @@ def main(argv=None):
     chart = CoilChart(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
+    if not SEGMENT_SCALES and args.restart is not None:  # the coordinates of the run this one continues
+        saved = args.restart / "scales.npy"
+        run_scales = np.load(saved) if saved.exists() else None
+        if run_scales is not None and run_scales.shape == chart.scales.shape:
+            chart.scales = run_scales
+        else:
+            print(f"[restart] no scales of the continued run in {saved} for these coordinates: this segment's "
+                  "scales", flush=True)
+    np.save(out / "scales.npy", chart.scales)  # the run's design-coordinate scales, which SEGMENT_SCALES=False keeps
     if restart_wout is not None:  # the run's last design: PHIEDGE (and a design current) start where it stopped
         if FREE_PHIEDGE:
             chart.x0[0] = float(restart_wout.phi[-1])
@@ -1466,10 +1501,16 @@ def main(argv=None):
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     # iota floors and ceiling hold on every surface, one row each: a minimum over surfaces switches surface where two
-    # are nearly equal, and no optimizer's linearization of it holds across that switch (the same feasible set)
-    ceiling = (abs_iota,) if IOTA_CEILING else ()
+    # are nearly equal, and no optimizer's linearization of it holds across that switch (the same feasible set).
+    # PLASMA_SURFACE_ROWS False: the earlier campaign's single min / max rows instead.
+    iota_rows = abs_iota if PLASMA_SURFACE_ROWS else min_abs_iota
+    ceiling = (abs_iota if PLASMA_SURFACE_ROWS else max_abs_iota,) if IOTA_CEILING else ()
     vacuum = vacuum_iota(inp)
-    vacuum_floor = (vacuum,) if VACUUM_IOTA_FLOOR else ()
+
+    def min_vacuum_iota(state, runtime):
+        return jnp.min(vacuum(state, runtime))
+
+    vacuum_floor = (vacuum if PLASMA_SURFACE_ROWS else min_vacuum_iota,) if VACUUM_IOTA_FLOOR else ()
     # stability rows, one per surface (Mercier) or sampled field line (ballooning), as the iota rows
     phiedge2 = float(inp.phiedge) ** 2
     s_full = np.linspace(0.0, 1.0, int(RESOLUTION[2]))
@@ -1477,7 +1518,8 @@ def main(argv=None):
     ballooning_surfaces = [min(max(round(s * (RESOLUTION[2] - 1)), 2), RESOLUTION[2] - 2) for s in BALLOONING_S]
 
     def mercier(state, runtime):
-        return phiedge2 * opt.d_merc_state(state, runtime)[mercier_surfaces]
+        d_merc = opt.d_merc_state(state, runtime)[mercier_surfaces]
+        return phiedge2 * d_merc if PLASMA_SURFACE_ROWS else jnp.min(d_merc)
 
     def ballooning(state, runtime):
         from vmex.core.stability import ballooning_lambda
@@ -1532,7 +1574,7 @@ def main(argv=None):
     problem = opt.FreeBoundaryProblem.from_loss(
         replace(inp, lfreeb=True, mgrid_file="direct ESSOS field") if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
-        quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
+        quantities=(iota_rows, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
         parameter_quantities=(clearance, aspect, *[quantity for _, quantity, _ in bn_rows]),
         method=args.free_boundary, **three_terms)
@@ -1617,11 +1659,11 @@ def main(argv=None):
         return common_residual(x) if nestor else problem.boundary_residual(x)
 
     state0, runtime0 = state_runtime(problem.accepted.parameters)  # the per-surface rows' counts
-    n_iota = int(np.size(abs_iota(state0, runtime0)))
-    n_vacuum = int(np.size(vacuum(state0, runtime0))) if vacuum_floor else 0
-    n_mercier = mercier_surfaces.size if MERCIER_FLOOR is not None else 0
+    n_iota = int(np.size(iota_rows(state0, runtime0)))
+    n_vacuum = int(np.size(vacuum_floor[0](state0, runtime0))) if vacuum_floor else 0
+    n_mercier = int(np.size(mercier(state0, runtime0))) if MERCIER_FLOOR is not None else 0
     n_ballooning = int(np.size(ballooning(state0, runtime0))) if BALLOONING_LIMIT is not None else 0
-    mercier_unit = float(np.max(np.abs(mercier(state0, runtime0)))) if n_mercier else 1.0
+    mercier_unit = float(np.max(np.abs(mercier(state0, runtime0)))) if n_mercier and PLASMA_SURFACE_ROWS else 1.0
     ballooning_unit = float(np.max(np.abs(ballooning(state0, runtime0)))) if n_ballooning else 1.0
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
@@ -1634,8 +1676,8 @@ def main(argv=None):
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] * n_iota if ceiling else []),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] * n_vacuum if vacuum_floor else []),
-        # stability rows in units of their largest magnitude at the start
-        *[(MERCIER_FLOOR, np.inf, mercier_unit)] * n_mercier,
+        # stability rows in units of their largest magnitude at the start (one min-DMerc row: unit 1, as the campaign)
+        *[(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, mercier_unit)] * n_mercier,
         *[(-np.inf, BALLOONING_LIMIT, ballooning_unit)] * n_ballooning,
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
@@ -1738,7 +1780,8 @@ def main(argv=None):
               f"clearance={row['coil_surface_distance_m']:.4f} "
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
-              + (f"PHIEDGE^2 DMerc min={row['mercier_min']:+.3e} " if n_mercier else "")
+              + (f"{'PHIEDGE^2 ' if PLASMA_SURFACE_ROWS else ''}DMerc min={row['mercier_min']:+.3e} "
+                 if n_mercier else "")
               + (f"ballooning max={row['ballooning_max']:+.2e} " if n_ballooning else "")
               + (f"B.n outside modes={row['bn_outside_modes']:.2e} " if BN_OUTSIDE_LIMIT else "")
               + (f"B.n inside modes={row['bn_inside_modes']:.2e} " if BN_INSIDE_LIMIT else "")
@@ -1857,6 +1900,10 @@ def main(argv=None):
             if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                     or problem.accepted_step >= args.steps):
                 break
+            if not SLSQP_RESUME_AFTER_REJECTION:  # the campaign's restart: an identity Hessian, now and on --restart
+                resume = None
+                slsqp_latest.clear()
+                (out / "slsqp_state.npz").unlink(missing_ok=True)
     if args.free_boundary == "least_squares" and not args.full_precision:
         # the last design re-solved at full precision (the measured repeatability alone, the deck's FTOL): the run's
         # answer is a root unique per resolution, whatever floor its trials converged to

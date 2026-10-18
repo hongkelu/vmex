@@ -210,3 +210,25 @@ def test_problem_entry_and_finite_beta_rows():
     rows, aux = model.evaluate(np.array(model.x0), model.params0,
                                _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json"), tight=True)
     assert np.all(np.isfinite(rows)) and rows.size == 3 * 16 * 16 + model.n_constraint_rows
+
+
+def test_jump_rows_use_the_whole_interior_field():
+    """The finite-beta rows are the jump of the whole interior edge field (``interior_band=False``, the default):
+    equal to :func:`_jump_rows` without the band limit, different from the band-limited rows (``interior_band``),
+    and a re-referenced model keeps the setting."""
+    grid = dict(nphi=16, ntheta=16, quadrature=(64, 32))
+    beta = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 13), lfreeb=False)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    rows = {}
+    for band in (False, True):
+        model = lsq.LeastSquaresFreeBoundaryModel(beta, interior_band=band, **grid)
+        r, aux = model.evaluate(np.array(model.x0), model.params0, field, tight=True)
+        rows[band] = np.asarray(r)[:-model.n_constraint_rows]
+        state, _, params, _ = aux
+        direct = lsq._jump_rows(model.fixed, state, field, runtime=model._im.runtime_from_params(params, model.cfg),
+                                nphi=grid["nphi"], ntheta=grid["ntheta"], digits=model.digits,
+                                precision=model.precision, B0=model._consts["B0"], band_limited=band)
+        np.testing.assert_allclose(rows[band], np.asarray(direct), rtol=1e-10, atol=1e-14)
+        assert model.rereferenced(np.array(model.x0)).interior_band is band
+    # the band limit removes the interior field's out-of-band part: the rows differ
+    assert np.max(np.abs(rows[False] - rows[True])) > 1e-6 * np.max(np.abs(rows[False]))

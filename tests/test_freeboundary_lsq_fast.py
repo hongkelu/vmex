@@ -232,3 +232,40 @@ def test_jump_rows_use_the_whole_interior_field():
         assert model.rereferenced(np.array(model.x0)).interior_band is band
     # the band limit removes the interior field's out-of-band part: the rows differ
     assert np.max(np.abs(rows[False] - rows[True])) > 1e-6 * np.max(np.abs(rows[False]))
+
+
+def test_hessian_falls_back_to_checkpointed_scans_then_narrower_blocks_on_device_memory():
+    """The exact Hessian's blocks run with the singular quadratures' scans stored; a block that runs out of device
+    memory is repeated with them checkpointed (the same columns), and only then with narrower blocks."""
+    n = 6
+    model = lsq.LeastSquaresFreeBoundaryModel.__new__(lsq.LeastSquaresFreeBoundaryModel)
+    model.x0, model.n_constraint_rows, model.hessian_chunk, model.hessian_remat = np.zeros(n), 0, 4, False
+    model._last_second_order = None
+    H = np.arange(n * n, dtype=float).reshape(n, n)
+    H = H + H.T
+    tangents = {"z": jnp.eye(n)}
+    model.linearize = lambda x, aux, field, extra=None: (np.eye(n), tangents, tangents, (None, None, None, None))
+    model._rows = lambda state, params, field: np.ones(n)
+    model._multiplier = lambda *a: (None, None, 0.0)
+    model._project = lambda dp, grad: np.zeros(n)
+    calls = []
+
+    def program(remat):
+        def run(state, mask, params, field, shift, lam, dz_cols, dp_cols, dz_b, dp_b):
+            width = dz_cols["z"].shape[0]
+            calls.append((remat, width))
+            if len(calls) <= 2:  # the stored scans, then the first checkpointed width, run out of memory
+                raise jax.errors.JaxRuntimeError("RESOURCE_EXHAUSTED: out of memory")
+            return np.asarray(dz_cols["z"]) @ H
+        return run
+
+    model._hessian_columns, model._hessian_columns_remat = program(False), program(True)
+    so = model.second_order(np.zeros(n), (None, None, None, None), None)
+    assert calls[:3] == [(False, 4), (True, 4), (True, 2)]
+    assert model.hessian_remat and model.hessian_chunk == 2
+    assert np.allclose(so["H"], H)
+    model.hessian_chunk, calls[:] = 2, [(None, 0)] * 2  # at the narrowest checkpointed block an error is raised
+    model._last_second_order = None
+    model._hessian_columns_remat = lambda *a: (_ for _ in ()).throw(jax.errors.JaxRuntimeError("RESOURCE_EXHAUSTED"))
+    with pytest.raises(jax.errors.JaxRuntimeError):
+        model.second_order(np.ones(n), (None, None, None, None), None)

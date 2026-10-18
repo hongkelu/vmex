@@ -49,6 +49,7 @@
     ["tests/test_virtual_casing_api.py", "virtual-casing", "unit", "fast", "cpu", "none", "none", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_virtual_casing_physics.py", "virtual-casing", "ad", "medium", "cpu-gpu", "reference-nc", "fd", ["pr-parity-a1", "optional", "full-core-fb-a"]],
     ["tests/test_free_boundary_seed_example.py", "free-boundary", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-core-fb-a"]],
+    ["tests/test_three_terms_seed_dkx_current.py", "free-boundary", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_freeboundary_vc.py", "free-boundary", "integration", "slow", "cpu-gpu", "none", "analytic", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_freeboundary_lsq.py", "free-boundary", "ad", "campaign", "cpu-gpu", "none", "fd", ["pr-parity-a1", "full-core-fb-a"]],
     ["tests/test_freeboundary_lsq_fast.py", "free-boundary", "ad", "medium", "cpu-gpu", "none", "fd", ["pr-parity-a1", "full-core-fb-a"]],

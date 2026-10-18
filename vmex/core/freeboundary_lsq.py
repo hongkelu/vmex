@@ -742,6 +742,24 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                           + (f"[cost {cost_of(got[0]):.10e} penalty {penalty:.1e} violation {violation(got[0]):.1e}] "
                              if m and got is not None else "")
                           + f"({time.perf_counter() - started:.0f} s)", flush=True)
+                for _ in range(3 if m else 0):
+                    # the constraint rows' own second-order correction (the Maratos effect): along the soft
+                    # directions of a finite-beta boundary the net-current and bootstrap rows curve, so a step that
+                    # gains the interface cost the model predicts leaves a violation of second order that the l1 merit
+                    # weighs above the gain (ctlqa 10-18, the first design step's trial: radius 0.02 .. 0.1 against
+                    # Newton steps of 2.3, a merit rejection every other model).  Restoring the rows from the trial,
+                    # x_t - Jc^+ r_c(x_t), moves the interface cost only at first order in that violation.
+                    if got is None or rho > 0.75 or violation(got[0]) <= violation(r):
+                        break
+                    restored, got_r = trial(x_new - S * np.linalg.lstsq(Jc, got[0][k:], rcond=None)[0])
+                    nfev += 1
+                    if got_r is None or merit_of(got_r[0]) >= cost_new:
+                        break
+                    x_new, got, cost_new = restored, got_r, merit_of(got_r[0])
+                    rho = (merit - cost_new) / predicted if predicted > 0 else -np.inf
+                    if verbose:
+                        print(f"  constraint restoration: cost {cost_new:.10e} rho {rho:.3f} "
+                              f"[violation {violation(got[0]):.1e}]", flush=True)
                 if got is not None and rho <= 0.75:
                     # a step that is not "very successful" by the radius update's own test: a second-order
                     # correction from the residual at the trial point with the Jacobian at hand, x_t - (J N)^+ r_t

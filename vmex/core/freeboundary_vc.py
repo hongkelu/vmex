@@ -589,6 +589,7 @@ def solve_free_boundary_three_terms(
     bootstrap_helicity: int | None = None,
     previous=None,
     method: str = "galerkin",
+    method_options: dict | None = None,
     verbose: int = 0,
 ):
     """Free-boundary equilibrium of ``inp`` by the interface conditions of the module docstring.
@@ -629,8 +630,12 @@ def solve_free_boundary_three_terms(
         An earlier result for the same deck (typically before a change of the external field): the solve starts
         from its boundary, Jacobian and model, and compiles nothing new.
     method:
-        ``"galerkin"`` (the square system above, the faster) or ``"least_squares"``
-        (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`, the same keywords and result).
+        ``"galerkin"`` (the square system above, the faster), ``"least_squares"``
+        (:func:`~vmex.core.freeboundary_lsq.solve_free_boundary_least_squares`, the same keywords and result) or
+        ``"least_squares_rz"`` (:func:`~vmex.core.freeboundary_lsq_rz.solve_free_boundary_least_squares_rz`: the
+        least squares on the boundary's Fourier coefficients, the three interface conditions as separate rows).
+    method_options:
+        Keywords of the method's own (``least_squares_rz``: ``gauge``, ``gauge_weight``).
     verbose:
         Print progress when nonzero.
 
@@ -655,16 +660,21 @@ def solve_free_boundary_three_terms(
     from .implicit import input_with_params
     from .optimize import solve_equilibrium
 
-    if method == "least_squares":
-        from .freeboundary_lsq import solve_free_boundary_least_squares
+    if method in ("least_squares", "least_squares_rz"):
+        if method == "least_squares":
+            from .freeboundary_lsq import solve_free_boundary_least_squares as solve
+        else:
+            from .freeboundary_lsq_rz import solve_free_boundary_least_squares_rz as solve
 
-        return solve_free_boundary_least_squares(
+        return solve(
             inp, external_field=external_field, mgrid_path=mgrid_path, initial_boundary=initial_boundary,
             max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, max_nfev=max_nfev, quadrature=quadrature,
             trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
-            previous=previous, verbose=verbose)
+            previous=previous, verbose=verbose, **(method_options or {}))
+    if method_options:
+        raise ValueError(f"method {method!r} takes no method_options")
     if method != "galerkin":
-        raise ValueError(f"method must be 'galerkin' or 'least_squares', got {method!r}")
+        raise ValueError(f"method must be 'galerkin', 'least_squares' or 'least_squares_rz', got {method!r}")
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
     _check_edge_pressure(inp)
@@ -1602,14 +1612,18 @@ class ThreeTermsFreeBoundaryModel:
         solved = self.solve(params_x, None if at_deck else self.seed[0], tight=True)
         return None if solved is None else self.rows_at((*solved, params_x, True), field)
 
+    def _boundary_rms(self, step):
+        """RMS over the angles of the boundary's displacement (metres) for a step of the boundary coordinates:
+        :func:`displacement_rms` of the normal displacement on :attr:`boundary_modes`."""
+        return displacement_rms(step, self.boundary_modes)
+
     def _step_converged(self, step, noise_step, x):
         """:func:`newton_step_converged` for the boundary part of ``step`` (metres, against ``R0``) and for the
         bootstrap-current part (against the current values ``x``); ``noise_step`` is the step of the measured
         row noise, or ``None`` before it is measured."""
         nb = self.n_boundary
         noise = np.zeros_like(step) if noise_step is None else noise_step
-        ok = nb == 0 or newton_step_converged(displacement_rms(step[:nb], self.boundary_modes),
-                                              displacement_rms(noise[:nb], self.boundary_modes), self.R0)
+        ok = nb == 0 or newton_step_converged(self._boundary_rms(step[:nb]), self._boundary_rms(noise[:nb]), self.R0)
         if step.size > nb:  # the bootstrap current: plain RMS of its knot values
             rms = lambda v: float(np.sqrt(np.mean(np.square(v))))  # noqa: E731
             ok = ok and newton_step_converged(rms(step[nb:]), rms(noise[nb:]), rms(x[nb:]))
@@ -1758,7 +1772,7 @@ class ThreeTermsFreeBoundaryModel:
                 converged = self._step_converged(p, _newton_step(J, noise), x)
         if not converged and used < budget:
             nb = self.n_boundary
-            length = displacement_rms(p[:nb], self.boundary_modes) if nb else 0.0
+            length = self._boundary_rms(p[:nb]) if nb else 0.0
             q = p * (np.sqrt(np.finfo(float).eps) * self.R0 / length) if length > 0.0 else 0.0 * p
             trial = self.evaluate(x + q, params, field, tight=True)
             used += 1

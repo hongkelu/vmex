@@ -47,7 +47,7 @@ from .loops import map_columns
 from .errors import TrialRejected
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
                               _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
-                              _net_current, displacement_rms, summarize_boundary_residual)
+                              _net_current, summarize_boundary_residual)
 from .input import VmecInput
 
 
@@ -779,7 +779,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if step_n is not None and noise_rows is not None:
                 g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))
                 step_noise = S * (N @ (Q @ ((Q.T @ g_noise) / w)))
-            moved = (displacement_rms(step_n[:self.n_boundary], self.boundary_modes)
+            moved = (self._boundary_rms(step_n[:self.n_boundary])
                      if step_n is not None and self.n_boundary else np.inf)
             history.append([cost, float(np.linalg.norm(gr)), w[0], w[-1], w_gn[0], w_gn[-1], decrement,
                             float(np.linalg.norm(so["g"] - so["g_adjoint"]) / max(np.linalg.norm(so["g"]), 1e-300))
@@ -986,6 +986,9 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
     "three_terms", three_terms_options=dict(method="least_squares", ...))``.
     """
 
+    #: the boundary model of every trial (the RZ least squares sets its own)
+    model_class = LeastSquaresFreeBoundaryModel
+
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_max_nfev=100, boundary_start=None, **model_options):
@@ -1001,7 +1004,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
-        model = LeastSquaresFreeBoundaryModel(inp, **model_options)
+        model = cls.model_class(inp, **model_options)
         if boundary_start is None or (isinstance(boundary_start, np.ndarray)
                                       and boundary_start.shape == np.shape(model.x0)):
             start = boundary_start
@@ -1276,7 +1279,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
                                       max_nfev: int = 60, quadrature: tuple[int, int] | None = None,
                                       trial_ftol: float | None = None, chunk: int = 8, bootstrap=None,
                                       bootstrap_helicity: int | None = None, previous=None,
-                                      verbose: int = 0):
+                                      verbose: int = 0, model_class=None, **model_options):
     """Solve the least-squares free boundary of a deck.
 
     This is :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` with ``method="least_squares"``,
@@ -1299,6 +1302,9 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
         :class:`LeastSquaresFreeBoundaryModel` options.
     verbose
         Print every model (``2``: also the weakest direction).
+    model_class, model_options
+        The model (default :class:`LeastSquaresFreeBoundaryModel`; the RZ least squares passes its own) and its
+        further keywords.
 
     Returns
     -------
@@ -1331,13 +1337,13 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
     if previous is not None:
         model, x0 = previous.model, previous.x
     else:
-        model = LeastSquaresFreeBoundaryModel(
+        model = (model_class or LeastSquaresFreeBoundaryModel)(
             inp, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity)
+            bootstrap_helicity=bootstrap_helicity, **model_options)
         x0 = None
         if initial_boundary is not None:
-            x0 = np.r_[model.displacement_of(initial_boundary), model.x0[model.n_boundary:]]
+            x0 = model.displacement_of(initial_boundary)  # every coordinate: the current values are the deck's
     initial = model.boundary_residual(model.seed[0], model.params0, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, max_iter=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]

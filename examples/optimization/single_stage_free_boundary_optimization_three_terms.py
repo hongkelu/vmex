@@ -9,7 +9,8 @@ plasma. Every trial equilibrium is the free boundary that satisfies all three
 plasma-vacuum interface conditions, B.n = 0, pressure balance and no sheet
 current (``FreeBoundaryProblem.from_loss(..., method="galerkin")``,
 :class:`vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`; ``--free-boundary least_squares`` solves the
-same conditions by least squares, ``--free-boundary nestor`` is classical VMEC + NESTOR, B.n = 0 only). Trial
+same conditions by least squares, ``least_squares_rz`` by least squares on the boundary's Fourier coefficients
+(:mod:`vmex.core.freeboundary_lsq_rz`), ``--free-boundary nestor`` is classical VMEC + NESTOR, B.n = 0 only). Trial
 boundaries are warm-started, design gradients come from the implicit function
 theorem of the boundary fit, and nothing recompiles when the coils or the
 plasma parameters change. The loss is (1/2) |r|^2 of the target residual r
@@ -1272,8 +1273,9 @@ def parse_args(argv=None):
                              "(a run saved before re-referencing; the cold solve from a far deck may not converge)")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
-    parser.add_argument("--free-boundary", choices=("galerkin", "least_squares", "nestor"), default="galerkin",
-                        help="free-boundary method: the three-terms Galerkin or least-squares solve, or VMEC + NESTOR")
+    parser.add_argument("--free-boundary", choices=("galerkin", "least_squares", "least_squares_rz", "nestor"),
+                        default="galerkin", help="free-boundary method: the three-terms Galerkin or least-squares "
+                        "solve (least_squares_rz: on the boundary's Fourier coefficients), or VMEC + NESTOR")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
     parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
     parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
@@ -1511,8 +1513,8 @@ def main(argv=None):
 
     nestor = args.free_boundary == "nestor"
     if (BN_OUTSIDE_LIMIT or BN_INSIDE_LIMIT) and nestor:
-        raise SystemExit("BN_OUTSIDE_LIMIT / BN_INSIDE_LIMIT bound the three-terms interface's B.n: --free-boundary galerkin "
-                         "or least_squares")
+        raise SystemExit("BN_OUTSIDE_LIMIT / BN_INSIDE_LIMIT bound the three-terms interface's B.n: --free-boundary galerkin, "
+                         "least_squares or least_squares_rz")
     if nestor and current_in_solve:
         raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
                          "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")
@@ -1530,7 +1532,7 @@ def main(argv=None):
         # a restart on the run's own deck starts its seed solve at the saved step's boundary, near that step's root
         # (least squares too: its cold solve from the deck did not reach a far design's boundary, v8-qal-sl 10-17)
         **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)}
-           if args.free_boundary in ("galerkin", "least_squares")
+           if args.free_boundary in ("galerkin", "least_squares", "least_squares_rz")
            and restart_wout is not None and not args.reference_from_wout else {})))
     from vmex.core.freeboundary_vc import NORMAL_INSIDE_MODES, NORMAL_OUTSIDE_MODES
     # the bounded B.n quantities end the parameter quantities: (outside the modes,) (on them,)

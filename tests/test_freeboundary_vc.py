@@ -1439,8 +1439,8 @@ def test_band_continuation_newton_damps_and_trials_do_not(monkeypatch):
 
 
 def test_rereferenced_model_keeps_its_class_and_settings(monkeypatch):
-    """A least-squares model re-referenced stays a least-squares model, with its Hessian chunk and its problem's
-    converged-trial rule (a Galerkin model in its place solved the LSQ problem's trial by the other method, and the
+    """A least-squares model re-referenced stays a least-squares model, with its Hessian chunk, its problem's
+    converged-trial rule and the trial's certificate directions (a Galerkin model in its place solved the LSQ problem's trial by the other method, and the
     LSQ gradient then failed: 'ThreeTermsFreeBoundaryModel' object has no attribute 'second_order')."""
     from vmex.core.freeboundary_lsq import LeastSquaresFreeBoundaryModel
 
@@ -1452,8 +1452,9 @@ def test_rereferenced_model_keeps_its_class_and_settings(monkeypatch):
             self.x0 = np.zeros(3)
 
     model = Probe.__new__(Probe)
+    extra = lambda params: None  # noqa: E731  (the problem's plasma directions, set during its trial)
     model.__dict__.update(fixed_boundary=False, max_mode=4, n_boundary=2, params0=None, hessian_chunk=6,
-                          require_converged=True,
+                          require_converged=True, certificate_extra=extra,
                           _source=(types.SimpleNamespace(rbc=np.zeros((1, 1)), zbs=np.zeros((1, 1))), dict(nphi=8)))
     model.with_boundary = lambda params, x: types.SimpleNamespace(rbc=np.ones((1, 1)), zbs=np.ones((1, 1)))
     monkeypatch.setattr(fvc, "replace", lambda inp, **changes: types.SimpleNamespace(**{**vars(inp), **changes}))
@@ -1461,7 +1462,7 @@ def test_rereferenced_model_keeps_its_class_and_settings(monkeypatch):
     assert type(other) is Probe
     assert built[0][1] == dict(max_mode=4, nphi=8)
     np.testing.assert_array_equal(built[0][0].rbc, np.ones((1, 1)))
-    assert other.hessian_chunk == 6 and other.require_converged is True
+    assert other.hessian_chunk == 6 and other.require_converged is True and other.certificate_extra is extra
     np.testing.assert_array_equal(other.x0, [0.0, 0.0, 7.0])
 
 

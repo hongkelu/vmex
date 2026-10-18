@@ -1050,8 +1050,10 @@ class ThreeTermsFreeBoundaryModel:
         return other
 
     #: instance settings a re-referenced model keeps (set after construction by a subclass or its problem: the
-    #: least-squares model's Hessian chunk, and its problem's rule that an unconverged trial fails)
-    _REREFERENCE_CARRIED = ("hessian_chunk", "require_converged")
+    #: least-squares model's Hessian chunk, its problem's rule that an unconverged trial fails, and the plasma
+    #: directions whose mixed columns the trial's certificate builds for the design gradient to reuse -- the
+    #: re-reference runs inside the problem's trial, after it set them)
+    _REREFERENCE_CARRIED = ("hessian_chunk", "require_converged", "certificate_extra")
 
     def rereferenced(self, x):
         """This model with the boundary at coordinates ``x`` as its deck, on the same band, grid and options.

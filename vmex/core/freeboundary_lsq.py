@@ -799,8 +799,12 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, **model_options):
-        """Solve the seed design's free boundary (keywords as the Galerkin problem's)."""
+                  quantities=(), parameter_quantities=(), boundary_max_nfev=100, boundary_start=None, **model_options):
+        """Solve the seed design's free boundary (keywords as the Galerkin problem's).
+
+        ``boundary_start`` (a restart's saved boundary coordinates, or a surface with ``rbc``/``zbs``) is where the
+        seed's solve starts instead of the deck's own boundary: a design that has moved far from the deck has a
+        free boundary the cold solve from the deck may not reach."""
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if plasma_from_parameters is not None:
             functions += (plasma_from_parameters,)
@@ -809,10 +813,15 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
         model = LeastSquaresFreeBoundaryModel(inp, **model_options)
+        if boundary_start is None or (isinstance(boundary_start, np.ndarray)
+                                      and boundary_start.shape == np.shape(model.x0)):
+            start = boundary_start
+        else:
+            start = model.displacement_of(boundary_start)
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_max_nfev=boundary_max_nfev)
+                   boundary_max_nfev=boundary_max_nfev, seed_start=start)
 
     def __init__(self, model, loss, x0, **options):
         from .implicit import _assemble, _dof_projector, _edge_mask, runtime_from_params

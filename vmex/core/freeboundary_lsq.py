@@ -660,7 +660,18 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       + f"({history[-1][-1]:.0f} s)", flush=True)
             if verbose > 1:
                 self._print_weakest(S * (N @ Q[:, 0]))
-            floor = noise  # gains below the cost's repeatability are not resolved by the equilibria
+            # gains below what the equilibria resolve are not resolved: the larger of the cost's measured
+            # repeatability and its a-priori resolution -- the rows are determined to sqrt(FTOL) relative, the cost to
+            # 2 sqrt(FTOL) of itself (the repeatability the exact models of finite-beta trials measure agrees: 1.4e-12
+            # at cost 3.3e-5, FTOL 1e-15). Along the soft direction of a finite-beta free boundary this locates the
+            # boundary to ~1e-5 m (accepted by the user 10-18); converging below it took half of every trial, linearly
+            # under the trust radius, chasing gains no equilibrium resolves.
+            floor = max(noise, 2.0 * tol_c * cost)
+            if not fresh and w[0] > 0 and feasible and 0.5 * decrement <= floor:
+                # a cheaper model's whole predicted gain is below that: only the exact model can certify it, so ask
+                # for it now (its own test below then ends the solve)
+                need = "exact"
+                continue
             if step_n is not None and feasible and self._step_converged(step_n, step_noise, x):
                 if not fresh:  # certify with the exact Hessian
                     need = "exact"
@@ -752,7 +763,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
                         callback(np.asarray(x).copy())
-                    if fresh and noise > 0 and gained <= noise and feasible:
+                    if fresh and gained <= floor and feasible:
                         # the exact model's step gained no more than the cost's measured repeatability: what is
                         # left is below what the equilibria resolve
                         converged, status = True, "converged: gain below the cost's repeatability"

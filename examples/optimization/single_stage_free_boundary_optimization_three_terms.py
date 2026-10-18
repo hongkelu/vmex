@@ -1285,7 +1285,17 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
+    parser.add_argument("--tolerance-continuation", action=argparse.BooleanOptionalAction, default=True,
+                        help="--free-boundary least_squares with SLSQP: converge trial boundaries to a looser force "
+                        "tolerance while the steps' objective change exceeds what it resolves, tightening to the deck's "
+                        "FTOL as they shrink; the last design is re-solved at the deck's FTOL (ToleranceContinuation)")
+    parser.add_argument("--full-precision", action="store_true",
+                        help="--free-boundary least_squares: every boundary solved to the measured repeatability alone "
+                        "(no a-priori floor), e.g. a validation re-solve (--restart R --steps 0); without it a run's "
+                        "trials converge to the floor and only its last design is re-solved so (a certified row)")
     args = parser.parse_args(argv)
+    if args.full_precision and args.free_boundary != "least_squares":
+        parser.error("--full-precision is an option of --free-boundary least_squares")
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
     elif args.seed_run is not None:
@@ -1506,6 +1516,7 @@ def main(argv=None):
         nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
         quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+        **({"full_precision": True} if args.full_precision else {}),
         # a restart on the run's own deck starts its seed solve at the saved step's boundary, near that step's root
         # (least squares too: its cold solve from the deck did not reach a far design's boundary, v8-qal-sl 10-17)
         **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)}
@@ -1540,6 +1551,19 @@ def main(argv=None):
         print(f"[model] {args.free_boundary}: {model.n_boundary} boundary and {model.x0.size - model.n_boundary} "
               f"bootstrap-current coordinates, {chart.size} design coordinates; built in "
               f"{time.monotonic() - started:.0f} s", flush=True)
+    # the trial boundaries' force-tolerance level (least squares + SLSQP): loose while the steps are large, the deck's
+    # FTOL by the end; a restart continues its run's level (tolerance.json)
+    continuation = None
+    if (args.tolerance_continuation and args.free_boundary == "least_squares" and args.optimizer == "slsqp"
+            and not args.full_precision):
+        from vmex.core.freeboundary_lsq import ToleranceContinuation
+        saved = None if args.restart is None else args.restart / "tolerance.json"
+        saved = json.loads(saved.read_text()) if saved is not None and saved.exists() else {}
+        continuation = ToleranceContinuation(problem.model.cfg.ftol, level=saved.get("level"),
+                                             tightened=saved.get("tightened", False))
+        problem.set_resolution_ftol(continuation.level)
+        print(f"[tolerance] trial boundaries at FTOL {continuation.level:.1e} (deck {continuation.final:.0e})",
+              flush=True)
 
     def state_runtime(x):
         """The equilibrium of design ``x``: ``(state, runtime)``."""
@@ -1651,7 +1675,7 @@ def main(argv=None):
     coil_metrics_at = jax.jit(lambda x: coil_metrics(chart.coils_from_x(x), normalization_points))
     last = dict(time=time.monotonic())
 
-    def log_step(intermediate_result=None):
+    def log_step(intermediate_result=None, certified=False):
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
         res = interface_residual(x)
@@ -1690,6 +1714,8 @@ def main(argv=None):
                    **({} if nestor else common_bn(x)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **getattr(problem, "stats", {}),
                    seconds={key: round(value, 1) for key, value in timers.items()},
+                   **({"resolution_ftol": continuation.level} if continuation else {}),
+                   **({"certified": certified or args.full_precision} if args.free_boundary == "least_squares" else {}),
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if intermediate_result is not None:
             # the augmented Lagrangian's state, saved atomically so that --restart continues this very run
@@ -1731,6 +1757,36 @@ def main(argv=None):
                 # SLSQP's whole state at this step, saved atomically: --restart continues with its Hessian
                 opt.save_slsqp_state(out / "slsqp_state.tmp.npz", snapshot)
                 os.replace(out / "slsqp_state.tmp.npz", out / "slsqp_state.npz")
+        if continuation is not None and not certified:
+            values, sensitivities, cost = problem.resolution_terms(x)
+            # the plasma rows' slack to their nearest bound (the objective's row first: none)
+            slack = np.minimum(values[1:] - np.asarray(lower), np.asarray(upper) - values[1:])
+            level = continuation.level
+            action = continuation.observe(values, sensitivities, cost, slack)
+            (out / "tolerance.json").write_text(json.dumps(continuation.state()) + "\n")
+            if continuation.binding is not None:  # which row (0 the objective, then the plasma rows) set the level
+                print(f"[tolerance] step {problem.accepted_step}: FTOL {continuation.level:.1e}, the level resolving "
+                      f"row {continuation.binding} (0: the objective)", flush=True)
+            if action is not None:
+                res = continuation.resolution(level, values, sensitivities, cost)
+                print(f"[tolerance] {action}: FTOL {level:.1e} -> {continuation.level:.1e} (objective change "
+                      f"{continuation.change:.2e}, its resolution {res[0]:.2e} at {level:.1e}, "
+                      f"{continuation.resolution(continuation.level, values, sensitivities, cost)[0]:.2e} at "
+                      f"{continuation.level:.1e})", flush=True)
+            if action == "loosen":  # the cached values resolve more than the looser level: no re-solve
+                problem.set_resolution_ftol(continuation.level)
+            elif action == "tighten":  # the accepted point is re-solved: SLSQP restarts there (below)
+                raise StopIteration
+
+    def tighten():
+        """Re-solve the accepted point at the continuation's (tighter) level; SLSQP's snapshot of it, if any."""
+        x = problem.accepted.parameters
+        problem.set_resolution_ftol(continuation.level)
+        problem.fun(x)
+        continuation.rebase(problem.resolution_terms(x)[0])
+        (out / "tolerance.json").write_text(json.dumps(continuation.state()) + "\n")
+        snapshot = slsqp_latest.get("state")
+        return snapshot if snapshot is not None and np.array_equal(snapshot["accepted"], x) else None
 
     slsqp_latest = {}  # the latest SLSQP snapshot (opt.minimize's state_callback), saved with its step
     log_step()
@@ -1789,9 +1845,24 @@ def main(argv=None):
                 resume = None
                 continue
             resume = slsqp_latest.get("state")
+            if continuation is not None and problem.accepted_step < args.steps and (
+                    result.stop_reason == "callback_stopped"  # a tighter level: continue there
+                    or (result.stop_reason != "equilibrium_trial_rejected" and continuation.finish())):
+                # (SLSQP stopped on its own at a looser level: what it resolved there is not the deck's answer)
+                resume = tighten()
+                continue
             if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                     or problem.accepted_step >= args.steps):
                 break
+    if args.free_boundary == "least_squares" and not args.full_precision:
+        # the last design re-solved at full precision (the measured repeatability alone, the deck's FTOL): the run's
+        # answer is a root unique per resolution, whatever floor its trials converged to
+        if continuation is not None:
+            continuation.finish()
+            (out / "tolerance.json").write_text(json.dumps(continuation.state()) + "\n")
+        problem.certify(problem.accepted.parameters)
+        print("[certify] the last design re-solved at full precision:", flush=True)
+        log_step(certified=True)
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=result.stop_reason,

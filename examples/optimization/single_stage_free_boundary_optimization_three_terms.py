@@ -1446,9 +1446,10 @@ def main(argv=None):
         nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
         quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
-        # a Galerkin restart on the run's own deck starts its seed solve at the saved step's boundary, near that
-        # step's root (least squares solves its seed at its first trial, from the deck)
-        **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)} if args.free_boundary == "galerkin"
+        # a restart on the run's own deck starts its seed solve at the saved step's boundary, near that step's root
+        # (least squares too: its cold solve from the deck did not reach a far design's boundary, v8-qal-sl 10-17)
+        **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)}
+           if args.free_boundary in ("galerkin", "least_squares")
            and restart_wout is not None and not args.reference_from_wout else {})))
     from vmex.core.freeboundary_vc import NORMAL_OUTSIDE_MODES
     problem = opt.FreeBoundaryProblem.from_loss(

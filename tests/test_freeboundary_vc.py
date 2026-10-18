@@ -469,6 +469,47 @@ def test_problem_method_selects_the_free_boundary(monkeypatch):
 
 
 @needs_vc
+def test_least_squares_problem_seed_starts_at_boundary_start(monkeypatch):
+    """A least-squares restart: ``boundary_start`` (the saved boundary coordinates) is where the seed's first trial
+    starts, before the deck's own boundary, and it lands on the cold solve's answer."""
+    from vmex.core import freeboundary_lsq as lsq
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    starts, solve = [], lsq.LeastSquaresFreeBoundaryModel.solve_boundary
+
+    def recording(self, params, field, *, x0=None, **kwargs):
+        starts.append(None if x0 is None else np.array(x0))
+        return solve(self, params, field, x0=x0, **kwargs)
+
+    monkeypatch.setattr(lsq.LeastSquaresFreeBoundaryModel, "solve_boundary", recording)
+
+    def build(boundary_start=None):
+        return FreeBoundaryProblem.from_loss(
+            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+            field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[0])),
+            boundary_condition="three_terms", method="least_squares",
+            three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80,
+                                     boundary_start=boundary_start))
+
+    cold = build()
+    assert starts[0] is None
+    saved = cold.boundary_coordinates(np.zeros(1))
+    starts.clear()
+    warm = build(saved)
+    np.testing.assert_array_equal(starts[0], saved)
+    np.testing.assert_allclose(warm.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
+    # a surface (rbc, zbs) instead of coordinates, here the deck's boundary scaled about the axis: the start is its
+    # displacement of the reference surface, and the solve lands on the same root
+    rbc, zbs = np.array(inp.rbc, dtype=float), 1.01 * np.array(inp.zbs, dtype=float)
+    rbc[:, 1:] *= 1.01
+    starts.clear()
+    surface = build(types.SimpleNamespace(rbc=rbc, zbs=zbs))
+    assert starts[0] is not None and np.any(starts[0])
+    np.testing.assert_allclose(surface.fun(np.zeros(1)), cold.fun(np.zeros(1)), rtol=1e-8)
+
+
 def test_three_terms_problem_seed_starts_at_boundary_start(monkeypatch):
     """``boundary_start`` (a restart's saved boundary) is where the seed's solve starts on the deck: the start is
     the deck displacement of that surface, and from the deck's own free boundary the solve starts near the root

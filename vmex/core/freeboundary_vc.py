@@ -1170,8 +1170,11 @@ class ThreeTermsFreeBoundaryModel:
         self._interface = lambda state, runtime, field: _interface_terms(  # traceable, from a runtime
             fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta, digits=digits, precision=precision,
             p_edge=0.0)[:2]
-        self._terms = jax.jit(lambda state, params, field: self._interface(
+        terms = jax.jit(lambda state, params, field: self._interface(
             state, im.runtime_from_params(params, cfg), field))
+        # every caller's state and parameters on the model's device (as the least-squares model's): a caller's
+        # parameters may sit on the default (GPU) device while the solve's state is on the model's
+        self._terms = lambda state, params, field: terms(*jax.device_put((state, params), cfg.device), field)
 
     def _make_normal_field(self, fixed, nphi, ntheta, digits, precision):
         """The traceable ``(B_out . n / |B_in|, area weights)`` of a state on the ``(nphi, ntheta)`` grid, as the
@@ -1875,13 +1878,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_max_nfev=boundary_max_nfev, seed_fit=seed_fit)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_max_nfev, seed_fit=None):
+                 parameter_quantities, boundary_max_nfev, seed_fit=None, seed_start=None):
         self.field = field_from_parameters
         self.boundary_max_nfev = int(boundary_max_nfev)
         x0 = np.asarray(x0, dtype=float)
         self._functions = (loss, tuple(quantities), tuple(parameter_quantities), plasma_from_parameters)
         self._bind(model, x0)
         self._cache, self._anchor = {}, {}
+        # where a trial without an anchor (the seed's, when from_loss did not solve it) starts before the deck's own
+        # boundary: a restart's saved boundary coordinates (boundary_start), near the root by construction
+        self._seed_start = None if seed_start is None else np.asarray(seed_start, dtype=float)
         self.references = [dict(step=0, trial=0, deck=model.fixed)]  # the deck of each step on (_rereference)
         self._warm_threads = self._warm_gradient_programs(x0)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
@@ -1998,7 +2004,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # boundary.  They are near the answer by construction, so Newton from them must not need damping; one that
         # does is outside the Newton basin (a large design step) and hands over at once, instead of crawling with
         # damped steps.  The last start is the cold solve from the deck: the same answer by any route.
-        starts = [(None, None)]
+        starts = ([(self._seed_start, None)] if self._seed_start is not None else []) + [(None, None)]
         anchor = self._anchor
         if anchor:
             dx = x - anchor["x"]

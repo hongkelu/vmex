@@ -151,7 +151,8 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
         x = out["x"]
         r = np.asarray(model.rows_fn(jnp.asarray(x)))
         J = np.asarray(model.jac_fn(jnp.asarray(x)))
-        assert abs(r[-1]) <= np.sqrt(model.cfg.ftol) * 10
+        # the constraint row restored until its Newton step is below the coordinates' round-off step tolerance
+        assert abs(r[-1]) / np.linalg.norm(J[-1]) <= np.sqrt(np.finfo(float).eps) * model.R0
         g = J[:-1].T @ r[:-1]  # stationary on the constraint: g in the span of the constraint's gradient
         c = J[-1] / np.linalg.norm(J[-1])
         assert np.linalg.norm(g - (g @ c) * c) <= 1e-6 * max(1.0, np.linalg.norm(g))

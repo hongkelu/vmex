@@ -155,7 +155,11 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
         assert abs(r[-1]) / np.linalg.norm(J[-1]) <= np.sqrt(np.finfo(float).eps) * model.R0
         g = J[:-1].T @ r[:-1]  # stationary on the constraint: g in the span of the constraint's gradient
         c = J[-1] / np.linalg.norm(J[-1])
-        assert np.linalg.norm(g - (g @ c) * c) <= 1e-6 * max(1.0, np.linalg.norm(g))
+        # to the resolution floor: the solve stops once the remaining gain 1/2 g^T H^-1 g is below 2 sqrt(FTOL) cost,
+        # which leaves a gradient of at most sqrt(2 floor |H|) (|H| ~ the Gauss-Newton matrix's norm)
+        floor = 2.0 * np.sqrt(model.cfg.ftol) * 0.5 * float(r[:-1] @ r[:-1])
+        resolved = np.sqrt(2.0 * floor * np.linalg.norm(J[:-1].T @ J[:-1], 2))
+        assert np.linalg.norm(g - (g @ c) * c) <= max(resolved, 1e-12 * max(1.0, np.linalg.norm(g)))
     model = _ToyModel()
     model.certificate_extra = lambda params: None  # full-column certificates
     out = model._newton(None, None, x0=start, max_iter=200)

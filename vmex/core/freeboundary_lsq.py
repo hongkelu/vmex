@@ -150,10 +150,15 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
 
-    def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, **options):
+    def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, full_precision=False, **options):
         self.interior_band = bool(interior_band)  # read when the rows are traced (set before the base builds them)
         super().__init__(inp, **options)
         self._source[1]["interior_band"] = self.interior_band  # a re-referenced model is built with the same rows
+        # Full precision (a certified answer: a run's last design, a validation re-solve): the boundary converges to
+        # the measured repeatability alone, without the a-priori floor 2 sqrt(FTOL) x cost -- that floor stops the
+        # trials where the cost is resolved, but leaves the objective off by up to sqrt(df/db W^-1 df/db^T)
+        # sqrt(2 floor) (QA 2.5 %: 1.9e-5 relative), so only a full-precision solve is unique per resolution.
+        self.full_precision = bool(full_precision)
         # Hessian columns a program call: by default two, the least vmex.core.loops allows; wider blocks take
         # several times the device memory for no speed.
         self.hessian_chunk = max(2, int(hessian_chunk or 2))
@@ -165,9 +170,22 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         # LeastSquaresFreeBoundaryProblem: params -> the plasma directions of its design gradient; the exact model
         # is then built with every column and these mixed columns, which the design gradient at the answer reuses
         self.certificate_extra = None
+        # The force tolerance whose resolution the boundary solve converges to (None: the deck's FTOL): an
+        # optimizer's tolerance continuation (ToleranceContinuation) loosens it while its steps' decrease is larger
+        # than what a looser solve resolves; never below the deck's FTOL, which the equilibria are solved to.
+        self.resolution_ftol = None
         self._linearization = None
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
+
+    _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision")
+
+    @property
+    def converged_ftol(self) -> float:
+        """The force tolerance the boundary solve's convergence floor stands for: :attr:`resolution_ftol`, never
+        tighter than the deck's FTOL (the equilibria resolve nothing below it)."""
+        level = None if getattr(self, "full_precision", False) else getattr(self, "resolution_ftol", None)
+        return float(self.cfg.ftol) if level is None else max(float(self.cfg.ftol), float(level))
 
     def _interface_setup(self, state, nphi, ntheta, digits):
         """The least-squares rows, with the base model's virtual-casing plan of the deck's surface
@@ -560,7 +578,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
         # The constraint rows are relative field (or current) mismatches; an equilibrium solved to FTOL determines
         # its fields to about sqrt(FTOL) relative: the rows' resolution until their repeatability is measured.
-        tol_c = float(np.sqrt(self.cfg.ftol))
+        tol_c = float(np.sqrt(self.converged_ftol))
+        loose = self.converged_ftol > float(self.cfg.ftol)
 
         def violation(rows):
             """The merit function's penalty term: the constraint rows' l1 norm beyond their resolution (below it they
@@ -574,7 +593,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             the band earns no merit, so the solve stops where its start's path entered the band."""
             if noise_rows is None or not m:
                 return tol_c
-            return float(np.max(np.abs(noise_rows[k:])))
+            # at a looser level than the deck's (ToleranceContinuation) the rows are asked for no more than that
+            # level resolves, sqrt(level), however repeatable the equilibria are
+            return max(float(np.max(np.abs(noise_rows[k:]))), tol_c if loose else 0.0)
 
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
@@ -679,7 +700,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             # at cost 3.3e-5, FTOL 1e-15). Along the soft direction of a finite-beta free boundary this locates the
             # boundary to ~1e-5 m (accepted by the user 10-18); converging below it took half of every trial, linearly
             # under the trust radius, chasing gains no equilibrium resolves.
-            floor = max(noise, 2.0 * tol_c * cost)
+            floor = noise if getattr(self, "full_precision", False) else max(noise, 2.0 * tol_c * cost)
             if not fresh and w[0] > 0 and feasible and 0.5 * decrement <= floor:
                 # a cheaper model's whole predicted gain is below that: only the exact model can certify it, so ask
                 # for it now (its own test below then ends the solve)
@@ -912,6 +933,32 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
             return sol["gradients"]
         return self._exact_gradients(x, sol)
 
+    def set_resolution_ftol(self, ftol):
+        """Converge later trials' boundaries to the resolution of force tolerance ``ftol`` (``None``: the deck's FTOL;
+        :class:`ToleranceContinuation`).  A tighter level drops every cached trial, the accepted point's included: its
+        next evaluation continues its boundary's solve from the looser answer (the anchor's boundary) to the new
+        floor.  A looser one keeps them (they resolve more than it asks)."""
+        model = self.model
+        before = model.converged_ftol
+        model.resolution_ftol = None if ftol is None else float(ftol)
+        if model.converged_ftol < before:
+            self._cache = {}
+
+    def certify(self, x):
+        """Re-solve ``x``'s boundary at full precision (:attr:`LeastSquaresFreeBoundaryModel.full_precision`, kept on
+        for every later solve) from its cached answer; returns the trial entry."""
+        self.model.full_precision = True
+        self._cache = {}
+        return self._record(self._x(x))
+
+    def resolution_terms(self, x):
+        """``(values, sensitivities, cost)`` at ``x`` (its design gradient taken): what :class:`ToleranceContinuation`
+        needs -- every row's value (the objective first), its sensitivity to an unconverged boundary
+        (``boundary_sensitivity``) and the boundary's least-squares cost."""
+        sol = self._record(self._x(x))
+        self._linearize(self._x(x), sol)
+        return np.asarray(sol["values"], float), np.asarray(sol["boundary_sensitivity"], float), float(sol["cost"])
+
     def _exact_gradients(self, x, sol):
         """Design gradients of every row with the exact Hessian of the boundary least squares.
 
@@ -976,7 +1023,114 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
                             params=params, cost=0.5 * so["r"][:k] @ so["r"][:k])
         sol["gradients"] = gradients
         sol["hessian_eigenvalues"] = w
+        # every row's sensitivity to an unconverged boundary: a boundary short of the minimum by db with remaining
+        # gain 1/2 db^T W db <= floor moves the row h by |dh/db . db| <= sqrt(dh/db W^-1 dh/db^T) sqrt(2 floor)
+        # (Cauchy-Schwarz in the W metric; W^-1 dh/db^T = mu): the rows' resolution at a convergence floor
+        sol["boundary_sensitivity"] = np.sqrt(np.maximum(np.einsum("ij,ji->i", G_b, mu), 0.0))
+        sol["cost"] = 0.5 * float(so["r"][:k] @ so["r"][:k])
         return gradients
+
+
+class ToleranceContinuation:
+    """The force tolerance an optimization's trial boundaries are converged to: loose while its steps are large,
+    the deck's FTOL by its end.
+
+    A row ``h`` (the objective, a constraint) of a least-squares free boundary converged at level ``L``
+    (:attr:`LeastSquaresFreeBoundaryModel.resolution_ftol`) is resolved to (:meth:`resolution`)::
+
+        max(2 sqrt(L) |h|,  s sqrt(2 floor)),   floor = 2 sqrt(L) cost,
+
+    the first term the equilibria's (their fields to ``sqrt(L)`` relative), the second the boundary's: its solve stops
+    once the remaining gain ``1/2 db^T W db`` is below ``floor``, which leaves ``h`` off by at most ``s sqrt(2 floor)``
+    with ``s = sqrt(dh/db W^-1 dh/db^T)`` (``boundary_sensitivity`` of the design gradient; measured on QA 2.5 %: the
+    bound 2.8e-6 at FTOL 1e-15 against an observed 3.6e-7 of the objective).  A row needs resolving to the larger of
+    its change over the last step (what the optimizer resolves on it) and its slack to its nearest bound (below that
+    an error cannot change which side of the bound it is on): its *tolerance*; the objective's slack is zero.  A level
+    is adequate while every row's resolution is within its tolerance.
+
+    :meth:`observe` takes each accepted step's rows at the current level and returns the next level.  Before the
+    first tightening: the loosest level adequate for the step (loosening is free: the values at hand resolve more).
+    Afterwards only tighter levels, once some row's resolution exceeds its tolerance: the level adequate for the
+    tolerances the objective's measured contraction predicts for the next step (fewer re-solves than one level per
+    step), never tighter than the deck's FTOL.  A tighter level re-solves the accepted point and the optimizer restarts
+    there (its rows move by at most the old level's resolution); the run ends at the deck's FTOL (:attr:`final`), its
+    last design re-solved at full precision.  No constants: the levels come from measured changes, the resolution
+    from the solve's own floor.
+
+    Opt-in (driver ``--tolerance-continuation``).  Measured on QA and QH at 2.5 % (10-18): while Mercier or B.n
+    rows are active their small slack keeps the deck's FTOL, so there is no saving (QA steps 286/261/209/257 s against
+    288/259/208 s).  An objective-only rule saved ~40 % per QA step (one exact Hessian a trial), but it read the
+    path's constraint rows wrong (at FTOL 1e-6 Mercier min 8.37e-4 against 9.44e-4 certified).
+    """
+
+    def __init__(self, final_ftol, level=None, tightened=False):
+        self.final = float(final_ftol)
+        self.level = self.final if level is None else max(self.final, float(level))
+        self.tightened = bool(tightened)
+        self.previous = None  # (level, rows) of the last observed step
+        self.change = None  # the last step's |change of the objective| at one level
+        self.binding = None  # the row that set the last level asked for (resolving)
+
+    @staticmethod
+    def resolution(level, values, sensitivities, cost):
+        """Each row's absolute resolution at force tolerance ``level`` (class docstring)."""
+        root = np.sqrt(level)
+        return np.maximum(2.0 * root * np.abs(values), np.asarray(sensitivities) * np.sqrt(4.0 * root * cost))
+
+    def resolving(self, tolerances, values, sensitivities, cost):
+        """The loosest level (not below :attr:`final`) whose :meth:`resolution` is within every row's tolerance (rows
+        with an infinite tolerance do not constrain it)."""
+        tolerances, values = np.atleast_1d(np.asarray(tolerances, float)), np.atleast_1d(np.asarray(values, float))
+        sensitivities = np.atleast_1d(np.asarray(sensitivities, float))
+        levels = [np.inf]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # the equilibria's term 2 sqrt(L) |h| = t, the boundary's s^2 4 sqrt(L) cost = t^2
+            levels.append(np.where(tolerances > 0, (tolerances / (2.0 * np.abs(values))) ** 2, 0.0))
+            if cost > 0:
+                levels.append(np.where(tolerances > 0, (tolerances**2 / (4.0 * sensitivities**2 * cost)) ** 2, 0.0))
+        rows = np.min([np.broadcast_to(np.nan_to_num(v, nan=np.inf), tolerances.shape) for v in levels], axis=0)
+        self.binding = int(np.argmin(rows))  # the row that sets the level (a diagnostic)
+        return max(self.final, float(rows[self.binding]))
+
+    def rebase(self, values):
+        """The accepted point re-evaluated at the current level (after a tightening): the next step's reference."""
+        self.previous = (self.level, np.atleast_1d(np.asarray(values, float)).copy())
+
+    def observe(self, values, sensitivities, cost, slack=None):
+        """An accepted step's rows (objective first, at :attr:`level`), their boundary sensitivities, the boundary's
+        cost and the constraint rows' slack to their nearest bound (``inf`` unbounded); returns ``"loosen"``,
+        ``"tighten"`` or ``None`` and sets :attr:`level`."""
+        values = np.atleast_1d(np.asarray(values, float)).copy()
+        slack = np.r_[0.0, np.full(values.size - 1, np.inf) if slack is None else np.maximum(slack, 0.0)]
+        previous, self.previous = self.previous, (self.level, values)
+        if previous is None or previous[0] != self.level or previous[1].shape != values.shape:
+            return None  # a change across levels mixes two resolutions
+        changes, before = np.abs(values - previous[1]), self.change
+        self.change = float(changes[0])
+        tolerances = np.maximum(changes, slack)
+        if not self.tightened:
+            target = self.resolving(tolerances, values, sensitivities, cost)
+            if target > self.level:
+                # the values at hand resolve more than the looser level: the next step's reference as they are
+                self.level, self.previous = target, (target, values)
+                return "loosen"
+        if self.level <= self.final or np.all(self.resolution(self.level, values, sensitivities, cost) <= tolerances):
+            return None
+        # the next step's changes predicted from the objective's measured contraction (none: this step's)
+        ratio = 1.0 if before is None or not before > changes[0] else changes[0] / before
+        predicted = np.maximum(changes * ratio, slack)
+        self.level, self.tightened = min(self.level, self.resolving(predicted, values, sensitivities, cost)), True
+        return "tighten"
+
+    def finish(self):
+        """The deck's FTOL (the run's end); ``"tighten"`` if that changed the level."""
+        changed = self.level > self.final
+        self.level, self.tightened = self.final, True
+        return "tighten" if changed else None
+
+    def state(self):
+        """The level, whether it was tightened (what a restart continues from) and the final level."""
+        return dict(level=self.level, final=self.final, tightened=self.tightened)
 
 
 def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = None, mgrid_path=None,

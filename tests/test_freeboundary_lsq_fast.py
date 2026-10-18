@@ -196,6 +196,33 @@ def test_trust_region_step_reaches_the_radius_on_near_null_models():
                                rtol=1e-10)
 
 
+class _CircleModel(_ToyModel):
+    """Rows ``(x0 - 2, w x1)`` on the unit circle (the constraint row): the minimum is ``(1, 0)``, and a step along
+    the circle's tangent violates the constraint at second order (the Maratos effect of the l1 merit)."""
+
+    def __init__(self, weight):
+        super().__init__(n=2)
+
+        def rows(x):
+            return jnp.stack([x[0] - 2.0, weight * x[1], x[0] ** 2 + x[1] ** 2 - 1.0])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+
+
+def test_constraint_restoration_lets_tangential_steps_pass_the_merit_test():
+    """From far along the circle the model's tangential steps leave the circle at second order and the l1 merit
+    rejects them; restoring the constraint row from the trial lets them pass, so the solve takes far fewer models
+    (36 without the restoration at ``w = 3``) and still converges where the steps are short (``w = 0.1``)."""
+    start = np.array([np.cos(1.2), np.sin(1.2)])
+    for weight, most in ((3.0, 20), (0.1, 40)):
+        out = _CircleModel(weight)._newton(None, None, x0=start, max_iter=200)
+        assert out["converged"], out["status"]
+        np.testing.assert_allclose(out["x"], [1.0, 0.0], atol=1e-6)
+        assert out["njev"] <= most, out["njev"]
+
+
 def test_problem_entry_and_finite_beta_rows():
     """Cheap end-to-end coverage: the least-squares single-stage problem in vacuum (design gradient along the coil
     currents against central differences of cold trials), the solve entry through ``method="least_squares"``

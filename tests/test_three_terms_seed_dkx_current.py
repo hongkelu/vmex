@@ -54,14 +54,16 @@ def _deck(driver):
 def test_seed_current_within_tolerance_is_kept(monkeypatch, driver):
     calls = _stub(monkeypatch, driver, {1.0e4: 0.5 * driver.REDL_TOLERANCE})
     inp = _deck(driver)
-    assert driver.seed_dkx_current(inp, None) is inp
+    out, refit = driver.seed_dkx_current(inp, None)
+    assert out is inp and refit is None
     assert calls == []
 
 
 def test_seed_current_over_tolerance_is_replaced_by_dkx_picard(monkeypatch, driver):
     # the QI A8 campaign seed: 3.2e-2 against REDL_TOLERANCE 1e-3 (DKX 2.9.0); the Picard current is DKX's own
     calls = _stub(monkeypatch, driver, {1.0e4: 3.2e-2, 2.0e4: 8.4e-5})
-    out = driver.seed_dkx_current(_deck(driver), None)
+    out, refit = driver.seed_dkx_current(_deck(driver), None)
     assert calls == [1.0e4]
+    assert refit.state == 2.0e4  # the new current's fixed-boundary equilibrium, for the coil refit
     assert float(out.curtor) == 2.0e4
     assert out.lfreeb is False

@@ -340,9 +340,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         # (vc.remat_scans: each chunk recomputed in the reverse sweep, the least memory).  Stored is faster (A100,
         # 8x8, ns 51, 180 columns: QA 2.5 % 50.3 -> 40.2 s a Hessian, QH 2.5 % 82.1 -> 65.2 s; H the same to 2e-14)
         # at a few GiB more (QH peak 3.9 -> 7.8 GiB): it is used until a block runs out of device memory
-        # (:attr:`hessian_remat`).  The flag is read when a program is traced, so each needs its own jit.
+        # (:attr:`hessian_remat`).  The flag is read when a program is traced, so each needs its own traced
+        # function (two jits of one function share its trace cache).
         self._hessian_columns = jax.jit(hessian_columns)
-        self._hessian_columns_remat = jax.jit(hessian_columns)
+        self._hessian_columns_remat = jax.jit(lambda *args: hessian_columns(*args))
         self.hessian_remat = False
         self._project = jax.jit(project)
         self._last_second_order = None

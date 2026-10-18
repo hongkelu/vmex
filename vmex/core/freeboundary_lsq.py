@@ -1036,7 +1036,7 @@ class ToleranceContinuation:
     the deck's FTOL by its end.
 
     A row ``h`` (the objective, a constraint) of a least-squares free boundary converged at level ``L``
-    (:attr:`LeastSquaresFreeBoundaryModel.resolution_ftol`) is resolved to (:meth:`resolution`)
+    (:attr:`LeastSquaresFreeBoundaryModel.resolution_ftol`) is resolved to (:meth:`resolution`)::
 
         max(2 sqrt(L) |h|,  s sqrt(2 floor)),   floor = 2 sqrt(L) cost,
 

@@ -1049,3 +1049,55 @@ def test_quasi_symmetric_redl_current_derivative_is_smooth(eq):
         minus = rows(jax.tree_util.tree_map(lambda a, b: a - h * b, state, t))
         fd = (np.asarray(plus) - np.asarray(minus)) / (2 * h)
         np.testing.assert_allclose(jvp, fd, rtol=1e-5, atol=1e-6 * np.max(np.abs(fd)))
+
+
+def test_full_field_redl_geometry_agrees_with_qs_when_axisymmetric(eq):
+    """``geometry="full"`` (the full field on the solver grid, e3313c0f's in-solve definition) and the default
+    quasi-symmetric profile coincide where the field is symmetric (Solovev: axisymmetric, so ``|B|`` is its own
+    quasi-symmetric part); an unknown geometry is refused."""
+    profiles = _paper_profiles(1e20, 2e3)
+    s_qs, qs = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
+    s_full, full = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime, geometry="full")
+    np.testing.assert_array_equal(np.asarray(s_qs), np.asarray(s_full))
+    np.testing.assert_allclose(np.asarray(full), np.asarray(qs), rtol=1e-3, atol=1e-6 * np.max(np.abs(qs)))
+    with pytest.raises(ValueError, match="Redl geometry"):
+        bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime, geometry="boozer")
+
+
+@pytest.mark.full
+def test_full_field_redl_geometry_reproduces_the_campaign_current():
+    """On the finite-beta QA campaign's step-0 boundary (e3313c0f, its seed deck and kinetic profiles), the
+    self-consistent Redl current with ``geometry="full"`` has the campaign's CURTOR (113,146 A) to the current
+    representation's change since (near-axis and edge knots: 0.15 %); the quasi-symmetric default is 10.6 % lower."""
+    import importlib
+    import sys
+
+    from vmex.core.freeboundary_vc import ThreeTermsFreeBoundaryModel
+
+    tests_data = Path(__file__).resolve().parent / "data"
+    data = np.load(tests_data / "qa4_beta_campaign_step0_boundary.npz")
+    seed = dataclasses.replace(VmecInput.from_file(tests_data / "input.qa4_beta_campaign_seed"), lfreeb=False)
+    inp = dataclasses.replace(seed, rbc=data["rbc"], zbs=data["zbs"])
+    examples = Path(__file__).resolve().parents[1] / "examples" / "optimization"
+    previous = os.environ.get("COIL_CASE")
+    os.environ["COIL_CASE"] = "qa4-beta"
+    sys.path.insert(0, str(examples))
+    try:  # the driver's kinetic profiles of the deck's calibrated pressure
+        driver = importlib.import_module("single_stage_free_boundary_optimization_three_terms")
+        profiles = driver.redl_profiles(seed)[0]
+    finally:
+        sys.path.remove(str(examples))
+        sys.modules.pop("single_stage_free_boundary_optimization_three_terms", None)
+        if previous is None:
+            os.environ.pop("COIL_CASE", None)
+        else:
+            os.environ["COIL_CASE"] = previous
+    curtor = {}
+    for geometry in ("qs", "full"):
+        model = ThreeTermsFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=0, fixed_boundary=True,
+                                            bootstrap_geometry=geometry)
+        solved = model.solve_boundary(model.params0, None, max_nfev=30)
+        curtor[geometry] = float(model.bootstrap.deck_with(model.fixed, solved["x"]).curtor)
+    campaign = float(data["curtor_e3313c0f"])
+    assert abs(curtor["full"] / campaign - 1) < 5e-3
+    assert curtor["qs"] / campaign - 1 < -0.09

@@ -14,7 +14,7 @@ revision it was measured at, and the pages that cite it.
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
   (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.
 - Finite-beta rows test B.n against the deck's response (LP QA 2.5 % 12x12 B.n 2.8e-4->1.1e-4) on the interior's band (no gap); Newton stalls build the band up from m<=1.
-- Redl (bootstrap rows, `RedlBootstrapMismatch`) on the quasi-symmetric part of |B| (simsopt `RedlGeomBoozer`): smooth.
+- Redl (bootstrap rows, `RedlBootstrapMismatch`) on the quasi-symmetric part of |B| (simsopt `RedlGeomBoozer`): smooth; `geometry="full"` keeps e3313c0f's full field.
 - `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
   (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
   4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:

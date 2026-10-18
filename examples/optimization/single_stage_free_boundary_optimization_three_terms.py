@@ -60,18 +60,22 @@ interface residuals ``bn``, ``pressure_balance`` and ``sheet_current``,
 trial counts, timings and peak GPU memory), and every ``--save-every`` steps
 ``coils.stepN.json``, ``wout.stepN.nc`` and, once the free boundary has been
 re-referenced, ``input.stepN.ref`` (the deck boundary of that step); with
-AUGLAG ``auglag_state.npz`` (multipliers, penalty, trust radius, curvature)
-after every step; and at the end ``coils.json``, ``wout.nc`` (plus
+AUGLAG ``auglag_state.npz`` (multipliers, penalty, trust radius, curvature),
+with SLSQP ``slsqp_state.npz`` (its quasi-Newton Hessian, multipliers and
+coordinates: ``opt.save_slsqp_state``) after every saved step; and at the end ``coils.json``, ``wout.nc`` (plus
 ``input.ref``) and ``summary.json``.
 
 Restart and verification
 ------------------------
 ``--restart DIR`` continues a run from its ``input.run``, ``coils.json`` and
 ``wout.nc``: the deck is the problem, the WOUT's PHIEDGE (and design current)
-the start of the design vector. If ``DIR/input.ref`` exists its boundary is
+the start of the design vector, or ``x.npy`` (the step's own design vector,
+saved as ``x.stepN.npy``) when present. If ``DIR/input.ref`` exists its boundary is
 the deck boundary; for an older run without one, ``--reference-from-wout``
 takes the WOUT's LCFS instead. With ``auglag_state.npz`` an AUGLAG run
-continues with its multipliers, penalty and trust region. ``--seed-run DIR``
+continues with its multipliers, penalty and trust region; with
+``slsqp_state.npz`` of the restart's step an SLSQP run continues with its
+Hessian (a state of another step: an identity Hessian, as before). ``--seed-run DIR``
 instead starts a new run from another run's ``input.run`` and
 ``coils.initial.json``, skipping the seed's bootstrap ramp and coil fit.
 ``--steps 0`` only evaluates the start: e.g.
@@ -1390,6 +1394,14 @@ def main(argv=None):
         if current is not None:
             last = current_from_wout(inp, restart_wout)
             chart.x0[chart.nphiedge:chart._coil0] = np.r_[np.asarray(last.ac_aux_f)[:current.size - 1], last.curtor]
+    if args.restart is not None and (args.restart / "x.npy").exists():
+        # the saved step's design vector itself (the WOUT's PHIEDGE is an integrated flux, and the coils' JSON
+        # rescales): the restart starts exactly where the run stopped, as its saved optimizer state needs
+        saved_x = np.load(args.restart / "x.npy")
+        if saved_x.shape == chart.x0.shape:
+            print(f"[restart] design vector from {args.restart / 'x.npy'} (largest change "
+                  f"{np.max(np.abs(saved_x - chart.x0) / chart.scales):.1e} design steps)", flush=True)
+            chart.x0[:] = saved_x
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     # iota floors and ceiling hold on every surface, one row each: a minimum over surfaces switches surface where two
@@ -1576,6 +1588,7 @@ def main(argv=None):
 
     def save(tag):
         x = problem.accepted.parameters
+        np.save(out / f"x{tag}.npy", x)  # the design vector itself: an exact restart's start (x.npy)
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
         if hasattr(problem, "boundary_coordinates"):  # the step's root on its deck: an exact restart's start
@@ -1661,7 +1674,13 @@ def main(argv=None):
               + f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
+            snapshot = slsqp_latest.get("state")
+            if snapshot is not None and np.array_equal(snapshot["accepted"], x):
+                # SLSQP's whole state at this step, saved atomically: --restart continues with its Hessian
+                opt.save_slsqp_state(out / "slsqp_state.tmp.npz", snapshot)
+                os.replace(out / "slsqp_state.tmp.npz", out / "slsqp_state.npz")
 
+    slsqp_latest = {}  # the latest SLSQP snapshot (opt.minimize's state_callback), saved with its step
     log_step()
     if args.steps == 0:  # an evaluation (e.g. --restart: a cold re-solve of saved coils), no optimizer
         return
@@ -1685,11 +1704,29 @@ def main(argv=None):
                               callback=lambda intermediate_result: log_step(intermediate_result),
                               options=dict(maxiter=args.steps, feasibility=feasibility, **resume))
     else:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+        # with the saved state of that point (slsqp_state.npz of a restart, then each call's latest snapshot) SLSQP
+        # continues with its quasi-Newton Hessian instead of the identity: a 2 h segment of a finite-beta run is
+        # 5-15 steps, too few to rebuild it each time
+        state_file = None if args.restart is None else args.restart / "slsqp_state.npz"
+        resume = opt.load_slsqp_state(state_file) if state_file is not None and state_file.exists() else None
+        if resume is not None:
+            print(f"[slsqp] continuing with the saved state of {state_file} (iteration "
+                  f"{int(resume['state']['iter'])})", flush=True)
         while True:
             before = problem.accepted_step
-            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                                  callback=lambda x: log_step(),
-                                  options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+            options = dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL,
+                           state_callback=lambda state: slsqp_latest.update(state=state))
+            try:
+                result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP",
+                                      constraints=constraints, callback=lambda x: log_step(),
+                                      options=dict(options, **({"resume": resume} if resume is not None else {})))
+            except ValueError as error:
+                if resume is None or "the SLSQP state is of another" not in str(error):
+                    raise
+                print(f"[slsqp] not resuming the saved state ({error}): an identity Hessian", flush=True)
+                resume = None
+                continue
+            resume = slsqp_latest.get("state")
             if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                     or problem.accepted_step >= args.steps):
                 break

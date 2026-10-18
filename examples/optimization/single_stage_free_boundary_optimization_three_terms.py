@@ -1359,7 +1359,11 @@ def main(argv=None):
         if args.ns:
             inp = replace(inp, ns_array=np.array([args.ns]), ftol_array=np.array([EQUILIBRIUM_FTOL]),
                           niter_array=np.asarray(inp.niter_array)[-1:])
-        if args.restart is not None and (args.reference_from_wout or (args.restart / "input.ref").exists()):
+        if args.restart is not None:
+            # the restart's first (cold) solve starts at the saved step's shaped boundary (its LCFS as a deck when
+            # re-referenced, or its boundary coordinates on the run's deck), where a single fine grid can fail to
+            # start: v8-qhlb-sl-c4 10-18 (vacuum QH, step 104) had no equilibrium at its own saved root. Hot-
+            # restarted trials skip the coarse rung (implicit.skip_ladder_rungs), so only that first solve uses it.
             inp = with_coarse_rung(inp)
         RESOLUTION = (int(inp.mpol), int(inp.ntor), int(np.asarray(inp.ns_array)[-1]))
         mpol, ntor, _ = RESOLUTION

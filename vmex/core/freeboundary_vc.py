@@ -1456,16 +1456,22 @@ class ThreeTermsFreeBoundaryModel:
         :meth:`boundary_residual` would add their own field evaluations (56 GiB in one program at 48 x 48)."""
         return self._outside_rms(*self._normal_field(state, runtime, field))
 
-    def _outside_rms(self, normal, weights):
+    def normal_inside(self, state, runtime, field):
+        """Traceable RMS (over ``|B|``, area-weighted) of the part of ``B_out . n`` on the boundary's modes: the value
+        of the :data:`NORMAL_INSIDE_MODES` quantity of :class:`ThreeTermsFreeBoundaryProblem` (with
+        :meth:`normal_outside` it splits ``boundary_residual().normal``: their squares add up to its square)."""
+        return self._outside_rms(*self._normal_field(state, runtime, field), inside=True)
+
+    def _outside_rms(self, normal, weights, inside=False):
         f = normal * jnp.sqrt(weights * weights.size)  # mean of f^2 = the weighted mean square of B.n
         power = jnp.abs(jnp.fft.fft2(f) / f.size) ** 2  # axes (phi, theta)
         k_phi = np.fft.fftfreq(f.shape[0], 1.0 / f.shape[0]).astype(int)
         k_theta = np.fft.fftfreq(f.shape[1], 1.0 / f.shape[1]).astype(int)
-        inside = np.zeros(f.shape, dtype=bool)
+        on_modes = np.zeros(f.shape, dtype=bool)
         for m, n in self.boundary_modes:  # sin(m theta - n nfp phi) holds (-n, m) and (n, -m)
-            inside |= (k_phi[:, None] == -n) & (k_theta[None, :] == m)
-            inside |= (k_phi[:, None] == n) & (k_theta[None, :] == -m)
-        return jnp.sqrt(jnp.sum(jnp.where(inside, 0.0, power)))
+            on_modes |= (k_phi[:, None] == -n) & (k_theta[None, :] == m)
+            on_modes |= (k_phi[:, None] == n) & (k_theta[None, :] == -m)
+        return jnp.sqrt(jnp.sum(jnp.where(on_modes, power, 0.0) if inside else jnp.where(on_modes, 0.0, power)))
 
     def bootstrap_residual(self, state, params) -> float:
         """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
@@ -1785,9 +1791,17 @@ class _NormalOutsideModes:
     """The :data:`NORMAL_OUTSIDE_MODES` quantity (evaluated by the problem with its current model)."""
 
     __name__ = "normal_outside_modes"
+    method = "normal_outside"  # the model's traceable evaluation
 
     def __call__(self, *args):
-        raise TypeError("NORMAL_OUTSIDE_MODES is evaluated by ThreeTermsFreeBoundaryProblem, not called")
+        raise TypeError(f"{self.__name__.upper()} is evaluated by ThreeTermsFreeBoundaryProblem, not called")
+
+
+class _NormalInsideModes(_NormalOutsideModes):
+    """The :data:`NORMAL_INSIDE_MODES` quantity (evaluated by the problem with its current model)."""
+
+    __name__ = "normal_inside_modes"
+    method = "normal_inside"
 
 
 #: A ``parameter_quantities`` entry of :meth:`ThreeTermsFreeBoundaryProblem.from_loss`: the RMS of ``B_out . n /
@@ -1796,6 +1810,13 @@ class _NormalOutsideModes:
 #: so an optimizer sees nothing of this part; bounding it keeps designs whose free boundary a finer boundary
 #: resolves (an unbounded run can drift to coils with no free boundary at higher resolution).
 NORMAL_OUTSIDE_MODES = _NormalOutsideModes()
+
+#: A ``parameter_quantities`` entry of :meth:`ThreeTermsFreeBoundaryProblem.from_loss`: the RMS of ``B_out . n /
+#: |B_in|`` on the boundary's modes (:meth:`ThreeTermsFreeBoundaryModel.normal_inside`).  The least-squares rows trade
+#: it against the other interface terms instead of zeroing it (the square Galerkin rows zero it), and a finer
+#: boundary keeps it: it is the B.n a higher-resolution re-solve reports, where the part outside the modes
+#: (:data:`NORMAL_OUTSIDE_MODES`) is what the finer boundary cancels.
+NORMAL_INSIDE_MODES = _NormalInsideModes()
 
 
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
@@ -1916,13 +1937,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         def part(f, with_x):
             if isinstance(f, _NormalOutsideModes):  # needs the model (its modes and interface): this one's
+                evaluate = getattr(model, f.method)
+
                 def outside(state, params, x):
                     # traced with checkpointed quadrature scans: its reverse pass (the design gradient) would
                     # otherwise keep every source chunk's kernel intermediates (62 GiB at 48 x 48); values unchanged
                     with vc.remat_scans():
-                        return jnp.atleast_1d(model.normal_outside(state, runtime_from_params(params, model.cfg),
-                                                                   field_from_parameters(x)))
-                outside.__name__ = "normal_outside_modes"
+                        return jnp.atleast_1d(evaluate(state, runtime_from_params(params, model.cfg),
+                                                       field_from_parameters(x)))
+                outside.__name__ = f.__name__
                 return outside
 
             def value(state, params, x):

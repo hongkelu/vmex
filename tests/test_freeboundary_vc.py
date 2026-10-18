@@ -642,8 +642,9 @@ def test_three_terms_problem_gradients_match_resolved_differences():
 @needs_vc
 @pytest.mark.parametrize("method", ["galerkin", "least_squares"])
 def test_normal_outside_modes_quantity_value_and_gradient(method):
-    """``NORMAL_OUTSIDE_MODES`` as a parameter quantity: its value is the model's ``normal_outside_modes`` of the
-    trial and its design gradient (direct field term plus the moving boundary) matches re-solved differences."""
+    """``NORMAL_OUTSIDE_MODES`` and ``NORMAL_INSIDE_MODES`` as parameter quantities: the first is the model's
+    ``normal_outside_modes`` of the trial, their squares add up to that of ``boundary_residual().normal``, and their
+    design gradients (direct field term plus the moving boundary) match re-solved differences."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
@@ -652,14 +653,17 @@ def test_normal_outside_modes_quantity_value_and_gradient(method):
     problem = FreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2), field_from_parameters=field,
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
-        parameter_quantities=(fvc.NORMAL_OUTSIDE_MODES,), boundary_condition="three_terms", method=method,
+        parameter_quantities=(fvc.NORMAL_OUTSIDE_MODES, fvc.NORMAL_INSIDE_MODES), boundary_condition="three_terms",
+        method=method,
         three_terms_options=dict(nphi=16, ntheta=16, quadrature=(4 * 2 * 16, 32), boundary_max_nfev=80))
     x0 = problem.x0
     value = problem.constraint_values(x0)
     sol = problem._record(x0)
-    np.testing.assert_allclose(value, [problem.model.normal_outside_modes(sol["state"], sol["params"], field(x0))],
+    residual = problem.model.boundary_residual(sol["state"], sol["params"], field(x0))
+    np.testing.assert_allclose(value[0], problem.model.normal_outside_modes(sol["state"], sol["params"], field(x0)),
                                rtol=1e-10)
-    assert 0 < value[0] < 1e-2
+    np.testing.assert_allclose(np.hypot(*value), residual.normal, rtol=1e-10)
+    assert 0 < value[0] < 1e-2 and 0 < value[1] < 1e-2
     jac = problem.constraint_jac(x0)
     # h = 4e-3: below ~2e-3 a least-squares trial stops at its Gauss-Newton prediction (the step left is under the
     # rows' noise), so its differences give the Gauss-Newton derivative (5 % off here); Galerkin agrees at any h
@@ -667,8 +671,9 @@ def test_normal_outside_modes_quantity_value_and_gradient(method):
         e = h * np.eye(2)[k]
         fd = (problem.constraint_values(x0 + e) - problem.constraint_values(x0 - e)) / (2 * h)
         np.testing.assert_allclose(jac[:, k], fd, rtol=3e-2, atol=1e-9)
-    with pytest.raises(TypeError):
-        fvc.NORMAL_OUTSIDE_MODES(None, None, None)
+    for quantity in (fvc.NORMAL_OUTSIDE_MODES, fvc.NORMAL_INSIDE_MODES):
+        with pytest.raises(TypeError, match=quantity.__name__.upper()):
+            quantity(None, None, None)
 
 
 def test_three_terms_problem_plasma_map_gradient_at_moved_point():

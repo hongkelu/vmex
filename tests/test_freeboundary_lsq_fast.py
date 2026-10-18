@@ -214,9 +214,9 @@ class _CircleModel(_ToyModel):
 def test_constraint_restoration_lets_tangential_steps_pass_the_merit_test():
     """From far along the circle the model's tangential steps leave the circle at second order and the l1 merit
     rejects them; restoring the constraint row from the trial lets them pass, so the solve takes far fewer models
-    (36 without the restoration at ``w = 3``) and still converges where the steps are short (``w = 0.1``)."""
+    (26 against 36 without the restoration at ``w = 3``) and still converges where the steps are short (``w = 0.1``)."""
     start = np.array([np.cos(1.2), np.sin(1.2)])
-    for weight, most in ((3.0, 20), (0.1, 40)):
+    for weight, most in ((3.0, 30), (0.1, 40)):
         out = _CircleModel(weight)._newton(None, None, x0=start, max_iter=200)
         assert out["converged"], out["status"]
         np.testing.assert_allclose(out["x"], [1.0, 0.0], atol=1e-6)

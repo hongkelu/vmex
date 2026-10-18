@@ -748,8 +748,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     # gains the interface cost the model predicts leaves a violation of second order that the l1 merit
                     # weighs above the gain (ctlqa 10-18, the first design step's trial: radius 0.02 .. 0.1 against
                     # Newton steps of 2.3, a merit rejection every other model).  Restoring the rows from the trial,
-                    # x_t - Jc^+ r_c(x_t), moves the interface cost only at first order in that violation.
-                    if got is None or rho > 0.75 or violation(got[0]) <= violation(r):
+                    # x_t - Jc^+ r_c(x_t), moves the interface cost only at first order in that violation.  Only
+                    # for a step the radius cut short (a long move along the model): a Newton step inside it that
+                    # fails the merit test is a stale model's (its constraint Jacobian), which a fresh model repairs
+                    # (restoring each such step instead kept the stale model and took 12 models for 9, qass_b25 r5)
+                    if got is None or rho > 0.75 or length < 0.99 * radius or violation(got[0]) <= violation(r):
                         break
                     restored, got_r = trial(x_new - S * np.linalg.lstsq(Jc, got[0][k:], rcond=None)[0])
                     nfev += 1

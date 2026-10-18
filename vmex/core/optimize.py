@@ -2978,7 +2978,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         result.update(report)
         return result
     try:
-        u0 = (x_start - start) / scales if resume is None else np.asarray(resume["u"], dtype=float).copy()
         hook = _SlsqpHook(resume, state_callback, start, scales, x_of)
         with hook if (resume is not None or state_callback is not None) else contextlib.nullcontext():
             result = scipy_minimize(fun, u_start, jac=jac, method="SLSQP", bounds=bounds,

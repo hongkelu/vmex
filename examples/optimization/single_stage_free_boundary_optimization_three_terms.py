@@ -1752,9 +1752,19 @@ def main(argv=None):
               f"({CURVATURE_POINTS} points vs twice as many: {resolution['curvature']:.1e} / "
               f"{resolution['speed']:.1e}); coil-coil distance rows resolve only {resolution['coil_distance']:.1e} "
               f"at {DISTANCE_POINTS} points", flush=True)
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
-                              callback=lambda intermediate_result: log_step(intermediate_result),
-                              options=dict(maxiter=args.steps, feasibility=feasibility, **resume))
+        try:
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
+                                  callback=lambda intermediate_result: log_step(intermediate_result),
+                                  options=dict(maxiter=args.steps, feasibility=feasibility, **resume))
+        except ValueError as error:
+            # a state of another problem (other rows or coordinates: e.g. a restart with another COIL_ORDER or bound
+            # set) cannot be continued: start the augmented Lagrangian afresh, as SLSQP does with its state
+            if not resume or "resume state does not match" not in str(error):
+                raise
+            print(f"[auglag] not resuming {state_file} ({error}): a fresh augmented Lagrangian", flush=True)
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="AUGLAG", constraints=constraints,
+                                  callback=lambda intermediate_result: log_step(intermediate_result),
+                                  options=dict(maxiter=args.steps, feasibility=feasibility))
     else:  # a rejected trial ends an SLSQP call; restart it from the accepted point
         # with the saved state of that point (slsqp_state.npz of a restart, then each call's latest snapshot) SLSQP
         # continues with its quasi-Newton Hessian instead of the identity: a 2 h segment of a finite-beta run is

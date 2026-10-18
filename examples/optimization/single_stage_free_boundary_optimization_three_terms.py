@@ -202,6 +202,11 @@ FORCE_B_REF, FORCE_NORMALIZE_GRID = None, (32, 32)
 # the BALLOONING_S surfaces is held below it.
 MERCIER_FLOOR, STABILITY_MIN_S = None, 0.2
 BALLOONING_LIMIT, BALLOONING_S = None, (0.3, 0.5, 0.7, 0.8, 0.9, 0.95)
+# set (Galerkin, least squares): an upper bound on the RMS of B.n/|B| outside the boundary's modes, the part the truncated boundary
+# cannot cancel (fvc.NORMAL_OUTSIDE_MODES); unbounded, the 8x8 optimizer drifts to coils whose free boundary a 12x12
+# boundary does not reach (qac8 10-17: 8x8 B.n 2.8e-3/4.1e-3, no 12x12 root). The validation's B.n tolerance (5e-4)
+# is the natural value: what the 8x8 boundary leaves is what a finer one must still cancel.
+BN_OUTSIDE_LIMIT = None
 BALLOONING_LINES = dict(zeta0s=tuple(np.linspace(-np.pi / 2, np.pi / 2, 5)), npoints=97, nturns=3.0)
 
 if CASE == "ellipse5-beta7":
@@ -1418,6 +1423,9 @@ def main(argv=None):
         return opt.aspect_ratio(state, runtime)
 
     nestor = args.free_boundary == "nestor"
+    if BN_OUTSIDE_LIMIT and nestor:
+        raise SystemExit("BN_OUTSIDE_LIMIT bounds the B.n outside the boundary's modes: --free-boundary galerkin or "
+                         "least_squares")
     if nestor and current_in_solve:
         raise SystemExit("--free-boundary nestor holds the bootstrap current by its mismatch row: "
                          "COIL_CASE_OVERRIDES='{\"BOOTSTRAP_IN_SOLVE\": false}'")
@@ -1434,12 +1442,14 @@ def main(argv=None):
         # step's root (least squares solves its seed at its first trial, from the deck)
         **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)} if args.free_boundary == "galerkin"
            and restart_wout is not None and not args.reference_from_wout else {})))
+    from vmex.core.freeboundary_vc import NORMAL_OUTSIDE_MODES
     problem = opt.FreeBoundaryProblem.from_loss(
         replace(inp, lfreeb=True, mgrid_file="direct ESSOS field") if nestor else inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor, *stability,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if mismatch_row else [])),
-        parameter_quantities=(clearance, aspect), method=args.free_boundary, **three_terms)
+        parameter_quantities=(clearance, aspect, *([NORMAL_OUTSIDE_MODES] if BN_OUTSIDE_LIMIT else [])),
+        method=args.free_boundary, **three_terms)
     if nestor:
         # the coupled root residual's floor depends on the resolution: polish to the tightest target the start
         # reaches, which later trials are then held to (transactional: a target not reached leaves the root)
@@ -1517,6 +1527,7 @@ def main(argv=None):
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
     nredl = int(mismatch_row)
+    nout = int(bool(BN_OUTSIDE_LIMIT))  # the B.n-outside-the-modes row, last
     lower, upper, row_scales = zip(
         *[(IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR)] * n_iota,
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
@@ -1529,7 +1540,8 @@ def main(argv=None):
         *[(-np.inf, BALLOONING_LIMIT, ballooning_unit)] * n_ballooning,
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
-        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
+        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
+        *([(-np.inf, BN_OUTSIDE_LIMIT, BN_OUTSIDE_LIMIT)] if BN_OUTSIDE_LIMIT else []))
     normalization_points = force_normalization_points(inp)
     coil_rows = coil_constraint(chart.coils_from_x, normalization_points, args.chunk)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
@@ -1592,7 +1604,9 @@ def main(argv=None):
                    **({"coil_max_force": float(coils_m["max_force"].max())} if FORCE_LIMIT is not None else {}),
                    **({"redl_max_relative": problem.model.bootstrap_residual(*problem.state(x))}
                       if current_in_solve else {}),
-                   coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
+                   # the parameter quantities end the rows: clearance, aspect (and the B.n outside the modes)
+                   coil_surface_distance_m=float(h[-2 - nout]), aspect=float(h[-1 - nout]),
+                   **({"bn_outside_modes": float(h[-1])} if nout else {}),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
@@ -1620,6 +1634,7 @@ def main(argv=None):
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"PHIEDGE^2 DMerc min={row['mercier_min']:+.3e} " if n_mercier else "")
               + (f"ballooning max={row['ballooning_max']:+.2e} " if n_ballooning else "")
+              + (f"B.n outside modes={row['bn_outside_modes']:.2e} " if nout else "")
               + (f"force={row['coil_max_force']:.2f} " if FORCE_LIMIT is not None else "")
               + f"cc={row['coil_coil_distance']:.5f} kappa={row['coil_max_curvature']:.4f} "
               f"msc={row['coil_max_msc']:.4f} L={row['coil_total_length']:.5f} "

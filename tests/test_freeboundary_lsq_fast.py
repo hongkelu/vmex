@@ -169,6 +169,60 @@ def test_trust_region_newton_on_a_nonlinear_constrained_least_squares():
     assert model._reduced(np.ones(4), None)[0].shape == (4, 4)
 
 
+def test_trust_region_step_reaches_the_radius_on_near_null_models():
+    """The trust-region subproblem's step lies on the radius whenever the Newton step is longer, also on models whose
+    smallest eigenvalues are below 1e-14 of the largest (M 16 finite beta: 3e-15 .. 53): a bisection bracket
+    relative to the largest eigenvalue returned a step far inside the radius there (|z| 1.3 for radius 13), so the
+    radius never grew and the solve crawled along the near-null directions until max_iter."""
+    rng = np.random.default_rng(1)
+    w = np.sort(np.r_[7e-15, np.logspace(-12, np.log10(52.0), 300)])
+    radius = 13.0
+    for scale in (1e-12, 1e-10, 1e-6):
+        gq = rng.standard_normal(w.size) * scale
+        newton = float(np.linalg.norm(gq / w))
+        assert newton > radius
+        z = lsq._trust_region_solution(w, gq, radius, newton)
+        np.testing.assert_allclose(np.linalg.norm(z), radius, rtol=1e-10)
+        mu = np.median(-gq / z - w)  # the step is -(w + mu)^-1 gq with one mu >= 0 (its optimality condition)
+        assert mu >= 0.0
+        np.testing.assert_allclose(z, -gq / (w + mu), rtol=1e-6)
+    gq = rng.standard_normal(w.size) * 1e-16  # a Newton step inside the radius is returned as it is
+    newton = float(np.linalg.norm(gq / w))
+    assert newton < radius
+    np.testing.assert_allclose(lsq._trust_region_solution(w, gq, radius, newton), -gq / w)
+    w_indefinite = np.r_[-1e-3, w]  # indefinite: on the radius, shifted past the negative eigenvalue
+    gq = rng.standard_normal(w_indefinite.size)
+    np.testing.assert_allclose(np.linalg.norm(lsq._trust_region_solution(w_indefinite, gq, 2.0, np.inf)), 2.0,
+                               rtol=1e-10)
+
+
+class _CircleModel(_ToyModel):
+    """Rows ``(x0 - 2, w x1)`` on the unit circle (the constraint row): the minimum is ``(1, 0)``, and a step along
+    the circle's tangent violates the constraint at second order (the Maratos effect of the l1 merit)."""
+
+    def __init__(self, weight):
+        super().__init__(n=2)
+
+        def rows(x):
+            return jnp.stack([x[0] - 2.0, weight * x[1], x[0] ** 2 + x[1] ** 2 - 1.0])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+
+
+def test_constraint_restoration_lets_tangential_steps_pass_the_merit_test():
+    """From far along the circle the model's tangential steps leave the circle at second order and the l1 merit
+    rejects them; restoring the constraint row from the trial lets them pass, so the solve takes far fewer models
+    (26 against 36 without the restoration at ``w = 3``) and still converges where the steps are short (``w = 0.1``)."""
+    start = np.array([np.cos(1.2), np.sin(1.2)])
+    for weight, most in ((3.0, 30), (0.1, 40)):
+        out = _CircleModel(weight)._newton(None, None, x0=start, max_iter=200)
+        assert out["converged"], out["status"]
+        np.testing.assert_allclose(out["x"], [1.0, 0.0], atol=1e-6)
+        assert out["njev"] <= most, out["njev"]
+
+
 def test_problem_entry_and_finite_beta_rows():
     """Cheap end-to-end coverage: the least-squares single-stage problem in vacuum (design gradient along the coil
     currents against central differences of cold trials), the solve entry through ``method="least_squares"``

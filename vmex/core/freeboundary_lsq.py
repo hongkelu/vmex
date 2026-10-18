@@ -129,7 +129,11 @@ def _trust_region_solution(w, gq, radius, newton):
     if newton <= radius:
         return -gq / w
     shift = max(0.0, -w[0])
-    lo = np.log(1e-300 + 1e-14 * max(abs(w[-1]), 1e-300))
+    # the bracket's lower end must lie below the model's smallest (shifted) eigenvalue, where |z| exceeds the radius:
+    # a bound relative to the largest one (1e-14 w_max) stopped short of the radius on models with near-null
+    # directions (condition number above 1e14, M 16: eigenvalues 3e-15 .. 53), returning a step far inside the
+    # radius, and the solve crawled along those directions at rho ~ 1 without the radius ever growing
+    lo = np.log(np.finfo(float).tiny)
     hi = np.log(np.linalg.norm(gq) / radius + abs(w[-1]) + 1e-300)
     for _ in range(200):
         mid = 0.5 * (lo + hi)
@@ -759,6 +763,27 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                           + (f"[cost {cost_of(got[0]):.10e} penalty {penalty:.1e} violation {violation(got[0]):.1e}] "
                              if m and got is not None else "")
                           + f"({time.perf_counter() - started:.0f} s)", flush=True)
+                for _ in range(3 if m else 0):
+                    # the constraint rows' own second-order correction (the Maratos effect): along the soft
+                    # directions of a finite-beta boundary the net-current and bootstrap rows curve, so a step that
+                    # gains the interface cost the model predicts leaves a violation of second order that the l1 merit
+                    # weighs above the gain (ctlqa 10-18, the first design step's trial: radius 0.02 .. 0.1 against
+                    # Newton steps of 2.3, a merit rejection every other model).  Restoring the rows from the trial,
+                    # x_t - Jc^+ r_c(x_t), moves the interface cost only at first order in that violation.  Only
+                    # for a step the radius cut short (a long move along the model): a Newton step inside it that
+                    # fails the merit test is a stale model's (its constraint Jacobian), which a fresh model repairs
+                    # (restoring each such step instead kept the stale model and took 12 models for 9, qass_b25 r5)
+                    if got is None or rho > 0.75 or length < 0.99 * radius or violation(got[0]) <= violation(r):
+                        break
+                    restored, got_r = trial(x_new - S * np.linalg.lstsq(Jc, got[0][k:], rcond=None)[0])
+                    nfev += 1
+                    if got_r is None or merit_of(got_r[0]) >= cost_new:
+                        break
+                    x_new, got, cost_new = restored, got_r, merit_of(got_r[0])
+                    rho = (merit - cost_new) / predicted if predicted > 0 else -np.inf
+                    if verbose:
+                        print(f"  constraint restoration: cost {cost_new:.10e} rho {rho:.3f} "
+                              f"[violation {violation(got[0]):.1e}]", flush=True)
                 if got is not None and rho <= 0.75:
                     # a step that is not "very successful" by the radius update's own test: a second-order
                     # correction from the residual at the trial point with the Jacobian at hand, x_t - (J N)^+ r_t

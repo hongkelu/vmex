@@ -689,6 +689,39 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
+def seed_dkx_current(inp, device):
+    """A ``--seed-run`` deck with its DKX current made self-consistent again, at this run's resolution and DKX.
+
+    A seed deck carries the current its own run found self-consistent, at that run's resolution and DKX version. If
+    the DKX mismatch here exceeds ``REDL_TOLERANCE``, the start breaks its own bootstrap row, and SLSQP's first step
+    (identity Hessian) goes to restore it at any cost to the rest: the QI A8 campaign seed has 3.2e-2 here (DKX
+    2.9.0) against 1.9e-4 in its own run, and the first step of every run from it took B.n from 4e-4 to 5e-3 and the
+    coil slack to -0.27. The deck is then given DKX's Picard current (``dkx_current``, boundary unchanged), and
+    its fixed-boundary equilibrium is returned for the coil refit (the seed's coils were fitted to the old current:
+    with only the current replaced, the seed's free boundary has B.n 1.8e-3 and a mismatch of 1.5e-3); within
+    tolerance the deck is kept as it is, with ``None``.
+    """
+    from vmex import optimize as opt
+
+    fixed = opt.solve_equilibrium(replace(inp, lfreeb=False), device=device, raise_on_max_iterations=True,
+                                  polish_force_balance=False)
+    mismatch = dkx_mismatch(inp)
+    before = float(mismatch(fixed.state, fixed.solver_context))
+    if before <= REDL_TOLERANCE:
+        print(f"[seed] DKX bootstrap mismatch {before:.3e} <= {REDL_TOLERANCE:g}: the seed's current is kept",
+              flush=True)
+        return inp, None
+    print(f"[seed] DKX bootstrap mismatch {before:.3e} > {REDL_TOLERANCE:g}: DKX's Picard current replaces the "
+          "seed's", flush=True)
+    inp = replace(dkx_current(replace(inp, lfreeb=False), fixed, device), lfreeb=inp.lfreeb)
+    fixed = opt.solve_equilibrium(replace(inp, lfreeb=False), initial_state=fixed.state, device=device,
+                                  raise_on_max_iterations=True, polish_force_balance=False)
+    after = float(mismatch(fixed.state, fixed.solver_context))
+    print(f"[seed] DKX bootstrap mismatch after the Picard current: {after:.3e}, CURTOR = {float(inp.curtor):.1f} A",
+          flush=True)
+    return inp, fixed
+
+
 def current_from_wout(inp, w):
     """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
     prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
@@ -1347,7 +1380,7 @@ def main(argv=None):
 
     started = time.monotonic()
     mpol, ntor, _ = RESOLUTION
-    inp, redl, restart_wout = seed_input(), None, None
+    inp, redl, restart_wout, refit_seed = seed_input(), None, None, None
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None or args.seed_run is not None:
@@ -1368,6 +1401,8 @@ def main(argv=None):
         RESOLUTION = (int(inp.mpol), int(inp.ntor), int(np.asarray(inp.ns_array)[-1]))
         mpol, ntor, _ = RESOLUTION
         redl = redl_profiles(inp)[1] if args.bootstrap else None
+        if args.seed_run is not None and args.bootstrap and BOOTSTRAP_MODEL == "dkx":
+            inp, refit_seed = seed_dkx_current(inp, "gpu")
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
@@ -1387,6 +1422,9 @@ def main(argv=None):
         coils = scale_coil_currents(coils, float(fixed.wout.rbtor))
         if args.beta > 0 and not args.no_coil_fit:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
+    elif refit_seed is not None and not args.no_coil_fit:
+        # the seed's coils were fitted to its own current: refitted to the plasma of the new one, as a seed is built
+        coils = fit_coils_to_plasma(coils, refit_seed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not current_in_solve else None

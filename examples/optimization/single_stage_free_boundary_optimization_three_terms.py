@@ -689,6 +689,37 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
+def seed_dkx_current(inp, device):
+    """A ``--seed-run`` deck with its DKX current made self-consistent again, at this run's resolution and DKX.
+
+    A seed deck carries the current its own run found self-consistent, at that run's resolution and DKX version. If
+    the DKX mismatch here exceeds ``REDL_TOLERANCE``, the start breaks its own bootstrap row, and SLSQP's first step
+    (identity Hessian) goes to restore it at any cost to the rest: the QI A8 campaign seed has 3.2e-2 here (DKX
+    2.9.0) against 1.9e-4 in its own run, and the first step of every run from it took B.n from 4e-4 to 5e-3 and the
+    coil slack to -0.27. The deck is then given DKX's Picard current (``dkx_current``, boundary and coils
+    unchanged); within tolerance it is kept as it is.
+    """
+    from vmex import optimize as opt
+
+    fixed = opt.solve_equilibrium(replace(inp, lfreeb=False), device=device, raise_on_max_iterations=True,
+                                  polish_force_balance=False)
+    mismatch = dkx_mismatch(inp)
+    before = float(mismatch(fixed.state, fixed.solver_context))
+    if before <= REDL_TOLERANCE:
+        print(f"[seed] DKX bootstrap mismatch {before:.3e} <= {REDL_TOLERANCE:g}: the seed's current is kept",
+              flush=True)
+        return inp
+    print(f"[seed] DKX bootstrap mismatch {before:.3e} > {REDL_TOLERANCE:g}: DKX's Picard current replaces the "
+          "seed's", flush=True)
+    inp = replace(dkx_current(replace(inp, lfreeb=False), fixed, device), lfreeb=inp.lfreeb)
+    fixed = opt.solve_equilibrium(replace(inp, lfreeb=False), initial_state=fixed.state, device=device,
+                                  raise_on_max_iterations=True, polish_force_balance=False)
+    after = float(mismatch(fixed.state, fixed.solver_context))
+    print(f"[seed] DKX bootstrap mismatch after the Picard current: {after:.3e}, CURTOR = {float(inp.curtor):.1f} A",
+          flush=True)
+    return inp
+
+
 def current_from_wout(inp, w):
     """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
     prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
@@ -1368,6 +1399,8 @@ def main(argv=None):
         RESOLUTION = (int(inp.mpol), int(inp.ntor), int(np.asarray(inp.ns_array)[-1]))
         mpol, ntor, _ = RESOLUTION
         redl = redl_profiles(inp)[1] if args.bootstrap else None
+        if args.seed_run is not None and args.bootstrap and BOOTSTRAP_MODEL == "dkx":
+            inp = seed_dkx_current(inp, "gpu")
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:

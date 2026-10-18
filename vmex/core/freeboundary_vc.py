@@ -1049,6 +1049,10 @@ class ThreeTermsFreeBoundaryModel:
         other._set_band(max_mode)
         return other
 
+    #: instance settings a re-referenced model keeps (set after construction by a subclass or its problem: the
+    #: least-squares model's Hessian chunk, and its problem's rule that an unconverged trial fails)
+    _REREFERENCE_CARRIED = ("hessian_chunk", "require_converged")
+
     def rereferenced(self, x):
         """This model with the boundary at coordinates ``x`` as its deck, on the same band, grid and options.
 
@@ -1061,7 +1065,13 @@ class ThreeTermsFreeBoundaryModel:
         inp, options = self._source
         boundary = self.with_boundary(self.params0, jnp.asarray(x))
         rbc, zbs = np.asarray(boundary.rbc), np.asarray(boundary.zbs)  # the deck's arrays, the band's modes set
-        other = ThreeTermsFreeBoundaryModel(replace(inp, rbc=rbc, zbs=zbs), max_mode=self.max_mode, **options)
+        # the same class (a least-squares model stays one: a Galerkin model in its place would solve the trial by
+        # the other method and has no second_order for the least-squares gradient), with the instance settings its
+        # owner set after construction
+        other = type(self)(replace(inp, rbc=rbc, zbs=zbs), max_mode=self.max_mode, **options)
+        for name in self._REREFERENCE_CARRIED:
+            if name in self.__dict__:
+                setattr(other, name, self.__dict__[name])
         nb = self.n_boundary
         other.x0 = np.r_[other.x0[:nb], np.asarray(x, dtype=float)[nb:]]
         return other

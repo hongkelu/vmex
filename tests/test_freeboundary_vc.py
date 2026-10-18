@@ -1438,6 +1438,33 @@ def test_band_continuation_newton_damps_and_trials_do_not(monkeypatch):
     assert seen == [(model.max_mode, True)]
 
 
+def test_rereferenced_model_keeps_its_class_and_settings(monkeypatch):
+    """A least-squares model re-referenced stays a least-squares model, with its Hessian chunk and its problem's
+    converged-trial rule (a Galerkin model in its place solved the LSQ problem's trial by the other method, and the
+    LSQ gradient then failed: 'ThreeTermsFreeBoundaryModel' object has no attribute 'second_order')."""
+    from vmex.core.freeboundary_lsq import LeastSquaresFreeBoundaryModel
+
+    built = []
+
+    class Probe(LeastSquaresFreeBoundaryModel):
+        def __init__(self, inp, **options):  # records the construction instead of solving a deck
+            built.append((inp, options))
+            self.x0 = np.zeros(3)
+
+    model = Probe.__new__(Probe)
+    model.__dict__.update(fixed_boundary=False, max_mode=4, n_boundary=2, params0=None, hessian_chunk=6,
+                          require_converged=True,
+                          _source=(types.SimpleNamespace(rbc=np.zeros((1, 1)), zbs=np.zeros((1, 1))), dict(nphi=8)))
+    model.with_boundary = lambda params, x: types.SimpleNamespace(rbc=np.ones((1, 1)), zbs=np.ones((1, 1)))
+    monkeypatch.setattr(fvc, "replace", lambda inp, **changes: types.SimpleNamespace(**{**vars(inp), **changes}))
+    other = model.rereferenced(np.array([0.1, 0.2, 7.0]))
+    assert type(other) is Probe
+    assert built[0][1] == dict(max_mode=4, nphi=8)
+    np.testing.assert_array_equal(built[0][0].rbc, np.ones((1, 1)))
+    assert other.hessian_chunk == 6 and other.require_converged is True
+    np.testing.assert_array_equal(other.x0, [0.0, 0.0, 7.0])
+
+
 def test_rereference_failures_keep_the_deck():
     """A deck that cannot be re-referenced, or a new deck on which the trial does not converge, leaves the problem
     on its deck: the trial fails and nothing of the new model remains."""

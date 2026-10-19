@@ -207,3 +207,33 @@ def test_fresh_exact_model_takes_its_whole_newton_step():
     assert any(radius < newton for exact, _, radius, newton in finite if not exact)  # cheap steps cut by the radius
     firsts = [(radius, newton) for exact, first, radius, newton in finite if exact and first]
     assert firsts and all(radius >= newton for radius, newton in firsts)
+
+
+def test_rz_design_gradient_with_krylov_trial_certificates():
+    """The RZ problem's trials carry the Krylov certificate (``trial_certificate = "krylov"``) and an accepted
+    point's design gradient builds the full columns itself: on the vacuum deck the gradient along PHIEDGE and the
+    coil currents matches central differences of re-solved trials (FD truncation at h = 5e-4: ~1e-7)."""
+    from dataclasses import replace as _replace
+
+    from vmex import optimize as opt
+    from vmex.core.freeboundary_lsq import LeastSquaresFreeBoundaryProblem
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    assert rz.LeastSquaresRZFreeBoundaryProblem.trial_certificate == "krylov"
+    assert LeastSquaresFreeBoundaryProblem.trial_certificate == "full"
+    inp = _vacuum_deck()
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _replace(coils, currents=coils.currents * (1 + x[1])),
+        plasma_from_parameters=lambda params, x: _replace(params, phiedge=params.phiedge * (1 + x[0])),
+        method="least_squares_rz", three_terms_options=dict(boundary_max_nfev=80, **OPTIONS))
+    value, grad = problem.value_and_grad(problem.x0)
+    h = 5e-4
+    for k in range(2):
+        values = []
+        for s in (1, -1):
+            problem._anchor = {}
+            values.append(float(problem.fun(problem.x0 + s * h * np.eye(2)[k])))
+        central = (values[0] - values[1]) / (2 * h)
+        np.testing.assert_allclose(grad[k], central, rtol=1e-5)

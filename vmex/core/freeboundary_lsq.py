@@ -998,6 +998,13 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 
     #: the boundary model of every trial (the RZ least squares sets its own)
     model_class = LeastSquaresFreeBoundaryModel
+    #: the certificate of an optimization's trial: "full" (every Hessian column and the plasma directions' mixed
+    #: columns, which an accepted point's design gradient reuses) or "krylov" (the exact model on a Krylov subspace;
+    #: an accepted point's gradient then builds the full columns itself).  A full-precision solve always builds the
+    #: full certificate.  "krylov" pays where the columns are many and most trials are not accepted: the RZ least
+    #: squares' 306 columns (QA seed, 8x8: trials 86-265 s against 156-329 s, an accepted point's gradient 101 s
+    #: against 1 s, so from two trials a step on)
+    trial_certificate = "full"
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
@@ -1069,6 +1076,8 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         """:meth:`ThreeTermsFreeBoundaryProblem._solve`, the boundary's certificate built with what
         :meth:`_exact_gradients` needs at the answer (every Hessian column and the plasma directions' mixed
         columns): the design gradient then reuses it instead of linearizing again."""
+        if self.trial_certificate == "krylov" and not getattr(self.model, "full_precision", False):
+            return ThreeTermsFreeBoundaryProblem._solve(self, x)
         xj = jnp.asarray(np.asarray(x, dtype=float))
         self.model.certificate_extra = ((lambda params: self._plasma_directions(xj)) if self._plasma.size
                                         else (lambda params: None))

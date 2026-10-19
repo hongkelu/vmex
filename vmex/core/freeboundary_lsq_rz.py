@@ -361,6 +361,7 @@ class LeastSquaresRZFreeBoundaryProblem(LeastSquaresFreeBoundaryProblem):
     first and makes that boundary the problem's deck."""
 
     model_class = LeastSquaresRZFreeBoundaryModel
+    trial_certificate = "krylov"  # 306 columns a full certificate (LeastSquaresFreeBoundaryProblem.trial_certificate)
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, labelling_presolve=None,

@@ -167,8 +167,11 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         ESS-scaled coefficients are below 1e-6 of the largest, every weak direction a pure relabelling; the spectral
         scales shrink the high modes, so a trust region round in those coordinates admits only tiny relabellings, and
         the solve crawled along them for most of its models.  Here the two kinds of motion have their own coordinates
-        and scales in metres: ``h`` the normal displacement's ESS scales, ``d`` the same spectral scales over the mean
-        poloidal metric ``L = <|e_theta|>`` (a relabelling ``d`` moves the points by about ``L d``)."""
+        and scales in metres: ``h`` the normal displacement's ESS scales, ``d`` one scale for every mode, ``1 / L``
+        with ``L = <|e_theta|>`` the mean poloidal metric (a relabelling ``d`` moves the points by about ``L d``).  No
+        spectral decay on ``d``: the gauge prices a relabelling by its angle whatever its mode (curvature ``w^2 / 2``
+        a unit angle), so decaying scales would only bring back the weak high-mode directions (the first try with ESS
+        on ``d`` too: smallest reduced eigenvalue 8e-13 against 3e-9 in the coefficients)."""
         from .freeboundary_vc import _normal_displacement_map
 
         normal, normal_modes, normal_scale = _normal_displacement_map(fixed, self.max_mode)
@@ -193,10 +196,9 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         Rt = np.einsum("nm,nmij->ij", -rbc * ms[None, :], np.sin(ph))
         Zt = np.einsum("nm,nmij->ij", np.asarray(fixed.zbs, dtype=float) * ms[None, :], np.cos(ph))
         self._metric = float(np.mean(np.hypot(Rt, Zt)))
-        levels = np.asarray([max(abs(m), abs(n)) for m, n in tangential_modes], dtype=float)
         self._basis = B
         self._normal_modes, self._tangential_modes = list(normal_modes), list(tangential_modes)
-        self.x_scale = np.r_[normal_scale, np.exp(-1.2 * levels) / np.exp(-1.2) / self._metric]
+        self.x_scale = np.r_[normal_scale, np.full(len(tangential_modes), 1.0 / self._metric)]
 
     def _interface_setup(self, state, nphi, ntheta, digits):
         """The base least-squares setup (its constants, reports and ``B . n`` programs), then this method's rows."""

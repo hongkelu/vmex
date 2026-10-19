@@ -178,6 +178,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
     #: rule only; full-precision solves always use it)
     trial_step_tolerance = None
+    #: whether the convergence floor includes the a-priori resolution 2 sqrt(FTOL) x cost (:meth:`_newton`); an
+    #: optimization's model (:class:`LeastSquaresFreeBoundaryProblem`) converges to the measured repeatability only,
+    #: as a full-precision solve, so that every accepted trial is the root its certification finds
+    a_priori_floor = True
 
     def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, full_precision=False,
                  host_ftol=HOST_FTOL, **options):
@@ -229,9 +233,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         host = getattr(self, "cfg_host", None)
         return self.cfg if host is None or getattr(self, "full_precision", False) else host
 
-    _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision",
-                                                                                 "trial_step_tolerance",
-                                                                                 "hessian_remat")
+    _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + (
+        "resolution_ftol", "full_precision", "trial_step_tolerance", "a_priori_floor", "hessian_remat")
 
     def _trial_tolerance(self):
         """The trials' physical step tolerance (m), or ``None`` (a full-precision or non-optimization solve)."""
@@ -816,13 +819,17 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if basin and fresh and not w[0] > 0 and outside >= 1:  # no Newton step: stop before its (costly) trials
                 status = "stalled: outside the Newton basin (a second exact model without a Newton step: indefinite)"
                 break
-            # gains below what the equilibria resolve are not resolved: the larger of the cost's measured
-            # repeatability and its a-priori resolution -- the rows are determined to sqrt(FTOL) relative, the cost to
-            # 2 sqrt(FTOL) of itself (the repeatability the exact models of finite-beta trials measure agrees: 1.4e-12
-            # at cost 3.3e-5, FTOL 1e-15). Along the soft direction of a finite-beta free boundary this locates the
-            # boundary to ~1e-5 m (accepted by the user 10-18); converging below it took half of every trial, linearly
-            # under the trust radius, chasing gains no equilibrium resolves.
-            floor = noise if getattr(self, "full_precision", False) else max(noise, 2.0 * tol_c * cost)
+            # gains below what the equilibria resolve are not resolved: the cost's measured repeatability, and for a
+            # solve outside an optimization (a_priori_floor) its a-priori resolution too -- the rows are determined to
+            # sqrt(FTOL) relative, the cost to 2 sqrt(FTOL) of itself.  An optimization's trials (and a tolerance
+            # continuation's looser levels apart) use the measured repeatability alone, as a full-precision solve: the
+            # a-priori floor accepted points that are no minimum.  Where the reduced Hessian's softest eigenvalue is
+            # near zero (an inflection of the cost along the soft direction: 9e-9 against Gauss-Newton's 1.7e-7) the
+            # quadratic model predicts a gain below the floor while the cost still falls by 6 % along that direction
+            # (f97-qa-al c1 step 10, 10-19: the trial's QA 0.135246 against 0.13334 certified; at the restart the
+            # same design gave f 0.06762 cold and 0.06667 warm, the certified root's).
+            a_priori = (getattr(self, "a_priori_floor", True) or loose) and not getattr(self, "full_precision", False)
+            floor = max(noise, 2.0 * tol_c * cost) if a_priori else noise
             if not (fresh or certifying) and w[0] > 0 and feasible and 0.5 * decrement <= floor:
                 # a cheaper model's whole predicted gain is below that: only the exact model can certify it, so ask
                 # for it now (its own test below then ends the solve)
@@ -1060,6 +1067,9 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
 
         field_from_parameters = options["field_from_parameters"]
         model.require_converged = True
+        # every solve of the optimization (the seed's included) converges to the measured repeatability: an accepted
+        # trial is then the root that certify() finds (LeastSquaresFreeBoundaryModel.a_priori_floor)
+        model.a_priori_floor = False
         edge, cfg = _edge_mask(model.cfg), model.cfg
 
         def coil_mixed(state, mask, params, x, shift, dz_mu, dp_mu):

@@ -319,6 +319,7 @@ def test_problem_entry_and_finite_beta_rows():
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         boundary_condition="three_terms", three_terms_options=dict(method="least_squares", **grid))
     assert isinstance(problem, lsq.LeastSquaresFreeBoundaryProblem)
+    assert problem.model.a_priori_floor is False  # an optimization converges to the measured repeatability
     value, grad = problem.value_and_grad(problem.x0)
     h = 2e-3
     values = []
@@ -500,3 +501,39 @@ def test_warm_start_outside_the_newton_basin_hands_over():
     model._newton_boundary(None, None, x0=start, jacobian=J)
     model.solve_boundary(None, None, x0=start, continuation=False)
     assert calls == [True, False, False]
+
+
+class _InflectionModel(_ToyModel):
+    """A large constant row and ``x0^2 - 1`` (minimum at ``x0 = 1``, an inflection of the cost at ``1/sqrt 3``), the
+    constraint row ``x1 - 1/2``, at FTOL 1e-6: from ``x0 = 0.6`` the exact model's whole predicted gain (1.8) is below
+    the a-priori floor 2 sqrt(FTOL) cost (10), though the cost still falls by that much on the way to the minimum."""
+
+    def __init__(self):
+        super().__init__(n=2)
+        self.cfg = type("cfg", (), {"ftol": 1e-6})()
+
+        def rows(x):
+            return jnp.stack([100.0 + 0.0 * x[0], x[0] ** 2 - 1.0, x[1] - 0.5])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+
+
+def test_optimization_solves_converge_to_the_measured_repeatability():
+    """The a-priori floor 2 sqrt(FTOL) cost accepts a point that is no minimum where the model is nearly flat; an
+    optimization's model (``a_priori_floor = False``, set by LeastSquaresFreeBoundaryProblem) converges to the measured
+    repeatability, to the full-precision answer: an accepted trial is the root its certification finds (f97-qa-al c1
+    step 10: trial QA 0.135246 against 0.13334 certified)."""
+    start = np.array([0.6, 0.5])
+    floor = _InflectionModel()._newton(None, None, x0=start, max_iter=100)
+    assert floor["status"] == "converged: gain below the cost's repeatability" and floor["x"][0] == 0.6
+    model = _InflectionModel()
+    model.a_priori_floor = False
+    trial = model._newton(None, None, x0=start, max_iter=100)
+    model = _InflectionModel()
+    model.full_precision = True
+    certified = model._newton(None, None, x0=start, max_iter=100)
+    assert trial["converged"] and certified["converged"]
+    np.testing.assert_allclose(trial["x"][0], 1.0, atol=1e-5)
+    np.testing.assert_array_equal(trial["x"], certified["x"])

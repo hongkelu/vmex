@@ -1292,6 +1292,10 @@ def parse_args(argv=None):
                         "2.5 %% (10-18): no saving while Mercier/B.n rows are active (QA 286/261/209/257 s vs "
                         "288/259/208 s); an objective-only rule saved ~40 %% per QA step but read the path's "
                         "constraint rows wrong (Mercier min 8.37e-4 vs 9.44e-4 certified at FTOL 1e-6)")
+    parser.add_argument("--host-ftol", type=float,
+                        help="--free-boundary least_squares: the host solve's tolerance of the trials' tight equilibria "
+                        "(default vmex.core.freeboundary_lsq.HOST_FTOL, 1e-13; the Newton refinement takes them to the "
+                        "residual floor either way; the deck's FTOL, e.g. 1e-15, solves them as before)")
     parser.add_argument("--full-precision", action="store_true",
                         help="--free-boundary least_squares: every boundary solved to the measured repeatability alone "
                         "(no a-priori floor), e.g. a validation re-solve (--restart R --steps 0); without it a run's "
@@ -1299,6 +1303,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.full_precision and args.free_boundary != "least_squares":
         parser.error("--full-precision is an option of --free-boundary least_squares")
+    if args.host_ftol is not None and args.free_boundary != "least_squares":
+        parser.error("--host-ftol is an option of --free-boundary least_squares")
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
     elif args.seed_run is not None:
@@ -1520,6 +1526,7 @@ def main(argv=None):
         quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
         trial_ftol=args.trial_forward_ftol, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
         **({"full_precision": True} if args.full_precision else {}),
+        **({"host_ftol": args.host_ftol} if args.host_ftol is not None else {}),
         # a restart on the run's own deck starts its seed solve at the saved step's boundary, near that step's root
         # (least squares too: its cold solve from the deck did not reach a far design's boundary, v8-qal-sl 10-17)
         **({"boundary_start": restart_boundary(args.restart, restart_wout, inp)}

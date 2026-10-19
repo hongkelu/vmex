@@ -326,3 +326,28 @@ def test_hessian_falls_back_to_checkpointed_scans_then_narrower_blocks_on_device
     model._hessian_columns_remat = lambda *a: (_ for _ in ()).throw(jax.errors.JaxRuntimeError("RESOURCE_EXHAUSTED"))
     with pytest.raises(jax.errors.JaxRuntimeError):
         model.second_order(np.ones(n), (None, None, None, None), None)
+
+
+def test_trials_stop_the_host_solve_at_host_ftol_and_full_precision_at_the_deck():
+    """Tight trial solves stop the host solve at ``host_ftol`` and refine to the residual floor; full-precision solves
+    (a certified answer) use the deck's FTOL; both land on the same root (rows within the equilibria's repeatability);
+    a model without a looser host config solves its trials with the deck's."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 9), phiedge=-0.025, curtor=0.0, am=np.zeros(21),
+                  ftol_array=np.array([1e-14]))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    model = lsq.LeastSquaresFreeBoundaryModel(replace(inp, lfreeb=False), nphi=16, ntheta=16, quadrature=(64, 32),
+                                              host_ftol=1e-12)
+    assert model.host_ftol == 1e-12 and model.cfg_host is not None and model.cfg_host.ftol == 1e-12
+    assert model.cfg.ftol == 1e-14 and model.converged_ftol == 1e-14  # the floor stays the deck's
+    assert model._tight_config() is model.cfg_host
+    x = np.array(model.x0)
+    x[0] += 1e-3 * model.x_scale[0]
+    rows_host, aux = model.evaluate(x, model.params0, field, tight=True)
+    model.full_precision = True
+    assert model._tight_config() is model.cfg
+    rows_deck = model.repeat(x, model.params0, field, aux)
+    np.testing.assert_allclose(rows_host, rows_deck, rtol=0, atol=1e-8 * np.max(np.abs(rows_deck)))
+    other = lsq.LeastSquaresFreeBoundaryModel.__new__(lsq.LeastSquaresFreeBoundaryModel)
+    other.cfg, other.full_precision, other.cfg_host = model.cfg, False, None  # host_ftol at or under the deck's
+    assert other._tight_config() is model.cfg
+    assert lsq.HOST_FTOL == 1e-13

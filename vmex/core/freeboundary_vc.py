@@ -1426,7 +1426,7 @@ class ThreeTermsFreeBoundaryModel:
         ``tight=False`` solves to the trial tolerance, without the Newton refinement that certifies a state for
         differentiation (:meth:`linearize` re-solves tight first).
         """
-        im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
+        im, cfg = self._im, (self._tight_config() if tight else self.cfg_trial)
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
@@ -1445,6 +1445,10 @@ class ThreeTermsFreeBoundaryModel:
             if not (bool(result.converged) or fsq / cfg.ftol <= cfg.max_fsq_ratio):
                 return None
         return jax.device_put(jax.tree.map(jnp.asarray, (state, mask)), cfg.device)
+
+    def _tight_config(self):
+        """The implicit config of a tight solve (the least-squares model's trials may stop the host solve earlier)."""
+        return self.cfg
 
     def boundary_residual(self, state, params, field) -> BoundaryResidual:
         """:class:`BoundaryResidual` of a solved state."""
@@ -1589,7 +1593,7 @@ class ThreeTermsFreeBoundaryModel:
         seed is the deck's equilibrium, or a cold start when ``x`` is the deck's boundary itself; the solver's
         one-entry memos are cleared so that the boundary is really solved again.
         """
-        im, cfg = self._im, self.cfg
+        im, cfg = self._im, self._tight_config()
         params_x = self.with_boundary(params, jnp.asarray(x))
         at_deck = not np.any(np.asarray(x)[:self.n_boundary] - self.x0[:self.n_boundary])
         for memo in (im._LAST_SOLVE, im._LAST_REFINED, im._LAST_REFINEMENT_CORRECTION) + (

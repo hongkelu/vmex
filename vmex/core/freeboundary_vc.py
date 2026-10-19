@@ -160,6 +160,11 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+#: Largest RMS interface residual (relative to |B|) of a three-term free boundary that counts as solved: a guard
+#: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
+ACCEPTED_RESIDUAL = 1e-2
+
+
 def solve_free_boundary_three_term(
     inp: VmecInput,
     *,
@@ -183,6 +188,7 @@ def solve_free_boundary_three_term(
     bootstrap_helicity: int = 0,
     bootstrap_weight: float = 100.0,
     previous=None,
+    max_residual: float = ACCEPTED_RESIDUAL,
     verbose: int = 0,
 ):
     """Free-boundary equilibrium of ``inp`` from the three interface conditions.
@@ -227,11 +233,14 @@ def solve_free_boundary_three_term(
     ``bootstrap_weight`` solve for a Redl-self-consistent current profile
     together with the boundary (:class:`ThreeTermFreeBoundaryModel`).
 
-    As DESC's least squares, the fit stops where it cannot improve any more: ``converged`` (and ``success``) is
-    True when the Levenberg-Marquardt finish met its relative cost-change test, or its steps still gained under
-    5% each after a fresh Jacobian; False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not be the free boundary (a wrong local minimum is
-    one too), and the interface rows cannot reach zero at a finite resolution (spectral truncation, the
-    virtual-casing grid), so ``boundary_residual`` is always reported for judging the result.
+    As DESC's least squares, the fit stops where it cannot improve any more: ``converged`` is True when the
+    Levenberg-Marquardt finish met its relative cost-change test, or its steps still gained under 5% each after a
+    fresh Jacobian; False when it ran out of evaluations or its trust radius collapsed.  A stationary point need
+    not be the free boundary (a wrong local minimum is one too), and the interface rows cannot reach zero at a
+    finite resolution (spectral truncation, the virtual-casing grid: VMEC2000's own CTH-like free boundary scores
+    6e-4 in vacuum and 2.4e-3 at finite beta), so ``success`` also requires every RMS interface residual
+    (:class:`BoundaryResidual`) at or below ``max_residual``, a stated acceptance tolerance above those floors;
+    ``boundary_residual`` is always reported.
 
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates, then any bootstrap-current values), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
@@ -241,7 +250,8 @@ def solve_free_boundary_three_term(
     """
     from scipy.optimize import OptimizeResult
 
-    from .freeboundary import _external_field_from_input
+    from .freeboundary import _resolve_mgrid
+    from .mgrid import MgridField
     from .optimize import solve_equilibrium
 
     if bool(inp.lasym):
@@ -250,8 +260,9 @@ def solve_free_boundary_three_term(
     if abs(p_edge) > 1e-8 * p_max:
         raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
                          "boundary pressure must vanish")
-    if external_field is None:
-        external_field = _external_field_from_input(inp, mgrid_path)
+    if external_field is None:  # tricubic: virtual casing samples between the mgrid planes, where the trilinear
+        # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
+        external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
     if previous is not None:
         model, x0, jacobian = previous.model, previous.x, previous.jac
     else:
@@ -274,13 +285,15 @@ def solve_free_boundary_three_term(
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
     converged = bool(out["converged"])
+    largest = max(residual.normal, residual.pressure, residual.sheet_current)
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
-        njev=out["njev"], success=converged, converged=converged,
+        njev=out["njev"], success=converged and largest <= max_residual, converged=converged,
         message=(f"{out['accepted']} Levenberg-Marquardt steps after the trust region; "
                  + ("the cost stopped improving" if converged else "stopped before the cost stopped improving")
                  + f"; interface residuals B.n {residual.normal:.2e}, pressure {residual.pressure:.2e}, "
-                 f"sheet current {residual.sheet_current:.2e}"),
+                 f"sheet current {residual.sheet_current:.2e}"
+                 + ("" if largest <= max_residual else f" (above the accepted {max_residual:.0e})")),
         input=boundary, equilibrium=solve_equilibrium(boundary, initial_state=state), model=model, aux=out["aux"],
         boundary_residual=residual, initial_boundary_residual=initial)
 

@@ -1001,6 +1001,8 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
         )
         emit(_timing_block(read_s, solve_s, wout_s), end="")
         emit(f"\n Wrote WOUT file: {wout_path}")
+        if bool(result.converged) and _interface_report(result):
+            emit(_interface_report(result))
         if not bool(result.converged):
             emit(_interface_failure(result) or "\n HINT : increase NITER or loosen FTOL")
     elif not bool(result.converged) and _interface_failure(result):
@@ -1034,14 +1036,28 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
     return 0
 
 
+def _interface_report(result) -> str:
+    """The interface residuals of a converged three-term free boundary, or ``""`` for any other result."""
+    residual = getattr(result, "boundary_residual", None)
+    if residual is None or result.vacuum is not None:
+        return ""
+    return (f"\n THREE-TERM INTERFACE RESIDUALS (RMS, relative to |B|): B.n {residual.normal:.2e}, "
+            f"pressure balance {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e}")
+
+
 def _interface_failure(result) -> str:
     """Why a three-term free boundary is not converged (its interface rows), or ``""`` for any other result."""
     residual = getattr(result, "boundary_residual", None)
     if residual is None or result.vacuum is not None:  # NESTOR, or a residual only reported
         return ""
+    from .freeboundary_vc import ACCEPTED_RESIDUAL
+
+    why = (f"a residual is above the accepted {ACCEPTED_RESIDUAL:.0e}"
+           if max(residual.normal, residual.pressure, residual.sheet_current) > ACCEPTED_RESIDUAL
+           else "the boundary fit stopped before its cost stopped improving")
     return (f"\n THREE-TERM FREE BOUNDARY NOT CONVERGED: interface residuals B.n {residual.normal:.2e}, "
             f"pressure balance {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e} "
-            "(relative to |B|); the boundary fit stopped before its cost stopped improving")
+            f"(relative to |B|); {why}")
 
 
 # ---------------------------------------------------------------------------

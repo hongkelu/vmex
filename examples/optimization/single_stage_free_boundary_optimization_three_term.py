@@ -1425,6 +1425,8 @@ def main(argv=None):
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),
                    failed_trials=problem.metadata["holder"]["failed_trials"],
+                   boundary_residual={k: float(v) for k, v in
+                                      vars(problem.boundary_residual(problem.accepted.parameters)).items()},
                    elapsed_seconds=time.monotonic() - started)
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))

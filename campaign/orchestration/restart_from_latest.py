@@ -1,9 +1,9 @@
 """Stop runs and restart each from its latest saved step with the current code, same command, environment and GPU.
 
-    python extra/restart_from_latest.py <suffix> <pid> [<pid> ...]     (cwd: the vmex tree)
+    python <repo>/campaign/orchestration/restart_from_latest.py <suffix> <pid> [<pid> ...]     (cwd: the vmex tree)
 
 The restart directory ``<output>.<suffix>-from-<step>`` gets input.run, coils.json and wout.nc of that step; the new
-run writes ``<output>-<suffix>``. Prints the new pids (for extra/continue_until_converged.py).
+run writes ``<output>-<suffix>``. Prints the new pids (for campaign/orchestration/continue_until_converged.py).
 """
 import os
 import re

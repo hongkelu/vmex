@@ -1,6 +1,6 @@
 """Effective ripple eps_eff^{3/2}(s) of WOUTs (NEO_JAX on a booz_xform_jax transform, as the plot_wout summary).
 
-    python extra/eps_eff.py <wout.nc | booz_small.npz> [...]     (cwd: vmex tree, GPU)
+    python <repo>/campaign/postprocess/eps_eff.py <wout.nc | booz_small.npz> [...]     (cwd: vmex tree, GPU)
 
 A ``.npz`` holds only the WOUT fields booz_xform_jax reads (``<field>_cols``: the nonzero columns of a Nyquist array).
 """

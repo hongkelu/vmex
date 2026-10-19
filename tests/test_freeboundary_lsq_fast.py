@@ -426,3 +426,77 @@ def test_trials_stop_the_host_solve_at_host_ftol_and_full_precision_at_the_deck(
     other.cfg, other.full_precision, other.cfg_host = model.cfg, False, None  # host_ftol at or under the deck's
     assert other._tight_config() is model.cfg
     assert lsq.HOST_FTOL == 1e-13
+
+
+class _HumpModel(_ToyModel):
+    """Rows ``(A - x0^2, 2 (x1 - x0 / 10), x2 - 0.3)`` and the constraint row ``x2 + x1^2 - 0.3``: the minimum is
+    near ``x0 = sqrt(A)``, and from ``x0 ~ 0`` the exact (Lagrangian) model is indefinite (``6 x0^2 < 2 A``) for a
+    long way.  Boundaries with ``|x0| > fail_at`` have no equilibrium (the evaluation fails), as a trial whose free
+    boundary lies past a region without equilibria (f97-qa-sl-c3, 10-19)."""
+
+    def __init__(self, A, fail_at=np.inf):
+        super().__init__(n=3)
+        self.fail_at = fail_at
+
+        def rows(x):
+            return jnp.stack([A - x[0] ** 2, 2.0 * (x[1] - 0.1 * x[0]), x[2] - 0.3, x[2] + x[1] ** 2 - 0.3])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+
+    def evaluate(self, x, params, field, seed=None, tight=False):
+        if abs(x[0]) > self.fail_at:
+            return None
+        return np.asarray(self.rows_fn(jnp.asarray(x))), (np.array(x), None, np.array(x), None)
+
+
+def test_trust_radius_collapse_is_no_convergence():
+    """A trust radius that collapses on trials without equilibrium is no convergence: trial steps below the rows'
+    noise certify only once the model's whole Newton step was evaluated.  Here the minimum (x0 = 10) lies past the
+    region with equilibria (|x0| <= 5); the solve used to report "converged: trial steps below the rows' noise" at
+    its edge, a point whose reduced gradient is far from zero (a non-root)."""
+    start = np.array([1e-3, 0.0, 0.3])
+    model = _HumpModel(100.0, fail_at=5.0)
+    out = model._newton(None, None, x0=start, max_iter=200)
+    assert not out["converged"], out["status"]
+    assert out["status"].startswith("stalled: the trust radius collapsed"), out["status"]
+    x = out["x"]
+    r, J = np.asarray(model.rows_fn(jnp.asarray(x))), np.asarray(model.jac_fn(jnp.asarray(x)))
+    c = J[-1] / np.linalg.norm(J[-1])
+    g = J[:-1].T @ r[:-1]
+    assert np.linalg.norm(g - (g @ c) * c) > 10.0  # not stationary on the constraint
+    # with every equilibrium available, the same start converges to the minimum
+    out = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=200)
+    assert out["converged"], out["status"]
+    np.testing.assert_allclose(out["x"][0], 10.0, rtol=1e-3)
+
+
+def test_warm_start_outside_the_newton_basin_hands_over():
+    """A warm start (``_newton_boundary(undamped=True)``, an optimizer's trial) stops, not converged, at the second
+    exact model in a row without its full Newton step (indefinite, or cut by the radius) instead of crawling: 5
+    models against 41 before the radius collapsed, the trial's next start then takes over.  Inside the basin the
+    warm solve is the solve without the test, to the last bit; a cold solve (``solve_boundary``) never stops so."""
+    start = np.array([1e-3, 0.0, 0.3])
+    model = _HumpModel(100.0, fail_at=5.0)
+    J = np.asarray(model.jac_fn(jnp.asarray(start)))
+    crawl = model._newton(None, None, x0=start, max_iter=200, jacobian=J)
+    warm = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=200, jacobian=J, basin=True)
+    assert not warm["converged"] and warm["status"].startswith("stalled: outside the Newton basin"), warm["status"]
+    assert warm["njev"] <= 6 < crawl["njev"], (warm["njev"], crawl["njev"])
+    answer = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=200)["x"]
+    for shift in (1e-3, 1e-2, 1e-1):  # near the answer: in the basin, the same solve with or without the test
+        near = answer + shift * np.array([1.0, -1.0, 0.5])
+        J = np.asarray(model.jac_fn(jnp.asarray(answer)))  # the anchor's Jacobian
+        a = _HumpModel(100.0)._newton(None, None, x0=near, max_iter=200, jacobian=J)
+        b = _HumpModel(100.0)._newton(None, None, x0=near, max_iter=200, jacobian=J, basin=True)
+        assert a["converged"] and b["converged"], (a["status"], b["status"])
+        np.testing.assert_array_equal(a["x"], b["x"])
+        assert a["njev"] == b["njev"]
+    calls = []
+    model = _HumpModel(100.0)
+    model._newton = lambda params, field, **kw: calls.append(kw["basin"]) or dict(converged=True, status="")
+    model._newton_boundary(None, None, x0=start, jacobian=J, undamped=True)
+    model._newton_boundary(None, None, x0=start, jacobian=J)
+    model.solve_boundary(None, None, x0=start, continuation=False)
+    assert calls == [True, False, False]

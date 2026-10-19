@@ -860,19 +860,34 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
             accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
             full = False  # the accepted step is the model's whole Newton step (not one the trust radius cut short)
+            # the model's whole Newton step was evaluated (an equilibrium there): only then do the shorter trial steps
+            # below the rows' noise mean convergence; ``forced``: that step was tried once on purpose
+            newton_tried, forced, collapsed = False, False, False
             for attempt in range(12):
                 full = bool(np.isfinite(newton) and newton <= radius)
                 step, predicted = model_step(radius)
                 if feasible and self._step_converged(S * step, step_noise, x):
                     # a trial step the rows' noise (or round-off) already accounts for carries no information:
                     # an evaluation there only returns the same state, which a ratio test would accept without end
-                    if fresh:
+                    if fresh and newton_tried:
                         converged, status = True, "converged: trial steps below the rows' noise"
+                    elif fresh and w[0] > 0 and not forced:
+                        # the radius, not the Newton step, is below the noise: it was cut by trials without
+                        # equilibrium or by an earlier model.  The Newton step decides: one evaluation there
+                        radius, forced = newton, True
+                        continue
+                    elif fresh:
+                        # the radius collapsed on trials without equilibrium (or the model is indefinite): no root
+                        # is located here (the toy of test_trust_radius_collapse_is_no_convergence converged at
+                        # the edge of the region with equilibria, its gradient far from zero)
+                        collapsed, status = True, ("stalled: the trust radius collapsed below the rows' noise "
+                                                   "without the Newton step's equilibrium")
                     else:
                         need = "exact"
                     break
                 x_new, got = trial(x + S * step)
                 nfev += 1
+                newton_tried = newton_tried or (full and got is not None)
                 cost_new = np.inf if got is None else merit_of(got[0])
                 evaluated = evaluated or got is not None
                 rho = (merit - cost_new) / predicted if predicted > 0 else -np.inf
@@ -966,7 +981,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     break
                 if tiny:  # the exact model's gain is below the cost's repeatability: nothing left to resolve
                     break
-            if converged:
+            if converged or collapsed:
                 break
             if fresh and accepted:
                 outside = 0 if full else outside + 1

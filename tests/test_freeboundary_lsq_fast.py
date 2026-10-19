@@ -485,6 +485,13 @@ def test_warm_start_outside_the_newton_basin_hands_over():
     warm = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=200, jacobian=J, basin=True)
     assert not warm["converged"] and warm["status"].startswith("stalled: outside the Newton basin"), warm["status"]
     assert warm["njev"] <= 6 < crawl["njev"], (warm["njev"], crawl["njev"])
+    # far from the minimum (x0 = 100) with every equilibrium available: positive-definite exact models whose steps
+    # the radius cuts short, two in a row
+    far = _HumpModel(1e4)
+    far = far._newton(None, None, x0=start, max_iter=300, jacobian=np.asarray(far.jac_fn(jnp.asarray(start))),
+                      basin=True)
+    assert not far["converged"] and "radius cut short" in far["status"], far["status"]
+    assert far["outside_basin"]
     answer = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=200)["x"]
     for shift in (1e-3, 1e-2, 1e-1):  # near the answer: in the basin, the same solve with or without the test
         near = answer + shift * np.array([1.0, -1.0, 0.5])

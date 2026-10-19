@@ -286,6 +286,16 @@ def test_trial_step_tolerance_and_previous_exact_certificate():
     assert full["converged"] and trial["converged"]
     assert trial["njev"] <= full["njev"]
     assert np.max(np.abs(trial["x"] - full["x"])) <= 1e-3
+    # the tolerance's current-value part (relative to the values, over R0): a step of 1e-4 of them passes at 1e-3, a
+    # trust-region step never does, nor any step of a full-precision solve
+    model = _ToyModel()
+    model.n_boundary, model.boundary_modes, model.trial_step_tolerance = 2, [(1, 0)] * 2, 1e-3
+    x, step = np.ones(4), np.r_[1e-5, 1e-5, 1e-4, 1e-4]
+    assert model._step_converged(step, None, x, newton=True)
+    assert not model._step_converged(step, None, x)
+    assert not model._step_converged(np.r_[1e-5, 1e-5, 1e-2, 1e-2], None, x, newton=True)
+    model.full_precision = True
+    assert not model._step_converged(step, None, x, newton=True)
     certified, reference = solve(1e-3, full_precision=True), solve(None, full_precision=True)
     np.testing.assert_array_equal(certified["x"], reference["x"])
     assert certified["njev"] == reference["njev"]

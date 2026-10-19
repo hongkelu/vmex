@@ -57,9 +57,9 @@ dependencies = [
   # is the first release that declares floors for what it imports, so
   # installing into an environment with older packages upgrades them
   # (nightly.yml "stale" lane).
-  # solvax 0.29.0 GMRES fails under jax_disable_jit, which this test suite sets
+  # solvax >= 0.28.5 GMRES fails under jax_disable_jit, which this test suite sets
   # ('_Fn' object is not callable in solvax/krylov.py); tt2-dev runs jitted:
-  "solvax>=0.27.0,<0.29",
+  "solvax>=0.27.0,<0.28.5",
 ]
 
 [project.scripts]

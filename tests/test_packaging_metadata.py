@@ -89,7 +89,7 @@ def test_plain_install_includes_plotting_and_qi_dependencies() -> None:
     assert "booz_xform_jax" in dependency_names
     assert "packaging" in dependency_names
     assert "numpy" in dependency_names
-    # Floors only: main pins upper bounds (jax<0.12, solvax<0.29) its 10-09 code was tested with.
+    # Floors only: main pins upper bounds (jax<0.12, solvax<0.28.5) its 10-09 code was tested with.
     assert any(Requirement(dep).name == "solvax" and ">=0.27.0" in str(Requirement(dep).specifier).split(",")
                for dep in project_dependencies)
     assert "gkx>=2.5.0" in optional_dependencies["turbulence"]

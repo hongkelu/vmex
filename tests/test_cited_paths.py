@@ -77,7 +77,7 @@ def test_readme_install_floors_match_pyproject() -> None:
     for requirement in [*project["dependencies"], *(r for name in
                         ("coils", "freeb", "neoclassical", "turbulence", "optimizers")
                         for r in extras[name])]:
-        # Floors only: main pins upper bounds (jax<0.12, solvax<0.29) its 10-09 code was tested with.
+        # Floors only: main pins upper bounds (jax<0.12, solvax<0.28.5) its 10-09 code was tested with.
         match = re.fullmatch(r"([A-Za-z0-9_.-]+)(?:>=([^,\s]+))?(?:,<\S+)?", requirement)
         assert match, requirement
         declared.setdefault(match.group(1), match.group(2) or "")

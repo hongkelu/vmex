@@ -1256,6 +1256,80 @@ def test_augmented_lagrangian_penalty_returns_once_feasible():
     np.testing.assert_allclose(loose.x, reference.x, atol=1e-6)
 
 
+def test_augmented_lagrangian_is_invariant_to_row_units():
+    """The penalty acts on rows divided by their starting gradient norms: rows in any units (here 1e-3 and 1e3,
+    the coil-length and axis-|B| rows of a finite-beta QH run differ by 3e4) take the same steps, and the weak row's
+    violation is removed as fast as the stiff one's."""
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    def run(units, steps=60):
+        p = opt.FunctionProblem.from_functions(np.array([0., 0.]), value_and_grad=lambda x: (
+            float((x[0] - 2)**2 + (x[1] - 2)**2 + x[0] * x[1]), np.array([2*(x[0] - 2) + x[1], 2*(x[1] - 2) + x[0]])))
+        a, b = units
+        rows = NonlinearConstraint(lambda x: np.array([a * (x[0] + x[1]**2), b * x[1]]), -np.inf, [a, b * .5],
+                                   jac=lambda x: np.array([[a, 2*a*x[1]], [0., b]]))
+        return opt.minimize(p, method="AUGLAG", constraints=rows, options=dict(maxiter=steps))
+
+    plain = run((1., 1.))
+    for units in ((1e-3, 1e3), (1e3, 1e-3)):
+        result = run(units)
+        assert result.success and result.max_violation <= 1e-8 * max(units)
+        np.testing.assert_allclose(result.x, plain.x, rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(plain.x, [.75, .5], atol=1e-8)
+
+
+def test_secant_update_keeps_noise_out_of_the_curvature():
+    """A pair whose y is mostly not along the step (a gradient's noise) changes only the curvature along the step;
+    Powell's damping put |y|^2 / (d.H.d / 5) of curvature along it. A measured pair is the BFGS update."""
+    from vmex.core.optimize import _secant_update
+
+    rng = np.random.default_rng(0)
+    H = np.diag([1., 2., 3., 4.])
+    d = 1e-4 * np.array([1., 0., 0., 0.])
+    noise = np.array([0., 1., -.5, .3])  # |noise| / |d| ~ 1e4, cos(d, y) ~ 1e-4
+    for y in (H @ d + noise, -.5 * H @ d + noise):
+        H1, partial = _secant_update(H, d, y)
+        assert partial and np.linalg.eigvalsh(H1)[-1] <= 4. + 1e-12 and np.linalg.eigvalsh(H1)[0] > 0
+        np.testing.assert_allclose(d @ H1 @ d, max(d @ y, .2 * d @ H @ d), rtol=1e-12)
+    A = rng.normal(size=(4, 4))
+    true = A @ A.T + np.eye(4)
+    d = rng.normal(size=4)
+    H1, partial = _secant_update(H, d, true @ d)
+    Hd = H @ d
+    assert not partial
+    np.testing.assert_allclose(H1, H + np.outer(true @ d, true @ d) / (d @ true @ d) - np.outer(Hd, Hd) / (d @ Hd))
+    np.testing.assert_allclose(H1 @ d, true @ d)
+    zero = np.zeros((4, 4))  # a row's first pair
+    np.testing.assert_allclose(_secant_update(zero, d, true @ d)[0], np.outer(true @ d, true @ d) / (d @ true @ d))
+    assert _secant_update(zero, d, -d)[0] is zero
+
+
+def test_augmented_lagrangian_resumes_a_state_of_unscaled_rows():
+    """A state saved before the rows were scaled (no ``row_scale``) resumes with its multipliers converted and its
+    curvature and radius restarted, and the run still reaches the constrained minimum."""
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    def rosenbrock(x):
+        return (float((1-x[0])**2 + 100*(x[1]-x[0]**2)**2),
+                np.array([-2*(1-x[0]) - 400*x[0]*(x[1]-x[0]**2), 200*(x[1]-x[0]**2)]))
+
+    disk = NonlinearConstraint(lambda x: np.array([x@x]), -np.inf, 1.5, jac=lambda x: 2*x[None])
+
+    def run(x0, steps, **options):
+        p = opt.FunctionProblem.from_functions(x0, scales=np.array([.5, 2.]), value_and_grad=rosenbrock)
+        return opt.minimize(p, method="AUGLAG", constraints=disk, options=dict(maxiter=steps, **options))
+
+    reference = run(np.array([-1.2, 1.]), 300)
+    first = run(np.array([-1.2, 1.]), 8)
+    legacy = {key: value for key, value in first.state.items() if key != "row_scale"}
+    legacy["B_f"] = 1e6 * np.eye(2)  # a curvature the earlier damped updates could have grown
+    second = run(first.x, 300, resume=legacy)
+    assert second.success and second.max_violation <= 1e-8 and second.state["row_scale"].shape == (1,)
+    np.testing.assert_allclose(second.x, reference.x, atol=1e-6)
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

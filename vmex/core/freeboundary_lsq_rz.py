@@ -50,6 +50,46 @@ from .input import VmecInput
 
 #: the labelling gauges of :class:`LeastSquaresRZFreeBoundaryModel` (module docstring)
 GAUGES = ("deck", "none")
+#: the solver's basis of the boundary coordinates (module docstring): the packed coefficients themselves, or the deck
+#: surface's normal displacement and its relabelling (the same space, an invertible linear map)
+BASES = ("rz", "normal_tangential")
+#: largest condition number of the normal-tangential basis (its columns unit-scaled) accepted: round-off in the
+#: coefficients stays below sqrt(eps) of a step (van der Sluis 1969 scaling, as freeboundary_vc._newton_step)
+_BASIS_MAX_COND = 1.0 / np.sqrt(np.finfo(float).eps)
+
+
+def _relabelling_map(inp, max_mode, ntheta, nzeta):
+    """Packed-coefficient changes of the relabellings ``theta -> theta + d sin(m theta - n nfp zeta)`` of ``inp``'s
+    surface, a column per mode of :func:`~vmex.core.optimize._dof_modes` (stellarator symmetric: ``d`` odd).
+
+    The points move along the surface, ``(dR, dZ) = (R_theta, Z_theta) d``, fitted on the boundary's modes by least
+    squares on a ``ntheta x nzeta`` grid of a field period (the product has harmonics beyond the band: the fit keeps
+    the band's part, the relabelling the truncated series can represent).  Returns ``(M, modes)``."""
+    from .optimize import _dof_modes, pack_boundary
+
+    rbc, zbs, nfp = np.asarray(inp.rbc, dtype=float), np.asarray(inp.zbs, dtype=float), int(inp.nfp)
+    ntor, mpol = (rbc.shape[0] - 1) // 2, rbc.shape[1]
+    th = np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False)
+    ze = np.linspace(0.0, 2.0 * np.pi / nfp, nzeta, endpoint=False)
+    T, Zg = np.meshgrid(th, ze, indexing="ij")
+    ns, ms = np.arange(-ntor, ntor + 1), np.arange(mpol)
+    ph = ms[None, :, None, None] * T[None, None] - ns[:, None, None, None] * nfp * Zg[None, None]
+    cos, sin = np.cos(ph), np.sin(ph)
+    Rt = np.einsum("nm,nmij->ij", -rbc * ms[None, :], sin)
+    Zt = np.einsum("nm,nmij->ij", zbs * ms[None, :], cos)
+    keep_z = ~((ms[None, :] == 0) & (ns[:, None] <= 0))
+    keep_r = ~((ms[None, :] == 0) & (ns[:, None] < 0))
+    pinv_r = np.linalg.pinv(cos[keep_r].reshape(int(keep_r.sum()), -1).T)
+    pinv_z = np.linalg.pinv(sin[keep_z].reshape(int(keep_z.sum()), -1).T)
+    modes = list(_dof_modes(inp, max_mode))
+    zero = replace(inp, rbc=np.zeros_like(rbc), zbs=np.zeros_like(zbs))
+    columns = []
+    for m, n in modes:
+        d = np.sin(m * T - n * nfp * Zg)
+        dr, dz = np.zeros_like(rbc), np.zeros_like(zbs)
+        dr[keep_r], dz[keep_z] = pinv_r @ (Rt * d).ravel(), pinv_z @ (Zt * d).ravel()
+        columns.append(pack_boundary(replace(zero, rbc=dr, zbs=dz), max_mode, vary_major_radius=True))
+    return np.asarray(columns).T, modes
 #: the old campaign solver's weight of its labelling rows (e3313c0f, ``label_weight``)
 DECK_GAUGE_WEIGHT = 1e-2
 
@@ -63,16 +103,20 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
     labelling gauge of the module docstring.
     """
 
-    def __init__(self, inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, **options):
+    def __init__(self, inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz", **options):
         if gauge not in GAUGES:
             raise ValueError(f"gauge must be one of {GAUGES}, got {gauge!r}")
+        if basis not in BASES:
+            raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+        self.basis = basis
         if options.get("fixed_boundary"):
             raise ValueError("the RZ least squares solves a free boundary: use LeastSquaresFreeBoundaryModel for "
                              "fixed_boundary=True")
         # read when the rows are traced (set before the base builds them)
         self.gauge, self.gauge_weight = gauge, float(gauge_weight)
         super().__init__(inp, **options)
-        self._source[1].update(gauge=self.gauge, gauge_weight=self.gauge_weight)  # a re-referenced model's too
+        # a re-referenced model's too
+        self._source[1].update(gauge=self.gauge, gauge_weight=self.gauge_weight, basis=self.basis)
 
     def _set_band(self, max_mode):
         """The boundary coordinates on the modes up to ``max_mode``: every packed coefficient, as an offset from the
@@ -88,6 +132,9 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         self.boundary_modes = list(modes) + [(0, 0)]
         self._mean_square_weight = np.r_[np.full(2 * len(modes), 0.5), 1.0]
         self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
+        self._basis = None  # basis "rz": the coordinates are the coefficients' offsets
+        if self.basis == "normal_tangential":
+            self._set_normal_tangential_basis(fixed, modes)
         self.x0 = np.zeros(x_ref.size)
         self.n_boundary = nb = x_ref.size
         if self.bootstrap is not None:
@@ -98,14 +145,58 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         self._x_ref = jnp.asarray(x_ref)
         self._normal_map = None
 
+        basis = None if self._basis is None else jnp.asarray(self._basis)
+
         def with_boundary(params, x):
-            rbc, zbs = boundary_arrays_from_x(fixed, self._x_ref + x[:nb], self.max_mode, vary_major_radius=True)
+            offset = x[:nb] if basis is None else basis @ x[:nb]
+            rbc, zbs = boundary_arrays_from_x(fixed, self._x_ref + offset, self.max_mode, vary_major_radius=True)
             params = replace(params, rbc=rbc, zbs=zbs)
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
         self._implicit_setup()
         self._interface_setup(self.seed[0], self.nphi, self.ntheta, self.digits)
+
+    def _set_normal_tangential_basis(self, fixed, modes):
+        """The basis ``"normal_tangential"``: ``x = (h, d)``, the deck surface's normal displacement ``h`` on the
+        modes of :func:`~vmex.core.freeboundary_vc._normal_displacement_map` (metres) and its relabelling ``d`` on
+        those of :func:`_relabelling_map` (radians); the packed coefficients are ``x_ref + B x``, ``B`` square and
+        invertible, so the unknowns, rows and answer are those of the basis ``"rz"``.
+
+        Why: at a converged QA boundary (qass_b25, 8x8) 137 of the 254 eigenvalues of the reduced exact Hessian in the
+        ESS-scaled coefficients are below 1e-6 of the largest, every weak direction a pure relabelling; the spectral
+        scales shrink the high modes, so a trust region round in those coordinates admits only tiny relabellings, and
+        the solve crawled along them for most of its models.  Here the two kinds of motion have their own coordinates
+        and scales in metres: ``h`` the normal displacement's ESS scales, ``d`` the same spectral scales over the mean
+        poloidal metric ``L = <|e_theta|>`` (a relabelling ``d`` moves the points by about ``L d``)."""
+        from .freeboundary_vc import _normal_displacement_map
+
+        normal, normal_modes, normal_scale = _normal_displacement_map(fixed, self.max_mode)
+        rbc = np.asarray(fixed.rbc, dtype=float)
+        ntheta, nzeta = 8 * rbc.shape[1], 8 * ((rbc.shape[0] - 1) // 2) + 8  # twice the normal map's first grid
+        tangential, tangential_modes = _relabelling_map(fixed, self.max_mode, ntheta, nzeta)
+        B = np.hstack([normal, tangential])
+        if B.shape[0] != B.shape[1]:
+            raise ValueError(f"the normal-tangential basis is {B.shape[0]} x {B.shape[1]}, not square")
+        unit = B / np.linalg.norm(B, axis=0)[None]
+        cond = float(np.linalg.cond(unit))
+        if cond > _BASIS_MAX_COND:
+            raise ValueError(f"the normal-tangential basis is singular on this deck (condition {cond:.1e})")
+        # the mean poloidal metric of the deck surface, on the same grid as the relabelling map
+        nfp = int(fixed.nfp)
+        th = np.linspace(0.0, 2.0 * np.pi, ntheta, endpoint=False)
+        ze = np.linspace(0.0, 2.0 * np.pi / nfp, nzeta, endpoint=False)
+        T, Zg = np.meshgrid(th, ze, indexing="ij")
+        ms = np.arange(rbc.shape[1])
+        ns = np.arange(-((rbc.shape[0] - 1) // 2), (rbc.shape[0] - 1) // 2 + 1)
+        ph = ms[None, :, None, None] * T[None, None] - ns[:, None, None, None] * nfp * Zg[None, None]
+        Rt = np.einsum("nm,nmij->ij", -rbc * ms[None, :], np.sin(ph))
+        Zt = np.einsum("nm,nmij->ij", np.asarray(fixed.zbs, dtype=float) * ms[None, :], np.cos(ph))
+        self._metric = float(np.mean(np.hypot(Rt, Zt)))
+        levels = np.asarray([max(abs(m), abs(n)) for m, n in tangential_modes], dtype=float)
+        self._basis = B
+        self._normal_modes, self._tangential_modes = list(normal_modes), list(tangential_modes)
+        self.x_scale = np.r_[normal_scale, np.exp(-1.2 * levels) / np.exp(-1.2) / self._metric]
 
     def _interface_setup(self, state, nphi, ntheta, digits):
         """The base least-squares setup (its constants, reports and ``B . n`` programs), then this method's rows."""
@@ -143,9 +234,16 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         self.interface_rows = interface_rows
 
     def _boundary_rms(self, step):
-        """RMS over the angles of the boundary points' displacement (metres) for a step of the packed
-        coefficients (normal and tangential: the coordinates move both)."""
-        return float(np.sqrt(np.sum(self._mean_square_weight * np.square(step))))
+        """RMS over the angles of the boundary points' displacement (metres) for a step of the coordinates (normal and
+        tangential: the coordinates move both; basis ``"normal_tangential"``: ``h`` in metres, ``d`` times the mean
+        poloidal metric)."""
+        if self._basis is None:
+            return float(np.sqrt(np.sum(self._mean_square_weight * np.square(step))))
+        from .freeboundary_vc import displacement_rms
+
+        k = len(self._normal_modes)
+        tangential = self._metric * float(np.sqrt(0.5 * np.sum(np.square(step[k:]))))
+        return float(np.hypot(displacement_rms(step[:k], self._normal_modes), tangential))
 
     def displacement_of(self, boundary, ntheta=None, nzeta=None):
         """Coordinates ``x`` of ``boundary``'s surface (its own coefficients, in its own labelling, on the band), with
@@ -159,12 +257,17 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
             nt, mp = min(ntor_mine, ntor_theirs), min(mine.shape[1], theirs.shape[1])
             mine[ntor_mine - nt:ntor_mine + nt + 1, :mp] = theirs[ntor_theirs - nt:ntor_theirs + nt + 1, :mp]
         x = pack_boundary(replace(self.fixed, rbc=rbc, zbs=zbs), self.max_mode, vary_major_radius=True)
-        return np.r_[x - np.asarray(self._x_ref), self.x0[self.n_boundary:]]
+        offset = x - np.asarray(self._x_ref)
+        if self._basis is not None:
+            offset = np.linalg.solve(self._basis, offset)
+        return np.r_[offset, self.x0[self.n_boundary:]]
 
     def _print_weakest(self, direction):
         """Print the largest coefficient components of ``direction`` (the reduced Hessian's weakest)."""
         modes = self.boundary_modes[:-1]
         labels = [f"rbc({m},{n})" for m, n in modes] + [f"zbs({m},{n})" for m, n in modes] + ["rbc(0,0)"]
+        if self._basis is not None:
+            labels = [f"h({m},{n})" for m, n in self._normal_modes] + [f"d({m},{n})" for m, n in self._tangential_modes]
         v = direction[:len(labels)] / np.max(np.abs(direction[:len(labels)]))
         top = np.argsort(-np.abs(v))[:6]
         print("  weakest:", " ".join(f"{labels[k]}:{v[k]:+.2f}" for k in top), flush=True)
@@ -178,12 +281,12 @@ class LeastSquaresRZFreeBoundaryProblem(LeastSquaresFreeBoundaryProblem):
     model_class = LeastSquaresRZFreeBoundaryModel
 
 
-def solve_free_boundary_least_squares_rz(inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT,
+def solve_free_boundary_least_squares_rz(inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz",
                                          **keywords):
     """Solve the RZ least-squares free boundary of a deck: :func:`~vmex.core.freeboundary_lsq.
     solve_free_boundary_least_squares` (the same keywords and result) on :class:`LeastSquaresRZFreeBoundaryModel`,
-    with its ``gauge`` and ``gauge_weight``."""
+    with its ``gauge``, ``gauge_weight`` and ``basis``."""
     from .freeboundary_lsq import solve_free_boundary_least_squares
 
     return solve_free_boundary_least_squares(inp, model_class=LeastSquaresRZFreeBoundaryModel, gauge=gauge,
-                                             gauge_weight=gauge_weight, **keywords)
+                                             gauge_weight=gauge_weight, basis=basis, **keywords)

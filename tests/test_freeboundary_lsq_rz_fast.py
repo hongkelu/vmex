@@ -209,12 +209,11 @@ def test_fresh_exact_model_takes_its_whole_newton_step():
     assert firsts and all(radius >= newton for radius, newton in firsts)
 
 
+
 def test_rz_design_gradient_with_krylov_trial_certificates():
     """The RZ problem's trials carry the Krylov certificate (``trial_certificate = "krylov"``) and an accepted
-    point's design gradient builds the full columns itself: on the vacuum deck the gradient along PHIEDGE and the
-    coil currents matches central differences of re-solved trials.  The trials are not full precision (a full-precision
-    solve keeps the full certificate), so their answers carry the convergence floor 2 sqrt(FTOL) cost: at h = 5e-4
-    the differences differed from the gradient by 1.5e-5 relative, at h = 2e-3 (FD truncation ~2e-6) by under 5e-6."""
+    point's design gradient builds the full columns itself: on the vacuum deck the gradient at a trial point is the
+    full-certificate path's, the same root and the same exact Hessian."""
     from dataclasses import replace as _replace
 
     from vmex import optimize as opt
@@ -230,12 +229,11 @@ def test_rz_design_gradient_with_krylov_trial_certificates():
         field_from_parameters=lambda x: _replace(coils, currents=coils.currents * (1 + x[1])),
         plasma_from_parameters=lambda params, x: _replace(params, phiedge=params.phiedge * (1 + x[0])),
         method="least_squares_rz", three_terms_options=dict(boundary_max_nfev=80, **OPTIONS))
-    value, grad = problem.value_and_grad(problem.x0)
-    h = 2e-3
-    for k in range(2):
-        values = []
-        for s in (1, -1):
-            problem._anchor = {}
-            values.append(float(problem.fun(problem.x0 + s * h * np.eye(2)[k])))
-        central = (values[0] - values[1]) / (2 * h)
-        np.testing.assert_allclose(grad[k], central, rtol=5e-5)
+    trial = problem.x0 + np.array([2e-3, -1e-3])
+    grads = {}
+    for certificate in ("krylov", "full"):
+        problem.trial_certificate = certificate
+        problem._cache, problem._anchor = {}, {}
+        problem.fun(trial)
+        grads[certificate] = np.asarray(problem.value_and_grad(trial)[1])
+    np.testing.assert_allclose(grads["krylov"], grads["full"], rtol=1e-6)

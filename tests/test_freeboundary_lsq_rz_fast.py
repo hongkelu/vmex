@@ -99,7 +99,7 @@ def test_rz_entry_and_options():
     inp = _vacuum_deck()
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     with pytest.raises(ValueError, match="gauge must be"):
-        rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), gauge="spectral", **OPTIONS)
+        rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), gauge="equal_area", **OPTIONS)
     with pytest.raises(ValueError, match="takes no method_options"):
         fvc.solve_free_boundary_three_terms(inp, external_field=field, method_options=dict(gauge="none"))
     fit = fvc.solve_free_boundary_three_terms(inp, external_field=field, method="least_squares_rz",

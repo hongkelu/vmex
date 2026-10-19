@@ -895,6 +895,20 @@ def coil_point_inequalities(coils):
                             (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
 
 
+def chunked_jacfwd(fun, chunk=32):
+    """Forward-mode Jacobian of ``fun`` with ``chunk`` input directions at a time: memory of the point rows' distance
+    kernels grows with the directions pushed at once (35 GiB for all of a QI design)."""
+    import jax
+    import jax.numpy as jnp
+
+    def jac(x):
+        n = x.size
+        basis = jnp.eye(-(-n // chunk) * chunk, n, dtype=x.dtype).reshape(-1, chunk, n)
+        columns = jax.lax.map(jax.vmap(lambda v: jax.jvp(fun, (x,), (v,))[1]), basis)
+        return columns.reshape(-1, columns.shape[-1])[:n].T
+    return jac
+
+
 def coil_rows_and_jacobian(coils_of, other_rows):
     """``x -> [coil limits of coils_of(x), other_rows(x)]`` and its Jacobian. The coil limits are per coil, or per
     point with ``--coil-point-rows``; their thousands of rows go forward, the rest (which may see the boundary)
@@ -906,7 +920,7 @@ def coil_rows_and_jacobian(coils_of, other_rows):
     rows = lambda x: jnp.concatenate([limits(coils_of(x)), other_rows(x)])
     if not COIL_POINT_ROWS:
         return rows, jax.jacrev(rows)
-    points, others = jax.jacfwd(lambda x: limits(coils_of(x))), jax.jacrev(other_rows)
+    points, others = chunked_jacfwd(lambda x: limits(coils_of(x))), jax.jacrev(other_rows)
     return rows, lambda x: jnp.concatenate([points(x), others(x)])
 
 

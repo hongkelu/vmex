@@ -985,6 +985,20 @@ def coil_point_inequalities(coils):
                             (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
 
 
+def chunked_jacfwd(fun, chunk=32):
+    """Forward-mode Jacobian of ``fun`` with ``chunk`` input directions at a time: memory of the point rows' distance
+    kernels grows with the directions pushed at once (35 GiB for all of a QI design)."""
+    import jax
+    import jax.numpy as jnp
+
+    def jac(x):
+        n = x.size
+        basis = jnp.eye(-(-n // chunk) * chunk, n, dtype=x.dtype).reshape(-1, chunk, n)
+        columns = jax.lax.map(jax.vmap(lambda v: jax.jvp(fun, (x,), (v,))[1]), basis)
+        return columns.reshape(-1, columns.shape[-1])[:n].T
+    return jac
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -1004,7 +1018,7 @@ def coil_constraint(coils_from_x):
     from scipy.optimize import NonlinearConstraint
     rows = coil_point_inequalities if COIL_POINT_ROWS else coil_inequalities
     fun = jax.jit(lambda x: rows(coils_from_x(x)))
-    jac = jax.jit(jax.jacfwd(fun) if COIL_POINT_ROWS else jax.jacrev(fun))  # thousands of point rows: forward
+    jac = jax.jit(chunked_jacfwd(fun) if COIL_POINT_ROWS else jax.jacrev(fun))  # thousands of point rows: forward
     return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                jac=lambda x: np.asarray(jac(jnp.asarray(x))))
 

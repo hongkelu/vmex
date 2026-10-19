@@ -163,3 +163,47 @@ def test_rz_labelling_presolve():
         inp, external_field=field, method="least_squares_rz",
         method_options=dict(gauge_weight=1e-1, labelling_presolve=dict(max_iter=10)), **OPTIONS)
     assert fit.success and np.allclose(fit.model.fixed.rbc, deck.rbc)  # the pre-solved deck is the model's
+
+
+def test_fresh_exact_model_takes_its_whole_newton_step():
+    """With ``exact_takes_newton_step`` (the RZ least squares' setting), a fresh exact (positive-definite) model's
+    first step is its whole Newton step, whatever radius the cheaper models' failures left: on the sphere rows of
+    ``test_freeboundary_lsq_fast`` the Gauss-Newton and BFGS steps overshoot and the radius shrinks below their Newton
+    steps; without it the exact model reached its own Newton step only over radius doublings, each a further exact
+    model in a trial."""
+    from vmex.core import freeboundary_lsq as lsq
+    from tests.test_freeboundary_lsq_fast import _SphereModel
+
+    assert rz.LeastSquaresRZFreeBoundaryModel.exact_takes_newton_step
+    assert not lsq.LeastSquaresFreeBoundaryModel.exact_takes_newton_step
+    calls, current = [], {"exact": False, "first": False}
+    solution = lsq._trust_region_solution
+
+    def recorded(w, gq, radius, newton):  # (exact model, its first step, radius, Newton step)
+        calls.append((current["exact"], current["first"], radius, newton))
+        current["first"] = False
+        return solution(w, gq, radius, newton)
+
+    rng = np.random.default_rng(0)
+    lsq._trust_region_solution = recorded
+    try:
+        for n, weight in ((3, 0.01), (6, 0.03), (6, 0.1)):
+            start = np.r_[0.3, rng.standard_normal(n - 1)]
+            model = _SphereModel(weight, n)
+            model.exact_takes_newton_step = True
+            model_of = model._derivative_model
+
+            def tagged(exact, *args, model_of=model_of, **kwargs):
+                current.update(exact=bool(exact), first=True)
+                return model_of(exact, *args, **kwargs)
+
+            model._derivative_model = tagged
+            out = model._newton(None, None, x0=start / np.linalg.norm(start), max_iter=200)
+            assert out["converged"], (n, weight, out["status"])
+            np.testing.assert_allclose(out["x"], np.r_[1.0, np.zeros(n - 1)], atol=1e-5)
+    finally:
+        lsq._trust_region_solution = solution
+    finite = [c for c in calls if np.isfinite(c[3])]
+    assert any(radius < newton for exact, _, radius, newton in finite if not exact)  # cheap steps cut by the radius
+    firsts = [(radius, newton) for exact, first, radius, newton in finite if exact and first]
+    assert firsts and all(radius >= newton for radius, newton in firsts)

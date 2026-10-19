@@ -175,6 +175,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
+    #: a fresh exact model may take its whole Newton step, whatever radius the cheaper models' failures left
+    #: (:meth:`_newton`).  Off here: the normal-displacement coordinates gain nothing from it and the M 16 QA seed
+    #: took 20 models against 16 (PR #103); the RZ least squares (its soft relabellings) sets it.
+    exact_takes_newton_step = False
     #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
     #: rule only; full-precision solves always use it)
     trial_step_tolerance = None
@@ -825,6 +829,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
+            if fresh and np.isfinite(newton) and self.exact_takes_newton_step:
+                # a fresh exact, positive-definite model takes its whole Newton step: the radius it inherits was
+                # shrunk by the cheaper models' failures, not by its own (the RZ least squares' warm trial at a design
+                # step 1e-2: radius 1.35e-3 against the exact model's Newton step 7.97e-3, and two more exact models
+                # to get there, 484 s against 336 s)
+                radius = max(radius, newton)
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""

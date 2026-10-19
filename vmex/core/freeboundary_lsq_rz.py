@@ -132,6 +132,10 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
     labelling gauge of the module docstring.
     """
 
+    #: the soft relabelling directions leave cheap models failing and the radius short of the exact model's Newton
+    #: step (:attr:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel.exact_takes_newton_step`)
+    exact_takes_newton_step = True
+
     def __init__(self, inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz",
                  gauge_top_weight=SPECTRAL_TOP_WEIGHT, **options):
         if gauge not in GAUGES:

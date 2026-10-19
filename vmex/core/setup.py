@@ -225,15 +225,11 @@ class RunSetup:
     lthreed: bool
     lconm1: bool
     ncurr: int
-    #: Hold the constrained m=1 combination at its initial-guess profile for the
-    #: whole solve (see :func:`vmex.core.residuals.pin_m1_gauge`); stellarator-symmetric
-    #: runs only (``lasym`` keeps VMEC2000's rule).
-    freeze_m1: bool = True
 
 
 _register(RadialGrids)
 _register(ProcessedBoundary, meta=("signgs", "lflip"))
-_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr", "freeze_m1"))
+_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr"))
 
 
 def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:
@@ -272,14 +268,16 @@ def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:
 def _lasym_delta_rotation(rbc, rbs, zbc, zbs, *, mpol: int, ntor: int):
     """``readin.f`` lasym normalization: rotate theta so ``RBS(0,1) = ZBC(0,1)``.
 
-    ``delta = atan2(rbs(0,1) - zbc(0,1), rbc(0,1) + zbs(0,1))`` (VMEC2000
-    readin.f since 2021; the earlier ``atan`` over ``|rbc| + |zbs|`` misses
-    the alignment when ``rbc(0,1)`` and ``zbs(0,1)`` differ in sign); every
-    (n, m) pair is rotated by ``m*delta`` (cos/sin mixing).
+    ``delta = atan((rbs(0,1) - zbc(0,1)) / (|rbc(0,1)| + |zbs(0,1)|))``; every
+    (n, m) pair is rotated by ``m*delta`` (cos/sin mixing).  A denominator of
+    zero (degenerate m=1 content) keeps the input unrotated.
     """
     if mpol < 2:
         return rbc, rbs, zbc, zbs
-    delta = float(np.arctan2(rbs[ntor, 1] - zbc[ntor, 1], rbc[ntor, 1] + zbs[ntor, 1]))
+    denom = abs(rbc[ntor, 1]) + abs(zbs[ntor, 1])
+    if denom == 0.0:
+        return rbc, rbs, zbc, zbs
+    delta = float(np.arctan((rbs[ntor, 1] - zbc[ntor, 1]) / denom))
     if delta == 0.0:
         return rbc, rbs, zbc, zbs
     m = np.arange(mpol, dtype=float)[None, :]
@@ -1198,7 +1196,6 @@ def _setup_lane(key: _SetupLaneKey):
             signgs=key.signgs, lflip=key.lflip,
             lasym=bool(res.lasym), lthreed=bool(res.lthreed),
             lconm1=key.lconm1, ncurr=key.ncurr,
-            freeze_m1=not bool(res.lasym),  # the fixed m=1 gauge is verified for lasym = False only
         )
 
     return jax.jit(tail, compiler_options=_LANE_COMPILER_OPTIONS)

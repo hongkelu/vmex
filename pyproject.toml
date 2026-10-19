@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vmex"
-version = "0.11.10"
+version = "0.11.9"
 description = "JAX implementation of VMEC2000 with differentiable fixed-boundary and branch-local free-boundary research paths."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,8 +29,10 @@ dependencies = [
   # vmex/__init__.py refuses older jax/jaxlib/scipy at import with the same
   # floors.  jaxlib 0.9.x crashes loading large cached executables, so
   # vmex/_compat.py keeps the persistent cache off below 0.10.
-  "jax>=0.9.2",
-  "jaxlib>=0.9.2",
+  # main is the 10-09 (PR #29) code; jax 0.12 differentiates jnp.hypot to NaN on the axis
+  # (mirror CircularCoils; fixed on tt2-dev in #104), so main stays below 0.12:
+  "jax>=0.9.2,<0.12",
+  "jaxlib>=0.9.2,<0.12",
   # 1.16 added least_squares(callback=), which the optimization examples pass;
   # SciPy 1.16 needs Python 3.11, hence requires-python.
   "scipy>=1.16",
@@ -55,7 +57,9 @@ dependencies = [
   # is the first release that declares floors for what it imports, so
   # installing into an environment with older packages upgrades them
   # (nightly.yml "stale" lane).
-  "solvax>=0.27.0",
+  # solvax >= 0.28.5 GMRES fails under jax_disable_jit, which this test suite sets
+  # ('_Fn' object is not callable in solvax/krylov.py); tt2-dev runs jitted:
+  "solvax>=0.27.0,<0.28.5",
 ]
 
 [project.scripts]
@@ -104,18 +108,12 @@ freeb = [
 turbulence = [
   "gkx>=2.5.0",
   # gkx's own jax floor.
-  "jax>=0.10.1",
-  "jaxlib>=0.10.1",
+  "jax>=0.10.1,<0.12",
+  "jaxlib>=0.10.1,<0.12",
 ]
 # Coil geometry and VMEC/Boozer tracing, including fixed-step solver options.
-# 0.20.1: per-pair Coulomb logarithms in the collision rates that collisional
-# `vmex --trace` uses (ESSOS #128); needs Python 3.11 and diffrax 0.7.2.
-# 0.20.2: InterpolatedField.around, surface walls and in-memory Vmec, which
-# essos_tracing_fields needs (ESSOS #159).
-# 0.21.0: Boozer |B| from an angle table and stopped particles dropped across
-# devices, which `vmex --trace` relies on for its speed (ESSOS #165).
 coils = [
-  "essos>=0.21.0",
+  "essos>=0.20.0",
 ]
 # Drift-kinetic bootstrap current (DKX, uwplasma's JAX SFINCS,
 # https://github.com/uwplasma/DKX) for the quasi-isodynamic coil-constraint
@@ -175,15 +173,14 @@ markers = [
 # extra (see [project.optional-dependencies]). Its FD-validated gradient
 # tests are importorskip-gated and skip in the dependency-minimal core CI,
 # so the module is excluded from the core >=95% coverage gate. It is
-# exercised by the optional-integrations CI lane. freeboundary_vc.py, the
-# free boundary built on it, is measured: the PR parity lanes install the
-# ``freeb`` and ``coils`` extras. turbulence.py is likewise gated on the
+# exercised by the optional-integrations CI lane, as is freeboundary_vc.py,
+# the free boundary built on it. turbulence.py is likewise gated on the
 # optional ``turbulence`` extra (gkx), as is gk_run.py (the ``vmex
 # --turbulence`` driver).
-omit = ["*/virtual_casing.py", "*/turbulence.py", "*/gk_run.py"]
+omit = ["*/virtual_casing.py", "*/freeboundary_vc.py", "*/turbulence.py", "*/gk_run.py"]
 
 [tool.coverage.report]
-omit = ["*/virtual_casing.py", "*/turbulence.py", "*/gk_run.py"]
+omit = ["*/virtual_casing.py", "*/freeboundary_vc.py", "*/turbulence.py", "*/gk_run.py"]
 
 [tool.ruff]
 line-length = 120

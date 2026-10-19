@@ -47,6 +47,7 @@ pytestmark = [
     pytest.mark.skipif(
         GOLDEN_DIR is None, reason="golden VMEC2000 fixtures unavailable (offline?)"
     ),
+    pytest.mark.usefixtures("_module_jit_enabled"),  # full solves: run jitted
 ]
 
 netCDF4 = pytest.importorskip("netCDF4")
@@ -149,13 +150,12 @@ def _solve_case(name: str) -> dict:
         if spec["niter"] is not None:
             niter_arr = np.resize(np.asarray(inp.niter_array, int), n_stages)
             niter_arr[-1] = spec["niter"]
-        # freeze_m1=False: VMEC2000's m=1 rule (bit parity with the reference runs)
         result = solve_multigrid(
-            inp, ftol_array=ftol_arr, niter_array=niter_arr, mode="cli", freeze_m1=False
+            inp, ftol_array=ftol_arr, niter_array=niter_arr, mode="cli"
         )
     else:
         result = solver.solve(
-            inp, ftol=spec["ftol"], max_iterations=spec["niter"], mode="cli", freeze_m1=False
+            inp, ftol=spec["ftol"], max_iterations=spec["niter"], mode="cli"
         )
 
     out = {}

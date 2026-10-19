@@ -40,6 +40,8 @@ from tests.test_lasym_free_case import (  # noqa: E402
     lasym_free_field, lasym_free_input,
 )
 
+pytestmark = pytest.mark.usefixtures("_module_jit_enabled")  # vacuum solves: run jitted
+
 REPO = Path(__file__).resolve().parents[1]
 DECK = REPO / "examples" / "data" / "input.cth_like_free_bdy_lasym_small"
 MGRID = REPO / "examples" / "data" / "mgrid_cth_like_lasym_small.nc"
@@ -771,20 +773,3 @@ def test_cli_missing_mgrid_fallback_warns(tmp_path):
     assert plan is None  # fixed-boundary fallback
     assert any("FIXED-BOUNDARY" in msg for msg in messages)
     assert any("mgrid file not found" in msg for msg in messages)
-
-
-def test_deck_nfp_must_match_the_mgrid_nfp():
-    """VMEC2000 ``read_mgrid`` stops with ier_flag 9 when ``nfper0 /= nfp``.
-
-    The table is periodic in its own ``2 pi / nfp``; a deck with another NFP
-    samples only part of a field period and solves a different problem.
-    """
-    from dataclasses import replace
-
-    from vmex.core.errors import VmecInputError
-
-    inp = VmecInput.from_file(DECK)
-    field = FB._external_field_from_input(inp, MGRID)
-    FB.free_boundary_resolution(inp, field)
-    with pytest.raises(VmecInputError, match="NFP"):
-        FB.free_boundary_resolution(replace(inp, nfp=2 * int(inp.nfp)), field)

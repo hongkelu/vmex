@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 
-__all__ = ["NDATAFMAX", "UnsupportedInputModeError", "VmecInput", "fit_aux_knots"]
+__all__ = ["UnsupportedInputModeError", "VmecInput"]
 
 Scalar = Union[str, bool, int, float]
 IndexComponent = Union[int, slice]
@@ -421,33 +421,6 @@ def _find_assignments(text: str) -> List[re.Match[str]]:
     return matches
 
 
-_LEGACY_END_RE = re.compile(r"[&$]\s*END\b", flags=re.IGNORECASE)
-
-
-def _namelist_end(text: str, start: int) -> int | None:
-    """Index of the first unquoted ``/`` (or legacy ``&END``/``$END``) after ``start``.
-
-    Fortran ends a namelist group there, also mid-line after the last value;
-    ``!`` comments and quoted strings are skipped.
-    """
-    i, quote = start, None
-    while i < len(text):
-        ch = text[i]
-        if quote is not None:
-            quote = None if ch == quote else quote
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == "!":
-            newline = text.find("\n", i)
-            if newline < 0:
-                return None
-            i = newline
-        elif ch == "/" or (ch in "&$" and _LEGACY_END_RE.match(text, i)):
-            return i
-        i += 1
-    return None
-
-
 def _read_indata_text(text: str) -> tuple[Dict[str, List[Scalar]], Dict[str, Dict[Tuple[int, ...], Scalar]]]:
     """Parse and sequentially replay the ``&INDATA`` block.
 
@@ -456,14 +429,13 @@ def _read_indata_text(text: str) -> tuple[Dict[str, List[Scalar]], Dict[str, Dic
     explicitly assigned array element.  Replaying assignments in source order
     reproduces Fortran overlay semantics for repeated dense/indexed writes.
     """
-    # The group name opens a line; "&INDATA" inside a "!" comment does not count.
-    m_start = re.search(r"^[ \t]*&\s*INDATA\b", text, flags=re.IGNORECASE | re.MULTILINE)
+    m_start = re.search(r"&\s*INDATA", text, flags=re.IGNORECASE)
     if not m_start:
         raise ValueError("no &INDATA namelist found")
-    end = _namelist_end(text, m_start.end())
-    if end is None:
+    m_end = re.search(r"\n\s*/\s*\n|\n\s*/\s*$", text[m_start.end():], flags=re.MULTILINE)
+    if not m_end:
         raise ValueError("no terminating '/' for &INDATA")
-    block = text[m_start.end(): end]
+    block = text[m_start.end(): m_start.end() + m_end.start()]
     cleaned = "\n".join(_strip_fortran_comments(ln) for ln in block.splitlines())
 
     scalars: Dict[str, List[Scalar]] = {}
@@ -552,46 +524,6 @@ def _trim_aux(aux_s, aux_f) -> tuple[np.ndarray, np.ndarray]:
             n_valid = idx
             break
     return s[:n_valid].copy(), f[:n_valid].copy()
-
-
-#: VMEC2000's ``ndatafmax`` (vmec_input.f): the length of the ``*_AUX_S`` / ``*_AUX_F`` knot arrays of an INDATA
-#: namelist and of a WOUT's profile echo.  VMEX's own profiles are not bound by it.
-NDATAFMAX = 101
-
-
-def fit_aux_knots(aux_s, aux_f, name: str = "profile") -> tuple[np.ndarray, np.ndarray]:
-    """``(aux_s, aux_f)`` with at most :data:`NDATAFMAX` knots, for an INDATA namelist or a WOUT.
-
-    A profile with more knots (a current solved on every half-mesh surface of a fine radial grid,
-    :class:`~vmex.core.bootstrap.HalfMeshCurrent`) keeps a subset of its own knots, both ends and then, one at
-    a time, the knot where the piecewise-linear interpolant of the kept ones is furthest from the profile's
-    value (values unchanged at the kept knots).  It warns with the largest deviation at a dropped knot, relative
-    to the largest value.  A profile within the limit is returned as it is.
-
-    Parameters
-    ----------
-    aux_s, aux_f:
-        The knots and their values.
-    name:
-        The profile's name in the warning.
-
-    Returns
-    -------
-    tuple
-        ``(aux_s, aux_f)`` with at most :data:`NDATAFMAX` entries.
-    """
-    s, f = np.asarray(aux_s, dtype=float), np.asarray(aux_f, dtype=float)
-    if s.size <= NDATAFMAX:
-        return s, f
-    chosen = [0, s.size - 1]
-    for _ in range(NDATAFMAX - 2):
-        error = np.abs(f - np.interp(s, s[chosen], f[chosen]))
-        error[chosen] = 0.0
-        chosen = sorted(chosen + [int(np.argmax(error))])
-    deviation = float(np.max(np.abs(f - np.interp(s, s[chosen], f[chosen]))) / max(np.max(np.abs(f)), 1e-300))
-    warnings.warn(f"{name}: {s.size} knots refit to VMEC2000's {NDATAFMAX} (ndatafmax), largest change "
-                  f"{deviation:.1e} of its largest value", RuntimeWarning, stacklevel=2)
-    return s[chosen], f[chosen]
 
 
 def _indata_values(
@@ -1436,21 +1368,18 @@ class VmecInput:
         put("PRES_SCALE", self.pres_scale)
         put("PMASS_TYPE", self.pmass_type)
         put("AM", self.am)
-        am_s, am_f = fit_aux_knots(self.am_aux_s, self.am_aux_f, "AM_AUX_S/F")
-        put("AM_AUX_S", am_s)
-        put("AM_AUX_F", am_f)
+        put("AM_AUX_S", self.am_aux_s)
+        put("AM_AUX_F", self.am_aux_f)
         put("NCURR", self.ncurr)
         put("CURTOR", self.curtor)
         put("PCURR_TYPE", self.pcurr_type)
         put("AC", self.ac)
-        ac_s, ac_f = fit_aux_knots(self.ac_aux_s, self.ac_aux_f, "AC_AUX_S/F")
-        put("AC_AUX_S", ac_s)
-        put("AC_AUX_F", ac_f)
+        put("AC_AUX_S", self.ac_aux_s)
+        put("AC_AUX_F", self.ac_aux_f)
         put("PIOTA_TYPE", self.piota_type)
         put("AI", self.ai)
-        ai_s, ai_f = fit_aux_knots(self.ai_aux_s, self.ai_aux_f, "AI_AUX_S/F")
-        put("AI_AUX_S", ai_s)
-        put("AI_AUX_F", ai_f)
+        put("AI_AUX_S", self.ai_aux_s)
+        put("AI_AUX_F", self.ai_aux_f)
         put("BLOAT", self.bloat)
         put("LFREEB", self.lfreeb)
         put("MGRID_FILE", self.mgrid_file)

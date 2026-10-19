@@ -112,7 +112,7 @@ elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
     SEED = (SEED[0], SEED[1], 0.01)  # a circular tokamak with a 1% helical ripple
-REDL_HELICITY = None if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt); QI: none, Redl refuses
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 
 POINCARE_SURFACES = (0.1, 0.3, 0.5, 0.7, 0.9, 1.0)
 POINCARE_POINTS_PER_SURFACE = 5

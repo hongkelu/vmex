@@ -25,7 +25,6 @@ from jax.flatten_util import ravel_pytree
 from solvax import block_thomas_solve
 from solvax.krylov import gmres
 
-from .loops import map_columns
 from . import implicit as im
 from .errors import AdjointSolveError
 
@@ -82,7 +81,6 @@ def _max_dofs(cfg):
 
 
 def _expand(value, template, space):
-    """The state pytree of active-space coordinates ``value``."""
     flat, unravel = ravel_pytree(template)
     weighted = value * space.weight
     result = jnp.zeros_like(flat).at[space.left].set(weighted)
@@ -91,24 +89,19 @@ def _expand(value, template, space):
 
 
 def _compress(value, space):
-    """The active-space coordinates of the state pytree ``value``."""
     flat = ravel_pytree(value)[0]
     return space.weight * (flat[space.left] + space.sign * flat[space.right])
 
 
 def _prepare_tangent(z, params, field, frozen, rcon, zcon, *, residual):
-    """The JVP of the projected residual at ``z``.
-
-    The projected residual is already compiled. Linearization stays
-    host-eager: wrapping the returned JVP closure in another jit can leak
-    nested force-kernel tracers through its static callable data.
-    """
+    # The projected residual is already compiled. Keep linearize host-eager: wrapping
+    # the returned JVP closure in another jit can leak nested force-kernel
+    # tracers through its static callable data on supported JAX versions.
     return jax.linearize(lambda x:residual(x, params, field, frozen, rcon, zcon), z)[1]
 
 
 @jax.jit
 def _columns(tangent, template, space, indices):
-    """Active-space ``J e_i`` for every index ``i`` of ``indices``."""
     size = space.left.shape[0]
     def column(index):
         seed = jax.nn.one_hot(index, size, dtype=ravel_pytree(template)[0].dtype)
@@ -125,9 +118,7 @@ def _assemble_device(tangent, template, space, *, batch_size):
     copy or transpose is materialized.
     """
     size = space.left.shape[0]
-    # at least two columns per loop step: a one-column JVP body is the program XLA:GPU miscompiles
-    # (vmex.core.loops)
-    batch_size = min(max(batch_size, 2), size)
+    batch_size = min(batch_size, size)
     chunks = (size + batch_size - 1)//batch_size
     dtype = ravel_pytree(template)[0].dtype
 
@@ -175,7 +166,7 @@ def _assemble_colored(tangent, template, space, seeds, probe_of, surface, *, bat
     """Return the Jacobian transpose from radially colored JVP probes."""
     def probe(seed):
         return _compress(tangent(_expand(seed, template, space)), space)
-    rows = map_columns(probe, seeds, batch_size=batch_size)
+    rows = jax.lax.map(probe, seeds, batch_size=batch_size)
     band = jnp.abs(surface[:, None] - surface[None, :]) <= bandwidth  # [column, row]
     if edge_axis:  # axis unknowns (columns) also reach the edge equations (rows)
         edge = jax.tree.leaves(template)[0].shape[0] - 1
@@ -244,9 +235,10 @@ def _factor_solve(matrix, rhs):
 
 
 _OPERATOR_NORM_ITERATIONS = 20  # power iterations for the backward-error scale ||A||_2
-# Without a matrix each iteration applies the full coupled operator twice.
-# Five iterations come close to the 20-iteration bound, and the lower bound
-# only makes the gate slightly stricter.
+# Without a matrix each iteration applies the full coupled operator twice
+# (~0.3 s at ns = 51). Five iterations reach 82-96% of the 20-iteration bound at
+# finite-beta QA roots (early to late in a run), a gate only that much stricter:
+# there the rows pass it by more than 10^6, and each step takes ~9 s less.
 _OPERATOR_NORM_MATVEC_ITERATIONS = 5
 
 
@@ -301,26 +293,27 @@ def _backward_error_report(cfg, *, residual_norm, rhs_norm, solution_norm, opera
 
 def _refine_dense_solution(matrix, rhs, solution, factors, tolerances):
     """Correct failed rows with the same LU; retain only residual improvements."""
-    rhs, solution = jnp.asarray(rhs), jnp.asarray(solution)
+    xp, solve = jnp, jsl.lu_solve
+    rhs, solution = xp.asarray(rhs), xp.asarray(solution)
     defect = rhs - solution @ matrix.T
-    norms = jnp.linalg.norm(defect, axis=1)
+    norms = xp.linalg.norm(defect, axis=1)
     initial = np.asarray(norms).copy()
     steps = np.zeros(rhs.shape[0], dtype=int)
     for _ in range(3):
-        failed = (norms > tolerances) & jnp.isfinite(norms) & jnp.all(jnp.isfinite(solution), axis=1)
-        if not bool(jnp.any(failed)):
+        failed = (norms > tolerances) & xp.isfinite(norms) & xp.all(xp.isfinite(solution), axis=1)
+        if not bool(xp.any(failed)):
             break
-        correction = jsl.lu_solve(factors, jnp.where(failed[:, None], defect, 0.).T, trans=0).T
+        correction = solve(factors, xp.where(failed[:, None], defect, 0.).T, trans=0).T
         candidate = solution + correction
         candidate_defect = rhs - candidate @ matrix.T
-        candidate_norms = jnp.linalg.norm(candidate_defect, axis=1)
-        improved = failed & (candidate_norms < norms) & jnp.all(jnp.isfinite(candidate), axis=1)
+        candidate_norms = xp.linalg.norm(candidate_defect, axis=1)
+        improved = failed & (candidate_norms < norms) & xp.all(xp.isfinite(candidate), axis=1)
         steps += np.asarray(failed, dtype=int)
-        if not bool(jnp.any(improved)):
+        if not bool(xp.any(improved)):
             break
-        solution = jnp.where(improved[:, None], candidate, solution)
-        defect = jnp.where(improved[:, None], candidate_defect, defect)
-        norms = jnp.where(improved, candidate_norms, norms)
+        solution = xp.where(improved[:, None], candidate, solution)
+        defect = xp.where(improved[:, None], candidate_defect, defect)
+        norms = xp.where(improved, candidate_norms, norms)
     return solution, norms, initial, steps
 
 
@@ -377,7 +370,6 @@ def _precondition(factors, template, space, value, *, transpose):
 
 
 def _frozen_host_copy(value):
-    """A read-only host copy of ``value``."""
     copy = np.array(value, copy=True)
     copy.setflags(write=False)
     return copy
@@ -539,9 +531,7 @@ def solve_dense_adjoint(residual, z, params, field, frozen, rcon, zcon,
             residual,z,params,field,frozen,rcon,zcon,space,factors,tangent,cfg,operator_norm=operator_norm)
     return adjoints
 
-
 def _signature(tree):
-    """The pytree structure, shapes and dtypes of ``tree``."""
     return jax.tree.structure(tree), [(x.shape, x.dtype) for x in jax.tree.leaves(tree)]
 
 
@@ -620,7 +610,6 @@ class SeedLU:
 
 @jax.jit
 def _forward_from_transpose(transpose, template, vector):
-    """``J v`` from the saved transpose ``J^T``."""
     return jax.linear_transpose(lambda value: transpose(value)[0], template)(vector)[0]
 
 
@@ -784,9 +773,10 @@ def solve_matrixfree_adjoint(
         report = _backward_error_report(cfg, row=row, residual_norm=norm, rhs_norm=rhs_norm,
             solution_norm=float(jnp.linalg.norm(solution)), operator_norm=preconditioner.operator_norm,
             iterations=iterations, backend="matrixfree_seed_lu", finite=bool(jnp.all(jnp.isfinite(solution))))
-        tolerance, passed = report["tolerance"], report["accepted"]
+        tolerance, full_passed = report["tolerance"], report["accepted"]
+        passed = full_passed
         if diagnostics is not None:
-            report.update(full_residual_accepted=passed,
+            report.update(accepted=passed, full_residual_accepted=full_passed,
                 krylov_converged=converged, krylov_residual_norm=krylov_norm,
                 krylov_tolerance=preconditioner.rtol * float(np.linalg.norm(host)),
                 rhs_batch_size=preconditioner.rhs_batch_size, reused_rhs=reused,

@@ -5,43 +5,32 @@ in full. A number appears here only where a committed artifact backs it, and
 `benchmarks/INDEX.md` lists every benchmark artifact with its generator, the
 revision it was measured at, and the pages that cite it.
 
-## Unreleased (hongkelu/vmex)
+## Unreleased
 
-- `solve_free_boundary_three_terms(method="least_squares")` (`vmex.core.freeboundary_lsq`): least squares of the jump
-  `(B_out - B_in) / B0` on Galerkin's deck-normal unknowns, `G = G_coil` and the bootstrap rows as equality
-  constraints, exact Hessian (second-order adjoint) and exact design gradients; start-independent, FD-checked.
-- `opt.solve_equilibrium` raises at its cap short of FTOL (opt-out explicit); mirror `CircularCoils` smooth on axis (jax 0.12 `hypot` NaN).
-- Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
-  (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.
-- Finite-beta rows test B.n against the deck's response (LP QA 2.5 % 12x12 B.n 2.8e-4->1.1e-4) on the interior's band (no gap); Newton stalls build the band up from m<=1.
-- Redl (bootstrap rows, `RedlBootstrapMismatch`) on the quasi-symmetric part of |B| (simsopt `RedlGeomBoozer`): smooth.
-- `boundary_condition="three_terms"` (Python/CLI/deck `BOUNDARY_CONDITION`): one fixed-boundary state per boundary
-  (`freeze_m1`); square Newton system: B.n, pressure balance, no sheet current (vacuum: LSQ of B.n; LP QH 12x12 B.n
-  4.9e-4->4.2e-5, field lines 21->1.2 mm; finite-beta QA step 265->74 s); `ThreeTermsFreeBoundaryModel`; derivatives:
-  dense LU (`forward_dense_jax`) or O(ns) block factors (`structured`, 15.4->7.8 GiB at 8x8); PHIEDGE, current via
-  `FreeBoundaryProblem.from_loss(field_from_parameters=, plasma_from_parameters=)` (SLSQP or `method="AUGLAG"`); new `opt.axis_iota`/`axis_field_strength`/
-  `major_radius`, `solve_free_boundary(include_edge_in_convergence=True)`, `from_tuples(vary_phiedge=True)`, movie `frame_labels`.
-- Example `single_stage_free_boundary_seed.py` (ellipse -> coils -> seed); free-boundary limits measured in the docs.
-- `minimize(method="AUGLAG")` (PHR augmented Lagrangian, exact `resume`); free boundary re-referenced when the deck fails.
-
-## 0.11.10 - 2026-10-13
-
-- **`vmex --trace` is about twice as fast** on large spectra with ESSOS 0.21:
-  ARIES-CS, 500 alphas over 10 ms on 10 M4 cores, 111 s to 53 s (#581).
-- `trace_alphas` and `vmex --trace` warn when the WOUT spectrum looks truncated
-  (`spectral_truncation` > 3e-3; see the trace how-to for what to do about it).
-- Floor `essos>=0.21.0` (0.20.1 brought per-pair Coulomb logarithms). `vj.essos_tracing_fields(wout, coils, wall=0.03)` gives ESSOS `Tracing`
-  the VMEC field, tabulated exterior field and wall (`examples/vmex_essos_tracing_to_wall.py`).
-- `VmecInteriorField` and the live-state field spectra work without stellarator
-  symmetry (`LASYM = T`): the sine families `rmns`, `zmnc`, `lmnc` and the
-  `B^u`/`B^v` sine tables are evaluated, and symmetric results are unchanged
-  bit for bit. On the exact up-down asymmetric Solov'ev equilibrium at ns = 65
-  the field gives B to 2e-7 and J to 3e-6-2e-5 at mid radius (4e-4 from WOUT).
+- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
+  solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
+  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to
+  74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
+- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
+  (PHIEDGE, current profile) from certified roots; `opt.minimize(method="SLSQP")` drives it.
+- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
+  15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
+- `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
+  `opt.axis_field_strength`, `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`,
+  `plot_optimization_movie(frame_labels=)`.
 - `examples/vmex_mrx_comparison.py` relaxes the 2.5 % beta QA deck with MRX
   from the VMEX ns = 65 field and compares the two (Poincare sections, iota,
   toroidal current, pressure). MRX is optional.
-- `vmex --trace` runs on one GPU when several are visible (two A4000s took 2-3
-  times longer than one); `trace_alphas(devices=jax.devices())` still splits.
+- `vmex --trace` runs on one GPU when several are visible. Each adaptive step
+  waits on every device, so two A4000s took 2-3 times longer than one;
+  `trace_alphas(devices=jax.devices())` still splits over all of them. CPU
+  runs are unchanged.
+- `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
+  solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;
+  `--nc-preset quick|default|full` sets the resolution, `--nc-profiles` takes
+  the n and T profiles (and draws VMEX's Redl `<j.B>` on them) and `--nc-er`
+  fixes `E_r`. The `neoclassical` extra now installs `dkx>=2.8.0`; an older
+  DKX runs without the profiles and says so.
 
 ## 0.11.9 - 2026-10-07
 
@@ -183,18 +172,27 @@ query on the magnetic axis no longer returns NaN. Full notes in the release.
 
 ## 0.9.1 - 2026-09-16
 
-Optimization gradients compile on a machine that has a GPU (the host-callback pin now applies only within one
-platform; jax-ml/jax#40722), the coil examples install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio`
-defaults to `1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07 one minor radius out on
-the QA wout, against 2.46e-02 before). Full notes in the GitHub release.
+Optimization gradients compile on a machine that has a GPU (the host-callback
+pin now applies only within one platform; jax-ml/jax#40722), the coil examples
+install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio` defaults to
+`1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07
+one minor radius out on the QA wout, against 2.46e-02 before). Full notes in
+the GitHub release.
 
 ## 0.9.0 - 2026-09-15
 
-The optimization release. The two workflows users reported as slow and inconclusive — quasi-isodynamic boundary design
-and single-stage plasma-and-coil design — now converge and meet the targets they print: the refinement every trial
-pays is a Newton finish through one block factorization, the implicit adjoint is solved exactly through that same
-factorization, and the compiled lanes stopped recompiling. The exterior field reports the accuracy it achieved, every
-evaluation carries counters, and the CLI reads DESC inputs. It does not close cold compile (median wall per case 23.1
-s against VMEC++'s 3.35 s in the independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
+The optimization release. The two workflows users reported as slow and
+inconclusive — quasi-isodynamic boundary design and single-stage plasma-and-coil
+design — now converge and meet the targets they print: the refinement every
+trial pays is a Newton finish through one block factorization, the implicit
+adjoint is solved exactly through that same factorization, and the compiled
+lanes stopped recompiling. The exterior field reports the accuracy it achieved,
+every evaluation carries counters, and the CLI reads DESC inputs. It does not
+close cold compile (median wall per case 23.1 s against VMEC++'s 3.35 s in the
+independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
 
 PRs and full notes: the GitHub release (#300-#344, 36 merged since 0.8.1).
+
+## 0.8.1 - 2026-09-02
+
+The cold-start performance release (#227-#234). Full notes in the release.

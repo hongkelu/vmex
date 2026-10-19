@@ -63,23 +63,16 @@ def test_none_leaves_placement_to_jax(monkeypatch):
     assert dev.resolve_mirror_device(None) is None
 
 
-def _no_user_placement(monkeypatch):
-    """No JAX placement selected by the user.  jax reads ``JAX_PLATFORMS`` once, at import, into
-    ``jax.config``; deleting the variable afterwards changes nothing, so a run with ``JAX_PLATFORMS=cpu``
-    (CPU-only nodes, CI) would otherwise see a user selection here."""
-    monkeypatch.setattr(dev, "_user_selected_placement", lambda: False)
-
-
 def test_omitted_device_uses_auto_policy(monkeypatch):
     seen = []
-    _no_user_placement(monkeypatch)
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
     monkeypatch.setattr(dev, "recommended_device", lambda res: seen.append(res) or "cpu")
     dev.resolve_device(resolution=_res(ns=11, mpol=6, ntor=0))
     assert len(seen) == 1
 
 
-def test_auto_without_resolution_has_a_clear_error(monkeypatch):
-    _no_user_placement(monkeypatch)
+def test_auto_without_resolution_has_a_clear_error():
     with pytest.raises(ValueError, match="resolution is required"):
         dev.resolve_device()
     with pytest.raises(ValueError, match="resolution is required"):
@@ -97,7 +90,8 @@ def test_default_device_context_is_never_overridden(monkeypatch):
 
 
 def test_auto_cpu_recommendation_is_a_noop_on_cpu(monkeypatch):
-    _no_user_placement(monkeypatch)
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
     # CPU-recommended + default backend already CPU -> nothing to place.
     if jax.default_backend() == "cpu":
         assert dev.resolve_device(dev.AUTO, _res(ns=11, mpol=6, ntor=0)) is None
@@ -593,6 +587,9 @@ def test_host_callback_is_not_pinned_across_platforms():
     same = im._callback_sharding(
         dataclasses.replace(cfg, device=jax.devices(here)[0]))
     assert isinstance(same, jax.sharding.SingleDeviceSharding)
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
 def test_host_callback_reuses_main_thread_executables():
     """A lane traced on the main thread is not traced again in a callback.
 
@@ -634,6 +631,9 @@ def test_free_boundary_backward_traces_like_the_forward_solve(monkeypatch):
         fbi._solve_bwd(cfg, saved, state_bar)
     assert seen["mesh"] == forward
     assert seen["committed"]
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("home", [None, "callback", "root"])
 def test_host_anchor_factors_rehomes_the_cached_root(monkeypatch, reverse, home):

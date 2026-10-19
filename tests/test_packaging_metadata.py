@@ -89,7 +89,9 @@ def test_plain_install_includes_plotting_and_qi_dependencies() -> None:
     assert "booz_xform_jax" in dependency_names
     assert "packaging" in dependency_names
     assert "numpy" in dependency_names
-    assert "solvax>=0.27.0" in project_dependencies
+    # Floors only: main pins upper bounds (jax<0.12, solvax<0.28.5) its 10-09 code was tested with.
+    assert any(Requirement(dep).name == "solvax" and ">=0.27.0" in str(Requirement(dep).specifier).split(",")
+               for dep in project_dependencies)
     assert "gkx>=2.5.0" in optional_dependencies["turbulence"]
     assert "virtual-casing-jax>=0.0.9" in optional_dependencies["freeb"]
     assert "plots" not in optional_dependencies
@@ -114,7 +116,7 @@ def test_import_guard_floors_match_pyproject() -> None:
     floors = {}
     for requirement in map(Requirement, data["project"]["dependencies"]):
         if requirement.name in vmex._MINIMUM_VERSIONS:
-            (spec,) = requirement.specifier
+            (spec,) = [s for s in requirement.specifier if s.operator != "<"]
             assert spec.operator == ">="
             floors[requirement.name] = Version(spec.version).release
     assert floors == vmex._MINIMUM_VERSIONS
@@ -128,14 +130,14 @@ def test_optional_floors_match_pyproject() -> None:
     for extra in data["project"]["optional-dependencies"].values():
         for requirement in map(Requirement, extra):
             if requirement.name in OPTIONAL_MINIMUMS:
-                (spec,) = requirement.specifier
+                (spec,) = [s for s in requirement.specifier if s.operator != "<"]
                 floors[requirement.name] = spec.version
     assert floors == OPTIONAL_MINIMUMS
 
 
 @pytest.mark.parametrize("found, message", [
-    (None, 'essos>=0.21.0; run: pip install "essos>=0.21.0"'),
-    ("0.19.2", 'essos>=0.21.0 (found 0.19.2); run: pip install -U "essos>=0.21.0"'),
+    (None, 'essos>=0.20.0; run: pip install "essos>=0.20.0"'),
+    ("0.19.2", 'essos>=0.20.0 (found 0.19.2); run: pip install -U "essos>=0.20.0"'),
 ])
 def test_require_optional_names_the_fix(monkeypatch, found, message) -> None:
     from vmex import _compat
@@ -194,7 +196,7 @@ def test_nightly_floors_lane_pins_the_declared_floors() -> None:
     for dep in [*project["dependencies"], *(r for name in
                 ("coils", "freeb", "neoclassical", "turbulence") for r in extras[name])]:
         requirement = Requirement(dep)
-        for spec in requirement.specifier:
+        for spec in (s for s in requirement.specifier if s.operator == ">="):
             floors[requirement.name] = max(floors.get(requirement.name, spec.version),
                                            spec.version, key=Version)
     workflow = (ROOT / ".github/workflows/nightly.yml").read_text()

@@ -10,7 +10,6 @@ ESSOS coils-file loading for ``--coils``).
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -78,12 +77,8 @@ def test_python_dash_m_entrypoint_exposes_cli_main():
 
 @pytest.mark.parametrize("argv", [["-m", "vmex", "--version"]])
 def test_python_dash_m_version(argv):
-    # the child must import the package under test, not whatever vmex the interpreter has installed (a stale
-    # site-packages copy, or another checkout's editable install): put this checkout first on its path
-    root = str(Path(vmex.__file__).resolve().parents[1])
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [root, os.environ.get("PYTHONPATH")])))
     proc = subprocess.run([sys.executable, *argv], capture_output=True, text=True,
-                          timeout=120, env=env, cwd=root)
+                          timeout=120)
     assert proc.returncode == 0
     assert vmex.__version__ in proc.stdout
 
@@ -232,6 +227,9 @@ def test_cli_missing_input_is_zero_crash(capsys):
     assert rc != 0
     out = capsys.readouterr().out
     assert "HINT" in out and "not found" in out
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
 def test_cli_bundled_test_verbose(tmp_path, capsys):
     """--test without --quiet prints the guided walkthrough (README quickstart)."""
     pytest.importorskip("matplotlib")

@@ -31,6 +31,8 @@ from vmex.core.input import VmecInput  # noqa: E402
 from vmex.core import implicit as im  # noqa: E402
 from vmex.core import optimize as opt  # noqa: E402
 
+pytestmark = [pytest.mark.usefixtures("_module_jit_enabled")]  # full solves: jitted
+
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 CACHE_DIR = Path("/tmp/vmex_test_cache_lgradb")
 
@@ -64,7 +66,7 @@ def _cached_eq(deck: str) -> opt.Equilibrium:
         ns = int(np.shape(state.R_cos)[0])
         runtime = prepare_runtime(inp, resolution_from_input(inp, ns=ns))
         return opt.Equilibrium(inp=inp, state=state, runtime=runtime, result=result)
-    eq = opt.solve_equilibrium(inp, raise_on_max_iterations=False)  # the lane reads the state, not its convergence
+    eq = opt.solve_equilibrium(inp)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     np.savez(cache,
              **{k: np.asarray(getattr(eq.state, k)) for k in _STATE_FIELDS},

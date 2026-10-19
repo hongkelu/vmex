@@ -65,10 +65,6 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
     stop after leaving the LCFS neighborhood.
     The finite-beta coil fixture is reproduced by ESSOS
     `examples/coil_optimization/optimize_coils_finite_beta_vmex.py`.
-  - `vmex_essos_tracing_to_wall.py` — guiding centres from a VMEX
-    equilibrium through the LCFS to a wall 3 cm outside it, with
-    `vj.essos_tracing_fields` (ESSOS coils, tabulated exterior field); the
-    direct exterior field checks the table.
   - `vmex_mrx_comparison.py` — relax the 2.5 % beta QA equilibrium with
     [MRX](https://github.com/ToBlick/mrx) (`pip install mrx`), which does not
     assume nested surfaces, and compare Poincare sections, iota, the toroidal
@@ -164,9 +160,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   stellarator-symmetric stationary subspace. Each has a finite-beta companion
   that adds Mercier and resistive-interchange rows on a radially graded weight.
   The asymmetric boundary doubles the decision variables, so a stage costs
-  roughly twice its symmetric equivalent. The vacuum QI script closes with the
-  NEO_JAX effective ripple of the seed and the optimized boundary, computed on
-  the asymmetric Boozer spectrum.
+  roughly twice its symmetric equivalent.
 - `optimization/QA_maxJ_continuation.py` and `QI_maxJ_continuation.py` walk the
   constructed maximum-J target into the resolved certificate; the QA script
   states where maximum-J and quasisymmetry conflict near the axis.
@@ -177,10 +171,10 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   `epsilon_eff^(3/2)` before and after.
 - `optimization/single_stage_free_boundary_optimization_coil_constraints.py`,
   `single_stage_optimization_coil_constraints.py` and
-  `single_stage_free_boundary_optimization_three_terms.py`: GPU benchmarks of
+  `single_stage_free_boundary_optimization_three_term.py`: GPU benchmarks of
   one single-stage QA/QH/QI coil design solved free-boundary
   (`FreeBoundaryProblem`), fixed-boundary, and on sheet-current-free free
-  boundaries (`FreeBoundaryProblem` with `boundary_condition="three_terms"`), with every physics and
+  boundaries (`FreeBoundaryProblem` with `boundary_condition="three_term"`), with every physics and
   coil-engineering limit a hard SLSQP inequality, from vacuum to finite beta
   with a self-consistent Redl or DKX bootstrap current. Each script is
   self-contained. `COIL_CASE` selects the case (`ellipse5`, `ellipse5-beta7`,
@@ -194,8 +188,8 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   In `../benchmarks/`, `coil_constraints_postprocess.py` compares the arms on
   one dense free-boundary solve, `coil_constraints_fit_coils.py` regenerates
   the stage-two coils, `coil_constraints_evolution_gifs.py` draws a run's
-  coils and LCFS, and `three_terms_highres.py` and `three_terms_postprocess.py`
-  re-solve and post-process three-terms runs.
+  coils and LCFS, and `three_term_highres.py` and `three_term_postprocess.py`
+  re-solve and post-process three-term runs.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

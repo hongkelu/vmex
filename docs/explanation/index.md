@@ -19,8 +19,6 @@ variational-problem
 iteration
 interior-field
 nestor-vacuum
-free-boundary-limits
-three-terms-least-squares
 high-order-force-balance
 ```
 

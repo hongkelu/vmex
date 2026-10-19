@@ -249,7 +249,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         if tol is None:
             return False
         nb = self.n_boundary
-        ok = nb == 0 or displacement_rms(step[:nb], self.boundary_modes) <= tol
+        ok = nb == 0 or self._boundary_rms(step[:nb]) <= tol
         if step.size > nb:
             rms = lambda v: float(np.sqrt(np.mean(np.square(v))))  # noqa: E731
             ok = ok and rms(step[nb:]) <= tol / float(self.R0) * rms(x[nb:])

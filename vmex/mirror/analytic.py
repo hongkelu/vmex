@@ -422,31 +422,44 @@ class CircularCoils:
 
     def __call__(self, points: Array) -> Array:
         points = jnp.asarray(points)
-        rho = jnp.hypot(points[..., 0], points[..., 1])[..., None]
+        x, y = points[..., 0][..., None], points[..., 1][..., None]
+        rho2 = x**2 + y**2
         radius = jnp.atleast_1d(jnp.asarray(self.radius, dtype=points.dtype))
         height = points[..., 2][..., None] - jnp.atleast_1d(jnp.asarray(self.z, dtype=points.dtype))
         scale = 2.0e-7 * jnp.atleast_1d(jnp.asarray(self.current, dtype=points.dtype))  # mu0 I / (2 pi)
+        # Within 1e-4 coil radii of the axis the field is its paraxial
+        # expansion in Cartesian x, y, which is smooth through rho = 0. The
+        # closed form depends on rho = |(x, y)|, whose derivative is undefined
+        # on the axis: jax >= 0.12 differentiates jnp.hypot to NaN there (0.11
+        # returned an arbitrary 0.5 per component), and closed mirror surfaces
+        # place collocation points on the axis, so the free-boundary Jacobian
+        # went NaN. The far branch is therefore evaluated at a stand-in radius
+        # inside the axis region, where neither its value nor its derivative
+        # can be singular, and discarded there by the select.
+        near_axis = rho2 < (1.0e-4 * radius) ** 2
+        rho = jnp.sqrt(jnp.where(near_axis, (0.5 * radius) ** 2, rho2))
         outer = (radius + rho) ** 2 + height**2
         inner = (radius - rho) ** 2 + height**2
         elliptic_k, elliptic_e = _complete_elliptic(4.0 * radius * rho / outer)
         prefactor = scale / jnp.sqrt(outer)
-        b_z = prefactor * (elliptic_k + (radius**2 - rho**2 - height**2) / inner * elliptic_e)
+        b_z_far = prefactor * (elliptic_k + (radius**2 - rho**2 - height**2) / inner * elliptic_e)
         # B_rho = mu0 I z / (2 pi rho sqrt(outer)) (-K + (a^2+rho^2+z^2) E / inner)
-        # cancels to O(rho) near the axis; there its paraxial limit
-        # -(rho/2) dBz_axis/dz is exact to O((rho/a)^2) < 1e-8.
-        near_axis = rho < 1.0e-4 * radius
-        safe_rho = jnp.where(near_axis, 1.0, rho)
-        b_rho_far = prefactor * height / safe_rho * (
+        b_rho_far = prefactor * height / rho * (
             -elliptic_k + (radius**2 + rho**2 + height**2) / inner * elliptic_e
         )
-        b_rho_axis = 1.5 * jnp.pi * scale * radius**2 * height * rho / (radius**2 + height**2) ** 2.5
-        b_rho = jnp.sum(jnp.where(near_axis, b_rho_axis, b_rho_far), axis=-1)
-        b_z = jnp.sum(b_z, axis=-1)
-        rho = rho[..., 0]
-        safe = jnp.where(rho > 0.0, rho, 1.0)
-        cos_phi = jnp.where(rho > 0.0, points[..., 0] / safe, 1.0)
-        sin_phi = jnp.where(rho > 0.0, points[..., 1] / safe, 0.0)
-        return jnp.stack((b_rho * cos_phi, b_rho * sin_phi, b_z), axis=-1)
+        # Paraxial limit about the on-axis field Bz0 = pi s a^2 / (a^2+z^2)^1.5:
+        # B_rho = -(rho/2) Bz0' (relative error O((rho/a)^2) < 1e-8) and
+        # B_z = Bz0 - (rho^2/4) Bz0'' (relative error O((rho/a)^4)).
+        axis_distance2 = radius**2 + height**2
+        b_z_axis = jnp.pi * scale * radius**2 / axis_distance2**1.5 * (
+            1.0 + 0.75 * rho2 * (radius**2 - 4.0 * height**2) / axis_distance2**2
+        )
+        b_rho_over_rho_axis = 1.5 * jnp.pi * scale * radius**2 * height / axis_distance2**2.5
+        b_rho_over_rho = jnp.where(near_axis, b_rho_over_rho_axis, b_rho_far / rho)
+        b_x = jnp.sum(b_rho_over_rho * x, axis=-1)
+        b_y = jnp.sum(b_rho_over_rho * y, axis=-1)
+        b_z = jnp.sum(jnp.where(near_axis, b_z_axis, b_z_far), axis=-1)
+        return jnp.stack((b_x, b_y, b_z), axis=-1)
 
     def axis_field(self, z: Array) -> Array:
         """Return the exact on-axis ``B_z(z)``."""

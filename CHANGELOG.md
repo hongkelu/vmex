@@ -10,7 +10,7 @@ revision it was measured at, and the pages that cite it.
 - `solve_free_boundary_three_terms(method="least_squares")` (`vmex.core.freeboundary_lsq`): least squares of the jump
   `(B_out - B_in) / B0` on Galerkin's deck-normal unknowns, `G = G_coil` and the bootstrap rows as equality
   constraints, exact Hessian (second-order adjoint) and exact design gradients; start-independent, FD-checked.
-- `opt.solve_equilibrium` raises at its iteration cap short of FTOL (was: silently unconverged); opt out explicitly.
+- `opt.solve_equilibrium` raises at its cap short of FTOL (opt-out explicit); mirror `CircularCoils` smooth on axis (jax 0.12 `hypot` NaN).
 - Bootstrap current solved with the equilibrium (`HalfMeshCurrent`): a knot per half-mesh surface at any `ns`
   (was <= 97; echoes refit to 101 knots), rows in interface units (no `bootstrap_weight`); qa4-beta 8x8: 7 evaluations.
 - Finite-beta rows test B.n against the deck's response (LP QA 2.5 % 12x12 B.n 2.8e-4->1.1e-4) on the interior's band (no gap); Newton stalls build the band up from m<=1.

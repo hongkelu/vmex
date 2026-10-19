@@ -208,3 +208,22 @@ def test_circular_coils_match_biot_savart_and_the_on_axis_formula() -> None:
     np.testing.assert_allclose(float(coils.axis_field(0.5)), expected[1, 2], rtol=1.0e-13)
     divergence = jnp.trace(jax.jacfwd(coils)(jnp.array([0.1, 0.2, 0.3])))
     assert abs(float(divergence)) < 1.0e-12
+
+
+def test_circular_coils_are_differentiable_on_the_axis() -> None:
+    """Closed mirror surfaces put collocation points on the axis, where rho = |(x, y)| has no derivative.
+
+    jax 0.12 differentiates ``jnp.hypot`` to NaN at the origin (0.11 gave an arbitrary 0.5 per
+    component, i.e. a wrong Jacobian), which made the two-coil free-boundary Jacobian NaN.
+    """
+    from vmex.mirror.analytic import CircularCoils
+
+    coils = CircularCoils(jnp.array([0.9, 0.5]), jnp.array([-1.0, 1.0]), jnp.array([2.0e5, -1.0e5]))
+    point = jnp.array([0.0, 0.0, 0.3])
+    forward, reverse = jax.jacfwd(coils)(point), jax.jacrev(coils)(point)
+    assert np.all(np.isfinite(np.asarray(forward))) and np.all(np.isfinite(np.asarray(reverse)))
+    np.testing.assert_allclose(np.asarray(reverse), np.asarray(forward), rtol=0.0, atol=1.0e-15)
+    # On the axis B_rho = -(rho/2) dBz/dz exactly in the limit, so dBx/dx = dBy/dy = -dBz/dz / 2.
+    dbz_dz = float(jax.grad(lambda z: coils.axis_field(z))(0.3))
+    expected = np.diag([-0.5 * dbz_dz, -0.5 * dbz_dz, dbz_dz])
+    np.testing.assert_allclose(np.asarray(forward), expected, rtol=0.0, atol=1.0e-12 * abs(dbz_dz))

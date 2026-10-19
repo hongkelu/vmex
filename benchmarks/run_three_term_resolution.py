@@ -64,6 +64,9 @@ CASES = {  # --case: the deck whose 12 x 12 fixed-boundary equilibrium is the kn
 DECK = CASES["beta"]
 NS = 51
 TRUTH_MODES = 12
+# "vmec": M is VMEC's MPOL = NTOR (poloidal modes m < M); "desc" (--modes desc): M is the highest mode number,
+# m <= M and |n| <= M as DESC's M = N, so MPOL = M + 1 and both codes carry the same boundary and interior modes.
+MODES = "vmec"
 START_SCALE = 0.97
 VC_GRID = 48
 QA_SURFACES = np.arange(1, 11) / 10
@@ -72,11 +75,14 @@ REPORT_KEYS = ("seconds", "total_seconds", "peak_gpu_gib", "peak_rss_gib", "devi
                "exit_code", "free_fsq")
 
 
-def deck(modes, ns=NS):
+def deck(modes, ns=NS, *, truth=False):
+    """The deck at ``modes``: MPOL = NTOR = ``modes``, or with ``--modes desc`` MPOL = ``modes`` + 1 (the truth keeps
+    MPOL = NTOR = ``TRUTH_MODES``)."""
     import vmex as vj
 
+    mpol = modes + 1 if MODES == "desc" and not truth else modes
     inp = vj.VmecInput.from_file(str(DECK)).change_resolution(
-        mpol=modes, ntor=modes, ntheta=2 * modes + 6, nzeta=2 * modes + 6)
+        mpol=mpol, ntor=modes, ntheta=2 * mpol + 6, nzeta=2 * modes + 6)
     return replace(inp, ns_array=np.array([ns]), ftol_array=np.array([1e-13]), niter_array=np.array([60000]))
 
 
@@ -173,7 +179,7 @@ def make_field(out):
     from vmex.core import virtual_casing as vc
 
     meter = Meter()
-    inp = deck(TRUTH_MODES)
+    inp = deck(TRUTH_MODES, truth=True)
     nfp = int(inp.nfp)
     eq = opt.solve_equilibrium(inp)
     w = eq.wout
@@ -550,6 +556,8 @@ def main(argv=None):
     p.add_argument("args", nargs="+", help="[M] OUT [NAME WOUT]")
     p.add_argument("--chunk", type=int, help="Jacobian columns per batch (default 8, 4 above 8 modes, 2 at 12)")
     p.add_argument("--case", choices=tuple(CASES), help="the deck (set by the field step and kept in OUT/case.txt)")
+    p.add_argument("--modes", choices=("vmec", "desc"), help="what M counts (default vmec: MPOL = NTOR = M; desc: "
+                   "the highest mode number, MPOL = M + 1, NTOR = M, as DESC's M = N); kept in OUT/modes.txt")
     a = p.parse_args(argv)
     modes = None if a.step in ("field", "mgrid", "table") else int(a.args[0])
     out = Path(a.args[0 if modes is None else 1]).resolve()
@@ -562,6 +570,12 @@ def main(argv=None):
     if a.step == "field":
         saved.write_text(case + "\n")
     DECK = CASES[case]
+    global MODES
+    saved_modes = out / "modes.txt"
+    MODES = saved_modes.read_text().strip() if saved_modes.exists() else (a.modes or "vmec")
+    if a.modes and a.modes != MODES:
+        raise SystemExit(f"{out} counts modes as {MODES}, not {a.modes}")
+    saved_modes.write_text(MODES + "\n")
     if modes is not None:
         (out / f"m{modes}").mkdir(exist_ok=True)
     if a.step == "field":

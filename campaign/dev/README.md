@@ -29,7 +29,7 @@ boundary, kept as they were run.
 |---|---|
 | `fd_rows.py` | finite-difference check of the vacuum-iota-min and axis-\|B\| rows through a finite-β implicit solve |
 | `fixed_debug.py` | the fixed-boundary driver with debug output (copy of the driver of that time) |
-| `debug_ctor.py` | compares a WOUT's `ctor` with `surface_currents().ctor` and prints ι_I; it showed `ctor` is already μ0·I (fix 3a6ceaf9) |
+| `debug_ctor.py` | compares a WOUT's `ctor` with `surface_currents().ctor` and prints ι_I; it showed `ctor` is already μ0·I (fix 36fa6a27) |
 | `repro_hang.py` | reproduces the tokamak-seed vacuum-iota hang, dumping all thread stacks every 120 s |
 
 ## Post-processing and status

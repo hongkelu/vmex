@@ -14,6 +14,17 @@ ancestors of this branch.
   - QH A10: 7.3e-3.
   - See `results/` and `reference/runs/`.
 
+## Commit hashes
+
+On 2026-10-19 the branch history was rewritten to drop `Co-Authored-By` trailers from commit messages. The code
+of every commit is unchanged (same trees), but the hashes changed.
+- **This folder:** uses the new hashes. `COMMITS.txt` lists each production commit's new hash, then its original
+  8-character hash.
+- **Original history:** kept as the tag `tt1-original-history`.
+- **Outside this folder:** the frozen package (`repro-campaign-20261018.tar`) and the Perlmutter copy
+  (`/pscratch/sd/h/hongkelu/freeboundary-single-stage-old`) use the original hashes. So did the run records of
+  2026-10-08 … 10-13.
+
 ## Layout
 
 | Path | What |
@@ -49,19 +60,19 @@ The 65 wheels are in the full copy of this folder, `env/wheelhouse/`:
 2. Run a row of `RUNS.md`, for example the vacuum-floor 0.31 run:
 
    ```bash
-   CUDA_VISIBLE_DEVICES=0 campaign/run.sh 91729930 F qa4-beta-merc --steps 1000 --seed-run seeds/qa4-beta-free --vacuum-iota-floor 0.31 --iota-ceiling 0.495 --output prod/free-qa4-beta-merc-vac0.31
+   CUDA_VISIBLE_DEVICES=0 campaign/run.sh aa36682e F qa4-beta-merc --steps 1000 --seed-run seeds/qa4-beta-free --vacuum-iota-floor 0.31 --iota-ceiling 0.495 --output prod/free-qa4-beta-merc-vac0.31
    ```
 
 3. Compare with the original:
 
    ```bash
-   campaign/venv/bin/python campaign/compare_metrics.py campaign/code/vmex-91729930/prod/free-qa4-beta-merc-vac0.31/metrics.jsonl campaign/reference/runs/free-qa4-beta-merc-vac0.31/metrics.jsonl
+   campaign/venv/bin/python campaign/compare_metrics.py campaign/code/vmex-aa36682e/prod/free-qa4-beta-merc-vac0.31/metrics.jsonl campaign/reference/runs/free-qa4-beta-merc-vac0.31/metrics.jsonl
    ```
 
 **Use the original seed.** A run whose command has no `--seed-run` or `--restart` built its seed on the GPU: a β ramp,
 the bootstrap current and, for the free arm, a 3000-iteration coil refit. That build is not bit-for-bit repeatable. Add
 `--seed-run <repo>/campaign/reference/runs/<run>` to start from the exact original seed. Exception: the fixed-arm driver has no
-`--seed-run` before fa3982a6, but its seed build did reproduce exactly.
+`--seed-run` before e2c6fdcc, but its seed build did reproduce exactly.
 
 On NERSC Perlmutter, run inside a GPU allocation (`salloc -q interactive -A m4656_g -C gpu ...`). Use a Python 3.12
 (conda) to create the venv. The wheels bring their own CUDA 12 libraries, so no module is needed for JAX.
@@ -73,22 +84,22 @@ The offline install passed: every file matches the hash manifest, all 65 pins in
 
 | Run (commit) | Steps | Agreement with the original `metrics.jsonl` |
 |---|---|---|
-| free QA baseline (50b6d527) | 0–3 | QA identical to 10–11 digits |
-| free QA, Mercier, vacuum ι ≥ 0.31 (91729930) | 0–3 | 7e-9 by step 3 |
-| fixed QA, Mercier (f749d3eb), own seed build | 0–3 | identical to 10 digits |
-| free QA w = 1, restart (e3313c0f; originally essos 0.20.0) | 0–2 | identical to 10 digits |
-| free QI A8 (0cc38def), own seed build | 0–1 | 5e-6 at step 0: the seed build differs |
-| free QI A8 (0cc38def), `--seed-run` the original seed | 0–1 | identical at step 0, 4e-8 at step 1 |
+| free QA baseline (bf07460b) | 0–3 | QA identical to 10–11 digits |
+| free QA, Mercier, vacuum ι ≥ 0.31 (aa36682e) | 0–3 | 7e-9 by step 3 |
+| fixed QA, Mercier (0040364e), own seed build | 0–3 | identical to 10 digits |
+| free QA w = 1, restart (9875b6b4; originally essos 0.20.0) | 0–2 | identical to 10 digits |
+| free QI A8 (38e45b3e), own seed build | 0–1 | 5e-6 at step 0: the seed build differs |
+| free QI A8 (38e45b3e), `--seed-run` the original seed | 0–1 | identical at step 0, 4e-8 at step 1 |
 
 ### 12 steps, free boundary, from the original seed or restart
 
 | Run | Through step 12 |
 |---|---|
-| QA baseline (50b6d527) | QA within ~1e-10 at every step |
-| QA w = 1, restart (e3313c0f) | QA identical to 10 digits at every step |
-| QA, Mercier, vacuum ι ≥ 0.31 (91729930) | ~1e-8 through step 9, then drifts to 1.5e-5 at step 12 |
-| QI A8 (0cc38def) | identical at step 0, 2e-7 at step 1, 2% at step 3, ~20% by step 12 |
-| QH A10 (0cc38def) | identical at step 0, 0.4% at step 1, then a different path (step 10: 0.193 vs 0.228) |
+| QA baseline (bf07460b) | QA within ~1e-10 at every step |
+| QA w = 1, restart (9875b6b4) | QA identical to 10 digits at every step |
+| QA, Mercier, vacuum ι ≥ 0.31 (aa36682e) | ~1e-8 through step 9, then drifts to 1.5e-5 at step 12 |
+| QI A8 (38e45b3e) | identical at step 0, 2e-7 at step 1, 2% at step 3, ~20% by step 12 |
+| QH A10 (38e45b3e) | identical at step 0, 0.4% at step 1, then a different path (step 10: 0.193 vs 0.228) |
 
 GPU arithmetic is not deterministic run to run: two seeded QI A8 reruns on the same GPU model differed at step 1.
 
@@ -103,7 +114,7 @@ GPU arithmetic is not deterministic run to run: two seeded QI A8 reruns on the s
 - **essos version:** two late launches and most `-cN` continuations ran essos 0.20.0. This package pins 0.19.3, the
   version before the upgrade.
 - **Late continuations:** six of them, from 2026-10-12 12:20 UTC+8 on, ran newer code from another session's commits.
-  Rerun them from e3313c0f instead.
+  Rerun them from 9875b6b4 instead.
 - **Missing lhk3-6 data:** the `-m002` restart states of the lhk3-6 runs (vacuum floor 0.27 and 0.29) and those runs'
   histories are missing, because lhk3-6 is offline. Their post-processing is in `results/qa4-variants/`.
 - **Thinned WOUTs on lhk0-7:** only every 5th step's `wout.stepN.nc` is still there. Every step's `metrics.jsonl` row and

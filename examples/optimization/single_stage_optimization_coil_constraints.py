@@ -786,6 +786,7 @@ def boundary_diagnostics(wout, coils, nphi=61, ntheta=64):
 
 # ---- coil inequalities -----------------------------------------------------------------------------------------------
 CURVATURE_POINTS = max(512, 64*COIL_ORDER)
+COIL_POINT_ROWS = False  # --coil-point-rows
 DISTANCE_POINTS = max(128, 16*COIL_ORDER)
 SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
 
@@ -860,6 +861,53 @@ def coil_inequalities(coils):
         jnp.atleast_1d((m['coil_distance']-COIL_DISTANCE_LIMIT-DISTANCE_MARGIN)/COIL_DISTANCE_LIMIT),
         jnp.atleast_1d((m['self_distance']-SELF_CLEARANCE)/COIL_DISTANCE_LIMIT),
         (m['min_speed']-1e-4)/LENGTH_LIMIT))
+
+
+def coil_point_inequalities(coils):
+    """:func:`coil_inequalities` with one row per sample point instead of each coil's extreme: the peak curvature,
+    coil-coil and self distance become every base-coil point's (its curvature; its distance to the other coils, all
+    symmetry copies; to its own non-adjacent segments).  Each row is smooth where the extreme switches points, and
+    the smallest of them equals the extreme row."""
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
+    curvature = base.curvature
+    nbase = curvature.shape[0]
+    points = resampled(coils, DISTANCE_POINTS).gamma  # base coils first, then their symmetry copies
+    n = points.shape[1]
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+
+    def per_point(b):
+        others = jnp.stack([jnp.min(segment_distances(points[b], points[j]), axis=1)
+                            for j in range(points.shape[0]) if j != b])
+        own = jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+        return jnp.min(others, axis=0), own
+
+    coil_distance, self_distance = map(jnp.concatenate, zip(*[per_point(b) for b in range(nbase)]))
+    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+                            jnp.ravel(CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT,
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (coil_distance - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (self_distance - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
+
+
+def coil_rows_and_jacobian(coils_of, other_rows):
+    """``x -> [coil limits of coils_of(x), other_rows(x)]`` and its Jacobian. The coil limits are per coil, or per
+    point with ``--coil-point-rows``; their thousands of rows go forward, the rest (which may see the boundary)
+    in reverse."""
+    import jax
+    import jax.numpy as jnp
+
+    limits = coil_point_inequalities if COIL_POINT_ROWS else coil_inequalities
+    rows = lambda x: jnp.concatenate([limits(coils_of(x)), other_rows(x)])
+    if not COIL_POINT_ROWS:
+        return rows, jax.jacrev(rows)
+    points, others = jax.jacfwd(lambda x: limits(coils_of(x))), jax.jacrev(other_rows)
+    return rows, lambda x: jnp.concatenate([points(x), others(x)])
 
 
 def surface_distance(coils, surface):
@@ -1032,13 +1080,12 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
     plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
         lambda xx: plasma_params(params, xx), (x,), (e,))[1])(jnp.eye(x.size)[:npl]))
 
-    def coil_rows(x):
-        coils, surface = coils_from_x(x), surface_from_x(x)
-        clearance = surface_distance(coils, surface)
-        return jnp.concatenate([coil_inequalities(coils), jnp.atleast_1d(
-            (clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_SURFACE_DISTANCE_LIMIT)])
+    def clearance_row(x):
+        clearance = surface_distance(coils_from_x(x), surface_from_x(x))
+        return jnp.atleast_1d((clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_SURFACE_DISTANCE_LIMIT)
 
-    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(jax.jacrev(coil_rows))
+    coil_rows, coil_rows_jac = coil_rows_and_jacobian(coils_from_x, clearance_row)
+    coil_rows_jit, coil_rows_jac = jax.jit(coil_rows), jax.jit(coil_rows_jac)
 
     cache, anchor = {}, {}
     counters = dict(trials=0, failed=0, evaluations=0, linearizations=0)
@@ -1234,6 +1281,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
+                        "(curvature, coil-coil and self distance) instead of each coil's extreme")
     parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
                         "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -1363,8 +1412,9 @@ def write_run_record(out, args):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     args = parse_args(argv)
+    COIL_POINT_ROWS = bool(args.coil_point_rows)
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:
@@ -1563,24 +1613,28 @@ def main(argv=None):
             x[:n_boundary], lambda state, ctx: plasma_rows(state, ctx, coils, part))
         return rows
 
-    def coil_rows(u):
+    def coils_of(u):
+        return objects_from_x(jnp.asarray(x0) + jnp.asarray(scales) * u)[3]
+
+    def other_coil_rows(u):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
         _, _, surface, coils = objects_from_x(x)
         clearance = surface_distance(coils, surface)
-        rows = [coil_inequalities(coils),
-                jnp.atleast_1d((clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
+        rows = [jnp.atleast_1d((clearance - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
                                / COIL_SURFACE_DISTANCE_LIMIT),
                 # At finite beta the normal-field limit is on the total field: plasma_rows.
                 *([] if args.beta > 0 else [
                     jnp.atleast_1d(1.0 - normal_field_rms(coils, surface) / NORMAL_FIELD_CONSTRAINT)])]
         return jnp.concatenate(rows)
 
+    coil_rows, coil_rows_jac = coil_rows_and_jacobian(coils_of, other_coil_rows)
+
     coil_rows_jit = jax.jit(coil_rows)
     plasma_rows_jit = jax.jit(plasma_constraint)
     # One adjoint per plasma row: the gradient of w . rows at a unit w over that row's function, the solve reused.
     plasma_part_grad = {part: jax.jit(jax.grad(lambda u, w, part=part: jnp.vdot(w, plasma_constraint(u, part))))
                         for part in set(row_parts)}
-    coil_rows_jac = jax.jit(jax.jacrev(coil_rows))
+    coil_rows_jac = jax.jit(coil_rows_jac)
     cache = {}
     def half_qa(u):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u

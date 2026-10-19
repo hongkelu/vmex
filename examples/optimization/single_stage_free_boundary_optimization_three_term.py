@@ -717,6 +717,7 @@ def total_normal_field(interface, field):
 
 # ---- coil chart and coil inequalities -------------------------------------------------------------------------------
 CURVATURE_POINTS = max(512, 64*COIL_ORDER)
+COIL_POINT_ROWS = False  # --coil-point-rows
 DISTANCE_POINTS = max(128, 16*COIL_ORDER)
 SURFACE_GRID = (61, 64)
 SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
@@ -952,6 +953,38 @@ def coil_inequalities(coils):
         (m['min_speed']-1e-4)/LENGTH_LIMIT))
 
 
+def coil_point_inequalities(coils):
+    """:func:`coil_inequalities` with one row per sample point instead of each coil's extreme: the peak curvature,
+    coil-coil and self distance become every base-coil point's (its curvature; its distance to the other coils, all
+    symmetry copies; to its own non-adjacent segments).  Each row is smooth where the extreme switches points, and
+    the smallest of them equals the extreme row."""
+    import jax.numpy as jnp
+
+    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
+    speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
+    curvature = base.curvature
+    nbase = curvature.shape[0]
+    points = resampled(coils, DISTANCE_POINTS).gamma  # base coils first, then their symmetry copies
+    n = points.shape[1]
+    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
+    nonadjacent = jnp.minimum(diff, n - diff) > 1
+
+    def per_point(b):
+        others = jnp.stack([jnp.min(segment_distances(points[b], points[j]), axis=1)
+                            for j in range(points.shape[0]) if j != b])
+        own = jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
+        return jnp.min(others, axis=0), own
+
+    coil_distance, self_distance = map(jnp.concatenate, zip(*[per_point(b) for b in range(nbase)]))
+    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+                            jnp.ravel(CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT,
+                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
+                            / MSC_LIMIT,
+                            (coil_distance - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
+                            (self_distance - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
+                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
+
+
 def surface_distance(coils, surface):
     """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
     import jax
@@ -969,8 +1002,9 @@ def coil_constraint(coils_from_x):
     import jax
     import jax.numpy as jnp
     from scipy.optimize import NonlinearConstraint
-    fun = jax.jit(lambda x: coil_inequalities(coils_from_x(x)))
-    jac = jax.jit(jax.jacrev(fun))
+    rows = coil_point_inequalities if COIL_POINT_ROWS else coil_inequalities
+    fun = jax.jit(lambda x: rows(coils_from_x(x)))
+    jac = jax.jit(jax.jacfwd(fun) if COIL_POINT_ROWS else jax.jacrev(fun))  # thousands of point rows: forward
     return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
                                jac=lambda x: np.asarray(jac(jnp.asarray(x))))
 
@@ -987,6 +1021,8 @@ def parse_args(argv=None):
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
+    parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
+                        "(curvature, coil-coil and self distance) instead of each coil's extreme")
     parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
                         "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -1166,7 +1202,7 @@ def write_run_record(out, args):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     args = parse_args(argv)
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
@@ -1176,6 +1212,7 @@ def main(argv=None):
         IOTA_CEILING = args.iota_ceiling
     if args.aspect_range is not None:
         ASPECT_RANGE = tuple(args.aspect_range)
+    COIL_POINT_ROWS = bool(args.coil_point_rows)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

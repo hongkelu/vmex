@@ -643,11 +643,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
             A band wider than the repeatability would leave the answer anywhere in it: restoring the rows inside
             the band earns no merit, so the solve stops where its start's path entered the band."""
-            if noise_rows is None or not m:
+            if noise_c is None or not m:
                 return tol_c
             # at a looser level than the deck's (ToleranceContinuation) the rows are asked for no more than that
             # level resolves, sqrt(level), however repeatable the equilibria are
-            return max(float(np.max(np.abs(noise_rows[k:]))), tol_c if loose else 0.0)
+            return max(noise_c, tol_c if loose else 0.0)
 
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
@@ -655,6 +655,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         rejected_cheap = 0  # cheap models (Gauss-Newton, quasi-Newton) whose step was rejected since the last exact one
         noise = 0.0  # the cost's measured repeatability
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
+        # the constraint rows' repeatability: the largest of every measurement (the noise vector kept above is the one
+        # of largest norm over all rows, whose constraint part can be smaller than an earlier one's -- the resolution
+        # then dropped between models and a point the cheap models had restored became infeasible to the exact one)
+        noise_c = None
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
         for it in range(int(max_iter)):
             if need is not None or H_full is None:
@@ -696,6 +700,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     noise = max(noise, abs(cost_of(again) - cost_of(r)))
                     if noise_rows is None or np.linalg.norm(again - r) > np.linalg.norm(noise_rows):
                         noise_rows = again - r
+                    if m:
+                        noise_c = max(noise_c or 0.0, float(np.max(np.abs(again[k:] - r[k:]))))
             gs_prev, x_prev = gs_f, x.copy()
             cost = cost_of(r)
             # the null space of the constraint rows (their Jacobian from the last model) and the Lagrangian's gradient

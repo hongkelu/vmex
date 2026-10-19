@@ -152,6 +152,16 @@ def _trust_region_solution(w, gq, radius, newton):
 #: ``host_ftol=None`` solves the trials to the deck's FTOL; full-precision solves always do.
 HOST_FTOL = 1.0e-13
 
+#: An optimization trial's boundary is converged once the remaining Newton step moves it by less than this (m, RMS normal
+#: displacement, :func:`~vmex.core.freeboundary_vc.displacement_rms`; its bootstrap-current values by less than this
+#: over ``R0`` relative), besides the full rule.  The full rule's first exact model of a warm trial always found one more
+#: step of <= 0.6 um (a gain of 5e-8 of the cost) and a second exact model, 68 s at qass M 8, was built only to certify
+#: it (the TT3 session's warm-trial study, 10-18).  1 um is far inside what the trials resolve anyway: the soft
+#: direction locates a finite-beta boundary to ~1e-5 m (#92), and start independence was accepted at that level.
+#: Trials only (user decision 10-18): full-precision solves -- a run's certified last design, validations -- and solves
+#: outside an optimization keep the full rule.
+TRIAL_STEP_TOLERANCE = 1.0e-6
+
 
 class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     """The least-squares free boundary of one deck for many external fields and plasma parameters.
@@ -165,6 +175,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
+    #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
+    #: rule only; full-precision solves always use it)
+    trial_step_tolerance = None
 
     def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, full_precision=False,
                  host_ftol=HOST_FTOL, **options):
@@ -217,7 +230,29 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         return self.cfg if host is None or getattr(self, "full_precision", False) else host
 
     _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision",
+                                                                                 "trial_step_tolerance",
                                                                                  "hessian_remat")
+
+    def _trial_tolerance(self):
+        """The trials' physical step tolerance (m), or ``None`` (a full-precision or non-optimization solve)."""
+        tol = getattr(self, "trial_step_tolerance", None)
+        return None if tol is None or getattr(self, "full_precision", False) else float(tol)
+
+    def _step_converged(self, step, noise_step, x):
+        """The full rule (:meth:`ThreeTermsFreeBoundaryModel._step_converged`), or for an optimization's trial a step
+        that moves the boundary by less than :data:`TRIAL_STEP_TOLERANCE` (RMS normal displacement) and its current
+        values by less than that over ``R0`` relative."""
+        if super()._step_converged(step, noise_step, x):
+            return True
+        tol = self._trial_tolerance()
+        if tol is None:
+            return False
+        nb = self.n_boundary
+        ok = nb == 0 or displacement_rms(step[:nb], self.boundary_modes) <= tol
+        if step.size > nb:
+            rms = lambda v: float(np.sqrt(np.mean(np.square(v))))  # noqa: E731
+            ok = ok and rms(step[nb:]) <= tol / float(self.R0) * rms(x[nb:])
+        return ok
 
     @property
     def converged_ftol(self) -> float:
@@ -653,6 +688,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
         rejected_cheap = 0  # cheap models (Gauss-Newton, quasi-Newton) whose step was rejected since the last exact one
+        # an optimization trial's last exact Hessian (every column, scaled), kept for the quasi-Newton models after it:
+        # with the exact gradient at their point it certifies a small remaining step without a second exact model
+        H_exact = None
         noise = 0.0  # the cost's measured repeatability
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
@@ -672,6 +710,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 model, need = ("exact" if need == "exact" else "gauss_newton"), None
                 if model == "exact":
                     rejected_cheap = 0
+                H_exact = None
             else:  # quasi-Newton: BFGS updates of the last model with the exact (adjoint) gradient
                 shift = None if not m else np.r_[np.zeros(k), -r[k:]]  # the interface cost's gradient
                 gs_f = S * self.gradient(x, aux, field, shift=shift)
@@ -705,6 +744,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             merit = cost_of(r) + penalty * violation(r)
             if fresh and "H" in so:  # every column of the exact Hessian (an optimizer's certificate)
                 Hs = S[:, None] * so["H"] * S[None]
+                if self._trial_tolerance() is not None:
+                    H_exact = Hs
             elif fresh:
                 # The exact model on a Krylov subspace: preconditioned Lanczos on the reduced Hessian (one product
                 # H v a vector), preconditioner the reduced Gauss-Newton matrix.  The subspace grows until the
@@ -712,6 +753,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # Eisenstat-Walker choice for superlinear convergence); the trust-region steps below are then
                 # exact in it.  The eigenpairs of the tridiagonal certify convergence on the subspace.
                 N, gq_norm_first = self._krylov_model(so, N, GN, S, gs, gq_norm_first)
+            # a trial's quasi-Newton model right after an exact one: that exact Hessian with the exact gradient here
+            # certifies (user decision 10-18: the previous exact model and the exact gradient, for trials only)
+            certifying = model == "quasi-Newton" and H_exact is not None
+            if certifying:
+                Hs = H_exact
             if fresh and "H" not in so:
                 Hp = S * so["hvp"]((S * p)[None])[0] if np.any(p) else 0.0 * p
             else:
@@ -756,18 +802,18 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             # boundary to ~1e-5 m (accepted by the user 10-18); converging below it took half of every trial, linearly
             # under the trust radius, chasing gains no equilibrium resolves.
             floor = noise if getattr(self, "full_precision", False) else max(noise, 2.0 * tol_c * cost)
-            if not fresh and w[0] > 0 and feasible and 0.5 * decrement <= floor:
+            if not (fresh or certifying) and w[0] > 0 and feasible and 0.5 * decrement <= floor:
                 # a cheaper model's whole predicted gain is below that: only the exact model can certify it, so ask
                 # for it now (its own test below then ends the solve)
                 need = "exact"
                 continue
             if step_n is not None and feasible and self._step_converged(step_n, step_noise, x):
-                if not fresh:  # certify with the exact Hessian
+                if not (fresh or certifying):  # certify with the exact Hessian
                     need = "exact"
                     continue
-                converged, status = True, "converged"
+                converged, status = True, "converged" + (" (the previous exact Hessian)" if certifying else "")
                 break
-            if fresh and w[0] > 0 and feasible and 0.5 * decrement <= floor:
+            if (fresh or certifying) and w[0] > 0 and feasible and 0.5 * decrement <= floor:
                 # the exact model's whole remaining gain is below the cost's measured repeatability: the minimum is
                 # located to the equilibria's noise, and further steps only move along it
                 converged, status = True, "converged: gain below the cost's repeatability"
@@ -1001,6 +1047,9 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         self._coil_mixed = jax.jit(coil_mixed)
         self._constraint_field_jacobian = jax.jit(constraint_field_jacobian)
         super().__init__(model, loss, x0, **options)
+        # the seed's solve above used the full rule; the optimization's trials converge to TRIAL_STEP_TOLERANCE too
+        # (certify() turns full precision on, which restores the full rule)
+        model.trial_step_tolerance = TRIAL_STEP_TOLERANCE
 
     def _solve(self, x):
         """:meth:`ThreeTermsFreeBoundaryProblem._solve`, the boundary's certificate built with what

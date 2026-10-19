@@ -325,22 +325,27 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     def _newton_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=60, verbose=0, undamped=False):
         """The optimizer's warm trial (``ThreeTermsFreeBoundaryProblem._solve``): :meth:`solve_boundary` from ``x0``
-        with ``jacobian`` as its first Gauss-Newton model (``undamped`` is the Galerkin Newton's option)."""
-        del undamped
-        return self.solve_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose)
+        with ``jacobian`` as its first Gauss-Newton model.
+
+        ``undamped=True`` (the warm starts of ``_solve``, near the answer by construction) is the Galerkin Newton's
+        contract in trust-region form: the solve stops, not converged, once it is outside the Newton basin
+        (:meth:`_newton`'s ``basin``), and ``_solve`` hands over to its next start instead of crawling."""
+        return self.solve_boundary(params, field, x0=x0, jacobian=jacobian, max_nfev=max_nfev, verbose=verbose,
+                                   basin=bool(undamped))
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, max_nfev=None,
-                       max_iter=60, callback=None, verbose=0, continuation=True):
+                       max_iter=60, callback=None, verbose=0, continuation=True, basin=False):
         """The free boundary for ``params`` and ``field``, from ``x0`` (default: the deck's boundary).
 
         :meth:`_newton`; ``max_nfev`` (the Galerkin solve's name) caps its models like ``max_iter``; ``continuation``
         (the Galerkin solve's band continuation) has no counterpart here: this solve is always its own Newton;
         ``jacobian`` (rows by coordinates, a nearby boundary's: an optimizer's previous trial) is the first
-        Gauss-Newton model instead of a fresh linearization.
+        Gauss-Newton model instead of a fresh linearization; ``basin`` (a warm start's) stops the solve once it is
+        outside the Newton basin (:meth:`_newton`).
         """
         out = self._newton(params, field, x0=x0, jacobian=jacobian,
                            max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
-                           verbose=verbose)
+                           verbose=verbose, basin=basin)
         if self.require_converged and not out["converged"]:  # an optimizer's trial: no answer, not a value
             raise RuntimeError(f"the least-squares free boundary did not converge ({out['status']})")
         return out
@@ -621,7 +626,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         g_f = self.gradient(x, aux, field, shift=shift)
         return dict(J=J, r=r_lin, g=g_f, g_f=g_f, aux=aux, asymmetry=np.nan, adjoint=np.nan, g_adjoint=g_f, seconds={})
 
-    def _newton(self, params, field, *, x0=None, max_iter=60, radius=None, callback=None, verbose=0, jacobian=None):
+    def _newton(self, params, field, *, x0=None, max_iter=60, radius=None, callback=None, verbose=0, jacobian=None,
+                basin=False):
         """Minimize ``1/2 |rows|^2`` over the boundary by a trust-region (quasi-)Newton method.
 
         With constraint rows (the net current's and the bootstrap current's, :attr:`n_constraint_rows`) the cost
@@ -646,6 +652,16 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         norm, smallest and largest eigenvalue of the reduced model and of ``J^T J``, Newton decrement, gap
         between ``J^T r`` and the adjoint gradient and Hessian asymmetry (exact models), seconds).
         ``callback(x)``, if given, is called with every accepted boundary (e.g. to checkpoint a long solve).
+
+        ``basin=True`` (a warm start, near the answer by construction) stops the solve, not converged (status
+        ``"stalled: outside the Newton basin ..."``), at the second exact model in a row without its full Newton
+        step: one that is indefinite, or whose accepted step the trust radius cut short.  Near a minimum of the
+        cost the exact reduced Hessian is positive definite and its Newton step is accepted; a second exact model
+        without that means the start is outside the basin (one is common on the way in), where a warm start only
+        crawls under a collapsing radius while its trials search for equilibria that may not exist (f97-qa-sl-c3,
+        10-19: indefinite exact models, eigenvalues down to -0.2 against Gauss-Newton's 5e-7, trials 2e-3 away
+        without equilibrium or on another equilibrium branch at 4000 times the cost; 27 models in 1 h 48 min of
+        one trial's first start).  The caller then hands over to its next start.
         """
         x = np.array(self.x0 if x0 is None else x0, dtype=float)
         t_eval = time.perf_counter()
@@ -695,6 +711,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         noise = 0.0  # the cost's measured repeatability
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
+        outside = 0  # exact models in a row without their full Newton step (``basin``)
         for it in range(int(max_iter)):
             if need is not None or H_full is None:
                 warm = jacobian if need != "exact" and so is None else None
@@ -796,6 +813,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       + f"({history[-1][-1]:.0f} s)", flush=True)
             if verbose > 1:
                 self._print_weakest(S * (N @ Q[:, 0]))
+            if basin and fresh and not w[0] > 0 and outside >= 1:  # no Newton step: stop before its (costly) trials
+                status = "stalled: outside the Newton basin (a second exact model without a Newton step: indefinite)"
+                break
             # gains below what the equilibria resolve are not resolved: the larger of the cost's measured
             # repeatability and its a-priori resolution -- the rows are determined to sqrt(FTOL) relative, the cost to
             # 2 sqrt(FTOL) of itself (the repeatability the exact models of finite-beta trials measure agrees: 1.4e-12
@@ -839,7 +859,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 return cost_of(rows) + penalty * violation(rows)
 
             accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
+            full = False  # the accepted step is the model's whole Newton step (not one the trust radius cut short)
             for attempt in range(12):
+                full = bool(np.isfinite(newton) and newton <= radius)
                 step, predicted = model_step(radius)
                 if feasible and self._step_converged(S * step, step_noise, x):
                     # a trial step the rows' noise (or round-off) already accounts for carries no information:
@@ -917,6 +939,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         if got_try is None or merit_of(got_try[0]) >= cost_new:
                             break
                         x_new, got, cost_new, length = x_try, got_try, merit_of(got_try[0]), np.linalg.norm(step2)
+                        full = bool(newton <= radius)
                         if verbose:
                             print(f"  extended: |s| {length:.2e} cost {cost_new:.10e} predicted {predicted2:.2e}",
                                   flush=True)
@@ -945,6 +968,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     break
             if converged:
                 break
+            if fresh and accepted:
+                outside = 0 if full else outside + 1
+                if basin and outside >= 2:
+                    status = "stalled: outside the Newton basin (a second exact model whose step the radius cut short)"
+                    break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise
                 converged = bool(w[0] > 0) and evaluated and feasible  # trials without equilibria are no noise floor

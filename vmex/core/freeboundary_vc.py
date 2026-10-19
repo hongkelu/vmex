@@ -2051,8 +2051,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model.deck))
             starts = [(anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["J_b"]),
                       (anchor["b"], anchor["J_b"]), (None, None)]
-        fit = None
+        fit, outside = None, 0  # outside: warm starts that stopped outside the Newton basin (least squares)
         for start, J in starts:
+            if J is None and anchor and outside == len(starts) - 1:
+                # every warm start is outside the Newton basin of this design (LeastSquaresFreeBoundaryModel's
+                # ``basin``): the design step is beyond the anchor's linearization, and the cold start would descend the
+                # same soft valley from much farther (f97-qa-sl-c3, 10-19: 34 models, 45 min and still descending).
+                # The trial fails at once and the optimizer shortens its step.
+                self.stats["outside_basin"] = self.stats.get("outside_basin", 0) + 1
+                fit = None
+                break
             try:
                 if J is None:  # cold: Newton from the deck (a trial that stalls there fails: the optimizer shortens
                     # its step; the band continuation, tens of minutes at finite beta, is the seed's route only)
@@ -2065,10 +2073,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
                 self.stats["boundary_evaluations"] += fit["nfev"]
+                outside += bool(fit.get("outside_basin"))
                 fit = None
                 continue
             break
-        if fit is None and anchor:
+        if fit is None and anchor and outside < len(starts) - 1:
             fit = self._rereference(x, anchor)
         if fit is None:
             self.stats["failed"] += 1

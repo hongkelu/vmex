@@ -349,7 +349,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         out = self._newton(params, field, x0=x0, jacobian=jacobian,
                            max_iter=max_iter if max_nfev is None else int(max_nfev), callback=callback,
                            verbose=verbose, basin=basin)
-        if self.require_converged and not out["converged"]:  # an optimizer's trial: no answer, not a value
+        # an optimizer's trial: no answer, not a value (a warm start outside the Newton basin is returned: its caller,
+        # ThreeTermsFreeBoundaryProblem._solve, then skips the starts that would only crawl)
+        if self.require_converged and not out["converged"] and not out["outside_basin"]:
             raise RuntimeError(f"the least-squares free boundary did not converge ({out['status']})")
         return out
 
@@ -1006,7 +1008,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                   f"({time.perf_counter() - started:.0f} s)", flush=True)
         return dict(x=x, rows=r, aux=aux, jacobian=None if so is None else so["J"],
                     hessian=None if so is None else so.get("H"), nfev=nfev, njev=len(history), converged=converged,
-                    status=status, accepted=len(history), history=np.asarray(history), radius=radius)
+                    status=status, accepted=len(history), history=np.asarray(history), radius=radius,
+                    outside_basin=status.startswith("stalled: outside the Newton basin"))
 
     def _print_weakest(self, direction):
         """Print the largest boundary-mode components of ``direction`` (the reduced Hessian's weakest)."""

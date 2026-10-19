@@ -537,3 +537,40 @@ def test_optimization_solves_converge_to_the_measured_repeatability():
     assert trial["converged"] and certified["converged"]
     np.testing.assert_allclose(trial["x"][0], 1.0, atol=1e-5)
     np.testing.assert_array_equal(trial["x"], certified["x"])
+
+
+def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin():
+    """``ThreeTermsFreeBoundaryProblem._solve``: when both warm starts of a trial stop outside the Newton basin, the
+    cold start and the re-referenced deck (which would descend the same soft valley from farther, 45 min in
+    f97-qa-sl-c3) are skipped and the trial fails at once (the optimizer rejects it); a warm start that stalls for
+    another reason still hands over to them."""
+    calls = []
+
+    class Model:
+        deck = None
+
+        def __init__(self, outside):
+            self.outside = outside
+
+        def _newton_boundary(self, params, field, **kw):
+            calls.append("warm")
+            return dict(converged=False, nfev=3, outside_basin=self.outside, status="")
+
+        def solve_boundary(self, params, field, **kw):
+            calls.append("cold")
+            return dict(converged=False, nfev=1, status="")
+
+    for outside, expected in ((True, ["warm", "warm"]), (False, ["warm", "warm", "cold", "reference"])):
+        problem = object.__new__(lsq.LeastSquaresFreeBoundaryProblem)
+        problem._cache, problem.stats, problem._seed_start = {}, dict(trials=0, boundary_evaluations=0, failed=0), None
+        problem._params_at, problem.field = (lambda x: None), (lambda x: None)
+        problem._plasma, problem.boundary_max_nfev = np.zeros(0, dtype=int), 10
+        problem._field_jvp = lambda *args: np.zeros(2)
+        problem._anchor = dict(x=np.zeros(3), b=np.zeros(2), J_b=np.eye(2), J_p=np.zeros((2, 0)), state=None,
+                               params=None)
+        problem._rereference = lambda x, anchor: calls.append("reference")
+        problem.model = Model(outside)
+        calls.clear()
+        assert lsq.ThreeTermsFreeBoundaryProblem._solve(problem, np.ones(3)) is None
+        assert calls == expected, calls
+        assert problem.stats.get("outside_basin", 0) == int(outside)

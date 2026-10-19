@@ -652,6 +652,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         penalty = 0.0  # the l1 penalty weight: above max |nu| (exact penalty), never decreased
         H_full = gs_prev = x_prev = None
         need = "gauss_newton"  # the next model: "gauss_newton" (J^T J), "exact" (second order) or None (BFGS)
+        rejected_cheap = 0  # cheap models (Gauss-Newton, quasi-Newton) whose step was rejected since the last exact one
         noise = 0.0  # the cost's measured repeatability
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
@@ -669,6 +670,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 H_full = GN
                 gs_f = S * (so["g_f"] if "g_f" in so else so["J"][:k, :x.size].T @ so["r"][:k])
                 model, need = ("exact" if need == "exact" else "gauss_newton"), None
+                if model == "exact":
+                    rejected_cheap = 0
             else:  # quasi-Newton: BFGS updates of the last model with the exact (adjoint) gradient
                 shift = None if not m else np.r_[np.zeros(k), -r[k:]]  # the interface cost's gradient
                 gs_f = S * self.gradient(x, aux, field, shift=shift)
@@ -811,6 +814,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                           + (f"[cost {cost_of(got[0]):.10e} penalty {penalty:.1e} violation {violation(got[0]):.1e}] "
                              if m and got is not None else "")
                           + f"({time.perf_counter() - started:.0f} s)", flush=True)
+                # the model's own quality: the step's ratio before any correction (a restored step's ratio also
+                # credits the violation it removes, so a model whose steps succeed only once restored -- one missing
+                # the constraint rows' curvature, nu grad^2 r_c, as Gauss-Newton and BFGS do -- would look good and
+                # never hand over to the exact model: qhss_b25 M 8, 87 cheap models and none exact, 69 of 86 steps
+                # failing their own test; the TT3 session's finding, 10-18)
+                rho_model = rho
                 for _ in range(3 if m else 0):
                     # the constraint rows' own second-order correction (the Maratos effect): along the soft
                     # directions of a finite-beta boundary the net-current and bootstrap rows curve, so a step that
@@ -874,11 +883,16 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         # the exact model's step gained no more than the cost's measured repeatability: what is
                         # left is below what the equilibria resolve
                         converged, status = True, "converged: gain below the cost's repeatability"
-                    if rho < 0.25 and not tiny:  # a poor model: the next better one at the new point
+                    if min(rho, rho_model) < 0.25 and not tiny:  # a poor model: the next better one at the new point
                         need = "exact" if model == "gauss_newton" else "gauss_newton"
                     break
                 if not fresh:  # a model that fails: a fresh Jacobian (quasi-Newton), else the exact Hessian
-                    need = "exact" if model == "gauss_newton" else "gauss_newton"
+                    # and from the second cheap model rejected since the last exact one, the exact model: where the
+                    # constraint rows' curvature dominates a soft direction, each fresh Gauss-Newton model gains a
+                    # little inside its small radius and the quasi-Newton model built on it fails again, a cycle the
+                    # radius only shrinks (300 models without converging on a sphere-constrained toy)
+                    rejected_cheap += 1
+                    need = "exact" if model == "gauss_newton" or rejected_cheap >= 2 else "gauss_newton"
                     break
                 if tiny:  # the exact model's gain is below the cost's repeatability: nothing left to resolve
                     break

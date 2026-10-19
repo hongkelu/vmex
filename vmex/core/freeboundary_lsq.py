@@ -143,7 +143,7 @@ def _trust_region_solution(w, gq, radius, newton):
 
 
 #: The host (descent) solve's force tolerance of a trial's tight equilibrium (LeastSquaresFreeBoundaryModel
-#: ``host_ftol``).  The Newton refinement after it lands every tight state at the residual floor (|F| 1.2-1.7e-13 from
+#: ``host_ftol``).  The Newton refinement after it lands every tight state at the residual floor (``|F|`` 1.2-1.7e-13 from
 #: a host stop at 1e-15, 1e-13, 1e-12 or 1e-11, QH 2.5 % 8x8), so the last decades of the linearly converging descent
 #: only cost time: a QH trial evaluation 8.4 -> 2.3 s (1799 -> 280 iterations) at a 1e-3 step, 16.6 -> 12.2 s at 1e-2.
 #: The answers agree within the equilibria's own repeatability: the same QH trial boundary solved to 1e-15 from two

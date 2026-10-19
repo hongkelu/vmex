@@ -127,3 +127,26 @@ def test_rz_entry_and_options():
     finally:
         rz.LeastSquaresRZFreeBoundaryProblem = original
     assert built is Recorder and calls[0]["gauge_weight"] == 1e-3
+
+
+def test_rz_normal_tangential_basis_same_answer():
+    """The basis ``"normal_tangential"`` is a change of coordinates only: it maps onto every packed coefficient
+    (square, invertible), round-trips a relabelled surface, and the solve certifies the same boundary as the basis
+    ``"rz"``."""
+    inp = _vacuum_deck()
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    rz_model = rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), **OPTIONS)
+    nt_model = rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), basis="normal_tangential", **OPTIONS)
+    assert nt_model._basis.shape == (rz_model.n_boundary, rz_model.n_boundary) == (nt_model.n_boundary,) * 2
+    surface = relabelled(nt_model.fixed)
+    y = nt_model.displacement_of(surface)
+    np.testing.assert_allclose(nt_model._basis @ y, rz_model.displacement_of(surface), atol=1e-12)
+    ends = []
+    for model in (rz_model, nt_model):
+        out = model.solve_boundary(model.params0, field, max_iter=60)
+        assert out["converged"], out["status"]
+        params = model.with_boundary(model.params0, out["x"])
+        ends.append(np.r_[np.ravel(params.rbc), np.ravel(params.zbs)])
+    assert np.sqrt(np.mean((ends[0] - ends[1]) ** 2)) < 1e-6 * rz_model.R0
+    with pytest.raises(ValueError, match="basis must be"):
+        rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), basis="xyz", **OPTIONS)

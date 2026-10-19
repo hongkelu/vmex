@@ -549,7 +549,7 @@ def test_direct_scipy_minimize_and_least_squares_use_same_problem():
 
 def test_vmex_jax_logging_default_and_override() -> None:
     """The default removes PjRt chatter without preventing an opt-in."""
-    code = "import vmex, jax; print(jax.config.jax_logging_level)"
+    code = "import vmex.core, jax; print(jax.config.jax_logging_level)"
     env = os.environ.copy()
     env.pop("VMEX_JAX_LOGGING_LEVEL", None)
     env.pop("JAX_LOGGING_LEVEL", None)
@@ -646,8 +646,7 @@ def test_vary_phiedge_appends_a_relative_phiedge_dof():
     """vary_phiedge: a named trailing dof, round-tripped through the input,
     whose implicit Jacobian column matches central differences of re-solves.
 
-    Jitted, as ``_module_jit_enabled`` does (the conftest disables jit globally,
-    and a thread-local ``jax.disable_jit(False)`` misses the solver's threads):
+    Jitted (a thread-local ``jax.disable_jit(False)`` misses the solver's threads):
     three solves take seconds, not six minutes."""
     import jax
 

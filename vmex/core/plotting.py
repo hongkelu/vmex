@@ -7,7 +7,7 @@ Self-contained matplotlib (Agg) figure set read from a ``wout_*.nc`` file
   mesh), pressure with the confinement diagnostics ``eps_eff^(3/2)`` (NEO_JAX) and
   ``Gamma_c`` sharing one right axis (bounded-resolution radial trends,
   cached per in-memory WOUT — see :class:`ConfinementSummary`), relative
-  radial force error with the bootstrap current ``<J.B>`` on its right
+  radial force error with the equilibrium's parallel current ``<J.B>`` on its right
   axis, Mercier ``DMerc``
   and Glasser ``D_R`` with ``V''(s)`` on the right axis, a 3-D LCFS,
   a Velasco-style polar second-adiabatic-invariant map ``J(alpha, s)``, ``|B|``
@@ -885,21 +885,9 @@ def _boozer_summary_data(
     )
     s_b = np.asarray(bx.s_b, dtype=float)
     iota_b = np.asarray(bx.iota, dtype=float)[np.asarray(indices, dtype=int)]
-    # The same transform feeds NEO's effective ripple (the summary confinement
-    # panel), so the one Boozer run is shared instead of duplicated.  NEO's
-    # BoozerData contract is symmetric-only; ``pmns_b`` carries booz_xform's
-    # ``-numns`` sign convention (see ``epsilon_effective_from_wout``).
-    neo_booz = None
-    if bmns_b is None:
-        neo_booz = {
-            "nfp_b": int(bx.nfp), "ns_b": len(indices),
-            "ixm_b": np.asarray(bx.xm_b), "ixn_b": np.asarray(bx.xn_b),
-            "iota_b": iota_b,
-            "buco_b": np.asarray(bx.Boozer_I), "bvco_b": np.asarray(bx.Boozer_G),
-            "rmnc_b": np.asarray(bx.rmnc_b), "zmns_b": np.asarray(bx.zmns_b),
-            "pmns_b": -np.asarray(bx.numns_b), "bmnc_b": np.asarray(bx.bmnc_b),
-            "s_b": s_b,
-        }
+    from .neoclassical import _neo_boozer_data
+
+    neo_booz = _neo_boozer_data(bx, indices)
     return {
         "bmnc_b": np.asarray(bx.bmnc_b, dtype=float).T,
         "bmns_b": bmns_b,
@@ -1022,8 +1010,10 @@ def _neo_surface_subset(neo_booz: dict[str, Any]) -> dict[str, Any]:
     subset = dict(neo_booz, ns_b=int(keep.size))
     for key in ("iota_b", "buco_b", "bvco_b", "s_b"):
         subset[key] = np.asarray(neo_booz[key])[keep]
-    for key in ("rmnc_b", "zmns_b", "pmns_b", "bmnc_b"):
-        subset[key] = np.asarray(neo_booz[key])[:, keep]
+    for key in ("rmnc_b", "zmns_b", "pmns_b", "bmnc_b",
+                "rmns_b", "zmnc_b", "pmnc_b", "bmns_b"):
+        if key in neo_booz:
+            subset[key] = np.asarray(neo_booz[key])[:, keep]
     return subset
 
 
@@ -1032,7 +1022,7 @@ def _epsilon_effective_profile(booz: dict[str, Any] | None, note: str):
     if booz is None:
         return None, None, note or "Boozer transform unavailable"
     if booz.get("neo_booz") is None:
-        return None, None, "NEO_JAX's BoozerData contract is symmetric-only"
+        return None, None, "NEO Boozer tables unavailable"
     try:
         from .neoclassical import diagnostic_neo_config, epsilon_effective_from_boozer
 
@@ -1041,7 +1031,7 @@ def _epsilon_effective_profile(booz: dict[str, Any] | None, note: str):
     except ImportError:
         return None, None, "effective ripple requires NEO_JAX (vmex[neoclassical])"
     except Exception as exc:  # noqa: BLE001 - summary stays usable without NEO
-        return None, None, f"NEO evaluation failed: {type(exc).__name__}"
+        return None, None, f"NEO evaluation failed: {type(exc).__name__}: {exc}"
     surfaces = np.asarray(surfaces, dtype=float)
     values = np.asarray(values, dtype=float)
     keep = np.isfinite(values) & (values > 0.0)
@@ -1327,7 +1317,8 @@ def _stability_panel(ax, wout, d_r_info: dict[str, Any], *, s_plot_ignore: float
     ax.set_xlim(0.0, 1.0)
 
     well_ax = ax.twinx()
-    s_vpp, vpp = _volume_second_derivative(wout)
+    # V'' needs four surfaces; at NS = 3 the plotted slice is empty anyway.
+    s_vpp, vpp = _volume_second_derivative(wout) if ns >= 4 else (s, np.full(ns, np.nan))
     finite_vpp = vpp[sl][np.isfinite(vpp[sl])]
     peak_vpp = max(float(np.max(np.abs(finite_vpp))) if finite_vpp.size else 1.0,
                    np.finfo(float).tiny)
@@ -1683,7 +1674,8 @@ def _summary_figure(
         )
 
         # Force error normalized by the magnetic pressure gradient (DESC),
-        # with the bootstrap <J.B> against the same rho on its right axis.
+        # with the equilibrium's total <J.B> (all current, not only bootstrap)
+        # against the same rho on its right axis.
         meta["force_error"] = _relative_force_error_panel(axes[0, 2], wout)
         current_axis = axes[0, 2].twinx(); meta["current_axis"] = current_axis
         current_line = current_axis.plot(
@@ -1691,7 +1683,7 @@ def _summary_figure(
             color=_LINE_COLORS[2], label=r"$\langle\mathbf{J}\cdot\mathbf{B}\rangle$",
         )[0]
         current_axis.set_ylabel(
-            r"Bootstrap $\langle \mathbf{J}\cdot\mathbf{B} \rangle$ [kA T/m$^2$]",
+            r"$\langle \mathbf{J}\cdot\mathbf{B} \rangle$ [kA T/m$^2$]",
             color=_LINE_COLORS[2],
         )
         current_axis.tick_params(axis="y", colors=_LINE_COLORS[2])
@@ -1783,7 +1775,8 @@ def plot_summary(
        average of ``|J x B - grad p|`` over the volume average of
        ``|grad(B^2/2mu0)|`` on ``0.1 <= s <= 0.99`` (DESC's normalization;
        the scalar card gives the volume average), on interior surfaces,
-       with the flux-surface-averaged bootstrap current ``<J.B>`` in
+       with the flux-surface-averaged parallel current ``<J.B>`` (the
+       equilibrium's total, not a bootstrap model) in
        kA T m^-2 on a coloured right axis;
     4. Mercier ``DMerc`` and the Glasser-Greene-Johnson ``D_R`` against ``s``,
        with the physical ``d2V/ds2`` on the right axis;
@@ -2577,6 +2570,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
     meta, bz = result.metadata, result.boozer
     lost = np.asarray(result.lost_times) >= 0
     t_loss = np.asarray(result.lost_times)[lost]
+    positive_losses = t_loss.size and np.all(t_loss > 0)
     birth = np.asarray(result.initial_conditions)
     final = np.asarray(result.final_states)
     nfp = int(bz["nfp"])
@@ -2613,7 +2607,8 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
         a_p.set(xlabel=r"birth pitch $v_\parallel/v$", ylabel="density")
         a_p.legend()
         a_tp.scatter(birth[lost, 3], t_loss, s=10)
-        a_tp.set(yscale="log", xlim=(-1, 1), xlabel=r"birth pitch $v_\parallel/v$", ylabel="loss time [s]")
+        a_tp.set(yscale="log" if positive_losses else "linear", xlim=(-1, 1),
+                 xlabel=r"birth pitch $v_\parallel/v$", ylabel="loss time [s]")
         if meta.get("birth") == "volume":
             edges = np.linspace(0, 1, 11)
             idx = np.clip(np.digitize(birth[:, 0], edges) - 1, 0, 9)
@@ -2624,9 +2619,11 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
             a_b.errorbar(mid, frac, yerr=err, fmt="o-")
             a_b.set(xlabel="birth s", ylabel="loss fraction", title="loss vs birth radius")
         else:
-            tb = np.logspace(np.log10(max(t[0], 1e-7)), np.log10(t[-1]), 30)
+            tb = (np.geomspace(min(t[0], t_loss.min()) / 2, t[-1], 30)
+                  if positive_losses else np.linspace(0, t[-1], 30))
             a_b.hist(t_loss, bins=tb)
-            a_b.set(xscale="log", xlabel="loss time [s]", ylabel="lost alphas", title="loss-time histogram")
+            a_b.set(xscale="log" if positive_losses else "linear", xlabel="loss time [s]",
+                    ylabel="lost alphas", title="loss-time histogram")
         s_b, iota = np.asarray(bz["s"]), np.asarray(bz["iota"])
         a_i.plot(s_b, iota, "-", color="0.2")
         lo, hi = float(np.min(iota)), float(np.max(iota))
@@ -2655,8 +2652,10 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                          color="0.8", alpha=0.25, linewidth=0)
         if lost.any():
             x, y, z = _boozer_boundary_xyz(bz, final[lost, 1], final[lost, 2])
-            sc = ax3.scatter(x, y, z, s=6, c=np.log10(t_loss), cmap="viridis", depthshade=False)
-            fig.colorbar(sc, ax=ax3, shrink=0.5, label="log10 loss time [s]")
+            sc = ax3.scatter(x, y, z, s=6, c=np.log10(t_loss) if positive_losses else t_loss,
+                             cmap="viridis", depthshade=False)
+            fig.colorbar(sc, ax=ax3, shrink=0.5,
+                         label="log10 loss time [s]" if positive_losses else "loss time [s]")
         ax3.set_axis_off()
         ax3.set_box_aspect((1, 1, 0.35))
         ax3.set_title(f"{name}: {int(lost.sum())} alpha loss locations")

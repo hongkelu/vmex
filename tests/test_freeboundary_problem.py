@@ -22,7 +22,6 @@ from vmex.core import freeboundary_problem as api
 from vmex.core.errors import TrialRejected, VmecError
 from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
 
 
 def test_public_names_share_the_core_classes():

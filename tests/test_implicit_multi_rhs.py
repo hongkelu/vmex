@@ -223,9 +223,6 @@ def test_block_response_forward_transpose_and_fd():
         np.testing.assert_allclose(
             directional, finite_difference, rtol=2e-5, atol=2e-8
         )
-
-
-@pytest.mark.usefixtures("_module_jit_enabled")
 def test_block_response_refines_columns_the_corrector_leaves_uncertified(monkeypatch):
     """A column the corrector leaves uncertified is refined through the block factors.
 
@@ -285,6 +282,37 @@ def test_raw_block_probe_chunking_preserves_exact_factors():
     with pytest.raises(ValueError, match="probe_chunk_size"):
         im._raw_block_system(
             params, cfg, state, mask, active, probe_chunk_size=0
+        )
+
+
+@pytest.mark.parametrize("deck,ns,ntor", [("solovev", 5, 0)] + [
+    pytest.param(*case, marks=pytest.mark.full)  # ~40 s each
+    for case in [("solovev", 3, 0),  # every surface its own color
+                 ("li383_low_res", 6, 1), ("up_down_asymmetric_tokamak", 4, 0)]
+])
+def test_colored_bands_match_the_per_row_build(monkeypatch, deck, ns, ntor):
+    """Three-colored forward probes give the per-row reverse blocks to round-off."""
+
+    inp = VmecInput.from_file(str(DATA / f"input.{deck}"))
+    inp = dataclasses.replace(
+        inp.change_resolution(mpol=3, ntor=ntor, ntheta=12, nzeta=4 * ntor + 4),
+        ns_array=np.asarray([ns]), ftol_array=np.asarray([1.0e-6]),
+        niter_array=np.asarray([500]),
+    )
+    cfg = im.make_config(inp, ftol=1.0e-6, max_iterations=500)  # any state will do
+    params = im.params_from_input(inp)
+    state, mask = im.solve_implicit_with_aux(params, cfg)
+    active = im._active_state_fields(cfg)
+    per_row = im._raw_block_system(
+        params, cfg, state, mask, active, probe_chunk_size=4,
+        runtime=im.runtime_from_params(params, cfg),
+    )
+    monkeypatch.setattr(im, "_COLORED_PROBE_BUDGET", 1)  # several probe batches
+    colored = im._raw_block_system(params, cfg, state, mask, active, probe_chunk_size=4)
+    for name in ("lower", "diagonal", "upper", "row_scale", "column_scale"):
+        scale = np.abs(np.asarray(getattr(per_row, name))).max()
+        np.testing.assert_allclose(
+            getattr(colored, name), getattr(per_row, name), rtol=0, atol=1e-12 * scale
         )
 
 

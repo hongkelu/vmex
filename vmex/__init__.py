@@ -104,7 +104,9 @@ links to the module that documents it.
 - :func:`~vmex.core.gammac.gamma_c_from_wout` — fast-ion ``Gamma_c`` profile
   from any compatible wout, without a solve
 - :func:`~vmex.core.tracing.essos_vmec_field` — hand a solved equilibrium to
-  ESSOS as an ``essos.fields.Vmec`` (optional ESSOS dependency)
+  ESSOS as an ``essos.fields.Vmec`` (optional ESSOS dependency);
+  :func:`~vmex.core.tracing.essos_tracing_fields` adds the exterior field and
+  wall for ``essos.dynamics.Tracing``
 - :func:`~vmex.core.tracing.trace_alphas` →
   :class:`~vmex.core.tracing.AlphaTracingResult` /
   :func:`~vmex.core.plotting.plot_tracing` — optional alpha-particle
@@ -183,7 +185,7 @@ def _check_supported_versions() -> None:
 
 _check_supported_versions()
 
-from ._compat import _apply_compilation_cache_policy
+from ._compat import configure as configure  # public: vmex.configure()
 
 
 def _source_tree_version() -> str | None:
@@ -215,26 +217,8 @@ _os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 _os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "2")
 _os.environ.setdefault("GLOG_minloglevel", "2")
 
-# Enable the JAX persistent XLA compilation cache in a machine-scoped
-# directory per the _compat policy (see _default_compilation_cache_dir).
-# ``core.solver._harden_compilation_cache`` re-applies this policy on every
-# solve path in case this module never ran (namespace-package shadowing).
-import jax as _jax
-
-
-def _configure_jax_logging(jax_module) -> None:
-    """Quiet JAX by default, with explicit overrides."""
-    level = _os.environ.get("VMEX_JAX_LOGGING_LEVEL")
-    if level is None:
-        level = _os.environ.get("JAX_LOGGING_LEVEL", "ERROR")
-    level = level.strip().upper()
-    if level not in ("", "INHERIT"):
-        jax_module.config.update("jax_logging_level", level)
-
-
-_configure_jax_logging(_jax)
-
-_apply_compilation_cache_policy(_jax)
+# ``import vmex`` changes no ``jax.config`` setting: :func:`configure` applies
+# them, explicitly or on first use of ``vmex.core`` / ``vmex.mirror``.
 
 # Lazy public exports: name -> (module, attribute).  ``attribute=None``
 # exports the module itself.
@@ -311,6 +295,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     # alpha-particle tracing (ESSOS)
     "AlphaTracingResult": (".core.tracing", "AlphaTracingResult"),
     "essos_vmec_field": (".core.tracing", "essos_vmec_field"),
+    "essos_tracing_fields": (".core.tracing", "essos_tracing_fields"),
     "trace_alphas": (".core.tracing", "trace_alphas"),
     "plot_tracing": (".core.plotting", "plot_tracing"),
     # optimizer-neutral problem callables

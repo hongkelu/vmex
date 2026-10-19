@@ -588,16 +588,6 @@ def _configure_jax_environment() -> None:
     default uses ``setdefault``: an explicit user environment always wins.
     """
     try:
-        # Enable x64 by default for VMEC parity unless the user opted out.
-        os.environ.setdefault("JAX_ENABLE_X64", "1")
-        # VMEC/JAX optimization callbacks immediately materialize most results
-        # on the host (SciPy residuals/Jacobians, history, wout writing).  On
-        # CPU, asynchronous dispatch can leave completed XLA/PjRt work and
-        # executable state queued across many exact-Jacobian callbacks in one
-        # long-lived process.  Default CPU dispatch to synchronous execution so
-        # memory is reclaimed at callback boundaries; users can still override
-        # this before import with JAX_CPU_ENABLE_ASYNC_DISPATCH=true.
-        os.environ.setdefault("JAX_CPU_ENABLE_ASYNC_DISPATCH", "false")
         # Suppress harmless informational C++ logs from XLA/PjRt.  Level
         # 0=INFO, 1=WARNING, 2=ERROR — default to ERROR-only so genuine errors
         # still surface.  JAX/jaxlib 0.9.1-0.9.2 can nevertheless print a
@@ -639,40 +629,27 @@ def _configure_jax_environment() -> None:
             any(a in f"{_accel_req} {_accel_reqs}" for a in ("cuda", "gpu", "tpu", "rocm"))
             or (_cuda_vis not in ("", "-1"))
         )
-        if "XLA_FLAGS" not in os.environ and not _on_accel:
-            _xla_flags = []
-            # Large differentiated single-stage graphs can exhaust the small
-            # macOS worker-thread stack while LLVM links its default 32 object
-            # partitions.  Finer partitioning bounds linker recursion without
-            # changing the executable's numerical operations.
-            if platform.system() == "Darwin":
-                _xla_flags.append("--xla_cpu_parallel_codegen_split_count=128")
-            if _fast_compile not in ("0", "false", "no", "off"):
-                _xla_flags.extend((
-                    "--xla_backend_optimization_level=1",
-                    "--xla_llvm_disable_expensive_passes=true",
-                ))
-            if _xla_flags:
-                os.environ["XLA_FLAGS"] = " ".join(_xla_flags)
+        if "XLA_FLAGS" not in os.environ:
+            # A solver iteration is many small kernels, so on a GPU it is
+            # launch-bound: let XLA capture every fused run into a CUDA graph,
+            # not only runs of five or more kernels (8-11 % per iteration on
+            # an RTX A4000, ns 16-101).  The CPU backend ignores GPU flags.
+            _xla_flags = ["--xla_gpu_graph_min_graph_size=1"]
+            if not _on_accel:
+                # Large differentiated single-stage graphs can exhaust the small
+                # macOS worker-thread stack while LLVM links its default 32 object
+                # partitions.  Finer partitioning bounds linker recursion without
+                # changing the executable's numerical operations.
+                if platform.system() == "Darwin":
+                    _xla_flags.append("--xla_cpu_parallel_codegen_split_count=128")
+                if _fast_compile not in ("0", "false", "no", "off"):
+                    _xla_flags.extend((
+                        "--xla_backend_optimization_level=1",
+                        "--xla_llvm_disable_expensive_passes=true",
+                    ))
+            os.environ["XLA_FLAGS"] = " ".join(_xla_flags)
 
-        import jax
 
-        try:
-            jax.config.update("jax_enable_x64", os.environ.get("JAX_ENABLE_X64", "0") == "1")
-        except Exception:
-            pass
-        try:
-            _cpu_async = os.environ.get("JAX_CPU_ENABLE_ASYNC_DISPATCH", "true")
-            jax.config.update(
-                "jax_cpu_enable_async_dispatch",
-                _cpu_async.strip().lower() not in ("0", "false", "no", "off"),
-            )
-        except Exception:
-            pass
-
-        # The persistent cache is configured through jax.config only, never
-        # exported: a job launched from this process may run on another node.
-        _apply_compilation_cache_policy(jax)
         if os.path.exists(_MAP_LIMIT_FILE) and not _MAP_STATE.get("listening"):
             from jax import monitoring
 
@@ -687,11 +664,76 @@ def _configure_jax_environment() -> None:
 
 _configure_jax_environment()
 
+# ``None`` until :func:`configure` runs; then the x64 choice it applied.
+_CONFIGURED: dict[str, bool] = {}
+
+
+def configure(*, x64: bool = True, compilation_cache: bool = True,
+              cpu_async_dispatch: bool | None = None,
+              logging_level: str | None = None) -> None:
+    """Apply VMEX's JAX settings to this process, explicitly.
+
+    ``import vmex`` leaves ``jax.config`` alone.  The settings below are
+    applied here, by the ``vmex`` command, and on first use of
+    :mod:`vmex.core` or :mod:`vmex.mirror` when this was not called before.
+
+    - ``x64``: float64 (``jax_enable_x64``).  The solver needs it, and
+      :func:`require_x64` refuses to solve without it.
+    - ``compilation_cache``: the machine-scoped persistent XLA cache
+      (``VMEX_COMPILATION_CACHE`` and friends).
+    - ``cpu_async_dispatch``: CPU dispatch mode.  The default is synchronous
+      (``JAX_CPU_ENABLE_ASYNC_DISPATCH`` overrides), so memory is reclaimed
+      at the host callbacks of exact-Jacobian optimizations.  It takes effect
+      only before JAX first runs a computation.
+    - ``logging_level``: ``jax_logging_level``, default ``ERROR``
+      (``VMEX_JAX_LOGGING_LEVEL`` or ``JAX_LOGGING_LEVEL`` overrides;
+      ``INHERIT`` leaves it).
+    """
+    import jax
+
+    jax.config.update("jax_enable_x64", bool(x64))
+    if cpu_async_dispatch is None:
+        cpu_async_dispatch = os.environ.get("JAX_CPU_ENABLE_ASYNC_DISPATCH", "false").strip().lower() \
+            not in ("0", "false", "no", "off")
+    try:
+        jax.config.update("jax_cpu_enable_async_dispatch", bool(cpu_async_dispatch))
+    except Exception:  # pragma: no cover - option absent in this jaxlib
+        pass
+    level = logging_level or os.environ.get("VMEX_JAX_LOGGING_LEVEL") or os.environ.get(
+        "JAX_LOGGING_LEVEL", "ERROR")
+    if level.strip().upper() not in ("", "INHERIT"):
+        jax.config.update("jax_logging_level", level.strip().upper())
+    if compilation_cache:
+        _apply_compilation_cache_policy(jax)
+    _CONFIGURED["x64"] = bool(x64)
+
+
+def ensure_configured() -> None:
+    """Apply :func:`configure` defaults once, unless the caller already chose.
+
+    An explicit ``JAX_ENABLE_X64`` in the environment is respected.
+    """
+    if _CONFIGURED:
+        return
+    value = os.environ.get("JAX_ENABLE_X64", "").strip().lower()
+    configure(x64=value not in ("0", "false", "no", "off", "n", "f"))
+
+
+def require_x64() -> None:
+    """Raise when JAX is not in float64: VMEX's solver is float64 only."""
+    import jax
+
+    if not jax.config.jax_enable_x64:
+        raise RuntimeError(
+            "VMEX solves in float64, but jax_enable_x64 is off. Call "
+            "vmex.configure() (or jax.config.update('jax_enable_x64', True)) "
+            "before solving.")
+
 
 # Floors of the optional extras, equal to pyproject.toml (a test pins them).
 # Checked where each is first used, so that an environment left behind by
 # `git pull` over an editable install fails with the fix, not a TypeError.
-OPTIONAL_MINIMUMS = {"essos": "0.20.0", "virtual-casing-jax": "0.0.9",
+OPTIONAL_MINIMUMS = {"essos": "0.21.0", "virtual-casing-jax": "0.0.9",
                      "neo-jax": "1.0.5", "gkx": "2.5.0",
                      "dkx": "2.8.0"}
 

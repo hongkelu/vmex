@@ -65,6 +65,15 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
     stop after leaving the LCFS neighborhood.
     The finite-beta coil fixture is reproduced by ESSOS
     `examples/coil_optimization/optimize_coils_finite_beta_vmex.py`.
+  - `vmex_essos_tracing_to_wall.py` — guiding centres from a VMEX
+    equilibrium through the LCFS to a wall 3 cm outside it, with
+    `vj.essos_tracing_fields` (ESSOS coils, tabulated exterior field); the
+    direct exterior field checks the table.
+  - `vmex_mrx_comparison.py` — relax the 2.5 % beta QA equilibrium with
+    [MRX](https://github.com/ToBlick/mrx) (`pip install mrx`), which does not
+    assume nested surfaces, and compare Poincare sections, iota, the toroidal
+    current, and the pressure with VMEX at ns = 65. Without MRX it exits after
+    printing the install command.
   - `vmex_fixed_free_boundary_comparison.py` *(preview)* — compare a parent
     free boundary with an `s=0.5` fixed-boundary solve and its exterior field.
 - `optimization/`: compact QA/QH/QP/QI scripts using `(function, target,
@@ -155,7 +164,9 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   stellarator-symmetric stationary subspace. Each has a finite-beta companion
   that adds Mercier and resistive-interchange rows on a radially graded weight.
   The asymmetric boundary doubles the decision variables, so a stage costs
-  roughly twice its symmetric equivalent.
+  roughly twice its symmetric equivalent. The vacuum QI script closes with the
+  NEO_JAX effective ripple of the seed and the optimized boundary, computed on
+  the asymmetric Boozer spectrum.
 - `optimization/QA_maxJ_continuation.py` and `QI_maxJ_continuation.py` walk the
   constructed maximum-J target into the resolved certificate; the QA script
   states where maximum-J and quasisymmetry conflict near the axis.

@@ -33,9 +33,6 @@ from vmex.core.errors import (
 
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
-
-
 def _dense_cfg(*, adjoint_tol=1e-11, **overrides):
     """A minimal ``forward_dense_jax`` configuration for unit-level dense tests."""
     implicit = SimpleNamespace(device=None, lconm1=False, adjoint_tol=adjoint_tol,

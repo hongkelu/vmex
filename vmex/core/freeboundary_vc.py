@@ -269,7 +269,7 @@ def solve_free_boundary_three_term(
     initial = model.boundary_residual(seed_state, seed_params, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
-                               max_nfev=max_nfev, verbose=verbose)
+                               max_nfev=max_nfev, refresh_on_stall=True, verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
@@ -626,12 +626,13 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, verbose=0):
+                       target_cost=None, refresh_on_stall=False, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`).
+        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`);
+        with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -685,7 +686,7 @@ class ThreeTermFreeBoundaryModel:
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
         self._radius = out["radius"]
-        if not out["converged"]:  # the steps stalled on a stale Jacobian: one fresh one there, as the warm start
+        if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)

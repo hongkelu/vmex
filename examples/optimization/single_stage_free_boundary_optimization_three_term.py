@@ -1,20 +1,52 @@
 #!/usr/bin/env python
 r"""Free-boundary single-stage coil optimization on sheet-current-free equilibria.
 
-The free arm of ``single_stage_free_boundary_optimization_coil_constraints.py``
-with its equilibrium replaced: every trial is the free boundary that satisfies
-all three plasma-vacuum interface conditions (B.n = 0, pressure balance and no
-sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves
-the tangential field jump free. The cases (``COIL_CASE``; the case table is in
-that script's docstring), the design variables (coil shapes, PHIEDGE and, with
-``--bootstrap``, the current spline values and CURTOR), the loss, the
-constraint rows and their bounds, and the run directory are that script's --
-except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
-boundary, Redl's on every half-grid surface, and neither its values nor the
-bootstrap-mismatch row enter the optimization. The coil currents are design
-variables too (``FREE_COIL_CURRENTS``, no bounds), with a row holding the axis
-|B| at ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the
-vacuum |iota| of the plasma boundary (``vacuum_iota``).
+Every trial is the free boundary that satisfies all three plasma-vacuum interface conditions (B.n = 0, pressure
+balance and no sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
+jump free. The design variables are the coil shapes and currents (``FREE_COIL_CURRENTS``, no bounds), PHIEDGE
+(``FREE_PHIEDGE``) and, with ``--bootstrap``, the current spline values and CURTOR -- except with
+``BOOTSTRAP_IN_SOLVE`` (Redl), where the current is solved with the boundary, Redl's on every half-grid surface, and
+neither its values nor the bootstrap-mismatch row enter the optimization. SLSQP minimizes J = (1/2) |r|^2, r the
+quasisymmetry residual of ``HELICITY`` (or the constructed QI residual of ``QI_optimization.py`` when it is None),
+subject to hard inequalities: min |iota| >= ``IOTA_FLOOR`` (``IOTA_EDGE``: on every half-mesh surface and the edge),
+the major radius within ``RADIUS_TOLERANCE`` of R0, the axis |B| at ``B0``, the edge mirror ratio <=
+``MIRROR_LIMIT`` and max |iota| <= ``IOTA_CEILING`` where set, the vacuum |iota| of the boundary >=
+``VACUUM_IOTA_FLOOR`` where set, the bootstrap mismatch (DKX), the coil-to-plasma clearance, the aspect ratio in
+``ASPECT_RANGE``, and the pure-coil rows (``coil_inequalities``, or per point with ``--coil-point-rows``): per-coil
+length, curvature and mean squared curvature, coil-coil distance.
+
+``COIL_CASE`` selects the case (default ``ellipse5``); the limits are the constants below:
+
+=============== ================================ ======== ======== ============= ======================
+case            configuration and seed           --beta   model    iota          coils per half period
+=============== ================================ ======== ======== ============= ======================
+ellipse5        QA, nfp 2, aspect 4.9-5.1, from  volume   Redl     >= 0.41       3 x order 16: 5 m,
+                ``input.rotating_ellipse_nfp2``                                  5 /m, 5 /m^2, 0.15 m
+                                                                                 apart, 0.20 m clear
+ellipse5-beta7  as ellipse5                      on axis  Redl     >= 0.16       as ellipse5
+qa3             QA, nfp 3, aspect 5.9-6.1        volume   Redl     >= 0.41       3 x order 8: 3.5 m,
+qh              QH (1, -1), nfp 4, 5.9-6.1       volume   Redl     >= 1.1        8 /m, 10 /m^2, 0.08 m
+qi              QI, nfp 4, 7.9-8.1, mirror 0.21  volume   Redl     >= 0.51       apart, 0.15 m clear
+qa4-beta        QA, nfp 2, aspect 3.5-4.5        volume   Redl     >= 0.27       4 x order 12, limits
+qi6-beta        QI, nfp 4, 5.9-6.1, mirror 0.21  volume   DKX      0.86 - 0.98   from the plasma size
+qh4-beta        as qh                            volume   Redl     >= 1.1        3 x order 12, likewise
+=============== ================================ ======== ======== ============= ======================
+
+"--beta" is how ``--beta`` is read (``BETA_DEFINITION``: <beta>, or WOUT ``betaxis``); "model" the bootstrap
+current of ``--bootstrap`` (``BOOTSTRAP_MODEL``). The iota floors and ceiling keep the profile off the low-order
+rationals: QH between iota = 1 and 8/7, QI above 1/2, qi6-beta in the Stellaris band below the 4/4 islands. The
+seeded cases start from a rotating ellipse (``SEED`` = (nfp, aspect, b / a_eff)) and their own stage-two coils,
+``examples/data/ESSOS_coils_<case>.json`` (``qh4-beta`` from the ``qh`` coils). A ``-tok`` suffix seeds the case
+from a circular tokamak with a 1% helical ripple, whose beta ramp starts at a prescribed Ohmic current
+(``OHMIC_CURRENT``) blended into the bootstrap current; ``-merc`` / ``-jbs`` add a Mercier floor or the bootstrap-
+current term, ``-A<aspect>`` moves a seeded case to that aspect ratio. For ``qa4-beta*``, ``qi6-beta*`` and
+``qh4-beta`` the coil length, curvature and MSC limits are ``COIL_LIMIT_FACTORS`` = (1.8, 2.5, 1.2) times the
+circumference, curvature and squared curvature of a circle ``COIL_SURFACE_DISTANCE_LIMIT`` outside the widest
+allowed plasma. Every case has R0 = 1 m and B0 = 1 T. ``--beta`` sets a pressure p ~ 1 - s calibrated on the
+fixed-boundary seed and refits the seed coils to (B_coils + B_plasma).n = 0 there; ``--bootstrap`` uses kinetic
+profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s at the beta and collisionality of a Helios-like reactor carried to R0 and B0,
+with a Picard loop making the seed current Redl's. It needs ESSOS (``vmex[coils]``), virtual casing
+(``vmex[freeb]``), DKX (``vmex[kinetic]``) for ``qi6-beta*`` and a GPU.
 
 The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
 (:class:`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`): warm-started

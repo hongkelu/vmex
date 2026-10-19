@@ -445,8 +445,8 @@ field-only path for host optimizers that step from an accepted equilibrium.
 It takes the same ``field_from_parameters`` map: VMEX keeps no coil code, so
 the coils and their chart come from ESSOS, here as a differentiable
 Biot-Savart field of ``coils_from_x(x)``
-(``examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py``
-runs it with coil constraints)::
+(``examples/optimization/single_stage_free_boundary_optimization_three_term.py`` runs the same
+interface on three-term free boundaries with coil constraints)::
 
    from dataclasses import replace
 

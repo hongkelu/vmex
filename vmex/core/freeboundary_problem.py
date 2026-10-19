@@ -629,39 +629,52 @@ class FreeBoundaryProblem(FunctionProblem):
         if isinstance(restart_from, (str, Path)):
             from .restart import restart_state
             restart_from = restart_state(restart_from, inp, ns=solver.resolution.ns)
-        stage = fb._solve_free_boundary_stage(
-            seed_inp,
-            external_field=field_from_parameters(jnp.asarray(point)),
-            resolution=solver.resolution,
-            ftol=solver.implicit.ftol,
-            max_iterations=solver.implicit.max_iterations,
-            initial_state=restart_from,
-            include_edge_in_convergence=True,
-            edge_force_tolerance=solver.edge_force_tolerance,
-            error_on_no_convergence=False,
-            jacobian_retries=0,
-            allow_initial_axis_reguess=False,
-            use_fft=False,
-        )
-        if not stage.result.converged:
-            forces = ", ".join(f"{k}={float(getattr(stage.result, k, np.nan)):.3e}" for k in ("fsqr", "fsqz", "fsql", "fedge"))
-            raise VmecError(f"initial ordinary equilibrium did not converge: {forces}")
+        if restart_from is None:
+            # A cold seed is main's anchored implicit solve (solve_free_boundary_implicit's host lane): an ordinary
+            # VMEX run, axis re-guess and Jacobian retries included, Newton-anchored on its coupled root.
+            seed_params = params if plasma_from_parameters is None else plasma_from_parameters(params, jnp.asarray(point))
+            state, _, rcon0, zcon0 = fbi._host_solve_and_mask(
+                solver, jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), seed_params), np.asarray(point))
+            report = fbi._FREE_LAST_ANCHOR.get(solver)
+            if report is not None and not report.certified:
+                raise VmecError(f"the seed did not anchor on its coupled root: |F| {report.residual:.3e}")
+            fedge = None
+        else:
+            stage = fb._solve_free_boundary_stage(
+                seed_inp,
+                external_field=field_from_parameters(jnp.asarray(point)),
+                resolution=solver.resolution,
+                ftol=solver.implicit.ftol,
+                max_iterations=solver.implicit.max_iterations,
+                initial_state=restart_from,
+                include_edge_in_convergence=True,
+                edge_force_tolerance=solver.edge_force_tolerance,
+                error_on_no_convergence=False,
+                jacobian_retries=0,
+                allow_initial_axis_reguess=False,
+                use_fft=False,
+            )
+            if not stage.result.converged:
+                forces = ", ".join(f"{k}={float(getattr(stage.result, k, np.nan)):.3e}"
+                                   for k in ("fsqr", "fsqz", "fsql", "fedge"))
+                raise VmecError(f"initial ordinary equilibrium did not converge: {forces}")
+            state, rcon0, zcon0, fedge = stage.result.state, stage.rcon0, stage.zcon0, stage.result.fedge
         cfg = _config_from_state(
             solver,
             params,
             point,
-            state=stage.result.state,
-            rcon0=stage.rcon0,
-            zcon0=stage.zcon0,
+            state=state,
+            rcon0=rcon0,
+            zcon0=zcon0,
             parameter_scales=np.ones_like(point) if scales is None else scales,
             continuation_step=continuation_step,
             max_continuation_steps=max_continuation_steps,
             root_residual_atol=root_residual_atol,
         )
         if any(not np.array_equal(np.asarray(a), np.asarray(b)) for a, b in
-               zip(jax.tree.leaves(stage.result.state), jax.tree.leaves(cfg._anchor.state))):
+               zip(jax.tree.leaves(state), jax.tree.leaves(cfg._anchor.state))):
             raise VmecError("initial certification changed the ordinary state")
-        if not np.isclose(stage.result.fedge, cfg._anchor.result.fedge, rtol=1e-5, atol=1e-15):
+        if fedge is not None and not np.isclose(fedge, cfg._anchor.result.fedge, rtol=1e-5, atol=1e-15):
             raise VmecError("ordinary/fresh edge residual disagreement")
         return cls(inp, cfg, loss=loss, names=names, quantities=quantities,
                    parameter_quantities=parameter_quantities, event=event, deadline=deadline)

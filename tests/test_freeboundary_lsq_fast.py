@@ -269,6 +269,28 @@ def test_cheap_models_missing_the_constraint_curvature_hand_over_to_the_exact_mo
     assert total <= 160, total
 
 
+def test_trial_step_tolerance_and_previous_exact_certificate():
+    """An optimization trial (``trial_step_tolerance``) stops once the Newton step moves the boundary by less than
+    the tolerance, certified by the previous exact Hessian with the exact gradient, within that tolerance of the full
+    rule's answer and in no more models; a full-precision solve keeps the full rule exactly."""
+    start = np.array([-1.2, 1.0, -0.5, 0.3])
+
+    def solve(tolerance=None, full_precision=False):
+        model = _ToyModel()
+        model.certificate_extra = lambda params: None  # full-column exact models, as an optimization's trials
+        model.trial_step_tolerance, model.full_precision = tolerance, full_precision
+        return model._newton(None, None, x0=start, max_iter=200)
+
+    full = solve()
+    trial = solve(1e-3)
+    assert full["converged"] and trial["converged"]
+    assert trial["njev"] <= full["njev"]
+    assert np.max(np.abs(trial["x"] - full["x"])) <= 1e-3
+    certified, reference = solve(1e-3, full_precision=True), solve(None, full_precision=True)
+    np.testing.assert_array_equal(certified["x"], reference["x"])
+    assert certified["njev"] == reference["njev"]
+
+
 def test_problem_entry_and_finite_beta_rows():
     """Cheap end-to-end coverage: the least-squares single-stage problem in vacuum (design gradient along the coil
     currents against central differences of cold trials), the solve entry through ``method="least_squares"``

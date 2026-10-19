@@ -238,13 +238,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         tol = getattr(self, "trial_step_tolerance", None)
         return None if tol is None or getattr(self, "full_precision", False) else float(tol)
 
-    def _step_converged(self, step, noise_step, x):
-        """The full rule (:meth:`ThreeTermsFreeBoundaryModel._step_converged`), or for an optimization's trial a step
-        that moves the boundary by less than :data:`TRIAL_STEP_TOLERANCE` (RMS normal displacement) and its current
+    def _step_converged(self, step, noise_step, x, newton=False):
+        """The full rule (:meth:`ThreeTermsFreeBoundaryModel._step_converged`), or for an optimization's trial and a
+        ``newton`` step (the model's whole remaining step, not a trust-region step the radius cut short) one that
+        moves the boundary by less than :data:`TRIAL_STEP_TOLERANCE` (RMS normal displacement) and its current
         values by less than that over ``R0`` relative."""
         if super()._step_converged(step, noise_step, x):
             return True
-        tol = self._trial_tolerance()
+        tol = self._trial_tolerance() if newton else None
         if tol is None:
             return False
         nb = self.n_boundary
@@ -807,7 +808,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # for it now (its own test below then ends the solve)
                 need = "exact"
                 continue
-            if step_n is not None and feasible and self._step_converged(step_n, step_noise, x):
+            if step_n is not None and feasible and self._step_converged(step_n, step_noise, x, newton=True):
                 if not (fresh or certifying):  # certify with the exact Hessian
                     need = "exact"
                     continue

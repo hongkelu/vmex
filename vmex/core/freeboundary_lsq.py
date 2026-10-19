@@ -47,7 +47,7 @@ from .loops import map_columns
 from .errors import TrialRejected
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
                               _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
-                              _net_current, displacement_rms, summarize_boundary_residual)
+                              _net_current, summarize_boundary_residual)
 from .input import VmecInput
 
 
@@ -175,6 +175,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
 
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
+    #: a fresh exact model may take its whole Newton step, whatever radius the cheaper models' failures left
+    #: (:meth:`_newton`).  Off here: the normal-displacement coordinates gain nothing from it and the M 16 QA seed
+    #: took 20 models against 16 (PR #103); the RZ least squares (its soft relabellings) sets it.
+    exact_takes_newton_step = False
     #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
     #: rule only; full-precision solves always use it)
     trial_step_tolerance = None
@@ -249,7 +253,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         if tol is None:
             return False
         nb = self.n_boundary
-        ok = nb == 0 or displacement_rms(step[:nb], self.boundary_modes) <= tol
+        ok = nb == 0 or self._boundary_rms(step[:nb]) <= tol
         if step.size > nb:
             rms = lambda v: float(np.sqrt(np.mean(np.square(v))))  # noqa: E731
             ok = ok and rms(step[nb:]) <= tol / float(self.R0) * rms(x[nb:])
@@ -779,7 +783,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if step_n is not None and noise_rows is not None:
                 g_noise = N.T @ (S * (so["J"][:k, :x.size].T @ noise_rows[:k]))
                 step_noise = S * (N @ (Q @ ((Q.T @ g_noise) / w)))
-            moved = (displacement_rms(step_n[:self.n_boundary], self.boundary_modes)
+            moved = (self._boundary_rms(step_n[:self.n_boundary])
                      if step_n is not None and self.n_boundary else np.inf)
             history.append([cost, float(np.linalg.norm(gr)), w[0], w[-1], w_gn[0], w_gn[-1], decrement,
                             float(np.linalg.norm(so["g"] - so["g_adjoint"]) / max(np.linalg.norm(so["g"]), 1e-300))
@@ -825,6 +829,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
+            if fresh and np.isfinite(newton) and self.exact_takes_newton_step:
+                # a fresh exact, positive-definite model takes its whole Newton step: the radius it inherits was
+                # shrunk by the cheaper models' failures, not by its own (the RZ least squares' warm trial at a design
+                # step 1e-2: radius 1.35e-3 against the exact model's Newton step 7.97e-3, and two more exact models
+                # to get there, 484 s against 336 s)
+                radius = max(radius, newton)
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""
@@ -986,6 +996,16 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
     "three_terms", three_terms_options=dict(method="least_squares", ...))``.
     """
 
+    #: the boundary model of every trial (the RZ least squares sets its own)
+    model_class = LeastSquaresFreeBoundaryModel
+    #: the certificate of an optimization's trial: "full" (every Hessian column and the plasma directions' mixed
+    #: columns, which an accepted point's design gradient reuses) or "krylov" (the exact model on a Krylov subspace;
+    #: an accepted point's gradient then builds the full columns itself).  A full-precision solve always builds the
+    #: full certificate.  "krylov" pays where the columns are many and most trials are not accepted: the RZ least
+    #: squares' 306 columns (QA seed, 8x8: trials 86-265 s against 156-329 s, an accepted point's gradient 101 s
+    #: against 1 s, so from two trials a step on)
+    trial_certificate = "full"
+
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_max_nfev=100, boundary_start=None, **model_options):
@@ -1001,7 +1021,7 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
-        model = LeastSquaresFreeBoundaryModel(inp, **model_options)
+        model = cls.model_class(inp, **model_options)
         if boundary_start is None or (isinstance(boundary_start, np.ndarray)
                                       and boundary_start.shape == np.shape(model.x0)):
             start = boundary_start
@@ -1056,6 +1076,8 @@ class LeastSquaresFreeBoundaryProblem(ThreeTermsFreeBoundaryProblem):
         """:meth:`ThreeTermsFreeBoundaryProblem._solve`, the boundary's certificate built with what
         :meth:`_exact_gradients` needs at the answer (every Hessian column and the plasma directions' mixed
         columns): the design gradient then reuses it instead of linearizing again."""
+        if self.trial_certificate == "krylov" and not getattr(self.model, "full_precision", False):
+            return ThreeTermsFreeBoundaryProblem._solve(self, x)
         xj = jnp.asarray(np.asarray(x, dtype=float))
         self.model.certificate_extra = ((lambda params: self._plasma_directions(xj)) if self._plasma.size
                                         else (lambda params: None))
@@ -1276,7 +1298,7 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
                                       max_nfev: int = 60, quadrature: tuple[int, int] | None = None,
                                       trial_ftol: float | None = None, chunk: int = 8, bootstrap=None,
                                       bootstrap_helicity: int | None = None, previous=None,
-                                      verbose: int = 0):
+                                      verbose: int = 0, model_class=None, **model_options):
     """Solve the least-squares free boundary of a deck.
 
     This is :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` with ``method="least_squares"``,
@@ -1299,6 +1321,9 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
         :class:`LeastSquaresFreeBoundaryModel` options.
     verbose
         Print every model (``2``: also the weakest direction).
+    model_class, model_options
+        The model (default :class:`LeastSquaresFreeBoundaryModel`; the RZ least squares passes its own) and its
+        further keywords.
 
     Returns
     -------
@@ -1331,13 +1356,13 @@ def solve_free_boundary_least_squares(inp: VmecInput, *, external_field: Any = N
     if previous is not None:
         model, x0 = previous.model, previous.x
     else:
-        model = LeastSquaresFreeBoundaryModel(
+        model = (model_class or LeastSquaresFreeBoundaryModel)(
             inp, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48), digits=digits,
             quadrature=quadrature, trial_ftol=trial_ftol, chunk=chunk, bootstrap=bootstrap,
-            bootstrap_helicity=bootstrap_helicity)
+            bootstrap_helicity=bootstrap_helicity, **model_options)
         x0 = None
         if initial_boundary is not None:
-            x0 = np.r_[model.displacement_of(initial_boundary), model.x0[model.n_boundary:]]
+            x0 = model.displacement_of(initial_boundary)  # every coordinate: the current values are the deck's
     initial = model.boundary_residual(model.seed[0], model.params0, external_field)
     out = model.solve_boundary(model.params0, external_field, x0=x0, max_iter=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]

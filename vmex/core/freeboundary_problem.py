@@ -580,11 +580,14 @@ class FreeBoundaryProblem(FunctionProblem):
             boundary solve's ``boundary_max_nfev``, and the
             :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` keywords,
             and ``method="least_squares"`` for
-            :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`);
+            :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`, ``method="least_squares_rz"``
+            for :class:`~vmex.core.freeboundary_lsq_rz.LeastSquaresRZFreeBoundaryProblem`, with its ``gauge``
+            and ``gauge_weight``);
             the other arguments are NESTOR's.  Default ``"nestor"``, or ``method``'s.
         method:
-            The free-boundary method in one word: ``"galerkin"`` or ``"least_squares"`` (the three-terms
-            boundary condition, ``three_terms_options`` their keywords) or ``"nestor"`` (VMEC + NESTOR).
+            The free-boundary method in one word: ``"galerkin"``, ``"least_squares"`` or
+            ``"least_squares_rz"`` (the three-terms boundary condition, ``three_terms_options`` their keywords)
+            or ``"nestor"`` (VMEC + NESTOR).
             Given with ``boundary_condition``, the two must agree.
 
         Returns
@@ -594,8 +597,9 @@ class FreeBoundaryProblem(FunctionProblem):
             Ordinary evaluations never promote a root.
         """
         if method is not None:
-            if method not in ("galerkin", "least_squares", "nestor"):
-                raise ValueError(f"method must be 'galerkin', 'least_squares' or 'nestor', got {method!r}")
+            if method not in ("galerkin", "least_squares", "least_squares_rz", "nestor"):
+                raise ValueError(f"method must be 'galerkin', 'least_squares', 'least_squares_rz' or 'nestor', "
+                                 f"got {method!r}")
             implied = "nestor" if method == "nestor" else "three_terms"
             if boundary_condition not in (None, implied):
                 raise ValueError(f"method={method!r} solves boundary_condition={implied!r}, "
@@ -614,10 +618,13 @@ class FreeBoundaryProblem(FunctionProblem):
             method = options.pop("method", "galerkin")
             if method == "least_squares":
                 from .freeboundary_lsq import LeastSquaresFreeBoundaryProblem as problem_class
+            elif method == "least_squares_rz":
+                from .freeboundary_lsq_rz import LeastSquaresRZFreeBoundaryProblem as problem_class
             elif method == "galerkin":
                 problem_class = ThreeTermsFreeBoundaryProblem
             else:
-                raise ValueError(f"three_terms_options method must be 'galerkin' or 'least_squares', got {method!r}")
+                raise ValueError(f"three_terms_options method must be 'galerkin', 'least_squares' or "
+                                 f"'least_squares_rz', got {method!r}")
             return problem_class.from_loss(
                 inp, loss, x0, field_from_parameters=field_from_parameters,
                 plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,

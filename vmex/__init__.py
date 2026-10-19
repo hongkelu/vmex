@@ -31,7 +31,10 @@ links to the module that documents it.
   single-stage optimization on it; ``method="least_squares"``:
   :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel` /
   :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`, the
-  reference-free least-squares free boundary
+  reference-free least-squares free boundary; ``method="least_squares_rz"``:
+  :class:`~vmex.core.freeboundary_lsq_rz.LeastSquaresRZFreeBoundaryModel` /
+  :class:`~vmex.core.freeboundary_lsq_rz.LeastSquaresRZFreeBoundaryProblem`, the
+  least squares on the boundary's Fourier coefficients
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -260,6 +263,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_vc", "ThreeTermsFreeBoundaryProblem"),
     "LeastSquaresFreeBoundaryModel": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryModel"),
     "LeastSquaresFreeBoundaryProblem": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryProblem"),
+    "LeastSquaresRZFreeBoundaryModel": (".core.freeboundary_lsq_rz", "LeastSquaresRZFreeBoundaryModel"),
+    "LeastSquaresRZFreeBoundaryProblem": (".core.freeboundary_lsq_rz", "LeastSquaresRZFreeBoundaryProblem"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),

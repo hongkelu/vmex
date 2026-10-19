@@ -2352,6 +2352,12 @@ _REJECTED_CONSTRAINT_OFFSET = 1e6
 
 
 # Augmented Lagrangian (method="AUGLAG" of minimize): fixed parameters, in scaled coordinates and row units.
+# A row whose gradient norm at the run's start is below 1 (scaled coordinates, F(start) = 1) is divided by it
+# (_Rows): its violation is then the design distance to its limit, and the penalty is as stiff on it as on a unit
+# row.  In row units the coil-length rows of a finite-beta QH run have gradients of 0.035 against the objective's 12:
+# rho |a|^2 = 0.12 at rho 10..100, so their violation (2.4e-3) never fell (f97-qh-al, 10-19).  A row steeper than
+# 1 keeps its units: a narrow band (axis |B| within 1e-3 T, gradient 1.1e3; R0 within 1 mm) is stiff by design, and
+# divided by its gradient it let the run trade it (|B| 2.8e-3 T out of its band in three steps).
 _AL_PENALTY = 10.0  # starting penalty: with F(start) = 1, a violation of one row unit costs five starting objectives
 _AL_RADIUS, _AL_MAX_RADIUS = 0.1, 100.0  # starting and largest trust radius
 _AL_MIN_RADIUS = 1e-8 * _AL_RADIUS  # a shorter step only resolves the evaluations' noise
@@ -2376,18 +2382,33 @@ def _phr(v, multipliers, penalty, equality):
     return terms, slope
 
 
-def _damped_bfgs(H, d, y):
-    """``(H', damped)``: the BFGS update of ``H`` by the secant pair ``(d, y)``, Powell-damped to stay positive
-    definite."""
+_AL_SECANT_COSINE = 0.1  # a secant pair updates the whole curvature only when cos(d, y) is at least this
+
+
+def _secant_update(H, d, y):
+    """``(H', partial)``: the curvature ``H`` updated by the secant pair ``(d, y)``, positive (semi)definite.
+
+    A pair whose ``y`` is a curvature measurement (``d.y`` at least ``_AL_SECANT_COSINE |d| |y|`` and at least a
+    fifth of ``d.H.d``) gives the BFGS update.  Otherwise (``partial``) only the curvature along ``d`` is updated, to
+    ``max(d.y, d.H.d / 5)`` (Powell's damping target), by scaling ``H`` along ``H d``; the rest of ``y`` is not used.
+    A gradient that is not a smooth function of the point (an equilibrium solve's floor, its seed) adds a ``y`` of
+    its own, nearly orthogonal to a short step: Powell's damped update put ``|y|^2 / (d.H.d / 5)`` of curvature along
+    it, which grew the objective's curvature 31 -> 8.6e5 and the axis-|B| row's to 1e7 in 12 steps of a finite-beta
+    QH run (cos(d, y) ~ 0.01 every step), the model's steps 1e-2 -> 3e-4, and the steps then resolved still less.
+    The curvature along ``d`` is what the pair measures for any ``y``: ``d.y`` holds only ``y``'s part along ``d``.
+    """
     Hd = H @ d
     dHd, dy = d @ Hd, d @ y
-    if dHd <= 0.0:  # H is zero along d: start from the pair's own curvature
-        return (np.outer(y, y) / dy, False) if dy > 0.0 else (H, False)
-    damped = dy < 0.2 * dHd
-    if damped:
-        theta = 0.8 * dHd / (dHd - dy)
-        y, dy = theta * y + (1.0 - theta) * Hd, 0.2 * dHd
-    return H + np.outer(y, y) / dy - np.outer(Hd, Hd) / dHd, damped
+    dd, yy = d @ d, y @ y
+    measured = dy > 0.0 and dy >= _AL_SECANT_COSINE * np.sqrt(dd * yy)
+    if dHd <= 0.0:  # H is zero along d (a row's first pair): start from the pair's curvature
+        if not dy > 0.0:
+            return H, True
+        return (H + np.outer(y, y) / dy, False) if measured else (H + dy / dd**2 * np.outer(d, d), True)
+    if measured and dy >= 0.2 * dHd:
+        return H + np.outer(y, y) / dy - np.outer(Hd, Hd) / dHd, False
+    sigma = max(dy, 0.2 * dHd) / dHd  # the new curvature along d over the old
+    return H + (sigma - 1.0) / dHd * np.outer(Hd, Hd), True
 
 
 def _augmented_lagrangian_step(B, gradient, A, v, multipliers, penalty, equality, radius, free):
@@ -2445,8 +2466,10 @@ def _augmented_lagrangian_step(B, gradient, A, v, multipliers, penalty, equality
 class _Rows:
     """Constraint rows ``row_lower <= c <= row_upper`` as violations ``v <= 0`` (``v = 0`` for an equality).
 
-    ``v = sign * c[index] - offset``: ``c - target`` for an equality, ``lower - c`` and ``c - upper`` for the finite
-    sides of the others (a two-sided row is two violations).
+    ``v = (sign * c[index] - offset) / scale``: ``c - target`` for an equality, ``lower - c`` and ``c - upper`` for
+    the finite sides of the others (a two-sided row is two violations), each divided by its ``scale``, the norm of
+    its gradient at the run's start when below 1 (:meth:`set_scale`; 1 until then). :meth:`violation` is in row
+    units.
     """
 
     def __init__(self, row_lower, row_upper):
@@ -2456,15 +2479,27 @@ class _Rows:
         self.sign = np.r_[np.ones(equal.sum()), -np.ones(low.sum()), np.ones(high.sum())]
         self.offset = np.r_[row_lower[equal], -row_lower[low], row_upper[high]]
         self.equality = np.r_[np.ones(equal.sum(), bool), np.zeros(low.sum() + high.sum(), bool)]
+        self.scale = np.ones(self.index.size)
+
+    @staticmethod
+    def gradient_scale(A):
+        """Each row's gradient norm, clipped to [1e-6, 1]: a row below unit gradient becomes one, a steeper row keeps
+        its units, and one the design hardly moves is not inflated past 1e6."""
+        norm = np.linalg.norm(A, axis=1) if A.size else np.zeros(A.shape[0])
+        return np.clip(norm, 1e-6, 1.0)
+
+    def set_scale(self, scale):
+        self.scale = np.asarray(scale, dtype=float).copy()
 
     def values(self, c):
-        return self.sign * c[self.index] - self.offset
+        return (self.sign * c[self.index] - self.offset) / self.scale
 
     def jacobian(self, J):
-        return self.sign[:, None] * J[self.index]
+        return (self.sign / self.scale)[:, None] * J[self.index]
 
     def violation(self, v):
-        """The largest violation, 0 when feasible."""
+        """The largest violation in row units, 0 when feasible."""
+        v = v * self.scale
         return float(np.max(np.where(self.equality, np.abs(v), np.maximum(v, 0.0)), initial=0.0))
 
 
@@ -2473,7 +2508,7 @@ class _ALState:
     """What an augmented-Lagrangian run carries between steps, and between calls (``resume``)."""
 
     scale: float  # the objective's scale: F = scale * f, F(start) = 1
-    multipliers: np.ndarray
+    multipliers: np.ndarray  # of the scaled rows (_Rows): a row-unit multiplier times the row's scale
     penalty: float
     radius: float  # trust radius, scaled coordinates
     B_f: np.ndarray | None  # BFGS curvature of the objective, None before the first step
@@ -2484,6 +2519,7 @@ class _ALState:
     inner: int = 0  # accepted steps since the latest multiplier update
     outer: int = 0  # multiplier updates
     stalls: int = 0  # multiplier updates in a row without a step
+    row_scale: np.ndarray | None = None  # the rows' gradient norms at the run's start (_Rows.set_scale)
 
     def hessian(self, multipliers):
         """The Lagrangian's curvature model ``B_f + sum_k max(lambda_k, 0) B_k``."""
@@ -2496,20 +2532,28 @@ class _ALState:
                     trust_radius=self.radius, B_f=np.zeros(0) if self.B_f is None else self.B_f,
                     row_keys=np.asarray(keys, dtype=int), row_B=[self.B_rows[k] for k in keys],
                     inner=self.inner, outer=self.outer, stalls=self.stalls, previous=self.previous, entry=self.entry,
-                    tolerance=np.inf if self.tolerance is None else self.tolerance)
+                    tolerance=np.inf if self.tolerance is None else self.tolerance, row_scale=self.row_scale.copy())
 
     @classmethod
-    def from_resume(cls, state, n_rows, n):
+    def from_resume(cls, state, n_rows, n, row_scale):
+        """The state of ``resume``; ``row_scale`` (the rows' gradient norms here) serves a state of the earlier
+        unscaled rows: its multipliers are converted, and its curvature and radius restart (their damped updates
+        could hold the noise's curvature, :func:`_secant_update`)."""
         if (np.shape(state["multipliers"]) != (n_rows,)
-                or (np.size(state["B_f"]) and np.shape(state["B_f"]) != (n, n))):
+                or (np.size(state["B_f"]) and np.shape(state["B_f"]) != (n, n))
+                or ("row_scale" in state and np.shape(state["row_scale"]) != (n_rows,))):
             raise ValueError("resume state does not match these rows and coordinates")
-        return cls(scale=float(state["scale"]), multipliers=np.asarray(state["multipliers"], dtype=float).copy(),
-                   penalty=float(state["penalty"]), radius=float(state["trust_radius"]),
-                   B_f=None if np.size(state["B_f"]) == 0 else np.asarray(state["B_f"], dtype=float).copy(),
-                   B_rows={int(k): np.asarray(m, dtype=float).copy() for k, m in zip(state["row_keys"], state["row_B"])},
+        legacy = "row_scale" not in state
+        multipliers = np.asarray(state["multipliers"], dtype=float).copy()
+        return cls(scale=float(state["scale"]), multipliers=multipliers * row_scale if legacy else multipliers,
+                   penalty=float(state["penalty"]), radius=_AL_RADIUS if legacy else float(state["trust_radius"]),
+                   B_f=None if legacy or np.size(state["B_f"]) == 0 else np.asarray(state["B_f"], dtype=float).copy(),
+                   B_rows={} if legacy else {int(k): np.asarray(m, dtype=float).copy()
+                                             for k, m in zip(state["row_keys"], state["row_B"])},
                    previous=float(state["previous"]), entry=float(state["entry"]),
                    tolerance=None if not np.isfinite(state["tolerance"]) else float(state["tolerance"]),
-                   inner=int(state["inner"]), outer=int(state["outer"]), stalls=int(state["stalls"]))
+                   inner=int(state["inner"]), outer=int(state["outer"]), stalls=int(state["stalls"]),
+                   row_scale=np.asarray(row_scale if legacy else state["row_scale"], dtype=float).copy())
 
 
 def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lower, row_upper, options, report):
@@ -2517,8 +2561,9 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     augmented Lagrangian (Conn, Gould and Toint; Birgin and Martinez) with a trust-region quasi-Newton inner solver.
 
     Outer iterations minimize ``F(u) + sum_k psi(v_k(u))`` approximately at fixed multipliers ``lambda`` and
-    penalty ``rho`` (``F = f / |f(start)|``, the scale clipped to 1e-12..1e12; ``v`` the rows' violations,
-    :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set ``lambda = max(lambda + rho v, 0)``. The penalty
+    penalty ``rho`` (``F = f / |f(start)|``, the scale clipped to 1e-12..1e12; ``v`` the rows' violations, a row
+    with a gradient norm below 1 at the run's start divided by it, :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set
+    ``lambda = max(lambda + rho v, 0)``. The penalty
     grows tenfold after an inner loop that moved unless the violation fell to half or to ``feasibility`` (option,
     row units, default ``1e-6``, also the stopping test's), and returns to its starting value at the first
     multiplier update at a feasible point, so a large penalty, whose kinks cut the steps short, does not outlive
@@ -2527,8 +2572,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     An inner loop ends at a projected-gradient tolerance (a tenth of the previous loop's), after ten accepted
     steps, when the trust radius collapses, or when the violation doubles past one row unit (a run-away, not the
     small excursion of a nearly feasible start). Each step minimizes the model of
-    :func:`_augmented_lagrangian_step`: the Lagrangian curvature ``B_f + sum_k lambda_k B_k`` from damped BFGS
-    matrices of the objective and of every row that has had a multiplier (so a multiplier change rescales a row's
+    :func:`_augmented_lagrangian_step`: the Lagrangian curvature ``B_f + sum_k lambda_k B_k`` from quasi-Newton
+    matrices (:func:`_secant_update`) of the objective and of every row that has had a multiplier (so a multiplier change rescales a row's
     curvature at once), with the penalty curvature of the active rows exact. A step is accepted on a ratio of actual
     to predicted decrease above 1e-4; the multipliers then become those of the model's step. A trial that raises
     :class:`~vmex.core.errors.TrialRejected` (or does not decrease) shrinks the radius; a radius that collapses
@@ -2544,7 +2589,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     accept:
         ``accept(u, info)`` is told each accepted point; ``info`` is ``report`` plus the step's
         ``augmented_lagrangian``, ``ratio``, ``rejected_trials``, ``step_norm``, ``predicted_decrease``,
-        ``objective_decrease``, ``penalty_decrease`` and ``damped`` (whether the objective's BFGS update was).
+        ``objective_decrease``, ``penalty_decrease`` and ``damped`` (whether the objective's pair updated only its curvature along the step,
+        :func:`_secant_update`).
     u, lower, upper, row_lower, row_upper:
         Start and bounds (scaled coordinates); row bounds (row units, ``-inf``/``inf`` where open).
     options:
@@ -2569,22 +2615,25 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     feasibility = float(options.get("feasibility", _AL_FEASIBILITY))
     rows = _Rows(row_lower, row_upper)
     f, c, gf, J = linearize(u)
-    v, A = rows.values(c), rows.jacobian(J)
+    start_scale = _Rows.gradient_scale(rows.jacobian(J))
     if options.get("resume") is None:
         # zero multipliers, not a least-squares fit: nearly parallel active rows (a limit at every point) inflate it
-        start = rows.violation(v)
+        rows.set_scale(start_scale)
+        start = rows.violation(rows.values(c))
         s = _ALState(scale=1.0 if f == 0.0 else float(np.clip(1.0 / abs(f), 1e-12, 1e12)),
-                     multipliers=np.zeros(v.size), penalty=_AL_PENALTY, radius=_AL_RADIUS, B_f=None, B_rows={},
-                     previous=start, entry=start)
+                     multipliers=np.zeros(start_scale.size), penalty=_AL_PENALTY, radius=_AL_RADIUS, B_f=None,
+                     B_rows={}, previous=start, entry=start, row_scale=start_scale)
     else:
-        s = _ALState.from_resume(options["resume"], v.size, u.size)
+        s = _ALState.from_resume(options["resume"], start_scale.size, u.size, start_scale)
+        rows.set_scale(s.row_scale)
+    v, A = rows.values(c), rows.jacobian(J)
     F, gF = s.scale * f, s.scale * gf
     B = np.eye(u.size) if s.B_f is None else s.hessian(s.multipliers)  # the model's curvature
     steps, rejected = 0, 0  # accepted steps of this call; rejected trials since the latest step
     solved = False  # since the latest step a trial was solved, or the model foresaw no decrease
 
     def note():
-        report.update(multipliers=s.multipliers.copy(), penalty=s.penalty, max_violation=rows.violation(v),
+        report.update(multipliers=s.multipliers / rows.scale, penalty=s.penalty, max_violation=rows.violation(v),
                       outer_iterations=s.outer, trust_radius=s.radius, state=s.to_resume())
 
     note()
@@ -2643,13 +2692,13 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
         y_f = s.scale * gf1 - gF
         if s.B_f is None:  # scaled to the objective's mean curvature along the first step
             s.B_f = max(d @ y_f / (d @ d), 1e-8) * np.eye(u.size) if d @ y_f > 0 else np.eye(u.size)
-        s.B_f, damped = _damped_bfgs(s.B_f, d, y_f)
+        s.B_f, damped = _secant_update(s.B_f, d, y_f)
         for k in np.flatnonzero(step_multipliers != 0.0):
             s.B_rows.setdefault(k, np.zeros((u.size, u.size)))
         for k, B_k in s.B_rows.items():
             y_k = A1[k] - A[k]
             if d @ y_k > 0:  # a row's convex curvature only: B stays positive definite
-                s.B_rows[k] = _damped_bfgs(B_k, d, y_k)[0]
+                s.B_rows[k] = _secant_update(B_k, d, y_k)[0]
         B = s.hessian(step_multipliers)
         s.multipliers = step_multipliers
         u, F_old = u + d, F

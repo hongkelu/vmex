@@ -35,6 +35,10 @@ Labelling gauge
     high-mode relabellings, where the rows' own curvature is negative (truncation; down to -4e-8, and -9e-4 far from
     the root) and a uniform weight 1e-2 only just outweighs it, while the weaker 1e-3 -- which leaves the low-mode
     labelling free -- ends nearer the resolved surface (1.34-1.42 mm against 1.70 mm) but does not converge.
+    ``gauge="arc"`` asks for a labelling of the surface's own: equal arc in each toroidal plane, the rows
+    ``w sqrt(area) (|e_theta| / <|e_theta|>_theta - 1)`` of the current boundary (no reference: the same rows for any
+    deck or start).  Equal arc fixes the labelling up to each plane's origin (the relabellings ``delta(zeta)``,
+    ``m = 0``), which the rows ``w <(x - x_deck) . t / L>_theta``, one a plane, fix to the deck's.
     ``gauge="none"`` drops the rows (to measure what they do).
 Solver
     :meth:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel._newton` unchanged: SQP on the constraint
@@ -56,7 +60,7 @@ from .freeboundary_vc import _interface_terms, _net_current, _surface_data
 from .input import VmecInput
 
 #: the labelling gauges of :class:`LeastSquaresRZFreeBoundaryModel` (module docstring)
-GAUGES = ("deck", "spectral", "none")
+GAUGES = ("deck", "spectral", "arc", "none")
 #: the spectral gauge's weight at the band's top mode level (gauge_top_weight): ten times the deck gauge's 1e-2, which
 #: at the converged QA boundary (qass_b25, 8x8) only just outweighs the rows' negative curvature of the high-mode
 #: relabellings (provisional: the value under test, analyze_hessian / benchmark of 10-18)
@@ -227,7 +231,7 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma0, axis=-1), axis=-1))
         length = jnp.linalg.norm(e_theta, axis=0)
         self._consts = dict(self._consts, gamma0=gamma0, tangent=e_theta / (length * jnp.mean(length))[None],
-                            gauge_weight=jnp.asarray(self.gauge_weight))
+                            gauge_weight=jnp.asarray(self.gauge_weight), wavenumber=wavenumber)
         gauge = self.gauge
         if gauge == "spectral":  # the weight of every grid harmonic (field periods in phi), by its mode level
             k_phi = np.abs(np.fft.fftfreq(nphi, 1.0 / nphi))[:, None]
@@ -250,6 +254,13 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
             if gauge == "deck":
                 label = consts["gauge_weight"] * jnp.sum((gamma - consts["gamma0"]) * consts["tangent"], axis=0)
                 parts.append((area * label).ravel())
+            elif gauge == "arc":  # equal arc in each plane, and the planes' origins at the deck's
+                e_t = jnp.real(jnp.fft.ifft(1j * consts["wavenumber"] * jnp.fft.fft(gamma, axis=-1), axis=-1))
+                metric = jnp.linalg.norm(e_t, axis=0)
+                arc = metric / jnp.mean(metric, axis=1, keepdims=True) - 1.0
+                origin = jnp.mean(jnp.sum((gamma - consts["gamma0"]) * consts["tangent"], axis=0), axis=1)
+                parts += [(consts["gauge_weight"] * area * arc).ravel(),
+                          consts["gauge_weight"] * origin / np.sqrt(origin.size)]
             elif gauge == "spectral":  # the area-weighted angle's harmonics (orthonormal: Parseval), weighted
                 angle = area * jnp.sum((gamma - consts["gamma0"]) * consts["tangent"], axis=0)
                 harmonics = consts["spectral_weight"] * jnp.fft.fft2(angle, norm="ortho")

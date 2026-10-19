@@ -25,12 +25,6 @@ from vmex import optimize as opt
 # Input deck:
 INPUT_FILE = Path(__file__).resolve().parent / "data" / "input.LandremanPaul2021_QA_lowres"
 
-# Iteration cap of the deck's final multigrid stage.  The deck's own NITER of
-# 1000 stops at fsq ~2.6e-13, short of its FTOL of 1e-13 (the stage converges
-# at about 1115 iterations on CPU), and solve_equilibrium raises rather than
-# return an unconverged state, so the cap is raised here; FTOL is unchanged:
-FORWARD_MAX_ITERATIONS = 3000
-
 # Flux surfaces the effective ripple is evaluated on:
 SURFACES = np.linspace(0.15, 0.95, 5)
 
@@ -60,8 +54,7 @@ FIGURE_PATH = Path("epsilon_effective.png")
 ### Set up the equilibrium ####################################################
 
 print("Solving the VMEX equilibrium...")
-equilibrium = opt.solve_equilibrium(vj.VmecInput.from_file(INPUT_FILE),
-                                    forward_max_iterations=FORWARD_MAX_ITERATIONS)
+equilibrium = opt.solve_equilibrium(vj.VmecInput.from_file(INPUT_FILE))
 
 ### Compute the effective ripple ##############################################
 

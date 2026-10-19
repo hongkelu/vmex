@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""WOUT figures and alpha losses of a three-terms single-stage run's final equilibrium.
+"""WOUT figures and alpha losses of a three-term single-stage run's final equilibrium.
 
-    COIL_CASE=qa4-beta python benchmarks/three_terms_postprocess.py <run dir> [--ns 201] [--bootstrap] [--trace-args "..."]
+    COIL_CASE=qa4-beta python benchmarks/three_term_postprocess.py <run dir> [--ns 201] [--bootstrap] [--trace-args "..."]
 
-A run of ``examples/optimization/single_stage_free_boundary_optimization_three_terms.py``. Its final boundary is the
+A run of ``examples/optimization/single_stage_free_boundary_optimization_three_term.py``. Its final boundary is the
 sheet-current-free free boundary of its final coils; this re-solves it as a fixed boundary at ``--ns`` (the campaign's
 dense radial resolution) with the run's PHIEDGE, pressure and current -- not with VMEC + NESTOR, which would leave that
 branch. Writes into ``<run>/postprocess``: ``wout_dense.nc``, ``dense.json`` (QA, min/max |iota|, aspect, major radius,
@@ -28,7 +28,7 @@ if CASE not in ("ellipse5", "ellipse5-beta7", "qa3", "qh", "qi", "qa4-beta", "qa
 # None: the constructed QI residual
 HELICITY = (1, -1) if CASE == "qh" or CASE.startswith("qh4-beta") else None if CASE.startswith("qi") else (1, 0)
 IOTA_AXIS = CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta")  # iota rows include opt.axis_iota and edge
-REDL_HELICITY = None if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt); QI: none, Redl refuses
+REDL_HELICITY = 0 if HELICITY is None else HELICITY[1]  # Redl's quasisymmetry N (simsopt convention)
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)
@@ -181,7 +181,7 @@ report = dict(ns=args.ns, fsq=float(w.fsqr + w.fsqz + w.fsql), qa=float(q @ q),
               major_radius_m=float(w.Rmajor_p), betatotal=float(w.betatotal))
 if args.bootstrap:
     report["redl_mismatch"] = float(redl_profiles(deck)[1].total_state(eq.solution, eq.solver_context))
-report["figures"] = [str(f) for f in vmex.plot_wout(str(path), out, name="three_terms").values()]
+report["figures"] = [str(f) for f in vmex.plot_wout(str(path), out, name="three_term").values()]
 (out / "dense.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report), flush=True)
 if not args.no_trace:

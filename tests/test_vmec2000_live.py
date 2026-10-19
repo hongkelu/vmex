@@ -29,6 +29,7 @@ from tests.test_lasym_free_case import (
 
 pytestmark = [
     pytest.mark.vmec2000_live,
+    pytest.mark.usefixtures("_module_jit_enabled"),
 ]
 
 ROOT = Path(__file__).resolve().parents[1]

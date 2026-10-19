@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Vacuum ground truth for ``run_three_terms_resolution.py --case vacuum``: field lines from each method's surfaces.
+"""Vacuum ground truth for ``run_three_term_resolution.py --case vacuum``: field lines from each method's surfaces.
 
-    python benchmarks/three_terms_resolution_poincare.py OUT [--only truth 4 5 ...] [--s 0.1 0.3 ... 1]
-    python benchmarks/three_terms_resolution_poincare.py OUT --plot [--figure 4 8 12]
+    python benchmarks/three_term_resolution_poincare.py OUT [--only truth 4 5 ...] [--s 0.1 0.3 ... 1]
+    python benchmarks/three_term_resolution_poincare.py OUT --plot [--figure 4 8 12]
 
 In vacuum the external field is the whole field, so its field lines define the flux surfaces without virtual
 casing.  A VMEC surface is a flux surface only if field lines started on it stay on it.  From ``--lines`` points
@@ -18,7 +18,7 @@ distance over a field period from the field's closed field line, found by Newton
 most, |b_mn| / |m iota - n|).  ``--only`` traces a
 subset (``truth`` and/or resolutions), so several processes can share the work; each saves
 ``OUT/poincare/<key>.npz``.  ``--plot`` collects them into ``OUT/poincare.json``, draws
-``OUT/three_terms_resolution_poincare.png`` (the distances against s at the ``--figure`` resolutions, and their mean
+``OUT/three_term_resolution_poincare.png`` (the distances against s at the ``--figure`` resolutions, and their mean
 against the resolution) and ``OUT/poincare/mM.png`` per resolution (the distances against s, and the signed
 distance of the LCFS crossings against the poloidal angle).
 """
@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import netCDF4  # noqa: E402
 import numpy as np  # noqa: E402
 
-METHODS = ("three_terms", "nestor", "nestor_mgrid", "vmec2000", "desc", "desc_lm")
+METHODS = ("three_term", "nestor", "nestor_mgrid", "vmec2000", "desc", "desc_lm")
 WOUTS = {"desc": "desc/wout_desc.nc", "desc_lm": "desc_lm/wout_desc.nc"}
 
 
@@ -235,7 +235,7 @@ def plot(a):
             rows[f.stem if f.stem == "truth" else f.stem.replace("_", "/", 1)] = json.loads(str(d["row"]))
     (a.out / "poincare.json").write_text(json.dumps(dict(lines=a.lines, transits=a.transits, steps=a.steps,
                                                           rows=rows), indent=1) + "\n")
-    colours = {"three_terms": "tab:blue", "nestor": "tab:red", "nestor_mgrid": "tab:orange", "vmec2000": "tab:purple",
+    colours = {"three_term": "tab:blue", "nestor": "tab:red", "nestor_mgrid": "tab:orange", "vmec2000": "tab:purple",
                "desc": "tab:green", "desc_lm": "tab:olive"}
     curve = lambda row, k: ([float(s) for s in row["poincare_surfaces"]],  # noqa: E731
                             [v[k] for v in row["poincare_surfaces"].values()])
@@ -269,11 +269,11 @@ def plot(a):
     fig.suptitle(f"Vacuum field lines from each method's own surfaces ({a.lines} per surface, {a.transits} transits): "
                  "distance of their crossings from the surface they started on", fontsize=9)
     fig.tight_layout()
-    fig.savefig(a.out / "three_terms_resolution_poincare.png", dpi=120)
+    fig.savefig(a.out / "three_term_resolution_poincare.png", dpi=120)
     plt.close(fig)
     for m in sorted({int(key.split("/")[0][1:]) for key in rows if key != "truth"}):
         case_figure(a, rows, m, colours, curve)
-    print("wrote", a.out / "poincare.json", a.out / "three_terms_resolution_poincare.png", a.out / "poincare/m*.png")
+    print("wrote", a.out / "poincare.json", a.out / "three_term_resolution_poincare.png", a.out / "poincare/m*.png")
 
 
 def signed_distance(R, Z, Rc, Zc):

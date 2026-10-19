@@ -29,6 +29,7 @@ pytestmark_golden = pytest.mark.skipif(
 )
 pytestmark = [
     pytestmark_golden,
+    pytest.mark.usefixtures("_module_jit_enabled"),  # full solves: run jitted
 ]
 
 netCDF4 = pytest.importorskip("netCDF4")

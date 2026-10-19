@@ -21,17 +21,14 @@ links to the module that documents it.
   (directives honored, ``wout_<case>.nc`` written)
 - :func:`~vmex.core.freeboundary.solve_free_boundary` — NESTOR free boundary
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
-- :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_terms` /
+- :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term` /
   :func:`~vmex.core.freeboundary_vc.boundary_residual` — free boundary from
   the three virtual-casing interface conditions (no sheet current);
-  :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` — its residual,
+  :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` — its residual,
   Jacobian and gradients for any coils without recompiling (optimizers);
-  :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`
-  (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_terms")``) —
-  single-stage optimization on it; ``method="least_squares"``:
-  :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel` /
-  :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`, the
-  reference-free least-squares free boundary
+  :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`
+  (``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``) —
+  single-stage optimization on it
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -107,9 +104,7 @@ links to the module that documents it.
 - :func:`~vmex.core.gammac.gamma_c_from_wout` — fast-ion ``Gamma_c`` profile
   from any compatible wout, without a solve
 - :func:`~vmex.core.tracing.essos_vmec_field` — hand a solved equilibrium to
-  ESSOS as an ``essos.fields.Vmec`` (optional ESSOS dependency);
-  :func:`~vmex.core.tracing.essos_tracing_fields` adds the exterior field and
-  wall for ``essos.dynamics.Tracing``
+  ESSOS as an ``essos.fields.Vmec`` (optional ESSOS dependency)
 - :func:`~vmex.core.tracing.trace_alphas` →
   :class:`~vmex.core.tracing.AlphaTracingResult` /
   :func:`~vmex.core.plotting.plot_tracing` — optional alpha-particle
@@ -253,13 +248,11 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.multigrid", "solve_free_boundary_multigrid"),
     "solve_free_boundary": (".core.freeboundary", "solve_free_boundary"),
     "solve_phiedge": (".core.freeboundary", "solve_phiedge"),
-    "solve_free_boundary_three_terms": (
-        ".core.freeboundary_vc", "solve_free_boundary_three_terms"),
+    "solve_free_boundary_three_term": (
+        ".core.freeboundary_vc", "solve_free_boundary_three_term"),
     "boundary_residual": (".core.freeboundary_vc", "boundary_residual"),
-    "ThreeTermsFreeBoundaryModel": (".core.freeboundary_vc", "ThreeTermsFreeBoundaryModel"),
-    "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_vc", "ThreeTermsFreeBoundaryProblem"),
-    "LeastSquaresFreeBoundaryModel": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryModel"),
-    "LeastSquaresFreeBoundaryProblem": (".core.freeboundary_lsq", "LeastSquaresFreeBoundaryProblem"),
+    "ThreeTermFreeBoundaryModel": (".core.freeboundary_vc", "ThreeTermFreeBoundaryModel"),
+    "ThreeTermFreeBoundaryProblem": (".core.freeboundary_vc", "ThreeTermFreeBoundaryProblem"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),
@@ -318,7 +311,6 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     # alpha-particle tracing (ESSOS)
     "AlphaTracingResult": (".core.tracing", "AlphaTracingResult"),
     "essos_vmec_field": (".core.tracing", "essos_vmec_field"),
-    "essos_tracing_fields": (".core.tracing", "essos_tracing_fields"),
     "trace_alphas": (".core.tracing", "trace_alphas"),
     "plot_tracing": (".core.plotting", "plot_tracing"),
     # optimizer-neutral problem callables

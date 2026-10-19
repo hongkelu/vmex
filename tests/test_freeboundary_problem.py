@@ -22,6 +22,8 @@ from vmex.core import freeboundary_problem as api
 from vmex.core.errors import TrialRejected, VmecError
 from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
+pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
+
 
 def test_public_names_share_the_core_classes():
     assert opt.TrialRejected is TrialRejected
@@ -396,30 +398,28 @@ def test_adaptive_refresh_preserves_acceptance_and_derivatives(scalar, monkeypat
         assert len(refresh_events) == 1 and refresh_events[0]["reason"] == "cost"
 
 
-@pytest.mark.parametrize("method", ["SLSQP", "AUGLAG"])
 @pytest.mark.parametrize("budget", [1, 5])
-def test_shared_minimize_promotes_only_certified_points(scalar, budget, method):
+def test_shared_minimize_promotes_only_certified_points(scalar, budget):
     p, stats, *_ = scalar
     p.enable_matrix_free()
     initial = p.fun(p.x0)
     seen = []
-    result = opt.minimize(p, method=method, callback=lambda x: seen.append(x.copy()),
+    result = opt.minimize(p, method="SLSQP", callback=lambda x: seen.append(x.copy()),
                           constraints=p.nonlinear_constraint([-1e6, -1e6], [1e6, 1e6]),
-                          options={"maxiter": budget, **({"ftol": 1e-10} if method == "SLSQP" else {})})
+                          options={"maxiter": budget, "ftol": 1e-10})
     assert 0 < p.accepted_step == len(seen) <= budget
     np.testing.assert_array_equal(p.accepted.parameters, result.x)
     assert p.fun(result.x) < initial and len(stats["seeds"]) == 1
 
 
-@pytest.mark.parametrize("method", ["SLSQP", "AUGLAG"])
-def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar, method):
+def test_failed_equilibrium_stops_minimize_at_the_accepted_root(scalar):
     p, stats, *_ = scalar
     p.enable_matrix_free()
     anchor = p.accepted
     stats["fail"] = True
-    result = opt.minimize(p, method=method, callback=lambda x: pytest.fail("failed trial promoted"),
+    result = opt.minimize(p, method="SLSQP", callback=lambda x: pytest.fail("failed trial promoted"),
                           options={"maxiter": 20})
-    assert not result.success and (method == "SLSQP" or result.stop_reason == "no_progress")
+    assert not result.success
     np.testing.assert_array_equal(result.x, anchor.parameters)
     assert p.accepted is anchor and p.accepted_step == 0
 

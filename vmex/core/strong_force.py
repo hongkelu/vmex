@@ -23,7 +23,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .loops import map_columns
 from .profiles import MU0
 from .radial_basis import BSplineBasis
 
@@ -736,7 +735,7 @@ def _evaluate_magnetic_pressure_gradient(
         values = jax.vmap(lambda point: _point_magnetic_pressure_gradient(state, point))(points)
     else:
         kernel = _point_magnetic_pressure_gradient_checkpoint if checkpoint else _point_magnetic_pressure_gradient
-        values = map_columns(
+        values = jax.lax.map(
             lambda point: kernel(state, point),
             points,
             batch_size=batch_size,
@@ -991,7 +990,7 @@ def _evaluate_strong_force(
         values = jax.vmap(lambda point: _point_force(state, point))(points)
     else:
         kernel = _point_force_checkpoint if checkpoint else _point_force
-        values = map_columns(
+        values = jax.lax.map(
             lambda point: kernel(state, point),
             points,
             batch_size=batch_size,

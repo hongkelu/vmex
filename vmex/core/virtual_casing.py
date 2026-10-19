@@ -50,18 +50,14 @@ remains available without it; virtual-casing solver paths raise a clear error.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 import operator
-import threading
 from typing import Any
 
 import numpy as np
 
 import jax
 import jax.numpy as jnp
-
-from .loops import map_columns
 
 try:  # optional dependency (uwplasma/virtual_casing_jax)
     from virtual_casing_jax import (
@@ -102,11 +98,6 @@ except ImportError as _exc:  # pragma: no cover - exercised only when the dep is
 
 #: Vacuum permeability [T m / A] (VMEC2000 ``mu0`` convention).
 MU0 = 4.0e-7 * np.pi
-
-#: Accuracy (decimal digits of the plasma field relative to ``|B|``) the singular patches of the on-surface virtual
-#: casing are planned to.  Its error enters ``B_out . n`` directly, so it must stay an order below the interface
-#: residuals a finite-beta free boundary reaches (a few 1e-4 of ``|B|``): 5 digits.
-VC_DIGITS = 5
 
 __all__ = [
     "MU0",
@@ -202,8 +193,8 @@ def _get(wout, name):
 def surface_field_data_from_wout(
     wout,
     *,
-    nphi: int,
-    ntheta: int,
+    nphi: int = 32,
+    ntheta: int = 32,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -222,9 +213,6 @@ def surface_field_data_from_wout(
     - ``normal`` / ``area_vector`` = ``e_theta x e_phi`` (oriented outward),
 
     all in the package's structure-of-arrays layout ``(3, nphi, ntheta)``.
-    ``nphi`` and ``ntheta`` have no default: the grid that resolves a surface
-    and its field depends on their mode content (see
-    :func:`~vmex.core.freeboundary_vc.interface_grid`).
 
     The construction is validated by ``|B_total . n| / |B|`` ~ 1e-16 on a
     converged equilibrium (the VMEC free-boundary condition), see the module test.
@@ -407,11 +395,11 @@ def _assemble_surface_field_data(
     )
 
 
-def _wrout_cos_coeffs_jax(f, modes, trig, sine=False):
-    """Traceable clone of :func:`nyquist.wrout_cos_coeffs` (``sine``: ``wrout_sin_coeffs``).
+def _wrout_cos_coeffs_jax(f, modes, trig):
+    """Traceable clone of :func:`nyquist.wrout_cos_coeffs`.
 
-    Identical wrout.f Nyquist analysis (``(ns, mnmax)`` coefficients), but
-    with ``jnp`` einsums so the field ``f`` may be a jax tracer; the trig
+    Identical wrout.f Nyquist cosine analysis (``(ns, mnmax)`` coefficients),
+    but with ``jnp`` einsums so the field ``f`` may be a jax tracer; the trig
     weight tables depend only on ``trig``/``modes`` and stay static numpy.
     """
     from .nyquist import _wrout_dmult, _wrout_theta_tables, _wrout_zeta_tables
@@ -421,21 +409,36 @@ def _wrout_cos_coeffs_jax(f, modes, trig, sine=False):
     cosmui, sinmui = _wrout_theta_tables(trig)
     cosnv, sinnv = _wrout_zeta_tables(trig)
     fj = jnp.asarray(f)[:, : int(trig.ntheta2), :]
-    if sine:
-        cosmui, sinmui = sinmui, cosmui
     f_theta_cos = jnp.einsum("sik,im->smk", fj, jnp.asarray(cosmui))
     f_theta_sin = jnp.einsum("sik,im->smk", fj, jnp.asarray(sinmui))
     cos_zeta = jnp.einsum("smk,kn->smn", f_theta_cos, jnp.asarray(cosnv))
     sin_zeta = jnp.einsum("smk,kn->smn", f_theta_sin, jnp.asarray(sinnv))
-    sgn = np.where(n < 0, -1.0, 1.0) * (-1.0 if sine else 1.0)
+    sgn = np.where(n < 0, -1.0, 1.0)
     coeff = cos_zeta[:, m, np.abs(n)] + sgn[None, :] * sin_zeta[:, m, np.abs(n)]
     return coeff * jnp.asarray(_wrout_dmult(modes, trig))[None, :]
 
 
-def _geometry_tables(res, ns):
-    """Mode table and Nyquist-grid trig tables of :func:`_state_field_spectra`."""
+def _state_field_spectra(inp, state, runtime=None):
+    """Traceable geometry and contravariant-field spectra for a live state."""
+    if bool(inp.lasym):
+        raise NotImplementedError(
+            "live-state field evaluation supports lasym = False only"
+        )
+    from .fields import magnetic_fields, metric_elements
     from .fourier import Resolution, mode_table, trig_tables
+    from .geometry import (
+        apply_lambda_axis_closure,
+        half_mesh_jacobian,
+        real_space_geometry,
+    )
+    from .nyquist import nyquist_limits
+    from .residuals import m1_constrained_to_physical
+    from .setup import boundary_from_input, flux_profiles, radial_grids
+    from .solver import resolution_from_input
+    from .transforms import physical_to_internal_scale
 
+    ns = int(np.shape(state.R_cos)[0])
+    res = resolution_from_input(inp, ns=ns) if runtime is None else runtime.resolution
     mpol, ntor, nfp, lasym = int(res.mpol), int(res.ntor), int(res.nfp), bool(res.lasym)
     nzeta = int(res.nzeta)
     modes = mode_table(mpol, ntor)
@@ -444,49 +447,6 @@ def _geometry_tables(res, ns):
     trig = trig_tables(Resolution(mpol=mnyq_grid + 1, ntor=nnyq_grid,
                                   ntheta=int(res.ntheta), nzeta=nzeta,
                                   nfp=nfp, lasym=lasym, ns=ns))
-    return modes, trig
-
-
-def _physical_geometry(state, res, modes, trig):
-    """Physical ``(R_cos, Z_sin, R_sin, Z_cos)``, the wout mode scaling and ``(xm, xn)`` of a state."""
-    from .residuals import m1_constrained_to_physical
-    from .transforms import physical_to_internal_scale
-
-    physical = m1_constrained_to_physical(
-        state.R_cos, state.Z_sin, state.R_sin, state.Z_cos,
-        modes=modes, lthreed=bool(res.lthreed), lasym=bool(res.lasym), lconm1=True)
-    mode_scale = 1.0 / physical_to_internal_scale(modes, trig)
-    xm = jnp.asarray(modes.m, dtype=float)
-    xn = jnp.asarray(modes.n, dtype=float) * float(res.nfp)
-    return physical, mode_scale, xm, xn
-
-
-def _state_geometry_spectra(state, res):
-    """``(xm, xn, rmnc, zmns)`` of a stellarator-symmetric state: :func:`_state_field_spectra`'s geometry
-    coefficients alone (the same operations), without its field evaluation."""
-    ns = int(np.shape(state.R_cos)[0])
-    modes, trig = _geometry_tables(res, ns)
-    (R_cos_p, Z_sin_p, _, _), mode_scale, xm, xn = _physical_geometry(state, res, modes, trig)
-    return xm, xn, R_cos_p * mode_scale[None, :], Z_sin_p * mode_scale[None, :]
-
-
-def _state_field_spectra(inp, state, runtime=None):
-    """Traceable geometry and contravariant-field spectra for a live state."""
-    from .fields import magnetic_fields, metric_elements
-    from .geometry import (
-        apply_lambda_axis_closure,
-        half_mesh_jacobian,
-        real_space_geometry,
-    )
-    from .fourier import mode_table
-    from .nyquist import nyquist_limits, symoutput_split
-    from .setup import boundary_from_input, flux_profiles, radial_grids
-    from .solver import resolution_from_input
-
-    ns = int(np.shape(state.R_cos)[0])
-    res = resolution_from_input(inp, ns=ns) if runtime is None else runtime.resolution
-    mpol, ntor, nfp, lasym = int(res.mpol), int(res.ntor), int(res.nfp), bool(res.lasym)
-    modes, trig = _geometry_tables(res, ns)
     if runtime is None:
         grids = radial_grids(ns)
         boundary = boundary_from_input(inp, modes=modes, trig=trig, lconm1=True)
@@ -500,7 +460,9 @@ def _state_field_spectra(inp, state, runtime=None):
                 ("phips", "phipf", "chips", "mass", "icurv")}
         gamma, ncurr = float(runtime.gamma), int(runtime.setup.ncurr)
 
-    (R_cos_p, Z_sin_p, R_sin_p, Z_cos_p), mode_scale, xm, xn = _physical_geometry(state, res, modes, trig)
+    R_cos_p, Z_sin_p, R_sin_p, Z_cos_p = m1_constrained_to_physical(
+        state.R_cos, state.Z_sin, state.R_sin, state.Z_cos,
+        modes=modes, lthreed=bool(res.lthreed), lasym=lasym, lconm1=True)
     lambda_sin = apply_lambda_axis_closure(state.L_sin, modes=modes, ntor=ntor)
     geometry = real_space_geometry(
         R_cos=R_cos_p, R_sin=R_sin_p, Z_cos=Z_cos_p, Z_sin=Z_sin_p,
@@ -521,16 +483,8 @@ def _state_field_spectra(inp, state, runtime=None):
     nyq_modes = mode_table(max(mnyq, max(mpol - 1, 0)) + 1, max(nnyq, ntor))
     xm_nyq = jnp.asarray(nyq_modes.m, dtype=float)
     xn_nyq = jnp.asarray(nyq_modes.n, dtype=float) * float(nfp)
-    def analysed(f):
-        """Cosine table and, without stellarator symmetry, the sine table (wrout.f symoutput)."""
-        if not lasym:
-            return _wrout_cos_coeffs_jax(f, nyq_modes, trig), None
-        even, odd = symoutput_split(f=jnp.asarray(f), trig=trig)
-        return (_wrout_cos_coeffs_jax(even, nyq_modes, trig),
-                _wrout_cos_coeffs_jax(odd, nyq_modes, trig, sine=True))
-
-    bsupumnc, bsupumns = analysed(fields.bsupu)
-    bsupvmnc, bsupvmns = analysed(fields.bsupv)
+    bsupumnc = _wrout_cos_coeffs_jax(fields.bsupu, nyq_modes, trig)
+    bsupvmnc = _wrout_cos_coeffs_jax(fields.bsupv, nyq_modes, trig)
 
     # These are the wout geometry coefficients and must be built exactly as
     # wout_from_state builds them: m1_constrained_to_physical has already
@@ -538,10 +492,13 @@ def _state_field_spectra(inp, state, runtime=None):
     # extra sqrt(s) on the odd-m rows here shrank every interior surface
     # towards the axis, which left adjacent surfaces crossing on a shaped
     # boundary and put B at the wrong place.
+    mode_scale = 1.0 / physical_to_internal_scale(modes, trig)
     rmnc = R_cos_p * mode_scale[None, :]
     zmns = Z_sin_p * mode_scale[None, :]
     rmns = R_sin_p * mode_scale[None, :] if lasym else None
     zmnc = Z_cos_p * mode_scale[None, :] if lasym else None
+    xm = jnp.asarray(modes.m, dtype=float)
+    xn = jnp.asarray(modes.n, dtype=float) * float(nfp)
 
     # The native field form (extender._contravariant_native) builds B from
     # these rather than from the fitted B^u/B^v tables: ``lmns`` carries VMEC's
@@ -555,10 +512,8 @@ def _state_field_spectra(inp, state, runtime=None):
     return dict(
         nfp=nfp, ns=ns, xm=xm, xn=xn, xmn=xm_nyq, xnn=xn_nyq,
         rmnc=rmnc, zmns=zmns, rmns=rmns, zmnc=zmnc,
-        bsupu=bsupumnc, bsupv=bsupvmnc, bsupu_s=bsupumns, bsupv_s=bsupvmns,
-        lmns=lmns, lmnc=(apply_lambda_axis_closure(state.L_cos, modes=modes, ntor=ntor)
-                         * jnp.asarray(fields.lamscale) * mode_scale[None, :] if lasym else None),
-        phipf=jnp.asarray(prof["phipf"]),
+        bsupu=bsupumnc, bsupv=bsupvmnc, bsupu_s=None, bsupv_s=None,
+        lmns=lmns, phipf=jnp.asarray(prof["phipf"]),
         chipf=_half_to_full_profile(fields.chips),
         lasym=lasym, signgs=signgs)
 
@@ -568,8 +523,8 @@ def surface_field_data_from_state(
     state,
     *,
     runtime=None,
-    nphi: int,
-    ntheta: int,
+    nphi: int = 32,
+    ntheta: int = 32,
     s_index: int = -1,
     use_stellsym: bool = True,
     project_current: bool = False,
@@ -579,13 +534,13 @@ def surface_field_data_from_state(
     Unlike :func:`surface_field_data_from_wout`, this rebuilds boundary
     geometry and contravariant-``B`` spectra without leaving the device.  Pass
     the matching ``runtime`` when profiles are differentiated so current and
-    pressure parameters remain in the graph; ``LASYM`` states carry their sine
-    partners.
+    pressure parameters remain in the graph.  Stellarator symmetry is the
+    currently validated live-state path.
     """
     # The live-state spectra also carry lambda and the flux derivatives, which
     # the interior field's native form needs and the surface assembly does not.
     spectra = {key: value for key, value in _state_field_spectra(inp, state, runtime).items()
-               if key not in ("lmns", "lmnc", "phipf", "chipf")}
+               if key not in ("lmns", "phipf", "chipf")}
     return _assemble_surface_field_data(
         **spectra, j=int(s_index % spectra["ns"]), use_stellsym=use_stellsym,
         nphi=nphi, ntheta=ntheta, source_convention="vmex_state",
@@ -610,8 +565,8 @@ def _carries_asymmetric_harmonics(state) -> bool:
 def surface_field_data_from_high_order(
     state,
     *,
-    nphi: int,
-    ntheta: int,
+    nphi: int = 32,
+    ntheta: int = 32,
     use_stellsym: bool = True,
 ) -> "VmecSurfaceFieldData":
     """Build virtual-casing surface data directly from a polished native state.
@@ -695,7 +650,7 @@ def surface_field_data_from_high_order(
 def plan_vc_precision(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = VC_DIGITS,
+    digits: int = 4,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -723,7 +678,7 @@ def plan_vc_precision(
 def plasma_field_on_boundary(
     surface_data: "VmecSurfaceFieldData",
     *,
-    digits: int = VC_DIGITS,
+    digits: int = 4,
     chunk_size: int = 1024,
     quad_nt: int | None = None,
     quad_np: int | None = None,
@@ -765,125 +720,11 @@ def plasma_field_on_boundary(
         kwargs["quad_np"] = int(quad_np)
     if precision is not None:
         kwargs["precision"] = precision
-    with _checkpointed_far_field():
-        if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
-            return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
-        if hasattr(field, "B_plasma_on_surface"):
-            return field.B_plasma_on_surface(**kwargs)
-        return field._vc.compute_internal_B(field.B_total, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Far-field quadrature whose reverse pass keeps no source-target kernel
-# ---------------------------------------------------------------------------
-
-def _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size):
-    """Sources ``(nsrc, 3)`` padded to source chunks, targets ``(ntrg, 3)`` padded to target chunks."""
-    from virtual_casing_jax import integrals
-
-    Xs, Xt = integrals._flatten_soa(X_src, "X_src").T, integrals._flatten_soa(X_trg, "X_trg").T
-    chunk = int(chunk_size) if chunk_size is not None and int(chunk_size) > 0 else Xs.shape[0]
-    block = (int(target_chunk_size) if target_chunk_size is not None and int(target_chunk_size) > 0
-             else GRADED_TARGET_BATCH)
-    Xs, pad = integrals._pad_to_multiple(Xs, 0, chunk)
-    return Xs, pad, chunk, integrals._pad_to_multiple(Xt, 0, block)[0], block, Xt.shape[0]
-
-
-def _far_field_sum(kernel, Xt, block, ntrg, sources, width):
-    """``sum_sources kernel(Xt - Xs, ...)`` per target: a loop over target blocks (:func:`~vmex.core.loops.map_columns`,
-    two blocks a step), each checkpointed, of a scan
-    over source chunks, each checkpointed.  The reverse pass keeps one block's inputs, not the dense source-target
-    kernel (``nsrc x ntrg x 3`` doubles per intermediate, tens of GiB for the interface rows' pullback).  Per
-    target the sum runs in the package's order (each source chunk
-    summed, then accumulated), so the values are the package's."""
-
-    @jax.checkpoint
-    def target_block(targets, sources):
-        def chunk(total, part):
-            return total + jnp.sum(kernel(targets[:, None, :] - part[0][None], *part[1:]), axis=1), None
-
-        return jax.lax.scan(jax.checkpoint(chunk), jnp.zeros((targets.shape[0],) + width, targets.dtype), sources)[0]
-
-    out = map_columns(lambda targets: target_block(targets, sources), Xt.reshape((-1, block, 3)))
-    return out.reshape((-1,) + width)[:ntrg]
-
-
-def _laplace_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
-                        remat=False):
-    """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` (gradient of the single layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(3, ntrg)``.  ``remat`` (the package's far-field checkpoint option, passed
-    by its singular quadratures under :class:`remat_scans`) is accepted and has no effect: the sum is always
-    checkpointed."""
-    from virtual_casing_jax import integrals
-
-    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
-    Xs, pad, chunk, Xt, block, ntrg = _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size)
-    weights = jnp.pad(weights, (0, pad))
-    sources = (Xs.reshape((-1, chunk, 3)), weights.reshape((-1, chunk)))
-    return _far_field_sum(lambda dx, w: integrals.laplace_fxd_u(dx, w[None]), Xt, block, ntrg, sources, (3,)).T
-
-
-def _laplace_dx_u_eval(X_src, n_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None,
-                       remat=False):
-    """``virtual_casing_jax.integrals.laplace_dx_u_eval`` (double layer, direct quadrature) with
-    :func:`_far_field_sum`'s memory: ``(1, ntrg)``.  ``remat`` as in :func:`_laplace_fxd_u_eval`."""
-    from virtual_casing_jax import integrals
-
-    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
-    Xs, pad, chunk, Xt, block, ntrg = _far_field_blocks(X_src, X_trg, chunk_size, target_chunk_size)
-    normals = jnp.pad(integrals._flatten_soa(n_src, "n_src").T, ((0, pad), (0, 0)))
-    weights = jnp.pad(weights, (0, pad))
-    sources = (Xs.reshape((-1, chunk, 3)), normals.reshape((-1, chunk, 3)), weights.reshape((-1, chunk)))
-    return _far_field_sum(lambda dx, n, w: integrals.laplace_dx_u(dx, n[None], w[None]), Xt, block, ntrg,
-                          sources, ())[None]
-
-
-_FAR_FIELD_LOCK = threading.RLock()
-_FAR_FIELD_USERS = [0, None]  # active contexts, the package's own functions while replaced
-
-
-@contextlib.contextmanager
-def _checkpointed_far_field():
-    """While VMEX traces a virtual-casing evaluation, the package's direct far-field quadratures are
-    :func:`_laplace_fxd_u_eval` / :func:`_laplace_dx_u_eval`: the same sums, with a reverse pass that keeps no
-    source-target kernel.  Reference-counted (programs are traced from several threads); restored on exit."""
-    from virtual_casing_jax import integrals
-
-    with _FAR_FIELD_LOCK:
-        if _FAR_FIELD_USERS[0] == 0:
-            _FAR_FIELD_USERS[1] = (integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval)
-            integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval = _laplace_fxd_u_eval, _laplace_dx_u_eval
-        _FAR_FIELD_USERS[0] += 1
-    try:
-        yield
-    finally:
-        with _FAR_FIELD_LOCK:
-            _FAR_FIELD_USERS[0] -= 1
-            if _FAR_FIELD_USERS[0] == 0:
-                integrals.laplace_fxd_u_eval, integrals.laplace_dx_u_eval = _FAR_FIELD_USERS[1]
-
-
-_REMAT = [False]  # set by remat_scans while second-order programs are traced
-
-
-class remat_scans:
-    """Context: virtual-casing quadratures traced inside it checkpoint their chunk scans (``remat=True``).
-
-    A reverse pass through the quadrature otherwise keeps every source chunk's kernel intermediates
-    (``targets x sources`` per array), which a second-order pass
-    (forward over reverse, the exact Hessian) cannot afford; checkpointed, each chunk is recomputed in the
-    reverse sweep and only its inputs are kept.  Values are unchanged.  Needs virtual_casing_jax with the
-    far-field ``remat`` option.
-    """
-
-    def __enter__(self):
-        self._saved = _REMAT[0]
-        _REMAT[0] = True
-        return self
-
-    def __exit__(self, *exc):
-        _REMAT[0] = self._saved
-        return False
+    if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
+        return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
+    if hasattr(field, "B_plasma_on_surface"):
+        return field.B_plasma_on_surface(**kwargs)
+    return field._vc.compute_internal_B(field.B_total, **kwargs)
 
 
 def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
@@ -891,7 +732,8 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
 
     The package evaluates the two single-layer gradients in two passes over the same source-target
     kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
-    its singular patches are built once (the same values to round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
+    its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
+    round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
     """
     from virtual_casing_jax.integrals import curl_single_layer_gradient, laplace_fxd_u_eval_vec_singular
     from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
@@ -913,7 +755,7 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
         setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
         patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
         orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype), remat=_REMAT[0])
+        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
     grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
     B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
     return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on
@@ -1139,8 +981,7 @@ def _nearest_surface_point(series, point, steps: int = 6):
         better = value < best_value
         return (angles, jnp.where(better, angles, best), jnp.where(better, value, best_value)), None
 
-    # unrolled: the step differentiates, and a rolled loop over derivatives is unsafe on GPU (vmex.core.loops)
-    (_, best, value), _ = jax.lax.scan(step, (start, start, distance2(start)), None, length=steps, unroll=True)
+    (_, best, value), _ = jax.lax.scan(step, (start, start, distance2(start)), None, length=steps)
     return best, jnp.sqrt(value)
 
 
@@ -1169,14 +1010,8 @@ def _graded_sources(series, center, distance, nodes):
             jnp.sum(area * B, axis=-1).reshape(-1))
 
 
-#: Targets per step of the graded rule when the caller sets none.  Each target's graded sources are summed in
-#: blocks of 4096 (``layer_derivatives``), so 64 targets hold 64 x 4096 x 27 doubles (57 MB) at order 2, while
-#: a batch that size still fills the device.
-GRADED_TARGET_BATCH = 64
-
-
 def _graded_target_batch_size(value):
-    """Validate a static target batch; None means :data:`GRADED_TARGET_BATCH`."""
+    """Validate a static target batch; None retains the serial map."""
     if value is None:
         return None
     try:
@@ -1198,8 +1033,8 @@ def _graded_field(series, points, order: int, nodes, *, target_batch_size=None):
         sources = _graded_sources(series, center, distance, nodes)
         return tuple(v[0] for v in layer_derivatives(point[None], *sources, order=int(order)))
 
-    # differentiated in the surface data: a batch axis in the loop body (vmex.core.loops)
-    return map_columns(one, jnp.asarray(points), batch_size=_graded_target_batch_size(target_batch_size) or GRADED_TARGET_BATCH)
+    return jax.lax.map(one, jnp.asarray(points),
+                       batch_size=_graded_target_batch_size(target_batch_size))
 
 
 def graded_plasma_field(surface_data, points, *, order: int = 0, nodes=GRADED_NODES,
@@ -1229,7 +1064,7 @@ def graded_plasma_field(surface_data, points, *, order: int = 0, nodes=GRADED_NO
     more ``3`` axis per order.  Traceable and differentiable in the points and
     the surface data; the grading centre is held fixed under differentiation.
     ``target_batch_size`` optionally evaluates that many target rules together;
-    ``None`` uses :data:`GRADED_TARGET_BATCH`, memory-bounded. Larger batches increase
+    ``None`` keeps the serial, memory-bounded default. Larger batches increase
     the working set; they change scheduling, not the quadrature or its accuracy.
     """
     _require_vcj()
@@ -1332,7 +1167,7 @@ class PlasmaVacuumInterface:
         surface_data: "VmecSurfaceFieldData",
         *,
         p_edge: float = 0.0,
-        digits: int = VC_DIGITS,
+        digits: int = 4,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,
@@ -1378,11 +1213,11 @@ class PlasmaVacuumInterface:
         cls,
         wout,
         *,
-        nphi: int,
-        ntheta: int,
+        nphi: int = 32,
+        ntheta: int = 32,
         s_index: int = -1,
         p_edge: float = 0.0,
-        digits: int = VC_DIGITS,
+        digits: int = 4,
         chunk_size: int = 1024,
         quad_nt: int | None = None,
         quad_np: int | None = None,

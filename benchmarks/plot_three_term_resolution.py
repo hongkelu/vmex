@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Figures of ``run_three_terms_resolution.py``: four methods at every resolution against the 12 x 12 target.
+"""Figures of ``run_three_term_resolution.py``: four methods at every resolution against the 12 x 12 target.
 
-    python benchmarks/plot_three_terms_resolution.py OUT [--sections 6 8 10 12]
+    python benchmarks/plot_three_term_resolution.py OUT [--sections 6 8 10 12]
 
 Reads ``OUT/m*/<method>.json`` and ``OUT/m*/wout_<method>.nc`` (any method or resolution still missing is left
-out, so the figures can be redrawn as runs finish) and writes ``OUT/three_terms_resolution.png`` (distance to the
+out, so the figures can be redrawn as runs finish) and writes ``OUT/three_term_resolution.png`` (distance to the
 target, the three interface conditions, wall time and peak GPU memory against mpol = ntor) and
-``OUT/three_terms_resolution_lcfs.png`` (LCFS cross-sections of every method on the target's at a few resolutions)
-and ``OUT/three_terms_resolution_surfaces.png`` (nested flux surfaces at ``--interior`` resolutions, the largest
+``OUT/three_term_resolution_lcfs.png`` (LCFS cross-sections of every method on the target's at a few resolutions)
+and ``OUT/three_term_resolution_surfaces.png`` (nested flux surfaces at ``--interior`` resolutions, the largest
 distance of every surface to the target's at the same normalized flux, and the iota profiles).
 """
 
@@ -24,7 +24,7 @@ import numpy as np  # noqa: E402
 
 METHODS = {  # name: (label, colour, marker, line style)
     "target": ("fixed-boundary target (same field)", "k", "s", "-"),
-    "three_terms": ("three-terms (VMEX, K = 0)", "tab:blue", "o", "-"),
+    "three_term": ("three-term (VMEX, K = 0)", "tab:blue", "o", "-"),
     "desc": ("DESC free boundary (K = 0), L = 2M", "tab:green", "^", "-"),
     "desc_lm": ("DESC free boundary (K = 0), L = M", "tab:olive", "^", ":"),
     "nestor": ("VMEC + NESTOR (VMEX)", "tab:red", "v", "--"),
@@ -106,7 +106,7 @@ def main():
                  "and sheet current\nshow the 48 x 48 virtual-casing evaluation's own error, ~2e-4); every method starts "
                  "from the same boundary (minor radius x 0.97)", fontsize=9)
     fig.tight_layout()
-    fig.savefig(a.out / "three_terms_resolution.png", dpi=130)
+    fig.savefig(a.out / "three_term_resolution.png", dpi=130)
     plt.close(fig)
 
     # ---- cross-sections ------------------------------------------------------------------------------------------
@@ -133,11 +133,11 @@ def main():
             ax.tick_params(labelsize=7)
     axes[0, 0].legend(fontsize=7, loc="lower left")
     fig.tight_layout()
-    fig.savefig(a.out / "three_terms_resolution_lcfs.png", dpi=120)
+    fig.savefig(a.out / "three_term_resolution_lcfs.png", dpi=120)
     plt.close(fig)
     interior(a.out, truth, nfp, [m for m in a.interior if (a.out / f"m{m}").exists()])
-    print("wrote", a.out / "three_terms_resolution.png", a.out / "three_terms_resolution_lcfs.png",
-          a.out / "three_terms_resolution_surfaces.png")
+    print("wrote", a.out / "three_term_resolution.png", a.out / "three_term_resolution_lcfs.png",
+          a.out / "three_term_resolution_surfaces.png")
 
 
 def interior(out, truth, nfp, resolutions):
@@ -198,7 +198,7 @@ def interior(out, truth, nfp, resolutions):
     ax_d.legend(fontsize=6)
     ax_i.legend(fontsize=7)
     fig.tight_layout()
-    fig.savefig(out / "three_terms_resolution_surfaces.png", dpi=115)
+    fig.savefig(out / "three_term_resolution_surfaces.png", dpi=115)
     plt.close(fig)
 
 

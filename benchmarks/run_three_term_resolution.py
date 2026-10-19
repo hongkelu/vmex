@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three-terms free boundary against VMEC + NESTOR and DESC at mpol = ntor = 4 ... 12.
+"""Three-term free boundary against VMEC + NESTOR and DESC at mpol = ntor = 4 ... 12.
 
 The case has a known answer.  The fixed-boundary QA equilibrium of
 ``examples/data/input.LandremanPaul2021_QA_beta2p5_bootstrap`` (``--case beta``,
@@ -11,15 +11,15 @@ current.  The target is then a free boundary of that field without a sheet
 current, and every method is scored against it.  Each step runs in a process of
 its own, so wall time and peak GPU memory belong to that step alone::
 
-    python benchmarks/run_three_terms_resolution.py field OUT          # target and field, once
-    python benchmarks/run_three_terms_resolution.py target M OUT       # fixed-boundary target and start at M x M
-    python benchmarks/run_three_terms_resolution.py nestor M OUT       # VMEC + NESTOR free boundary
-    python benchmarks/run_three_terms_resolution.py three_terms M OUT   # the three-terms free boundary
-    python benchmarks/run_three_terms_resolution.py mgrid OUT          # the field as an mgrid table, once
-    python benchmarks/run_three_terms_resolution.py vmec2000 M OUT     # VMEC2000 + NESTOR on it (CPU, $VMEC2000_CMD)
-    python benchmarks/run_three_terms_resolution.py nestor_mgrid M OUT # VMEX + NESTOR on the same table
-    python benchmarks/run_three_terms_resolution.py score M OUT NAME WOUT   # score another code's boundary
-    python benchmarks/run_three_terms_resolution.py table OUT          # collect OUT/*/*.json
+    python benchmarks/run_three_term_resolution.py field OUT          # target and field, once
+    python benchmarks/run_three_term_resolution.py target M OUT       # fixed-boundary target and start at M x M
+    python benchmarks/run_three_term_resolution.py nestor M OUT       # VMEC + NESTOR free boundary
+    python benchmarks/run_three_term_resolution.py three_term M OUT   # the three-term free boundary
+    python benchmarks/run_three_term_resolution.py mgrid OUT          # the field as an mgrid table, once
+    python benchmarks/run_three_term_resolution.py vmec2000 M OUT     # VMEC2000 + NESTOR on it (CPU, $VMEC2000_CMD)
+    python benchmarks/run_three_term_resolution.py nestor_mgrid M OUT # VMEX + NESTOR on the same table
+    python benchmarks/run_three_term_resolution.py score M OUT NAME WOUT   # score another code's boundary
+    python benchmarks/run_three_term_resolution.py table OUT          # collect OUT/*/*.json
 
 All methods start from the same boundary, the target's with every ``m >= 1``
 coefficient scaled by ``START_SCALE``.  Every result is scored the same way: its
@@ -152,7 +152,7 @@ def filament_field(gamma, gamma_dash, currents):
     """Biot-Savart field B = 1e-7 sum_c I_c mean_p gamma'_cp x d / |d|^3 of filaments, as a pytree with ``b_cyl``.
 
     VMEX holds no coil code; any field with ``b_cyl(r, phi, z)`` whose arrays are pytree leaves serves the
-    three-terms model without recompiling.
+    three-term model without recompiling.
     """
     import jax.numpy as jnp
 
@@ -315,7 +315,7 @@ def score(modes, out, name, eq, extra, inp=None):
                                                          ntheta=VC_GRID, precision=plan))
     q = np.asarray(opt.QuasisymmetryRatioResidual(QA_SURFACES, 1, 0).residuals_state(eq.solution, eq.solver_context))
     nfp = int(inp.nfp)
-    row = dict(method=name, modes=modes, ns=NS, force_fsq=float(w.fsqr + w.fsqz + w.fsql), bn=res.normal, bn_max=res.normal_max,
+    row = dict(method=name, modes=modes, ns=NS, force_fsq=float(w.fsqr + w.fsqz + w.fsql), bn=res.normal,
                pressure_balance=res.pressure, sheet_current=res.sheet_current, qa=float(q @ q),
                iota_axis=float(abs(np.asarray(w.iotaf)[0])), iota_edge=float(abs(np.asarray(w.iotaf)[-1])),
                aspect=float(w.aspect), volume_m3=float(w.volume_p),
@@ -461,23 +461,16 @@ def run_nestor_mgrid(modes, out):
     score(modes, out, "nestor_mgrid", eq, extra)
 
 
-def run_three_terms(modes, out, chunk, reference="start"):
-    from vmex.core.freeboundary_vc import solve_free_boundary_three_terms
+def run_three_term(modes, out, chunk):
+    from vmex.core.freeboundary_vc import solve_free_boundary_three_term
 
     meter = Meter()
-    # The deck is the solver's fixed labelling reference (the free boundary is its displacement along the deck
-    # equilibrium's radial lines): the common start, not the answer.  ``--reference target`` labels with the
-    # target and starts from the start.
     inp = replace(deck(modes), lfreeb=True, mgrid_file="field(direct)")
-    start = start_boundary(inp)
-    fit = solve_free_boundary_three_terms(start if reference == "start" else inp, external_field=load_field(out),
-                                         initial_boundary=None if reference == "start" else start,
+    fit = solve_free_boundary_three_term(inp, external_field=load_field(out), initial_boundary=start_boundary(inp),
                                          nphi=VC_GRID, ntheta=VC_GRID, max_nfev=60, trial_ftol=1e-11, chunk=chunk,
                                          quadrature=(4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID), verbose=2)
-    name = "three_terms" if reference == "start" else "three_terms_" + reference
-    score(modes, out, name, fit.equilibrium, dict(nfev=int(fit.nfev), njev=int(fit.njev), cost=float(fit.cost),
-                                                  converged=bool(fit.success), message=str(fit.message),
-                                                  reference=reference, **meter()))
+    score(modes, out, "three_term", fit.equilibrium, dict(nfev=int(fit.nfev), njev=int(fit.njev),
+                                                          cost=float(fit.cost), **meter()))
 
 
 def run_score(modes, out, name, path):
@@ -527,7 +520,7 @@ def table(out):
             w = boundary(own)
             r["lcfs_mm_vs_target"] = lcfs_mm(w, boundary(target), int(w.nfp))
     field = json.loads((out / "field.json").read_text())
-    (out / "three_terms_resolution.json").write_text(json.dumps(dict(
+    (out / "three_term_resolution.json").write_text(json.dumps(dict(
         case=str(DECK.relative_to(REPO)), ns=NS, truth_modes=TRUTH_MODES, start_scale=START_SCALE,
         vc_grid=VC_GRID, field=field, rows=rows), indent=1) + "\n")
     columns = {"modes": "M = N", "method": "method", "seconds": "wall s", "peak_gpu_gib": "peak GiB",
@@ -552,12 +545,10 @@ def main(argv=None):
     import argparse
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=("field", "mgrid", "target", "nestor", "nestor_mgrid", "vmec2000", "three_terms",
+    p.add_argument("step", choices=("field", "mgrid", "target", "nestor", "nestor_mgrid", "vmec2000", "three_term",
                                      "score", "table"))
     p.add_argument("args", nargs="+", help="[M] OUT [NAME WOUT]")
     p.add_argument("--chunk", type=int, help="Jacobian columns per batch (default 8, 4 above 8 modes, 2 at 12)")
-    p.add_argument("--reference", choices=("start", "target"), default="start",
-                   help="three_terms: the deck (the solver's labelling reference) is the common start or the target")
     p.add_argument("--case", choices=tuple(CASES), help="the deck (set by the field step and kept in OUT/case.txt)")
     a = p.parse_args(argv)
     modes = None if a.step in ("field", "mgrid", "table") else int(a.args[0])
@@ -585,8 +576,8 @@ def main(argv=None):
         run_target(modes, out)
     elif a.step == "nestor":
         run_nestor(modes, out)
-    elif a.step == "three_terms":
-        run_three_terms(modes, out, a.chunk or (8 if modes <= 8 else 4 if modes <= 10 else 2), a.reference)
+    elif a.step == "three_term":
+        run_three_term(modes, out, a.chunk or (8 if modes <= 8 else 4 if modes <= 10 else 2))
     elif a.step == "score":
         run_score(modes, out, a.args[2], a.args[3])
     else:

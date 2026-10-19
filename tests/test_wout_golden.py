@@ -41,6 +41,7 @@ pytestmark_golden = pytest.mark.skipif(
 )
 pytestmark = [
     pytestmark_golden,
+    pytest.mark.usefixtures("_module_jit_enabled"),  # full solves: run jitted
 ]
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 
@@ -232,8 +233,7 @@ def case(request, tmp_path_factory):
         # raise_on_max_iterations=False: the up_down deck exhausts NITER
         # before FTOL — exactly like the golden VMEC2000 run, which simply
         # wrote its last (NITER-exhausted) state to the wout file.
-        # freeze_m1=False: VMEC2000's m=1 rule, so the solve follows the golden run's path bit for bit
-        result = solve_multigrid(inp, verbose=False, freeze_m1=False,
+        result = solve_multigrid(inp, verbose=False,
                                  raise_on_max_iterations=False)
         # fsqt history (wrout.f nstore_seq subsampling of fsqr + fsqz).
         history = np.asarray(result.fsq_history, dtype=float)

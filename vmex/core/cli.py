@@ -302,10 +302,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Samples of the loss-fraction curve (default: 1000).",
     )
     p.add_argument(
-        "--trace-no-resolution-check", action="store_true",
-        help="Do not warn when the equilibrium spectrum is truncated (edge modes above 3e-3 of m = 1).",
-    )
-    p.add_argument(
         "--trace-mode-cut", type=float, default=None,
         help="Drop Boozer |B| modes below this fraction of the largest amplitude (default: 2e-4; "
              "1e-3 misses losses in precise quasisymmetry).",
@@ -361,9 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="cli",
         choices=("cli", "jit"),
         help=(
-            "Fixed-boundary solver lane: 'cli' (jitted blocks with host residual "
-            "checks, live printing, exact-ftol exit) or 'jit' (single "
-            "lax.while_loop). Free-boundary and mirror decks always run the 'cli' lane."
+            "Solver lane: 'cli' (jitted blocks with host residual checks, live "
+            "printing, exact-ftol exit) or 'jit' (single lax.while_loop)."
         ),
     )
     p.add_argument(
@@ -443,11 +438,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--boundary-condition",
-        choices=("nestor", "three-terms"),
+        choices=("nestor", "three-term"),
         default=None,
         help=(
             "Plasma-vacuum interface condition of an LFREEB = T deck: NESTOR's "
-            "vacuum pressure (default) or the three-terms free boundary: B.n = 0, "
+            "vacuum pressure (default) or the three-term free boundary: B.n = 0, "
             "pressure balance and no sheet current (plasma field by virtual casing), solved for the "
             "boundary from the deck's (requires virtual-casing-jax). Overrides "
             "the deck's !@VMEX BOUNDARY_CONDITION directive."
@@ -651,9 +646,8 @@ class _FreeBoundaryPlan:
     """Resolved free-boundary routing: solver kwargs + wout metadata."""
 
     def __init__(self, *, solver_kwargs, nextcur=0, extcur=None,
-                 mgrid_mode="", curlabel=None, banner=""):
+                 mgrid_mode="", curlabel=None):
         self.solver_kwargs = dict(solver_kwargs)
-        self.banner = banner
         self.nextcur = int(nextcur)
         self.extcur = extcur
         self.mgrid_mode = str(mgrid_mode)
@@ -782,28 +776,7 @@ def _free_boundary_plan(args, inp, input_path: Path, *, emit):
         solver_kwargs={"mgrid_path": mgrid},
         nextcur=int(data.nextcur), extcur=extcur,
         mgrid_mode=str(data.mgrid_mode), curlabel=tuple(data.coil_groups),
-        banner=_mgrid_banner(mgrid, data, extcur),
     )
-
-
-def _mgrid_banner(path: Path, data, extcur) -> str:
-    """Startup summary of the vacuum table and the currents applied to it."""
-    import numpy as np
-
-    fmt = lambda v: ", ".join(f"{x:.6g}" for x in np.ravel(v))  # noqa: E731
-    raw = np.asarray(data.raw_coil_cur, dtype=float)
-    groups = ", ".join(str(g).strip() for g in data.coil_groups) or "unnamed"
-    text = (f"  Opening vacuum field file: {path.name}\n"
-            f"  mgrid: NFP = {data.nfp}, mode {data.mgrid_mode}, {data.nextcur} coil groups ({groups}),"
-            f" R in [{data.rmin:.6g}, {data.rmax:.6g}] m, Z in [{data.zmin:.6g}, {data.zmax:.6g}] m,"
-            f" {data.ir} x {data.jz} x {data.kp} (R x Z x phi)\n"
-            f"  B = sum EXTCUR * table (VMEC2000, every mode), EXTCUR = {fmt(extcur)};"
-            f" file currents raw_coil_cur = {fmt(raw)} A\n")
-    if (str(data.mgrid_mode).upper()[:1] in "RN" and np.any(np.abs(raw) != 1.0)
-            and np.allclose(extcur, raw)):
-        text += ("  WARNING: EXTCUR equals raw_coil_cur on a mode-R table, which already carries those"
-                 " currents; the coil field is applied twice. MAKEGRID raw tables expect EXTCUR near 1.\n")
-    return text
 
 
 def _stage_overrides(inp, *, ftol: float | None, max_iter: int | None):
@@ -904,8 +877,6 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
         emit(f" RESTART : seeding from {restart_source}")
 
     freeb_plan = _free_boundary_plan(args, inp, input_path, emit=emit)
-    if verbose and freeb_plan is not None and freeb_plan.banner:
-        emit(freeb_plan.banner, end="")
     # VMEC2000 turns off LFREEB when the requested mgrid cannot be opened.
     # Use that effective mode in setup and WOUT metadata, not merely in CLI
     # routing; otherwise a fixed-boundary fallback is mislabeled free-boundary.
@@ -1192,8 +1163,7 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
     import numpy as np
 
     from .plotting import plot_tracing
-    from .tracing import (ENERGY_TOLERANCE, MODE_TOLERANCE, RESOLUTION_TOLERANCE, TOLERANCE, trace_alphas,
-                          truncation_message)
+    from .tracing import ENERGY_TOLERANCE, MODE_TOLERANCE, TOLERANCE, trace_alphas
 
     scale = None if args.trace_no_scale else args.scale_target
     mode_cut = MODE_TOLERANCE if args.trace_mode_cut is None else float(args.trace_mode_cut)
@@ -1235,7 +1205,6 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             mode_tolerance=mode_cut,
             nboz=int(args.nbooz),
             progress=None if quiet else _TraceProgress(),
-            check_resolution=False,
         )
     except ImportError as exc:
         raise VmecInputError(
@@ -1247,8 +1216,6 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             WERROR_MESSAGES[INPUT_ERROR_FLAG], hint=str(exc)
         ) from exc
     meta = result.metadata
-    if not args.trace_no_resolution_check and meta["spectral_truncation"] > RESOLUTION_TOLERANCE:
-        emit(f" WARNING: {truncation_message(meta['spectral_truncation'], '--trace-no-resolution-check')}")
     if not quiet:
         emit(
             f" Scaling: B_scale={meta['b_scale']:.6g}, R_scale={meta['r_scale']:.6g} "

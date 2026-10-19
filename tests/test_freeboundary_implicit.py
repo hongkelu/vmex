@@ -33,6 +33,7 @@ from vmex.core.errors import (
 
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
+pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
 
 
 def _dense_cfg(*, adjoint_tol=1e-11, **overrides):
@@ -1104,11 +1105,7 @@ def test_structured_factorization_requires_the_dense_backend():
     assert dense._max_dofs(cfg) == np.inf
 
 
-@pytest.mark.parametrize("factor_dtype", [
-    None,
-    # the mixed-precision factors repeat the ~4 min dense comparison: full lane
-    pytest.param(jnp.float32, marks=pytest.mark.full),
-])
+@pytest.mark.parametrize("factor_dtype", [None, jnp.float32])
 def test_structured_pullback_matches_dense_on_a_small_deck(factor_dtype):
     """Structured factors give the dense pullback, tangent and seed at a real root.
 

@@ -1,7 +1,7 @@
 """Stability-selected NESTOR analytic ``T^{+/-}_l`` recurrence.
 
 analyt.f fills ``T_l = int_{-1}^{1} x^l / sqrt(A x^2 + 2 d x + B) dx`` with
-a FORWARD three-terms recurrence whose homogeneous modes grow like
+a FORWARD three-term recurrence whose homogeneous modes grow like
 ``(B/A)^{l/2}``; once ``(mf + nf) * ln(B/A)`` is large (free boundary
 around mpol/ntor ~ 12) the forward pass returns garbage.  VMEC2000 computes
 the SAME wrong integrals, so two-code parity cannot see the defect; these
@@ -366,6 +366,9 @@ def test_solver_dataclass_unchanged():
     """The public surface is untouched: same signature, same closures."""
     fields = {f.name for f in dataclasses.fields(V.VacuumSolver)}
     assert fields == {"basis", "signgs", "full", "skip", "assemble"}
+
+
+@pytest.mark.usefixtures("_module_jit_enabled")
 @pytest.mark.parametrize("include_kernel", [False, True])
 def test_analytic_mode_projection_boundary_derivative(cth_vacuum_inputs, include_kernel):
     """Signed Fourier projection retains the boundary response in both lanes."""

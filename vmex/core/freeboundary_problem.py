@@ -507,7 +507,7 @@ class FreeBoundaryProblem(FunctionProblem):
                   quantities=(), parameter_quantities=(),
                   continuation_step=0.1, max_continuation_steps=64,
                   root_residual_atol=2e-6, event=None, deadline=None,
-                  boundary_condition=None, three_terms_options=None, method=None):
+                  boundary_condition="nestor", three_term_options=None):
         """Solve and certify the seed equilibrium of a scalar loss of ``x``.
 
         Parameters
@@ -569,23 +569,18 @@ class FreeBoundaryProblem(FunctionProblem):
             Optional :func:`time.monotonic` value; construction, trials and
             derivatives raise :class:`TimeoutError` once it has passed.
         boundary_condition:
-            ``"nestor"`` (VMEC + NESTOR, this class) or ``"three_terms"``:
+            ``"nestor"`` (VMEC + NESTOR, this class) or ``"three_term"``:
             every trial is the free boundary on which ``B.n``, the pressure
             jump and the sheet current vanish, and the problem is a
-            :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem`
+            :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`
             with the same optimizer interface. It takes ``loss``, ``x0``, the
             parameter maps, ``scales``, ``names``, the quantities and
-            ``three_terms_options`` (keywords of
-            :meth:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryProblem.from_loss`: the
-            boundary solve's ``boundary_max_nfev``, and the
-            :class:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel` keywords,
-            and ``method="least_squares"`` for
-            :class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem`);
-            the other arguments are NESTOR's.  Default ``"nestor"``, or ``method``'s.
-        method:
-            The free-boundary method in one word: ``"galerkin"`` or ``"least_squares"`` (the three-terms
-            boundary condition, ``three_terms_options`` their keywords) or ``"nestor"`` (VMEC + NESTOR).
-            Given with ``boundary_condition``, the two must agree.
+            ``three_term_options`` (keywords of
+            :meth:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem.from_loss`: the
+            boundary fit's ``boundary_ftol``, ``boundary_max_nfev`` and
+            ``boundary_max_residual``, and the
+            :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` keywords);
+            the other arguments are NESTOR's.
 
         Returns
         -------
@@ -593,37 +588,16 @@ class FreeBoundaryProblem(FunctionProblem):
             A problem whose accepted root is the certified seed equilibrium.
             Ordinary evaluations never promote a root.
         """
-        if method is not None:
-            if method not in ("galerkin", "least_squares", "nestor"):
-                raise ValueError(f"method must be 'galerkin', 'least_squares' or 'nestor', got {method!r}")
-            implied = "nestor" if method == "nestor" else "three_terms"
-            if boundary_condition not in (None, implied):
-                raise ValueError(f"method={method!r} solves boundary_condition={implied!r}, "
-                                 f"not {boundary_condition!r}")
-            boundary_condition = implied
-            if method != "nestor":
-                given = (three_terms_options or {}).get("method", method)
-                if given != method:
-                    raise ValueError(f"method={method!r} disagrees with three_terms_options method={given!r}")
-                three_terms_options = dict(three_terms_options or {}, method=method)
-        boundary_condition = boundary_condition or "nestor"
-        if boundary_condition == "three_terms":
-            from .freeboundary_vc import ThreeTermsFreeBoundaryProblem
+        if boundary_condition == "three_term":
+            from .freeboundary_vc import ThreeTermFreeBoundaryProblem
 
-            options = dict(three_terms_options or {})
-            method = options.pop("method", "galerkin")
-            if method == "least_squares":
-                from .freeboundary_lsq import LeastSquaresFreeBoundaryProblem as problem_class
-            elif method == "galerkin":
-                problem_class = ThreeTermsFreeBoundaryProblem
-            else:
-                raise ValueError(f"three_terms_options method must be 'galerkin' or 'least_squares', got {method!r}")
-            return problem_class.from_loss(
+            return ThreeTermFreeBoundaryProblem.from_loss(
                 inp, loss, x0, field_from_parameters=field_from_parameters,
                 plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
-                quantities=quantities, parameter_quantities=parameter_quantities, **options)
+                quantities=quantities, parameter_quantities=parameter_quantities,
+                **dict(three_term_options or {}))
         if boundary_condition != "nestor":
-            raise ValueError(f"boundary_condition must be 'nestor' or 'three_terms', got {boundary_condition!r}")
+            raise ValueError(f"boundary_condition must be 'nestor' or 'three_term', got {boundary_condition!r}")
         quantities = tuple(quantities)
         parameter_quantities = tuple(parameter_quantities)
         if not all(callable(f) for f in (loss, field_from_parameters, *quantities, *parameter_quantities)) or (

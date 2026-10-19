@@ -40,9 +40,6 @@ from vmex.core import plotting  # noqa: E402
 from vmex.core import stability as stab  # noqa: E402
 from vmex.core.input import VmecInput  # noqa: E402
 from vmex.core.wout import wout_from_state  # noqa: E402
-
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
-
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 DECK = "cth_like_fixed_bdy"
 
@@ -174,7 +171,7 @@ def test_summary_combines_stability_and_well(summary_figure):
 def test_summary_combines_force_current_and_confinement(
     solved_case, summary_figure,
 ):
-    """Force balance carries bootstrap <J.B>; iota stands alone; pressure carries confinement."""
+    """Force balance carries the equilibrium <J.B>; iota stands alone; pressure carries confinement."""
     _, meta = summary_figure
     iota = meta["axes"]["iota"]
     assert len(iota.lines) == 1 and iota.get_legend() is None
@@ -184,7 +181,7 @@ def test_summary_combines_force_current_and_confinement(
     current = meta["current_axis"]
     assert len(current.lines) == 1
     assert current.get_shared_x_axes().joined(current, force)
-    assert current.get_ylabel().startswith(r"Bootstrap $\langle \mathbf{J}")
+    assert current.get_ylabel().startswith(r"$\langle \mathbf{J}")   # total, not bootstrap
     assert current.get_ylabel().endswith("[kA T/m$^2$]")
     labels = [text.get_text() for text in force.get_legend().get_texts()]
     assert "force error" in labels
@@ -406,7 +403,7 @@ def test_confinement_cache_is_bounded_and_weakly_keyed(solved_case, monkeypatch)
 
 
 def test_confinement_missing_neo_and_lasym_notes(solved_case, monkeypatch):
-    """Missing NEO_JAX and symmetric-only Boozer tables give stated reasons."""
+    """Missing NEO_JAX or Boozer tables give stated reasons."""
     from vmex.core import neoclassical
 
     _, wout = solved_case
@@ -425,7 +422,7 @@ def test_confinement_missing_neo_and_lasym_notes(solved_case, monkeypatch):
     plotting._CONFINEMENT_CACHE.clear()
     conf = plotting.confinement_summary(wout, {**booz, "neo_booz": None})
     assert not conf.validity["epsilon_effective"]
-    assert "symmetric-only" in conf.notes["epsilon_effective"]
+    assert "tables unavailable" in conf.notes["epsilon_effective"]
 
 
 def test_confinement_one_valid_one_invalid_and_never_zero(
@@ -490,7 +487,7 @@ def test_confinement_guards_report_failures_and_skip_cache(
     monkeypatch.setattr(neoclassical, "epsilon_effective_from_boozer", _raises)
     plotting._CONFINEMENT_CACHE.clear()
     conf = plotting.confinement_summary(wout, booz)
-    assert conf.notes["epsilon_effective"] == "NEO evaluation failed: RuntimeError"
+    assert conf.notes["epsilon_effective"] == "NEO evaluation failed: RuntimeError: synthetic NEO failure"
 
     monkeypatch.setattr(
         neoclassical, "epsilon_effective_from_boozer",
@@ -823,6 +820,16 @@ def test_vacuum_stability_panel_is_labeled_as_a_limit():
         axis, wout, {"valid": False, "note": "not sampled"}, s_plot_ignore=0.0)
     assert "vacuum-limit" in axis.lines[0].get_label()
     assert "not finite-pressure" in axis.get_title()
+    plt.close(figure)
+
+
+def test_stability_panel_accepts_the_minimum_three_surfaces():
+    """NS = 3 is VMEC's smallest grid; V'' needs four surfaces, so it is skipped."""
+    import matplotlib.pyplot as plt
+
+    wout = SimpleNamespace(ns=3, DMerc=np.ones(3), betatotal=0.01, vp=np.arange(3, dtype=float))
+    figure, axis = plt.subplots()
+    plotting._stability_panel(axis, wout, {"valid": False, "note": "n/a"}, s_plot_ignore=0.2)
     plt.close(figure)
 
 

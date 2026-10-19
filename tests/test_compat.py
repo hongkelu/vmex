@@ -10,6 +10,7 @@ Item I.8a dead-code prune — the core is JAX-only.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import types
@@ -502,14 +503,11 @@ def test_configure_jax_environment_idempotent_and_respects_user_env(monkeypatch)
     _compat._configure_jax_environment()  # must not raise (jax already imported)
     assert os.environ["XLA_FLAGS"] == "--user_set_flag"       # setdefault only
     assert os.environ["TF_CPP_MIN_LOG_LEVEL"] == "0"          # user wins
-    # the x64 default survives (VMEC parity: float64 mandatory)
-    import jax
-
-    assert jax.config.read("jax_enable_x64") is True
 
 
 def test_macos_cpu_codegen_split_default_respects_backend_and_user(monkeypatch):
-    """The large-graph linker guard is macOS/CPU-only and never overrides users."""
+    """The large-graph linker guard is macOS/CPU-only, the CUDA-graph flag is
+    always set, and neither overrides users."""
     import os
 
     monkeypatch.delenv("XLA_FLAGS", raising=False)
@@ -518,7 +516,8 @@ def test_macos_cpu_codegen_split_default_respects_backend_and_user(monkeypatch):
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(_compat.platform, "system", lambda: "Darwin")
     _compat._configure_jax_environment()
-    assert os.environ["XLA_FLAGS"] == "--xla_cpu_parallel_codegen_split_count=128"
+    assert os.environ["XLA_FLAGS"] == ("--xla_gpu_graph_min_graph_size=1 "
+                                       "--xla_cpu_parallel_codegen_split_count=128")
 
     monkeypatch.setenv("XLA_FLAGS", "--user_set_flag")
     _compat._configure_jax_environment()
@@ -534,7 +533,7 @@ def test_macos_cpu_codegen_split_default_respects_backend_and_user(monkeypatch):
     monkeypatch.delenv("VMEX_FAST_COMPILE")
     monkeypatch.setenv("JAX_PLATFORMS", "cuda,cpu")
     _compat._configure_jax_environment()
-    assert "XLA_FLAGS" not in os.environ
+    assert os.environ["XLA_FLAGS"] == "--xla_gpu_graph_min_graph_size=1"
 
 
 def test_machine_fingerprint_is_stable_and_platform_scoped(monkeypatch):
@@ -781,7 +780,7 @@ def test_machine_scoping_is_idempotent(tmp_path):
 def _import_cache_dir(env):
     import subprocess
 
-    code = "import jax, vmex; print(jax.config.jax_compilation_cache_dir)"
+    code = "import jax, vmex.core; print(jax.config.jax_compilation_cache_dir)"
     result = subprocess.run(
         [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True
     )
@@ -804,3 +803,87 @@ def test_import_points_jax_at_the_single_scoped_default(tmp_path):
     explicit = tmp_path / "explicit"
     env["JAX_COMPILATION_CACHE_DIR"] = str(explicit)
     assert pathlib.Path(_import_cache_dir(env)) == explicit / fingerprint
+
+
+@pytest.mark.parametrize("value,enabled", [
+    ("1", True), ("true", True), ("TRUE", True), ("t", True),
+    ("yes", True), ("y", True), ("on", True),
+    ("0", False), ("false", False), ("FALSE", False), ("f", False),
+    ("no", False), ("n", False), ("off", False),
+])
+def test_jax_precision_environment_uses_jax_boolean_spellings(monkeypatch, value, enabled):
+    import jax
+
+    previous = jax.config.x64_enabled
+    try:
+        monkeypatch.setenv("JAX_ENABLE_X64", value)
+        monkeypatch.setattr(_compat, "_CONFIGURED", {})
+        _compat.ensure_configured()
+        assert jax.config.x64_enabled is enabled
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_jax_precision_keeps_existing_runtime_without_env(monkeypatch, enabled):
+    import jax
+
+    previous = jax.config.x64_enabled
+    try:
+        jax.config.update("jax_enable_x64", enabled)
+        monkeypatch.delenv("JAX_ENABLE_X64", raising=False)
+        _compat._configure_jax_environment()
+        assert jax.config.x64_enabled is enabled
+        assert "JAX_ENABLE_X64" not in _compat.os.environ
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_invalid_precision_override_does_not_demote_runtime(monkeypatch):
+    import jax
+
+    previous = jax.config.x64_enabled
+    try:
+        jax.config.update("jax_enable_x64", True)
+        monkeypatch.setenv("JAX_ENABLE_X64", "invalid")
+        _compat._configure_jax_environment()
+        assert jax.config.x64_enabled
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_fresh_jax_import_defaults_to_float64(monkeypatch):
+    import subprocess
+
+    monkeypatch.delenv("JAX_ENABLE_X64", raising=False)
+    subprocess.run([sys.executable, "-c",
+                    "import vmex.core, jax; assert jax.config.x64_enabled"], check=True)
+
+
+def _fresh(code: str, **env: str) -> str:
+    import subprocess
+    import sys
+
+    environ = {k: v for k, v in os.environ.items() if k not in ("JAX_ENABLE_X64",)}
+    environ.update(env)
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          env=environ, check=True).stdout.strip()
+
+
+def test_import_vmex_leaves_jax_config_alone():
+    """``import vmex`` changes no ``jax.config`` setting; using the core applies them."""
+    probe = ("import jax; before = (jax.config.jax_enable_x64, jax.config.jax_logging_level, "
+             "jax.config.jax_compilation_cache_dir); import vmex; "
+             "after = (jax.config.jax_enable_x64, jax.config.jax_logging_level, "
+             "jax.config.jax_compilation_cache_dir); print(before == after, after[0]); "
+             "import vmex.core.solver; print(jax.config.jax_enable_x64)")
+    assert _fresh(probe).splitlines() == ["True False", "True"]
+
+
+def test_explicit_float32_choice_is_respected_and_refused_by_the_solver():
+    probe = ("import vmex, jax; vmex.configure(x64=False); import vmex.core.solver as s\n"
+             "print(jax.config.jax_enable_x64)\n"
+             "try:\n    s.prepare_runtime(None)\nexcept RuntimeError as e:\n    print('float64' in str(e))")
+    assert _fresh(probe).splitlines() == ["False", "True"]
+    assert _fresh("import jax, vmex.core.solver; print(jax.config.jax_enable_x64)",
+                  JAX_ENABLE_X64="0") == "False"

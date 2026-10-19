@@ -5,7 +5,7 @@ in full. A number appears here only where a committed artifact backs it, and
 `benchmarks/INDEX.md` lists every benchmark artifact with its generator, the
 revision it was measured at, and the pages that cite it.
 
-## Unreleased
+## Unreleased (tt1)
 
 - `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
   solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
@@ -18,12 +18,55 @@ revision it was measured at, and the pages that cite it.
 - `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
   `opt.axis_field_strength`, `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`,
   `plot_optimization_movie(frame_labels=)`.
-- `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
-  solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;
-  `--nc-preset quick|default|full` sets the resolution, `--nc-profiles` takes
-  the n and T profiles (and draws VMEX's Redl `<j.B>` on them) and `--nc-er`
-  fixes `E_r`. The `neoclassical` extra now installs `dkx>=2.8.0`; an older
-  DKX runs without the profiles and says so.
+
+## 0.11.11 - 2026-10-18
+
+- **mgrid scaling matches VMEC2000.** EXTCUR multiplies every coil table; VMEX
+  no longer divides by the raw coil current, which gave 5e-5 of the field on a
+  raw mgrid. A deck NFP that differs from the mgrid NFP now stops the run (#591).
+- A free-boundary boundary that leaves the mgrid box warns as VMEC2000 does,
+  naming the side, the overshoot and the grid extents (#604). `piota` ignores
+  BLOAT, as in VMEC2000; BLOAT other than 1 requires NCURR = 1.
+- A PHIEDGE whose sign opposes the external toroidal field stops the run, as
+  VMEC2000's vacuum.f does (#571).
+- LASYM: the theta shift uses VMEC2000's `atan2` form (#606).
+- WOUT `phi` is correct for non-uniform APHI; the namelist reader accepts
+  `&END`, `$END` and a `/` before a comment; the summary plot works at NS = 3 (#593).
+- `import vmex` no longer changes `jax.config`. `vmex.configure()` sets x64,
+  the compilation cache and logging in one place; the CLI and the first core
+  import call it, and the solver refuses to run in float32 (#607).
+- CI runs in seven balanced lanes and the test suite runs jitted (#586, #580).
+- README: VMEX against exact equilibria, with and without stellarator symmetry (#578).
+
+## 0.11.10 - 2026-10-13
+
+- **`vmex --trace` is about twice as fast** on large spectra with ESSOS 0.21:
+  ARIES-CS, 500 alphas over 10 ms on 10 M4 cores, 111 s to 53 s (#581).
+- `trace_alphas` and `vmex --trace` warn when the WOUT spectrum looks truncated
+  (`spectral_truncation` > 3e-3; see the trace how-to for what to do about it).
+- Floor `essos>=0.21.0` (0.20.1 brought per-pair Coulomb logarithms). `vj.essos_tracing_fields(wout, coils, wall=0.03)` gives ESSOS `Tracing`
+  the VMEC field, tabulated exterior field and wall (`examples/vmex_essos_tracing_to_wall.py`).
+- `VmecInteriorField` and the live-state field spectra work without stellarator
+  symmetry (`LASYM = T`): the sine families `rmns`, `zmnc`, `lmnc` and the
+  `B^u`/`B^v` sine tables are evaluated, and symmetric results are unchanged
+  bit for bit. On the exact up-down asymmetric Solov'ev equilibrium at ns = 65
+  the field gives B to 2e-7 and J to 3e-6-2e-5 at mid radius (4e-4 from WOUT).
+- `examples/vmex_mrx_comparison.py` relaxes the 2.5 % beta QA deck with MRX
+  from the VMEX ns = 65 field and compares the two (Poincare sections, iota,
+  toroidal current, pressure). MRX is optional.
+- `vmex --trace` runs on one GPU when several are visible (two A4000s took 2-3
+  times longer than one); `trace_alphas(devices=jax.devices())` still splits.
+
+## 0.11.9 - 2026-10-07
+
+- On a GPU, every fused run of kernels is captured into a CUDA graph
+  (`--xla_gpu_graph_min_graph_size=1` unless `XLA_FLAGS` is set): 8-11 %
+  faster per solver iteration on an RTX A4000, results unchanged (#563).
+- `vmex --neoclassical`: DKX neoclassical transport (#548).
+- Optimization examples: dimensionless Mercier and resistive hinges for the
+  bootstrap examples, a DESC-style ballooning hinge with a COBRAVMEC 3-D
+  gate, and larger mode-2 budgets for the scalar and SciPy lanes
+  (#555, #556, #557, #560).
 
 ## 0.11.8 - 2026-10-06
 
@@ -112,33 +155,13 @@ revision it was measured at, and the pages that cite it.
 
 ## 0.11.3 - 2026-09-27
 
-- `vmex --trace`: 1000 alphas over 1e-2 s at ARIES-CS size by default (scaled
-  in memory; `--trace-no-scale` opts out), traced in Boozer coordinates
-  (`essos.boozer`, ESSOS 0.19) in about 30 s on a 10-core laptop, with a
-  converged step. New flags: `--trace-birth volume`, `--collisional`,
-  `--trace-ne0` and `--trace-te0`. Output: `*_trace.json`/`.npz`, a summary
-  figure and a 3-D loss map. Guide: `docs/howto/trace-alpha-particles.md`.
-- `--scale` now targets the ARIES-CS wout's own `volavgB = 5.8646 T` and
-  `Aminor_p = 1.7044 m` (was `|b0| = 5.7 T`, `1.7 m`, which matches no
-  published convention and put the reference reactor-scale wouts 7-10 % high
-  in field). `--scale-target axis` keeps Landreman & Paul (2022), Boozer
-  `B00 = 5.7 T` on the axis and `a = 1.7 m` (`vmex.core.scaling.b00_axis`).
-
-- The implicit fixed-boundary solve rehomes the forward state beside the
-  parameters before refining it. On a GPU host with `JAX_PLATFORMS` set, the
-  forward solve ran on the GPU while the callback's parameters stayed on the
-  CPU, and every gradient failed with "Received incompatible devices".
-- `vmex.solve_phiedge` finds the PHIEDGE whose free-boundary LCFS meets a
-  target outboard radius, volume or user metric (bracketed secant over
-  warm-started solves); example `examples/free_boundary_phiedge.py`, guide
-  `docs/howto/match-phiedge.md`. `vmex.phiedge_root` attaches the
-  implicit-function-theorem derivative of that PHIEDGE with respect to
-  plasma and coil parameters, from one adjoint gradient.
-
-- Long CPU runs no longer abort with "Failed to materialize symbols": vmex
-  releases compiled executables before the process reaches
-  `vm.max_map_count`. The compilation cache is one directory per machine, and
-  `VMEX_COMPILATION_CACHE=disabled` overrides every cache variable.
+- `vmex --trace` at ARIES-CS size in Boozer coordinates (ESSOS 0.19), with
+  volume births, `--collisional` and summary figures; `--scale` targets the
+  ARIES-CS `volavgB = 5.8646 T`, `Aminor_p = 1.7044 m`.
+- `vmex.solve_phiedge` and `vmex.phiedge_root` match a free-boundary target
+  through PHIEDGE, with its implicit derivative.
+- Fixes: GPU-host implicit solves rehome the forward state beside the
+  parameters; long CPU runs release executables before `vm.max_map_count`.
 
 ## 0.11.2 - 2026-09-24
 
@@ -181,20 +204,6 @@ install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio` defaults to
 one minor radius out on the QA wout, against 2.46e-02 before). Full notes in
 the GitHub release.
 
-## 0.9.0 - 2026-09-15
+## 0.9.0 and earlier
 
-The optimization release. The two workflows users reported as slow and
-inconclusive — quasi-isodynamic boundary design and single-stage plasma-and-coil
-design — now converge and meet the targets they print: the refinement every
-trial pays is a Newton finish through one block factorization, the implicit
-adjoint is solved exactly through that same factorization, and the compiled
-lanes stopped recompiling. The exterior field reports the accuracy it achieved,
-every evaluation carries counters, and the CLI reads DESC inputs. It does not
-close cold compile (median wall per case 23.1 s against VMEC++'s 3.35 s in the
-independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
-
-PRs and full notes: the GitHub release (#300-#344, 36 merged since 0.8.1).
-
-## 0.8.1 - 2026-09-02
-
-The cold-start performance release (#227-#234). Full notes in the release.
+See the [GitHub releases](https://github.com/uwplasma/vmex/releases).

@@ -142,6 +142,17 @@ def _trust_region_solution(w, gq, radius, newton):
     return -gq / (w + shift + np.exp(hi))
 
 
+#: The host (descent) solve's force tolerance of a trial's tight equilibrium (LeastSquaresFreeBoundaryModel
+#: ``host_ftol``).  The Newton refinement after it lands every tight state at the residual floor (``|F|`` 1.2-1.7e-13 from
+#: a host stop at 1e-15, 1e-13, 1e-12 or 1e-11, QH 2.5 % 8x8), so the last decades of the linearly converging descent
+#: only cost time: a QH trial evaluation 8.4 -> 2.3 s (1799 -> 280 iterations) at a 1e-3 step, 16.6 -> 12.2 s at 1e-2.
+#: The answers agree within the equilibria's own repeatability: the same QH trial boundary solved to 1e-15 from two
+#: seeds differs by 1.3e-10 in its rows, 1e-13 vs 1e-15 by 1.4e-10; certified QH designs agree to 5.6e-14 (same start)
+#: and 8.6e-12 (another start) against a 1e-15 two-seed spread of 1.6e-10; QH steps 13 % faster (user decision 10-18).
+#: ``host_ftol=None`` solves the trials to the deck's FTOL; full-precision solves always do.
+HOST_FTOL = 1.0e-13
+
+
 class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     """The least-squares free boundary of one deck for many external fields and plasma parameters.
 
@@ -155,10 +166,27 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
 
-    def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, full_precision=False, **options):
+    def __init__(self, inp: VmecInput, *, hessian_chunk=None, interior_band=False, full_precision=False,
+                 host_ftol=HOST_FTOL, **options):
         self.interior_band = bool(interior_band)  # read when the rows are traced (set before the base builds them)
         super().__init__(inp, **options)
         self._source[1]["interior_band"] = self.interior_band  # a re-referenced model is built with the same rows
+        self._source[1]["host_ftol"] = host_ftol
+        # The trials' tight solves stop the host (descent) solve at ``host_ftol`` (never tighter than the deck's
+        # FTOL) and the Newton refinement takes the state to the residual floor, as at the deck's FTOL: see
+        # HOST_FTOL.  The deck's FTOL still sets the convergence floor (converged_ftol), the constraint rows'
+        # resolution, and every full-precision solve (a certified answer, :meth:`_tight_config`).
+        deck_ftol = float(self.cfg.ftol)
+        self.host_ftol = deck_ftol if host_ftol is None else max(deck_ftol, float(host_ftol))
+        self.cfg_host = None
+        if self.host_ftol > deck_ftol:
+            from dataclasses import replace as _replace
+            ftols = np.array(self.fixed.ftol_array, dtype=float)
+            ftols[-1] = self.host_ftol
+            cfg = self._im.make_config(_replace(self.fixed, ftol_array=ftols), multigrid=True, hot_restart=True,
+                                       certify_refined=True)
+            self.cfg_host = self._im._canonical_config(_replace(cfg, device=self.cfg.device))
+            self._im._template_runtime(self.cfg_host)
         # Full precision (a certified answer: a run's last design, a validation re-solve): the boundary converges to
         # the measured repeatability alone, without the a-priori floor 2 sqrt(FTOL) x cost -- that floor stops the
         # trials where the cost is resolved, but leaves the objective off by up to sqrt(df/db W^-1 df/db^T)
@@ -182,6 +210,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         self._linearization = None
         self._last_linearize = None
         self._second_order_setup(self.rows, self._im._active_state_fields(self.cfg), self._im._edge_mask(self.cfg))
+
+    def _tight_config(self):
+        """The trials' tight solves stop the host solve at :attr:`host_ftol`; full-precision ones at the deck's FTOL."""
+        host = getattr(self, "cfg_host", None)
+        return self.cfg if host is None or getattr(self, "full_precision", False) else host
 
     _REREFERENCE_CARRIED = ThreeTermsFreeBoundaryModel._REREFERENCE_CARRIED + ("resolution_ftol", "full_precision",
                                                                                  "hessian_remat")

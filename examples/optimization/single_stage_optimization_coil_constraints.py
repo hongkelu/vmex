@@ -1255,6 +1255,62 @@ def parse_args(argv=None):
     return args
 
 
+def write_run_record(out, args):
+    """``run.json``: what reproduces this run (command, environment, code, packages, device and input hashes)."""
+    import hashlib
+    import importlib.metadata
+    import platform
+    import shutil
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+
+    def digest(paths):
+        h = hashlib.sha256()
+        for path in sorted(paths):
+            h.update(str(path.relative_to(root) if path.is_relative_to(root) else path).encode())
+            h.update(path.read_bytes())
+        return h.hexdigest()
+
+    def git(*command):
+        try:
+            return subprocess.run(["git", "-C", str(root), *command], capture_output=True, text=True,
+                                  check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+
+    def version(name):
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
+    def gpus():  # from nvidia-smi: importing JAX here would fix its config before main sets JAX_ENABLE_X64
+        listing = subprocess.run(["nvidia-smi", "--query-gpu=uuid,name,driver_version", "--format=csv,noheader"],
+                                 capture_output=True, text=True).stdout if shutil.which("nvidia-smi") else ""
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        rows = [dict(zip(("uuid", "name", "driver"), line.split(", "))) for line in listing.strip().splitlines()]
+        return [r for r in rows if visible is None or r["uuid"] in visible.split(",")]
+
+    inputs = {}
+    for name in ("seed_run", "restart", "coils"):
+        path = getattr(args, name, None)
+        if path is not None and Path(path).exists():
+            files = [p for p in Path(path).rglob("*") if p.is_file()] if Path(path).is_dir() else [Path(path)]
+            inputs[name] = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
+    record = dict(
+        argv=sys.argv, cwd=os.getcwd(), driver=str(Path(__file__).resolve()),
+        environment={k: v for k, v in os.environ.items() if k.startswith(("COIL_CASE", "CUDA", "XLA", "JAX"))},
+        git_commit=git("rev-parse", "HEAD"), git_dirty=bool(git("status", "--porcelain", "--untracked-files=no")),
+        code_sha256=digest([Path(__file__).resolve(), *(root / "vmex").rglob("*.py")]),
+        python=platform.python_version(), gpus=gpus(),
+        packages={n: version(n) for n in ("jax", "jaxlib", "jax-cuda12-plugin", "numpy", "scipy", "essos", "dkx",
+                                          "solvax", "booz_xform_jax", "virtual-casing-jax", "neo-jax")},
+        inputs=inputs)
+    (out / "run.json").write_text(json.dumps(record, indent=1) + "\n")
+
+
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE
     args = parse_args(argv)
@@ -1269,6 +1325,7 @@ def main(argv=None):
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
+    write_run_record(out, args)
     os.environ["JAX_ENABLE_X64"] = "1"
     # The vacuum-iota solve runs inside a jax.pure_callback; a GPU program XLA compiles there (its Krylov
     # certification fallback) deadlocks in the autotuner, which waits on the device the callback holds.

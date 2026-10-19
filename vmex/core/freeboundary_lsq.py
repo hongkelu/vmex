@@ -682,9 +682,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                     H_full = H_full - np.outer(Bs, Bs) / float(step_s @ Bs) + np.outer(y, y) / sy
                 model = "quasi-Newton"
             fresh = model == "exact"
-            if fresh:  # the cost's repeatability here: the same boundary solved again from a second seed, the
-                # solver's memos cleared (ThreeTermsFreeBoundaryModel.repeat; a hot restart would return the same
-                # state and understate the noise)
+            if fresh or (m and noise_rows is None):
+                # the cost's repeatability here: the same boundary solved again from a second seed, the solver's
+                # memos cleared (ThreeTermsFreeBoundaryModel.repeat; a hot restart would return the same state and
+                # understate the noise).  With constraint rows also at the first model, whatever it is: until the
+                # rows' repeatability is measured their resolution is the a-priori sqrt(FTOL), so the cheap models
+                # stopped restoring them at ~1e-9 while the first exact model then measured ~1e-14, found the point
+                # infeasible and needed a second exact model only to restore them (warm trials of qass M 8: two
+                # exact models of 68 s each, the TT3 session's measurement 10-18); one equilibrium (~3 s) instead
                 again = self.repeat(x, params, self._bundle(field), aux)
                 nfev += 1
                 if again is not None:

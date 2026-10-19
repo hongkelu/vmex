@@ -1,6 +1,6 @@
 """Maximum-J scan: the second adiabatic invariant J(alpha, s) at a range of physical pitches 1/lambda = B*.
 
-    python extra/maxj_scan.py <wout> <out.png> [--surfaces 33] [--pitches 24]     (cwd: vmex tree, GPU)
+    python <repo>/campaign/postprocess/maxj_scan.py <wout> <out.png> [--surfaces 33] [--pitches 24]     (cwd: vmex tree, GPU)
 
 A configuration is maximum-J where dJ/ds < 0 at fixed physical lambda and field line alpha (Rodriguez, Helander &
 Goodman 2024). For every B* between the smallest Bmin and the largest Bmax over the surfaces, J is computed on every

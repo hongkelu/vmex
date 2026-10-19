@@ -1,6 +1,6 @@
 """Prototype: DKX's per-surface kinetic <j.B> as one lax.map over stacked surface templates, against dkx's own loop.
 
-    COIL_CASE=qi6-beta python extra/dkx_map_proto.py <seed dir with input.run>     (cwd: vmex tree, GPU)
+    COIL_CASE=qi6-beta python <repo>/campaign/checks/dkx_map_proto.py <seed dir with input.run>     (cwd: vmex tree, GPU)
 
 Prints compile and run times of value and gradient for both, and their largest relative differences.
 """

@@ -1,6 +1,6 @@
 """3D GIF of the coils and the LCFS over an optimization's saved steps, the LCFS coloured by |B| on it.
 
-    JAX_PLATFORMS=cpu python extra/lcfs_modb_gif.py <title> <out.gif> <run dir> [--stride N] [--last K]
+    JAX_PLATFORMS=cpu python <repo>/campaign/postprocess/lcfs_modb_gif.py <title> <out.gif> <run dir> [--stride N] [--last K]
 
 Each frame reads ``wout.stepK.nc`` (LCFS from rmnc/zmns; |B| from bmnc, extrapolated from the last two half-mesh
 surfaces to the edge) and ``coils.stepK.json``; the colour range is shared by every frame.

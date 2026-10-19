@@ -1,4 +1,5 @@
 #!/bin/bash
+# Historical: the launcher as used on lhk0-7 (paths there). The portable equivalent is <repo>/campaign/run.sh.
 # launch.sh <gpu uuid> <arm: free|fixed> <case> [extra args]: one production run, every step saved
 set -e
 cd /root/autodl-tmp/vmex-qa-cases

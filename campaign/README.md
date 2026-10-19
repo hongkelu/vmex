@@ -1,71 +1,110 @@
-# Finite-β single-stage campaign: QA, QI and QH (Oct 2026)
+# Old campaign: finite-β single-stage QA, QI and QH (lhk0-7 / lhk3-6, 2026-10-08 … 10-13)
 
-Coils and plasma optimized together at ⟨β⟩ = 2.5% with a self-consistent bootstrap current: Redl for QA and QH,
-DKX Fokker–Planck for QI. Resolution is 8×8 modes, ns = 51, and every step is saved.
+This folder (branch `tt1`) holds the exact environment, inputs, run commands and results of the finite-β
+(⟨β⟩ = 2.5%) single-stage campaign. Its code is this repository's history: the 10 commits in `COMMITS.txt`, all
+ancestors of this branch.
 
-- **Free arm** (`examples/optimization/single_stage_free_boundary_optimization_three_term.py`): the free-boundary
-  equilibrium of the coils with the three-term boundary condition, B·n = 0, pressure balance and sheet current K = 0
-  on the LCFS (`ThreeTermFreeBoundaryProblem`).
-- **Fixed arm** (`examples/optimization/single_stage_optimization_coil_constraints.py`): fixed-boundary equilibrium plus
-  a coil B·n term.
-- **Optimizer:** SciPy SLSQP with hard constraint rows and implicit-differentiation gradients.
-
-The code is this branch's parent commit `e3313c0f` on `qa-mercier-bootstrap-cases`.
-[`HANDOFF-2026-10-10.md`](HANDOFF-2026-10-10.md) describes the setup, the server rules and the comparison planned with
-Gil et al., PRL 137, 065101 (2026).
+- **Free arm:** three-term free boundary, B·n = 0, pressure balance and K = 0.
+- **Fixed arm:** fixed boundary.
+- **Bootstrap current:** Redl for QA and QH, DKX for QI. Resolution 8×8 modes, ns = 51.
+- **Optimizer:** SLSQP with hard constraint rows.
+- **Main results:**
+  - QA with the Mercier floor and vacuum ι ≥ 0.27–0.31: QA 1.9e-4 to 7e-4, alpha loss 0–0.6%, ε_eff ≤ 0.14%;
+  - QI A8: 3.8e-3;
+  - QH A10: 7.3e-3.
+  - See `results/` and `reference/runs/`.
 
 ## Layout
 
-- `tools/`: helper scripts exactly as run. They lived in `extra/` of the remote tree and run from the tree root.
-  - `lcfs_modb_gif.py`: 3D coils and LCFS coloured by |B| over the saved steps.
-  - `maxj_scan.py`: maximum-J check, ∂J/∂s < 0 at fixed physical λ over 24 pitches.
-  - `eps_eff.py`: effective ripple ε_eff^{3/2}(s) through NEO_JAX. Accepts a WOUT or a compact `.npz` of the Boozer
-    fields.
-  - `continue_until_converged.py`, `restart_from_latest.py`: continue a run past its step budget, or restart it from its
-    latest step.
-  - `launch.sh`: one production run, pinned to a GPU by UUID.
-  - `checks/fixed_jaccheck.py`: the fixed-arm grouped plasma Jacobian matches the per-row one to 1.2e-14 (116 → 15.5 s).
-  - `checks/dkx_map_proto.py`: DKX surfaces in one `lax.map` match the Python loop to 2e-7 (gradient compile
-    1016 → 40 s).
-- `runs/<run>/`: for each run, `metrics.jsonl` (one row per accepted step), `input.run`, `coils.initial.json`, the latest
-  `coils.stepN.json` and `summary.json`. WOUTs are not included (8–31 MB each); they stay on lhk0-7 in
-  `/root/autodl-tmp/vmex-qa-cases/prod`.
-  - A `-cN` suffix is the N-th continuation (`--restart` from the previous final state).
-  - `-m002` restarted with the 0.02 Mercier margin.
-- `results/`: post-processing.
-  - `qa4-campaign-post/`: baseline QA, free against fixed. Includes the HTML page.
-  - `qa4-variants/`: Mercier, bootstrap-weight and vacuum-floor cases. Dense ns = 201 re-solve with `plot_wout`
-    figures, `--trace` alpha losses, |B| GIFs, max-J scans and ε_eff.
+| Path | What |
+|---|---|
+| `COMMITS.txt` | the 10 commits the runs launched from, with time and subject; `setup.sh` checks each out as `code/vmex-<commit>/` |
+| `env/` | `requirements.txt` (65 pins, sha256-locked), `freeze-campaign.txt` (the production venv frozen 2026-10-10 00:48 UTC+8, essos 0.19.3), and the wheel-against-installed check. The wheels themselves (3.2 GB, Linux x86_64, Python 3.12) are not in git: see below |
+| `inputs/seeds/` | `qa4-beta-free`, `qa4-beta-fixed`, `qi6-beta-free`, `qi6-beta-fixed`, `seed-qa4`, `smoke-c2-qa4`: the `input.run` and `coils.initial.json` that runs started from |
+| `inputs/restarts/` | the restart states (`input.run`, `coils.json`, `wout.nc`) of the restarted runs |
+| `reference/runs/<run>/` | each original run's `metrics.jsonl` (every step), `input.run`, `coils.initial.json`, last `coils.stepN.json` and `summary.json`. A run's own `input.run` and `coils.initial.json` are its exact seed. |
+| `reference/watcher-relaunches-lhk0-7.log` | when each `-cN` continuation was relaunched |
+| `results/` | post-processing: ns = 201 dense re-solves and `plot_wout` figures, `--trace` alpha losses, coil + LCFS \|B\| GIFs, max-J scans, ε_eff |
+| `postprocess/` | `lcfs_modb_gif.py`, `maxj_scan.py`, `eps_eff.py` |
+| `orchestration/` | `continue_until_converged.py` (watcher), `restart_from_latest.py`, `launch.sh` (as used on lhk0-7) |
+| `checks/` | `fixed_jaccheck.py` (also the driver of `fixed-qi6-beta-grouped`), `dkx_map_proto.py`: exactness checks of the two speed-ups |
+| `compare_metrics.py` | step-by-step comparison of a rerun with its reference |
+| `RUNS.md` | **every run's commit, essos version, host, launch time and exact command** |
+| `setup.sh`, `run.sh` | offline install, and one run with the campaign's environment |
 
-## Results
+## Use
 
-The "qa" column of `metrics.jsonl` is the case's target: the QA, QH or QI residual. B·n, PB and K are the RMS
-three-term boundary residuals of the free arm.
+You need Linux x86_64, Python 3.12, git, an NVIDIA GPU with a CUDA 12 driver, and about 10 GB of disk. No internet.
 
-| Case | Run | Final step | Target | Notes |
-|---|---|---|---|---|
-| QA, free, Mercier ≥ 0.02 (s ≥ 0.2), vacuum ι ≥ 0.31, ι ≤ 0.495 | `free-qa4-beta-merc-vac0.31` → `-c1` → `-c2` | 999 + 998 + 84 | **QA 1.9e-4** | D_Merc +0.026, ι_I 0.28, A 4.31, B·n / PB / K 1.9 / 2.0 / 2.8e-4 |
-| QA, free, Mercier, vacuum ι ≥ 0.27 | lhk3-6 (offline); post-processed at step 267 | | QA 5.5e-4 | alpha loss 0.6%, ε_eff ≤ 0.13%, max-J 63% |
-| QA, free, Mercier, vacuum ι ≥ 0.29 | lhk3-6 (offline); post-processed at step 242 | | QA 7.0e-4 | **alpha loss 0%**, ε_eff ≤ 0.14%, max-J 62% |
-| QA, fixed, Mercier, vacuum ι ≥ 0.23 | `fixed-qa4-beta-merc-s02-init-m002` → `-c1` → `-c2` | 300 + 300 + 260 | **QA 1.6e-4** | D_Merc +0.020, A 4.5 (at its upper bound) |
-| QA, free, Mercier, vacuum ι ≥ 0.23 | `free-qa4-beta-merc-s02-init` | 260 | QA 8.2e-4 | before the margin; alpha loss 3.2% at step 238 |
-| QA, free, bootstrap weight w = 0.01 | `free-qa4-beta-jbs` | 300 | QA 3.5e-4 | ι_I 0.31 |
-| QA, free, w = 0.1 | `free-qa4-beta-jbs-w0.1` | 300 | QA 1.5e-3 | ι_I 0.21, vacuum ι 0.49 |
-| QA, free, w = 1, aspect 3.0–4.5 | `free-qa4-beta-jbs-w1` → `-c1` → `-A3` | 300 + 132 + 1000 | QA 6.7e-3 | ι_I 0.15, A 3.57, total ι 0.61 (past ι = 1/2) |
-| QA, fixed, w = 0.01 | `fixed-qa4-beta-jbs` | 110 | QA 3.2e-3 | |
-| QI, free, A 6, unscaled steps | `free-qi6-beta-scale1` → `-c1` → `-c1-c1` … `-c1-c5` | 7 × 300 | **QI 1.7e-2** | ι 0.86 at the floor |
-| QI, fixed, A 6, grouped Jacobian | `fixed-qi6-beta-grouped` | 260 | QI 2.6e-2 | |
-| QI, free, A 8 | `free-qi6-beta-A8` → `-c1` … `-c5` | 5 × 500 + 196 | **QI 3.8e-3** | B·n / PB / K 0.9 / 0.5 / 1.1e-3 |
-| QH, free, A 8 | `free-qh4-beta-A8` (+ `-c1`, stopped) | 500 + 6 | QH 7.0e-3 | ι 1.1 at the floor |
-| QH, free, A 10 | `free-qh4-beta-A10` → `-c1` … `-c4` | 4 × 500 + 130 | **QH 7.3e-3** | B·n / PB / K 1.5 / 1.5 / 2.2e-4 |
+The 65 wheels are in the full copy of this folder, `env/wheelhouse/`:
+- on Perlmutter: `/pscratch/sd/h/hongkelu/freeboundary-single-stage-old/env/wheelhouse`;
+- as a tar: `repro-campaign-20261018.tar` in the workspace.
 
-### Notes
+1. Install. This creates `campaign/venv/` and the checkouts `campaign/code/vmex-<commit>/`:
 
-- **Snapshot date:** these are the last rows as of 2026-10-16. The runs without a `summary.json` were still running, or
-  had been stopped, when copied.
-- **Shared tree:** continuations launched after 2026-10-11 ran from the shared lhk0-7 tree, which another session had
-  updated past `e3313c0f` (stability rows and a batched field-term pullback with the same gradients). The QA, QI and QH
-  rows above use none of the stability rows.
-- **lhk3-6 runs:** the run histories of the vacuum-floor 0.27 and 0.29 runs (and the fixed 0.27 arm) are on lhk3-6, which
-  has been offline since 2026-10-12. Their post-processing is in `results/qa4-variants/`.
-- **QI A10:** never started. Its seed build failed in VMEC: MORE ITERATIONS REQUIRED in the β ramp and in `dkx_current`.
+   ```bash
+   WHEELHOUSE=/pscratch/sd/h/hongkelu/freeboundary-single-stage-old/env/wheelhouse PYTHON=python3.12 campaign/setup.sh
+   ```
+
+2. Run a row of `RUNS.md`, for example the vacuum-floor 0.31 run:
+
+   ```bash
+   CUDA_VISIBLE_DEVICES=0 campaign/run.sh 91729930 F qa4-beta-merc --steps 1000 --seed-run seeds/qa4-beta-free --vacuum-iota-floor 0.31 --iota-ceiling 0.495 --output prod/free-qa4-beta-merc-vac0.31
+   ```
+
+3. Compare with the original:
+
+   ```bash
+   campaign/venv/bin/python campaign/compare_metrics.py campaign/code/vmex-91729930/prod/free-qa4-beta-merc-vac0.31/metrics.jsonl campaign/reference/runs/free-qa4-beta-merc-vac0.31/metrics.jsonl
+   ```
+
+**Use the original seed.** A run whose command has no `--seed-run` or `--restart` built its seed on the GPU: a β ramp,
+the bootstrap current and, for the free arm, a 3000-iteration coil refit. That build is not bit-for-bit repeatable. Add
+`--seed-run <repo>/campaign/reference/runs/<run>` to start from the exact original seed. Exception: the fixed-arm driver has no
+`--seed-run` before fa3982a6, but its seed build did reproduce exactly.
+
+On NERSC Perlmutter, run inside a GPU allocation (`salloc -q interactive -A m4656_g -C gpu ...`). Use a Python 3.12
+(conda) to create the venv. The wheels bring their own CUDA 12 libraries, so no module is needed for JAX.
+
+## Reproducibility, tested on lhk0-7 (RTX 5090), 2026-10-19
+
+The offline install passed: every file matches the hash manifest, all 65 pins installed with hash checks, and
+`pip check` is clean.
+
+| Run (commit) | Steps | Agreement with the original `metrics.jsonl` |
+|---|---|---|
+| free QA baseline (50b6d527) | 0–3 | QA identical to 10–11 digits |
+| free QA, Mercier, vacuum ι ≥ 0.31 (91729930) | 0–3 | 7e-9 by step 3 |
+| fixed QA, Mercier (f749d3eb), own seed build | 0–3 | identical to 10 digits |
+| free QA w = 1, restart (e3313c0f; originally essos 0.20.0) | 0–2 | identical to 10 digits |
+| free QI A8 (0cc38def), own seed build | 0–1 | 5e-6 at step 0: the seed build differs |
+| free QI A8 (0cc38def), `--seed-run` the original seed | 0–1 | identical at step 0, 4e-8 at step 1 |
+
+### 12 steps, free boundary, from the original seed or restart
+
+| Run | Through step 12 |
+|---|---|
+| QA baseline (50b6d527) | QA within ~1e-10 at every step |
+| QA w = 1, restart (e3313c0f) | QA identical to 10 digits at every step |
+| QA, Mercier, vacuum ι ≥ 0.31 (91729930) | ~1e-8 through step 9, then drifts to 1.5e-5 at step 12 |
+| QI A8 (0cc38def) | identical at step 0, 2e-7 at step 1, 2% at step 3, ~20% by step 12 |
+| QH A10 (0cc38def) | identical at step 0, 0.4% at step 1, then a different path (step 10: 0.193 vs 0.228) |
+
+GPU arithmetic is not deterministic run to run: two seeded QI A8 reruns on the same GPU model differed at step 1.
+
+- **QA:** it starts near its optimum, so it replays closely.
+- **QI and QH:** they start with the target near 1 and take large unscaled SLSQP steps, which turn round-off into a
+  different path within a few steps.
+- **How to compare:** match long runs, and every QI or QH run, by their endpoints.
+- **For bit-for-bit replay:** future runs would need XLA's `--xla_gpu_deterministic_ops=true`, which is untested here.
+
+## Caveats (details in `RUNS.md`)
+
+- **essos version:** two late launches and most `-cN` continuations ran essos 0.20.0. This package pins 0.19.3, the
+  version before the upgrade.
+- **Late continuations:** six of them, from 2026-10-12 12:20 UTC+8 on, ran newer code from another session's commits.
+  Rerun them from e3313c0f instead.
+- **Missing lhk3-6 data:** the `-m002` restart states of the lhk3-6 runs (vacuum floor 0.27 and 0.29) and those runs'
+  histories are missing, because lhk3-6 is offline. Their post-processing is in `results/qa4-variants/`.
+- **Thinned WOUTs on lhk0-7:** only every 5th step's `wout.stepN.nc` is still there. Every step's `metrics.jsonl` row and
+  coils are here.

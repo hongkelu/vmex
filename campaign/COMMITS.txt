@@ -1,0 +1,10 @@
+50b6d52749ac5f3633d556d1d19e855d7b76c964 2026-10-08T00:50:07-05:00 ThreeTermFreeBoundaryModel.pullback: a tuple of functions, each row through its own revers
+3a6ceaf9ff7bfdd6ceafd96e4e906353150bbdac 2026-10-08T13:15:45-05:00 current_iota: surface_currents' ctor is already mu0 I
+bfd2e0097288f1253335b04aacb44c1fc9a53e65 2026-10-08T15:52:10-05:00 Single stage: --current-iota-weight sets w of the bootstrap-current term
+f749d3ebb42c948d77d4fab858a4ea5099c31d2d 2026-10-08T16:01:06-05:00 Mercier floor on s >= 0.2 (DMerc is inaccurate near the axis; Landreman et al. 2026)
+96947f162450611fbdbfe8ee36c7b9c4fb2eb65b 2026-10-08T19:10:15-05:00 Fixed arm: each plasma row's gradient through its own function only (the virtual casing an
+fa3982a6ac4f893b2d1074c6d65920e4cdb5e439 2026-10-08T20:33:04-05:00 DKX bootstrap current: the surfaces in one lax.map (gradient compile 1016 -> 40 s at 50 su
+41d47a2c1c7424ba2e44441666b85be8c9b914e2 2026-10-08T23:39:51-05:00 Single stage: --vacuum-iota-floor and --iota-ceiling override the case values
+0cc38deff702c2a7c37e710959bf119a70103c46 2026-10-08T23:44:37-05:00 Single stage: an -A<aspect> case suffix moves a seeded case to that aspect ratio
+91729930bec7ccff314aa3a22a729a216a44e268 2026-10-09T08:48:01-05:00 Mercier floor with a 0.02 margin: DMerc strictly positive
+e3313c0fab00f6761522b860e76594efacf5ba2e 2026-10-09T14:21:49-05:00 Single stage: --aspect-range overrides the aspect bounds, coil limits unchanged

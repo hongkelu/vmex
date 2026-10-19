@@ -1,7 +1,7 @@
 """Continue optimization runs until SLSQP converges: when a followed process ends at its step budget, relaunch it
 with ``--restart`` from its final coils and boundary on an empty GPU (its own first), same command and environment.
 
-    python extra/continue_until_converged.py <pid> [<pid> ...]     (cwd: the vmex tree; log to stdout)
+    python <repo>/campaign/orchestration/continue_until_converged.py <pid> [<pid> ...]     (cwd: the vmex tree; log to stdout)
 
 A run that converged, stopped for another optimizer reason or crashed is not relaunched; at most MAX_CONTINUATIONS each.
 """

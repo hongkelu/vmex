@@ -984,6 +984,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
+                        "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="aspect-ratio bounds (default: ASPECT_RANGE); the coil limits keep the case's")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
@@ -1056,6 +1058,25 @@ def fit_coils_to_plasma(coils, wout, inp):
     print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
     return fitted
+
+
+def load_extension(path):
+    """``ROWS`` and ``TERMS`` of an ``--extension`` file, empty without one.
+
+    ``ROWS = {name: (f, lower, upper, scale)}``: hard constraint rows ``lower <= f(state, runtime) <= upper`` (a
+    scalar or an array, every element a row; ``scale`` is the row's unit).  ``TERMS = {name: (f, weight)}``: the
+    objective adds ``weight / 2 |f(state, runtime)|^2``.  ``f`` is a JAX function of the equilibrium state and
+    its runtime, like ``vmex.optimize.aspect_ratio``; its gradient comes from the same implicit adjoint as the
+    built-in rows.  Their values are logged as ``extension_<name>``.
+    """
+    if path is None:
+        return {}, {}
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("single_stage_extension", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(getattr(module, "ROWS", {})), dict(getattr(module, "TERMS", {}))
 
 
 def write_run_record(out, args):
@@ -1195,10 +1216,15 @@ def main(argv=None):
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
         return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
 
+    ext_rows, ext_terms = load_extension(args.extension)
+
+    def extension_cost(state, runtime):
+        return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
+
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
-        return 0.5 * jnp.vdot(residuals, residuals) + current
+        return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
     def clearance(state, runtime, x):
         return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
@@ -1211,7 +1237,8 @@ def main(argv=None):
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
-                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else [])),
+                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
+                    *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
         three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
@@ -1225,6 +1252,10 @@ def main(argv=None):
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
     nredl = int(redl is not None)
+    state0, params0 = problem.state(problem.x0)
+    runtime0 = im.runtime_from_params(params0, model.cfg)
+    extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
+                        for _ in range(int(np.size(f(state0, runtime0))))]
     lower, upper, row_scales = zip(
         (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
@@ -1235,6 +1266,7 @@ def main(argv=None):
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
+        *extension_bounds,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
     coil_rows = coil_constraint(chart.coils_from_x)
@@ -1248,6 +1280,9 @@ def main(argv=None):
     last = dict(time=time.monotonic())
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
+    extension_values = jax.jit(lambda state, params: (
+        {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
+        extension_cost(state, im.runtime_from_params(params, model.cfg))))
 
     def log_step():
         x = problem.accepted.parameters
@@ -1258,7 +1293,10 @@ def main(argv=None):
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         vac = np.asarray(vacuum(state_x, runtime_x))
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
-        row = dict(step=problem.accepted_step, qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2,
+        ext_values, ext_cost = extension_values(state_x, params_x)
+        row = dict(step=problem.accepted_step,
+                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
+                   **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),

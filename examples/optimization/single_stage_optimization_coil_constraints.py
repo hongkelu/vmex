@@ -965,6 +965,8 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
     def normal_field(state, params, x):
         return total_normal_field_rms(coils_from_x(x), state, im.runtime_from_params(params, model.cfg))[None]
 
+    ext_rows, ext_terms = load_extension(args.extension)
+
     def quantities(state, params, x, nf=None):
         """``[QA residuals..., B.n rms, plasma rows...]`` (rows scaled so c >= 0 is feasible; ``nf`` fixes B.n)."""
         runtime = im.runtime_from_params(params, model.cfg)
@@ -991,13 +993,18 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         q = qs.residuals_state(state, runtime)
         if CURRENT_IOTA_WEIGHT:  # the objective's 0.5 |q|^2 then carries w/2 iota_I^2
             q = jnp.concatenate([q, jnp.sqrt(CURRENT_IOTA_WEIGHT) * current_iota(state, runtime)[None]])
-        return jnp.concatenate([q, jnp.stack([nf] + rows)])
+        q = jnp.concatenate([q, extension_residuals(ext_terms, state, runtime)])  # and the extension's terms
+        return jnp.concatenate([q, jnp.stack([nf] + rows), extension_rows(ext_rows, state, runtime)])
 
-    nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size) + bool(CURRENT_IOTA_WEIGHT)
-    nrows = 7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + (MERCIER_FLOOR is not None) + 3
+    n_ext_terms = int(extension_residuals(ext_terms, state0, runtime0).size)
+    nq = int(np.asarray(qs.residuals_state(state0, runtime0)).size) + bool(CURRENT_IOTA_WEIGHT) + n_ext_terms
+    nrows = (7 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR) + (MERCIER_FLOOR is not None) + 3
+             + int(extension_rows(ext_rows, state0, runtime0).size))
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     quantities_jit = jax.jit(quantities)
+    extension_values = jax.jit(lambda state, params: {
+        name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()})
 
     @jax.jit
     def quantity_pullback(state, mask, params, cots, x):
@@ -1138,8 +1145,11 @@ def run_bootstrap_in_solve(args, inp, coils0, out, *, max_mode, ess_alpha, bound
         coils = coils_from_x(jnp.asarray(x))
         vac = np.asarray(vacuum(state, runtime))
         iota_i, d_merc = map(float, diagnostics(state, params))
+        q_ext = values[nq - n_ext_terms:nq]  # the extension's residuals: not the target
         now = time.monotonic()
-        row = dict(step=last["step"], qa=float(values[:nq] @ values[:nq]) - CURRENT_IOTA_WEIGHT * iota_i**2,
+        row = dict(step=last["step"],
+                   qa=float(values[:nq] @ values[:nq]) - CURRENT_IOTA_WEIGHT * iota_i**2 - float(q_ext @ q_ext),
+                   **{f"extension_{n}": np.asarray(v).tolist() for n, v in extension_values(state, params).items()},
                    current_iota=iota_i, min_d_merc=d_merc,
                    objective=fun(np.asarray(u, dtype=float)), min_abs_iota=float(min_abs_iota(state, runtime)),
                    geometric_axis_iota=float(abs(opt.axis_iota(state, runtime))),
@@ -1224,6 +1234,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
+                        "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="aspect-ratio bounds (default: ASPECT_RANGE); the coil limits keep the case's")
     parser.add_argument("--steps", type=int, default=100, help="SLSQP iterations")
@@ -1253,6 +1265,45 @@ def parse_args(argv=None):
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     return args
+
+
+def load_extension(path):
+    """``ROWS`` and ``TERMS`` of an ``--extension`` file, empty without one.
+
+    ``ROWS = {name: (f, lower, upper, scale)}``: hard constraint rows ``lower <= f(state, runtime) <= upper`` (a
+    scalar or an array, every element a row; ``scale`` is the row's unit).  ``TERMS = {name: (f, weight)}``: the
+    objective adds ``weight / 2 |f(state, runtime)|^2``.  ``f`` is a JAX function of the equilibrium state and
+    its runtime, like ``vmex.optimize.aspect_ratio``; its gradient comes from the same implicit adjoint as the
+    built-in rows.  Their values are logged as ``extension_<name>``.
+    """
+    if path is None:
+        return {}, {}
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("single_stage_extension", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(getattr(module, "ROWS", {})), dict(getattr(module, "TERMS", {}))
+
+
+def extension_rows(ext_rows, state, runtime):
+    """``ROWS`` of an extension as scaled rows, non-negative when feasible: one per finite bound and element."""
+    import jax.numpy as jnp
+
+    rows = []
+    for f, lower, upper, scale in ext_rows.values():
+        value = jnp.ravel(f(state, runtime))
+        rows += [(value - lower) / scale] if np.isfinite(lower) else []
+        rows += [(upper - value) / scale] if np.isfinite(upper) else []
+    return jnp.concatenate(rows) if rows else jnp.zeros(0)
+
+
+def extension_residuals(ext_terms, state, runtime):
+    """``TERMS`` of an extension as least-squares residuals ``sqrt(weight) f``: half their square is the cost."""
+    import jax.numpy as jnp
+
+    terms = [jnp.sqrt(w) * jnp.ravel(f(state, runtime)) for f, w in ext_terms.values()]
+    return jnp.concatenate(terms) if terms else jnp.zeros(0)
 
 
 def write_run_record(out, args):
@@ -1468,6 +1519,13 @@ def main(argv=None):
     # weight still ran the virtual casing and the kinetic current backward for every row).
     row_parts = (["geometry"] * (5 + bool(MIRROR_LIMIT) + bool(IOTA_CEILING) + bool(VACUUM_IOTA_FLOOR))
                  + (["normal"] + ["geometry"] * 4) * (args.beta > 0) + ["kinetic"] * int(redl is not None))
+    n_builtin = len(row_parts)
+    ext_rows, ext_terms = load_extension(args.extension)
+    if ext_rows:  # each extension row its own part (its own reverse pass), sized on the seed equilibrium
+        seed_eq = plasma_problem.equilibrium_from_x(x_boundary0)
+        for name, row in ext_rows.items():
+            size = int(extension_rows({name: row}, seed_eq.solution, seed_eq.runtime).size)
+            row_parts += [f"extension:{name}"] * size
     n_plasma = len(row_parts)
 
     def plasma_rows(state, ctx, coils, part=None):
@@ -1493,7 +1551,10 @@ def main(argv=None):
                      lambda: (B0 + b_width - b_axis()) / B_AXIS_TOLERANCE]
         if redl is not None:
             rows.append(lambda: 1.0 - mismatch(state, ctx) / REDL_TOLERANCE)
-        return jnp.stack([row() for row, kind in zip(rows, row_parts) if part in (None, kind)])
+        values = [jnp.atleast_1d(row()) for row, kind in zip(rows, row_parts[:n_builtin]) if part in (None, kind)]
+        values += [extension_rows({name: row}, state, ctx) for name, row in ext_rows.items()
+                   if part in (None, f"extension:{name}")]
+        return jnp.concatenate(values)
 
     def plasma_constraint(u, part=None):
         x = jnp.asarray(x0) + jnp.asarray(scales) * u
@@ -1538,11 +1599,21 @@ def main(argv=None):
 
     normal_field_value_and_grad = jax.jit(jax.value_and_grad(normal_field_cost))
 
+    def extension_cost(u):  # the extension's TERMS: weight/2 |f|^2 each
+        x = jnp.asarray(x0) + jnp.asarray(scales) * u
+        return plasma_problem.jax_extra_costs_from_state(x[:n_boundary], lambda state, ctx: (
+            0.5 * jnp.sum(extension_residuals(ext_terms, state, ctx) ** 2))[None], n_extra_terms=1)[0]
+
+    extension_value_and_grad = jax.jit(jax.value_and_grad(extension_cost)) if ext_terms else None
+
     def objective(u):
         u = np.asarray(u, dtype=float)
         if cache.get("key") != u.tobytes():
             half_qa, gradient = qa_value_and_grad(jnp.asarray(u))
             extra, extra_gradient = normal_field_value_and_grad(jnp.asarray(u))
+            if extension_value_and_grad is not None:
+                ext, ext_gradient = extension_value_and_grad(jnp.asarray(u))
+                extra, extra_gradient = extra + ext, extra_gradient + ext_gradient
             cache.update(key=u.tobytes(), qa=2 * float(half_qa), value=float(half_qa + extra),
                          gradient=np.asarray(gradient + extra_gradient))
         return cache["value"], cache["gradient"].copy()
@@ -1574,6 +1645,8 @@ def main(argv=None):
         vac = np.asarray(vacuum(state, ctx))
         now = time.monotonic()
         row = dict(step=last["step"], qa=cache["qa"], objective=value,
+                   **{f"extension_{n}": np.asarray(f(state, ctx)).tolist()
+                      for n, (f, *_) in {**ext_rows, **ext_terms}.items()},
                    min_abs_iota=float(min_abs_iota(state, ctx)),
                    geometric_axis_iota=float(abs(opt.axis_iota(state, ctx))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),

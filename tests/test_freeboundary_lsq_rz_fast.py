@@ -150,3 +150,16 @@ def test_rz_normal_tangential_basis_same_answer():
     assert np.sqrt(np.mean((ends[0] - ends[1]) ** 2)) < 1e-6 * rz_model.R0
     with pytest.raises(ValueError, match="basis must be"):
         rz.LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), basis="xyz", **OPTIONS)
+
+
+def test_rz_labelling_presolve():
+    """The labelling pre-solve returns the deck with a weak-gauge solve's boundary (and nothing else changed), and
+    ``labelling_presolve`` solves from it to a certified boundary (the strong gauge's)."""
+    inp = _vacuum_deck()
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    deck = rz.presolve_labelling(replace(inp, lfreeb=False), field, max_iter=10, **OPTIONS)
+    assert not np.allclose(deck.rbc, inp.rbc) and deck.phiedge == inp.phiedge and np.array_equal(deck.ns_array, inp.ns_array)
+    fit = fvc.solve_free_boundary_three_terms(
+        inp, external_field=field, method="least_squares_rz",
+        method_options=dict(gauge_weight=1e-1, labelling_presolve=dict(max_iter=10)), **OPTIONS)
+    assert fit.success and np.allclose(fit.model.fixed.rbc, deck.rbc)  # the pre-solved deck is the model's

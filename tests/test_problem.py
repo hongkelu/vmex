@@ -1256,10 +1256,10 @@ def test_augmented_lagrangian_penalty_returns_once_feasible():
     np.testing.assert_allclose(loose.x, reference.x, atol=1e-6)
 
 
-def test_augmented_lagrangian_is_invariant_to_row_units():
-    """The penalty acts on rows divided by their starting gradient norms: rows in any units (here 1e-3 and 1e3,
-    the coil-length and axis-|B| rows of a finite-beta QH run differ by 3e4) take the same steps, and the weak row's
-    violation is removed as fast as the stiff one's."""
+def test_augmented_lagrangian_normalizes_weak_rows():
+    """Rows with gradients below 1 are divided by their starting gradient norms: in any such units (the coil-length
+    rows of a finite-beta QH run have 0.035) they take the same steps, to the constrained minimum; steeper rows keep
+    their units."""
     from scipy.optimize import NonlinearConstraint
     from vmex import optimize as opt
 
@@ -1271,12 +1271,18 @@ def test_augmented_lagrangian_is_invariant_to_row_units():
                                    jac=lambda x: np.array([[a, 2*a*x[1]], [0., b]]))
         return opt.minimize(p, method="AUGLAG", constraints=rows, options=dict(maxiter=steps))
 
-    plain = run((1., 1.))
-    for units in ((1e-3, 1e3), (1e3, 1e-3)):
+    weak = run((1e-1, 1e-1))
+    np.testing.assert_allclose(weak.x, [.75, .5], atol=1e-8)
+    for units in ((1e-4, 1e-3), (1e-3, 1e-1)):
         result = run(units)
         assert result.success and result.max_violation <= 1e-8 * max(units)
-        np.testing.assert_allclose(result.x, plain.x, rtol=1e-8, atol=1e-10)
-    np.testing.assert_allclose(plain.x, [.75, .5], atol=1e-8)
+        np.testing.assert_allclose(result.x, weak.x, rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(result.state["row_scale"], units)
+    for units in ((1., 1.), (1e3, 1e-3)):
+        result = run(units)
+        assert result.success and result.max_violation <= 1e-8 * max(units)
+        np.testing.assert_allclose(result.x, [.75, .5], atol=1e-7)
+        np.testing.assert_allclose(result.state["row_scale"], np.minimum(units, 1.))
 
 
 def test_secant_update_keeps_noise_out_of_the_curvature():

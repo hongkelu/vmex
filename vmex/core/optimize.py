@@ -2352,12 +2352,13 @@ _REJECTED_CONSTRAINT_OFFSET = 1e6
 
 
 # Augmented Lagrangian (method="AUGLAG" of minimize): fixed parameters, in scaled coordinates and row units.
-# The penalty acts on the rows divided by their gradient norms at the run's start (_Rows): a row's violation is
-# then the design distance to its limit, and one penalty is equally stiff on every row.  In row units alone the
-# rows of a finite-beta QH run differ by 3e4 in their gradients (coil length 0.035, axis |B| in its 1e-3 T band
-# 1.1e3): any one penalty was too soft for the length rows (their violation 2.4e-3 never fell) and stiff enough on
-# the axis |B| row to make its linearization's error cut the trust radius (f97-qh-al, 10-19).
-_AL_PENALTY = 10.0  # starting penalty: with F(start) = 1, a violation of 0.1 design units costs five objectives
+# A row whose gradient norm at the run's start is below 1 (scaled coordinates, F(start) = 1) is divided by it
+# (_Rows): its violation is then the design distance to its limit, and the penalty is as stiff on it as on a unit
+# row.  In row units the coil-length rows of a finite-beta QH run have gradients of 0.035 against the objective's 12:
+# rho |a|^2 = 0.12 at rho 10..100, so their violation (2.4e-3) never fell (f97-qh-al, 10-19).  A row steeper than
+# 1 keeps its units: a narrow band (axis |B| within 1e-3 T, gradient 1.1e3; R0 within 1 mm) is stiff by design, and
+# divided by its gradient it let the run trade it (|B| 2.8e-3 T out of its band in three steps).
+_AL_PENALTY = 10.0  # starting penalty: with F(start) = 1, a violation of one row unit costs five starting objectives
 _AL_RADIUS, _AL_MAX_RADIUS = 0.1, 100.0  # starting and largest trust radius
 _AL_MIN_RADIUS = 1e-8 * _AL_RADIUS  # a shorter step only resolves the evaluations' noise
 _AL_INNER_STEPS = 10  # accepted steps per multiplier update
@@ -2467,7 +2468,8 @@ class _Rows:
 
     ``v = (sign * c[index] - offset) / scale``: ``c - target`` for an equality, ``lower - c`` and ``c - upper`` for
     the finite sides of the others (a two-sided row is two violations), each divided by its ``scale``, the norm of
-    its gradient at the run's start (:meth:`set_scale`; 1 until then). :meth:`violation` is in row units.
+    its gradient at the run's start when below 1 (:meth:`set_scale`; 1 until then). :meth:`violation` is in row
+    units.
     """
 
     def __init__(self, row_lower, row_upper):
@@ -2481,11 +2483,10 @@ class _Rows:
 
     @staticmethod
     def gradient_scale(A):
-        """Each row's gradient norm, at least 1e-6 of the largest (a row the design hardly moves is not inflated past
-        that), all 1 when every gradient vanishes."""
+        """Each row's gradient norm, clipped to [1e-6, 1]: a row below unit gradient becomes one, a steeper row keeps
+        its units, and one the design hardly moves is not inflated past 1e6."""
         norm = np.linalg.norm(A, axis=1) if A.size else np.zeros(A.shape[0])
-        top = np.max(norm, initial=0.0)
-        return np.maximum(norm, 1e-6 * top) if top > 0.0 else np.ones(A.shape[0])
+        return np.clip(norm, 1e-6, 1.0)
 
     def set_scale(self, scale):
         self.scale = np.asarray(scale, dtype=float).copy()
@@ -2560,8 +2561,8 @@ def _augmented_lagrangian(evaluate, linearize, accept, u, lower, upper, row_lowe
     augmented Lagrangian (Conn, Gould and Toint; Birgin and Martinez) with a trust-region quasi-Newton inner solver.
 
     Outer iterations minimize ``F(u) + sum_k psi(v_k(u))`` approximately at fixed multipliers ``lambda`` and
-    penalty ``rho`` (``F = f / |f(start)|``, the scale clipped to 1e-12..1e12; ``v`` the rows' violations, each
-    divided by its gradient norm at the run's start, :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set
+    penalty ``rho`` (``F = f / |f(start)|``, the scale clipped to 1e-12..1e12; ``v`` the rows' violations, a row
+    with a gradient norm below 1 at the run's start divided by it, :class:`_Rows`; ``psi`` the PHR terms, :func:`_phr`), then set
     ``lambda = max(lambda + rho v, 0)``. The penalty
     grows tenfold after an inner loop that moved unless the violation fell to half or to ``feasibility`` (option,
     row units, default ``1e-6``, also the stopping test's), and returns to its starting value at the first

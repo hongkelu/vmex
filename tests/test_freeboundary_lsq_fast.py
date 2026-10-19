@@ -426,3 +426,41 @@ def test_trials_stop_the_host_solve_at_host_ftol_and_full_precision_at_the_deck(
     other.cfg, other.full_precision, other.cfg_host = model.cfg, False, None  # host_ftol at or under the deck's
     assert other._tight_config() is model.cfg
     assert lsq.HOST_FTOL == 1e-13
+
+
+
+def test_fresh_exact_model_takes_its_whole_newton_step():
+    """A fresh exact (positive-definite) model's first step is its whole Newton step, whatever radius the cheaper
+    models' failures left: on the sphere rows the Gauss-Newton and BFGS steps overshoot and the radius shrinks below
+    their Newton steps; the exact model then reached its own Newton step only over radius doublings, each a further
+    exact model where a trial stopped short."""
+    calls, current = [], {"exact": False, "first": False}
+    solution = lsq._trust_region_solution
+
+    def recorded(w, gq, radius, newton):  # (exact model, its first step, radius, Newton step)
+        calls.append((current["exact"], current["first"], radius, newton))
+        current["first"] = False
+        return solution(w, gq, radius, newton)
+
+    rng = np.random.default_rng(0)
+    lsq._trust_region_solution = recorded
+    try:
+        for n, weight in ((3, 0.01), (6, 0.03), (6, 0.1)):
+            start = np.r_[0.3, rng.standard_normal(n - 1)]
+            model = _SphereModel(weight, n)
+            model_of = model._derivative_model
+
+            def tagged(exact, *args, model_of=model_of, **kwargs):
+                current.update(exact=bool(exact), first=True)
+                return model_of(exact, *args, **kwargs)
+
+            model._derivative_model = tagged
+            out = model._newton(None, None, x0=start / np.linalg.norm(start), max_iter=200)
+            assert out["converged"], (n, weight, out["status"])
+            np.testing.assert_allclose(out["x"], np.r_[1.0, np.zeros(n - 1)], atol=1e-5)
+    finally:
+        lsq._trust_region_solution = solution
+    finite = [c for c in calls if np.isfinite(c[3])]
+    assert any(radius < newton for exact, _, radius, newton in finite if not exact)  # cheap steps cut by the radius
+    firsts = [(radius, newton) for exact, first, radius, newton in finite if exact and first]
+    assert firsts and all(radius >= newton for radius, newton in firsts)

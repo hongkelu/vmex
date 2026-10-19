@@ -825,6 +825,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
+            if fresh and np.isfinite(newton):
+                # a fresh exact, positive-definite model may take its whole Newton step: the radius it inherits was
+                # shrunk by the cheaper models' failures, not by its own (the RZ least squares' warm trial at a design
+                # step 1e-2: radius 1.35e-3 against the exact model's Newton step 7.97e-3, and two more exact models
+                # to get there, 484 s against 336 s)
+                radius = max(radius, newton)
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""

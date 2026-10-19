@@ -40,6 +40,15 @@ Labelling gauge
     deck or start).  Equal arc fixes the labelling up to each plane's origin (the relabellings ``delta(zeta)``,
     ``m = 0``), which the rows ``w <(x - x_deck) . t / L>_theta``, one a plane, fix to the deck's.
     ``gauge="none"`` drops the rows (to measure what they do).
+Labelling pre-solve
+    A deck gauge pulls the answer's labelling toward the deck's, and the 8x8 truncation prefers another: on the old
+    campaign's QA seed (qass_b25, 2.5 %) the deck gauge at 1e-2 ends 1.70 mm (RMS) from the resolved (M 16) free
+    boundary, at 1e-1 1.76 mm, from a relabelled deck 1.39 mm; with no gauge, or a weak one (1e-3), 1.37-1.39 mm, but
+    the near-flat labelling directions then keep the solve from certifying (100 models).  ``labelling_presolve``
+    (:func:`presolve_labelling`) first relaxes the labelling with a weak gauge (a bounded number of models, no
+    certificate) and makes that boundary the deck; the certified solve then runs with the strong gauge from it: QA
+    1.38 mm, 7 models, 146 s, a warm restart 82 s (against 1.70 mm, 71 models, 1228 s and 249 s with the deck gauge
+    1e-2 alone).  The answer is then that of the pre-solved deck: deterministic for a deck and resolution.
 Solver
     :meth:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel._newton` unchanged: SQP on the constraint
     manifold with the exact second-order adjoint Hessian, converged only at a certified root of the step test, and
@@ -309,20 +318,81 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         print("  weakest:", " ".join(f"{labels[k]}:{v[k]:+.2f}" for k in top), flush=True)
 
 
+#: the labelling pre-solve's gauge weight: weak enough that the labelling relaxes to the truncation's preferred one
+#: (1e-3 ends within 0.02 mm of no gauge on qass_b25), strong enough that the solve stays well defined
+PRESOLVE_GAUGE_WEIGHT = 1e-3
+#: the labelling pre-solve's models: no certificate is asked for (the certified solve follows)
+PRESOLVE_MODELS = 40
+
+
+def presolve_labelling(inp: VmecInput, field, params=None, *, initial_boundary=None,
+                       gauge_weight=PRESOLVE_GAUGE_WEIGHT, max_iter=PRESOLVE_MODELS, verbose=0,
+                       **model_options) -> VmecInput:
+    """``inp`` with the boundary of a weak-gauge RZ least-squares solve of ``max_iter`` models: the labelling the
+    rows prefer (module docstring), as the deck of the certified, strongly gauged solve.
+
+    ``params`` (default the deck's) are the plasma parameters of the solve and ``initial_boundary`` its start
+    (default the deck's boundary); ``model_options`` are :class:`LeastSquaresRZFreeBoundaryModel` keywords other
+    than the gauge's."""
+    options = {k: v for k, v in model_options.items() if k not in ("gauge", "gauge_weight", "gauge_top_weight")}
+    weak = LeastSquaresRZFreeBoundaryModel(replace(inp, lfreeb=False), gauge="deck", gauge_weight=gauge_weight,
+                                           **options)
+    x0 = None if initial_boundary is None else weak.displacement_of(initial_boundary)
+    out = weak.solve_boundary(weak.params0 if params is None else params, field, x0=x0, max_iter=int(max_iter),
+                              verbose=verbose)
+    boundary = weak.with_boundary(weak.params0, jnp.asarray(out["x"]))
+    return replace(inp, rbc=np.asarray(boundary.rbc, dtype=float), zbs=np.asarray(boundary.zbs, dtype=float))
+
+
 class LeastSquaresRZFreeBoundaryProblem(LeastSquaresFreeBoundaryProblem):
     """:class:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem` on the RZ least-squares free boundary
     (:class:`LeastSquaresRZFreeBoundaryModel`; the same exact design gradients).  Build with
-    ``FreeBoundaryProblem.from_loss(..., three_terms_options=dict(method="least_squares_rz", ...))``."""
+    ``FreeBoundaryProblem.from_loss(..., three_terms_options=dict(method="least_squares_rz", ...))``;
+    ``labelling_presolve`` (``True`` or :func:`presolve_labelling` keywords) relaxes the seed design's labelling
+    first and makes that boundary the problem's deck."""
 
     model_class = LeastSquaresRZFreeBoundaryModel
 
+    @classmethod
+    def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, labelling_presolve=None,
+                  **options):
+        """:meth:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryProblem.from_loss` (the same keywords), from the
+        labelling pre-solved deck with ``labelling_presolve``."""
+        if labelling_presolve:
+            presolve = {} if labelling_presolve is True else dict(labelling_presolve)
+            model_options = {k: v for k, v in options.items() if k not in (
+                "scales", "names", "quantities", "parameter_quantities", "boundary_max_nfev", "boundary_start")}
+            xj = jnp.asarray(np.asarray(x0, dtype=float))
+            params = None
+            if plasma_from_parameters is not None:
+                from .implicit import params_from_input
+
+                params = plasma_from_parameters(params_from_input(replace(inp, lfreeb=False)), xj)
+            inp = presolve_labelling(inp, field_from_parameters(xj), params, **presolve, **model_options)
+        return super().from_loss(inp, loss, x0, field_from_parameters=field_from_parameters,
+                                 plasma_from_parameters=plasma_from_parameters, **options)
+
 
 def solve_free_boundary_least_squares_rz(inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz",
-                                         gauge_top_weight=SPECTRAL_TOP_WEIGHT, **keywords):
+                                         gauge_top_weight=SPECTRAL_TOP_WEIGHT, labelling_presolve=None, **keywords):
     """Solve the RZ least-squares free boundary of a deck: :func:`~vmex.core.freeboundary_lsq.
     solve_free_boundary_least_squares` (the same keywords and result) on :class:`LeastSquaresRZFreeBoundaryModel`,
-    with its ``gauge``, ``gauge_weight``, ``gauge_top_weight`` and ``basis``."""
+    with its ``gauge``, ``gauge_weight``, ``gauge_top_weight`` and ``basis``; ``labelling_presolve`` (``True`` or
+    :func:`presolve_labelling` keywords) solves from the labelling pre-solved deck (module docstring)."""
     from .freeboundary_lsq import solve_free_boundary_least_squares
+    from .freeboundary import _external_field_from_input
+
+    if labelling_presolve and keywords.get("previous") is None:
+        field = keywords.get("external_field")
+        if field is None:
+            field = _external_field_from_input(inp, keywords.get("mgrid_path"))
+        presolve = {} if labelling_presolve is True else dict(labelling_presolve)
+        model_options = {k: keywords[k] for k in ("max_mode", "digits", "quadrature", "trial_ftol", "chunk",
+                                                  "bootstrap", "bootstrap_helicity") if k in keywords}
+        # the grid of the certified solve (solve_free_boundary_least_squares's default)
+        model_options.update(nphi=int(keywords.get("nphi") or 48), ntheta=int(keywords.get("ntheta") or 48))
+        inp = presolve_labelling(inp, field, initial_boundary=keywords.pop("initial_boundary", None),
+                                 verbose=keywords.get("verbose", 0), **presolve, **model_options)
 
     return solve_free_boundary_least_squares(inp, model_class=LeastSquaresRZFreeBoundaryModel, gauge=gauge,
                                              gauge_weight=gauge_weight, basis=basis,

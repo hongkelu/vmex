@@ -612,6 +612,21 @@ def solve_multigrid(
     )
 
 
+def _nestor_boundary(inp: VmecInput, **kwargs) -> VmecInput:
+    """``inp``'s NESTOR free boundary (and axis) as a fixed-boundary deck: a three-term fit's start."""
+    from .wout import wout_from_state
+
+    free = solve_free_boundary_multigrid(inp, raise_on_max_iterations=False, **kwargs)
+    wout = wout_from_state(inp=inp, state=free.state, fsqr=float(free.fsqr), fsqz=float(free.fsqz),
+                           fsql=float(free.fsql), converged=bool(free.converged), vacuum_output=free.vacuum)
+    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
+    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
+                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
+        rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
+    return replace(inp, rbc=rbc, zbs=zbs, raxis_c=np.asarray(wout.raxis_cc)[:inp.ntor + 1],
+                   zaxis_s=np.asarray(wout.zaxis_cs)[:inp.ntor + 1])
+
+
 def solve_free_boundary_multigrid(
     inp: VmecInput,
     ns_array=None,
@@ -709,9 +724,17 @@ def solve_free_boundary_multigrid(
     balance and no sheet current) with the plasma field from virtual casing:
     the boundary is solved for by
     :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term`
-    (keywords in ``three_term_options``) starting from the deck boundary,
+    (keywords in ``three_term_options``).  The interface least squares has
+    several minima, so by default (``three_term_options["start"] = "best"``)
+    it is fitted from the deck boundary and from this ladder's NESTOR free
+    boundary, keeping the lower cost: on the CTH-like vacuum deck the deck
+    start ends ~4 cm from NESTOR/VMEC2000, while at finite beta NESTOR's
+    boundary carries an edge sheet current and the deck (the design) is the
+    better start.  ``"deck"`` or ``"nestor"`` fits from one start only,
     and the result is the fixed-boundary ladder's final stage on that boundary,
-    with ``result.boundary_residual`` set and ``result.vacuum = None``.  Only
+    with ``result.boundary_residual`` set, ``result.vacuum = None`` and
+    ``result.converged`` False when the boundary fit stopped before its cost
+    stopped improving.  Only
     the ladder, external-field, ``verbose``/``emit`` and ``device`` arguments
     apply to it.
 
@@ -733,15 +756,29 @@ def solve_free_boundary_multigrid(
         ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
                          ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
                          niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
-        fit = solve_free_boundary_three_term(
-            ladder, external_field=external_field, mgrid_path=mgrid_path,
-            **(three_term_options or {}))
+        options = dict(three_term_options or {})
+        start = options.pop("start", "best")
+        if start not in ("best", "deck", "nestor"):
+            raise ValueError(f"three_term_options['start'] must be 'best', 'deck' or 'nestor', got {start!r}")
+        fits = []
+        if start in ("best", "deck"):
+            fits.append(solve_free_boundary_three_term(
+                ladder, external_field=external_field, mgrid_path=mgrid_path, **options))
+        if start in ("best", "nestor"):  # the interface least squares has several minima: NESTOR's basin too
+            nestor_start = dict(options, initial_boundary=_nestor_boundary(
+                ladder, mgrid_path=mgrid_path, external_field=external_field, verbose=verbose, emit=emit,
+                device=device))
+            fits.append(solve_free_boundary_three_term(
+                ladder, external_field=external_field, mgrid_path=mgrid_path, **nestor_start))
+        fit = min(fits, key=lambda f: float(f.cost))
         ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
         result = solve_multigrid(
             fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
             niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
             initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
-        return replace(result, boundary_residual=fit.boundary_residual)
+        # Converged only if the interface conditions hold too: the polish converges on any boundary.
+        return replace(result, converged=bool(result.converged) and bool(fit.success),
+                       boundary_residual=fit.boundary_residual)
     if boundary_condition != "nestor":
         raise ValueError(f"boundary_condition must be 'nestor' or 'three_term', got {boundary_condition!r}")
 

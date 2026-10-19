@@ -7,6 +7,12 @@ revision it was measured at, and the pages that cite it.
 
 ## Unreleased (tt1)
 
+- Three-term free boundary: a standalone solve (`solve_free_boundary_multigrid(boundary_condition="three_term")`,
+  the CLI) fits from the deck boundary and from the NESTOR free boundary and keeps the lower cost
+  (`three_term_options["start"]`). From the deck alone the CTH-like vacuum deck ended ~4 cm from NESTOR and
+  VMEC2000 (uwplasma/vmex#451); now 1.1 mm, with half NESTOR's interface residual. `converged` follows DESC's least
+  squares (no further improvement) and the interface residuals are reported with it; a fit stalled on a stale
+  Jacobian retries once with a fresh one.
 - `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
   solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
   sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to

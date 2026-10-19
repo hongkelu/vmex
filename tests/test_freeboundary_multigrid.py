@@ -517,6 +517,7 @@ def test_prefetch_compile_parity_and_bookkeeping() -> None:
 class _Result:
     state: object
     boundary_residual: object = None
+    converged: bool = True
     fsqr: float = 0.0
     fsqz: float = 0.0
     fsql: float = 0.0
@@ -565,8 +566,9 @@ def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) 
 
     def fake_fit(ladder, **kwargs):
         calls["fit"] = (ladder, kwargs)
-        return SimpleNamespace(input=fit_input, equilibrium=SimpleNamespace(solution=solution),
-                               boundary_residual="no sheet current")
+        calls["fits"] = calls.get("fits", 0) + 1
+        return SimpleNamespace(input=fit_input, equilibrium=SimpleNamespace(solution=solution), cost=1.0,
+                               boundary_residual="no sheet current", success=calls.get("fit_converged", True))
 
     def fake_solve_multigrid(inp_, **kwargs):
         calls["polish"] = (inp_, kwargs)
@@ -574,6 +576,9 @@ def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) 
 
     _fake_freeboundary_vc(monkeypatch, solve_free_boundary_three_term=fake_fit)
     monkeypatch.setattr(MG, "solve_multigrid", fake_solve_multigrid)
+    nestor_start = object()
+    monkeypatch.setattr(MG, "_nestor_boundary", lambda ladder, **kw: calls.setdefault("nestor", (ladder, kw))
+                        and nestor_start)
     field = object()
     result = solve_free_boundary_multigrid(
         inp, ns_array=[5, 9], external_field=field, boundary_condition="three_term",
@@ -581,8 +586,22 @@ def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) 
 
     ladder, kwargs = calls["fit"]
     np.testing.assert_array_equal(ladder.ns_array, [5, 9])
-    assert kwargs == {"external_field": field, "mgrid_path": None, "max_nfev": 3}
+    # by default the fit runs from the deck and from the ladder's NESTOR free boundary (the last fit here)
+    assert calls["nestor"][0] is ladder and calls["nestor"][1]["external_field"] is field
+    assert kwargs == {"external_field": field, "mgrid_path": None, "max_nfev": 3, "initial_boundary": nestor_start}
+    assert calls["fits"] == 2
     polish_input, polish = calls["polish"]
     assert polish_input is fit_input
     assert polish["ns_array"] == [9] and polish["ftol_array"] == [1e-11] and polish["niter_array"] == [50]
     assert result == _Result(solution, "no sheet current")
+    # The polish converges on any boundary: an interface fit above its tolerance is not converged.
+    calls["fit_converged"] = False
+    del calls["nestor"]
+    calls["fits"] = 0
+    result = solve_free_boundary_multigrid(inp, ns_array=[5, 9], external_field=field, boundary_condition="three_term",
+                                           three_term_options={"start": "deck"})
+    assert result == _Result(solution, "no sheet current", converged=False)
+    assert "nestor" not in calls and "initial_boundary" not in calls["fit"][1] and calls["fits"] == 1
+    with pytest.raises(ValueError, match="start"):
+        solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
+                                      three_term_options={"start": "vmec"})

@@ -171,6 +171,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     for fit in fits:
         after = _residual(inp, fit.equilibrium, field)
         assert after.normal < before.normal and after.sheet_current < before.sheet_current
+        assert fit.converged and fit.success and "interface residuals" in fit.message
     walls = [fit.equilibrium.wout for fit in fits]
     for wall in walls:   # budget: NESTOR's own floor (~1.6 mm) plus the flat least-squares minimum (~3 mm)
         assert _lcfs_distance(wall, nestor.wout) < 5e-3
@@ -351,3 +352,37 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
+
+
+CTH_MGRID = DATA / "mgrid_cth_like.nc"
+
+
+def _wout(inp, result):
+    return vj.wout_from_state(inp=inp, state=result.state, fsqr=float(result.fsqr), fsqz=float(result.fsqz),
+                              fsql=float(result.fsql), converged=bool(result.converged), vacuum_output=result.vacuum)
+
+
+@needs_vc
+@pytest.mark.full
+@pytest.mark.skipif(not CTH_MGRID.exists(), reason="python tools/fetch_assets.py --bundle reference-nc")
+@pytest.mark.parametrize("case", ["vacuum", "beta"])
+def test_three_term_agrees_with_nestor_on_the_cth_like_deck(case):
+    """uwplasma/vmex#451: from the deck boundary the three-term fit of the CTH-like vacuum deck ended in a
+    least-squares minimum ~4 cm from NESTOR (and VMEC2000, DESC) with twice NESTOR's interface residual; from the
+    NESTOR free boundary it stays within ~1 mm of it and lowers the residual, and the default start (the lower
+    cost of the deck and NESTOR starts) keeps that fit.  At finite beta NESTOR's free boundary keeps an edge
+    sheet current, which the three-term boundary removes: they are different equilibria (~8 mm apart here,
+    axis iota ~7e-3), so there the check is that the three-term interface residuals are the lower ones."""
+    inp = replace(vj.VmecInput.from_file(DATA / "input.cth_like_free_bdy"), mgrid_file=str(CTH_MGRID))
+    if case == "vacuum":
+        inp = replace(inp, pres_scale=0.0, curtor=0.0)
+    nestor = vj.solve_free_boundary_multigrid(inp, report_boundary_residual=True)
+    three = vj.solve_free_boundary_multigrid(inp, boundary_condition="three_term")
+    assert nestor.converged and three.converged
+    w_nestor, w_three = _wout(inp, nestor), _wout(inp, three)
+    distance, iota, volume = (3e-3, 5e-3, 1e-2) if case == "vacuum" else (1e-2, 1e-2, 3e-2)
+    assert _lcfs_distance(w_three, w_nestor) < distance
+    np.testing.assert_allclose(np.asarray(w_three.iotaf)[[0, -1]], np.asarray(w_nestor.iotaf)[[0, -1]], atol=iota)
+    np.testing.assert_allclose(float(w_three.volume_p), float(w_nestor.volume_p), rtol=volume)
+    for name in ("normal", "sheet_current"):
+        assert getattr(three.boundary_residual, name) < getattr(nestor.boundary_residual, name)

@@ -227,10 +227,16 @@ def solve_free_boundary_three_term(
     ``bootstrap_weight`` solve for a Redl-self-consistent current profile
     together with the boundary (:class:`ThreeTermFreeBoundaryModel`).
 
+    As DESC's least squares, the fit stops where it cannot improve any more: ``converged`` (and ``success``) is
+    True when the Levenberg-Marquardt finish met its relative cost-change test, or its steps still gained under
+    5% each after a fresh Jacobian; False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not be the free boundary (a wrong local minimum is
+    one too), and the interface rows cannot reach zero at a finite resolution (spectral truncation, the
+    virtual-casing grid), so ``boundary_residual`` is always reported for judging the result.
+
     Returns a :class:`scipy.optimize.OptimizeResult` with ``x`` (the boundary
     coordinates, then any bootstrap-current values), ``fun`` (the residual), ``jac`` (its last Jacobian), ``cost``,
     ``nfev``, ``njev``, ``input`` (the free boundary, and the current, as a fixed-boundary deck),
-    ``equilibrium``, ``model``, ``boundary_residual`` and
+    ``equilibrium``, ``model``, ``boundary_residual``, ``converged`` and
     ``initial_boundary_residual`` (:class:`BoundaryResidual` at the start).
     """
     from scipy.optimize import OptimizeResult
@@ -266,11 +272,17 @@ def solve_free_boundary_three_term(
                                max_nfev=max_nfev, verbose=verbose)
     state, _, params, _ = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
+    residual = model.boundary_residual(state, params, external_field)
+    converged = bool(out["converged"])
     return OptimizeResult(
         x=out["x"], fun=out["rows"], jac=out["jacobian"], cost=0.5 * out["rows"] @ out["rows"], nfev=out["nfev"],
-        njev=out["njev"], success=True, message=f"{out['accepted']} Levenberg-Marquardt steps after the trust region",
+        njev=out["njev"], success=converged, converged=converged,
+        message=(f"{out['accepted']} Levenberg-Marquardt steps after the trust region; "
+                 + ("the cost stopped improving" if converged else "stopped before the cost stopped improving")
+                 + f"; interface residuals B.n {residual.normal:.2e}, pressure {residual.pressure:.2e}, "
+                 f"sheet current {residual.sheet_current:.2e}"),
         input=boundary, equilibrium=solve_equilibrium(boundary, initial_state=state), model=model, aux=out["aux"],
-        boundary_residual=model.boundary_residual(state, params, external_field), initial_boundary_residual=initial)
+        boundary_residual=residual, initial_boundary_residual=initial)
 
 
 class ThreeTermFreeBoundaryModel:
@@ -673,6 +685,15 @@ class ThreeTermFreeBoundaryModel:
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
         self._radius = out["radius"]
+        if not out["converged"]:  # the steps stalled on a stale Jacobian: one fresh one there, as the warm start
+            J, _, _, aux = self.linearize(out["x"], out["aux"], field)
+            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+            self._radius, njev = again["radius"], njev + 1
+            # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
+            # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
+            out = dict(again, nfev=out["nfev"] + again["nfev"],
+                       converged=again["converged"] or again["reason"] == "stalled")
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
 
@@ -938,13 +959,13 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     last solve's radius over (at least 1/20 of the first Gauss-Newton step; default: that step's length).
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
-    Gauss-Newton step.
+    Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
     """
     J = np.asarray(J)
     norms = np.linalg.norm(J, axis=0)
     norms[norms == 0.0] = 1.0
     U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-    nfev, accepted, converged, slow = 1, 0, False, 0
+    nfev, accepted, converged, slow, reason = 1, 0, False, 0, "max_nfev"
     started = time.perf_counter()
 
     def step(g, lam):
@@ -954,12 +975,13 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         g = U.T @ r
         cost = 0.5 * r @ r
         if 0.5 * g @ g <= ftol * cost:  # the Gauss-Newton step's predicted gain
-            converged = True
+            converged, reason = True, "ftol"
             break
         full = np.linalg.norm(step(g, 0.0))
         if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
             radius = full if radius is None else max(radius, 0.05 * full)
         if radius < 1e-4 * full:
+            reason = "radius"
             break
         lam = 0.0
         if full > radius:  # the damping whose step has the radius' length (bisection in log lam)
@@ -988,8 +1010,10 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         if cost_new < cost:
             x, (r, aux), accepted = x_new, got, accepted + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
-                converged = True
+                converged, reason = True, "ftol"
                 break
         if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
+            reason = "stalled"
             break
-    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius)
+    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
+                reason=reason)

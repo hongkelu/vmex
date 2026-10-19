@@ -1002,7 +1002,10 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
         emit(_timing_block(read_s, solve_s, wout_s), end="")
         emit(f"\n Wrote WOUT file: {wout_path}")
         if not bool(result.converged):
-            emit("\n HINT : increase NITER or loosen FTOL")
+            emit(_interface_failure(result) or "\n HINT : increase NITER or loosen FTOL")
+    elif not bool(result.converged) and _interface_failure(result):
+        emit(_interface_failure(result))
+        emit(f" Wrote WOUT file: {wout_path}")
     elif not bool(result.converged):
         # The typed termination message used to reach --quiet runs through
         # the raised convergence error.  The CLI keeps the state instead, so
@@ -1029,6 +1032,16 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
     if not bool(result.converged):  # NITER exhaustion: wout kept, distinct code
         return int(result.ier_flag) or 1
     return 0
+
+
+def _interface_failure(result) -> str:
+    """Why a three-term free boundary is not converged (its interface rows), or ``""`` for any other result."""
+    residual = getattr(result, "boundary_residual", None)
+    if residual is None or result.vacuum is not None:  # NESTOR, or a residual only reported
+        return ""
+    return (f"\n THREE-TERM FREE BOUNDARY NOT CONVERGED: interface residuals B.n {residual.normal:.2e}, "
+            f"pressure balance {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e} "
+            "(relative to |B|); the boundary fit stopped before its cost stopped improving")
 
 
 # ---------------------------------------------------------------------------

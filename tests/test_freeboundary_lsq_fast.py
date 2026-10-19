@@ -226,6 +226,81 @@ def test_constraint_restoration_lets_tangential_steps_pass_the_merit_test():
         assert out["njev"] <= most, out["njev"]
 
 
+class _SphereModel(_ToyModel):
+    """Rows ``(x0 - 2, w x1, ..., w x_{n-1})`` on the unit sphere (the constraint row): along the sphere the cheap
+    models' curvature is ``w^2`` (J^T J), the Lagrangian's ``w^2 + 1`` (the multiplier 1/2 times the sphere's
+    curvature 2), so for small ``w`` Gauss-Newton and BFGS steps overshoot and pass only once restored."""
+
+    def __init__(self, weight, n):
+        super().__init__(n=n)
+
+        def rows(x):
+            return jnp.concatenate([jnp.stack([x[0] - 2.0]), weight * x[1:], jnp.stack([jnp.sum(x * x) - 1.0])])
+
+        self.rows_fn = jax.jit(rows)
+        self.jac_fn = jax.jit(jax.jacfwd(rows))
+        self.hess_fn = jax.jit(lambda x, w: jax.hessian(lambda z: 0.5 * jnp.sum((rows(z) + w) ** 2))(x))
+        self.exact_models = 0
+        model = self._derivative_model
+
+        def counted(exact, *args, **kwargs):
+            self.exact_models += bool(exact)
+            return model(exact, *args, **kwargs)
+
+        self._derivative_model = counted
+
+
+def test_cheap_models_missing_the_constraint_curvature_hand_over_to_the_exact_model():
+    """Where the constraint rows' curvature dominates, a cheap model whose step passes only once restored, or that
+    fails again after a fresh Gauss-Newton model, hands over to the exact (Lagrangian) model.  Before, a restored
+    step's ratio (crediting the violation it removed) kept such models (151 models over these starts against 162),
+    and escalating on the ratio before the restoration alone cycled on one start (300 models without converging)."""
+    rng = np.random.default_rng(0)
+    total = 0
+    for n in (3, 6):
+        for weight in (0.01, 0.03, 0.1):
+            start = np.r_[0.3, rng.standard_normal(n - 1)]
+            model = _SphereModel(weight, n)
+            out = model._newton(None, None, x0=start / np.linalg.norm(start), max_iter=200)
+            assert out["converged"], (n, weight, out["status"])
+            np.testing.assert_allclose(out["x"], np.r_[1.0, np.zeros(n - 1)], atol=1e-5)
+            assert model.exact_models >= 1
+            total += out["njev"]
+    assert total <= 160, total
+
+
+def test_trial_step_tolerance_and_previous_exact_certificate():
+    """An optimization trial (``trial_step_tolerance``) stops once the Newton step moves the boundary by less than
+    the tolerance, certified by the previous exact Hessian with the exact gradient, within that tolerance of the full
+    rule's answer and in no more models; a full-precision solve keeps the full rule exactly."""
+    start = np.array([-1.2, 1.0, -0.5, 0.3])
+
+    def solve(tolerance=None, full_precision=False):
+        model = _ToyModel()
+        model.certificate_extra = lambda params: None  # full-column exact models, as an optimization's trials
+        model.trial_step_tolerance, model.full_precision = tolerance, full_precision
+        return model._newton(None, None, x0=start, max_iter=200)
+
+    full = solve()
+    trial = solve(1e-3)
+    assert full["converged"] and trial["converged"]
+    assert trial["njev"] <= full["njev"]
+    assert np.max(np.abs(trial["x"] - full["x"])) <= 1e-3
+    # the tolerance's current-value part (relative to the values, over R0): a step of 1e-4 of them passes at 1e-3, a
+    # trust-region step never does, nor any step of a full-precision solve
+    model = _ToyModel()
+    model.n_boundary, model.boundary_modes, model.trial_step_tolerance = 2, [(1, 0)] * 2, 1e-3
+    x, step = np.ones(4), np.r_[1e-5, 1e-5, 1e-4, 1e-4]
+    assert model._step_converged(step, None, x, newton=True)
+    assert not model._step_converged(step, None, x)
+    assert not model._step_converged(np.r_[1e-5, 1e-5, 1e-2, 1e-2], None, x, newton=True)
+    model.full_precision = True
+    assert not model._step_converged(step, None, x, newton=True)
+    certified, reference = solve(1e-3, full_precision=True), solve(None, full_precision=True)
+    np.testing.assert_array_equal(certified["x"], reference["x"])
+    assert certified["njev"] == reference["njev"]
+
+
 def test_problem_entry_and_finite_beta_rows():
     """Cheap end-to-end coverage: the least-squares single-stage problem in vacuum (design gradient along the coil
     currents against central differences of cold trials), the solve entry through ``method="least_squares"``

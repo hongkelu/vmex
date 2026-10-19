@@ -28,7 +28,14 @@ Labelling gauge
     pick, among the near-equivalent labellings, the one nearest the deck's and leave the surface to the interface
     rows.  The deck is the model's: a re-referenced model (an optimizer far from its seed,
     :meth:`~vmex.core.freeboundary_vc.ThreeTermsFreeBoundaryModel.rereferenced`) penalizes the displacement from
-    its new deck.  ``gauge="none"`` drops the rows (to measure what they do).
+    its new deck.  ``gauge="spectral"`` prices the same displacement angle by its Fourier modes over a field period:
+    a mode of level ``k = max(|m|, |n|)`` has weight ``w (1 + (w_top / w - 1) (k / K)^4)``, ``K`` the band's top
+    level and ``w_top = gauge_top_weight`` (capped there above it); uniform weights are the deck gauge exactly
+    (Parseval).  Why: at a converged QA boundary (qass_b25, 8x8) the reduced Hessian's weak directions are the
+    high-mode relabellings, where the rows' own curvature is negative (truncation; down to -4e-8, and -9e-4 far from
+    the root) and a uniform weight 1e-2 only just outweighs it, while the weaker 1e-3 -- which leaves the low-mode
+    labelling free -- ends nearer the resolved surface (1.34-1.42 mm against 1.70 mm) but does not converge.
+    ``gauge="none"`` drops the rows (to measure what they do).
 Solver
     :meth:`~vmex.core.freeboundary_lsq.LeastSquaresFreeBoundaryModel._newton` unchanged: SQP on the constraint
     manifold with the exact second-order adjoint Hessian, converged only at a certified root of the step test, and
@@ -49,7 +56,11 @@ from .freeboundary_vc import _interface_terms, _net_current, _surface_data
 from .input import VmecInput
 
 #: the labelling gauges of :class:`LeastSquaresRZFreeBoundaryModel` (module docstring)
-GAUGES = ("deck", "none")
+GAUGES = ("deck", "spectral", "none")
+#: the spectral gauge's weight at the band's top mode level (gauge_top_weight): ten times the deck gauge's 1e-2, which
+#: at the converged QA boundary (qass_b25, 8x8) only just outweighs the rows' negative curvature of the high-mode
+#: relabellings (provisional: the value under test, analyze_hessian / benchmark of 10-18)
+SPECTRAL_TOP_WEIGHT = 1e-1
 #: the solver's basis of the boundary coordinates (module docstring): the packed coefficients themselves, or the deck
 #: surface's normal displacement and its relabelling (the same space, an invertible linear map)
 BASES = ("rz", "normal_tangential")
@@ -103,7 +114,8 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
     labelling gauge of the module docstring.
     """
 
-    def __init__(self, inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz", **options):
+    def __init__(self, inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz",
+                 gauge_top_weight=SPECTRAL_TOP_WEIGHT, **options):
         if gauge not in GAUGES:
             raise ValueError(f"gauge must be one of {GAUGES}, got {gauge!r}")
         if basis not in BASES:
@@ -113,10 +125,11 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
             raise ValueError("the RZ least squares solves a free boundary: use LeastSquaresFreeBoundaryModel for "
                              "fixed_boundary=True")
         # read when the rows are traced (set before the base builds them)
-        self.gauge, self.gauge_weight = gauge, float(gauge_weight)
+        self.gauge, self.gauge_weight, self.gauge_top_weight = gauge, float(gauge_weight), float(gauge_top_weight)
         super().__init__(inp, **options)
         # a re-referenced model's too
-        self._source[1].update(gauge=self.gauge, gauge_weight=self.gauge_weight, basis=self.basis)
+        self._source[1].update(gauge=self.gauge, gauge_weight=self.gauge_weight, basis=self.basis,
+                               gauge_top_weight=self.gauge_top_weight)
 
     def _set_band(self, max_mode):
         """The boundary coordinates on the modes up to ``max_mode``: every packed coefficient, as an offset from the
@@ -216,6 +229,12 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
         self._consts = dict(self._consts, gamma0=gamma0, tangent=e_theta / (length * jnp.mean(length))[None],
                             gauge_weight=jnp.asarray(self.gauge_weight))
         gauge = self.gauge
+        if gauge == "spectral":  # the weight of every grid harmonic (field periods in phi), by its mode level
+            k_phi = np.abs(np.fft.fftfreq(nphi, 1.0 / nphi))[:, None]
+            k_theta = np.abs(np.fft.fftfreq(ntheta, 1.0 / ntheta))[None, :]
+            level = np.minimum(np.maximum(k_phi, k_theta) / max(self.max_mode, 1), 1.0)
+            w = self.gauge_weight * (1.0 + (self.gauge_top_weight / self.gauge_weight - 1.0) * level**4)
+            self._consts["spectral_weight"] = jnp.asarray(w)
 
         def interface_rows(state, params, field, moments=False):
             """``sqrt(area)`` times the interface conditions (``B . n``, pressure balance, sheet current; in vacuum
@@ -231,6 +250,10 @@ class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):
             if gauge == "deck":
                 label = consts["gauge_weight"] * jnp.sum((gamma - consts["gamma0"]) * consts["tangent"], axis=0)
                 parts.append((area * label).ravel())
+            elif gauge == "spectral":  # the area-weighted angle's harmonics (orthonormal: Parseval), weighted
+                angle = area * jnp.sum((gamma - consts["gamma0"]) * consts["tangent"], axis=0)
+                harmonics = consts["spectral_weight"] * jnp.fft.fft2(angle, norm="ortho")
+                parts += [jnp.real(harmonics).ravel(), jnp.imag(harmonics).ravel()]
             return jnp.concatenate(parts + [((G - G_coil) / G_coil)[None]])
 
         self.interface_rows = interface_rows
@@ -284,11 +307,12 @@ class LeastSquaresRZFreeBoundaryProblem(LeastSquaresFreeBoundaryProblem):
 
 
 def solve_free_boundary_least_squares_rz(inp: VmecInput, *, gauge="deck", gauge_weight=DECK_GAUGE_WEIGHT, basis="rz",
-                                         **keywords):
+                                         gauge_top_weight=SPECTRAL_TOP_WEIGHT, **keywords):
     """Solve the RZ least-squares free boundary of a deck: :func:`~vmex.core.freeboundary_lsq.
     solve_free_boundary_least_squares` (the same keywords and result) on :class:`LeastSquaresRZFreeBoundaryModel`,
-    with its ``gauge``, ``gauge_weight`` and ``basis``."""
+    with its ``gauge``, ``gauge_weight``, ``gauge_top_weight`` and ``basis``."""
     from .freeboundary_lsq import solve_free_boundary_least_squares
 
     return solve_free_boundary_least_squares(inp, model_class=LeastSquaresRZFreeBoundaryModel, gauge=gauge,
-                                             gauge_weight=gauge_weight, basis=basis, **keywords)
+                                             gauge_weight=gauge_weight, basis=basis,
+                                             gauge_top_weight=gauge_top_weight, **keywords)

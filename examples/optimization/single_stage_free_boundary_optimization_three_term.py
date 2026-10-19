@@ -984,6 +984,9 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
+                        help="compare the seed's design gradients with central differences along N random "
+                        "directions (gradient_check.json), then stop")
     parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
                         "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -1058,6 +1061,33 @@ def fit_coils_to_plasma(coils, wout, inp):
     print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
     return fitted
+
+
+def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
+    """Implicit design gradients of the loss and every quantity at the seed against central differences of
+    re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
+    ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector)."""
+    x = np.asarray(problem.accepted.parameters, dtype=float)
+    _, grad = problem.value_and_grad(x)
+    jac = problem.constraint_jac(x)
+    rng = np.random.default_rng(0)
+    records = []
+    for k in range(directions):
+        d = rng.standard_normal(x.size)
+        d /= np.linalg.norm(d)
+        implicit = np.r_[grad @ d, jac @ d]
+        for h in steps:
+            values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
+            fd = (values[0] - values[1]) / (2 * h)
+            loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
+            rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)
+            records.append(dict(direction=k, h=h, loss_implicit=float(implicit[0]), loss_difference=float(fd[0]),
+                                loss_relative=float(loss), rows_relative=float(rows),
+                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist()))
+            print(f"[gradient check] direction {k} h={h:.0e}: loss {implicit[0]:.6e} vs {fd[0]:.6e} "
+                  f"(relative {loss:.1e}), quantities relative {rows:.1e}", flush=True)
+    (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
 
 
 def load_extension(path):
@@ -1328,6 +1358,9 @@ def main(argv=None):
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
+    if args.check_gradient:
+        check_gradient(problem, args.check_gradient, out)
+        return
     log_step()
     while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
         before = problem.accepted_step

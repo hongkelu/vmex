@@ -23,7 +23,8 @@ Labelling gauge
     singular there, and the answer's labelling (and the design gradient through the inverse Hessian) would be
     undetermined.  ``gauge="deck"`` (the default, the old solver's) adds the rows ``w sqrt(area) (x - x_deck) .
     t / L``: the boundary points' displacement from the deck's along the unit poloidal tangent ``t``, over the mean
-    poloidal metric ``L = <|e_theta|>`` (an angle), ``w = gauge_weight`` (default 1e-2, the old solver's).  A pure
+    poloidal metric ``L = <|e_theta|>`` (an angle), ``w = gauge_weight`` (default 1e-1, :data:`DECK_GAUGE_WEIGHT`;
+    the old solver's 1e-2 certified the QA seed in 71 models against 15).  A pure
     relabelling by ``delta`` costs ``w delta`` a point, a normal displacement nothing at first order, so the rows
     pick, among the near-equivalent labellings, the one nearest the deck's and leave the surface to the interface
     rows.  The deck is the model's: a re-referenced model (an optimizer far from its seed,
@@ -115,7 +116,11 @@ def _relabelling_map(inp, max_mode, ntheta, nzeta):
         columns.append(pack_boundary(replace(zero, rbc=dr, zbs=dz), max_mode, vary_major_radius=True))
     return np.asarray(columns).T, modes
 #: the old campaign solver's weight of its labelling rows (e3313c0f, ``label_weight``)
-DECK_GAUGE_WEIGHT = 1e-2
+OLD_SOLVER_GAUGE_WEIGHT = 1e-2
+#: the deck gauge's default weight: on the QA seed (qass_b25, 8x8) 1e-1 certifies in 15 models (388 s, warm restart
+#: 72 s) against 71 (1228 s, 249 s) at the old solver's 1e-2, 1.76 against 1.70 mm from the resolved free boundary;
+#: the accuracy comes from the labelling pre-solve instead (module docstring)
+DECK_GAUGE_WEIGHT = 1e-1
 
 
 class LeastSquaresRZFreeBoundaryModel(LeastSquaresFreeBoundaryModel):

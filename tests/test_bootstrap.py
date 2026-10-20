@@ -916,7 +916,8 @@ def test_half_mesh_picard_makes_the_current_redls():
     n0 = 1.5e20
     T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0)
     profiles = _paper_profiles(n0, T0)
-    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh")
+    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh",
+                                          verbose=True)
     assert result.converged and result.input.pcurr_type == "line_segment_ip"
     assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
     state, rt = result.equilibrium.solution, result.equilibrium.solver_context

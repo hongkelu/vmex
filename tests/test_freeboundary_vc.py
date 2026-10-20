@@ -113,6 +113,107 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
+def test_levenberg_marquardt_finish():
+    """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
+    and reports why it stopped."""
+    target = np.array([1.0, -2.0, 0.5])
+
+    def rows(x):
+        return np.r_[x - target, 0.1 * (x[0] * x[1] - target[0] * target[1])]
+
+    def evaluate(x):
+        return rows(x), "aux"
+
+    J = np.vstack([np.eye(3), 0.1 * np.array([target[1], target[0], 0.0])])
+    x0 = np.zeros(3)
+    out = fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=50, verbose=1)
+    assert out["converged"] and out["reason"] == "ftol" and out["accepted"] >= 1
+    np.testing.assert_allclose(out["x"], target, atol=1e-5)
+    # a step that fails to solve shrinks the radius, a budget of one evaluation stops at once
+    failed = fvc._levenberg_marquardt(lambda x: None, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=30,
+                                      verbose=0, radius=10.0)
+    assert not failed["converged"] and failed["reason"] in ("radius", "stalled") and failed["accepted"] == 0
+    np.testing.assert_array_equal(failed["x"], x0)
+    assert fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=1,
+                                    verbose=0)["reason"] == "max_nfev"
+    # a wrong Jacobian: steps keep gaining little, so the finish stops as stalled before its budget
+    stale = fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", np.vstack([np.eye(3), np.ones(3)]) * 40,
+                                     ftol=1e-14, max_nfev=200, verbose=0)
+    assert stale["reason"] in ("stalled", "radius") and stale["nfev"] < 200
+
+
+def test_coil_net_current_is_the_circulation_around_the_axis():
+    """G of a purely toroidal 1/R field is its R B_phi, whatever the axis loop it is taken around."""
+
+    class Toroidal:
+        def b_cyl(self, r, phi, z):
+            return 0.0 * r, 0.7 / r, 0.0 * z
+
+    wout = SimpleNamespace(raxis_cc=np.array([1.0, 0.1]), zaxis_cs=np.array([0.0, -0.05]), nfp=2)
+    # 720 points and a second-order tangent: 1.2e-5 relative on this axis
+    assert fvc._coil_net_current(Toroidal(), wout) == pytest.approx(0.7, rel=1e-4)
+
+
+#: The smallest vacuum case that still has a free boundary: LP QA at mpol = ntor = 2, ns 7, a 12 x 12 interface
+#: grid with the boundary modes up to 1, and its fixed singular quadrature (4 nfp nphi, 2 ntheta).
+SMALL = dict(nphi=12, ntheta=12, max_mode=1, quadrature=(96, 24))
+
+
+def _small_vacuum():
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 2, 7), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    return inp, _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+
+
+@needs_vc
+@pytest.mark.full
+def test_three_term_option_fits_the_best_of_two_starts():
+    """The solver option at low resolution: both starts (deck and NESTOR) reduce B.n and the sheet current of
+    the deck's fixed-boundary equilibrium, the lower cost wins, and the result reports its interface residual."""
+    inp, field = _small_vacuum()
+    design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field, n=12)
+    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
+                                              three_term_options=dict(SMALL, max_nfev=20))
+    res = result.boundary_residual
+    assert result.vacuum is None and res.normal < design.normal and res.sheet_current < design.sheet_current
+    with pytest.raises(ValueError, match="start"):
+        vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
+                                         three_term_options=dict(start="coils"))
+
+
+@needs_vc
+@pytest.mark.full
+def test_three_term_problem_gradient_and_one_slsqp_step():
+    """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
+    differences, one SLSQP step through ``minimize``, and the accepted point's reports."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    base = field.currents
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        quantities=(opt.mean_iota,), boundary_condition="three_term", three_term_options=SMALL)
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    jac = problem.constraint_jac(x0)
+    h = 1e-3
+    fd = [(problem.fun(x0 + h) - problem.fun(x0 - h)) / (2 * h),
+          (problem.constraint_values(x0 + h) - problem.constraint_values(x0 - h)) / (2 * h)]
+    np.testing.assert_allclose(grad, fd[0], rtol=1e-3)
+    np.testing.assert_allclose(jac[:, 0], fd[1], rtol=1e-3)
+    result = opt.minimize(problem, x0=x0, method="SLSQP", options=dict(maxiter=1),
+                          constraints=[problem.nonlinear_constraint([0.0], [1.0])])
+    assert result.accepted_steps == problem.accepted_step == 1 and result.fun <= value
+    x = problem.accepted.parameters
+    assert max(vars(problem.boundary_residual(x)).values()) < 0.1
+    state, params = problem.state(x)
+    assert problem.equilibrium_from_x(x).wout.aspect == pytest.approx(result.fun, rel=1e-6)
+    problem.close()
+    with pytest.raises(ValueError, match="evaluate the candidate"):
+        problem.accept_x(x0 + 0.123)
+    assert problem.stats["trials"] >= 3 and problem.stats["linearizations"] >= 1
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0
@@ -299,6 +400,14 @@ def test_bootstrap_current_profile_layout():
         current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, 1.0))
     outer = s[s > 0.2]
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
+    with pytest.raises(ValueError, match="ncurr = 1"):
+        HalfMeshCurrent(replace(inp, ncurr=0), _lp_beta0p5_profiles(inp), 0)
+    with pytest.raises(ValueError, match="knot per half-mesh surface"):
+        HalfMeshCurrent(replace(inp, ns_array=np.array([201])), _lp_beta0p5_profiles(inp), 0)
+    from vmex.core.bootstrap import self_consistent_bootstrap
+
+    with pytest.raises(ValueError, match="'power_series' or 'half_mesh'"):
+        self_consistent_bootstrap(inp, _lp_beta0p5_profiles(inp), 0, profile="spline")
 
 
 @needs_vc

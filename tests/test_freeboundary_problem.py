@@ -44,7 +44,7 @@ def test_from_loss_rejects_invalid_definitions():
 
 @pytest.fixture(scope="module")
 def problem():
-    """Aspect ratio of the LP QA deck (ns 11, mpol = ntor = 3) in its ESSOS coils: x = (PHIEDGE, coil currents)."""
+    """Aspect ratio of the LP QA deck (ns 7, mpol = ntor = 2) in its ESSOS coils: x = (PHIEDGE, coil currents)."""
     jax.config.update("jax_enable_x64", True)
     pytest.importorskip("essos")
     from essos.coils import Coils
@@ -57,8 +57,8 @@ def problem():
     base = coils.dofs
     n = coils.dofs_curves.size
     inp = vj.VmecInput.from_file(DATA / "input.LandremanPaul2021_QA_lowres").change_resolution(
-        mpol=3, ntor=3, ntheta=12, nzeta=16)
-    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", phiedge=-0.025, ns_array=np.array([11]),
+        mpol=2, ntor=2, ntheta=10, nzeta=12)
+    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", phiedge=-0.025, ns_array=np.array([7]),
                   niter_array=np.array([20000]), ftol_array=np.array([1e-12]))
     return FreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: im.aspect_ratio(state, runtime), np.zeros(2),

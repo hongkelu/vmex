@@ -338,7 +338,7 @@ run, not gates that would fail if the physics regressed. Read them as such.
 
 ### Three-term free boundary against VMEC + NESTOR and DESC
 
-`benchmarks/run_three_term_resolution.py` builds a free boundary whose answer is
+The benchmark builds a free boundary whose answer is
 known. A coil field (a winding-surface current at 1.2 minor radii) is fitted to
 cancel the plasma's normal field on the 12 x 12 fixed-boundary QA equilibrium
 of `input.LandremanPaul2021_QA_beta2p5_bootstrap` (beta 2.5%, ns 51), so that
@@ -348,10 +348,8 @@ from the same boundary, the target's with its minor radius scaled by 0.97
 (11 mm away), and every result is scored the same way: the boundary is
 re-solved as a fixed-boundary equilibrium, and the three conditions are
 evaluated on a 48 x 48 virtual-casing grid with the singular quadrature
-(4 nfp 48, 96). `benchmarks/run_three_term_resolution.py table OUT` collects a run's records into
-`OUT/three_term_resolution.json`; `benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
-surfaces and iota), and `benchmarks/three_term_resolution_poincare.py` traces
-the vacuum field lines. DESC (`FixSheetCurrent`, not a VMEX dependency) was run
+(4 nfp 48, 96). The scripts that ran it (the resolution scan, its plots and the
+field-line tracer) are kept on the fork's `tt1-campaign-archive` branch, not in VMEX. DESC (`FixSheetCurrent`, not a VMEX dependency) was run
 outside VMEX and its wouts scored the same way, re-solved with all of their
 modes (DESC's M includes m = M).
 Columns are the largest LCFS distance to the target, the sheet current

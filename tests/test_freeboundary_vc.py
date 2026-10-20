@@ -525,7 +525,7 @@ def test_three_term_on_the_cth_like_deck(case):
     PRES_SCALE = CURTOR = 0) scored the same way.
 
     Vacuum: the coil field is the whole field, so the LCFS must be one of its flux surfaces: the coil B.n/|B| on it
-    and the drift of field lines started on it (benchmarks/cth_vacuum_poincare.py) measure that without virtual
+    and the drift of field lines started on it measure that without virtual
     casing.  From the deck boundary alone the fit ends in a least-squares minimum ~4 cm away; the default start (the
     lower cost of the deck and NESTOR starts, on the tricubic mgrid field) lands 2.1 mm from VMEC2000's boundary;
     in that field its coil B.n is 3.0e-4 against VMEC2000's 4.6e-4 and its interface residuals a fifth of

@@ -160,7 +160,7 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
-#: Largest RMS interface residual (relative to |B|) of a three-term free boundary that counts as solved: a guard
+#: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
 

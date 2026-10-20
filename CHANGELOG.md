@@ -17,7 +17,11 @@ record under `benchmarks/` names the revision it was measured at.
   sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to
   74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
 - `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
-  (PHIEDGE, current profile) from certified roots; `opt.minimize(method="SLSQP")` drives it.
+  (and PHIEDGE or the current profile) on VMEX + NESTOR free boundaries: each design point is
+  `solve_free_boundary_implicit` (anchored root) and its derivatives that root's implicit adjoint, one per row;
+  `opt.minimize(method="SLSQP")` drives it. (The earlier trial predictor, root polish, Newton correction and
+  matrix-free/LU reuse layers are gone; `restart_from`, `continuation_step`, `root_residual_atol`, `event` and
+  `deadline` are no longer arguments.)
 - Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
   15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
 - `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,

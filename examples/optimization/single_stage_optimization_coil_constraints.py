@@ -917,7 +917,10 @@ def coil_rows_and_jacobian(coils_of, other_rows):
     import jax.numpy as jnp
 
     limits = coil_point_inequalities if COIL_POINT_ROWS else coil_inequalities
-    rows = lambda x: jnp.concatenate([limits(coils_of(x)), other_rows(x)])
+
+    def rows(x):
+        return jnp.concatenate([limits(coils_of(x)), other_rows(x)])
+
     if not COIL_POINT_ROWS:
         return rows, jax.jacrev(rows)
     points, others = chunked_jacfwd(lambda x: limits(coils_of(x))), jax.jacrev(other_rows)

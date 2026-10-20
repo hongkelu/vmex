@@ -160,6 +160,22 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+def _equal_arc_rows(gamma):
+    """Rows that vanish when the boundary's poloidal angle is equal-arc on every toroidal cut and the m = 1 part of
+    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.
+
+    ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points.  Returns ``(arc, phase)``: ``|d gamma/d theta|`` relative to
+    its mean on each cut, minus one, ``(nphi, ntheta)``; and ``Im c1 / |c1|`` per cut, ``(nphi,)``.
+    """
+    ntheta = gamma.shape[-1]
+    wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
+    e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma, axis=-1), axis=-1))
+    speed = jnp.linalg.norm(e_theta, axis=0)
+    arc = speed / jnp.mean(speed, axis=-1, keepdims=True) - 1.0
+    c1 = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]) + 1j * gamma[2], axis=-1)[..., 1]
+    return arc, jnp.imag(c1) / jnp.abs(c1)
+
+
 #: Largest RMS interface residual (relative to |B|) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
@@ -178,6 +194,7 @@ def solve_free_boundary_three_term(
     weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
     net_current_weight: float = 1.0,
     label_weight: float = 1e-2,
+    labelling: str = "start",
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
@@ -271,7 +288,8 @@ def solve_free_boundary_three_term(
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
         model = ThreeTermFreeBoundaryModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
                                    digits=digits, weights=weights, net_current_weight=net_current_weight,
-                                   label_weight=label_weight, quadrature=quadrature, trial_ftol=trial_ftol,
+                                   label_weight=label_weight, labelling=labelling, quadrature=quadrature,
+                                   trial_ftol=trial_ftol,
                                    chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
                                    bootstrap_weight=bootstrap_weight)
         x0 = jacobian = None
@@ -356,7 +374,7 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False):
+                 fixed_boundary=False, labelling="start"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -366,6 +384,8 @@ class ThreeTermFreeBoundaryModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
+        if labelling not in ("start", "equal_arc"):
+            raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -409,10 +429,12 @@ class ThreeTermFreeBoundaryModel:
         state, mask = seed[:2]
         self.seed = (state, mask)
         if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
+            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
+                                  labelling)
         self._implicit_setup()
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight):
+    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
+                         labelling="start"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium
@@ -434,8 +456,13 @@ class ThreeTermFreeBoundaryModel:
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
-            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
-            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
+            if labelling == "equal_arc":  # a labelling of the current surface alone: no reference to the start
+                label, phase = _equal_arc_rows(gamma)
+                label, phase = label_weight * label, label_weight * phase / np.sqrt(nphi)
+            else:
+                label, phase = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0), jnp.zeros(0)
+            interface = jnp.concatenate([(jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel(),
+                                         phase])
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))

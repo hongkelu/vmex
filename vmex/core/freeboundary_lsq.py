@@ -45,8 +45,9 @@ import jax.numpy as jnp
 from . import virtual_casing as vc
 from .loops import map_columns
 from .errors import TrialRejected
+from .solver import EarlyStop
 from .freeboundary_vc import (BoundaryResidual, ThreeTermsFreeBoundaryModel, ThreeTermsFreeBoundaryProblem,
-                              _REPORT_FTOL, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
+                              _REPORT_FTOL, _TRIAL_RATE_WINDOW, _axis_loop, _edge_pressure, _fingerprint, _interface_terms,
                               _net_current, displacement_rms, summarize_boundary_residual)
 from .input import VmecInput
 
@@ -204,7 +205,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             ftols[-1] = self.host_ftol
             cfg = self._im.make_config(_replace(self.fixed, ftol_array=ftols), multigrid=True, hot_restart=True,
                                        certify_refined=True)
-            self.cfg_host = self._im._canonical_config(_replace(cfg, device=self.cfg.device))
+            # A boundary without an equilibrium stalls the host solve far above its tolerance (f98-qa-sl-c6: fsq
+            # 5e-8 against 1e-13 after the whole 60000-iteration budget, 237 s per seed): stop the descent once the
+            # residual it is accepted at (max_fsq_ratio * ftol) is out of reach within the budget (EarlyStop, as the
+            # trial config of freeboundary_vc).  A solve that reaches it is never stopped; the tolerance is unchanged.
+            early_stop = EarlyStop(target=cfg.max_fsq_ratio * cfg.ftol, window=_TRIAL_RATE_WINDOW)
+            self.cfg_host = self._im._canonical_config(_replace(cfg, device=self.cfg.device, early_stop=early_stop))
             self._im._template_runtime(self.cfg_host)
         # Full precision (a certified answer: a run's last design, a validation re-solve): the boundary converges to
         # the measured repeatability alone, without the a-priori floor 2 sqrt(FTOL) x cost -- that floor stops the

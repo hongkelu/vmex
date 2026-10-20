@@ -2005,7 +2005,13 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         _HOST_ERROR.clear()
         error = None
         try:
-            state, mask = _host_solve_and_mask_impl(cfg, params_np)
+            # The forward solve first: a state it rejects (status 2 below) is not refined -- the refinement
+            # cannot change that status and costs a stalled, unconverged state ~50 s (f98-qa-sl-c6).  An
+            # accepted one is refined by the second call, which memo-hits the solve.
+            state, mask = _host_solve_and_mask_impl(cfg, params_np, refine=False)
+            hit = _LAST_SOLVE.get(cfg)
+            if hit is None or bool(hit[1].converged) or _fsq(hit[1]) / cfg.ftol <= cfg.max_fsq_ratio:
+                state, mask = _host_solve_and_mask_impl(cfg, params_np)
         except VmecError as exc:
             # Direct host calls preserve the typed exception; pure_callback
             # wraps the same error in the relayed sentinel handled below.

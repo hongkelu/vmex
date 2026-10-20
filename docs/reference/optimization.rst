@@ -443,8 +443,8 @@ field-only path for host optimizers that step from an accepted equilibrium.
 It takes the same ``field_from_parameters`` map: VMEX keeps no coil code, so
 the coils and their chart come from ESSOS, here as a differentiable
 Biot-Savart field of ``coils_from_x(x)``
-(``examples/optimization/single_stage_free_boundary_optimization_three_term.py`` runs the same
-interface on three-term free boundaries with coil constraints)::
+(``examples/optimization/single_stage_free_boundary_three_term.py`` runs the same
+interface on three-term free boundaries)::
 
    from dataclasses import replace
 
@@ -455,10 +455,10 @@ interface on three-term free boundaries with coil constraints)::
    import vmex as vj
    from vmex import optimize as opt
 
-   inp = vj.VmecInput.from_file("examples/data/input.rotating_ellipse_nfp2")
-   inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
+   inp = vj.VmecInput.from_file("examples/data/input.LandremanPaul2021_QA_lowres")
+   inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", phiedge=-0.025)
    qs = opt.QuasisymmetryRatioResidual(np.linspace(0.1, 1.0, 10), 1, 0)
-   coils0 = Coils.from_json("examples/data/ESSOS_coils_ellipse5.json")
+   coils0 = Coils.from_json("examples/data/ESSOS_biot_savart_LandremanPaulQA.json")
    x0 = np.asarray(coils0.dofs_curves).ravel()
 
    def coils_from_x(x):
@@ -470,7 +470,7 @@ interface on three-term free boundaries with coil constraints)::
        scales=np.full(x0.size, 0.01),
        quantities=(opt.min_abs_iota, opt.aspect_ratio))
    result = opt.minimize(problem, method="SLSQP",
-       constraints=problem.nonlinear_constraint([0.41, 4.9], [np.inf, 5.1]))
+       constraints=problem.nonlinear_constraint([0.41, 5.9], [np.inf, 6.1]))
    problem.close()
 
 Every design point is the free boundary of

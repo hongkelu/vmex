@@ -12,9 +12,9 @@ boundary itself: the implicit function theorem of the boundary fit, through the
 equilibrium and the coils' field.
 
 The resolution is the smallest at which the free boundary is meaningful
-(``MPOL = NTOR = 3``, ``NS = 11``, a 16 x 16 interface grid), so the example
-runs in a few minutes on a laptop CPU; most of that is compilation, which a
-second design point does not repeat.
+(``MPOL = NTOR = 3``, ``NS = 11``, a 16 x 16 interface grid).  On 8 CPU cores
+the first design point takes about 7 minutes, nearly all of it compilation,
+and each SLSQP step about one more: new coils recompile nothing.
 """
 
 from dataclasses import replace

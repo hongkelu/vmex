@@ -3,6 +3,7 @@
     python hdiag.py OUT base    # H3: deck and NESTOR starts; stationarity, Jacobian spectrum, longer fits
     python hdiag.py OUT quad    # H2: both starts with the same fixed singular quadrature
     python hdiag.py OUT path    # H4: the interface cost along the straight path between the base solutions
+    python hdiag.py OUT starts W [beta]   # six starts at label_weight W (vacuum, or the finite-beta deck)
 
 Every boundary is scored by one common scorer: a fixed-boundary equilibrium on it, the three interface conditions on
 a 64 x 64 grid with one singular quadrature (4 nfp 64, 128) planned once on the deck-start solution, and field
@@ -30,8 +31,11 @@ from test_freeboundary_vc import _vacuum_flux_surface  # noqa: E402
 
 out, mode = Path(sys.argv[1]), sys.argv[2]
 out.mkdir(parents=True, exist_ok=True)
+beta = mode == "starts" and sys.argv[-1] == "beta"
 inp = replace(vj.VmecInput.from_file("examples/data/input.cth_like_free_bdy"),
-              mgrid_file="examples/data/mgrid_cth_like.nc", pres_scale=0.0, curtor=0.0)
+              mgrid_file="examples/data/mgrid_cth_like.nc")
+if not beta:
+    inp = replace(inp, pres_scale=0.0, curtor=0.0)
 field = vj.MgridField.from_input(inp, inp.mgrid_file, order=3)
 fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
 N = 64
@@ -58,7 +62,7 @@ def score(deck, tag, **extra):
     rows, weights = fvc.boundary_residual(deck, eq.solution, field, runtime=eq.solver_context, nphi=N, ntheta=N,
                                           precision=_plan["plan"])
     res = fvc.summarize_boundary_residual(rows, weights)
-    bn, drift = _vacuum_flux_surface(eq.wout, field, lines=32, transits=30, steps=128)
+    bn, drift = (np.nan, np.nan) if beta else _vacuum_flux_surface(eq.wout, field, lines=32, transits=30, steps=128)
     row = dict(tag=tag, bn=res.normal, pressure=res.pressure, sheet=res.sheet_current,
                cost=0.5 * float(np.sum(np.asarray(weights) * np.sum(np.asarray(rows) ** 2, axis=0))),
                coil_bn=bn, fieldline_drift_mm=1e3 * drift, iota_axis=float(np.asarray(eq.wout.iotaf)[0]),
@@ -110,6 +114,28 @@ elif mode == "quad":
         save(f"{name}-quad", f)
         stationarity(f"{name}: fixed quadrature", f)
         score(f.input, f"{name}: fixed quadrature", seconds=s)
+elif mode == "starts":
+    W = float(sys.argv[3])
+    def scaled(f):
+        r, z = np.array(inp.rbc), np.array(inp.zbs); r[:, 1:] *= f; z[:, 1:] *= f
+        return replace(inp, rbc=r, zbs=z)
+    r = np.array(inp.rbc); r[inp.ntor, 0] += 0.01
+    rng = np.random.default_rng(451)
+    rp, zp = np.array(inp.rbc), np.array(inp.zbs)
+    rp[:, 1:] *= 1 + 0.02 * rng.standard_normal(rp[:, 1:].shape)
+    zp[:, 1:] *= 1 + 0.02 * rng.standard_normal(zp[:, 1:].shape)
+    six = {"deck": inp, "nestor": nestor_start, "m>=1 x0.97": scaled(0.97), "m>=1 x1.03": scaled(1.03),
+           "shifted +1 cm": replace(inp, rbc=r), "random 2%": replace(inp, rbc=rp, zbs=zp)}
+    walls = {}
+    for name, start in six.items():
+        f, s = fit(start, label_weight=W)
+        save(f"{name.replace(' ', '_').replace('%', 'pct').replace('>=', 'ge')}-W{W:g}", f)
+        stationarity(f"{name}: label {W:g}", f)
+        walls[name] = score(f.input, f"{name}: label {W:g}", seconds=s, label_weight=W)
+    ref = walls["nestor"]
+    from test_freeboundary_vc import _lcfs_distance
+    log(dict(tag=f"LCFS distance to the NESTOR start's fit, mm (label {W:g})",
+             **{k: 1e3 * _lcfs_distance(w, ref) for k, w in walls.items()}))
 elif mode == "path":
     a, b = (np.load(out.parent / "base" / f"{k}.npz") for k in ("deck", "nestor"))
     for s in np.linspace(0, 1, 11):

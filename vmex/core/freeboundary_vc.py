@@ -2080,6 +2080,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
                                                       max_nfev=self.boundary_max_nfev, undamped=True)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
+                # a warm start without an equilibrium of its own (the anchor's first-order prediction of the
+                # boundary) is past the anchor's linearization, as one outside the Newton basin: with every warm
+                # start so the trial fails at once (f98-qh-sl-c5, 10-20: the prediction had none, the other warm
+                # start stopped outside the basin, and the cold start then ground for 1 h+ at 8-13 min a model)
+                outside += J is not None
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
                 self.stats["boundary_evaluations"] += fit["nfev"]

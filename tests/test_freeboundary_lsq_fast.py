@@ -584,13 +584,17 @@ def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin()
 
         def _newton_boundary(self, params, field, **kw):
             calls.append("warm")
-            return dict(converged=False, nfev=3, outside_basin=self.outside, status="")
+            if self.outside == "raise" and calls.count("warm") == 1:  # the prediction has no equilibrium
+                raise RuntimeError("the starting boundary has no certified equilibrium")
+            return dict(converged=False, nfev=3, outside_basin=bool(self.outside), status="")
 
         def solve_boundary(self, params, field, **kw):
             calls.append("cold")
             return dict(converged=False, nfev=1, status="")
 
-    for outside, expected in ((True, ["warm", "warm"]), (False, ["warm", "warm", "cold", "reference"])):
+    # a warm start without an equilibrium of its own counts as outside (f98-qh-sl-c5: the cold start ground 1 h+)
+    for outside, expected in ((True, ["warm", "warm"]), ("raise", ["warm", "warm"]),
+                              (False, ["warm", "warm", "cold", "reference"])):
         problem = object.__new__(lsq.LeastSquaresFreeBoundaryProblem)
         problem._cache, problem.stats, problem._seed_start = {}, dict(trials=0, boundary_evaluations=0, failed=0), None
         problem._params_at, problem.field = (lambda x: None), (lambda x: None)
@@ -603,7 +607,7 @@ def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin()
         calls.clear()
         assert lsq.ThreeTermsFreeBoundaryProblem._solve(problem, np.ones(3)) is None
         assert calls == expected, calls
-        assert problem.stats.get("outside_basin", 0) == int(outside)
+        assert problem.stats.get("outside_basin", 0) == int(bool(outside))
 
 
 def test_trial_cold_start_crawling_outside_the_newton_basin_stops():

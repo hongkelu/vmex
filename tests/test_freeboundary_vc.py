@@ -150,7 +150,8 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
             return 0.0 * r, 0.7 / r, 0.0 * z
 
     wout = SimpleNamespace(raxis_cc=np.array([1.0, 0.1]), zaxis_cs=np.array([0.0, -0.05]), nfp=2)
-    assert fvc._coil_net_current(Toroidal(), wout) == pytest.approx(0.7, rel=1e-6)
+    # 720 points and a second-order tangent: 1.2e-5 relative on this axis
+    assert fvc._coil_net_current(Toroidal(), wout) == pytest.approx(0.7, rel=1e-4)
 
 
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):

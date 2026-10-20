@@ -507,3 +507,24 @@ def test_anchor_factor_callback_and_eager_miss_fall_back_to_the_fresh_adjoint() 
         jax.config.update("jax_disable_jit", previous)
     for a, b in zip(jax.tree.leaves(missed), jax.tree.leaves(fresh)):
         np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-12, atol=0.0)
+
+
+def test_rejected_solve_is_not_refined(monkeypatch) -> None:
+    """A host solve that ends above ``max_fsq_ratio * ftol`` is status 2 without a refinement (which cannot change
+    that status); an accepted one is refined, as before."""
+    inp, _, p0 = _small_solovev_setup()
+    params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), p0)
+    calls = []
+    refine = im._refined_state
+    monkeypatch.setattr(im, "_refined_state", lambda *a, **k: calls.append(1) or refine(*a, **k))
+    short = dataclasses.replace(inp, niter_array=np.asarray([3]))  # an iteration budget far too small
+    cfg = im.make_config(short, ftol=1.0e-10, multigrid=True, max_fsq_ratio=1.0)
+    for memo in (im._LAST_SOLVE, im._LAST_REFINED):
+        memo.pop(cfg, None)
+    assert int(im._host_solve_and_mask_status(cfg, params_np)[2]) == 2
+    assert not calls
+    cfg = im.make_config(inp, ftol=1.0e-10, max_iterations=1000)
+    for memo in (im._LAST_SOLVE, im._LAST_REFINED):
+        memo.pop(cfg, None)
+    assert int(im._host_solve_and_mask_status(cfg, params_np)[2]) == 0
+    assert calls

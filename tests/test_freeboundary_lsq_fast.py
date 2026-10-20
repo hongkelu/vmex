@@ -415,6 +415,8 @@ def test_trials_stop_the_host_solve_at_host_ftol_and_full_precision_at_the_deck(
                                               host_ftol=1e-12)
     assert model.host_ftol == 1e-12 and model.cfg_host is not None and model.cfg_host.ftol == 1e-12
     assert model.cfg.ftol == 1e-14 and model.converged_ftol == 1e-14  # the floor stays the deck's
+    # a host solve that cannot reach the residual it is accepted at fails early; the deck's solves run to the end
+    assert model.cfg_host.early_stop.target == model.cfg_host.max_fsq_ratio * 1e-12 and model.cfg.early_stop is None
     assert model._tight_config() is model.cfg_host
     x = np.array(model.x0)
     x[0] += 1e-3 * model.x_scale[0]

@@ -1092,6 +1092,67 @@ def test_shared_minimize_offsets_linear_constraints(sparse):
         opt.minimize(p, forward_ftol=1e-11)
 
 
+class _Stateful(FunctionProblem):
+    """``x @ x`` with an accepted point, as the free-boundary problems keep one; ``reject`` refuses trials."""
+
+    def __init__(self, x0, reject=lambda x: False, **kwargs):
+        from vmex.core.errors import TrialRejected
+
+        def value_and_grad(x):
+            if reject(x):
+                raise TrialRejected("no equilibrium here")
+            return float(x @ x), 2 * x
+        super().__init__(np.asarray(x0, dtype=float), value_and_grad=value_and_grad,
+                         fun=lambda x: value_and_grad(x)[0], **kwargs)
+        self.accepted, self.promoted = SimpleNamespace(parameters=self.x0.copy()), []
+
+    def accept_x(self, x):
+        self.accepted = SimpleNamespace(parameters=np.array(x))
+        self.promoted.append(np.array(x))
+
+
+def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
+    """Only accepted iterates are promoted, ``maxiter`` counts them, and a rejected trial is an infinite value
+    (or, for a constraint, a point far outside its bounds) that SLSQP backs off from."""
+    from scipy.optimize import Bounds, NonlinearConstraint
+    from vmex import optimize as opt
+    from vmex.core.errors import TrialRejected
+
+    p = _Stateful([3., 4.], bounds=([-5., -5.], [5., 5.]))
+    result = opt.minimize(p, method="SLSQP", x0=p.x0, options=dict(maxiter=2))
+    assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 2
+    assert not result.success and result.status == 99 and len(p.promoted) == 2
+    np.testing.assert_array_equal(result.x, p.promoted[-1])
+    budget0 = opt.minimize(_Stateful([3., 4.]), method="SLSQP", options=dict(maxiter=0))
+    assert budget0.accepted_steps == 0 and budget0.stop_reason == "accepted_step_budget_reached"
+
+    def far(x):
+        return bool(x[1] < -2.)
+
+    def rows(x):
+        if far(x):
+            raise TrialRejected("no equilibrium here")
+        return np.array([x[0] - x[1]])
+
+    q = _Stateful([3., 4.], reject=far)
+    result = opt.minimize(q, method="SLSQP", bounds=[(None, 6.), (-6., None)], options=dict(ftol=1e-10),
+                          constraints=[NonlinearConstraint(rows, 0., np.inf, jac=lambda x: np.array([[1., -1.]])),
+                                       NonlinearConstraint(rows, -np.inf, np.inf, jac=lambda x: None)])
+    assert result.stop_reason is None and result.success
+    np.testing.assert_allclose(result.x, [0., 0.], atol=1e-6)
+
+    for kwargs, error in [(dict(x0=[np.nan, 1.]), "finite"), (dict(x0=[1., 1.]), "accepted equilibrium"),
+                          (dict(options=dict(maxiter=-1)), "nonnegative"),
+                          (dict(constraints=NonlinearConstraint(rows, 0., 1.)), "analytic Jacobian"),
+                          (dict(constraints=[{"type": "eq", "fun": rows}]), "LinearConstraint")]:
+        with pytest.raises(ValueError if error != "LinearConstraint" else TypeError, match=error):
+            opt.minimize(_Stateful([3., 4.]), method="SLSQP", bounds=Bounds(-9., 9.), **kwargs)
+    with pytest.raises(TypeError, match="owns its input"):
+        opt.minimize(q, object())
+    with pytest.raises(TypeError, match="require a VmecInput"):
+        opt.minimize([(lambda *a: 0., 0., 1.)])
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

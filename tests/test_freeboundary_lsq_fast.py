@@ -604,3 +604,27 @@ def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin()
         assert lsq.ThreeTermsFreeBoundaryProblem._solve(problem, np.ones(3)) is None
         assert calls == expected, calls
         assert problem.stats.get("outside_basin", 0) == int(outside)
+
+
+def test_trial_cold_start_crawling_outside_the_newton_basin_stops():
+    """An optimization trial's cold start (``basin=COLD_TRIAL_BASIN``) stops once that many exact models in a row lack
+    their Newton step, instead of crawling at minutes a model (f98-qh-sl-c5, 10-20: an hour on one trial's cold start,
+    5 such models in a row and still infeasible); a cold start that converges is unchanged."""
+    from vmex.core.freeboundary_vc import COLD_TRIAL_BASIN
+
+    start = np.array([1e-3, 0.0, 0.3])
+    crawl = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300)
+    stop = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
+    assert not crawl["converged"] and not stop["converged"]
+    assert stop["outside_basin"] and stop["njev"] <= 10 < crawl["njev"], (stop["njev"], crawl["njev"])
+    a = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300)
+    b = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
+    assert a["converged"] and b["converged"]
+    np.testing.assert_array_equal(a["x"], b["x"])
+    rng = np.random.default_rng(0)
+    for n in (3, 6):
+        for weight in (0.01, 0.03, 0.1, 0.3):
+            x0 = np.r_[0.3, rng.standard_normal(n - 1)]
+            out = _SphereModel(weight, n)._newton(None, None, x0=x0 / np.linalg.norm(x0), max_iter=200,
+                                                  basin=COLD_TRIAL_BASIN)
+            assert out["converged"], (n, weight, out["status"])

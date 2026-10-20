@@ -1794,6 +1794,10 @@ class ThreeTermsFreeBoundaryModel:
 #: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves an
 #: error of order 1 % in a quasi-symmetry error near 1e-6 (the boundary solve's own states are Newton-refined).
 _REPORT_FTOL = 1e-17
+#: Exact models in a row without their full Newton step after which an optimization trial's cold start from the deck
+#: stops (least squares, :meth:`LeastSquaresFreeBoundaryModel._newton`'s ``basin``): a warm start's 2 allows for one
+#: on the way in, a cold start from farther for two.
+COLD_TRIAL_BASIN = 3
 
 
 @dataclass(frozen=True)
@@ -2064,8 +2068,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             try:
                 if J is None:  # cold: Newton from the deck (a trial that stalls there fails: the optimizer shortens
                     # its step; the band continuation, tens of minutes at finite beta, is the seed's route only)
+                    # A trial's cold start that keeps crawling outside the Newton basin fails too (least squares:
+                    # f98-qh-sl-c5, 10-20: 11 exact models, 5 in a row indefinite or cut short, an hour on one
+                    # trial at 4-5 min a model, still infeasible); a converging cold start reaches models with their
+                    # Newton step on the way in.  Not counted as a warm start outside the basin below.
+                    kw = {"basin": COLD_TRIAL_BASIN} if anchor and getattr(self.model, "basin_aware", False) else {}
                     fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev,
-                                                    continuation=False)
+                                                    continuation=False, **kw)
                 else:
                     fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
                                                       max_nfev=self.boundary_max_nfev, undamped=True)
@@ -2073,7 +2082,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
                 self.stats["boundary_evaluations"] += fit["nfev"]
-                outside += bool(fit.get("outside_basin"))
+                outside += bool(J is not None and fit.get("outside_basin"))
                 fit = None
                 continue
             break

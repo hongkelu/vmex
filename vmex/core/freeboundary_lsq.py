@@ -173,6 +173,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     ``hessian_chunk`` bounds the second-derivative columns per program call (default and least: 2).
     """
 
+    basin_aware = True  # solve_boundary takes ``basin`` (an optimization trial's cold start passes one)
+
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
     #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
@@ -666,8 +668,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         crawls under a collapsing radius while its trials search for equilibria that may not exist (f97-qa-sl-c3,
         10-19: indefinite exact models, eigenvalues down to -0.2 against Gauss-Newton's 5e-7, trials 2e-3 away
         without equilibrium or on another equilibrium branch at 4000 times the cost; 27 models in 1 h 48 min of
-        one trial's first start).  The caller then hands over to its next start.
+        one trial's first start).  The caller then hands over to its next start.  An integer ``basin`` is that
+        count (``True``: 2); an optimization trial's cold start from the deck uses :data:`COLD_TRIAL_BASIN`.
         """
+        limit = 0 if not basin else (2 if basin is True else int(basin))
         x = np.array(self.x0 if x0 is None else x0, dtype=float)
         t_eval = time.perf_counter()
         got = self.evaluate(x, params, field, tight=True)
@@ -819,8 +823,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       + f"({history[-1][-1]:.0f} s)", flush=True)
             if verbose > 1:
                 self._print_weakest(S * (N @ Q[:, 0]))
-            if basin and fresh and not w[0] > 0 and outside >= 1:  # no Newton step: stop before its (costly) trials
-                status = "stalled: outside the Newton basin (a second exact model without a Newton step: indefinite)"
+            if limit and fresh and not w[0] > 0 and outside >= limit - 1:  # no Newton step: stop before its (costly) trials
+                status = (f"stalled: outside the Newton basin ({limit} exact models in a row without their Newton step, "
+                          "the last indefinite)")
                 break
             # gains below what the equilibria resolve are not resolved: the cost's measured repeatability, and for a
             # solve outside an optimization (a_priori_floor) its a-priori resolution too -- the rows are determined to
@@ -856,7 +861,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             probe = None  # the radius a probe of the Newton step returns to when that step fails
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
-                if basin and fresh and cheap_cut and newton > radius:
+                if limit and fresh and cheap_cut and newton > radius:
                     # the radius measures the cheap model whose rejected step cut it, not this one: the basin test
                     # judges an exact model by its own Newton step, so that step is evaluated first (one probe; if it
                     # fails, the solve goes on from the cut radius as without it).  f98-qh-al-c4, 10-19: an exact
@@ -1020,8 +1025,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # model with rho 0.993 at an inherited radius 1/10 of its Newton step, extended to 0.85 of it)
                 # dropped both warm starts of the trial at their answer and left it to grind on the cold start
                 outside = 0 if full or (w[0] > 0 and newton_gains) else outside + 1
-                if basin and outside >= 2:
-                    status = "stalled: outside the Newton basin (a second exact model whose step the radius cut short)"
+                if limit and outside >= limit:
+                    status = (f"stalled: outside the Newton basin ({limit} exact models in a row without their Newton step, "
+                              "the last one's step the radius cut short)")
                     break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise

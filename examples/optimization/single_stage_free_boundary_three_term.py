@@ -100,8 +100,8 @@ problem = opt.FreeBoundaryProblem.from_loss(
     inp, loss, np.asarray(X0), field_from_parameters=field_from_parameters,
     quantities=(opt.mean_iota, opt.aspect_ratio), boundary_condition="three_term", three_term_options=THREE_TERM)
 x0 = problem.x0
-start = problem.boundary_residual(x0)
-print(f"start: loss {problem.fun(x0):.4e}, iota {problem.constraint_values(x0)[0]:.4f}, "
+start, loss0 = problem.boundary_residual(x0), problem.fun(x0)
+print(f"start: loss {loss0:.4e}, iota {problem.constraint_values(x0)[0]:.4f}, "
       f"aspect {problem.constraint_values(x0)[1]:.3f}; interface residuals B.n {start.normal:.1e}, "
       f"pressure {start.pressure:.1e}, sheet current {start.sheet_current:.1e}")
 
@@ -125,7 +125,7 @@ result = opt.minimize(problem, x0=x0, method="SLSQP", constraints=[bounds], call
 x = result.x
 end = problem.boundary_residual(x)
 print(f"\n{result.accepted_steps} accepted steps ({result.stop_reason or result.message}): "
-      f"loss {problem.fun(x0):.4e} -> {result.fun:.4e}")
+      f"loss {loss0:.4e} -> {result.fun:.4e}")
 print(f"final interface residuals B.n {end.normal:.1e}, pressure {end.pressure:.1e}, "
       f"sheet current {end.sheet_current:.1e}")
 print(f"trials {problem.stats['trials']}, boundary evaluations {problem.stats['boundary_evaluations']}")

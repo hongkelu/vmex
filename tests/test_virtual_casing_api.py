@@ -152,3 +152,5 @@ def test_an_old_virtual_casing_jax_counts_as_unavailable(monkeypatch):
         return
     monkeypatch.setattr(_compat.importlib_metadata, "version", lambda name: "0.0.4")
     assert not virtual_casing.have_virtual_casing_jax()
+    monkeypatch.setattr(virtual_casing, "_HAVE_VCJ", False)  # not installed at all
+    assert not virtual_casing.have_virtual_casing_jax()

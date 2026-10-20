@@ -89,7 +89,10 @@ def test_status_callback_exposes_under_converged_fsq(monkeypatch):
     mask = jax.tree.map(jax.numpy.zeros_like, state)
     result = SimpleNamespace(converged=False, fsqr=2.0e-10, fsqz=3.0e-10, fsql=0.0)
 
-    def under_converged(config, params_np):
+    refines = []
+
+    def under_converged(config, params_np, *, refine=True):
+        refines.append(refine)
         im._LAST_SOLVE[config] = (im._params_key(params_np), result)
         return jax.tree.map(np.asarray, state), jax.tree.map(np.asarray, mask)
 
@@ -98,6 +101,7 @@ def test_status_callback_exposes_under_converged_fsq(monkeypatch):
         cfg, jax.tree.map(np.asarray, params)
     )
     assert int(status) == 2
+    assert refines == [False]  # a rejected state is not refined
     assert np.isfinite(fsq) and fsq > 0.0
     np.testing.assert_allclose(fsq_ratio, fsq / cfg.ftol)
 

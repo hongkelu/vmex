@@ -74,7 +74,9 @@ def config(name):
     if res:
         M = int(res)
         ns = int(np.asarray(inp.ns_array)[-1])
-        inp = replace(inp.change_resolution(mpol=M, ntor=M, ntheta=2 * M + 6, nzeta=max(16, 2 * M + 4)),
+        # an mgrid deck keeps its NZETA: it must divide the table's toroidal planes (VMEC2000's pairing rule)
+        nzeta = int(inp.nzeta) if isinstance(field, vj.MgridField) else max(16, 2 * M + 4)
+        inp = replace(inp.change_resolution(mpol=M, ntor=M, ntheta=2 * M + 6, nzeta=nzeta),
                       ns_array=np.array([ns]), niter_array=np.array([20000]),
                       ftol_array=np.array([float(np.asarray(inp.ftol_array)[-1])]))
         k = 6 if M in (6, 8) else 4

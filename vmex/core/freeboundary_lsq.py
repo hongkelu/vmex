@@ -855,6 +855,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
+                if basin and fresh and cheap_cut:
+                    # the radius measures the cheap model whose rejected step cut it, not this one: the basin test
+                    # judges an exact model by its own Newton step (f98-qh-al-c4, 10-19: an exact model with rho
+                    # 0.993 at such a radius, 1/10 of its Newton step, counted as outside the basin, and both warm
+                    # starts of the trial stopped so at their answer; the trial failed and the optimizer backtracked)
+                    radius, cheap_cut = max(radius, newton), False
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""
@@ -869,7 +875,6 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 return cost_of(rows) + penalty * violation(rows)
 
             accepted, evaluated = False, False  # evaluated: some trial had an equilibrium (a cost to compare)
-            inherited = cheap_cut  # this model starts from a radius a cheap model's failure cut
             full = False  # the accepted step is the model's whole Newton step (not one the trust radius cut short)
             # the model's whole Newton step was evaluated (an equilibrium there): only then do the shorter trial steps
             # below the rows' noise mean convergence; ``forced``: that step was tried once on purpose
@@ -979,9 +984,6 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         radius = 2.0 * radius
                 if rho > 0.1 or (tiny and cost_new <= merit):
                     gained = merit - cost_new
-                    # the model failed at its radius: its own rejected trials cut the radius, or its step's ratio
-                    # (before any correction) fails the radius test
-                    own = attempt > 0 or rho_model < 0.25
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
                         callback(np.asarray(x).copy())
@@ -1009,13 +1011,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # Counting a step the radius cut short as outside the basin there (f98-qh-al-c4, 10-19: an exact
                 # model with rho 0.993 at an inherited radius 1/10 of its Newton step, extended to 0.85 of it)
                 # dropped both warm starts of the trial at their answer and left it to grind on the cold start
-                # A positive-definite model whose first step was accepted at a radius that a cheap model's rejected
-                # step had cut is no evidence either way (that radius measures the cheap model, toy of
-                # test_warm_start_at_its_answer_stays_in_the_newton_basin): the count stands.
-                if full or (w[0] > 0 and newton_gains):
-                    outside = 0
-                elif not (w[0] > 0 and inherited and not own):
-                    outside += 1
+                outside = 0 if full or (w[0] > 0 and newton_gains) else outside + 1
                 if basin and outside >= 2:
                     status = "stalled: outside the Newton basin (a second exact model whose step the radius cut short)"
                     break

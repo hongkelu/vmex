@@ -1794,6 +1794,11 @@ class ThreeTermsFreeBoundaryModel:
 #: Force residual of the reported equilibrium's final rung: plain descent stopped at the usual 1e-13 leaves an
 #: error of order 1 % in a quasi-symmetry error near 1e-6 (the boundary solve's own states are Newton-refined).
 _REPORT_FTOL = 1e-17
+#: Exact models in a row without their full Newton step after which an optimization trial's cold start from the deck
+#: (or a re-referenced deck) stops (least squares, :meth:`LeastSquaresFreeBoundaryModel._newton`'s ``basin``), as a
+#: warm start does: one on the way in is allowed.  f98-qh-sl-c5 (10-20): with 3 the cold start of a failing trial still
+#: took 34 min (exact models of 7-13 min from the deck), and the re-referenced solve after it ground on unbounded.
+COLD_TRIAL_BASIN = 2
 
 
 @dataclass(frozen=True)
@@ -2064,16 +2069,26 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             try:
                 if J is None:  # cold: Newton from the deck (a trial that stalls there fails: the optimizer shortens
                     # its step; the band continuation, tens of minutes at finite beta, is the seed's route only)
+                    # A trial's cold start that keeps crawling outside the Newton basin fails too (least squares:
+                    # f98-qh-sl-c5, 10-20: 11 exact models, 5 in a row indefinite or cut short, an hour on one
+                    # trial at 4-5 min a model, still infeasible); a converging cold start reaches models with their
+                    # Newton step on the way in.  Not counted as a warm start outside the basin below.
+                    kw = {"basin": COLD_TRIAL_BASIN} if anchor and getattr(self.model, "basin_aware", False) else {}
                     fit = self.model.solve_boundary(params, field, x0=start, max_nfev=self.boundary_max_nfev,
-                                                    continuation=False)
+                                                    continuation=False, **kw)
                 else:
                     fit = self.model._newton_boundary(params, field, x0=start, jacobian=J,
                                                       max_nfev=self.boundary_max_nfev, undamped=True)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
+                # a warm start without an equilibrium of its own (the anchor's first-order prediction of the
+                # boundary) is past the anchor's linearization, as one outside the Newton basin: with every warm
+                # start so the trial fails at once (f98-qh-sl-c5, 10-20: the prediction had none, the other warm
+                # start stopped outside the basin, and the cold start then ground for 1 h+ at 8-13 min a model)
+                outside += J is not None
                 continue
             if not fit["converged"]:  # a stalled fit is no free boundary (its rows are not zero): the next start
                 self.stats["boundary_evaluations"] += fit["nfev"]
-                outside += bool(fit.get("outside_basin"))
+                outside += bool(J is not None and fit.get("outside_basin"))
                 fit = None
                 continue
             break
@@ -2107,8 +2122,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._bind(model, x)
         fit = None
         try:
+            kw = {"basin": COLD_TRIAL_BASIN} if getattr(model, "basin_aware", False) else {}
             fit = model.solve_boundary(self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x)),
-                                       max_nfev=self.boundary_max_nfev, continuation=False)
+                                       max_nfev=self.boundary_max_nfev, continuation=False, **kw)
         except (VmecError, RuntimeError):
             pass
         if fit is None or not fit["converged"]:

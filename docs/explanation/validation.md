@@ -349,9 +349,8 @@ from the same boundary, the target's with its minor radius scaled by 0.97
 (11 mm away), and every result is scored the same way: the boundary is
 re-solved as a fixed-boundary equilibrium, and the three conditions are
 evaluated on a 48 x 48 virtual-casing grid with the singular quadrature
-(4 nfp 48, 96). The records are `benchmarks/three_term_resolution.json` (beta)
-and `benchmarks/three_term_resolution_vacuum.json`;
-`benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
+(4 nfp 48, 96). `benchmarks/run_three_term_resolution.py table OUT` collects a run's records into
+`OUT/three_term_resolution.json`; `benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
 surfaces and iota), and `benchmarks/three_term_resolution_poincare.py` traces
 the vacuum field lines. DESC (`FixSheetCurrent`, not a VMEX dependency) was run
 outside VMEX and its wouts scored the same way, re-solved with all of their

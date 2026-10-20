@@ -1,8 +1,0 @@
-{
-  "accepted_steps": 999,
-  "success": false,
-  "message": "Iteration limit reached",
-  "stop_reason": null,
-  "failed_trials": 14,
-  "elapsed_seconds": 97547.29890204966
-}

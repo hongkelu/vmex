@@ -270,9 +270,7 @@ Inspect the policy instead of guessing:
 
 Diagnostics include ``fsq``, ``fsq_ratio``, ``max_fsq_ratio``,
 ``derivative_certified``, solve/iteration totals, rejected trials, and
-derivative fallbacks. ``benchmarks/optimization.py`` profiles the QI, QA, QH,
-QP, and scalar contracts over NFP 1--5 and accepts ``--max-fsq-ratio`` without
-turning machine-specific results into a package default.
+derivative fallbacks.
 
 SciPy
 -----
@@ -439,6 +437,62 @@ outer ``jax.jit`` the pullback warns and uses the staged coupled GCROT solve
 instead, so call the objective eagerly to keep it. ``device="auto"`` uses the CPU
 for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
+
+:class:`vmex.core.freeboundary_problem.FreeBoundaryProblem` packages the same
+field-only path for host optimizers that step from an accepted equilibrium.
+It takes the same ``field_from_parameters`` map: VMEX keeps no coil code, so
+the coils and their chart come from ESSOS, here as a differentiable
+Biot-Savart field of ``coils_from_x(x)``
+(``examples/optimization/single_stage_free_boundary_three_term.py`` runs the same
+interface on three-term free boundaries)::
+
+   from dataclasses import replace
+
+   import jax.numpy as jnp
+   import numpy as np
+   from essos.coils import Coils
+   from essos.fields import BiotSavart
+   import vmex as vj
+   from vmex import optimize as opt
+
+   inp = vj.VmecInput.from_file("examples/data/input.LandremanPaul2021_QA_lowres")
+   inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field", phiedge=-0.025)
+   qs = opt.QuasisymmetryRatioResidual(np.linspace(0.1, 1.0, 10), 1, 0)
+   coils0 = Coils.from_json("examples/data/ESSOS_biot_savart_LandremanPaulQA.json")
+   x0 = np.asarray(coils0.dofs_curves).ravel()
+
+   def coils_from_x(x):
+       return coils0.with_dofs(jnp.concatenate((x, coils0.dofs_currents)))
+
+   problem = opt.FreeBoundaryProblem.from_loss(
+       inp, lambda state, rt, x: qs.total_state(state, rt), x0,
+       field_from_parameters=lambda x: BiotSavart(coils_from_x(x)),
+       scales=np.full(x0.size, 0.01),
+       quantities=(opt.min_abs_iota, opt.aspect_ratio))
+   result = opt.minimize(problem, method="SLSQP",
+       constraints=problem.nonlinear_constraint([0.41, 5.9], [np.inf, 6.1]))
+   problem.close()
+
+Every design point is the free boundary of
+:func:`~vmex.core.freeboundary_implicit.solve_free_boundary_implicit` (an
+ordinary VMEX + NESTOR solve, Newton-anchored on its coupled root), solved
+once and cached; the gradient and the constraint Jacobian are reverse-mode
+derivatives through its implicit adjoint, one adjoint per row.
+``opt.minimize`` supports SLSQP for problems and promotes only the iterates
+SciPy accepts (``accept_x``); a point whose free boundary does not solve
+raises :class:`~vmex.core.errors.TrialRejected`, and the result's
+``stop_reason`` says why a run stopped. The loss is ``loss(state, rt, x)``; ``quantities`` are
+``function(state, rt)`` constraint rows and ``parameter_quantities`` are
+``function(state, rt, x)`` rows (a coil-plasma clearance, say), whose
+derivatives include both the explicit term and the equilibrium response.
+Constraints on ``x`` alone, such as coil length or curvature from ESSOS, are
+ordinary optimizer constraints and need no adjoint. An optional
+``plasma_from_parameters(params, x)`` makes the design vector also set plasma
+parameters, for example PHIEDGE, which then enter the equilibrium and its
+derivatives. ``solver_options`` are passed to
+:func:`~vmex.core.freeboundary_implicit.make_free_boundary_config`.
+``equilibrium_from_x`` returns the :class:`~vmex.core.optimize.Equilibrium`
+of a design point.
 
 Use :class:`vmex.core.monitoring.EquilibriumReporter` for the compact physics
 summary shared by the examples.  Each entry accepts either VMEX's

@@ -160,6 +160,7 @@ def plot_optimization_movie(
     fps: int = 10,
     max_frames: int = 50,
     dpi: int = 100,
+    frame_labels: Sequence[str] | None = None,
 ) -> Path:
     """Animate accepted surface and coil geometries from an optimization.
 
@@ -205,6 +206,10 @@ def plot_optimization_movie(
     dpi:
         Output resolution, default 100 — deliberately below the still-figure
         default, since every frame is rendered.
+    frame_labels:
+        Optional title for each entry of ``x_history`` (for example the
+        optimizer step a checkpoint was saved at); the default titles a frame
+        with its index into ``x_history``.
 
     Returns
     -------
@@ -213,6 +218,8 @@ def plot_optimization_movie(
     """
     if not x_history:
         raise ValueError("x_history must contain at least one accepted point")
+    if frame_labels is not None and len(frame_labels) != len(x_history):
+        raise ValueError("frame_labels must have one entry per x_history point")
     if fps < 1 or max_frames < 2 or dpi < 1:
         raise ValueError("fps and dpi must be positive and max_frames at least 2")
     path = Path(path)
@@ -304,7 +311,9 @@ def plot_optimization_movie(
         axis.set_xlim(center[0] - span / 2, center[0] + span / 2)
         axis.set_ylim(center[1] - span / 2, center[1] + span / 2)
         axis.set_zlim(center[2] - span / 2, center[2] + span / 2)
-        axis.set_box_aspect((1, 1, 1)); axis.set_title(f"accepted iteration {indices[frame_index]}")
+        axis.set_box_aspect((1, 1, 1)); axis.set_title(
+            f"accepted iteration {indices[frame_index]}" if frame_labels is None
+            else str(frame_labels[indices[frame_index]]))
         return (*axis.lines, *axis.collections)
 
     animation = FuncAnimation(figure, draw, frames=len(indices), interval=1000 / fps)
@@ -2589,7 +2598,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
         theta = np.mod(final[lost, 1], 2 * np.pi)
         h = a_map.hist2d(zeta, theta, bins=(24, 36), range=[[0, 2 * np.pi / nfp], [0, 2 * np.pi]],
                          cmap="Blues", cmin=1)
-        fig.colorbar(h[3], ax=a_map, label="lost alphas")
+        fig.colorbar(h[3], ax=a_map, label="lost particles")
         a_map.set(xlabel=r"$\zeta_B$ (one period)", ylabel=r"$\theta_B$", title="loss locations on s = 1")
         bins = np.linspace(-1, 1, 21)
         for mask, label in ((~lost, "confined"), (lost, "lost")):
@@ -2614,7 +2623,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                   if positive_losses else np.linspace(0, t[-1], 30))
             a_b.hist(t_loss, bins=tb)
             a_b.set(xscale="log" if positive_losses else "linear", xlabel="loss time [s]",
-                    ylabel="lost alphas", title="loss-time histogram")
+                    ylabel="lost particles", title="loss-time histogram")
         s_b, iota = np.asarray(bz["s"]), np.asarray(bz["iota"])
         a_i.plot(s_b, iota, "-", color="0.2")
         lo, hi = float(np.min(iota)), float(np.max(iota))
@@ -2626,7 +2635,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                     a_i.annotate(f"{k * nfp}/{m}", (1.0, r), fontsize=8, ha="right", va="bottom")
         if lost.any() and meta.get("birth") == "volume":
             a_i.axvspan(float(birth[lost, 0].min()), float(birth[lost, 0].max()), alpha=0.15,
-                        label="births of lost alphas")
+                        label="births of lost particles")
             a_i.legend(loc="best")
         a_i.set(xlabel="s", ylabel=r"$\iota$", title=r"$\iota(s)$ and rationals $nN_{fp}/m$")
         fig.suptitle(title, fontsize=11)
@@ -2649,7 +2658,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                          label="log10 loss time [s]" if positive_losses else "loss time [s]")
         ax3.set_axis_off()
         ax3.set_box_aspect((1, 1, 0.35))
-        ax3.set_title(f"{name}: {int(lost.sum())} alpha loss locations")
+        ax3.set_title(f"{name}: {int(lost.sum())} particle loss locations")
         path = outdir / f"{name}_trace_3d.png"
         _save_figure(fig, path, dpi=_DPI)
         plt.close(fig)

@@ -104,7 +104,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   are in the file beside its physical targets, resolution and save names, so a
   reader never has to open a second file to follow one run.
   The scalar lane trades objective progress per evaluation (measured: QA
-  final QS 2.7x above least squares with 40 mode-2 iterations, QI 17x) for a cheaper cold start and
+  final QS 2.7x above least squares with 40 mode-2 iterations; QI on an equal seed, weights and solve count ends 0.7x the least-squares value) for a cheaper cold start and
   lower peak memory; `QA_optimization.py` remains the default.
   `single_stage_optimization.py` *(preview)* is the simplest joint
   plasma-and-coil script and the one to copy for a new problem: every
@@ -175,6 +175,12 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
+- `optimization/single_stage_free_boundary_three_term.py`: single-stage
+  optimization of the LP QA coil currents on the three-term free boundary
+  (`FreeBoundaryProblem` with `boundary_condition="three_term"`: B.n, pressure
+  balance and no sheet current), SLSQP lowering quasisymmetry with the
+  rotational transform and aspect ratio bounded. About 13 minutes on 8 CPU
+  cores, most of it the first point's compilation. Needs `vmex[coils,freeb]`.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

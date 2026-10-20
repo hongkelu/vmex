@@ -630,6 +630,61 @@ def test_direct_jaxopt_and_optax_contracts():
     assert float(problem.jax_fun(x)) < float(problem.jax_fun(problem.x0))
 
 
+def test_vary_phiedge_requires_implicit_derivatives():
+    from pathlib import Path
+
+    from vmex.core import optimize as opt
+    from vmex.core.input import VmecInput
+
+    inp = VmecInput.from_file(Path(__file__).resolve().parents[1] / "examples/data/input.solovev")
+    with pytest.raises(ValueError, match="vary_phiedge requires"):
+        opt.make_problem(inp, objective_terms=[(opt.volume_average_beta, 0.0, 1.0)], vary_phiedge=True,
+                         derivative_method="finite_difference")
+
+
+def test_vary_phiedge_appends_a_relative_phiedge_dof():
+    """vary_phiedge: a named trailing dof, round-tripped through the input,
+    whose implicit Jacobian column matches central differences of re-solves.
+
+    Jitted (a thread-local ``jax.disable_jit(False)`` misses the solver's threads):
+    three solves take seconds, not six minutes."""
+    import jax
+
+    previous = bool(jax.config.jax_disable_jit)
+    jax.config.update("jax_disable_jit", False)
+    try:
+        _check_vary_phiedge()
+    finally:
+        jax.config.update("jax_disable_jit", previous)
+
+
+def _check_vary_phiedge():
+    import dataclasses
+    from pathlib import Path
+
+    from vmex.core import optimize as opt
+    from vmex.core.input import VmecInput
+
+    inp = VmecInput.from_file(
+        Path(__file__).resolve().parents[1] / "examples/data/input.solovev"
+    )
+    terms = [(opt.volume_average_beta, 0.0, 1.0)]
+    problem = opt.VmecProblem.from_tuples(inp, terms, max_mode=1, vary_phiedge=True)
+    assert problem.names[-1] == "PHIEDGE/nominal" and problem.x0[-1] == 0.0
+    x = problem.x0.copy()
+    x[-1] = 0.1
+    assert np.isclose(problem.input_from_x(x).phiedge, 1.1 * inp.phiedge)
+    np.testing.assert_allclose(problem.x_from_input(problem.input_from_x(x)), x)
+
+    def beta(scale):
+        trial = dataclasses.replace(inp, phiedge=inp.phiedge * scale)
+        return float(np.ravel(opt._call_term(opt.volume_average_beta, opt.solve_equilibrium(trial)))[0])
+
+    step = 1e-4
+    difference = (beta(1 + step) - beta(1 - step)) / (2 * step)
+    np.testing.assert_allclose(problem.residual_jac(problem.x0)[0, -1], difference, rtol=1e-4)
+
+
 def test_vmec_finite_difference_factory_uses_parallel_provider(monkeypatch):
     """The VMEC factory composes tuples and differentiates opaque host terms."""
     from pathlib import Path
@@ -967,6 +1022,135 @@ def test_vmec_subproblem_needs_a_recorded_deck_for_a_max_mode_stage():
         names=("RBC(0,1)", "ZBS(0,1)"))
     with pytest.raises(AttributeError, match="does not record the input deck"):
         problem.subproblem(max_mode=1)
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_shared_minimize_uses_physical_coordinates(bounded):
+    from vmex import optimize as opt
+    from scipy.optimize import Bounds
+
+    target = np.array([2., -3.])
+    problem = opt.FunctionProblem.from_functions(np.array([1., 1.]), scales=np.array([.2, 4.]),
+        value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
+    points = []
+    bounds = Bounds([-5., -5.], [5., 5.]) if bounded else None
+    result = opt.minimize(problem, method="SLSQP", bounds=bounds, callback=lambda x: points.append(x.copy()),
+                          options={"maxiter": 100, "ftol": 1e-12})
+    assert result.success and points
+    np.testing.assert_allclose(result.x, target, atol=1e-5)
+    np.testing.assert_allclose(result.jac, 2*(result.x-target), atol=1e-10)
+    np.testing.assert_array_equal(points[-1], result.x)
+
+
+def test_shared_minimize_scales_physical_constraints_and_rejects_unsupported_method():
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    problem = opt.FunctionProblem.from_functions(np.array([.2, .2]), scales=np.array([.1, 2.]),
+        value_and_grad=lambda x: (float(np.sum((x-2.)**2)), 2*(x-2.)))
+    constraint = NonlinearConstraint(lambda x: np.array([x.sum()]), -np.inf, 1.,
+                                     jac=lambda x: np.ones((1, 2)))
+    result = opt.minimize(problem, method="SLSQP", constraints=constraint,
+                          options={"maxiter": 50, "ftol": 1e-12})
+    assert result.success
+    np.testing.assert_allclose(result.x, [.5, .5], atol=1e-6)
+    for method in ("L-BFGS-B", "BFGS"):
+        with pytest.raises(ValueError, match="only method='SLSQP'"):
+            opt.minimize(problem, method=method, constraints=constraint)
+    with pytest.raises(ValueError, match="only method='SLSQP'"):
+        opt.minimize(problem)  # the scalarized-VMEC default is not supported here
+
+
+def test_shared_minimize_callback_stop_keeps_last_reported_point():
+    from vmex import optimize as opt
+
+    p = opt.FunctionProblem.from_functions(np.array([5.]), scales=np.array([.3]),
+        value_and_grad=lambda x: (float(x@x), 2*x))
+    seen = []
+    def callback(intermediate_result):
+        seen.append(intermediate_result.x.copy())
+        raise StopIteration
+    result = opt.minimize(p, method="SLSQP", callback=callback)
+    assert not result.success and result.stop_reason == "callback_stopped"
+    np.testing.assert_array_equal(result.x, seen[0])
+    np.testing.assert_allclose(result.fun, result.x@result.x)
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_shared_minimize_offsets_linear_constraints(sparse):
+    from scipy.optimize import LinearConstraint
+    from scipy.sparse import csr_matrix
+    from vmex import optimize as opt
+    p = FunctionProblem.from_functions([3., 4.], scales=[.3, 2.],
+        value_and_grad=lambda x: (float(x@x), 2*x))
+    matrix = np.array([[1., 1.]])
+    constraint = LinearConstraint(csr_matrix(matrix) if sparse else matrix, 1., 1.)
+    result = opt.minimize(p, method="SLSQP", constraints=constraint, options=dict(ftol=1e-12))
+    assert result.success
+    np.testing.assert_allclose(result.x, [.5, .5], atol=1e-6)
+    with pytest.raises(TypeError, match="when building"):
+        opt.minimize(p, forward_ftol=1e-11)
+
+
+class _Stateful(FunctionProblem):
+    """``sum(x**power)`` with an accepted point, as the free-boundary problems keep one; ``reject`` refuses trials."""
+
+    def __init__(self, x0, reject=lambda x: False, power=2, **kwargs):
+        from vmex.core.errors import TrialRejected
+
+        def value_and_grad(x):
+            if reject(x):
+                raise TrialRejected("no equilibrium here")
+            return float(np.sum(x**power)), power * x**(power - 1)
+        super().__init__(np.asarray(x0, dtype=float), value_and_grad=value_and_grad,
+                         fun=lambda x: value_and_grad(x)[0], **kwargs)
+        self.accepted, self.promoted = SimpleNamespace(parameters=self.x0.copy()), []
+
+    def accept_x(self, x):
+        self.accepted = SimpleNamespace(parameters=np.array(x))
+        self.promoted.append(np.array(x))
+
+
+def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
+    """Only accepted iterates are promoted, ``maxiter`` counts them, and a rejected trial is an infinite value
+    (or, for a constraint, a point far outside its bounds) that SLSQP backs off from."""
+    from scipy.optimize import Bounds, NonlinearConstraint
+    from vmex import optimize as opt
+    from vmex.core.errors import TrialRejected
+
+    p = _Stateful([3., 4.], power=4, bounds=([-5., -5.], [5., 5.]))
+    result = opt.minimize(p, method="SLSQP", x0=p.x0, options=dict(maxiter=2))
+    assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 2
+    assert not result.success and result.status == 99 and len(p.promoted) == 2
+    np.testing.assert_array_equal(result.x, p.promoted[-1])
+    budget0 = opt.minimize(_Stateful([3., 4.]), method="SLSQP", options=dict(maxiter=0))
+    assert budget0.accepted_steps == 0 and budget0.stop_reason == "accepted_step_budget_reached"
+
+    def far(x):
+        return bool(x[1] < -2.)
+
+    def rows(x):
+        if far(x):
+            raise TrialRejected("no equilibrium here")
+        return np.array([x[0] - x[1]])
+
+    q = _Stateful([3., 4.], reject=far)
+    result = opt.minimize(q, method="SLSQP", bounds=[(None, 6.), (-6., None)], options=dict(ftol=1e-10),
+                          constraints=[NonlinearConstraint(rows, 0., np.inf, jac=lambda x: np.array([[1., -1.]])),
+                                       NonlinearConstraint(rows, -np.inf, np.inf, jac=lambda x: None)])
+    assert result.stop_reason is None and result.success
+    np.testing.assert_allclose(result.x, [0., 0.], atol=1e-6)
+
+    for kwargs, error in [(dict(x0=[np.nan, 1.]), "finite"), (dict(x0=[1., 1.]), "accepted equilibrium"),
+                          (dict(options=dict(maxiter=-1)), "nonnegative"),
+                          (dict(constraints=NonlinearConstraint(rows, 0., 1.)), "analytic Jacobian"),
+                          (dict(constraints=[{"type": "eq", "fun": rows}]), "LinearConstraint")]:
+        with pytest.raises(ValueError if error != "LinearConstraint" else TypeError, match=error):
+            opt.minimize(_Stateful([3., 4.]), method="SLSQP", bounds=Bounds(-9., 9.), **kwargs)
+    with pytest.raises(TypeError, match="owns its input"):
+        opt.minimize(q, object())
+    with pytest.raises(TypeError, match="require a VmecInput"):
+        opt.minimize([(lambda *a: 0., 0., 1.)])
 
 
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):

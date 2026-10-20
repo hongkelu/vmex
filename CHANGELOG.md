@@ -1,9 +1,13 @@
 # Changelog
 
 Release notes are mirrored from the GitHub releases, which carry each release
-in full. A number appears here only where a committed artifact backs it, and
-`benchmarks/INDEX.md` lists every benchmark artifact with its generator, the
-revision it was measured at, and the pages that cite it.
+in full. A number appears here only where a committed artifact backs it; each
+record under `benchmarks/` names the revision it was measured at.
+
+## Unreleased
+
+- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION`) solves the free boundary where B.n, pressure
+  balance and the sheet current vanish; `FreeBoundaryProblem` optimizes coils on it, or on NESTOR's, via `opt.minimize`.
 
 ## 0.11.11 - 2026-10-18
 

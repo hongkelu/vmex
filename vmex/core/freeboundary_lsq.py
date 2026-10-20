@@ -853,14 +853,17 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if radius is None:
                 # the first radius: the Newton step, or (indefinite model) the gradient step of the stiffest mode
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
+            probe = None  # the radius a probe of the Newton step returns to when that step fails
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
-                if basin and fresh and cheap_cut:
+                if basin and fresh and cheap_cut and newton > radius:
                     # the radius measures the cheap model whose rejected step cut it, not this one: the basin test
-                    # judges an exact model by its own Newton step (f98-qh-al-c4, 10-19: an exact model with rho
-                    # 0.993 at such a radius, 1/10 of its Newton step, counted as outside the basin, and both warm
-                    # starts of the trial stopped so at their answer; the trial failed and the optimizer backtracked)
-                    radius, cheap_cut = max(radius, newton), False
+                    # judges an exact model by its own Newton step, so that step is evaluated first (one probe; if it
+                    # fails, the solve goes on from the cut radius as without it).  f98-qh-al-c4, 10-19: an exact
+                    # model with rho 0.993 at such a radius, 1/10 of its Newton step, counted as outside the basin,
+                    # and both warm starts of the trial stopped so at their answer; the trial failed and the optimizer
+                    # backtracked, trial after trial (15-17 min each)
+                    probe, radius, cheap_cut = radius, newton, False
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""
@@ -925,6 +928,11 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # failing their own test; the TT3 session's finding, 10-18)
                 rho_model = rho
                 newton_gains = newton_gains or (full and got is not None and rho > 0)
+                if probe is not None:
+                    back, probe = probe, None
+                    if got is None or rho < 0.25:  # no corrections of the probe: back to the cut radius
+                        radius = back
+                        continue
                 for _ in range(3 if m else 0):
                     # the constraint rows' own second-order correction (the Maratos effect): along the soft
                     # directions of a finite-beta boundary the net-current and bootstrap rows curve, so a step that

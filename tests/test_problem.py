@@ -1093,15 +1093,15 @@ def test_shared_minimize_offsets_linear_constraints(sparse):
 
 
 class _Stateful(FunctionProblem):
-    """``x @ x`` with an accepted point, as the free-boundary problems keep one; ``reject`` refuses trials."""
+    """``sum(x**power)`` with an accepted point, as the free-boundary problems keep one; ``reject`` refuses trials."""
 
-    def __init__(self, x0, reject=lambda x: False, **kwargs):
+    def __init__(self, x0, reject=lambda x: False, power=2, **kwargs):
         from vmex.core.errors import TrialRejected
 
         def value_and_grad(x):
             if reject(x):
                 raise TrialRejected("no equilibrium here")
-            return float(x @ x), 2 * x
+            return float(np.sum(x**power)), power * x**(power - 1)
         super().__init__(np.asarray(x0, dtype=float), value_and_grad=value_and_grad,
                          fun=lambda x: value_and_grad(x)[0], **kwargs)
         self.accepted, self.promoted = SimpleNamespace(parameters=self.x0.copy()), []
@@ -1118,7 +1118,7 @@ def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
     from vmex import optimize as opt
     from vmex.core.errors import TrialRejected
 
-    p = _Stateful([3., 4.], bounds=([-5., -5.], [5., 5.]))
+    p = _Stateful([3., 4.], power=4, bounds=([-5., -5.], [5., 5.]))
     result = opt.minimize(p, method="SLSQP", x0=p.x0, options=dict(maxiter=2))
     assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 2
     assert not result.success and result.status == 99 and len(p.promoted) == 2

@@ -616,7 +616,7 @@ def test_trial_cold_start_crawling_outside_the_newton_basin_stops():
     crawl = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300)
     stop = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
     assert not crawl["converged"] and not stop["converged"]
-    assert stop["outside_basin"] and stop["njev"] <= 10 < crawl["njev"], (stop["njev"], crawl["njev"])
+    assert stop["outside_basin"] and stop["njev"] <= 8 < crawl["njev"], (stop["njev"], crawl["njev"])
     a = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300)
     b = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
     assert a["converged"] and b["converged"]

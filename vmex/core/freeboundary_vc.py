@@ -1795,9 +1795,10 @@ class ThreeTermsFreeBoundaryModel:
 #: error of order 1 % in a quasi-symmetry error near 1e-6 (the boundary solve's own states are Newton-refined).
 _REPORT_FTOL = 1e-17
 #: Exact models in a row without their full Newton step after which an optimization trial's cold start from the deck
-#: stops (least squares, :meth:`LeastSquaresFreeBoundaryModel._newton`'s ``basin``): a warm start's 2 allows for one
-#: on the way in, a cold start from farther for two.
-COLD_TRIAL_BASIN = 3
+#: (or a re-referenced deck) stops (least squares, :meth:`LeastSquaresFreeBoundaryModel._newton`'s ``basin``), as a
+#: warm start does: one on the way in is allowed.  f98-qh-sl-c5 (10-20): with 3 the cold start of a failing trial still
+#: took 34 min (exact models of 7-13 min from the deck), and the re-referenced solve after it ground on unbounded.
+COLD_TRIAL_BASIN = 2
 
 
 @dataclass(frozen=True)
@@ -2116,8 +2117,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._bind(model, x)
         fit = None
         try:
+            kw = {"basin": COLD_TRIAL_BASIN} if getattr(model, "basin_aware", False) else {}
             fit = model.solve_boundary(self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x)),
-                                       max_nfev=self.boundary_max_nfev, continuation=False)
+                                       max_nfev=self.boundary_max_nfev, continuation=False, **kw)
         except (VmecError, RuntimeError):
             pass
         if fit is None or not fit["converged"]:

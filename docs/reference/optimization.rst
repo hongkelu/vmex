@@ -456,7 +456,6 @@ interface on three-term free boundaries with coil constraints)::
    from vmex import optimize as opt
 
    inp = vj.VmecInput.from_file("examples/data/input.rotating_ellipse_nfp2")
-   seed = opt.solve_equilibrium(inp).state   # fixed-boundary seed state
    inp = replace(inp, lfreeb=True, mgrid_file="direct ESSOS field")
    qs = opt.QuasisymmetryRatioResidual(np.linspace(0.1, 1.0, 10), 1, 0)
    coils0 = Coils.from_json("examples/data/ESSOS_coils_ellipse5.json")
@@ -469,37 +468,31 @@ interface on three-term free boundaries with coil constraints)::
        inp, lambda state, rt, x: qs.total_state(state, rt), x0,
        field_from_parameters=lambda x: BiotSavart(coils_from_x(x)),
        scales=np.full(x0.size, 0.01),
-       quantities=(opt.min_abs_iota, opt.aspect_ratio), restart_from=seed)
-   problem.enable_root_polishing()   # optional Newton polish of each root
-   problem.enable_matrix_free(dense_derivatives=True)   # seed LU of the accepted root
-   problem.enable_newton_correction()   # optional Newton correction of predicted trials
+       quantities=(opt.min_abs_iota, opt.aspect_ratio))
    result = opt.minimize(problem, method="SLSQP",
        constraints=problem.nonlinear_constraint([0.41, 4.9], [np.inf, 5.1]))
    problem.close()
 
-Every trial starts from a tangent prediction at the accepted root, is solved
-with strict edge convergence and freshly certified before its value is used.
-``opt.minimize`` supports SLSQP for problems, promotes only the iterates SciPy
-accepts, and a rejected trial (:class:`~vmex.core.errors.TrialRejected`) never
-changes the accepted root; the result's ``stop_reason`` says why a run
-stopped. The loss is ``loss(state, rt, x)``; ``quantities`` are
+Every design point is the free boundary of
+:func:`~vmex.core.freeboundary_implicit.solve_free_boundary_implicit` (an
+ordinary VMEX + NESTOR solve, Newton-anchored on its coupled root), solved
+once and cached; the gradient and the constraint Jacobian are reverse-mode
+derivatives through its implicit adjoint, one adjoint per row.
+``opt.minimize`` supports SLSQP for problems and promotes only the iterates
+SciPy accepts (``accept_x``); a point whose free boundary does not solve
+raises :class:`~vmex.core.errors.TrialRejected`, and the result's
+``stop_reason`` says why a run stopped. The loss is ``loss(state, rt, x)``; ``quantities`` are
 ``function(state, rt)`` constraint rows and ``parameter_quantities`` are
 ``function(state, rt, x)`` rows (a coil-plasma clearance, say), whose
 derivatives include both the explicit term and the equilibrium response.
 Constraints on ``x`` alone, such as coil length or curvature from ESSOS, are
 ordinary optimizer constraints and need no adjoint. An optional
 ``plasma_from_parameters(params, x)`` makes the design vector also set plasma
-parameters, for example PHIEDGE, which then enter the residual, the trials and
-the exported WOUT. The problem uses the
-``forward_dense_jax`` adjoint. After the first dense factorization,
-matrix-free solves use that LU as a GMRES preconditioner, with one dense retry
-on failure; ``refresh_horizon`` rebuilds the LU when warm solves slow down,
-and ``dense_derivatives=True`` instead solves every derivative densely and
-makes each accepted root's LU the new seed. ``enable_newton_correction``
-Newton-corrects each predicted trial on that seed before falling back to the
-ordinary solve. ``equilibrium_from_x`` returns an
-:class:`~vmex.core.optimize.Equilibrium` whose WOUT uses the exact
-fixed-geometry vacuum of that point.
+parameters, for example PHIEDGE, which then enter the equilibrium and its
+derivatives. ``solver_options`` are passed to
+:func:`~vmex.core.freeboundary_implicit.make_free_boundary_config`.
+``equilibrium_from_x`` returns the :class:`~vmex.core.optimize.Equilibrium`
+of a design point.
 
 Use :class:`vmex.core.monitoring.EquilibriumReporter` for the compact physics
 summary shared by the examples.  Each entry accepts either VMEX's

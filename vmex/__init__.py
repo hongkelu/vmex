@@ -90,7 +90,7 @@ links to the module that documents it.
   :class:`~vmex.core.problem.Evaluation` — optimizer-neutral value,
   residual, and derivative callables
 - :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem` — scalar
-  free-boundary optimization of the external field from the accepted equilibrium
+  free-boundary optimization of the external field (and plasma parameters)
 - :class:`~vmex.core.monitoring.OptimizationMonitor` /
   :class:`~vmex.core.monitoring.OptimizationRecord` — accepted iterations;
   :class:`~vmex.core.monitoring.EquilibriumReporter` — compact diagnostics

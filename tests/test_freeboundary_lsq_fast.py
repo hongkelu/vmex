@@ -512,6 +512,29 @@ def test_warm_start_outside_the_newton_basin_hands_over():
     assert calls == [True, False, False]
 
 
+def test_warm_start_at_its_answer_stays_in_the_newton_basin():
+    """A warm start reaching its answer is not stopped as outside the Newton basin.  The basin test counts exact
+    models without their full Newton step.  A cheap model's rejected step cuts the radius the next exact model starts
+    from, and a full step can fail the merit test at second order in the constraint rows (Maratos); neither is the
+    exact model failing.  An exact model after such a cut starts from its Newton step, and one whose Newton step has
+    an equilibrium and lowers the merit is in the basin.  Before, these sphere solves (Gauss-Newton and BFGS missing
+    the constraint curvature) stopped "outside the Newton basin" on 18 of 24 starts, most at the answer itself
+    (f98-qh-al-c4, 10-19: both warm starts of a QH trial stopped so, at rho 0.993 for a step cut to 1/10 of its
+    Newton step by the radius of the quasi-Newton step before it)."""
+    rng = np.random.default_rng(0)
+    for n in (3, 6):
+        for weight in (0.01, 0.03, 0.1, 0.3):
+            for radius in (None, 1e-3, 1e-5):
+                start = np.r_[0.3, rng.standard_normal(n - 1)]
+                start = start / np.linalg.norm(start)
+                model = _SphereModel(weight, n)
+                J = np.asarray(model.jac_fn(jnp.asarray(start)))
+                out = model._newton(None, None, x0=start, max_iter=200, jacobian=J, basin=True, radius=radius)
+                assert out["converged"], (n, weight, radius, out["status"])
+                np.testing.assert_allclose(out["x"], np.r_[1.0, np.zeros(n - 1)], atol=1e-5)
+                assert out["njev"] <= 40, (n, weight, radius, out["njev"])
+
+
 class _InflectionModel(_ToyModel):
     """A large constant row and ``x0^2 - 1`` (minimum at ``x0 = 1``, an inflection of the cost at ``1/sqrt 3``), the
     constraint row ``x1 - 1/2``, at FTOL 1e-6: from ``x0 = 0.6`` the exact model's whole predicted gain (1.8) is below
@@ -563,13 +586,17 @@ def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin()
 
         def _newton_boundary(self, params, field, **kw):
             calls.append("warm")
-            return dict(converged=False, nfev=3, outside_basin=self.outside, status="")
+            if self.outside == "raise" and calls.count("warm") == 1:  # the prediction has no equilibrium
+                raise RuntimeError("the starting boundary has no certified equilibrium")
+            return dict(converged=False, nfev=3, outside_basin=bool(self.outside), status="")
 
         def solve_boundary(self, params, field, **kw):
             calls.append("cold")
             return dict(converged=False, nfev=1, status="")
 
-    for outside, expected in ((True, ["warm", "warm"]), (False, ["warm", "warm", "cold", "reference"])):
+    # a warm start without an equilibrium of its own counts as outside (f98-qh-sl-c5: the cold start ground 1 h+)
+    for outside, expected in ((True, ["warm", "warm"]), ("raise", ["warm", "warm"]),
+                              (False, ["warm", "warm", "cold", "reference"])):
         problem = object.__new__(lsq.LeastSquaresFreeBoundaryProblem)
         problem._cache, problem.stats, problem._seed_start = {}, dict(trials=0, boundary_evaluations=0, failed=0), None
         problem._params_at, problem.field = (lambda x: None), (lambda x: None)
@@ -582,4 +609,28 @@ def test_trial_fails_at_once_when_every_warm_start_is_outside_the_newton_basin()
         calls.clear()
         assert lsq.ThreeTermsFreeBoundaryProblem._solve(problem, np.ones(3)) is None
         assert calls == expected, calls
-        assert problem.stats.get("outside_basin", 0) == int(outside)
+        assert problem.stats.get("outside_basin", 0) == int(bool(outside))
+
+
+def test_trial_cold_start_crawling_outside_the_newton_basin_stops():
+    """An optimization trial's cold start (``basin=COLD_TRIAL_BASIN``) stops once that many exact models in a row lack
+    their Newton step, instead of crawling at minutes a model (f98-qh-sl-c5, 10-20: an hour on one trial's cold start,
+    5 such models in a row and still infeasible); a cold start that converges is unchanged."""
+    from vmex.core.freeboundary_vc import COLD_TRIAL_BASIN
+
+    start = np.array([1e-3, 0.0, 0.3])
+    crawl = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300)
+    stop = _HumpModel(100.0, fail_at=5.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
+    assert not crawl["converged"] and not stop["converged"]
+    assert stop["outside_basin"] and stop["njev"] <= 8 < crawl["njev"], (stop["njev"], crawl["njev"])
+    a = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300)
+    b = _HumpModel(100.0)._newton(None, None, x0=start, max_iter=300, basin=COLD_TRIAL_BASIN)
+    assert a["converged"] and b["converged"]
+    np.testing.assert_array_equal(a["x"], b["x"])
+    rng = np.random.default_rng(0)
+    for n in (3, 6):
+        for weight in (0.01, 0.03, 0.1, 0.3):
+            x0 = np.r_[0.3, rng.standard_normal(n - 1)]
+            out = _SphereModel(weight, n)._newton(None, None, x0=x0 / np.linalg.norm(x0), max_iter=200,
+                                                  basin=COLD_TRIAL_BASIN)
+            assert out["converged"], (n, weight, out["status"])

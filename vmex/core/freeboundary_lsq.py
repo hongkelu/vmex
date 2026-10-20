@@ -174,6 +174,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
     ``hessian_chunk`` bounds the second-derivative columns per program call (default and least: 2).
     """
 
+    basin_aware = True  # solve_boundary takes ``basin`` (an optimization trial's cold start passes one)
+
     #: the jump rows see only the interior edge field's Galerkin band (the earlier definition; module docstring)
     interior_band = False
     #: set by :class:`LeastSquaresFreeBoundaryProblem` for its trials: :data:`TRIAL_STEP_TOLERANCE` (``None``: the full
@@ -672,8 +674,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         crawls under a collapsing radius while its trials search for equilibria that may not exist (f97-qa-sl-c3,
         10-19: indefinite exact models, eigenvalues down to -0.2 against Gauss-Newton's 5e-7, trials 2e-3 away
         without equilibrium or on another equilibrium branch at 4000 times the cost; 27 models in 1 h 48 min of
-        one trial's first start).  The caller then hands over to its next start.
+        one trial's first start).  The caller then hands over to its next start.  An integer ``basin`` is that
+        count (``True``: 2); an optimization trial's cold start from the deck uses :data:`COLD_TRIAL_BASIN`.
         """
+        limit = 0 if not basin else (2 if basin is True else int(basin))
         x = np.array(self.x0 if x0 is None else x0, dtype=float)
         t_eval = time.perf_counter()
         got = self.evaluate(x, params, field, tight=True)
@@ -723,6 +727,7 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
         noise_rows = None  # the rows' measured repeatability (rows of one boundary solved from two states)
         gq_norm_first = None  # the first exact model's preconditioned gradient norm (the forcing term's scale)
         outside = 0  # exact models in a row without their full Newton step (``basin``)
+        cheap_cut = False  # the radius is a cheap model's: the last change cut it on that model's rejected step
         for it in range(int(max_iter)):
             if need is not None or H_full is None:
                 warm = jacobian if need != "exact" and so is None else None
@@ -819,13 +824,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                       f"eig(JtJ_r) [{w_gn[0]:.2e}, {w_gn[-1]:.2e}] decrement/cost {decrement / (2 * cost):.2e} "
                       + (f"g-g_adj {history[-1][7]:.1e} asym {so['asymmetry']:.1e} adj {so['adjoint']:.1e} "
                          f"noise {noise:.1e} r_c resolved {resolved_c():.1e} " if fresh else "")
-                      + f"Newton step moves <= {moved:.1e} m "
+                      + f"Newton step moves <= {moved:.1e} m " + ("" if feasible else "infeasible ")
                       + ("times " + " ".join(f"{k} {v:.1f}" for k, v in so["seconds"].items()) + " s " if fresh else "")
                       + f"({history[-1][-1]:.0f} s)", flush=True)
             if verbose > 1:
                 self._print_weakest(S * (N @ Q[:, 0]))
-            if basin and fresh and not w[0] > 0 and outside >= 1:  # no Newton step: stop before its (costly) trials
-                status = "stalled: outside the Newton basin (a second exact model without a Newton step: indefinite)"
+            if limit and fresh and not w[0] > 0 and outside >= limit - 1:  # no Newton step: stop before its (costly) trials
+                status = (f"stalled: outside the Newton basin ({limit} exact models in a row without their Newton step, "
+                          "the last indefinite)")
                 break
             # gains below what the equilibria resolve are not resolved: the cost's measured repeatability, and for a
             # solve outside an optimization (a_priori_floor) its a-priori resolution too -- the rows are determined to
@@ -858,8 +864,17 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if radius is None:
                 # the first radius: the Newton step, or (indefinite model) the gradient step of the stiffest mode
                 radius = newton if np.isfinite(newton) else float(np.linalg.norm(gq) / abs(w[-1]))
+            probe = None  # the radius a probe of the Newton step returns to when that step fails
             if np.isfinite(newton):
                 radius = max(radius, 1e-3 * newton)
+                if limit and fresh and cheap_cut and newton > radius:
+                    # the radius measures the cheap model whose rejected step cut it, not this one: the basin test
+                    # judges an exact model by its own Newton step, so that step is evaluated first (one probe; if it
+                    # fails, the solve goes on from the cut radius as without it).  f98-qh-al-c4, 10-19: an exact
+                    # model with rho 0.993 at such a radius, 1/10 of its Newton step, counted as outside the basin,
+                    # and both warm starts of the trial stopped so at their answer; the trial failed and the optimizer
+                    # backtracked, trial after trial (15-17 min each)
+                    probe, radius, cheap_cut = radius, newton, False
 
             def model_step(radius):
                 """The trust-region step of the reduced model for ``radius``, and its predicted gain."""
@@ -878,6 +893,10 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             # the model's whole Newton step was evaluated (an equilibrium there): only then do the shorter trial steps
             # below the rows' noise mean convergence; ``forced``: that step was tried once on purpose
             newton_tried, forced, collapsed = False, False, False
+            # the model's whole Newton step had an equilibrium and lowered the merit (``basin``): the model holds out
+            # to it, wherever the radius cut the accepted step -- a radius inherited from a cheap model's rejected
+            # step, or a merit test the full step failed at second order in the constraint rows (the Maratos effect)
+            newton_gains = False
             for attempt in range(12):
                 full = bool(np.isfinite(newton) and newton <= radius)
                 step, predicted = model_step(radius)
@@ -919,6 +938,12 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                 # never hand over to the exact model: qhss_b25 M 8, 87 cheap models and none exact, 69 of 86 steps
                 # failing their own test; the TT3 session's finding, 10-18)
                 rho_model = rho
+                newton_gains = newton_gains or (full and got is not None and rho > 0)
+                if probe is not None:
+                    back, probe = probe, None
+                    if got is None or rho < 0.25:  # no corrections of the probe: back to the cut radius
+                        radius = back
+                        continue
                 for _ in range(3 if m else 0):
                     # the constraint rows' own second-order correction (the Maratos effect): along the soft
                     # directions of a finite-beta boundary the net-current and bootstrap rows curve, so a step that
@@ -956,9 +981,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                             print(f"  second-order correction: cost {cost_new:.10e} rho {rho:.3f}", flush=True)
                 tiny = predicted <= floor  # below the cost's repeatability: accept a non-increase
                 if rho < 0.25 and not tiny:
-                    radius = 0.25 * length
+                    radius, cheap_cut = 0.25 * length, not fresh
                 elif rho > 0.75 and length > 0.99 * radius:
-                    radius = 2.0 * radius
+                    radius, cheap_cut = 2.0 * radius, False
                     # a very successful step at the radius: go further along the same model while it keeps
                     # gaining (each extension one equilibrium, no new derivatives) -- long valleys of the
                     # low-order shape modes at finite beta take one model instead of one per doubling
@@ -966,6 +991,8 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         step2, predicted2 = model_step(radius)
                         x_try, got_try = trial(x + S * step2)
                         nfev += 1
+                        if got_try is not None and newton <= radius and merit_of(got_try[0]) < merit:
+                            newton_gains = True
                         if got_try is None or merit_of(got_try[0]) >= cost_new:
                             break
                         x_new, got, cost_new, length = x_try, got_try, merit_of(got_try[0]), np.linalg.norm(step2)
@@ -999,9 +1026,14 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
             if converged or collapsed:
                 break
             if fresh and accepted:
-                outside = 0 if full else outside + 1
-                if basin and outside >= 2:
-                    status = "stalled: outside the Newton basin (a second exact model whose step the radius cut short)"
+                # in the basin: the model's Newton step taken, or evaluated with an equilibrium and a lower merit.
+                # Counting a step the radius cut short as outside the basin there (f98-qh-al-c4, 10-19: an exact
+                # model with rho 0.993 at an inherited radius 1/10 of its Newton step, extended to 0.85 of it)
+                # dropped both warm starts of the trial at their answer and left it to grind on the cold start
+                outside = 0 if full or (w[0] > 0 and newton_gains) else outside + 1
+                if limit and outside >= limit:
+                    status = (f"stalled: outside the Newton basin ({limit} exact models in a row without their Newton step, "
+                              "the last one's step the radius cut short)")
                     break
             if not accepted and fresh:
                 # no step gains although the exact model predicts one: the gain is below the cost's noise

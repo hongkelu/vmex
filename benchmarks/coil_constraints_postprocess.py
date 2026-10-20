@@ -503,7 +503,7 @@ def dense_solve(frame, args, rows, out):
     started = time.monotonic()
     stage = _solve_free_boundary_stage(
         inp, external_field=field, resolution=resolution, initial_state=state, ftol=EQUILIBRIUM_FTOL,
-        max_iterations=args.max_iterations, include_edge_in_convergence=True, edge_force_tolerance=EQUILIBRIUM_FTOL,
+        max_iterations=args.max_iterations,
         use_fft=False, error_on_no_convergence=False, jacobian_retries=0, allow_initial_axis_reguess=False)
     result = stage.result
     forces = {k: float(getattr(result, k)) for k in ("fsqr", "fsqz", "fsql", "fedge")}

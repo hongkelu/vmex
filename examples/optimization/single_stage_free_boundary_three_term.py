@@ -43,8 +43,10 @@ PHIEDGE = -0.025
 # fixed singular quadrature of virtual casing, (4 nfp nphi, 2 ntheta):
 THREE_TERM = dict(nphi=16, ntheta=16, max_mode=2, quadrature=(128, 32))
 
-# Design: each base coil's current is I_0 (1 + CURRENT_STEP x):
+# Design: each base coil's current is I_0 (1 + CURRENT_STEP x).  The start detunes
+# the optimized currents by up to 10%, which the optimizer then recovers:
 CURRENT_STEP = 0.05
+X0 = [2.0, -2.0, 1.0, -1.0]
 
 # Quasisymmetry (M, N) on these surfaces is the loss; the bounds below keep the
 # mean rotational transform and the aspect ratio where they start:
@@ -54,7 +56,7 @@ IOTA_RANGE = (0.40, 0.46)
 ASPECT_RANGE = (5.5, 6.5)
 
 # SLSQP steps, and its relative tolerance (the loss starts small, so SciPy's 1e-6 would stop at once):
-MAX_STEPS = 3
+MAX_STEPS = 5
 FTOL = 1e-12
 
 ###############################################################################
@@ -95,7 +97,7 @@ def loss(state, runtime, x):
 
 
 problem = opt.FreeBoundaryProblem.from_loss(
-    inp, loss, np.zeros(n_currents), field_from_parameters=field_from_parameters,
+    inp, loss, np.asarray(X0), field_from_parameters=field_from_parameters,
     quantities=(opt.mean_iota, opt.aspect_ratio), boundary_condition="three_term", three_term_options=THREE_TERM)
 x0 = problem.x0
 start = problem.boundary_residual(x0)
@@ -112,7 +114,7 @@ def report(intermediate_result):
     x = intermediate_result.x
     iota, aspect = problem.constraint_values(x)
     print(f"step {intermediate_result.nit}: loss {intermediate_result.fun:.4e}, iota {iota:.4f}, "
-          f"aspect {aspect:.3f}, currents x {np.array2string(x, precision=3)}")
+          f"aspect {aspect:.3f}, currents x {np.array2string(x, precision=3, suppress_small=True)}")
 
 
 result = opt.minimize(problem, x0=x0, method="SLSQP", constraints=[bounds], callback=report,

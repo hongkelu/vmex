@@ -9,7 +9,8 @@ with one fixed singular quadrature per configuration (planned on the deck's equi
 axis/edge iota, R00, and the LCFS distance to the NESTOR result with a dense reference curve.
 
 CONFIG: cth_vac, cth_beta, lpqa_vac, lpqa_b05, lpqa_b25, ncsx (repository data), or prod:RUN:STEP for a production
-run's design (RUN a directory with input.run, coils.stepSTEP.json and wout.stepSTEP.nc).
+run's design (RUN a directory with input.run, coils.stepSTEP.json and wout.stepSTEP.nc); append @M for the
+resolution MPOL = NTOR = M (boundary truncated or zero-padded).  Six starts at M = 6 and 8, four otherwise.
 """
 import json
 import sys
@@ -67,7 +68,20 @@ def ladder(inp, mpol, ns):
 
 
 def config(name):
-    """(deck, field, vacuum?, number of starts, three-term options)."""
+    """(deck, field, vacuum?, number of starts, three-term options), at the resolution of an ``@M`` suffix."""
+    base, _, res = name.partition("@")
+    inp, field, vacuum, k, options = _config(base)
+    if res:
+        M = int(res)
+        ns = int(np.asarray(inp.ns_array)[-1])
+        inp = replace(inp.change_resolution(mpol=M, ntor=M, ntheta=2 * M + 6, nzeta=max(16, 2 * M + 4)),
+                      ns_array=np.array([ns]), niter_array=np.array([20000]),
+                      ftol_array=np.array([float(np.asarray(inp.ftol_array)[-1])]))
+        k = 6 if M in (6, 8) else 4
+    return inp, field, vacuum, k, options
+
+
+def _config(name):
     if name.startswith("cth"):
         inp = replace(vj.VmecInput.from_file(DATA / "input.cth_like_free_bdy"), mgrid_file=str(DATA / "mgrid_cth_like.nc"))
         if name == "cth_vac":

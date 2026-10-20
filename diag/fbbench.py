@@ -79,7 +79,7 @@ def config(name):
         inp = replace(inp.change_resolution(mpol=M, ntor=M, ntheta=2 * M + 6, nzeta=nzeta),
                       ns_array=np.array([ns]), niter_array=np.array([20000]),
                       ftol_array=np.array([float(np.asarray(inp.ftol_array)[-1])]))
-        k = 6 if M in (6, 8) else 4
+        k = min(k, 6 if M in (6, 8) else 4)
     return inp, field, vacuum, k, options
 
 

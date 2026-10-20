@@ -117,9 +117,17 @@ __all__ = [
 
 
 def have_virtual_casing_jax() -> bool:
-    """Return ``True`` iff ``virtual_casing_jax`` is importable."""
+    """Return ``True`` iff ``virtual_casing_jax`` is importable and at least the ``vmex[freeb]`` floor."""
 
-    return _HAVE_VCJ
+    if not _HAVE_VCJ:
+        return False
+    from .._compat import require_optional
+
+    try:
+        require_optional("virtual-casing-jax", "the virtual-casing exterior field")
+    except ImportError:
+        return False
+    return True
 
 
 def _require_vcj() -> None:
@@ -132,7 +140,7 @@ def _require_vcj() -> None:
             "vmex.core.virtual_casing requires the optional dependency "
             "'virtual_casing_jax' (canonical repository "
             "https://github.com/uwplasma/virtual_casing_jax). Install it "
-            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.8)."
+            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.9)."
         ) from _IMPORT_ERROR
 
 

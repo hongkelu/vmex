@@ -154,6 +154,64 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
     assert fvc._coil_net_current(Toroidal(), wout) == pytest.approx(0.7, rel=1e-4)
 
 
+#: The smallest vacuum case that still has a free boundary: LP QA at mpol = ntor = 2, ns 7, a 12 x 12 interface
+#: grid with the boundary modes up to 1, and its fixed singular quadrature (4 nfp nphi, 2 ntheta).
+SMALL = dict(nphi=12, ntheta=12, max_mode=1, quadrature=(96, 24))
+
+
+def _small_vacuum():
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 2, 7), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    return inp, _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+
+
+@needs_vc
+def test_three_term_option_fits_the_best_of_two_starts():
+    """The solver option at low resolution: both starts (deck and NESTOR) reduce B.n and the sheet current of
+    the deck's fixed-boundary equilibrium, the lower cost wins, and the result reports its interface residual."""
+    inp, field = _small_vacuum()
+    design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field, n=12)
+    result = vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
+                                              three_term_options=dict(SMALL, max_nfev=20))
+    res = result.boundary_residual
+    assert result.vacuum is None and res.normal < design.normal and res.sheet_current < design.sheet_current
+    with pytest.raises(ValueError, match="start"):
+        vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
+                                         three_term_options=dict(start="coils"))
+
+
+@needs_vc
+def test_three_term_problem_gradient_and_one_slsqp_step():
+    """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
+    differences, one SLSQP step through ``minimize``, and the accepted point's reports."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    base = field.currents
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        quantities=(opt.mean_iota,), boundary_condition="three_term", three_term_options=SMALL)
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    jac = problem.constraint_jac(x0)
+    h = 1e-3
+    fd = [(problem.fun(x0 + h) - problem.fun(x0 - h)) / (2 * h),
+          (problem.constraint_values(x0 + h) - problem.constraint_values(x0 - h)) / (2 * h)]
+    np.testing.assert_allclose(grad, fd[0], rtol=1e-3)
+    np.testing.assert_allclose(jac[:, 0], fd[1], rtol=1e-3)
+    result = opt.minimize(problem, x0=x0, method="SLSQP", options=dict(maxiter=1),
+                          constraints=[problem.nonlinear_constraint([0.0], [1.0])])
+    assert result.accepted_steps == problem.accepted_step == 1 and result.fun <= value
+    x = problem.accepted.parameters
+    assert max(vars(problem.boundary_residual(x)).values()) < 0.1
+    state, params = problem.state(x)
+    assert problem.equilibrium_from_x(x).wout.aspect == pytest.approx(result.fun, rel=1e-6)
+    problem.close()
+    with pytest.raises(ValueError, match="evaluate the candidate"):
+        problem.accept_x(x0 + 0.123)
+    assert problem.stats["trials"] >= 3 and problem.stats["linearizations"] >= 1
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

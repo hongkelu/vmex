@@ -299,6 +299,14 @@ def test_bootstrap_current_profile_layout():
         current(d.pcurr_type, d.ac, d.ac_aux_s, d.ac_aux_f, 1.0))
     outer = s[s > 0.2]
     np.testing.assert_allclose(deck_I(block.deck, outer), deck_I(inp, outer), rtol=2e-2)
+    with pytest.raises(ValueError, match="ncurr = 1"):
+        HalfMeshCurrent(replace(inp, ncurr=0), _lp_beta0p5_profiles(inp), 0)
+    with pytest.raises(ValueError, match="knot per half-mesh surface"):
+        HalfMeshCurrent(replace(inp, ns_array=np.array([201])), _lp_beta0p5_profiles(inp), 0)
+    from vmex.core.bootstrap import self_consistent_bootstrap
+
+    with pytest.raises(ValueError, match="'power_series' or 'half_mesh'"):
+        self_consistent_bootstrap(inp, _lp_beta0p5_profiles(inp), 0, profile="spline")
 
 
 @needs_vc

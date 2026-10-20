@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 r"""Fixed-boundary single-stage coil optimization with hard coil constraints.
 
-The fixed-boundary arm of ``single_stage_free_boundary_optimization_coil_constraints.py``:
+The fixed-boundary arm of ``single_stage_free_boundary_optimization_three_term.py``:
 the same cases (``COIL_CASE``, default ``ellipse5``; the case table is in that
 script's docstring), limits and seeds. The design variables are the boundary
 modes up to ``MAX_MODE`` (RBC(0,0) fixed), the coil currents (``FREE_COIL_CURRENTS``,

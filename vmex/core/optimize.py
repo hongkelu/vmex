@@ -1024,6 +1024,51 @@ def _qi_grid(bmnc_b, xm_b, xn_b, iota_b, *, bmns_b=None, nfp: int, weights, nphi
     return weights_arr, phi0, phi1, phi, alpha, bmag, bnorm, levels, eps
 
 
+def _minimum_position(b, softness: float, *, periodic: bool):
+    """Index-space position of the minimum of ``b`` along its last axis.
+
+    ``softness = 0`` is the grid argmin.  A positive value is the softmin
+    centroid with weights ``exp(-(b - min b)/softness)`` (circular for a
+    periodic line), which moves continuously as ``b`` changes and tends to
+    the argmin as ``softness -> 0``.
+    """
+    n = b.shape[-1]
+    if softness <= 0.0:
+        return jnp.argmin(b, axis=-1).astype(b.dtype)
+    weights = jax.nn.softmax(-(b - jnp.min(b, axis=-1, keepdims=True)) / softness, axis=-1)
+    index = jnp.arange(n, dtype=b.dtype)
+    if not periodic:
+        return jnp.sum(weights * index, axis=-1)
+    angle = 2.0 * jnp.pi * index / n
+    centre = jnp.arctan2(jnp.sum(weights * jnp.sin(angle), axis=-1),
+                         jnp.sum(weights * jnp.cos(angle), axis=-1))
+    return jnp.mod(centre * n / (2.0 * jnp.pi), n)
+
+
+def _sample(b, position, *, periodic: bool):
+    """Linear interpolation of ``b`` at fractional index ``position``.
+
+    Integer positions return the samples exactly.  A non-periodic line reads
+    the normalized maximum 1 one step beyond either end and is clamped there,
+    so a branch that leaves the field period ends on the well's wall.
+    """
+    n = b.shape[-1]
+    if not periodic:
+        one = jnp.ones(b.shape[:-1] + (1,), dtype=b.dtype)
+        b = jnp.concatenate([one, b, one], axis=-1)
+        position = jnp.clip(position + 1.0, 0.0, float(n + 1))
+    lower = jnp.floor(position)
+    frac = position - lower
+    lower = lower.astype(jnp.int32)
+    upper = lower + 1
+    if periodic:
+        lower, upper = jnp.mod(lower, n), jnp.mod(upper, n)
+    else:
+        upper = jnp.minimum(upper, n + 1)
+    return ((1.0 - frac) * jnp.take_along_axis(b, lower, axis=-1)
+            + frac * jnp.take_along_axis(b, upper, axis=-1))
+
+
 def quasi_isodynamic_residual(
     *,
     bmnc_b,
@@ -1044,6 +1089,7 @@ def quasi_isodynamic_residual(
     profile_weight: float = 0.1,
     shuffle_profile_weight: float = 1.0,
     shuffle_profile_softness: float = 2.0e-2,
+    argmin_softness: float = 0.0,
     phimin: float = 0.0,
 ) -> dict[str, Array]:
     """Smooth Goodman-style quasi-isodynamic residual from Boozer ``|B|`` modes.
@@ -1074,6 +1120,15 @@ def quasi_isodynamic_residual(
       reinterpolated onto the original grid and compared pointwise to the
       original ``bnorm`` (the closest smooth analogue of Goodman et al.'s
       construction of the nearest omnigenous field).
+
+    Both branch terms start each well at its ``|B|`` minimum.  With the
+    default ``argmin_softness = 0`` that is the grid argmin, which jumps a
+    whole grid cell as the field moves, so the residual is discontinuous
+    there.  A positive ``argmin_softness`` (in units of the normalized
+    ``|B|``) uses the softmin centroid and reads the branches by linear
+    interpolation, and drops the two period-end samples of the shuffle
+    comparison, which sit on the constructed well's wall; the residual is
+    then continuous in the field.
 
     Legacy port (``quasi_isodynamic_residual_from_boozer_modes``) with the
     unused ``aligned_profile_*`` / ``weighted_shuffle_*`` /
@@ -1109,11 +1164,10 @@ def quasi_isodynamic_residual(
         bper = jnp.swapaxes(bnorm[:, :-1, :], 1, 2)           # periodic, (nsurf, nalpha, nper)
         nper = nphi_ - 1
         offs = jnp.arange(max(1, nper // 2) + 1, dtype=jnp.int32)
-        imin = jnp.argmin(bper, axis=-1)
-        left = jnp.maximum.accumulate(
-            jnp.take_along_axis(bper, jnp.mod(imin[:, :, None] - offs[None, None, :], nper), axis=-1), axis=-1)
-        right = jnp.maximum.accumulate(
-            jnp.take_along_axis(bper, jnp.mod(imin[:, :, None] + offs[None, None, :], nper), axis=-1), axis=-1)
+        pmin = _minimum_position(bper, float(argmin_softness), periodic=True)[:, :, None]
+        offs_p = jnp.asarray(offs, dtype=dtype)[None, None, :]
+        left = jnp.maximum.accumulate(_sample(bper, pmin - offs_p, periodic=True), axis=-1)
+        right = jnp.maximum.accumulate(_sample(bper, pmin + offs_p, periodic=True), axis=-1)
         left = (left - left[..., :1]) / jnp.maximum(left[..., -1:] - left[..., :1], tiny)
         right = (right - right[..., :1]) / jnp.maximum(right[..., -1:] - right[..., :1], tiny)
         distance = jnp.asarray(offs, dtype=dtype) / jnp.asarray(nper, dtype=dtype)
@@ -1138,15 +1192,11 @@ def quasi_isodynamic_residual(
         offs_f = jnp.asarray(offs, dtype=dtype)
         dphi = (phi1 - phi0) / jnp.asarray(nphi_ - 1, dtype=dtype)
         period = phi1 - phi0
-        imin = jnp.argmin(b_alpha, axis=-1)
-        li_raw = imin[:, :, None] - offs[None, None, :]
-        ri_raw = imin[:, :, None] + offs[None, None, :]
-        lvalid, rvalid = li_raw >= 0, ri_raw < nphi_
-        lraw = jnp.take_along_axis(b_alpha, jnp.clip(li_raw, 0, nphi_ - 1), axis=-1)
-        rraw = jnp.take_along_axis(b_alpha, jnp.clip(ri_raw, 0, nphi_ - 1), axis=-1)
-        one = jnp.asarray(1.0, dtype=dtype)
-        left = jnp.maximum.accumulate(jnp.where(lvalid, lraw, one), axis=-1)
-        right = jnp.maximum.accumulate(jnp.where(rvalid, rraw, one), axis=-1)
+        imin = _minimum_position(b_alpha, float(argmin_softness), periodic=False)
+        left = jnp.maximum.accumulate(
+            _sample(b_alpha, imin[:, :, None] - offs_f[None, None, :], periodic=False), axis=-1)
+        right = jnp.maximum.accumulate(
+            _sample(b_alpha, imin[:, :, None] + offs_f[None, None, :], periodic=False), axis=-1)
 
         seps = jnp.maximum(jnp.asarray(float(shuffle_profile_softness), dtype=dtype),
                            jnp.asarray(jnp.finfo(dtype).eps, dtype=dtype))
@@ -1160,10 +1210,10 @@ def quasi_isodynamic_residual(
         bw = lcross + rcross
         bw_mean = jnp.mean(bw, axis=1, keepdims=True)
 
-        min_phi = phi0 + jnp.asarray(imin, dtype=dtype) * dphi
+        min_phi = phi0 + imin * dphi
         lend = jnp.maximum(min_phi - phi0, 0.0)
         rend = jnp.maximum(phi1 - min_phi, 0.0)
-        signed_phi = (offs_f[None, None, :] - jnp.asarray(imin[:, :, None], dtype=dtype)) * dphi
+        signed_phi = (offs_f[None, None, :] - imin[:, :, None]) * dphi
 
         level_full = jnp.concatenate([jnp.zeros((1,), dtype=dtype), levels,
                                       jnp.ones((1,), dtype=dtype)])
@@ -1189,6 +1239,10 @@ def quasi_isodynamic_residual(
             x_target, signed_phi)
         constructed_bnorm = shuffled
         shuffle_res = (shuffled - b_alpha) * sqrt_w * shuffle_profile_weight
+        if float(argmin_softness) > 0.0:
+            # The period ends sit on the constructed wall, where the target
+            # jumps to 1 as a branch crossing reaches the end: drop them.
+            shuffle_res = shuffle_res[..., 1:-1]
         pieces.append(jnp.ravel(shuffle_res)
                       / jnp.sqrt(jnp.asarray(nalpha_ * nphi_, dtype=dtype)))
 
@@ -1315,8 +1369,8 @@ def _dof_modes(inp: VmecInput, max_mode: int) -> list[tuple[int, int]]:
 def _n_boundary_families(inp: VmecInput) -> int:
     """Packed boundary Fourier families: 2 (``rbc``/``zbs``) for a
     stellarator-symmetric boundary, 4 (``rbc``/``zbs``/``rbs``/``zbc``) when
-    ``inp.lasym`` — the non-stellarator-symmetric families that simsopt 1.10.3
-    / VMEC++ 0.6.0 added for up-down-asymmetric tokamaks and reconstruction.
+    ``inp.lasym`` — the non-stellarator-symmetric families of up-down-asymmetric
+    tokamaks and reconstruction.
     """
     return 4 if bool(inp.lasym) else 2
 
@@ -1823,6 +1877,18 @@ def _make_finite_difference_problem(
     )
 
 
+def _restart_source(restart_from: Any, inp: VmecInput) -> Any:
+    """An :class:`Equilibrium`'s own state when its mode table matches ``inp``.
+
+    Its wout (dozens of eager op compiles) is built only to remap modes.
+    """
+    if not isinstance(restart_from, Equilibrium):
+        return restart_from
+    same = all(getattr(restart_from.inp, k) == getattr(inp, k)
+               for k in ("mpol", "ntor", "nfp", "lasym"))
+    return restart_from.state if same else restart_from.wout
+
+
 def _with_forward_controls(
     inp: VmecInput,
     ftol: float | None,
@@ -1966,8 +2032,7 @@ def make_problem(
     initial_state = None
     if restart_from is not None:
         from .restart import restart_state
-        source = restart_from.wout if isinstance(restart_from, Equilibrium) else restart_from
-        initial_state = restart_state(source, inp)
+        initial_state = restart_state(_restart_source(restart_from, inp), inp)
     if vary_phiedge and derivative_method != "implicit":
         raise ValueError("vary_phiedge requires derivative_method='implicit'")
     if derivative_method == "finite_difference":
@@ -3017,14 +3082,21 @@ def _least_squares_implicit(
     state0_np, mask_np = imp._host_solve_and_mask(cfg, params0_np, refine=False)
     _require_certified_seed(imp._LAST_SOLVE.get(cfg), cfg.ftol, cfg.max_fsq_ratio)
     state0 = jax.tree.map(_place, state0_np)
-    params_at_x0 = params_of(_place(x0))
-    runtime0 = imp.runtime_from_params(params_at_x0, cfg)
-    initial_rows = np.asarray(
-        jax.device_get(term_rows(state0, runtime0)), dtype=float
-    ).ravel()
-    if initial_rows.size == 0 or not np.all(np.isfinite(initial_rows)):
+
+    def term_blocks(x, state):
+        rt = imp.runtime_from_params(params_of(x), cfg)
+        if traceable_scalar is not None:
+            return [term_rows(state, rt)]
+        return [jnp.atleast_1d(w * (jnp.asarray(f(state, rt)) - t)).ravel()
+                for f, t, w in terms]
+
+    # Row counts from shapes alone: evaluating the terms eagerly here cost
+    # ~200 one-off op compiles; the values come from the jitted rows below.
+    sizes = [int(np.prod(block.shape)) for block in
+             jax.eval_shape(term_blocks, _place(x0), state0)]
+    residual_size = int(sum(sizes))
+    if residual_size == 0:
         raise FloatingPointError("non-finite or empty objective at the initial point")
-    residual_size = int(initial_rows.size)
     if traceable_scalar is not None and residual_size != 1:
         raise ValueError(
             f"loss returned {residual_size} values at the initial point; "
@@ -3033,9 +3105,6 @@ def _least_squares_implicit(
             "least_squares, or reduce them: "
             "lambda state, runtime: jnp.sum(term.residuals_state(state, runtime)**2).")
     if traceable_scalar is None:
-        sizes = [int(np.asarray(jax.device_get(
-            jnp.atleast_1d(w * (jnp.asarray(f(state0, runtime0)) - t)).ravel()
-        )).size) for f, t, w in terms]
         starts = np.cumsum([0] + sizes)
         term_slices = tuple(
             (_term_name(function), int(starts[j]), int(starts[j + 1]))
@@ -3070,13 +3139,6 @@ def _least_squares_implicit(
     # be reused here: against a ~1e15 cliff the dcsrch interpolation
     # collapses its step to machine zero (measured |dy| ~ 1e-20 on the QI
     # example) instead of backtracking geometrically into the basin.
-    seed_cost = (
-        0.5 * float(initial_rows @ initial_rows)
-        if traceable_scalar is None
-        else float(initial_rows[0])
-    )
-    scalar_wall_base = max(10.0 * abs(seed_cost), 1.0)
-
     def failure_value_and_gradient(x: np.ndarray) -> tuple[float, np.ndarray]:
         """Exact scalar pair of the smooth scalar-lane trial wall.
 
@@ -3160,6 +3222,16 @@ def _least_squares_implicit(
 
     host_rows_jit = _problem_jit(
         problem_jit_key, "host_rows", lambda: jax.jit(rows_at_state))
+    initial_rows = np.asarray(jax.device_get(
+        host_rows_jit(x0_device, state0, np.int32(0))), dtype=float)
+    if not np.all(np.isfinite(initial_rows)):
+        raise FloatingPointError("non-finite or empty objective at the initial point")
+    seed_cost = (
+        0.5 * float(initial_rows @ initial_rows)
+        if traceable_scalar is None
+        else float(initial_rows[0])
+    )
+    scalar_wall_base = max(10.0 * abs(seed_cost), 1.0)
     rows_jit = _problem_jit(
         problem_jit_key, "rows", lambda: jax.jit(residual_rows))
 

@@ -1,9 +1,8 @@
-"""Coil chart and ESSOS-backed coil rows of the coil-constraint single-stage example."""
+"""Coil chart and ESSOS-backed coil rows of the free-boundary single-stage example."""
 
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -12,7 +11,7 @@ import pytest
 
 essos_coils = pytest.importorskip("essos.coils")
 EXAMPLE = (Path(__file__).resolve().parents[1] / "examples" / "optimization"
-           / "single_stage_free_boundary_optimization_coil_constraints.py")
+           / "single_stage_free_boundary_optimization_three_term.py")
 SPEC = importlib.util.spec_from_file_location("coil_constraints_example", EXAMPLE)
 cc = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cc)
@@ -65,10 +64,6 @@ def test_chart_plasma_coordinates_come_first(coils):
     np.testing.assert_allclose(chart.base_currents_at(x), [2.4e5, -3.1e5 * (1 + x[4])])
     np.testing.assert_allclose(chart.coils_from_x(x).dofs_curves, coefficients + x[5:].reshape(2, 3, 5),
                                rtol=2e-15, atol=2e-15)
-    deck = SimpleNamespace(phiedge=0.08, ncurr=1, ac_aux_f=[2.0, -4.0, 9.0], ac=[], curtor=1.5e4)
-    chart.check_input(deck)
-    with pytest.raises(ValueError, match="nominal plasma current"):
-        chart.check_input(SimpleNamespace(**{**vars(deck), "curtor": 1.0e4}))
     with pytest.raises(ValueError, match="does not vary PHIEDGE"):
         cc.CoilChart(coils, current_dofs=()).phiedge_at(np.zeros(30))
     with pytest.raises(ValueError, match="nonzero CURTOR"):

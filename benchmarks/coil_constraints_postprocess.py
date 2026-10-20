@@ -5,7 +5,7 @@
     python benchmarks/coil_constraints_postprocess.py runs/fixed --match-flux   # fixed-boundary arm
     COIL_CASE=qi6-beta python benchmarks/coil_constraints_postprocess.py runs/free-qi6 --no-dense
 
-The runs are those of ``examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py``
+The runs are those of ``examples/optimization/single_stage_free_boundary_optimization_three_term.py``
 and ``single_stage_optimization_coil_constraints.py``. Run it with the run's
 ``COIL_CASE``: the limits and targets are the examples' (the case values this
 script reads are repeated below). Reads what both optimization scripts write:

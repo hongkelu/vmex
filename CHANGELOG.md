@@ -4,29 +4,10 @@ Release notes are mirrored from the GitHub releases, which carry each release
 in full. A number appears here only where a committed artifact backs it; each
 record under `benchmarks/` names the revision it was measured at.
 
-## Unreleased (tt1)
+## Unreleased
 
-- Three-term free boundary: a standalone solve (`solve_free_boundary_multigrid(boundary_condition="three_term")`,
-  the CLI) fits from the deck boundary and from the NESTOR free boundary and keeps the lower cost
-  (`three_term_options["start"]`). From the deck alone the CTH-like vacuum deck ended ~4 cm from NESTOR and
-  VMEC2000 (uwplasma/vmex#451); now 1.1 mm, with half NESTOR's interface residual. `converged` follows DESC's least
-  squares (no further improvement) and the interface residuals are reported with it; a fit stalled on a stale
-  Jacobian retries once with a fresh one.
-- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
-  solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
-  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to
-  74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
-- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
-  (and PHIEDGE or the current profile) on VMEX + NESTOR free boundaries: each design point is
-  `solve_free_boundary_implicit` (anchored root) and its derivatives that root's implicit adjoint, one per row;
-  `opt.minimize(method="SLSQP")` drives it. (The earlier trial predictor, root polish, Newton correction and
-  matrix-free/LU reuse layers are gone; `restart_from`, `continuation_step`, `root_residual_atol`, `event` and
-  `deadline` are no longer arguments.)
-- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
-  15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
-- `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
-  `opt.axis_field_strength`, `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`,
-  `plot_optimization_movie(frame_labels=)`.
+- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION`) solves the free boundary where B.n, pressure
+  balance and the sheet current vanish; `FreeBoundaryProblem` optimizes coils on it, or on NESTOR's, via `opt.minimize`.
 
 ## 0.11.11 - 2026-10-18
 
@@ -202,7 +183,8 @@ odd-`m` coefficient, which put `li383_low_res` surfaces 1.2 cm (R) and 5.9 cm
 (Z) off at mid-radius; it now reproduces the wout table to 6.7e-16 m and all
 126 adjacent surface pairs nest. Points well outside the plasma return NaN
 instead of raising, the inversion starts from the best of three seeds, and a
-query on the magnetic axis no longer returns NaN. Full notes in the release.
+query on the magnetic axis no longer returns NaN. Full notes in the GitHub
+release.
 
 ## 0.9.1 - 2026-09-16
 

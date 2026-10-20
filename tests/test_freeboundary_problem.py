@@ -68,6 +68,7 @@ def problem():
         parameter_quantities=(lambda state, runtime, x: im.aspect_ratio(state, runtime) * (1 + x[1]),))
 
 
+@pytest.mark.full
 def test_rows_and_jacobian_match_resolved_differences(problem):
     """Loss gradient and constraint Jacobian against central differences of independent solves, along PHIEDGE
     (a plasma coordinate) and the coil currents (a field coordinate)."""
@@ -85,6 +86,7 @@ def test_rows_and_jacobian_match_resolved_differences(problem):
         assert np.all(np.abs(np.r_[grad[k], jac[:, k]] - fd) <= 2e-3 * np.abs(fd) + 2e-5 * size), (k, grad, jac, fd)
 
 
+@pytest.mark.full
 def test_one_slsqp_step_accepts_an_evaluated_point(problem):
     """minimize starts at the accepted point, promotes the step it takes and stops at the step budget."""
     before = problem.accepted.parameters.copy()

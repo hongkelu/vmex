@@ -165,6 +165,7 @@ def _small_vacuum():
 
 
 @needs_vc
+@pytest.mark.full
 def test_three_term_option_fits_the_best_of_two_starts():
     """The solver option at low resolution: both starts (deck and NESTOR) reduce B.n and the sheet current of
     the deck's fixed-boundary equilibrium, the lower cost wins, and the result reports its interface residual."""
@@ -180,6 +181,7 @@ def test_three_term_option_fits_the_best_of_two_starts():
 
 
 @needs_vc
+@pytest.mark.full
 def test_three_term_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""

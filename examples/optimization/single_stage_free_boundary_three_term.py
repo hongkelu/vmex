@@ -53,8 +53,9 @@ SURFACES = [0.25, 0.5, 0.75, 1.0]
 IOTA_RANGE = (0.40, 0.46)
 ASPECT_RANGE = (5.5, 6.5)
 
-# SLSQP steps:
+# SLSQP steps, and its relative tolerance (the loss starts small, so SciPy's 1e-6 would stop at once):
 MAX_STEPS = 3
+FTOL = 1e-12
 
 ###############################################################################
 # End of input parameters.
@@ -115,7 +116,7 @@ def report(intermediate_result):
 
 
 result = opt.minimize(problem, x0=x0, method="SLSQP", constraints=[bounds], callback=report,
-                      options=dict(maxiter=MAX_STEPS))
+                      options=dict(maxiter=MAX_STEPS, ftol=FTOL))
 
 ### Print and save ############################################################
 

@@ -113,6 +113,46 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
+def test_levenberg_marquardt_finish():
+    """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
+    and reports why it stopped."""
+    target = np.array([1.0, -2.0, 0.5])
+
+    def rows(x):
+        return np.r_[x - target, 0.1 * (x[0] * x[1] - target[0] * target[1])]
+
+    def evaluate(x):
+        return rows(x), "aux"
+
+    J = np.vstack([np.eye(3), 0.1 * np.array([target[1], target[0], 0.0])])
+    x0 = np.zeros(3)
+    out = fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=50, verbose=1)
+    assert out["converged"] and out["reason"] == "ftol" and out["accepted"] >= 1
+    np.testing.assert_allclose(out["x"], target, atol=1e-5)
+    # a step that fails to solve shrinks the radius, a budget of one evaluation stops at once
+    failed = fvc._levenberg_marquardt(lambda x: None, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=30,
+                                      verbose=0, radius=10.0)
+    assert not failed["converged"] and failed["reason"] in ("radius", "stalled") and failed["accepted"] == 0
+    np.testing.assert_array_equal(failed["x"], x0)
+    assert fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", J, ftol=1e-12, max_nfev=1,
+                                    verbose=0)["reason"] == "max_nfev"
+    # a wrong Jacobian: steps keep gaining little, so the finish stops as stalled before its budget
+    stale = fvc._levenberg_marquardt(evaluate, x0, rows(x0), "aux", np.vstack([np.eye(3), np.ones(3)]) * 40,
+                                     ftol=1e-14, max_nfev=200, verbose=0)
+    assert stale["reason"] in ("stalled", "radius") and stale["nfev"] < 200
+
+
+def test_coil_net_current_is_the_circulation_around_the_axis():
+    """G of a purely toroidal 1/R field is its R B_phi, whatever the axis loop it is taken around."""
+
+    class Toroidal:
+        def b_cyl(self, r, phi, z):
+            return 0.0 * r, 0.7 / r, 0.0 * z
+
+    wout = SimpleNamespace(raxis_cc=np.array([1.0, 0.1]), zaxis_cs=np.array([0.0, -0.05]), nfp=2)
+    assert fvc._coil_net_current(Toroidal(), wout) == pytest.approx(0.7, rel=1e-6)
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

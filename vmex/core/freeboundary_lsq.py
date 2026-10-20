@@ -979,7 +979,9 @@ class LeastSquaresFreeBoundaryModel(ThreeTermsFreeBoundaryModel):
                         radius = 2.0 * radius
                 if rho > 0.1 or (tiny and cost_new <= merit):
                     gained = merit - cost_new
-                    own = attempt > 0  # a radius this model's own rejected trials cut
+                    # the model failed at its radius: its own rejected trials cut the radius, or its step's ratio
+                    # (before any correction) fails the radius test
+                    own = attempt > 0 or rho_model < 0.25
                     x, (r, aux), accepted = x_new, got, True
                     if callback is not None:
                         callback(np.asarray(x).copy())

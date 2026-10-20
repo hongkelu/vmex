@@ -510,6 +510,29 @@ def test_warm_start_outside_the_newton_basin_hands_over():
     assert calls == [True, False, False]
 
 
+def test_warm_start_at_its_answer_stays_in_the_newton_basin():
+    """A warm start reaching its answer is not stopped as outside the Newton basin.  The basin test counts exact
+    models without their full Newton step; a cheap model's rejected step cuts the radius the next exact model starts
+    from, and a full step can fail the merit test at second order in the constraint rows (Maratos).  Neither is the
+    exact model failing: a positive-definite model whose first step passes at a radius a cheap model cut, or whose
+    whole Newton step has an equilibrium and lowers the merit, is no evidence of being outside.  Before, these
+    sphere solves (Gauss-Newton and BFGS missing the constraint curvature) stopped "outside the Newton basin" on 18
+    of 24 starts, most at the answer itself (f98-qh-al-c4, 10-19: both warm starts of a QH trial stopped so, at
+    rho 0.993 for a step cut to 1/10 of its Newton step by the radius of the quasi-Newton step before it)."""
+    rng = np.random.default_rng(0)
+    for n in (3, 6):
+        for weight in (0.01, 0.03, 0.1, 0.3):
+            for radius in (None, 1e-3, 1e-5):
+                start = np.r_[0.3, rng.standard_normal(n - 1)]
+                start = start / np.linalg.norm(start)
+                model = _SphereModel(weight, n)
+                J = np.asarray(model.jac_fn(jnp.asarray(start)))
+                out = model._newton(None, None, x0=start, max_iter=200, jacobian=J, basin=True, radius=radius)
+                assert out["converged"], (n, weight, radius, out["status"])
+                np.testing.assert_allclose(out["x"], np.r_[1.0, np.zeros(n - 1)], atol=1e-5)
+                assert out["njev"] <= 40, (n, weight, radius, out["njev"])
+
+
 class _InflectionModel(_ToyModel):
     """A large constant row and ``x0^2 - 1`` (minimum at ``x0 = 1``, an inflection of the cost at ``1/sqrt 3``), the
     constraint row ``x1 - 1/2``, at FTOL 1e-6: from ``x0 = 0.6`` the exact model's whole predicted gain (1.8) is below

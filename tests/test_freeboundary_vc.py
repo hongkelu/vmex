@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -240,7 +241,9 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
     x = problem.accepted.parameters
     assert max(vars(problem.boundary_residual(x)).values()) < 0.1
     state, params = problem.state(x)
-    assert problem.equilibrium_from_x(x).wout.aspect == pytest.approx(result.fun, rel=1e-6)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)  # the report re-solves the accepted state, not another one
+        assert problem.equilibrium_from_x(x).wout.aspect == pytest.approx(result.fun, rel=1e-6)
     problem.close()
     with pytest.raises(ValueError, match="evaluate the candidate"):
         problem.accept_x(x0 + 0.123)

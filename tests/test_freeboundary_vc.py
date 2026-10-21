@@ -387,6 +387,23 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
     problem.close()
 
 
+@needs_vc
+@pytest.mark.full
+def test_only_acceptance_advances_the_continuation():
+    """A trial that was evaluated and differentiated but not accepted does not change what the next trial
+    starts from: x2 after an unaccepted x1 equals x2 straight from the accepted x0."""
+    x0 = np.zeros(1)
+    seen = []
+    for detour in (True, False):
+        problem = _small_problem()
+        problem.value_and_grad(x0)  # the accepted point's anchor
+        if detour:
+            problem.value_and_grad(x0 + 0.02)
+        seen.append(problem._record(x0 + 0.01)["values"].copy())
+        problem.close()
+    np.testing.assert_allclose(seen[0], seen[1], rtol=1e-12, atol=0)
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

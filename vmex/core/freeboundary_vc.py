@@ -1022,11 +1022,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         gradients[:, self._plasma] -= lam.T @ J_p
         if not np.all(np.isfinite(gradients)):
             raise TrialRejected("nonfinite design gradient")
-        self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
-                            params=params, cost=0.5 * sol["rows"] @ sol["rows"])
-        self._continuation = self._checkpoint()
-        sol["gradients"] = gradients
+        # Differentiation augments the trial's record; only acceptance (accept_x) makes it the anchor and the
+        # continuation that later trials start from.
+        sol.update(gradients=gradients, continuation=self._checkpoint(),
+                   anchor=dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
+                               params=params, cost=0.5 * sol["rows"] @ sol["rows"]))
+        if hasattr(self, "accepted") and np.array_equal(np.asarray(x, dtype=float), self.accepted.parameters):
+            self._promote(sol)
         return gradients
+
+    def _promote(self, sol):
+        if "anchor" in sol:
+            self._anchor, self._continuation = sol["anchor"], sol["continuation"]
 
     def _value(self, x):
         return float(self._record(x)["values"][0])
@@ -1051,11 +1058,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
     def accept_x(self, x):
-        """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
+        """Promote an evaluated point after the optimizer accepts it (its anchor and continuation, once it is
+        differentiated, become what later trials start from); drop the other trials."""
         key = np.asarray(self._x(x), dtype=float).tobytes()
         if self._cache.get(key) is None:
             raise ValueError("evaluate the candidate before accepting it")
         self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
+        self._promote(self._cache[key])
         self._cache = {key: self._cache[key]}
 
     def state(self, x):

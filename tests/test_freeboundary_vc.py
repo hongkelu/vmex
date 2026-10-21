@@ -407,6 +407,30 @@ def test_only_acceptance_advances_the_continuation():
     np.testing.assert_allclose(seen[0], seen[1], rtol=1e-12, atol=0)
 
 
+@needs_vc
+@pytest.mark.full
+def test_interior_state_does_not_depend_on_its_start():
+    """At one boundary, the equilibrium solved cold, warm from a nearby boundary's equilibrium, and from a
+    perturbed seed gives the same interface rows and boundary Jacobian: no history dependence through the
+    interior's m = 1 gauge or the hot restart."""
+    inp, field = _small_vacuum()
+    model = fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    x = np.asarray(model.x0)
+    params = model.params0
+    near = model.solve(model.with_boundary(params, jnp.asarray(x + 1e-3 * np.asarray(model.x_scale))))[0]
+    perturbed = jax.tree.map(lambda a: a * (1 + 1e-3 * jnp.cos(jnp.arange(a.size).reshape(a.shape)))
+                             if jnp.issubdtype(a.dtype, jnp.inexact) else a, model.seed[0])
+    results = []
+    for seed in (None, near, perturbed):
+        rows, aux = model.evaluate(x, params, field, seed=seed, tight=True)
+        J = model.linearize(x, aux, field)[0]
+        results.append((np.asarray(rows), np.asarray(J)))
+        model._last_linearize = None
+    for rows, J in results[1:]:
+        np.testing.assert_allclose(rows, results[0][0], rtol=1e-6, atol=1e-9)
+        np.testing.assert_allclose(J, results[0][1], rtol=1e-5, atol=1e-7 * np.max(np.abs(results[0][1])))
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

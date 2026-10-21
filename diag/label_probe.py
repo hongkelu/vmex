@@ -172,7 +172,7 @@ def curvature(problem, **_):
     top = np.argsort(weight)[::-1][:12]
     composition = dict(top=[(names[i], round(float(weight[i]), 4)) for i in top],
                        m0=float(sum(w for w, k in zip(weight, names) if k.startswith(("rbc0,", "zbs0,")))),
-                       rbc00=float(weight[-1]), singular_values=np.linalg.svd(J / scale[None] * scale[None],
+                       rbc00=float(weight[-1]), singular_values=np.linalg.svd(J * scale[None],
                                                                               compute_uv=False)[-5:].tolist())
     print(json.dumps(dict(loss_multiplier_composition=composition)), flush=True)
     for name, v in (("loss multiplier", mu), ("random", scale * np.random.default_rng(0).standard_normal(nb))):

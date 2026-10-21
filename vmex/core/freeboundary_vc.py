@@ -995,8 +995,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise TrialRejected("no three-term free boundary at this design point")
         return sol
 
-    def _linearize(self, x, sol):
-        """Every row's design gradient at ``sol`` (cached), re-solved tight and polished with its own Jacobian."""
+    def _linearize(self, x, sol, polish=True):
+        """Every row's design gradient at ``sol`` (cached), re-solved tight and (``polish``) polished with its own
+        Jacobian."""
         if "gradients" in sol:
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
@@ -1018,10 +1019,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         J = tight()
         polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=POLISH_FTOL,
-                                        max_nfev=20)
-        self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:  # the same fit, nearer its stationary point
-            sol.update(x=polished["x"], aux=polished["aux"])
+                                        max_nfev=20) if polish else None
+        if polished is not None:
+            self.stats["boundary_evaluations"] += polished["nfev"]
+        if polished is not None and polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
+            sol.update(x=polished["x"], aux=polished["aux"])  # the same fit, nearer its stationary point
             J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
         sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
@@ -1150,15 +1152,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
                  meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
 
-    def restore_checkpoint(self, path, *, rtol=1e-4):
+    def restore_checkpoint(self, path, *, rtol=1e-6):
         """Make a saved accepted point (:meth:`save_checkpoint`) this problem's accepted point.
 
         The problem must have been built with the same definition (deck, settings, design layout) or this raises
-        :class:`ValueError`; the saved design is re-solved from the saved boundary and interior state, certified,
-        and must reproduce the saved values to ``rtol`` (relative to the largest) or this raises
-        :class:`~vmex.core.errors.VmecError`.  The re-fit and its polish (``POLISH_FTOL``) can move the
-        boundary within the fit's tolerance, so the default ``rtol`` is that tolerance.  Returns the largest
-        relative value change.
+        :class:`ValueError`.  The saved boundary itself is evaluated (its interior equilibrium re-solved from the
+        saved state, no re-fit: a re-fit moves a soft boundary within the fit's tolerance) and certified; every
+        value must agree with the saved one to ``rtol`` relative to its own size or this raises
+        :class:`~vmex.core.errors.VmecError`.  Returns the largest relative value change.
         """
         data = np.load(path, allow_pickle=False)
         meta = json.loads(str(data["meta"]))
@@ -1175,12 +1176,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._continuation = dict(linearization=None, radius=None,
                                   hot={cfg: state for cfg in {model.cfg, model.cfg_trial}})
         self._cache.pop(x.tobytes(), None)
-        sol = self._solve(x, starts=[np.asarray(data["b"], dtype=float)])
-        if sol is None:
-            raise VmecError("the checkpoint's design has no certified three-term free boundary from its saved state")
-        self._linearize(x, sol)
+        self._restore(self._continuation)
+        b, xj = np.asarray(data["b"], dtype=float), jnp.asarray(x)
+        got = model.evaluate(b, self._params_at(xj), self.field(xj), seed=state, tight=True)
+        if got is None:
+            raise VmecError("the checkpoint's boundary has no certified equilibrium from its saved state")
+        rows, aux = got
+        st, mk, params_b, _ = aux
+        sol = dict(x=b, rows=rows, aux=aux, nfev=1, njev=0, accepted=0, converged=True, radius=None, reason="restored",
+                   state=st, mask=mk, params=params_b, values=np.asarray(self._rows(st, params_b, xj)))
+        self._linearize(x, sol, polish=False)
         saved = np.asarray(data["values"])
-        change = float(np.max(np.abs(sol["values"] - saved)) / max(float(np.max(np.abs(saved))), 1e-300))
+        change = float(np.max(np.abs(sol["values"] - saved) / np.maximum(np.abs(saved), 1e-300)))
         if not change <= rtol:
             raise VmecError(f"the restored equilibrium changes the saved values by {change:.2e} (> {rtol:g})")
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), int(meta["accepted_step"])

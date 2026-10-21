@@ -322,6 +322,57 @@ def gnstep(problem, **_):
     sys.exit(0)
 
 
+def plasmaparts(problem, **_):
+    """The plasma-current derivative of the loss in pieces, along the noise mode's seeded direction of NOISE_FAMILY,
+    at a FIXED boundary (the certified fit of the restart design): the pullback route (direct + G_x, as the gradient
+    assembles it), the forward tangent route (the state's certified response pushed through the rows), and central
+    differences of re-solved equilibria at that boundary; then the boundary columns J_p d against differences of
+    the interface rows."""
+    import jax
+    import jax.numpy as jnp
+
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    xj = jnp.asarray(x0)
+    problem.value_and_grad(x0)
+    sol = problem._solve(x0)
+    state, mask, params, b = sol["state"], sol["mask"], sol["params"], np.asarray(sol["x"])
+    field = problem.field(xj)
+    family = os.environ.get("NOISE_FAMILY", "profile")
+    plasma = np.asarray(problem._plasma)
+    d = np.asarray(problem.scales) * np.random.default_rng(0).standard_normal(x0.size)
+    keep = dict(phiedge=plasma[:1], current=plasma[1:], curtor=plasma[-1:], profile=plasma[1:-1],
+                coils=np.setdiff1d(np.arange(x0.size), plasma))[family]
+    d = np.where(np.isin(np.arange(x0.size), keep), d, 0.0)
+    d /= np.linalg.norm(d / np.asarray(problem.scales))
+    params_bar = problem._pullback(state, mask, params, xj)
+    G_b, G_x = map(np.asarray, problem._coordinates(params, jnp.asarray(b), xj, params_bar))
+    direct = np.asarray(problem._direct(state, params, xj))
+    pullback_route = float((direct[0] + G_x[0]) @ d)
+    tangent = problem._plasma_directions(params, xj)  # rows: params tangents along each plasma coordinate
+    batch = jax.tree.map(lambda a: jnp.tensordot(jnp.asarray(d[plasma]), a, axes=1)[None], tangent)
+    got = model._tangents(params, state, mask, batch)
+    dz = got[0] if isinstance(got, tuple) else got
+    loss_rows = lambda s, p: problem._rows(s, p, xj)  # noqa: E731
+    forward_route = float(np.asarray(model.push(loss_rows, state, mask, params, dz, batch)).ravel()[0])
+    J_p_d = np.asarray(model.push(lambda s, p: model.rows(s, p, field), state, mask, params, dz, batch)).ravel()
+    rows = []
+    for h in (1e-3, 1e-4, 1e-5):
+        vals, rws = [], []
+        for sign in (1, -1):
+            xs = jnp.asarray(x0 + sign * h * d)
+            got = model.evaluate(b, problem._params_at(xs), problem.field(xs), tight=True)
+            st, mk, pr, _ = got[1]
+            vals.append(np.asarray(problem._rows(st, pr, xs))[0])
+            rws.append(np.asarray(got[0]))
+        fd = (vals[0] - vals[1]) / (2 * h)
+        fd_rows = (rws[0] - rws[1]) / (2 * h)
+        rows.append(dict(family=family, h=h, pullback_route=pullback_route, forward_route=forward_route, fd_fixed_b=fd,
+                         Jp_rel_err=float(np.linalg.norm(J_p_d - fd_rows) / np.linalg.norm(fd_rows))))
+        print(json.dumps(rows[-1]), flush=True)
+    (out / "plasmaparts.json").write_text(json.dumps(rows, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
@@ -334,5 +385,7 @@ elif mode == "exactgrad":
     opt.minimize = exactgrad
 elif mode == "gnstep":
     opt.minimize = gnstep
+elif mode == "plasmaparts":
+    opt.minimize = plasmaparts
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

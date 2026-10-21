@@ -521,11 +521,13 @@ class ThreeTermFreeBoundaryModel:
         edge = im._edge_mask(cfg)
 
         def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
-            return im._implicit_evolved_tangent_multi_rhs(
+            """Projected state responses to the stacked parameter tangents (one block factorization, chunked), and
+            whether each column's linear solve is certified."""
+            solution, report = im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))[0]
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))
+            return solution, report.converged
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
@@ -681,7 +683,10 @@ class ThreeTermFreeBoundaryModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        dz_all, certified = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        certified = np.asarray(certified)
+        if not certified.all():  # an uncertified response is no Jacobian column: reject rather than use it
+            raise RuntimeError(f"{int((~certified).sum())} of {certified.size} tangent solves are not certified")
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]

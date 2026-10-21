@@ -195,6 +195,26 @@ def test_three_term_option_fits_the_best_of_two_starts():
 
 @needs_vc
 @pytest.mark.full
+def test_uncertified_tangent_solve_is_no_jacobian(monkeypatch):
+    """A boundary Jacobian whose tangent solves are not all certified raises instead of being used."""
+    from vmex.core import implicit as im
+
+    inp, field = _small_vacuum()
+    model = fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    rows, aux = model.evaluate(model.x0, model.params0, field)
+    solve = im._implicit_evolved_tangent_multi_rhs
+
+    def one_uncertified(*args, **kwargs):
+        solution, report = solve(*args, **kwargs)
+        return solution, report._replace(converged=report.converged.at[0].set(False))
+
+    monkeypatch.setattr(im, "_implicit_evolved_tangent_multi_rhs", one_uncertified)
+    with pytest.raises(RuntimeError, match="not certified"):
+        model.linearize(model.x0, aux, field)
+
+
+@needs_vc
+@pytest.mark.full
 def test_three_term_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""

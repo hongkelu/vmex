@@ -224,12 +224,17 @@ def exactgrad(problem, **_):
         out[plasma] -= lam_res @ J_p
         return out
 
-    def grads_at(bp):  # d/db' and d/dc of <r, r(b', c)> at the boundary bp (r held fixed)
+    nb = model.x0.size
+
+    def grads_at(bp):  # d/db' and d/dc of <r, r(b', c)> at the boundary bp (r held fixed), from linearize's columns
         got = model.evaluate(bp, P, field, tight=True)
-        st, mk, pr, _ = got[1]
-        pb = model.pullback(lambda s_, p_, f_: model.rows(s_, p_, f_), st, mk, pr, jnp.asarray(r)[None], field)
-        gb, gx = map(np.asarray, problem._coordinates(pr, jnp.asarray(bp), xj, pb))
-        return gb[0], gx[0] + np.asarray(problem._field_vjp(st, pr, xj, jnp.asarray(r)))
+        extra = problem._plasma_directions(got[1][2], xj) if plasma.size else None
+        Jf, _, _, aux = model.linearize(bp, got[1], field, extra=extra)
+        model._last_linearize = None
+        st, _, pr, _ = aux
+        gx = np.asarray(problem._field_vjp(st, pr, xj, jnp.asarray(r)))
+        gx[plasma] += np.asarray(Jf)[:, nb:].T @ r
+        return np.asarray(Jf)[:, :nb].T @ r, gx
 
     Js = J * scale[None]
     Gs = scale * G_b[0]

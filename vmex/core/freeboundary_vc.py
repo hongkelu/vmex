@@ -176,6 +176,29 @@ def _equal_arc_rows(gamma):
     return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
+def _condensation_rows(gamma, mpol, ntor):
+    """VMEC's spectral-condensation condition on the boundary (Hirshman & Breslau 1998, VMEC2000's ``alias.f``):
+    the ``m = 1 .. mpol - 2``, ``|n| <= ntor`` Fourier components of
+    ``G = R_theta sum m (m - 1) R_mn cos(m theta - n N phi) + Z_theta sum m (m - 1) Z_mn sin(m theta - n N phi)``,
+    relative to the mean ``R_theta^2 + Z_theta^2``.  Free-boundary VMEC holds its boundary's poloidal angle by this
+    condition once its anchor to the initial angle has decayed (``funct3d.f``); unlike equal arc, it is built from
+    the truncated series itself, so a labelling of ``mpol x ntor`` modes can satisfy it.
+
+    ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points over one field period.  Returns the real and imaginary
+    parts of those components, flattened.
+    """
+    nphi, ntheta = gamma.shape[-2:]
+    k = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
+    R, Z = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]), axis=-1), jnp.fft.fft(gamma[2], axis=-1)
+    theta_derivative = lambda f: jnp.real(jnp.fft.ifft(1j * k * f, axis=-1))  # noqa: E731
+    condensed = lambda f: jnp.real(jnp.fft.ifft(jnp.abs(k) * (jnp.abs(k) - 1) * f, axis=-1))  # noqa: E731
+    R_theta, Z_theta = theta_derivative(R), theta_derivative(Z)
+    G = (condensed(R) * R_theta + condensed(Z) * Z_theta) / jnp.mean(R_theta**2 + Z_theta**2)
+    spectrum = jnp.fft.fft2(G) / G.size
+    rows = spectrum[np.r_[0:ntor + 1, nphi - ntor:nphi]][:, 1:mpol - 1]
+    return jnp.concatenate([jnp.real(rows).ravel(), jnp.imag(rows).ravel()])
+
+
 #: Largest RMS interface residual (relative to |B|) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
@@ -384,8 +407,8 @@ class ThreeTermFreeBoundaryModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        if labelling not in ("start", "equal_arc"):
-            raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
+        if labelling not in ("start", "equal_arc", "condensed"):
+            raise ValueError(f"labelling must be 'start', 'equal_arc' or 'condensed', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -459,6 +482,11 @@ class ThreeTermFreeBoundaryModel:
             if labelling == "equal_arc":  # a labelling of the current surface alone: no reference to the start
                 label, phase = _equal_arc_rows(gamma)
                 label, phase = label_weight * label, label_weight * phase / np.sqrt(nphi)
+            elif labelling == "condensed":  # VMEC's free-boundary labelling, with equal arc's m = 1 phase rows
+                phase = _equal_arc_rows(gamma)[1] / np.sqrt(nphi)
+                label = jnp.zeros_like(gamma[0])
+                phase = label_weight * jnp.concatenate([jnp.sqrt(jnp.sum(area)) * _condensation_rows(
+                    gamma, int(fixed.mpol), int(fixed.ntor)), phase])
             else:
                 label, phase = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0), jnp.zeros(0)
             interface = jnp.concatenate([(jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel(),

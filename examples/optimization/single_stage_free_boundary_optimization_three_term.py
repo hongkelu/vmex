@@ -1067,9 +1067,10 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
-                        help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
-                        "equal arc length of the current surface (equal_arc); see ThreeTermFreeBoundaryModel")
+    parser.add_argument("--labelling", choices=("start", "equal_arc", "condensed"), default="start",
+                        help="the boundary's poloidal labelling rows: anchored to the start boundary (start), "
+                        "equal arc length of the current surface (equal_arc) or VMEC's spectral condensation "
+                        "(condensed); see ThreeTermFreeBoundaryModel")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
     args = parser.parse_args(argv)

@@ -361,6 +361,32 @@ def test_rejected_trial_leaves_the_continuation(monkeypatch):
     problem.close()
 
 
+@needs_vc
+@pytest.mark.full
+def test_plasma_map_derivatives_at_nonzero_offsets():
+    """The design gradient differentiates the plasma map itself, phiedge0 (1 + x1/2) + x2^2 / 100: at a nonzero
+    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    base = field.currents
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(3),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        plasma_from_parameters=lambda params, x: replace(
+            params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
+        boundary_condition="three_term", three_term_options=SMALL)
+    assert list(problem._plasma) == [1, 2]
+    x = np.array([0.0, 0.1, 0.3])
+    _, grad = problem.value_and_grad(x)
+    h = 1e-3
+    for k in (1, 2):
+        e = np.eye(3)[k] * h
+        fd = (problem.fun(x + e) - problem.fun(x - e)) / (2 * h)
+        assert grad[k] == pytest.approx(fd, rel=1e-2), k
+    problem.close()
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

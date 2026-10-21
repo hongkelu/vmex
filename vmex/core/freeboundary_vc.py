@@ -847,12 +847,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         self._rows = jax.jit(rows)
         # The coordinates of x that move plasma parameters: their columns of the interface rows enter the gradient.
-        tangent = jax.jacfwd(lambda x: params_at(model.params0, x))(jnp.asarray(x0))
-        moved = sum(np.any(np.asarray(a).reshape(-1, x0.size) != 0, axis=0) for a in jax.tree.leaves(tangent))
+        # Structural dependence (a NaN tangent reaches every output that depends on the coordinate, even where its
+        # derivative is zero, as x^2 at 0), not a numerical Jacobian at x0.
+        base = model.params0
+        probes = jnp.where(jnp.eye(x0.size, dtype=bool), jnp.nan, 0.0)
+        tangent = jax.vmap(lambda e: jax.jvp(lambda x: params_at(base, x), (jnp.asarray(x0),), (e,))[1])(probes)
+        moved = sum(np.any(np.asarray(a).reshape(x0.size, -1) != 0, axis=1) for a in jax.tree.leaves(tangent)
+                    if jnp.issubdtype(a.dtype, jnp.inexact))
         self._plasma = np.flatnonzero(moved)
         eye = jnp.eye(x0.size)[self._plasma]
+        # The derivatives are those of the forward map, params_at(params0, x), at every x.
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
-            lambda z: params_at(params, z), (x,), (e,))[1])(eye))
+            lambda z: params_at(base, z), (x,), (e,))[1])(eye))
         def pullback(state, mask, params, x):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
@@ -864,7 +870,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def coordinates(params, b, x, params_bar):
             """``ImplicitParams`` cotangents onto the model coordinates ``b`` and onto ``x`` (plasma parameters)."""
             _, b_vjp = jax.vjp(lambda z: model.with_boundary(params, z), b)
-            _, x_vjp = jax.vjp(lambda z: params_at(params, z), x)
+            _, x_vjp = jax.vjp(lambda z: params_at(model.params0, z), x)
             return jax.vmap(lambda bar: (b_vjp(bar)[0], x_vjp(bar)[0]))(params_bar)
 
         self._coordinates = coordinates

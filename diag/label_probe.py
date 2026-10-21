@@ -4,6 +4,7 @@
     python label_probe.py W cold  OUT <driver arguments>   # build the problem (solve the seed design) and stop
     python label_probe.py W noise OUT <driver arguments>   # LM noise / finite-difference test at the restart design
     python label_probe.py W twostart OUT <driver arguments> # the restart design's boundary fit from two starts
+                                  # (TWOSTART_STARTS=restart: that start only; CONVERGED_MAX_NFEV caps the full fit)
 
 (cwd: a vmex tree with the driver.)  W = "default" keeps the code's weight.  ``cold`` reports the seed design's
 loss, constraint values and interface residuals; ``noise`` is finish_noise.py's LM half.
@@ -113,8 +114,10 @@ def twostart(problem, **_):
     seed = VmecInput.from_file(Path(sys.argv[sys.argv.index("--restart") + 1]) / "input.run")
     b_seed = pack_boundary(_replace(model.fixed, rbc=seed.rbc, zbs=seed.zbs), model.max_mode, vary_major_radius=True)
     starts = dict(restart=np.asarray(model.x0), seed=np.asarray(b_seed))
+    starts = {k: starts[k] for k in os.environ.get("TWOSTART_STARTS", "restart,seed").split(",")}
     settings = dict(trial=dict(ftol=problem.boundary_ftol, max_nfev=problem.boundary_max_nfev),
-                    converged=dict(ftol=1e-10, jacobian_ftol=1e-10, max_nfev=400, refresh_on_stall=True))
+                    converged=dict(ftol=1e-10, jacobian_ftol=1e-10, refresh_on_stall=True,
+                                   max_nfev=int(os.environ.get("CONVERGED_MAX_NFEV", 400))))
     rows = []
     for how, kw in settings.items():
         for name, b in starts.items():

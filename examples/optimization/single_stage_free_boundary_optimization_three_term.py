@@ -1067,6 +1067,11 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
+    parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
+                        help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
+                        "equal arc length of the current surface (equal_arc); see ThreeTermFreeBoundaryModel")
+    parser.add_argument("--label-weight", type=float,
+                        help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1325,7 +1330,8 @@ def main(argv=None):
                                 quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                                boundary_max_residual=args.max_boundary_residual))
+                                boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
+                                **({} if args.label_weight is None else {"label_weight": args.label_weight})))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
@@ -1365,6 +1371,30 @@ def main(argv=None):
         {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
         extension_cost(state, im.runtime_from_params(params, model.cfg))))
 
+    def label_speed_ratio(params):
+        """Largest over smallest |d(R, Z)/d theta| on the LCFS, worst of 9 toroidal cuts (1: equal arc length)."""
+        rbc, zbs = np.asarray(params.rbc), np.asarray(params.zbs)
+        ntor = (rbc.shape[0] - 1) // 2
+        m = np.arange(rbc.shape[1])[None, :]
+        n = (np.arange(rbc.shape[0]) - ntor)[:, None] * int(inp.nfp)
+        theta, worst = np.linspace(0, 2 * np.pi, 361, endpoint=False), 1.0
+        for phi in np.linspace(0, 2 * np.pi / int(inp.nfp), 9, endpoint=False):
+            angle = m[None] * theta[:, None, None] - n[None] * phi
+            dR = -np.sum(rbc[None] * m[None] * np.sin(angle), axis=(1, 2))
+            dZ = np.sum(zbs[None] * m[None] * np.cos(angle), axis=(1, 2))
+            speed = np.hypot(dR, dZ)
+            worst = max(worst, float(speed.max() / speed.min()))
+        return worst
+
+    def boundary_jacobian_condition():
+        """Condition number of the last boundary Jacobian (columns scaled to unit norm), None before one."""
+        J_b = problem._anchor.get("J_b") if isinstance(problem._anchor, dict) else None
+        if J_b is None:
+            return None
+        J_b = np.asarray(J_b)
+        sv = np.linalg.svd(J_b / np.maximum(np.linalg.norm(J_b, axis=0), 1e-300), compute_uv=False)
+        return float(sv[0] / sv[-1])
+
     def log_step():
         x = problem.accepted.parameters
         h = problem.constraint_values(x)
@@ -1390,6 +1420,7 @@ def main(argv=None):
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
+                   label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         last.update(time=now)
@@ -1403,7 +1434,9 @@ def main(argv=None):
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
-              + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} {row['step_seconds']:.1f}s "
+              + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
+              + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
+              + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:

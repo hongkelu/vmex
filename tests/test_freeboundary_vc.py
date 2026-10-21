@@ -420,8 +420,14 @@ def test_interior_state_does_not_depend_on_its_start():
     near = model.solve(model.with_boundary(params, jnp.asarray(x + 1e-3 * np.asarray(model.x_scale))))[0]
     perturbed = jax.tree.map(lambda a: a * (1 + 1e-3 * jnp.cos(jnp.arange(a.size).reshape(a.shape)))
                              if jnp.issubdtype(a.dtype, jnp.inexact) else a, model.seed[0])
+    from vmex.core import implicit as im
+
     results = []
     for seed in (None, near, perturbed):
+        for cfg in {model.cfg, model.cfg_trial}:  # a genuine cold or seeded solve: no memo, no hot restart
+            for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED):
+                cache.pop(cfg, None)
+        model._linearization = None
         rows, aux = model.evaluate(x, params, field, seed=seed, tight=True)
         J = model.linearize(x, aux, field)[0]
         results.append((np.asarray(rows), np.asarray(J)))

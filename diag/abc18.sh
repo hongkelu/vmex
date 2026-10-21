@@ -13,10 +13,11 @@ QH_B="--beta 0.025 --bootstrap $VAC --design-step-scale 1.0 --max-iterations 200
 QI_B="--beta 0.025 --bootstrap $VAC --seed-run $SEEDS/prod/seed-dkx29-qi6-beta"
 declare -A LAB=([A]="--labelling start" [C]="--labelling equal_arc --label-weight 1e-3" [NL]="--labelling start --label-weight 0")
 jobs=()
-for m in A C NL; do
-  jobs+=("lhk0-7|qa-beta-$m|qa4-beta-merc|$QA_B|$m" "lhk0-7|qi-beta-$m|qi6-beta|$QI_B|$m")
+# C and NL claim GPUs first, then A
+for m in C NL; do
+  jobs+=("lhk0-7|qa-beta-$m|qa4-beta-merc|$QA_B|$m" "lhk0-7|qi-beta-$m|qi6-beta|$QI_B|$m" "lhk0-7|qh-beta-$m|qh4-beta-A10|$QH_B|$m")
 done
-jobs+=("lhk0-7|qh-beta-C|qh4-beta-A10|$QH_B|C" "lhk0-7|qh-beta-NL|qh4-beta-A10|$QH_B|NL")
+jobs+=("lhk0-7|qa-beta-A|qa4-beta-merc|$QA_B|A" "lhk0-7|qi-beta-A|qi6-beta|$QI_B|A")
 for c in qa:qa3 qh:qh qi:qi; do jobs+=("lhk14-19|${c%%:*}-vac-C|${c##*:}|$VAC|C" "lhk14-19|${c%%:*}-vac-NL|${c##*:}|$VAC|NL" "lhk8-13|${c%%:*}-vac-A|${c##*:}|$VAC|A"); done
 jobs+=("lhk8-13|qh-beta-A|qh4-beta-A10|$QH_B|A")
 cd "$(dirname "$0")/.."

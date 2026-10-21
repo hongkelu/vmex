@@ -254,7 +254,9 @@ def solve_free_boundary_three_term(
     and 5e-5 at 64 x 64 (whose quadrature needs several times the memory).
     Rows of the boundary points' displacement along the surface in ``theta``,
     relative to the initial boundary and scaled by ``label_weight``, fix the
-    boundary's poloidal labelling, which the interface conditions leave free.
+    boundary's poloidal labelling, which the interface conditions leave free;
+    ``labelling="equal_arc"`` replaces them by equal arc length of the current surface, and
+    ``labelling="condensed"`` by VMEC's spectral-condensation condition (:func:`_condensation_rows`).
     ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
     the net poloidal current (edge ``rbtor`` against the external field's
     circulation around the seed's magnetic axis), the direction the

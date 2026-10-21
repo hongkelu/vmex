@@ -775,7 +775,8 @@ class ThreeTermFreeBoundaryModel:
 
         def fun(z):
             got = self.evaluate(z, params, field)
-            if got is None:
+            if got is None:  # no state here: a Jacobian asked at z must not linearize another point's state
+                memo.update(key=z.tobytes(), rows=None, aux=None)
                 return np.full(memo.get("size", 1), 1e6)
             memo.update(key=z.tobytes(), size=got[0].size, rows=got[0], aux=got[1])
             return got[0]
@@ -784,6 +785,8 @@ class ThreeTermFreeBoundaryModel:
             nonlocal njev
             if memo.get("key") != z.tobytes():
                 fun(z)
+            if memo["aux"] is None:
+                raise RuntimeError("the boundary where the fit needs a Jacobian has no certified equilibrium")
             njev += 1
             J, _, _, memo["aux"] = self.linearize(z, memo["aux"], field)
             memo.update(jacobian=J, jkey=z.tobytes())

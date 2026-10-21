@@ -1147,13 +1147,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
                  meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
 
-    def restore_checkpoint(self, path, *, rtol=1e-6):
+    def restore_checkpoint(self, path, *, rtol=1e-4):
         """Make a saved accepted point (:meth:`save_checkpoint`) this problem's accepted point.
 
         The problem must have been built with the same definition (deck, settings, design layout) or this raises
         :class:`ValueError`; the saved design is re-solved from the saved boundary and interior state, certified,
         and must reproduce the saved values to ``rtol`` (relative to the largest) or this raises
-        :class:`~vmex.core.errors.VmecError`.  Returns the largest relative value change.
+        :class:`~vmex.core.errors.VmecError`.  The re-fit and its polish (relative cost change 1e-4) can move the
+        boundary within the fit's tolerance, so the default ``rtol`` is that tolerance.  Returns the largest
+        relative value change.
         """
         data = np.load(path, allow_pickle=False)
         meta = json.loads(str(data["meta"]))

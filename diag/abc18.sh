@@ -26,6 +26,7 @@ i=0
 for job in "${jobs[@]}"; do
   IFS='|' read -r host name case args m <<< "$job"
   [ "$host" = "$HOST" ] || continue
+  [ -n "$ONLY" ] && [[ "$name" != $ONLY ]] && continue
   [ -n "$SMOKE" ] && { name="smoke-$name"; steps=2; } || steps=2000
   [ -e "$OUT/$name" ] && { echo "skip $name: $OUT/$name exists"; continue; }
   G=${free[$i]}; i=$((i + 1))

@@ -78,6 +78,14 @@ H = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
 def noise(problem, **_):
     x0 = np.asarray(problem.accepted.parameters, dtype=float)
     d = np.asarray(problem.scales) * np.random.default_rng(0).standard_normal(x0.size)
+    family = os.environ.get("NOISE_FAMILY")  # phiedge | current | coils: the random direction in that family only
+    if family:
+        plasma = np.asarray(problem._plasma)
+        keep = dict(phiedge=plasma[:1], current=plasma[1:],
+                    coils=np.setdiff1d(np.arange(x0.size), plasma))[family]
+        mask = np.zeros(x0.size, dtype=bool)
+        mask[keep] = True
+        d = np.where(mask, d, 0.0)
     d /= np.linalg.norm(d / np.asarray(problem.scales))
     t0 = time.perf_counter()
     f0, g = problem.value_and_grad(x0)
@@ -157,6 +165,16 @@ def curvature(problem, **_):
     Q, R = np.linalg.qr(J)
     mu = np.linalg.solve(R, np.linalg.solve(R.T, G_b[0]))
     rows, scale = [], np.asarray(model.x_scale)
+    from vmex.core.optimize import _dof_modes
+    modes = _dof_modes(model.fixed, model.max_mode)
+    names = [f"rbc{m},{n}" for m, n in modes] + [f"zbs{m},{n}" for m, n in modes] + ["rbc0,0"]
+    weight = (mu / scale) ** 2 / np.sum((mu / scale) ** 2)
+    top = np.argsort(weight)[::-1][:12]
+    composition = dict(top=[(names[i], round(float(weight[i]), 4)) for i in top],
+                       m0=float(sum(w for w, k in zip(weight, names) if k.startswith(("rbc0,", "zbs0,")))),
+                       rbc00=float(weight[-1]), singular_values=np.linalg.svd(J / scale[None] * scale[None],
+                                                                              compute_uv=False)[-5:].tolist())
+    print(json.dumps(dict(loss_multiplier_composition=composition)), flush=True)
     for name, v in (("loss multiplier", mu), ("random", scale * np.random.default_rng(0).standard_normal(nb))):
         for step in (1e-3, 1e-4):
             t = step / np.linalg.norm(v / scale)

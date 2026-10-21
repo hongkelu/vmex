@@ -3,6 +3,7 @@
     python label_probe.py W run   OUT <driver arguments>   # a normal optimization run at label_weight W
     python label_probe.py W cold  OUT <driver arguments>   # build the problem (solve the seed design) and stop
     python label_probe.py W noise OUT <driver arguments>   # LM noise / finite-difference test at the restart design
+    python label_probe.py W curvature OUT <driver arguments> # the least-squares curvature the gradient leaves out
     python label_probe.py W twostart OUT <driver arguments> # the restart design's boundary fit from two starts
                                   # (TWOSTART_STARTS=restart: that start only; CONVERGED_MAX_NFEV caps the full fit)
 
@@ -137,11 +138,50 @@ def twostart(problem, **_):
     sys.exit(0)
 
 
+def curvature(problem, **_):
+    """Size of the least-squares curvature term the implicit gradient leaves out, at the restart design: for the
+    loss row's multiplier mu = (J^T J)^-1 dh/db (and a random direction), |S mu| / |J^T J mu| with
+    S = sum_i r_i grad^2 r_i from central differences of the boundary Jacobian."""
+    import jax.numpy as jnp
+
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    xj = jnp.asarray(x0)
+    problem.value_and_grad(x0)
+    sol, anchor = problem._solve(x0), problem._anchor
+    state, mask, params = sol["state"], sol["mask"], sol["params"]
+    params_bar = problem._pullback(state, mask, params, xj)
+    G_b = np.asarray(problem._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar)[0])
+    J, b, nb = anchor["J_b"], np.asarray(anchor["b"]), model.x0.size
+    P, field = problem._params_at(xj), problem.field(xj)
+    r = np.asarray(model.evaluate(b, P, field, tight=True)[0])
+    Q, R = np.linalg.qr(J)
+    mu = np.linalg.solve(R, np.linalg.solve(R.T, G_b[0]))
+    rows, scale = [], np.asarray(model.x_scale)
+    for name, v in (("loss multiplier", mu), ("random", scale * np.random.default_rng(0).standard_normal(nb))):
+        for step in (1e-3, 1e-4):
+            t = step / np.linalg.norm(v / scale)
+            Js = []
+            for sign in (1, -1):
+                got = model.evaluate(b + sign * t * v, P, field)
+                Js.append(model.linearize(b + sign * t * v, got[1], field)[0][:, :nb])
+            Sv = (Js[0] - Js[1]).T @ r / (2 * t)
+            JJv = J.T @ (J @ v)
+            row = dict(direction=name, step=step, S_v=float(np.linalg.norm(Sv)), JtJ_v=float(np.linalg.norm(JJv)),
+                       ratio=float(np.linalg.norm(Sv) / np.linalg.norm(JJv)), residual=float(np.linalg.norm(r)),
+                       loss_gradient_change=float(abs(mu @ Sv) / abs(mu @ JJv)) if name == "loss multiplier" else None)
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+    (out / "curvature.json").write_text(json.dumps(rows, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
     opt.minimize = cold
 elif mode == "noise":
     opt.minimize = noise
+elif mode == "curvature":
+    opt.minimize = curvature
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

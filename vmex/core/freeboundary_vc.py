@@ -879,8 +879,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return None
         self.stats["boundary_evaluations"] += fit["nfev"]
         state, mask, params_b, _ = fit["aux"]
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b,
-                                values=np.asarray(self._rows(state, params_b, jnp.asarray(x))))
+        try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
+            values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
+        except (VmecError, RuntimeError):
+            self.stats["failed"] += 1
+            self._cache[key] = None
+            return None
+        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
         return self._cache[key]
 
     def _record(self, x):

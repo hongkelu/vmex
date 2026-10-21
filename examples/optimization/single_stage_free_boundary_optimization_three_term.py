@@ -1402,7 +1402,12 @@ def main(argv=None):
         now = time.monotonic()
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
-        vac = np.asarray(vacuum(state_x, runtime_x))
+        try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
+            vac = np.asarray(vacuum(state_x, runtime_x))
+        except RuntimeError as error:
+            vac = np.full(3, np.nan)
+            print(f"[step {problem.accepted_step}] vacuum iota not available: {str(error).splitlines()[0][:200]}",
+                  flush=True)
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
         ext_values, ext_cost = extension_values(state_x, params_x)
         row = dict(step=problem.accepted_step,

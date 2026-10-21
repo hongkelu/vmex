@@ -301,6 +301,42 @@ def test_failed_or_nonfinite_rows_and_adjoints_reject_the_trial(monkeypatch):
     problem.close()
 
 
+def test_fit_certificate_measures_stationarity_and_rank():
+    """The certificate's stationarity is the Gauss-Newton step's predicted relative gain; a repeated column is a
+    rank-deficient Jacobian."""
+    J = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+    assert fvc._fit_certificate(J, np.array([0.0, 0.0, 2.0]))["stationarity"] == pytest.approx(0.0)
+    assert fvc._fit_certificate(J, np.array([1.0, 0.0, 1.0]))["stationarity"] == pytest.approx(0.5)
+    certificate = fvc._fit_certificate(np.array([[1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]), np.ones(3))
+    assert certificate["rank_deficient"] and certificate["condition"] > 1e12
+
+
+@needs_vc
+@pytest.mark.full
+def test_unconverged_fits_and_rank_deficient_jacobians_reject_the_trial(monkeypatch):
+    """A finite boundary fit that did not converge is no trial point; a rank-deficient boundary Jacobian is no
+    gradient; a certified gradient comes with the value of the same (polished) state."""
+    problem = _small_problem()
+    model = problem.model
+    value, gradient = problem.value_and_grad(problem.x0)
+    assert problem.fun(problem.x0) == value and problem._record(problem.x0)["certificate"]["stationarity"] <= 1e-3
+    solve_boundary = model.solve_boundary
+    monkeypatch.setattr(model, "solve_boundary",
+                        lambda *args, **kwargs: dict(solve_boundary(*args, **kwargs), converged=False, reason="radius"))
+    assert problem._solve(problem.x0 + 0.01) is None and problem.stats["fit_reasons"]["radius"] >= 1
+    monkeypatch.setattr(model, "solve_boundary", solve_boundary)
+    linearize = model.linearize
+
+    def one_dead_column(*args, **kwargs):
+        J, *rest = linearize(*args, **kwargs)
+        return (J.at[:, 0].set(0.0) if hasattr(J, "at") else np.where(np.arange(J.shape[1]) == 0, 0.0, J), *rest)
+
+    monkeypatch.setattr(model, "linearize", one_dead_column)
+    with pytest.raises(TrialRejected, match="rank-deficient"):
+        problem.value_and_grad(problem.x0 + 0.02)
+    problem.close()
+
+
 @needs_vc
 @pytest.mark.full
 def test_rejected_trial_leaves_the_continuation(monkeypatch):

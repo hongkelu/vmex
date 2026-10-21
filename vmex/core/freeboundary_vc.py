@@ -874,7 +874,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
-        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
+        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
+                          max_condition=0.0)
         self._continuation = None
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-term free boundary")
@@ -924,9 +925,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for start in starts:
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev,
+                                                max_nfev=self.boundary_max_nfev, refresh_on_stall=True,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # an uncertified equilibrium: try the next start
+                continue
+            reasons = self.stats["fit_reasons"]
+            reasons[fit["reason"]] = reasons.get(fit["reason"], 0) + 1
+            if not fit["converged"]:  # a finite fit is no solution: radius collapse or budget exhausted
+                self.stats["boundary_evaluations"] += fit["nfev"]
+                fit = None
                 continue
             if self.boundary_max_residual is not None:
                 state, _, params_b, _ = fit["aux"]
@@ -985,10 +992,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
                                         max_nfev=20)
         self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
+        if polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:  # the same fit, nearer its stationary point
             sol.update(x=polished["x"], aux=polished["aux"])
             J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
+        sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
+        self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
+        if certificate["rank_deficient"]:
+            raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
+        if certificate["stationarity"] > self.boundary_ftol:
+            raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
+                                f"{certificate['stationarity']:.2e} of the cost")
         state, params = sol["state"], sol["params"]
         try:
             params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -1060,6 +1074,21 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         """Drop the cached trials but the accepted one."""
         key = self.accepted.parameters.tobytes()
         self._cache = {k: v for k, v in self._cache.items() if k == key}
+
+
+def _fit_certificate(J, r):
+    """Stationarity and conditioning of a boundary fit with rows ``r`` and (scaled) Jacobian ``J`` at its point.
+
+    ``stationarity`` is the relative cost reduction a Gauss-Newton step with this Jacobian predicts,
+    ``|Q^T r|^2 / |r|^2``; ``condition`` is ``J``'s condition number, and ``rank_deficient`` marks a smallest
+    singular value at the rounding level, ``max(J.shape) * eps`` of the largest (NumPy's rank rule).
+    """
+    sv = np.linalg.svd(J, compute_uv=False)
+    Q = np.linalg.qr(J)[0]
+    cost = r @ r
+    return dict(stationarity=float(np.sum((Q.T @ r) ** 2) / cost) if cost > 0 else 0.0,
+                condition=float(sv[0] / sv[-1]) if sv[-1] > 0 else np.inf,
+                rank_deficient=bool(sv[-1] <= sv[0] * max(J.shape) * np.finfo(float).eps))
 
 
 @dataclass(frozen=True)

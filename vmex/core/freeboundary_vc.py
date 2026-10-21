@@ -51,6 +51,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import hashlib
+import json
+from pathlib import Path
 import time
 from typing import Any
 
@@ -198,6 +200,9 @@ def _condensation_rows(gamma, mpol, ntor):
     rows = spectrum[np.r_[0:ntor + 1, nphi - ntor:nphi]][:, 1:mpol - 1]
     return jnp.concatenate([jnp.real(rows).ravel(), jnp.imag(rows).ravel()])
 
+
+#: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
+CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/1"
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
@@ -405,6 +410,13 @@ class ThreeTermFreeBoundaryModel:
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
+        #: The settings that define the discrete problem (a checkpoint must match them to restore).
+        self.options = dict(max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, weights=list(weights),
+                            net_current_weight=net_current_weight, label_weight=label_weight, trial_ftol=trial_ftol,
+                            quadrature=None if quadrature is None else list(quadrature),
+                            bootstrap=None if bootstrap is None else type(bootstrap).__name__,
+                            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
+                            fixed_boundary=bool(fixed_boundary), labelling=labelling)
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
@@ -907,11 +919,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             else:
                 im._HOT_CACHE[cfg] = state
 
-    def _solve(self, x):
+    def _solve(self, x, starts=None):
         """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``.
 
-        Every trial starts from the continuation of the latest linearized (accepted) point, so neither a rejected
-        trial nor the order of trials changes what a later trial starts from.
+        Every trial starts from the continuation of the accepted point, so neither a rejected trial nor the order
+        of trials changes what a later trial starts from.
         """
         key = np.asarray(x, dtype=float).tobytes()
         if key in self._cache:
@@ -921,12 +933,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        anchor, starts, J = self._anchor, [None], None
-        if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
+        anchor, J = self._anchor, None
+        if starts is not None:  # given starts (a restore: the saved boundary)
+            anchor = {}
+        elif anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
+        else:
+            starts = [None]
         fit = None
         for start in starts:
             try:
@@ -1097,6 +1113,67 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             warnings.warn(f"the reporting re-solve moved the optimizer's state by {moved:.2e} (> {rtol:g})",
                           RuntimeWarning, stacklevel=2)
         return eq
+
+    def _definition(self):
+        """What a checkpoint must match: the deck the model was built on (its labelling reference, quadrature plan
+        and axis come from it), the model and fit settings, and the design layout."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            deck = self.model.fixed.to_indata(Path(folder) / "input.checkpoint").read_text()
+        return json.loads(json.dumps(dict(
+            deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
+            boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
+            design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
+
+    def save_checkpoint(self, path):
+        """Save the accepted point (``.npz``): its design, certified boundary and interior state, values and
+        certificate, and the problem's definition.  :meth:`restore_checkpoint` re-solves it; the optimizer's own
+        history is not saved, so a restart is a warm restart of the accepted equilibrium."""
+        x = self.accepted.parameters
+        sol = self._record(x)
+        self._linearize(x, sol)
+        leaves = jax.tree.leaves(sol["state"])
+        meta = dict(schema=CHECKPOINT_SCHEMA, accepted_step=self.accepted_step, definition=self._definition(),
+                    certificate=sol.get("certificate"), state_leaves=len(leaves))
+        np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
+                 meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
+
+    def restore_checkpoint(self, path, *, rtol=1e-6):
+        """Make a saved accepted point (:meth:`save_checkpoint`) this problem's accepted point.
+
+        The problem must have been built with the same definition (deck, settings, design layout) or this raises
+        :class:`ValueError`; the saved design is re-solved from the saved boundary and interior state, certified,
+        and must reproduce the saved values to ``rtol`` (relative to the largest) or this raises
+        :class:`~vmex.core.errors.VmecError`.  Returns the largest relative value change.
+        """
+        data = np.load(path, allow_pickle=False)
+        meta = json.loads(str(data["meta"]))
+        if meta.get("schema") != CHECKPOINT_SCHEMA:
+            raise ValueError(f"not a {CHECKPOINT_SCHEMA} checkpoint: {meta.get('schema')!r}")
+        definition = self._definition()
+        differ = sorted(k for k in set(definition) | set(meta["definition"])
+                        if definition.get(k) != meta["definition"].get(k))
+        if differ:
+            raise ValueError(f"the checkpoint is of a different problem: {', '.join(differ)} differ")
+        model, x = self.model, np.asarray(data["x"], dtype=float)
+        state = jax.tree.unflatten(jax.tree.structure(model.seed[0]),
+                                   [jnp.asarray(data[f"state{i}"]) for i in range(meta["state_leaves"])])
+        self._continuation = dict(linearization=None, radius=None,
+                                  hot={cfg: state for cfg in {model.cfg, model.cfg_trial}})
+        self._cache.pop(x.tobytes(), None)
+        sol = self._solve(x, starts=[np.asarray(data["b"], dtype=float)])
+        if sol is None:
+            raise VmecError("the checkpoint's design has no certified three-term free boundary from its saved state")
+        self._linearize(x, sol)
+        saved = np.asarray(data["values"])
+        change = float(np.max(np.abs(sol["values"] - saved)) / max(float(np.max(np.abs(saved))), 1e-300))
+        if not change <= rtol:
+            raise VmecError(f"the restored equilibrium changes the saved values by {change:.2e} (> {rtol:g})")
+        self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), int(meta["accepted_step"])
+        self._promote(sol)
+        self._cache = {x.tobytes(): sol}
+        return change
 
     def close(self):
         """Drop the cached trials but the accepted one."""

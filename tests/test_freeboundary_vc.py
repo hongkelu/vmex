@@ -437,6 +437,32 @@ def test_interior_state_does_not_depend_on_its_start():
         np.testing.assert_allclose(J, results[0][1], rtol=1e-5, atol=1e-7 * np.max(np.abs(results[0][1])))
 
 
+@needs_vc
+@pytest.mark.full
+def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
+    """A saved accepted point restores in a new problem of the same definition (the solver's caches cleared),
+    reproducing its values; a problem with other settings refuses it."""
+    from vmex.core import implicit as im
+
+    problem = _small_problem()
+    x1 = problem.x0 + 0.01
+    problem.value_and_grad(problem.x0)
+    problem.value_and_grad(x1)
+    problem.accept_x(x1)
+    path = tmp_path / "accepted.npz"
+    problem.save_checkpoint(path)
+    saved = problem._record(x1)["values"].copy()
+    problem.close()
+    for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED):
+        cache.clear()
+    fresh = _small_problem()
+    assert fresh.restore_checkpoint(path) <= 1e-6
+    assert np.array_equal(fresh.accepted.parameters, x1) and fresh.accepted_step == 1
+    np.testing.assert_allclose(fresh._record(x1)["values"], saved, rtol=1e-6)
+    with pytest.raises(ValueError, match="model"):
+        _small_problem(label_weight=0.0).restore_checkpoint(path)
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

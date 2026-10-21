@@ -812,7 +812,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -820,7 +820,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
         first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.
+        rejected.  With ``boundary_xtol`` a gradient's certified fit must also be within that (scaled) length of
+        its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -833,14 +834,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None):
+                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
+                 boundary_xtol=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
+        self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
@@ -1025,6 +1028,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if certificate["stationarity"] > self.boundary_ftol:
             raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
                                 f"{certificate['stationarity']:.2e} of the cost")
+        self.stats["max_step"] = max(self.stats.get("max_step", 0.0), certificate["step"])
+        if self.boundary_xtol is not None and certificate["step"] > self.boundary_xtol:
+            raise TrialRejected(f"boundary fit not stationary: its Gauss-Newton step is {certificate['step']:.2e} "
+                                f"(scaled) long, above boundary_xtol")
         state, params = sol["state"], sol["params"]
         try:
             params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -1124,6 +1131,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return json.loads(json.dumps(dict(
             deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
             boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
+            boundary_xtol=self.boundary_xtol,
             design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
 
     def save_checkpoint(self, path):
@@ -1185,13 +1193,16 @@ def _fit_certificate(J, r):
     """Stationarity and conditioning of a boundary fit with rows ``r`` and (scaled) Jacobian ``J`` at its point.
 
     ``stationarity`` is the relative cost reduction a Gauss-Newton step with this Jacobian predicts,
-    ``|Q^T r|^2 / |r|^2``; ``condition`` is ``J``'s condition number, and ``rank_deficient`` marks a smallest
-    singular value at the rounding level, ``max(J.shape) * eps`` of the largest (NumPy's rank rule).
+    ``|Q^T r|^2 / |r|^2``, and ``step`` that step's length, ``|J^+ r|`` in the (scaled) coordinates: in a flat
+    direction a fit can be far from its stationary point while the cost barely changes, which only ``step`` sees.
+    ``condition`` is ``J``'s condition number, and ``rank_deficient`` marks a smallest singular value at the
+    rounding level, ``max(J.shape) * eps`` of the largest (NumPy's rank rule).
     """
     sv = np.linalg.svd(J, compute_uv=False)
-    Q = np.linalg.qr(J)[0]
+    Q, R = np.linalg.qr(J)
     cost = r @ r
-    return dict(stationarity=float(np.sum((Q.T @ r) ** 2) / cost) if cost > 0 else 0.0,
+    step = float(np.linalg.norm(np.linalg.solve(R, Q.T @ r))) if sv[-1] > 0 else np.inf
+    return dict(stationarity=float(np.sum((Q.T @ r) ** 2) / cost) if cost > 0 else 0.0, step=step,
                 condition=float(sv[0] / sv[-1]) if sv[-1] > 0 else np.inf,
                 rank_deficient=bool(sv[-1] <= sv[0] * max(J.shape) * np.finfo(float).eps))
 

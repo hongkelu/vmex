@@ -310,6 +310,8 @@ def test_fit_certificate_measures_stationarity_and_rank():
     J = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
     assert fvc._fit_certificate(J, np.array([0.0, 0.0, 2.0]))["stationarity"] == pytest.approx(0.0)
     assert fvc._fit_certificate(J, np.array([1.0, 0.0, 1.0]))["stationarity"] == pytest.approx(0.5)
+    flat = fvc._fit_certificate(np.diag([1.0, 1e-3, 0.0])[:, :2], np.array([1e-6, 1e-6, 1.0]))
+    assert flat["stationarity"] < 1e-11 and flat["step"] == pytest.approx(1e-3)  # flat: tiny gain, long step
     certificate = fvc._fit_certificate(np.array([[1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]), np.ones(3))
     assert certificate["rank_deficient"] and certificate["condition"] > 1e12
 

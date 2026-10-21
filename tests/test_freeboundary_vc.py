@@ -113,6 +113,19 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
+def test_condensation_rows_vanish_on_a_uniformly_labelled_circle():
+    """VMEC's condensation condition holds for a circle in its natural angle, not once that angle is distorted."""
+    phi, theta = jnp.meshgrid(jnp.linspace(0.0, jnp.pi / 2, 16, endpoint=False),
+                              jnp.linspace(0.0, 2 * jnp.pi, 32, endpoint=False), indexing="ij")
+
+    def rows(angle):
+        R = 1.0 + 0.2 * jnp.cos(angle)
+        return fvc._condensation_rows(jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), 0.2 * jnp.sin(angle)]), 6, 3)
+
+    assert float(jnp.max(jnp.abs(rows(theta)))) < 1e-12
+    assert float(jnp.max(jnp.abs(rows(theta + 0.2 * jnp.sin(2 * theta))))) > 0.1
+
+
 def test_levenberg_marquardt_finish():
     """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
     and reports why it stopped."""

@@ -234,6 +234,37 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
     assert problem.stats["trials"] >= 3 and problem.stats["linearizations"] >= 1
 
 
+@needs_vc
+@pytest.mark.full
+def test_rejected_trial_leaves_the_continuation(monkeypatch):
+    """A rejected trial that changed the boundary fit's trust radius and linearization does not change what the
+    next trial starts from."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    base = field.currents
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        boundary_condition="three_term", three_term_options=SMALL)
+    model, seen = problem.model, []
+
+    def corrupting_fit(*args, **kwargs):
+        x_ref = None if model._linearization is None else np.asarray(model._linearization[0]).copy()
+        seen.append((model._radius, x_ref))
+        model._radius = 123.0
+        if model._linearization is not None:
+            model._linearization = (model._linearization[0] + 1.0, *model._linearization[1:])
+        raise RuntimeError("no boundary")
+
+    monkeypatch.setattr(model, "solve_boundary", corrupting_fit)
+    assert problem._solve(problem.x0 + 0.01) is None and problem._solve(problem.x0 + 0.02) is None
+    (radius_1, x_1), (radius_2, x_2) = seen[0], seen[-1]
+    assert radius_2 == radius_1 != 123.0
+    assert (x_1 is None and x_2 is None) or np.array_equal(x_1, x_2)
+    problem.close()
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

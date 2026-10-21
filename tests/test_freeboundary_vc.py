@@ -249,6 +249,18 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
 
 @needs_vc
 @pytest.mark.full
+def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
+    """A boundary fit whose Jacobian point has no certified equilibrium raises RuntimeError (a rejected trial),
+    not KeyError (which ended a campaign run), and never linearizes another point's state."""
+    inp, field = _small_vacuum()
+    model = fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    monkeypatch.setattr(model, "evaluate", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="no certified equilibrium"):
+        model.solve_boundary(model.params0, field)
+
+
+@needs_vc
+@pytest.mark.full
 def test_rejected_trial_leaves_the_continuation(monkeypatch):
     """A rejected trial that changed the boundary fit's trust radius and linearization does not change what the
     next trial starts from."""

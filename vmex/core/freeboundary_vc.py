@@ -1077,13 +1077,26 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol = self._record(x)
         return self.model.boundary_residual(sol["state"], sol["params"], self.field(jnp.asarray(x)))
 
-    def equilibrium_from_x(self, x):
-        """The free-boundary equilibrium of ``x`` as an ``Equilibrium`` (fixed-boundary solve on its boundary)."""
+    def equilibrium_from_x(self, x, *, rtol=1e-6):
+        """The free-boundary equilibrium of ``x`` as an ``Equilibrium`` (fixed-boundary solve on its boundary).
+
+        The re-solve starts from the state of ``x`` the optimizer used; if it moves that state by more than ``rtol``
+        (largest relative change of any field) a warning reports it, so the returned equilibrium never silently
+        differs from the optimizer's.
+        """
         from .optimize import solve_equilibrium
 
         sol = self._record(x)
-        return solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
-                                 initial_state=sol["state"])
+        eq = solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
+                               initial_state=sol["state"])
+        moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(float(np.max(np.abs(np.asarray(b)))), 1e-300))
+                    for a, b in zip(jax.tree.leaves(eq.state), jax.tree.leaves(sol["state"])) if np.size(b))
+        if not moved <= rtol:
+            import warnings
+
+            warnings.warn(f"the reporting re-solve moved the optimizer's state by {moved:.2e} (> {rtol:g})",
+                          RuntimeWarning, stacklevel=2)
+        return eq
 
     def close(self):
         """Drop the cached trials but the accepted one."""

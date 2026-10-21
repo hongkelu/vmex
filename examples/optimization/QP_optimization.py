@@ -143,7 +143,8 @@ inp = replace(inp, delt=0.5).change_resolution(
 # optimizer leaves the seed and needs no action; see examples/README.md.
 problem = opt.VmecProblem.from_tuples(
     inp, objective_function_terms, max_mode=max(MAX_MODES),
-    vary_major_radius=VARY_MAJOR_RADIUS, use_ess=True, ess_alpha=ESS_ALPHA)
+    vary_major_radius=VARY_MAJOR_RADIUS, use_ess=True, ess_alpha=ESS_ALPHA,
+    progress=not ci_smoke, evaluation_progress=not ci_smoke)
 monitor.problem = problem
 if not ci_smoke:
     problem.compile_residual_and_jacobian()

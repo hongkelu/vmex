@@ -259,19 +259,54 @@ def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
         model.solve_boundary(model.params0, field)
 
 
+def _small_problem(**options):
+    """A one-coil-current design on the small vacuum free boundary: aspect ratio, with mean iota as a quantity."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    base = field.currents
+    return FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        quantities=(opt.mean_iota,), boundary_condition="three_term", three_term_options=dict(SMALL, **options))
+
+
+@needs_vc
+@pytest.mark.full
+def test_failed_or_nonfinite_rows_and_adjoints_reject_the_trial(monkeypatch):
+    """A design whose loss or quantity rows raise or are not finite, or whose adjoint fails, is a rejected trial
+    (TrialRejected), not an error that ends the optimization and not a usable value or gradient."""
+    from vmex.core.errors import AdjointSolveError
+
+    problem = _small_problem()
+    rows = problem._rows
+
+    def failing(*args):
+        raise RuntimeError("host equilibrium solve failed")
+
+    monkeypatch.setattr(problem, "_rows", failing)
+    assert problem._solve(problem.x0 + 0.01) is None
+    with pytest.raises(TrialRejected):
+        problem.fun(problem.x0 + 0.01)
+    monkeypatch.setattr(problem, "_rows", lambda *args: rows(*args) * jnp.nan)
+    assert problem._solve(problem.x0 + 0.02) is None
+    monkeypatch.setattr(problem, "_rows", rows)
+
+    def failed_adjoint(*args):
+        raise AdjointSolveError("adjoint did not converge")
+
+    monkeypatch.setattr(problem, "_pullback", failed_adjoint)
+    with pytest.raises(TrialRejected, match="adjoint"):
+        problem.value_and_grad(problem.x0 + 0.03)
+    problem.close()
+
+
 @needs_vc
 @pytest.mark.full
 def test_rejected_trial_leaves_the_continuation(monkeypatch):
     """A rejected trial that changed the boundary fit's trust radius and linearization does not change what the
     next trial starts from."""
-    from vmex.core.freeboundary_problem import FreeBoundaryProblem
-
-    inp, field = _small_vacuum()
-    base = field.currents
-    problem = FreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
-        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
-        boundary_condition="three_term", three_term_options=SMALL)
+    problem = _small_problem()
     model, seen = problem.model, []
 
     def corrupting_fit(*args, **kwargs):

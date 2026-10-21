@@ -942,8 +942,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return None
         self.stats["boundary_evaluations"] += fit["nfev"]
         state, mask, params_b, _ = fit["aux"]
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b,
-                                values=np.asarray(self._rows(state, params_b, jnp.asarray(x))))
+        try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
+            values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
+        except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError
+            values = None
+        if values is None or not (np.all(np.isfinite(values)) and np.all(np.isfinite(fit["rows"]))):
+            self.stats["failed"] += 1
+            self._cache[key] = None
+            return None
+        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
         return self._cache[key]
 
     def _record(self, x):
@@ -962,14 +969,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         def tight():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
-            try:
+            try:  # the trial's state may not tighten to the deck's tolerance, or a row's own solve may fail
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
-            except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
+                state, mask, params, _ = aux
+                rows, values = np.asarray(model._rows(state, params, field)), np.asarray(self._rows(state, params, xj))
+            except (VmecError, RuntimeError) as error:
                 raise TrialRejected(str(error)) from error
-            state, mask, params, _ = aux
-            sol.update(aux=aux, state=state, mask=mask, params=params,
-                       rows=np.asarray(model._rows(state, params, field)),
-                       values=np.asarray(self._rows(state, params, xj)))
+            if not (np.all(np.isfinite(J)) and np.all(np.isfinite(rows)) and np.all(np.isfinite(values))):
+                raise TrialRejected("nonfinite rows or boundary Jacobian at the tightened state")
+            sol.update(aux=aux, state=state, mask=mask, params=params, rows=rows, values=values)
             self.stats["linearizations"] += 1
             return J
 
@@ -982,13 +990,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        try:
+            params_bar = self._pullback(state, sol["mask"], params, xj)
+        except (VmecError, RuntimeError) as error:  # an adjoint solve that does not certify
+            raise TrialRejected(str(error)) from error
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
+        if not np.all(np.isfinite(gradients)):
+            raise TrialRejected("nonfinite design gradient")
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         self._continuation = self._checkpoint()

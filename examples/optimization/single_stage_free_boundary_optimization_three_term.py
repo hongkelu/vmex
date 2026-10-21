@@ -1071,8 +1071,9 @@ def parse_args(argv=None):
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start), "
                         "equal arc length of the current surface (equal_arc) or VMEC's spectral condensation "
                         "(condensed); see ThreeTermFreeBoundaryModel")
-    parser.add_argument("--label-weight", type=float,
-                        help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
+    parser.add_argument("--label-weight", type=lambda v: v if v == "auto" else float(v),
+                        help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them; auto: "
+                        "VMEC2000's scaling of the condensed rows to the interface rows)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"

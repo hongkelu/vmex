@@ -216,7 +216,7 @@ def solve_free_boundary_three_term(
     digits: int = 4,
     weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
     net_current_weight: float = 1.0,
-    label_weight: float = 1e-2,
+    label_weight: float | str = 1e-2,
     labelling: str = "start",
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
@@ -254,7 +254,10 @@ def solve_free_boundary_three_term(
     and 5e-5 at 64 x 64 (whose quadrature needs several times the memory).
     Rows of the boundary points' displacement along the surface in ``theta``,
     relative to the initial boundary and scaled by ``label_weight``, fix the
-    boundary's poloidal labelling, which the interface conditions leave free.
+    boundary's poloidal labelling, which the interface conditions leave free;
+    ``labelling="equal_arc"`` replaces them by equal arc length of the current surface, and
+    ``labelling="condensed"`` by VMEC's spectral-condensation condition (:func:`_condensation_rows`), whose
+    ``label_weight="auto"`` is set at the first fit as VMEC2000 sets its constraint weight.
     ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
     the net poloidal current (edge ``rbtor`` against the external field's
     circulation around the seed's magnetic axis), the direction the
@@ -409,6 +412,11 @@ class ThreeTermFreeBoundaryModel:
         self.fixed_boundary = bool(fixed_boundary)
         if labelling not in ("start", "equal_arc", "condensed"):
             raise ValueError(f"labelling must be 'start', 'equal_arc' or 'condensed', got {labelling!r}")
+        self._label_auto = label_weight == "auto"
+        if self._label_auto and labelling != "condensed":
+            raise ValueError("label_weight='auto' scales the condensed rows: pass labelling='condensed'")
+        label_weight = 1.0 if self._label_auto else float(label_weight)
+        self.label_weight = label_weight
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -451,9 +459,10 @@ class ThreeTermFreeBoundaryModel:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
         self.seed = (state, mask)
+        self._interface_args = (state, nphi, ntheta, digits, quadrature, weights)
+        self._label_args = (net_current_weight, labelling)
         if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                                  labelling)
+            self._interface_setup(*self._interface_args, label_weight, *self._label_args)
         self._implicit_setup()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
@@ -514,7 +523,6 @@ class ThreeTermFreeBoundaryModel:
             return jnp.concatenate(parts)
 
         self.rows = rows
-        self._rows = jax.jit(rows)
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
@@ -549,8 +557,7 @@ class ThreeTermFreeBoundaryModel:
 
         self._tangents = jax.jit(tangents)
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
-            lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
+        self._jit_rows()
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
@@ -582,6 +589,40 @@ class ThreeTermFreeBoundaryModel:
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+
+    def _jit_rows(self):
+        """The compiled rows and their pushes (rebuilt when the automatic labelling weight is set)."""
+        rows = self.rows
+        self._rows = jax.jit(rows)
+        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: self.push(
+            lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
+
+    def _calibrate_label_weight(self, params, field, x):
+        """Set the automatic weight of the condensed rows at boundary ``x``, as VMEC2000 sets its constraint's.
+
+        VMEC scales its spectral-condensation force on each surface to the MHD force's own stiffness there
+        (``tcon = min(ard / arnorm, azd / aznorm) * tcon_mul * (32 hs)^2``, halved on the boundary;
+        ``bcovar.f``) with ``tcon0 = 1``.  Here the stiffness of each kind of row is the Frobenius norm of its
+        Jacobian in the boundary coordinates, and the weight makes the condensed rows' that same factor
+        ``(1 + ns/60 + ns^2/24000) / 16 * (32 / (ns - 1))^2 / 2`` of the interface rows'.
+        """
+        got = self.evaluate(x, params, field)
+        if got is None:
+            raise RuntimeError("the starting boundary has no certified equilibrium")
+        J = self.linearize(x, got[1], field)[0][:, :self.n_boundary]
+        _, nphi, ntheta, *_ = self._interface_args
+        n = nphi * ntheta
+        mpol, ntor = int(self.fixed.mpol), int(self.fixed.ntor)
+        condensed = slice(6 * n, 6 * n + 2 * (mpol - 2) * (2 * ntor + 1) + nphi)
+        ns = int(np.asarray(self.fixed.ns_array)[np.asarray(self.fixed.ns_array) > 0][-1])
+        tcon = (1 + ns / 60 + ns**2 / 24000) / 16 * (32 / (ns - 1)) ** 2 / 2
+        self.label_weight = float(tcon * np.linalg.norm(J[:5 * n]) / np.linalg.norm(J[condensed]))
+        self._label_auto = False
+        self._interface_setup(*self._interface_args, self.label_weight, *self._label_args)
+        self._jit_rows()
+        self._last_linearize = None
+        print(f"[labelling] condensed rows: automatic weight {self.label_weight:.3e} (VMEC factor {tcon:.3e})",
+              flush=True)
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -707,6 +748,9 @@ class ThreeTermFreeBoundaryModel:
         import scipy.optimize
 
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
+        if self._label_auto:
+            self._calibrate_label_weight(params, field, x)
+            jacobian = None  # taken with the unit weight
         nfev = njev = 0
         if jacobian is not None:
             first = self.evaluate(x, params, field)

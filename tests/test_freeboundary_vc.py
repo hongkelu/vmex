@@ -195,6 +195,21 @@ def test_three_term_option_fits_the_best_of_two_starts():
 
 @needs_vc
 @pytest.mark.full
+def test_condensed_labelling_with_the_automatic_weight():
+    """``labelling="condensed"`` with VMEC's automatic weight: the weight is set at the first fit and the fit
+    still reduces B.n and the sheet current of the deck's fixed-boundary equilibrium."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 7), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field, n=12)
+    result = fvc.solve_free_boundary_three_term(inp, external_field=field, labelling="condensed",
+                                                label_weight="auto", **dict(SMALL, max_mode=3), max_nfev=20)
+    res = result.boundary_residual
+    assert 0 < result.model.label_weight < np.inf and not result.model._label_auto
+    assert res.normal < design.normal and res.sheet_current < design.sheet_current
+
+
+@needs_vc
+@pytest.mark.full
 def test_three_term_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""

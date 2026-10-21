@@ -79,10 +79,10 @@ H = [float(h) for h in os.environ.get("NOISE_H", "1e-2,1e-3,1e-4,1e-5,1e-6").spl
 def noise(problem, **_):
     x0 = np.asarray(problem.accepted.parameters, dtype=float)
     d = np.asarray(problem.scales) * np.random.default_rng(0).standard_normal(x0.size)
-    family = os.environ.get("NOISE_FAMILY")  # phiedge | current | coils: the random direction in that family only
+    family = os.environ.get("NOISE_FAMILY")  # phiedge | current (= profile + curtor) | profile | curtor | coils
     if family:
         plasma = np.asarray(problem._plasma)
-        keep = dict(phiedge=plasma[:1], current=plasma[1:],
+        keep = dict(phiedge=plasma[:1], current=plasma[1:], curtor=plasma[-1:], profile=plasma[1:-1],
                     coils=np.setdiff1d(np.arange(x0.size), plasma))[family]
         mask = np.zeros(x0.size, dtype=bool)
         mask[keep] = True

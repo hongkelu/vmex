@@ -280,6 +280,48 @@ def exactgrad(problem, **_):
     sys.exit(0)
 
 
+def gnstep(problem, **_):
+    """How far the optimizer's trial fits are from their stationary point: at the restart design and nearby trial
+    designs, the Gauss-Newton step |J^+ r| (scaled boundary coordinates) and the loss at the trial fit, and the same
+    after a tightly converged fit (ftol 1e-10) of the same design, with that fit's evaluation count."""
+    import jax.numpy as jnp
+
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    scale = np.asarray(model.x_scale)
+    nb = model.x0.size
+    problem.value_and_grad(x0)
+
+    def step(x_b, aux, field):
+        J = np.asarray(model.linearize(x_b, aux, field)[0])[:, :nb] * scale[None]
+        model._last_linearize = None
+        r = np.asarray(model._rows(aux[0], aux[2], field))
+        return float(np.linalg.norm(np.linalg.lstsq(J, r, rcond=None)[0])), r
+
+    rng = np.random.default_rng(1)
+    rows = []
+    for t in (0.0, 1e-3, 1e-2, 3e-2):
+        d = np.asarray(problem.scales) * rng.standard_normal(x0.size)
+        x = x0 + t * d / np.linalg.norm(d / np.asarray(problem.scales))
+        sol = problem._solve(x)
+        if sol is None:
+            rows.append(dict(t=t, trial="rejected"))
+            continue
+        xj = jnp.asarray(x)
+        field, P = problem.field(xj), problem._params_at(xj)
+        s_trial, r_trial = step(sol["x"], sol["aux"], field)
+        tight = model.solve_boundary(P, field, x0=sol["x"], ftol=1e-10, jacobian_ftol=1e-10, max_nfev=400,
+                                     refresh_on_stall=True)
+        s_tight, r_tight = step(tight["x"], tight["aux"], field)
+        values = np.asarray(problem._rows(tight["aux"][0], tight["aux"][2], xj))
+        rows.append(dict(t=t, step_trial=s_trial, step_tight=s_tight, tight_nfev=int(tight["nfev"]),
+                         tight_reason=tight.get("reason"), boundary_move=float(np.linalg.norm((tight["x"] - sol["x"]) / scale)),
+                         loss_trial=float(sol["values"][0]), loss_tight=float(values[0]),
+                         cost_trial=float(r_trial @ r_trial), cost_tight=float(r_tight @ r_tight)))
+        print(json.dumps(rows[-1]), flush=True)
+    (out / "gnstep.json").write_text(json.dumps(rows, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
@@ -290,5 +332,7 @@ elif mode == "curvature":
     opt.minimize = curvature
 elif mode == "exactgrad":
     opt.minimize = exactgrad
+elif mode == "gnstep":
+    opt.minimize = gnstep
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

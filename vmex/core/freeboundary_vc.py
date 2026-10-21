@@ -872,17 +872,42 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._anchor = {}, {}
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0)
+        self._continuation = None
         if self._solve(x0) is None:
             raise VmecError("the seed design has no three-term free boundary")
+        self._continuation = self._checkpoint()
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
 
+    def _checkpoint(self):
+        """The continuation a trial starts from: the boundary fit's latest linearization and trust radius, and the
+        equilibrium solver's hot-restart state."""
+        im, model = self.model._im, self.model
+        return dict(linearization=model._linearization, radius=model._radius,
+                    hot={cfg: im._HOT_CACHE.get(cfg) for cfg in {model.cfg, model.cfg_trial}})
+
+    def _restore(self, checkpoint):
+        im, model = self.model._im, self.model
+        model._linearization, model._radius = checkpoint["linearization"], checkpoint["radius"]
+        for cfg, state in checkpoint["hot"].items():
+            im._PERTURB_SEED.pop(cfg, None)
+            if state is None:
+                im._HOT_CACHE.pop(cfg, None)
+            else:
+                im._HOT_CACHE[cfg] = state
+
     def _solve(self, x):
-        """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``."""
+        """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``.
+
+        Every trial starts from the continuation of the latest linearized (accepted) point, so neither a rejected
+        trial nor the order of trials changes what a later trial starts from.
+        """
         key = np.asarray(x, dtype=float).tobytes()
         if key in self._cache:
             return self._cache[key]
+        if self._continuation is not None:
+            self._restore(self._continuation)
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
@@ -963,6 +988,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
+        self._continuation = self._checkpoint()
         sol["gradients"] = gradients
         return gradients
 

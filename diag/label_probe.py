@@ -246,6 +246,11 @@ def exactgrad(problem, **_):
         step = eps * scale * V[:, j]
         Z[:, j] = scale * (grads_at(b + step)[0] - grads_at(b - step)[0]) / (2 * eps)
         print(json.dumps(dict(hvp=j, ratio=float(np.linalg.norm(Z[:, j]) / np.linalg.norm(Js.T @ (Js @ V[:, j]))))), flush=True)
+    for k in ks:  # is the fit a strict minimum in the weak subspace? eigenvalues of V^T (J^T J + S) V
+        Vk, Zk = V[:, :k], Z[:, :k]
+        H = Vk.T @ (Js.T @ (Js @ Vk)) + 0.5 * (Vk.T @ Zk + Zk.T @ Vk)
+        print(json.dumps(dict(k=k, weak_hessian_eigenvalues=np.linalg.eigvalsh(H).tolist(),
+                              weak_JtJ_eigenvalues=np.linalg.eigvalsh(Vk.T @ (Js.T @ (Js @ Vk))).tolist())), flush=True)
     lam_gn = np.linalg.solve(Js.T @ Js, Gs)
     rows = [dict(k=0, check_gn=float(np.max(np.abs(first_order(Js @ lam_gn) - G_gn[0])) / np.max(np.abs(G_gn[0]))))]
     gradients = {0: first_order(Js @ lam_gn)}

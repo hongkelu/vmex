@@ -73,7 +73,7 @@ def cold(problem, **_):
 
 
 T = np.r_[-np.logspace(-2, -6, 5), 0.0, np.logspace(-6, -2, 5)]
-H = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+H = [float(h) for h in os.environ.get("NOISE_H", "1e-2,1e-3,1e-4,1e-5,1e-6").split(",")]
 
 
 def noise(problem, **_):

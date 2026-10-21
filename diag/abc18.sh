@@ -4,9 +4,9 @@
 #   HOST: lhk0-7 | lhk14-19 | lhk8-13 (runs whose seeds or slots are on that host); each run takes an empty GPU.
 #   smoke: 2 steps of the first run of HOST only, into OUT/smoke-<name>.
 HOST=$1; SMOKE=$2
-P=/root/autodl-tmp/venv-tt1-v2/bin/python
+P=${PYTHON:-/root/autodl-tmp/venv-tt1-v2/bin/python}
 OUT=/root/autodl-tmp/abc18; mkdir -p $OUT
-SEEDS=/root/autodl-tmp/tt1-work/tree
+SEEDS=${SEEDS:-/root/autodl-tmp/tt1-work/tree}
 VAC="--modes 8 8 --ns 51 --save-every 10 --coil-point-rows"
 QA_B="--beta 0.025 --bootstrap $VAC --seed-run $SEEDS/seeds/qa4-beta-free --vacuum-iota-floor 0.31 --iota-ceiling 0.495"
 QH_B="--beta 0.025 --bootstrap $VAC --design-step-scale 1.0 --max-iterations 20000"
@@ -15,10 +15,10 @@ declare -A LAB=([A]="--labelling start" [C]="--labelling equal_arc --label-weigh
 jobs=()
 # C and NL claim GPUs first, then A
 for m in C NL; do
-  jobs+=("lhk0-7|qa-beta-$m|qa4-beta-merc|$QA_B|$m" "lhk0-7|qi-beta-$m|qi6-beta-A8|$QI_B|$m" "lhk0-7|qh-beta-$m|qh4-beta-A8-merc|$QH_B|$m")
+  jobs+=("lhk14-19|qh-beta-$m|qh4-beta-A8-merc|$QH_B|$m" "lhk14-19|qa-beta-$m|qa4-beta-merc|$QA_B|$m" "lhk14-19|qi-beta-$m|qi6-beta-A8|$QI_B|$m")
 done
-jobs+=("lhk0-7|qa-beta-A|qa4-beta-merc|$QA_B|A" "lhk0-7|qi-beta-A|qi6-beta-A8|$QI_B|A")
-for c in qa:qa3 qh:qh qi:qi; do jobs+=("lhk14-19|${c%%:*}-vac-C|${c##*:}|$VAC|C" "lhk14-19|${c%%:*}-vac-NL|${c##*:}|$VAC|NL" "lhk8-13|${c%%:*}-vac-A|${c##*:}|$VAC|A"); done
+jobs+=("lhk8-13|qa-beta-A|qa4-beta-merc|$QA_B|A" "lhk8-13|qi-beta-A|qi6-beta-A8|$QI_B|A")
+for c in qa:qa3 qh:qh qi:qi; do jobs+=("lhk0-7|${c%%:*}-vac-C|${c##*:}|$VAC|C" "lhk0-7|${c%%:*}-vac-NL|${c##*:}|$VAC|NL" "lhk8-13|${c%%:*}-vac-A|${c##*:}|$VAC|A"); done
 jobs+=("lhk8-13|qh-beta-A|qh4-beta-A8-merc|$QH_B|A")
 cd "$(dirname "$0")/.."
 free=($(nvidia-smi --query-gpu=uuid,memory.used --format=csv,noheader,nounits | awk -F', ' '$2 < 100 {print $1}'))

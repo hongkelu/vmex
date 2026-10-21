@@ -232,7 +232,7 @@ def exactgrad(problem, **_):
         Jf, _, _, aux = model.linearize(bp, got[1], field, extra=extra)
         model._last_linearize = None
         st, _, pr, _ = aux
-        gx = np.asarray(problem._field_vjp(st, pr, xj, jnp.asarray(r)))
+        gx = np.array(problem._field_vjp(st, pr, xj, jnp.asarray(r)))
         gx[plasma] += np.asarray(Jf)[:, nb:].T @ r
         return np.asarray(Jf)[:, :nb].T @ r, gx
 

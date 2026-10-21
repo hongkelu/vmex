@@ -201,6 +201,9 @@ def _condensation_rows(gamma, mpol, ntor):
     return jnp.concatenate([jnp.real(rows).ravel(), jnp.imag(rows).ravel()])
 
 
+#: Relative cost change at which a gradient's polish of its trial fit stops (with the trial's own Jacobian).
+POLISH_FTOL = 1e-4
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/1"
 
@@ -1014,7 +1017,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return J
 
         J = tight()
-        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
+        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=POLISH_FTOL,
                                         max_nfev=20)
         self.stats["boundary_evaluations"] += polished["nfev"]
         if polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:  # the same fit, nearer its stationary point
@@ -1025,7 +1028,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
         if certificate["rank_deficient"]:
             raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
-        if certificate["stationarity"] > self.boundary_ftol:
+        if certificate["stationarity"] > max(self.boundary_ftol, POLISH_FTOL):  # what the fit and polish aimed at
             raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
                                 f"{certificate['stationarity']:.2e} of the cost")
         self.stats["max_step"] = max(self.stats.get("max_step", 0.0), certificate["step"])
@@ -1153,7 +1156,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         The problem must have been built with the same definition (deck, settings, design layout) or this raises
         :class:`ValueError`; the saved design is re-solved from the saved boundary and interior state, certified,
         and must reproduce the saved values to ``rtol`` (relative to the largest) or this raises
-        :class:`~vmex.core.errors.VmecError`.  The re-fit and its polish (relative cost change 1e-4) can move the
+        :class:`~vmex.core.errors.VmecError`.  The re-fit and its polish (``POLISH_FTOL``) can move the
         boundary within the fit's tolerance, so the default ``rtol`` is that tolerance.  Returns the largest
         relative value change.
         """

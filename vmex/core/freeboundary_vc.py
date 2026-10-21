@@ -218,6 +218,7 @@ def solve_free_boundary_three_term(
     net_current_weight: float = 1.0,
     label_weight: float | str = 1e-2,
     labelling: str = "start",
+    label_ratio: float = 1e-3,
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
@@ -257,7 +258,8 @@ def solve_free_boundary_three_term(
     boundary's poloidal labelling, which the interface conditions leave free;
     ``labelling="equal_arc"`` replaces them by equal arc length of the current surface, and
     ``labelling="condensed"`` by VMEC's spectral-condensation condition (:func:`_condensation_rows`), whose
-    ``label_weight="auto"`` is set at the first fit as VMEC2000 sets its constraint weight.
+    ``label_weight="auto"`` is set at the first fit, VMEC2000's way, relative to the interface rows
+    (``label_ratio``, a model keyword; see :meth:`ThreeTermFreeBoundaryModel._calibrate_label_weight`).
     ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
     the net poloidal current (edge ``rbtor`` against the external field's
     circulation around the seed's magnetic axis), the direction the
@@ -314,8 +316,8 @@ def solve_free_boundary_three_term(
             raxis_c=initial_boundary.raxis_c, zaxis_s=initial_boundary.zaxis_s)
         model = ThreeTermFreeBoundaryModel(start, max_mode=max_mode, nphi=int(nphi or 48), ntheta=int(ntheta or 48),
                                    digits=digits, weights=weights, net_current_weight=net_current_weight,
-                                   label_weight=label_weight, labelling=labelling, quadrature=quadrature,
-                                   trial_ftol=trial_ftol,
+                                   label_weight=label_weight, labelling=labelling, label_ratio=label_ratio,
+                                   quadrature=quadrature, trial_ftol=trial_ftol,
                                    chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
                                    bootstrap_weight=bootstrap_weight)
         x0 = jacobian = None
@@ -400,7 +402,7 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="start"):
+                 fixed_boundary=False, labelling="start", label_ratio=1e-3):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -416,7 +418,7 @@ class ThreeTermFreeBoundaryModel:
         if self._label_auto and labelling != "condensed":
             raise ValueError("label_weight='auto' scales the condensed rows: pass labelling='condensed'")
         label_weight = 1.0 if self._label_auto else float(label_weight)
-        self.label_weight = label_weight
+        self.label_weight, self.label_ratio = label_weight, float(label_ratio)
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -598,13 +600,13 @@ class ThreeTermFreeBoundaryModel:
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
 
     def _calibrate_label_weight(self, params, field, x):
-        """Set the automatic weight of the condensed rows at boundary ``x``, as VMEC2000 sets its constraint's.
+        """Set the automatic weight of the condensed rows at boundary ``x``.
 
-        VMEC scales its spectral-condensation force on each surface to the MHD force's own stiffness there
-        (``tcon = min(ard / arnorm, azd / aznorm) * tcon_mul * (32 hs)^2``, halved on the boundary;
-        ``bcovar.f``) with ``tcon0 = 1``.  Here the stiffness of each kind of row is the Frobenius norm of its
-        Jacobian in the boundary coordinates, and the weight makes the condensed rows' that same factor
-        ``(1 + ns/60 + ns^2/24000) / 16 * (32 / (ns - 1))^2 / 2`` of the interface rows'.
+        As VMEC2000 scales its spectral-condensation force on each surface to the MHD force's own stiffness there
+        (``tcon ~ ard / arnorm``; ``bcovar.f``), the weight makes the Frobenius norm of the condensed rows'
+        Jacobian in the boundary coordinates ``label_ratio`` times the interface rows'.  VMEC's remaining factor
+        ``tcon_mul * (32 hs)^2`` belongs to its radial preconditioner (it is about 1 at ns = 7 and 0.025 at
+        ns = 51) and has no counterpart in rows on the boundary alone.
         """
         got = self.evaluate(x, params, field)
         if got is None:
@@ -614,14 +616,12 @@ class ThreeTermFreeBoundaryModel:
         n = nphi * ntheta
         mpol, ntor = int(self.fixed.mpol), int(self.fixed.ntor)
         condensed = slice(6 * n, 6 * n + 2 * (mpol - 2) * (2 * ntor + 1) + nphi)
-        ns = int(np.asarray(self.fixed.ns_array)[np.asarray(self.fixed.ns_array) > 0][-1])
-        tcon = (1 + ns / 60 + ns**2 / 24000) / 16 * (32 / (ns - 1)) ** 2 / 2
-        self.label_weight = float(tcon * np.linalg.norm(J[:5 * n]) / np.linalg.norm(J[condensed]))
+        self.label_weight = float(self.label_ratio * np.linalg.norm(J[:5 * n]) / np.linalg.norm(J[condensed]))
         self._label_auto = False
         self._interface_setup(*self._interface_args, self.label_weight, *self._label_args)
         self._jit_rows()
         self._last_linearize = None
-        print(f"[labelling] condensed rows: automatic weight {self.label_weight:.3e} (VMEC factor {tcon:.3e})",
+        print(f"[labelling] condensed rows: automatic weight {self.label_weight:.3e} (ratio {self.label_ratio:g})",
               flush=True)
 
     def solve(self, params, seed=None, tight=True):

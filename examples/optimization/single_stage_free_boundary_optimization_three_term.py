@@ -1073,7 +1073,10 @@ def parse_args(argv=None):
                         "(condensed); see ThreeTermFreeBoundaryModel")
     parser.add_argument("--label-weight", type=lambda v: v if v == "auto" else float(v),
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them; auto: "
-                        "VMEC2000's scaling of the condensed rows to the interface rows)")
+                        "the condensed rows scaled to the interface rows, as VMEC2000 scales its constraint)")
+    parser.add_argument("--label-ratio", type=float,
+                        help="with --label-weight auto: the condensed rows' Jacobian norm relative to the interface "
+                        "rows' (default: the model's)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1333,7 +1336,8 @@ def main(argv=None):
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
                                 boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
-                                **({} if args.label_weight is None else {"label_weight": args.label_weight})))
+                                **({} if args.label_weight is None else {"label_weight": args.label_weight}),
+                                **({} if args.label_ratio is None else {"label_ratio": args.label_ratio})))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

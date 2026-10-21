@@ -2,8 +2,9 @@
 
     python fbbench.py OUT CONFIG [CONFIG ...]
 
-Methods: NESTOR + VMEX (from the deck), and the three-term solve with equal-arc labelling at weight 1e-3 ("C") and
-with no labelling rows ("NL": start labelling at weight 0), each from several starting boundaries.  Every result is
+Methods: NESTOR + VMEX (from the deck), and the three-term solve with equal-arc labelling at weight 1e-3 ("C"),
+with no labelling rows ("NL": start labelling at weight 0), and with VMEC's condensation rows ("D" at 1e-3, "DautoR"
+at the automatic weight of ratio R), each from several starting boundaries; FBB_METHODS=C,NL,... picks a subset.  Every result is
 scored the same way: a fixed-boundary equilibrium on its boundary; the three interface conditions on an N x N grid
 with one fixed singular quadrature per configuration (planned on the deck's equilibrium); field lines in vacuum;
 axis/edge iota, R00, and the LCFS distance to the NESTOR result with a dense reference curve.
@@ -13,6 +14,7 @@ run's design (RUN a directory with input.run, coils.stepSTEP.json and wout.stepS
 resolution MPOL = NTOR = M (boundary truncated or zero-padded).  Six starts at M = 6 and 8, four otherwise.
 """
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -34,7 +36,13 @@ from test_freeboundary_vc import _vacuum_flux_surface  # noqa: E402
 
 DATA = Path("examples/data")
 N = 64
-METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(labelling="start", label_weight=0.0)}
+METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(labelling="start", label_weight=0.0),
+           # D: VMEC's spectral-condensation rows (branch exp-label-condensed), fixed or automatic weight
+           "D": dict(labelling="condensed", label_weight=1e-3),
+           **{f"Dauto{r:g}": dict(labelling="condensed", label_weight="auto", label_ratio=r)
+              for r in (1e-4, 1e-3, 1e-2, 1e-1)}}
+if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=D,Dauto0.001
+    METHODS = {k: METHODS[k] for k in os.environ["FBB_METHODS"].split(",")}
 
 
 @dataclass(frozen=True)
@@ -220,7 +228,7 @@ def main():
                 sv = np.linalg.svd(J / np.maximum(np.linalg.norm(J, axis=0), 1e-300), compute_uv=False)
                 score(fit.input, f"{method} from {sname}", ref=ref, seconds=round(time.perf_counter() - t0),
                       nfev=int(fit.nfev), njev=int(fit.njev), converged=bool(fit.converged), success=bool(fit.success),
-                      cond=float(sv[0] / sv[-1]))
+                      cond=float(sv[0] / sv[-1]), label_weight=float(getattr(fit.model, "label_weight", np.nan)))
         log.close()
 
 

@@ -142,6 +142,9 @@ Free boundary
 .. automodule:: vmex.core.mgrid
    :members:
 
+.. automodule:: vmex.core.position_control
+   :members:
+
 .. automodule:: vmex.core.extender
    :members:
 

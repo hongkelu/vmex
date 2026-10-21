@@ -247,6 +247,15 @@ NESTOR free boundary driven by ESSOS coils (or an MGRID table), ramping beta and
 Shafranov shift: `python examples/free_boundary_essos_coils.py`. The exterior field is described
 [below](#fields-coils-and-free-boundary).
 
+### Position control for current-carrying plasmas
+
+![Axis position, feedback vertical field and force residual with and without position control](docs/_static/figures/position_control_deck.webp)
+
+Opt-in (`LPOSITION_CONTROL = T` or `position_control=vj.PositionControl(target=...)`): a PID law on the
+axis radius sets a uniform vertical field that holds a current-carrying free-boundary plasma in place.
+Equations and the DIII-D-like example (`python examples/free_boundary_position_control.py`) are in
+[the explanation page](docs/explanation/position-control.md).
+
 ### Single-stage plasma and coil design
 
 ![Fixed-boundary vacuum single-stage optimization: boundary and coils at each accepted iterate](docs/_static/figures/readme_single_stage_fixed_boundary.webp)

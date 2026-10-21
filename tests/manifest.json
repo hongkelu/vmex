@@ -19,6 +19,7 @@
     ["tests/test_bounce.py", "diagnostics", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-a-c"]],
     ["tests/test_bootstrap.py", "diagnostics", "oracle", "slow", "cpu", "golden", "external", ["pr-parity-b", "full-core-a-c"]],
     ["tests/test_boozer_tables.py", "diagnostics", "oracle", "medium", "cpu", "golden", "golden", ["pr-parity-c1", "full-core-a-c"]],
+    ["tests/test_position_control.py", "free-boundary", "integration", "medium", "cpu", "generated", "analytic", ["pr-parity-c6", "full-core-j-m"]],
     ["tests/test_test_manifest.py", "infrastructure", "unit", "fast", "cpu", "none", "none", ["pr-parity-c2", "full-core-t-z"]],
     ["tests/test_cli.py", "interface", "integration", "medium", "cpu", "none", "analytic", ["pr-parity-c1", "full-core-a-c"]],
     ["tests/test_desc.py", "interface", "integration", "medium", "cpu", "generated", "analytic", ["pr-fast", "pr-parity-c1", "full-core-d-f0"]],

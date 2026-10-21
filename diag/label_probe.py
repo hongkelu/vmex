@@ -4,6 +4,7 @@
     python label_probe.py W cold  OUT <driver arguments>   # build the problem (solve the seed design) and stop
     python label_probe.py W noise OUT <driver arguments>   # LM noise / finite-difference test at the restart design
     python label_probe.py W curvature OUT <driver arguments> # the least-squares curvature the gradient leaves out
+    python label_probe.py W exactgrad OUT <driver arguments> # the loss gradient with that curvature, against FD
     python label_probe.py W twostart OUT <driver arguments> # the restart design's boundary fit from two starts
                                   # (TWOSTART_STARTS=restart: that start only; CONVERGED_MAX_NFEV caps the full fit)
 
@@ -193,6 +194,82 @@ def curvature(problem, **_):
     sys.exit(0)
 
 
+def exactgrad(problem, **_):
+    """The loss gradient with the least-squares curvature in the k weakest boundary directions (EXACT_K, a list),
+    against the Gauss-Newton gradient and, along the noise mode's seeded family directions, against the finite
+    differences in FD_DIR/<family>/noise.json.  S v and the mixed term are central differences (EXACT_EPS, scaled
+    coordinates) of exact adjoint gradients J(b')^T r and d/dc <r, r(b', c)>, so they include the second-order
+    response through the interior equilibrium."""
+    import jax.numpy as jnp
+
+    ks = [int(k) for k in os.environ.get("EXACT_K", "8,24,48").split(",")]
+    eps = float(os.environ.get("EXACT_EPS", "1e-4"))
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    xj = jnp.asarray(x0)
+    problem.value_and_grad(x0)
+    sol, anchor = problem._solve(x0), problem._anchor
+    G_gn = np.asarray(sol["gradients"])
+    state, mask, params = sol["state"], sol["mask"], sol["params"]
+    P, field = problem._params_at(xj), problem.field(xj)
+    b, J, J_p = np.asarray(anchor["b"]), np.asarray(anchor["J_b"]), np.asarray(anchor["J_p"])
+    scale = np.asarray(model.x_scale)
+    r = np.asarray(model._rows(state, params, field))
+    params_bar = problem._pullback(state, mask, params, xj)
+    G_b, G_x = map(np.asarray, problem._coordinates(params, jnp.asarray(b), xj, params_bar))
+    direct = np.asarray(problem._direct(state, params, xj))
+    plasma = np.asarray(problem._plasma)
+
+    def first_order(lam_res):
+        out = direct[0] + G_x[0] - np.asarray(problem._field_vjp(state, params, xj, jnp.asarray(lam_res)))
+        out[plasma] -= lam_res @ J_p
+        return out
+
+    def grads_at(bp):  # d/db' and d/dc of <r, r(b', c)> at the boundary bp (r held fixed)
+        got = model.evaluate(bp, P, field, tight=True)
+        st, mk, pr, _ = got[1]
+        pb = model.pullback(lambda s_, p_, f_: model.rows(s_, p_, f_), st, mk, pr, jnp.asarray(r)[None], field)
+        gb, gx = map(np.asarray, problem._coordinates(pr, jnp.asarray(bp), xj, pb))
+        return gb[0], gx[0] + np.asarray(problem._field_vjp(st, pr, xj, jnp.asarray(r)))
+
+    Js = J * scale[None]
+    Gs = scale * G_b[0]
+    Vt = np.linalg.svd(Js, full_matrices=False)[2]
+    kmax = max(ks)
+    V = Vt[-kmax:][::-1].T  # weakest first
+    Z = np.zeros_like(V)
+    for j in range(kmax):
+        step = eps * scale * V[:, j]
+        Z[:, j] = scale * (grads_at(b + step)[0] - grads_at(b - step)[0]) / (2 * eps)
+        print(json.dumps(dict(hvp=j, ratio=float(np.linalg.norm(Z[:, j]) / np.linalg.norm(Js.T @ (Js @ V[:, j]))))), flush=True)
+    lam_gn = np.linalg.solve(Js.T @ Js, Gs)
+    rows = [dict(k=0, check_gn=float(np.max(np.abs(first_order(Js @ lam_gn) - G_gn[0])) / np.max(np.abs(G_gn[0]))))]
+    gradients = {0: first_order(Js @ lam_gn)}
+    for k in ks:
+        Vk, Zk = V[:, :k], Z[:, :k]
+        S = Zk @ Vk.T + Vk @ Zk.T - Vk @ (Vk.T @ Zk) @ Vk.T
+        lam = np.linalg.solve(Js.T @ Js + 0.5 * (S + S.T), Gs)
+        step = eps * scale * lam / np.linalg.norm(lam)
+        mixed = (grads_at(b + step)[1] - grads_at(b - step)[1]) / (2 * eps) * np.linalg.norm(lam)
+        gradients[k] = first_order(Js @ lam) - mixed
+        rows.append(dict(k=k, multiplier_change=float(np.linalg.norm(lam - lam_gn) / np.linalg.norm(lam_gn))))
+    fd_dir = os.environ.get("FD_DIR")
+    for family in ("coils", "phiedge", "current"):
+        d = np.asarray(problem.scales) * np.random.default_rng(0).standard_normal(x0.size)
+        keep = dict(phiedge=plasma[:1], current=plasma[1:], coils=np.setdiff1d(np.arange(x0.size), plasma))[family]
+        d = np.where(np.isin(np.arange(x0.size), keep), d, 0.0)
+        d /= np.linalg.norm(d / np.asarray(problem.scales))
+        fd = None
+        if fd_dir and Path(fd_dir, f"grad-{family}", "noise.json").exists():
+            fd = json.loads(Path(fd_dir, f"grad-{family}", "noise.json").read_text())["fd"][2]  # h = 1e-4
+        for k, g in gradients.items():
+            rows.append(dict(family=family, k=k, g_dot_d=float(g @ d), fd=fd,
+                             rel_err=None if fd is None else float(abs(g @ d - fd) / abs(fd))))
+    for row in rows:
+        print(json.dumps(row), flush=True)
+    (out / "exactgrad.json").write_text(json.dumps(rows, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
@@ -201,5 +278,7 @@ elif mode == "noise":
     opt.minimize = noise
 elif mode == "curvature":
     opt.minimize = curvature
+elif mode == "exactgrad":
+    opt.minimize = exactgrad
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

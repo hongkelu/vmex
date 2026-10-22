@@ -373,6 +373,67 @@ def plasmaparts(problem, **_):
     sys.exit(0)
 
 
+def exactdir(problem, **_):
+    """The exact least-squares sensitivity along one design direction (NOISE_FAMILY's seeded direction), no low-rank
+    approximation: db = -F_b^{-1} F_c d with F(b, c) = J_b(b, c)^T r(b, c), where F_c d and every F_b v are central
+    differences (EXACT_EPS, scaled coordinates) of F at tightly solved states, and F_b db = -F_c d is solved by GMRES
+    preconditioned by J^T J.  Prints the loss derivative from the Gauss-Newton and the exact response."""
+    import jax.numpy as jnp
+    import scipy.sparse.linalg as sla
+
+    eps = float(os.environ.get("EXACT_EPS", "1e-4"))
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    xj = jnp.asarray(x0)
+    problem.value_and_grad(x0)
+    sol, anchor = problem._solve(x0), problem._anchor
+    state, mask, params = sol["state"], sol["mask"], sol["params"]
+    b, J, J_p = np.asarray(anchor["b"]), np.asarray(anchor["J_b"]), np.asarray(anchor["J_p"])
+    scale, nb = np.asarray(model.x_scale), model.x0.size
+    family = os.environ.get("NOISE_FAMILY", "profile")
+    plasma = np.asarray(problem._plasma)
+    d = np.asarray(problem.scales) * np.random.default_rng(0).standard_normal(x0.size)
+    keep = dict(phiedge=plasma[:1], current=plasma[1:], curtor=plasma[-1:], profile=plasma[1:-1],
+                coils=np.setdiff1d(np.arange(x0.size), plasma))[family]
+    d = np.where(np.isin(np.arange(x0.size), keep), d, 0.0)
+    d /= np.linalg.norm(d / np.asarray(problem.scales))
+    params_bar = problem._pullback(state, mask, params, xj)
+    G_b, G_x = map(np.asarray, problem._coordinates(params, jnp.asarray(b), xj, params_bar))
+    direct = np.asarray(problem._direct(state, params, xj))
+    fixed_b = float((direct[0] + G_x[0]) @ d)
+    count = [0]
+
+    def F(bp, c):  # the stationarity gradient J^T r (in scaled boundary coordinates) at boundary bp, design c
+        cj = jnp.asarray(c)
+        got = model.evaluate(bp, problem._params_at(cj), problem.field(cj), tight=True)
+        Jf = np.asarray(model.linearize(bp, got[1], problem.field(cj))[0])[:, :nb] * scale[None]
+        model._last_linearize = None
+        count[0] += 1
+        return Jf.T @ np.asarray(got[0])
+
+    Fc = (F(b, x0 + eps * d) - F(b, x0 - eps * d)) / (2 * eps)
+    Js = J * scale[None]
+    JtJ = Js.T @ Js
+    GN_db = -np.linalg.solve(JtJ, Js.T @ (J_p @ d[plasma])) if plasma.size and family != "coils" else None
+
+    def Fb(v):
+        n = np.linalg.norm(v)
+        if n == 0:
+            return np.zeros_like(v)
+        step = eps * scale * v / n
+        return (F(b + step, x0) - F(b - step, x0)) / (2 * eps) * n
+
+    op = sla.LinearOperator((nb, nb), matvec=Fb, dtype=float)
+    pre = sla.LinearOperator((nb, nb), matvec=lambda v: np.linalg.solve(JtJ, v), dtype=float)
+    db, info = sla.gmres(op, -Fc, M=pre, rtol=1e-4, restart=40, maxiter=2)
+    Gs = G_b[0] * scale
+    row = dict(family=family, fixed_boundary_part=fixed_b, gauss_newton=fixed_b + float(Gs @ GN_db) if GN_db is not None else None,
+               exact=fixed_b + float(Gs @ db), gmres_info=int(info), F_evaluations=count[0],
+               db_change_vs_gn=float(np.linalg.norm(db - GN_db) / np.linalg.norm(GN_db)) if GN_db is not None else None)
+    print(json.dumps(row), flush=True)
+    (out / "exactdir.json").write_text(json.dumps(row, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
@@ -387,5 +448,7 @@ elif mode == "gnstep":
     opt.minimize = gnstep
 elif mode == "plasmaparts":
     opt.minimize = plasmaparts
+elif mode == "exactdir":
+    opt.minimize = exactdir
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

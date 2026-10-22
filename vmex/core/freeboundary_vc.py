@@ -976,7 +976,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             self._cache[key] = None
             return None
         self.stats["boundary_evaluations"] += fit["nfev"]
-        state, mask, params_b, _ = fit["aux"]
+        state, mask, params_b, tight = fit["aux"]
+        if not tight:  # values from the state its gradient will use: the fit's looser trial equilibrium, re-solved
+            solved = self.model.solve(params_b, seed=state)
+            if solved is None:
+                self.stats["failed"] += 1
+                self._cache[key] = None
+                return None
+            state, mask = solved
+            fit = dict(fit, aux=(state, mask, params_b, True), rows=np.asarray(self.model._rows(state, params_b, field)))
         try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
             values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
         except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError

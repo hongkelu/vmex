@@ -5,7 +5,9 @@ the bounce action J of the same trapped particles must not grow outward between 
 ``QI_maxJ_continuation.py`` (its first stage: target 0, weight 500), the pitches are held fixed: common trapped
 pitches of the starting equilibrium (``MAXJ_WOUT``, its wout), at TRAPPING_DEPTHS of the shared trapping interval.
 
-Environment: ``MAXJ_WOUT`` (required), ``MAXJ_WEIGHT`` (500), ``MAXJ_TARGET`` (0).
+Environment: ``MAXJ_WOUT`` (required), ``MAXJ_WEIGHT`` (500), ``MAXJ_TARGET`` (0); a cheaper term with
+``MAXJ_SURFACES`` (colon-separated s values) and ``MAXJ_NALPHA``, ``MAXJ_POINTS``, ``MAXJ_PERIODS``, ``MAXJ_WELLS``,
+``MAXJ_QUADRATURE`` (field lines, points per period, periods, wells, quadrature order of the bounce actions).
 """
 
 import os
@@ -17,9 +19,11 @@ from vmex.core.maxj import MaximumJResidual, common_trapped_pitches
 from vmex.core.optimize import boozer_modes_from_wout
 from vmex.core.wout import read_wout
 
-SURFACES = np.array([0.20, 0.35, 0.50, 0.65, 0.80, 0.90])
+SURFACES = np.array([float(v) for v in os.environ.get("MAXJ_SURFACES", "0.20:0.35:0.50:0.65:0.80:0.90").split(":")])
 TRAPPING_DEPTHS = (0.35, 0.55, 0.75)
-ACTION = dict(nalpha=5, points_per_period=24, num_periods=6, max_wells=16, quadrature_order=16)  # COARSE_ACTION
+ACTION = dict(nalpha=int(os.environ.get("MAXJ_NALPHA", 5)), points_per_period=int(os.environ.get("MAXJ_POINTS", 24)),
+              num_periods=int(os.environ.get("MAXJ_PERIODS", 6)), max_wells=int(os.environ.get("MAXJ_WELLS", 16)),
+              quadrature_order=int(os.environ.get("MAXJ_QUADRATURE", 16)))  # defaults: the example's COARSE_ACTION
 MBOZ = 8
 WEIGHT = float(os.environ.get("MAXJ_WEIGHT", 500.0))
 TARGET = float(os.environ.get("MAXJ_TARGET", 0.0))
@@ -39,7 +43,8 @@ def starting_pitches(path, nalpha=9, points_per_period=64, num_periods=4):
 
 
 PITCH = starting_pitches(os.environ["MAXJ_WOUT"])
-print(f"[maxj] pitches 1/lambda = {np.round(1 / PITCH, 5).tolist()} T, weight {WEIGHT}, target {TARGET}", flush=True)
+print(f"[maxj] pitches 1/lambda = {np.round(1 / PITCH, 5).tolist()} T, weight {WEIGHT}, target {TARGET}, "
+      f"surfaces {SURFACES.tolist()}, {ACTION}", flush=True)
 _maxj = MaximumJResidual(SURFACES, PITCH, mboz=MBOZ, nboz=MBOZ, target=TARGET, **ACTION)
 
 ROWS = {}

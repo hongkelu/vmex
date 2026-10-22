@@ -1127,3 +1127,37 @@ def test_certify_polishes_on_tight_states(monkeypatch):
     assert problem._solve(problem.x0 + 0.01) is not None
     assert calls[0] is False and True in calls[1:]
     problem.close()
+
+
+@needs_vc
+@pytest.mark.full
+def test_normal_operator_is_the_surface_normal_displacement():
+    """N @ dx is the normal displacement of the boundary surface for a coordinate change dx (finite differences of
+    the surface against its numerical normal, periodic central differences), a the RMS minor radius."""
+    inp, field = _small_vacuum()
+    model = fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    x = jnp.asarray(model.x0)
+    N, a = map(np.asarray, model._normal_operator(x))
+    assert 0.05 < a < 0.5 and N.shape == (48 * 48, x.size)
+    rng = np.random.default_rng(0)
+    dx = rng.normal(size=x.size) * np.asarray(model.x_scale) * 1e-3
+    from vmex.core.optimize import boundary_arrays_from_x
+
+    def points(z):
+        rbc, zbs = map(np.asarray, boundary_arrays_from_x(model.fixed, z, model.max_mode, vary_major_radius=True))
+        th, ph = np.meshgrid(np.linspace(0, 2 * np.pi, 48, endpoint=False),
+                             np.linspace(0, 2 * np.pi / int(inp.nfp), 48, endpoint=False), indexing="ij")
+        R = sum(rbc[i, m] * np.cos(m * th - (i - (rbc.shape[0] - 1) // 2) * int(inp.nfp) * ph)
+                for i in range(rbc.shape[0]) for m in range(rbc.shape[1]))
+        Z = sum(zbs[i, m] * np.sin(m * th - (i - (rbc.shape[0] - 1) // 2) * int(inp.nfp) * ph)
+                for i in range(rbc.shape[0]) for m in range(rbc.shape[1]))
+        return np.stack([R * np.cos(ph), R * np.sin(ph), Z]), th, ph
+
+    X, th, ph = points(np.asarray(x))
+    e_t = (np.roll(X, -1, axis=1) - np.roll(X, 1, axis=1)) / (2 * (th[1, 0] - th[0, 0]))
+    e_p = (X[:, :, 2:] - X[:, :, :-2]) / (2 * (ph[0, 1] - ph[0, 0]))  # one field period: interior points only
+    X, e_t = X[:, :, 1:-1], e_t[:, :, 1:-1]
+    n = np.cross(e_t, e_p, axis=0)
+    n /= np.linalg.norm(n, axis=0)
+    fd = np.sum((points(np.asarray(x) + dx)[0] - points(np.asarray(x) - dx)[0])[:, :, 1:-1] / 2 * n, axis=0)
+    np.testing.assert_allclose((N @ dx).reshape(48, 48)[:, 1:-1], fd, atol=2e-2 * np.max(np.abs(fd)))

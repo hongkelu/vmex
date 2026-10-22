@@ -217,7 +217,7 @@ POLISH_FTOL = 1e-4
 POLISH_ROUNDS = 5
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
-CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/2"
+CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
@@ -249,6 +249,7 @@ def solve_free_boundary_three_term(
     bootstrap_weight: float = 100.0,
     previous=None,
     max_residual: float = ACCEPTED_RESIDUAL,
+    normal_tol: float | None = None,
     verbose: int = 0,
 ):
     """Free-boundary equilibrium of ``inp`` from the three interface conditions.
@@ -298,7 +299,8 @@ def solve_free_boundary_three_term(
     ``converged`` means certified, by the same rule as every trial of the optimization
     (:meth:`ThreeTermFreeBoundaryModel.certify`): the fit's final point, re-solved to the deck's tolerance and
     polished with fresh Jacobians, predicts a Gauss-Newton gain of at most ``max(ftol, POLISH_FTOL)`` of its cost
-    (``certificate``; ``message`` says why not).  A stalled finish is not convergence by itself.  A stationary
+    (``certificate``; ``message`` says why not), or with ``normal_tol`` a Gauss-Newton step that moves the
+    boundary normally by at most that fraction of the minor radius.  A stalled finish is not convergence by itself.  A stationary
     point need not be the free boundary (a wrong local minimum is one too), and the interface rows cannot reach
     zero at a finite resolution (spectral truncation, the virtual-casing grid: VMEC2000's own CTH-like free
     boundary scores 6e-4 in vacuum and 2.4e-3 at finite beta), so ``success`` also requires every RMS interface
@@ -345,7 +347,8 @@ def solve_free_boundary_three_term(
                                max_nfev=max_nfev, refresh_on_stall=True, verbose=verbose)
     stats = {}
     try:  # the optimization's acceptance rule: one definition of a solved free boundary
-        out = model.certify(model.params0, external_field, out, gate=max(ftol, POLISH_FTOL), stats=stats)
+        out = model.certify(model.params0, external_field, out, gate=max(ftol, POLISH_FTOL), normal_tol=normal_tol,
+                            stats=stats)
         converged, why = True, f"certified (Gauss-Newton gain {out['certificate']['stationarity']:.1e})"
         jacobian_out = out["J"][:, :model.x0.size]
     except TrialRejected as error:
@@ -487,6 +490,34 @@ class ThreeTermFreeBoundaryModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
+
+        def surface(x):
+            """``(R, Z)`` of the boundary of coordinates ``x`` on a 48 x 48 grid over one field period."""
+            rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
+            th = jnp.linspace(0.0, 2 * jnp.pi, 48, endpoint=False)
+            ph = jnp.linspace(0.0, 2 * jnp.pi / int(fixed.nfp), 48, endpoint=False)
+            n = (jnp.arange(rbc.shape[0]) - (rbc.shape[0] - 1) // 2) * int(fixed.nfp)
+            m = jnp.arange(rbc.shape[1])
+            angle = m[None, None, None, :] * th[:, None, None, None] - n[None, None, :, None] * ph[None, :, None, None]
+            return (jnp.einsum("tpnm,nm->tp", jnp.cos(angle), rbc), jnp.einsum("tpnm,nm->tp", jnp.sin(angle), zbs))
+
+        def normal_operator(x):
+            """``(N, a)``: ``N @ dx`` is the boundary's normal displacement [m] on the grid for a change ``dx`` of
+            the boundary coordinates, ``a`` the RMS minor radius."""
+            R, Z = surface(x)
+            dR, dZ = jax.jacfwd(surface)(x)
+            th_axis, ph_axis = 0, 1
+            k = jnp.fft.fftfreq(48, 1.0 / 48)
+            d = lambda f, ax: jnp.real(jnp.fft.ifft(1j * k * jnp.fft.fft(f, axis=ax), axis=ax))  # noqa: E731
+            R_t, Z_t = d(R, th_axis), d(Z, th_axis)
+            R_p, Z_p = d(R, ph_axis) * int(fixed.nfp), d(Z, ph_axis) * int(fixed.nfp)
+            cross = jnp.stack([-R * Z_t, Z_t * R_p - R_t * Z_p, R * R_t])  # e_theta x e_phi, cylindrical
+            n_R, n_Z = (cross[0], cross[2]) / jnp.linalg.norm(cross, axis=0)
+            N = (dR * n_R[..., None] + dZ * n_Z[..., None]).reshape(-1, x.size)
+            a = jnp.sqrt(2 * jnp.mean((R - jnp.mean(R)) ** 2 + Z**2))
+            return N, a
+
+        self._normal_operator = jax.jit(normal_operator) if nb else None
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -816,15 +847,18 @@ class ThreeTermFreeBoundaryModel:
             out = dict(again, nfev=out["nfev"] + again["nfev"])
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
-    def certify(self, params, field, fit, *, gate, xtol=None, polish=True, max_residual=None, extra=None,
-                values=None, stats=None):
+    def certify(self, params, field, fit, *, gate, xtol=None, normal_tol=None, polish=True, max_residual=None,
+                extra=None, values=None, stats=None):
         """The one record of a boundary fit that counts as solved, or :class:`~vmex.core.errors.TrialRejected`.
 
         The fit's point is re-solved to the deck's tolerance and linearized there (with the ``extra`` parameter
         tangents' columns); with ``polish`` it is polished with that fresh Jacobian, up to ``POLISH_ROUNDS`` times,
         until its certificate (:func:`_fit_certificate`, on the model coordinates: boundary and any bootstrap
-        current together) predicts a Gauss-Newton gain of at most ``gate`` of the cost, and a Gauss-Newton step
-        of at most ``xtol`` (scaled) if given.  Every finite rows/Jacobian check, the certificate and
+        current together) predicts a Gauss-Newton gain of at most ``gate`` of the cost -- or, with ``normal_tol``,
+        a Gauss-Newton step that moves the boundary normally by at most ``normal_tol`` of the minor radius (RMS;
+        the certificate's ``normal_step``): the rest of such a step relabels the surface along itself, which the
+        interface rows barely see and the physical outputs do not -- and a Gauss-Newton step of at most ``xtol``
+        (scaled) if given.  Every finite rows/Jacobian check, the certificate and
         ``max_residual`` (each :class:`BoundaryResidual` term) apply to the final state, whose ``values(state,
         params)`` are computed only then.  The standalone solve (:func:`solve_free_boundary_three_term`) and the
         optimization (:class:`ThreeTermFreeBoundaryProblem`) accept a state through this one method.  ``stats``
@@ -849,11 +883,18 @@ class ThreeTermFreeBoundaryModel:
 
         sol = dict(fit, **tight(fit["x"], fit["aux"]))
         for round_ in range(POLISH_ROUNDS + 1):
-            sol["certificate"] = certificate = _fit_certificate(sol["J"][:, :n] * scale, sol["rows"])
+            normal = None
+            if self._normal_operator is not None:  # the remaining step's motion of the surface itself
+                N, a = map(np.asarray, self._normal_operator(jnp.asarray(sol["x"])))
+                normal = np.hstack([N * scale[:, :N.shape[1]], np.zeros((N.shape[0], n - N.shape[1]))]) / a
+            sol["certificate"] = certificate = _fit_certificate(sol["J"][:, :n] * scale, sol["rows"], normal)
             stats["max_condition"] = max(stats.get("max_condition", 0.0), certificate["condition"])
             if certificate["rank_deficient"]:
                 raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
-            stationary = certificate["stationarity"] <= gate and (xtol is None or certificate["step"] <= xtol)
+            settled = certificate["stationarity"] <= gate or (
+                normal_tol is not None and certificate["normal_step"] is not None
+                and certificate["normal_step"] <= normal_tol)
+            stationary = settled and (xtol is None or certificate["step"] <= xtol)
             if stationary or not polish or round_ == POLISH_ROUNDS:
                 break
             # Not there yet: polish with this (fresh, tight) Jacobian, to a tenth of the gate, and certify again.
@@ -871,9 +912,13 @@ class ThreeTermFreeBoundaryModel:
                 break  # the polish gains nothing: the certificate below decides
             sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
             stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
-        if certificate["stationarity"] > gate:
+        if not settled:
+            normal_note = "" if certificate["normal_step"] is None else (
+                f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
             raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
-                                f"{certificate['stationarity']:.2e} of the cost")
+                                f"{certificate['stationarity']:.2e} of the cost{normal_note}")
+        if certificate["normal_step"] is not None:
+            stats["max_normal_step"] = max(stats.get("max_normal_step", 0.0), certificate["normal_step"])
         stats["max_step"] = max(stats.get("max_step", 0.0), certificate["step"])
         if xtol is not None and certificate["step"] > xtol:
             raise TrialRejected(f"boundary fit not stationary: its Gauss-Newton step is {certificate['step']:.2e} "
@@ -918,7 +963,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, boundary_normal_tol=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -928,7 +973,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         design: a gradient never moves it).  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
-        its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).
+        its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  With
+        ``boundary_normal_tol`` a fit also counts as stationary when its remaining Gauss-Newton step moves the boundary
+        normally by at most that fraction of the minor radius (:meth:`ThreeTermFreeBoundaryModel.certify`;
+        ``stats["max_normal_step"]``).
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -941,16 +989,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol,
+                   boundary_normal_tol=boundary_normal_tol)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None):
+                 boundary_xtol=None, boundary_normal_tol=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
+        self.boundary_normal_tol = None if boundary_normal_tol is None else float(boundary_normal_tol)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
@@ -1103,6 +1153,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            normal_tol=self.boundary_normal_tol,
                             polish=polish, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
@@ -1218,7 +1269,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return json.loads(json.dumps(dict(
             deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
             boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
-            boundary_xtol=self.boundary_xtol,
+            boundary_xtol=self.boundary_xtol, boundary_normal_tol=self.boundary_normal_tol,
             design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
 
     def _maps(self, x):
@@ -1296,21 +1347,26 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._cache = {k: v for k, v in self._cache.items() if k == key}
 
 
-def _fit_certificate(J, r):
+def _fit_certificate(J, r, normal=None):
     """Stationarity and conditioning of a boundary fit with rows ``r`` and (scaled) Jacobian ``J`` at its point.
 
     ``stationarity`` is the relative cost reduction a Gauss-Newton step with this Jacobian predicts,
     ``|Q^T r|^2 / |r|^2``, and ``step`` that step's length, ``|J^+ r|`` in the (scaled) coordinates: in a flat
     direction a fit can be far from its stationary point while the cost barely changes, which only ``step`` sees.
     ``condition`` is ``J``'s condition number, and ``rank_deficient`` marks a smallest singular value at the
-    rounding level, ``max(J.shape) * eps`` of the largest (NumPy's rank rule).
+    rounding level, ``max(J.shape) * eps`` of the largest (NumPy's rank rule).  With ``normal`` (rows: the
+    boundary's normal displacement per unit of each scaled coordinate, over the minor radius, on a grid),
+    ``normal_step`` is that step's RMS normal displacement of the boundary over the minor radius: what the fit
+    still has to move the surface itself, as opposed to its labelling (tangential motion).
     """
     sv = np.linalg.svd(J, compute_uv=False)
     Q, R = np.linalg.qr(J)
     cost = r @ r
-    step = float(np.linalg.norm(np.linalg.solve(R, Q.T @ r))) if sv[-1] > 0 else np.inf
+    full = np.linalg.solve(R, Q.T @ r) if sv[-1] > 0 else None
+    step = float(np.linalg.norm(full)) if full is not None else np.inf
+    normal_step = None if normal is None or full is None else float(np.sqrt(np.mean((normal @ full) ** 2)))
     return dict(stationarity=float(np.sum((Q.T @ r) ** 2) / cost) if cost > 0 else 0.0, step=step,
-                condition=float(sv[0] / sv[-1]) if sv[-1] > 0 else np.inf,
+                normal_step=normal_step, condition=float(sv[0] / sv[-1]) if sv[-1] > 0 else np.inf,
                 rank_deficient=bool(sv[-1] <= sv[0] * max(J.shape) * np.finfo(float).eps))
 
 

@@ -7,7 +7,10 @@ with no labelling rows ("NL": start labelling at weight 0), and with VMEC's cond
 at the automatic weight of ratio R), each from several starting boundaries; FBB_METHODS=C,NL,... picks a subset.  Every result is
 scored the same way: a fixed-boundary equilibrium on its boundary; the three interface conditions on an N x N grid
 with one fixed singular quadrature per configuration (planned on the deck's equilibrium); field lines in vacuum;
-axis/edge iota, R00, and the LCFS distance to the NESTOR result with a dense reference curve.
+axis/edge iota, R00, and the LCFS distance to the NESTOR result with a dense reference curve; per method, the
+largest LCFS distance between its starts ("spread", independent of the labelling).  FBB_FIXED_MODEL=1 builds each
+method's problem once (from the deck) and varies only the initial boundary: otherwise every start rebuilds the model
+from itself (A's labelling reference, the quadrature plan and the axis then change with the start).
 
 CONFIG: cth_vac, cth_beta, lpqa_vac, lpqa_b05, lpqa_b25, ncsx (repository data), or prod:RUN:STEP for a production
 run's design (RUN a directory with input.run, coils.stepSTEP.json and wout.stepSTEP.nc); append @M for the
@@ -169,6 +172,23 @@ def lcfs_mm(a, b, nphi=8, ntheta=361):
     return 1e3 * worst
 
 
+def from_start(model, field, start):
+    """The three-term fit of ``model`` (one problem definition) from the initial boundary of ``start``, as
+    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term` runs it."""
+    from types import SimpleNamespace
+
+    from vmex.core.optimize import pack_boundary
+
+    nb = model.n_boundary
+    x0 = np.r_[pack_boundary(start, model.max_mode, vary_major_radius=True), np.asarray(model.x0)[nb:]]
+    out = model.solve_boundary(model.params0, field, x0=x0, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
+                               refresh_on_stall=True)
+    params = out["aux"][2]
+    return SimpleNamespace(input=model._im.input_with_params(model.fixed, params), jac=out["jacobian"],
+                           nfev=out["nfev"], njev=out["njev"], converged=out["converged"], success=out["converged"],
+                           model=model)
+
+
 def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
@@ -215,6 +235,7 @@ def main():
             emit(dict(label="NESTOR + VMEX", failed=f"{type(error).__name__}: {str(error)[:200]}"))
             nestor_deck, ref = None, None
         for method, kw in METHODS.items():
+            wouts, model = {}, None
             for sname, start in starts(inp, k).items():
                 if sname == "nestor":
                     if nestor_deck is None:
@@ -222,16 +243,27 @@ def main():
                     start = nestor_deck
                 t0 = time.perf_counter()
                 try:
-                    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, initial_boundary=start,
-                                                             **kw, **options)
+                    if os.environ.get("FBB_FIXED_MODEL") == "1" and model is not None:
+                        fit = from_start(model, field, start)
+                    else:
+                        fit = fvc.solve_free_boundary_three_term(inp, external_field=field, initial_boundary=start,
+                                                                 **kw, **options)
+                        model = fit.model
                 except Exception as error:  # noqa: BLE001
                     emit(dict(label=f"{method} from {sname}", failed=f"{type(error).__name__}: {str(error)[:200]}"))
                     continue
                 J = np.asarray(fit.jac)
                 sv = np.linalg.svd(J / np.maximum(np.linalg.norm(J, axis=0), 1e-300), compute_uv=False)
-                score(fit.input, f"{method} from {sname}", ref=ref, seconds=round(time.perf_counter() - t0),
-                      nfev=int(fit.nfev), njev=int(fit.njev), converged=bool(fit.converged), success=bool(fit.success),
-                      cond=float(sv[0] / sv[-1]), label_weight=float(getattr(fit.model, "label_weight", np.nan)))
+                wouts[sname] = score(fit.input, f"{method} from {sname}", ref=ref,
+                                     seconds=round(time.perf_counter() - t0), nfev=int(fit.nfev), njev=int(fit.njev),
+                                     converged=bool(fit.converged), success=bool(fit.success), cond=float(sv[0] / sv[-1]),
+                                     label_weight=float(getattr(fit.model, "label_weight", np.nan)),
+                                     fixed_model=os.environ.get("FBB_FIXED_MODEL") == "1")
+            names = list(wouts)
+            pairs = {f"{a}|{b}": max(lcfs_mm(wouts[a], wouts[b]), lcfs_mm(wouts[b], wouts[a]))
+                     for i, a in enumerate(names) for b in names[i + 1:]}
+            if pairs:
+                emit(dict(label=f"{method} spread", lcfs_spread_mm=max(pairs.values()), pairs_mm=pairs))
         log.close()
 
 

@@ -487,7 +487,7 @@ def stall(problem, **_):
     from vmex.core.optimize import boundary_arrays_from_x
 
     model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
-    nb, scale = model.n_boundary, np.asarray(model.x_scale)
+    nb, nall, scale = model.n_boundary, model.x0.size, np.asarray(model.x_scale)
     xj = jnp.asarray(x0)
     field, P = problem.field(xj), problem._params_at(xj)
     sol = problem._solve(x0)
@@ -499,19 +499,23 @@ def stall(problem, **_):
                                max_nfev=int(os.environ.get("STALL_MAX_NFEV", "200")), refresh_on_stall=True)
     b, aux = np.asarray(fit["x"]), fit["aux"]
     state, _, params_b, _ = aux
-    J = np.asarray(model.linearize(b, aux, field)[0])[:, :nb]
+    J = np.asarray(model.linearize(b, aux, field)[0])[:, :nall]
     model._last_linearize = None
     r = np.asarray(model._rows(state, params_b, field))
     values, _ = model._terms(state, params_b, field)
     n = int(np.asarray(values)[0].size)
     blocks = dict(interface=slice(0, 5 * n), label=slice(5 * n, 6 * n), other=slice(6 * n, r.size))
     split = lambda v: {k: float(v[s] @ v[s]) for k, s in blocks.items()}  # noqa: E731
-    Js = J[:, :nb] * scale[None, :nb]
+    Js = J * scale[None]
     U, sv, Vt = np.linalg.svd(Js, full_matrices=False)
     p_s = -np.linalg.lstsq(Js, r, rcond=None)[0]
     report["tight_fit"] = dict(reason=fit.get("reason"), nfev=int(fit["nfev"]), njev=int(fit.get("njev", -1)),
                                seconds=time.time() - t0, cost=float(r @ r), cost_split=split(r),
-                               boundary_move=float(np.linalg.norm((b - sol["x"])[:nb] / scale[:nb])),
+                               boundary_move=float(np.linalg.norm((b - sol["x"]) / scale)),
+                               top_singular_vector_coordinates=np.argsort(-np.abs(Vt[0]))[:5].tolist(),
+                               boundary_coordinates=int(nb),
+                               equilibrated_condition=float(np.linalg.cond(Js / np.linalg.norm(Js, axis=0)[None])),
+                               boundary_only_condition=float(np.linalg.cond(Js[:, :nb])),
                                gn_step=float(np.linalg.norm(p_s)), condition=float(sv[0] / sv[-1]),
                                singular_values_low=sv[-6:].tolist(), singular_values_high=sv[:3].tolist(),
                                stationarity=float(np.linalg.norm(Js.T @ r) / (sv[0] * np.linalg.norm(r))))
@@ -542,7 +546,8 @@ def stall(problem, **_):
     def motion(d):
         Rd, Zd = (a - c for a, c in zip(surface(b + d)[:2], (R, Z)))
         normal = Rd * nvec[0] + Zd * nvec[2]
-        return dict(normal_share=float(np.sqrt(np.mean(normal**2) / np.mean(Rd**2 + Zd**2))),
+        return dict(normal_share=float(np.sqrt(np.mean(normal**2) / max(np.mean(Rd**2 + Zd**2), 1e-300))),
+                    boundary_share=float(np.linalg.norm(d[:nb] / scale[:nb]) / np.linalg.norm(d / scale)),
                     normal_rms_over_a=float(np.sqrt(np.mean(normal**2)) / abs(minor)),
                     normal_max_over_a=float(np.max(np.abs(normal)) / abs(minor)))
 
@@ -550,11 +555,10 @@ def stall(problem, **_):
         got = model.evaluate(x, P, field, tight=True)
         return None if got is None else np.asarray(got[0])
 
-    directions = dict(gn=p_s * scale[:nb], **{f"weak{k}": Vt[-1 - k] * scale[:nb] for k in range(3)})
+    directions = dict(gn=p_s * scale, **{f"weak{k}": Vt[-1 - k] * scale for k in range(3)})
     report["directions"] = {}
     for name, d in directions.items():
-        d = np.r_[d, np.zeros(b.size - nb)]
-        Jd, entry = J @ d, dict(scaled_length=float(np.linalg.norm(d[:nb] / scale[:nb])), **motion(d))
+        Jd, entry = J @ d, dict(scaled_length=float(np.linalg.norm(d / scale)), **motion(d))
         unit = d / entry["scaled_length"]
         for t in (1e-1, 1e-2, 1e-3, 1e-4):
             hi, lo = rows_at(b + t * unit), rows_at(b - t * unit)
@@ -570,7 +574,7 @@ def stall(problem, **_):
         report["directions"][name] = entry
         print(json.dumps({name: entry}), flush=True)
 
-    p = np.r_[p_s * scale[:nb], np.zeros(b.size - nb)]
+    p = p_s * scale
     Jp, line = J @ p, []
     for a in (1.0, 0.5, 0.25, 0.1, 0.03, 0.01, 1e-3):
         actual = rows_at(b + a * p)

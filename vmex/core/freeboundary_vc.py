@@ -1018,8 +1018,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return J
 
         J = tight()
-        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=POLISH_FTOL,
-                                        max_nfev=20) if polish else None
+        polished = None
+        if polish:
+            try:  # a failed polish leaves the trial's own fit, which the certificate below still checks
+                polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb],
+                                                ftol=POLISH_FTOL, max_nfev=20)
+            except (VmecError, RuntimeError):
+                self.stats["failed_polishes"] = self.stats.get("failed_polishes", 0) + 1
         if polished is not None:
             self.stats["boundary_evaluations"] += polished["nfev"]
         if polished is not None and polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
@@ -1237,9 +1242,14 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
     """
     J = np.asarray(J)
+    if not np.all(np.isfinite(J)):
+        raise RuntimeError("nonfinite boundary Jacobian")
     norms = np.linalg.norm(J, axis=0)
     norms[norms == 0.0] = 1.0
-    U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
+    try:
+        U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
+    except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
+        raise RuntimeError(f"boundary Jacobian: {error}") from error
     nfev, accepted, converged, slow, reason = 1, 0, False, 0, "max_nfev"
     started = time.perf_counter()
 

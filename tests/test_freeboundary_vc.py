@@ -304,6 +304,15 @@ def test_failed_or_nonfinite_rows_and_adjoints_reject_the_trial(monkeypatch):
     problem.close()
 
 
+def test_levenberg_marquardt_rejects_a_bad_jacobian():
+    """A nonfinite boundary Jacobian, or one whose SVD fails, is a RuntimeError (a rejected trial): the
+    LinAlgError it used to raise ended a campaign run (QI 2.5%, A, step 240)."""
+    evaluate = lambda z: (np.zeros(2), None)  # noqa: E731
+    with pytest.raises(RuntimeError, match="nonfinite"):
+        fvc._levenberg_marquardt(evaluate, np.zeros(2), np.ones(2), None, np.array([[1.0, np.nan], [0.0, 1.0]]),
+                                 ftol=1e-4, max_nfev=5, verbose=0)
+
+
 def test_fit_certificate_measures_stationarity_and_rank():
     """The certificate's stationarity is the Gauss-Newton step's predicted relative gain; a repeated column is a
     rank-deficient Jacobian."""

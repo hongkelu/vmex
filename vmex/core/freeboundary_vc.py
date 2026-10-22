@@ -512,7 +512,8 @@ class ThreeTermFreeBoundaryModel:
             R_t, Z_t = d(R, th_axis), d(Z, th_axis)
             R_p, Z_p = d(R, ph_axis) * int(fixed.nfp), d(Z, ph_axis) * int(fixed.nfp)
             cross = jnp.stack([-R * Z_t, Z_t * R_p - R_t * Z_p, R * R_t])  # e_theta x e_phi, cylindrical
-            n_R, n_Z = (cross[0], cross[2]) / jnp.linalg.norm(cross, axis=0)
+            length = jnp.linalg.norm(cross, axis=0)
+            n_R, n_Z = cross[0] / length, cross[2] / length
             N = (dR * n_R[..., None] + dZ * n_Z[..., None]).reshape(-1, x.size)
             a = jnp.sqrt(2 * jnp.mean((R - jnp.mean(R)) ** 2 + Z**2))
             return N, a

@@ -1117,9 +1117,9 @@ def test_certify_polishes_on_tight_states(monkeypatch):
         calls.append(bool(kwargs.get("tight", False)))
         return original(*args, **kwargs)
 
-    def first_fails(J, r):
+    def first_fails(J, r, *args):
         count["n"] += 1
-        certificate = real(J, r)
+        certificate = real(J, r, *args)
         return dict(certificate, stationarity=1.0) if count["n"] == 1 else certificate
 
     monkeypatch.setattr(model, "solve_boundary", spy)

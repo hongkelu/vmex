@@ -351,7 +351,7 @@ def solve_free_boundary_three_term(
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=ftol,
                                jacobian_ftol=ftol if jacobian_ftol is None else jacobian_ftol,
                                max_nfev=max_nfev, refresh_on_stall=True, verbose=verbose)
-    stats = {}
+    stats: dict[str, Any] = {}
     try:  # the optimization's acceptance rule: one definition of a solved free boundary
         out = model.certify(model.params0, external_field, out, gate=max(ftol, POLISH_FTOL), normal_tol=normal_tol,
                             stats=stats)

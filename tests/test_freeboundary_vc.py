@@ -329,6 +329,21 @@ def test_levenberg_marquardt_rejects_a_bad_jacobian():
                                  ftol=1e-4, max_nfev=5, verbose=0)
 
 
+def test_levenberg_marquardt_projects_stiff_coordinates():
+    """A stiff closure coordinate (x1 in 100 (x1 - x0^2)) stalls the fixed-Jacobian steps of x0; re-solving it
+    after every step (project) reaches the minimum in a few evaluations."""
+    def evaluate(x):
+        return np.array([x[0] - 1.0, 100.0 * (x[1] - x[0] ** 2)]), None
+
+    x0 = np.zeros(2)
+    J = np.array([[1.0, 0.0], [0.0, 100.0]])  # at x0
+    plain = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-12, max_nfev=8, verbose=0)
+    projected = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-12, max_nfev=8, verbose=0,
+                                         project=np.array([1]))
+    assert projected["converged"] and np.allclose(projected["x"], 1.0, atol=1e-6)
+    assert not plain["converged"] and abs(plain["x"][0] - 1.0) > 1e-2
+
+
 def test_fit_certificate_measures_stationarity_and_rank():
     """The certificate's stationarity is the Gauss-Newton step's predicted relative gain; a repeated column is a
     rank-deficient Jacobian."""

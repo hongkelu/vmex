@@ -463,6 +463,10 @@ class ThreeTermFreeBoundaryModel:
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
             self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
+        # The current values are re-solved after every boundary step (variable projection): their rows, scaled by
+        # bootstrap_weight, leave their linear model long before the interface rows do (QH 2.5%: a step that halves
+        # the interface cost takes them from 1e-7 to order one, and the fit stalls).
+        self._projected = np.arange(nb, self.x0.size) if self.bootstrap is not None and nb else None
         self.chunk = int(chunk)
 
         def with_boundary(params, x):
@@ -745,7 +749,7 @@ class ThreeTermFreeBoundaryModel:
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"]) and close:
@@ -753,7 +757,7 @@ class ThreeTermFreeBoundaryModel:
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -787,12 +791,12 @@ class ThreeTermFreeBoundaryModel:
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
@@ -1268,7 +1272,24 @@ class _AcceptedPoint:
     parameters: np.ndarray
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
+def _project(evaluate, x, got, J_c, index, budget):
+    """Up to two Gauss-Newton corrections of the coordinates ``index`` of ``x`` (columns ``J_c`` of a nearby
+    Jacobian), each kept only if it lowers the cost: the least-squares minimum over those coordinates at the rest
+    of ``x`` (variable projection), so the converged problem is unchanged.  Returns ``(x, (rows, aux), evaluations)``.
+    """
+    used = 0
+    for _ in range(min(2, budget)):
+        x_try = np.array(x, dtype=float)
+        x_try[index] -= np.linalg.lstsq(J_c, got[0], rcond=None)[0]
+        again = evaluate(x_try)
+        used += 1
+        if again is None or again[0] @ again[0] >= got[0] @ got[0]:
+            break
+        x, got = x_try, again
+    return x, got, used
+
+
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, project=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -1279,6 +1300,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
     Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
+
+    ``project`` (indices of ``x``) are coordinates re-solved after every step (:func:`_project`): stiff closure
+    coordinates, such as the bootstrap current's, whose rows a step of the others moves far off their linear model.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -1320,6 +1344,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         x_new = x + (Vt.T @ z) / norms
         got = evaluate(x_new)
         nfev += 1
+        if got is not None and project is not None:
+            x_new, got, used = _project(evaluate, x_new, got, J[:, project], project, max_nfev - nfev)
+            nfev += used
         cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
         rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
         if verbose:

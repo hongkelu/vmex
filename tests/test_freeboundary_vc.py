@@ -488,6 +488,15 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     np.testing.assert_allclose(fresh._record(x1)["values"], saved, rtol=1e-6)
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
+    # and in a fresh process: nothing but the checkpoint carries the state over
+    import subprocess
+    import sys
+
+    script = ("import sys; sys.path.insert(0, 'tests'); from test_freeboundary_vc import _small_problem; "
+              f"print('change', _small_problem().restore_checkpoint({str(path)!r}))")
+    done = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1], capture_output=True,
+                          text=True, check=True)
+    assert float(done.stdout.split("change")[-1]) <= 1e-6
 
 
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):

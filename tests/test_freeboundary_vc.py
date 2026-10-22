@@ -1264,3 +1264,21 @@ def test_stall_rule_model_continues_well_predicted_small_gains(monkeypatch, rule
         np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
     else:
         assert out["reason"] == "stalled"
+
+
+def test_broyden_update_cuts_the_evaluations_of_a_stale_jacobian(monkeypatch):
+    """From a stale Jacobian, secant (Broyden) updates along the accepted steps reach the root in far fewer
+    evaluations than the fixed Jacobian."""
+    def evaluate(x):
+        return np.array([x[0] ** 2 - 2.0, x[1] ** 3 - 3.0, x[0] * x[1] - np.sqrt(2) * 3 ** (1 / 3)]), None
+
+    x0 = np.array([3.0, 3.0])
+    J0 = np.array([[2 * x0[0], 0.0], [0.0, 3 * x0[1] ** 2], [x0[1], x0[0]]])
+    runs = {}
+    for mode in ("none", "broyden"):
+        monkeypatch.setattr(fvc, "JACOBIAN_UPDATE", mode)
+        runs[mode] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J0, ftol=1e-14, max_nfev=200,
+                                              verbose=0)
+        np.testing.assert_allclose(runs[mode]["x"], [np.sqrt(2), 3 ** (1 / 3)], rtol=1e-10)
+    assert runs["broyden"]["jacobian_updates"] > 0 and runs["none"]["jacobian_updates"] == 0
+    assert runs["broyden"]["nfev"] * 3 < runs["none"]["nfev"]

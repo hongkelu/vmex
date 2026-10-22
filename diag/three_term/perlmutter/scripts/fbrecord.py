@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 DRIVER = Path("examples/optimization/single_stage_free_boundary_optimization_three_term.py")
-OVERRIDES = ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "STALL_RULE", "MAX_MODE")
+OVERRIDES = ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "STALL_RULE", "JACOBIAN_UPDATE", "MAX_MODE")
 PACKAGES = ("jax", "jaxlib", "jax-cuda13-plugin", "jax-cuda12-plugin", "numpy", "scipy", "solvax", "booz_xform_jax",
             "essos", "dkx", "simsopt", "netCDF4", "equinox", "lineax")
 
@@ -118,6 +118,8 @@ def main():
             setattr(fv, name, int(os.environ[name]))
     if "STALL_RULE" in os.environ:
         fv.STALL_RULE = os.environ["STALL_RULE"]
+    if "JACOBIAN_UPDATE" in os.environ:
+        fv.JACOBIAN_UPDATE = os.environ["JACOBIAN_UPDATE"]
     counter = [0]
     certified = []
 

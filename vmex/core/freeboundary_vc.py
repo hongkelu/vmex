@@ -226,6 +226,9 @@ STALL_GAIN = 0.05
 #: gain ratio, actual over predicted reduction, is under 0.25: the Jacobian no longer describes the rows; a step the
 #: model predicted well continues however small its gain, the trust radius growing after full steps).
 STALL_RULE = "gain"
+#: Jacobian of the Levenberg-Marquardt steps between fresh ones: ``"none"`` (fixed, the default) or ``"broyden"``
+#: (a rank-one secant update after every accepted step; every certificate still uses a fresh Jacobian).
+JACOBIAN_UPDATE = "none"
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
@@ -1597,22 +1600,32 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     if not np.all(np.isfinite(J)):
         raise RuntimeError("nonfinite boundary Jacobian")
     n = x.size
-    if project is None:
-        free, Q_c, R_c, J_free = np.arange(n), None, None, J
-    else:
+    if project is not None:
         project = np.asarray(project)
-        free = np.setdiff1d(np.arange(n), project)
-        Q_c, R_c = np.linalg.qr(J[:, project])
-        block_sv = np.linalg.svd(R_c, compute_uv=False)
-        if not (np.all(np.isfinite(block_sv)) and block_sv[-1] > CURRENT_BLOCK_RCOND * block_sv[0]):
-            raise RuntimeError(f"rank-deficient current block (singular values {block_sv[0]:.2e} .. {block_sv[-1]:.2e})")
-        J_free = J[:, free] - Q_c @ (Q_c.T @ J[:, free])  # the reduced Jacobian of the boundary coordinates
-    norms = np.linalg.norm(J_free, axis=0)
-    norms[norms == 0.0] = 1.0
-    try:
-        U, sv, Vt = np.linalg.svd(J_free / norms, full_matrices=False)
-    except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
-        raise RuntimeError(f"boundary Jacobian: {error}") from error
+    free = np.arange(n) if project is None else np.setdiff1d(np.arange(n), project)
+
+    def decompose(J):
+        """The current block's QR (rank-checked), the reduced boundary Jacobian and its scaled SVD."""
+        if project is None:
+            Q_c = R_c = None
+            J_free = J
+        else:
+            Q_c, R_c = np.linalg.qr(J[:, project])
+            block_sv = np.linalg.svd(R_c, compute_uv=False)
+            if not (np.all(np.isfinite(block_sv)) and block_sv[-1] > CURRENT_BLOCK_RCOND * block_sv[0]):
+                raise RuntimeError(f"rank-deficient current block (singular values {block_sv[0]:.2e} .. "
+                                   f"{block_sv[-1]:.2e})")
+            J_free = J[:, free] - Q_c @ (Q_c.T @ J[:, free])  # the reduced Jacobian of the boundary coordinates
+        norms = np.linalg.norm(J_free, axis=0)
+        norms[norms == 0.0] = 1.0
+        try:
+            U, sv, Vt = np.linalg.svd(J_free / norms, full_matrices=False)
+        except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
+            raise RuntimeError(f"boundary Jacobian: {error}") from error
+        return Q_c, R_c, norms, U, sv, Vt
+
+    Q_c, R_c, norms, U, sv, Vt = decompose(J)
+    updates = 0
     nfev, accepted, converged, slow, reason, unprojected = 1, 0, False, 0, "max_nfev", 0
     started = time.perf_counter()
 
@@ -1670,6 +1683,12 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         else:
             slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
         if cost_new < cost:
+            if JACOBIAN_UPDATE == "broyden":  # rank-one secant update along the accepted step (Broyden's good)
+                dx, dr = x_new - x, got[0] - r
+                if dx @ dx > 0:
+                    J = J + np.outer(dr - J @ dx, dx) / (dx @ dx)
+                    Q_c, R_c, norms, U, sv, Vt = decompose(J)
+                    updates += 1
             x, (r, aux), accepted = x_new, got, accepted + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
@@ -1696,4 +1715,5 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             if not certified_projection:
                 converged, reason = False, "projection_unconverged"
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
-                reason=reason, projections=unprojected, projection_certified=certified_projection)
+                reason=reason, projections=unprojected, projection_certified=certified_projection,
+                jacobian_updates=updates)

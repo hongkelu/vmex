@@ -1102,3 +1102,28 @@ def test_standalone_and_optimization_accept_the_same_equilibrium(monkeypatch):
     stalled = fvc.solve_free_boundary_three_term(inp, external_field=field, ftol=1e-4, max_nfev=2, **SMALL)
     assert not stalled.converged and not stalled.success and "not certified" in stalled.message
     assert stalled.certificate is None
+
+
+@needs_vc
+@pytest.mark.full
+def test_certify_polishes_on_tight_states(monkeypatch):
+    """The polish of a trial that failed its certificate evaluates tight states (the ones the certificate judges),
+    while the trial's own fit stays on trial states."""
+    problem = _small_problem()
+    model, calls, original, real = problem.model, [], problem.model.solve_boundary, fvc._fit_certificate
+    count = {"n": 0}
+
+    def spy(*args, **kwargs):
+        calls.append(bool(kwargs.get("tight", False)))
+        return original(*args, **kwargs)
+
+    def first_fails(J, r):
+        count["n"] += 1
+        certificate = real(J, r)
+        return dict(certificate, stationarity=1.0) if count["n"] == 1 else certificate
+
+    monkeypatch.setattr(model, "solve_boundary", spy)
+    monkeypatch.setattr(fvc, "_fit_certificate", first_fails)
+    assert problem._solve(problem.x0 + 0.01) is not None
+    assert calls[0] is False and True in calls[1:]
+    problem.close()

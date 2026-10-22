@@ -290,10 +290,40 @@ def redl_surfaces():
     return (np.arange(1, ns) - 0.5) / (ns - 1)
 
 
+#: The kinetic profiles of a run this one continues (``--restart``/``--seed-run``), read from its profiles.json: a
+#: restart keeps the physical problem instead of rebuilding n and T from the restored boundary's RBC(0,0).
+PINNED_PROFILES = None
+
+
+def save_profiles(profiles, path):
+    """Write the kinetic profiles' coefficients (profiles.json)."""
+    path.write_text(json.dumps({k: np.atleast_1d(np.asarray(getattr(profiles, k), dtype=float)).tolist()
+                                for k in ("ne_coeffs", "Te_coeffs", "Ti_coeffs", "Zeff_coeffs")}, indent=1) + "\n")
+
+
+def pin_profiles(run):
+    """Use the kinetic profiles of the run folder ``run``: its profiles.json, or, for a run from before it was
+    written, those of its own input.run (the deck it was launched with, not a restored boundary)."""
+    global PINNED_PROFILES
+    from vmex.core.bootstrap import KineticProfiles
+    import vmex as vj
+
+    if (run / "profiles.json").exists():
+        data = json.loads((run / "profiles.json").read_text())
+        PINNED_PROFILES = KineticProfiles(**{k: np.asarray(v, dtype=float) for k, v in data.items()})
+        return
+    print(f"warning: {run} has no profiles.json: kinetic profiles rebuilt from its input.run", flush=True)
+    PINNED_PROFILES = redl_profiles(vj.VmecInput.from_file(str(run / "input.run")))[0]
+
+
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch
+    (the pinned profiles of a continued run, :func:`pin_profiles`, when there are any)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
+    if PINNED_PROFILES is not None:
+        return PINNED_PROFILES, RedlBootstrapMismatch(PINNED_PROFILES, REDL_HELICITY, redl_surfaces(),
+                                                      n_lambda=REDL_N_LAMBDA)
     r0, b0 = float(inp.rbc[inp.ntor, 0]), B0
     t0 = REACTOR_T0 * (b0 / REACTOR_B0) ** (2 / 3) * (r0 / REACTOR_R0) ** (1 / 3)
     n0 = REACTOR_N0 * (b0 / REACTOR_B0) ** (4 / 3) * (REACTOR_R0 / r0) ** (1 / 3)
@@ -1256,9 +1286,11 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
+        pin_profiles(args.restart)
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
+        pin_profiles(args.seed_run)
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
@@ -1272,6 +1304,8 @@ def main(argv=None):
     if args.max_iterations:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
+    if args.bootstrap:
+        save_profiles(redl_profiles(inp)[0], out / "profiles.json")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:

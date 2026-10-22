@@ -215,6 +215,12 @@ def _condensation_rows(gamma, mpol, ntor):
 POLISH_FTOL = 1e-4
 #: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
 POLISH_ROUNDS = 5
+#: Most evaluations of one polish round (Levenberg-Marquardt steps with that round's Jacobian).
+POLISH_MAX_NFEV = 20
+#: Levenberg-Marquardt stops as stalled after this many steps in a row that each gained less than STALL_GAIN of the
+#: cost (the Jacobian no longer describes the rows there).
+STALL_STEPS = 3
+STALL_GAIN = 0.05
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
@@ -907,7 +913,7 @@ class ThreeTermFreeBoundaryModel:
                 # (QH 2.5%: trial FTOL 1e-11 against the deck's 1e-15) Redl's target differs enough that the
                 # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
                 polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
-                                               ftol=0.1 * gate, max_nfev=20, tight=True)
+                                               ftol=0.1 * gate, max_nfev=POLISH_MAX_NFEV, tight=True)
             except (VmecError, RuntimeError):
                 stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
                 break
@@ -1536,13 +1542,13 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        slow = slow + 1 if cost_new > 0.95 * cost else 0
+        slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
         if cost_new < cost:
             x, (r, aux), accepted = x_new, got, accepted + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
-        if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
+        if slow >= STALL_STEPS:  # steps in a row gained under STALL_GAIN: the Jacobian no longer describes the rows
             reason = "stalled"
             break
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,

@@ -131,6 +131,8 @@ UNTESTED_EXAMPLES = {
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
     "examples/optimization/single_stage_free_boundary_three_term.py": "about 13 minutes of CPU compilation; its problem "
     "is tests/test_freeboundary_vc.py::test_three_term_problem_gradient_and_one_slsqp_step",
+    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "the GPU campaign driver (seed "
+    "build, coil fit, single-stage SLSQP): no test runs it; its library path is tests/test_freeboundary_vc.py",
 }
 
 

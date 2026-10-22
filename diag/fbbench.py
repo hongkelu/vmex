@@ -44,8 +44,8 @@ METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(label
            "D": dict(labelling="condensed", label_weight=1e-3),
            **{f"Dauto{r:g}": dict(labelling="condensed", label_weight="auto", label_ratio=r)
               for r in (1e-4, 1e-3, 1e-2, 1e-1)}}
-LABELLINGS = {"A": "start", "C": "equal_arc", "D": "condensed"}
-if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,D:1e-2 (label:weight for A, C or D)
+LABELLINGS = {"A": "start", "C": "equal_arc", "D": "condensed", "M": "condensed_modal"}
+if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,D:1e-2 (label:weight for A, C, D or M = modal D)
     METHODS = {k: METHODS[k] if k in METHODS else dict(labelling=LABELLINGS[k.split(":")[0]],
                                                        label_weight=float(k.split(":")[1]))
                for k in os.environ["FBB_METHODS"].split(",")}

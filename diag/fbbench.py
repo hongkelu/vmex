@@ -44,8 +44,11 @@ METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(label
            "D": dict(labelling="condensed", label_weight=1e-3),
            **{f"Dauto{r:g}": dict(labelling="condensed", label_weight="auto", label_ratio=r)
               for r in (1e-4, 1e-3, 1e-2, 1e-1)}}
-LABELLINGS = {"A": "start", "C": "equal_arc", "D": "condensed"}
-if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,D:1e-2 (label:weight for A, C or D)
+# The fits' tolerances (solve_free_boundary_three_term's defaults; FBB_FTOL=1e-10 FBB_MAX_NFEV=300 for tight fits)
+FIT = dict(ftol=float(os.environ.get("FBB_FTOL", "1e-4")), jacobian_ftol=float(os.environ.get("FBB_JACOBIAN_FTOL", "1e-2")),
+           max_nfev=int(os.environ.get("FBB_MAX_NFEV", "60")))
+LABELLINGS = {"A": "start", "C": "equal_arc", "D": "condensed", "M": "condensed_modal"}
+if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,D:1e-2 (label:weight for A, C, D or M = modal D)
     METHODS = {k: METHODS[k] if k in METHODS else dict(labelling=LABELLINGS[k.split(":")[0]],
                                                        label_weight=float(k.split(":")[1]))
                for k in os.environ["FBB_METHODS"].split(",")}
@@ -181,8 +184,7 @@ def from_start(model, field, start):
 
     nb = model.n_boundary
     x0 = np.r_[pack_boundary(start, model.max_mode, vary_major_radius=True), np.asarray(model.x0)[nb:]]
-    out = model.solve_boundary(model.params0, field, x0=x0, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                               refresh_on_stall=True)
+    out = model.solve_boundary(model.params0, field, x0=x0, **FIT, refresh_on_stall=True)
     params = out["aux"][2]
     return SimpleNamespace(input=model._im.input_with_params(model.fixed, params), jac=out["jacobian"],
                            nfev=out["nfev"], njev=out["njev"], converged=out["converged"], success=out["converged"],
@@ -247,7 +249,7 @@ def main():
                         fit = from_start(model, field, start)
                     else:
                         fit = fvc.solve_free_boundary_three_term(inp, external_field=field, initial_boundary=start,
-                                                                 **kw, **options)
+                                                                 **kw, **options, **FIT)
                         model = fit.model
                 except Exception as error:  # noqa: BLE001
                     emit(dict(label=f"{method} from {sname}", failed=f"{type(error).__name__}: {str(error)[:200]}"))

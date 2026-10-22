@@ -113,6 +113,19 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
+def test_condensation_rows_vanish_on_a_uniformly_labelled_circle():
+    """VMEC's condensation condition holds for a circle in its natural angle, not once that angle is distorted."""
+    phi, theta = jnp.meshgrid(jnp.linspace(0.0, jnp.pi / 2, 16, endpoint=False),
+                              jnp.linspace(0.0, 2 * jnp.pi, 32, endpoint=False), indexing="ij")
+
+    def rows(angle):
+        R = 1.0 + 0.2 * jnp.cos(angle)
+        return fvc._condensation_rows(jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), 0.2 * jnp.sin(angle)]), 6, 3)
+
+    assert float(jnp.max(jnp.abs(rows(theta)))) < 1e-12
+    assert float(jnp.max(jnp.abs(rows(theta + 0.2 * jnp.sin(2 * theta))))) > 0.1
+
+
 def test_levenberg_marquardt_finish():
     """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
     and reports why it stopped."""
@@ -178,6 +191,21 @@ def test_three_term_option_fits_the_best_of_two_starts():
     with pytest.raises(ValueError, match="start"):
         vj.solve_free_boundary_multigrid(inp, external_field=field, boundary_condition="three_term",
                                          three_term_options=dict(start="coils"))
+
+
+@needs_vc
+@pytest.mark.full
+def test_condensed_labelling_with_the_automatic_weight():
+    """``labelling="condensed"`` with VMEC's automatic weight: the weight is set at the first fit and the fit
+    still reduces B.n and the sheet current of the deck's fixed-boundary equilibrium."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 7), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field, n=12)
+    result = fvc.solve_free_boundary_three_term(inp, external_field=field, labelling="condensed",
+                                                label_weight="auto", **dict(SMALL, max_mode=3), max_nfev=20)
+    res = result.boundary_residual
+    assert 0 < result.model.label_weight < np.inf and not result.model._label_auto
+    assert res.normal < design.normal and res.sheet_current < design.sheet_current
 
 
 @needs_vc

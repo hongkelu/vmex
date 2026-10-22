@@ -592,10 +592,16 @@ def trapped_fraction_from_state(
 # ===========================================================================
 
 
+#: Prefactor conventions of the quasisymmetry isomorphism in :func:`j_dot_B_redl`.
+G_CONVENTIONS = ("simsopt", "isomorphism")
+
+
 def j_dot_B_redl(
     profiles: KineticProfiles,
     geom: RedlGeometry,
     helicity_n: int,
+    *,
+    g_convention: str = "simsopt",
 ) -> tuple[Array, dict[str, Array]]:
     """Bootstrap ``<J.B>`` [A*T/m^2] from the Redl (2021) formulae (pure jnp).
 
@@ -607,6 +613,13 @@ def j_dot_B_redl(
     ``N = nfp*helicity_n`` in the collisionality geometry factor and in the
     ``1/(psi_edge*(iota - N))`` prefactor; ``G`` (and the ``R`` provided by
     the geometry lanes) is used unshifted.
+
+    ``g_convention="isomorphism"`` uses ``G + N I`` in the prefactor instead: with the helical angle
+    ``chi = theta - N phi`` the Boozer field ``G grad phi + I grad theta`` is ``(G + N I) grad phi + I grad chi``,
+    so the substitution of Landreman, Buller & Drevlak (2022) is ``iota -> iota - N`` together with
+    ``G -> G + N I``.  ``R = (G + iota I) <1/B>`` is invariant under it.  The two agree for ``N = 0`` or ``I = 0``
+    and differ by the factor ``1 + N I / G`` otherwise (:func:`isomorphism_g_shift`); ``"simsopt"`` (the
+    default) keeps the published optimizations' convention until that difference is resolved.
 
     ``helicity_n`` is 0 for quasi-axisymmetry, +/-1 for quasi-helical
     symmetry.  ``Te/Ti`` are clamped at 1 eV and ``ne`` at 1e17 1/m^3
@@ -697,8 +710,11 @@ def j_dot_B_redl(
              - 0.002 * nu_i * nu_i * (f_t ** 6)) \
         / (1 + 0.004 * nu_i * nu_i * (f_t ** 6))
 
+    if g_convention not in G_CONVENTIONS:
+        raise ValueError(f"g_convention must be one of {G_CONVENTIONS}, got {g_convention!r}")
+    G = geom.G + helicity_N * geom.I if g_convention == "isomorphism" else geom.G
     # Factor of ELEMENTARY_CHARGE converts temperatures from eV to J:
-    pref = -geom.G * ELEMENTARY_CHARGE / (geom.psi_edge * iota_N)
+    pref = -G * ELEMENTARY_CHARGE / (geom.psi_edge * iota_N)
     dnds_term = pref * (ne_s * Te_s + ni_s * Ti_s) * L31 * (d_ne_d_s / ne_s)
     dTeds_term = pref * pe_s * (L31 + L32) * (d_Te_d_s / Te_s)
     dTids_term = pref * pi_s * (L31 + L34 * alpha) * (d_Ti_d_s / Ti_s)
@@ -718,6 +734,12 @@ def j_dot_B_redl(
         "dTids_term": dTids_term, "jdotB": jdotB,
     }
     return jdotB, details
+
+
+def isomorphism_g_shift(geom: RedlGeometry, helicity_n: int) -> Array:
+    """``N I / G`` per surface: the relative change of Redl's ``<J.B>`` from ``g_convention="simsopt"`` to
+    ``"isomorphism"`` (:func:`j_dot_B_redl`), ``N = nfp * helicity_n``."""
+    return int(geom.nfp) * int(helicity_n) * jnp.asarray(geom.I) / jnp.asarray(geom.G)
 
 
 # ===========================================================================
@@ -764,22 +786,24 @@ def redl_current_derivative(profiles: KineticProfiles, helicity_n: int, state: S
     return _redl_current_derivative(profiles, helicity_n, state, rt, n_lambda=n_lambda)[:2]
 
 
-def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMBDA):
-    """:func:`redl_current_derivative`'s ``(s, dI/ds)``, with the Redl geometry and ``<J.B>`` behind them."""
+def _redl_current_derivative(profiles, helicity_n, state, rt, *, n_lambda=N_LAMBDA, g_convention="simsopt"):
+    """:func:`redl_current_derivative`'s ``(s, dI/ds)``, with the half-mesh fields, Redl geometry and ``<J.B>``
+    behind them."""
     hm = _half_mesh_fields(state, rt)
     geom = _geometry_from_half(hm, hm.s_half, n_lambda=n_lambda, refine_extrema=True)
-    jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
-    return hm.s_half, _current_derivative(hm, jr), geom, jr
+    jr, _ = j_dot_B_redl(profiles, geom, helicity_n, g_convention=g_convention)
+    return hm.s_half, _current_derivative(hm, jr), geom, jr, hm
 
 
-def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlGeometry, j_dot_b, x) -> Array:
-    """Redl's ``<J.B>`` at ``s = x s_1`` over its value at ``s_1`` (``x < 1``), inside the first surface.
+def near_axis_redl_j_dot_b(profiles: KineticProfiles, helicity_n: int, geom: RedlGeometry, x, *,
+                           g_convention: str = "simsopt") -> Array:
+    """Redl's ``<J.B>`` at ``s = x s_1`` (``x < 1``), inside the first surface ``s_1`` of ``geom``.
 
-    The geometry is ``geom``'s at ``s_1`` (its first surface; ``j_dot_b`` Redl's ``<J.B>`` there) continued
-    to the axis: ``eps ~ s^(1/2)`` and ``f_t ~ s^(1/4)`` (``f_t ~ eps^(1/2)``), ``iota``, ``G``, ``R`` and the
-    flux-surface averages at their ``s_1`` values, while the kinetic profiles are evaluated at ``s``.  The
-    banana-regime current follows ``s^(1/4)`` until the electron collisionality ``nu*_e ~ eps^(-3/2)``
-    turns it into a collisional decay towards the axis.
+    The geometry is ``geom``'s at ``s_1`` continued to the axis: ``eps ~ s^(1/2)`` and ``f_t ~ s^(1/4)``
+    (``f_t ~ eps^(1/2)``), ``iota``, ``G``, ``I``, ``R`` and the flux-surface averages at their ``s_1`` values,
+    while the kinetic profiles are evaluated at ``s``.  The banana-regime current follows ``s^(1/4)`` until the
+    electron collisionality ``nu*_e ~ eps^(-3/2)`` turns it into a collisional decay towards the axis.  Finite
+    wherever the profiles are (zero where they are flat), unlike a ratio to the ``s_1`` value.
     """
     x = jnp.asarray(x)
 
@@ -790,7 +814,16 @@ def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlG
         geom, surfaces=first(geom.surfaces) * x, iota=first(geom.iota), G=first(geom.G), I=first(geom.I),
         R=first(geom.R), epsilon=first(geom.epsilon) * jnp.sqrt(x), f_t=first(geom.f_t) * x**0.25,
         fsa_B2=first(geom.fsa_B2), fsa_1overB=first(geom.fsa_1overB), Bmin=first(geom.Bmin), Bmax=first(geom.Bmax))
-    return j_dot_B_redl(profiles, near, helicity_n)[0] / jnp.asarray(j_dot_b)[0]
+    return j_dot_B_redl(profiles, near, helicity_n, g_convention=g_convention)[0]
+
+
+def near_axis_redl_ratio(profiles: KineticProfiles, helicity_n: int, geom: RedlGeometry, j_dot_b, x) -> Array:
+    """:func:`near_axis_redl_j_dot_b` over Redl's ``<J.B>`` at ``s_1`` (``j_dot_b[0]``).
+
+    Undefined (0/0) where the bootstrap drive vanishes at ``s_1``; :class:`HalfMeshCurrent` uses the
+    finite :func:`near_axis_redl_j_dot_b` directly.
+    """
+    return near_axis_redl_j_dot_b(profiles, helicity_n, geom, x) / jnp.asarray(j_dot_b)[0]
 
 
 def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tuple[Array, Array]:
@@ -803,13 +836,21 @@ def current_derivative(j_dot_b, state: SpectralState, rt: SolverRuntime) -> tupl
     return hm.s_half, _current_derivative(hm, jnp.asarray(j_dot_b))
 
 
-def _current_derivative(hm: _HalfMeshFields, j_dot_b: Array) -> Array:
-    """dI/ds [A] solving ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` on the half mesh (Boozer ``I``)."""
+def _current_derivative_terms(hm: _HalfMeshFields) -> tuple[Array, Array]:
+    """``(a, b)`` with ``dI/ds = a <J.B> + b`` [A] per half-mesh surface (:func:`_current_derivative`): ``a`` the
+    drive's coefficient, ``b = -I dp/ds`` over ``<B^2>`` (Boozer ``I``, ``p`` in ``mu0`` Pa), in A."""
     w = jnp.abs(hm.w)
     fsa_B2 = jnp.mean(hm.bmag * hm.bmag * w, axis=(1, 2)) / jnp.mean(w, axis=(1, 2))
     hs = hm.s_half[1] - hm.s_half[0]
-    dI_boozer = (j_dot_b * MU0 * hm.phi_edge / hm.signgs - hm.I * _dds_half(hm.p_int, hs)) / fsa_B2
-    return dI_boozer * 2.0 * jnp.pi / (MU0 * hm.signgs)
+    to_amperes = 2.0 * jnp.pi / (MU0 * hm.signgs)
+    return (MU0 * hm.phi_edge / hm.signgs / fsa_B2 * to_amperes,
+            -hm.I * _dds_half(hm.p_int, hs) / fsa_B2 * to_amperes)
+
+
+def _current_derivative(hm: _HalfMeshFields, j_dot_b: Array) -> Array:
+    """dI/ds [A] solving ``<B^2> dI/ds + I dp/ds = mu0 Phi_a <J.B>`` on the half mesh (Boozer ``I``)."""
+    a, b = _current_derivative_terms(hm)
+    return a * j_dot_b + b
 
 
 class HalfMeshCurrent:
@@ -824,17 +865,19 @@ class HalfMeshCurrent:
     ``profile="half_mesh"`` by fixed-point iteration at a fixed boundary.
 
     ``I'(0) = 0`` -- a quasisymmetric bootstrap current density vanishes on the axis with the trapped
-    fraction -- and inside ``s_1`` knots at ``s_1 / 64, s_1 / 16, s_1 / 4`` carry Redl's current on the
-    near-axis continuation of the ``s_1`` geometry, ``I'_Redl(s_1)`` times :func:`near_axis_redl_ratio`
-    (``s^(1/4)`` in the banana regime, decaying where the collisionality diverges): unknowns with a row
-    each, ahead of the half-mesh ones.  The edge knot continues the last two linearly (it only enters
-    CURTOR), and CURTOR is the profile's integral.  ``deck`` is the input on this profile, starting from
-    its own current's derivative.
+    fraction -- and inside ``s_1`` knots at ``x s_1``, ``x = 1/64, 1/16, 1/4``, carry Redl's current on the
+    near-axis continuation of the ``s_1`` geometry (:func:`near_axis_redl_j_dot_b`; ``s^(1/4)`` in the banana
+    regime, decaying where the collisionality diverges), converted to ``I'`` with the ``s_1`` coefficients of
+    the identity and ``I(x s_1) = x I(s_1)`` (a uniform current density): finite for any drive, zero for flat
+    profiles.  They are unknowns with a row each, ahead of the half-mesh ones.  The edge knot ``s = 1``
+    continues the last two half-mesh values linearly, ``(3 v_{-1} - v_{-2}) / 2`` (they sit at ``1 - 3h/2`` and
+    ``1 - h/2``); it only enters CURTOR, the profile's integral.  ``deck`` is the input on this profile,
+    starting from its own current's derivative.  ``g_convention`` is :func:`j_dot_B_redl`'s.
     """
 
     SUB = (1 / 64, 1 / 16, 1 / 4)
 
-    def __init__(self, deck, profiles, helicity_n, weight=1.0):
+    def __init__(self, deck, profiles, helicity_n, weight=1.0, g_convention="simsopt"):
         from .profiles import current
         from .wout import _NDFMAX
 
@@ -856,6 +899,9 @@ class HalfMeshCurrent:
         self.x_scale = np.full(slope.size, self.ref)
         self.weight = float(weight) / np.sqrt(ns - 1)
         self.profiles, self.helicity_n = profiles, int(helicity_n)
+        if g_convention not in G_CONVENTIONS:
+            raise ValueError(f"g_convention must be one of {G_CONVENTIONS}, got {g_convention!r}")
+        self.g_convention = g_convention
         values = self.values(self.x0)  # knots and values in one replace: VmecInput trims them to a common length
         self.deck = dataclasses.replace(deck, pcurr_type="line_segment_ip", ac_aux_s=self.knots,
                                         ac_aux_f=np.asarray(values), curtor=float(self.current(values, 1.0)))
@@ -863,7 +909,7 @@ class HalfMeshCurrent:
     def values(self, v):
         """Every knot value from the unknowns ``v`` (the sub-axis knots', then the half-mesh ones)."""
         v = jnp.asarray(v)
-        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (2 * v[-1] - v[-2])[None]])
+        return jnp.concatenate([jnp.zeros(1, v.dtype), v, (1.5 * v[-1] - 0.5 * v[-2])[None]])
 
     def deck_with(self, deck, v):
         """``deck`` with the knot values ``v``."""
@@ -877,9 +923,22 @@ class HalfMeshCurrent:
 
     def target(self, state, runtime):
         """``I'_Redl`` at the sub-axis knots and the half-mesh surfaces (traceable)."""
-        _, target, geom, jr = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime)
-        ratio = near_axis_redl_ratio(self.profiles, self.helicity_n, geom, jr, jnp.asarray(self.SUB))
-        return jnp.concatenate([target[0] * ratio, target])
+        _, target, geom, _, hm = _redl_current_derivative(self.profiles, self.helicity_n, state, runtime,
+                                                          g_convention=self.g_convention)
+        x = jnp.asarray(self.SUB)
+        a, b = _current_derivative_terms(hm)
+        near = near_axis_redl_j_dot_b(self.profiles, self.helicity_n, geom, x, g_convention=self.g_convention)
+        return jnp.concatenate([a[0] * near + b[0] * x, target])
+
+    def identity(self):
+        """What defines this closure (a checkpoint must match it): the kinetic profiles, helicity, weight,
+        prescriptions and conventions."""
+        p = self.profiles
+        return dict(model="redl_half_mesh", helicity_n=self.helicity_n, weight=self.weight,
+                    g_convention=self.g_convention, sub_axis=list(self.SUB),
+                    near_axis="redl_s1_continuation/direct", edge="linear_half_step",
+                    ne=np.asarray(p.ne_coeffs, float).tolist(), Te=np.asarray(p.Te_coeffs, float).tolist(),
+                    Ti=np.asarray(p.Ti_coeffs, float).tolist(), Zeff=np.asarray(p.Zeff_coeffs, float).tolist())
 
     def mismatch(self, state, runtime, params):
         """``(I' - I'_Redl, I'_Redl)`` at the sub-axis knots and the half-mesh surfaces."""
@@ -1136,10 +1195,10 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
 
     block = HalfMeshCurrent(inp, profiles, helicity_n)
     inp, v = block.deck, block.x0
-    history, state, eq, converged = [], None, None, False
+    history, state, eq, converged, solved = [], None, None, False, inp
     for it in range(int(n_iter)):
         eq = opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {}))
-        state = eq.state
+        state, solved = eq.state, inp
         target = np.asarray(block.target(eq.solution, eq.solver_context))
         delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
         history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=float(mismatch.total(eq.wout))))
@@ -1148,9 +1207,11 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
         if delta <= float(tol):
             converged = True
             break
+        if it + 1 == int(n_iter):  # out of iterations: return the iterate that was solved, not an unsolved update
+            break
         v = (1.0 - relax) * v + relax * target
         inp = block.deck_with(inp, v)
-    return BootstrapPicardResult(input=inp, equilibrium=eq, converged=converged, iterations=len(history),
+    return BootstrapPicardResult(input=solved, equilibrium=eq, converged=converged, iterations=len(history),
                                  history=tuple(history))
 
 
@@ -1158,12 +1219,13 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
 class BootstrapPicardResult:
     """Outcome of :func:`self_consistent_bootstrap`.
 
-    ``input`` carries the final ``AC``/``CURTOR`` (``ncurr=1``,
-    ``pcurr_type="power_series"``); ``equilibrium`` is the last solved
-    :class:`~vmex.core.optimize.Equilibrium`; ``history`` is one dict per
-    iteration (``curtor``, ``delta``, ``f_boot``).  ``delta`` is the
-    self-consistency error ``max|I'_Redl - I'_applied| / max|I'_Redl|``
-    between the Redl-implied and the currently applied current profile.
+    ``input`` is the deck ``equilibrium`` (the last solved
+    :class:`~vmex.core.optimize.Equilibrium`) was solved from, and the last
+    ``history`` entry (one dict per iteration: ``curtor``, ``delta``,
+    ``f_boot``) describes that same iterate, also when the iterations ran out.
+    ``delta`` is the self-consistency error
+    ``max|I'_Redl - I'_applied| / max|I'_Redl|`` between the Redl-implied and
+    the applied current profile (the fitted one the equilibrium was solved with).
     """
 
     input: VmecInput
@@ -1264,6 +1326,7 @@ def self_consistent_bootstrap(
     dIds_applied = None   # I'(s_full) currently driving the equilibrium
     eq = None
     converged = False
+    solved = inp
 
     for it in range(int(n_iter)):
         try:
@@ -1272,7 +1335,7 @@ def self_consistent_bootstrap(
             if state is None:
                 raise
             eq = opt.solve_equilibrium(inp, **solve_kwargs)  # cold fallback
-        state = eq.state
+        state, solved = eq.state, inp
         w = eq.wout
         ns = int(w.ns)
         if ns < 5:
@@ -1315,6 +1378,8 @@ def self_consistent_bootstrap(
         if delta <= float(tol):
             converged = True
             break
+        if it + 1 == int(n_iter):  # out of iterations: return the iterate that was solved, not an unsolved update
+            break
 
         dIds_use = (dIds_new if dIds_applied is None
                     else (1.0 - relax) * dIds_applied + relax * dIds_new)
@@ -1322,11 +1387,13 @@ def self_consistent_bootstrap(
         coeffs = np.polynomial.polynomial.polyfit(s_full, dIds_use, deg)
         ac = np.zeros(max(21, deg + 1))
         ac[:deg + 1] = coeffs
-        curtor = float(np.trapezoid(dIds_use, s_full))
+        # The equilibrium sees the fitted polynomial: CURTOR is its exact integral, and the next delta is
+        # measured against it, not against the samples it was fitted to.
+        curtor = float(np.sum(coeffs / np.arange(1, deg + 2)))
         inp = dataclasses.replace(inp, ncurr=1, pcurr_type="power_series",
                                   ac=ac, curtor=curtor)
-        dIds_applied = dIds_use
+        dIds_applied = np.polynomial.polynomial.polyval(s_full, coeffs)
 
     return BootstrapPicardResult(
-        input=inp, equilibrium=eq, converged=converged,
+        input=solved, equilibrium=eq, converged=converged,
         iterations=len(history), history=tuple(history))

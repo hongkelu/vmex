@@ -681,7 +681,8 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
     again = fvc.solve_free_boundary_three_term(inp, external_field=field, previous=fit)
-    assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
+    # no new Jacobian: the warm start's own certification reuses the latest linearization (counted once)
+    assert again.njev <= 1 and again.converged and again.cost <= fit.cost * (1 + 1e-6)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
 
@@ -946,3 +947,158 @@ def test_three_term_on_the_cth_like_deck(case):
               f"(VMEC2000 {1e3 * drift_ref:.2f} mm)")
         assert bn < 5e-4 and bn < bn_ref
         assert drift < 1e-3  # absolute: at 5 x 4 modes VMEC2000's boundary drifts a little less (see above)
+
+
+def _exact_and_gauss_newton_sensitivity(residual, b, d):
+    """``db/dd`` of ``min_b |residual(b, d)|^2`` at a stationary ``b``: exact (curvature terms by AD) and
+    Gauss-Newton, both through :func:`fvc._least_squares_sensitivity`."""
+    r = np.asarray(residual(b, d))
+    J_b = np.asarray(jax.jacfwd(residual, 0)(b, d))
+    J_d = np.asarray(jax.jacfwd(residual, 1)(b, d))
+    S_bb = np.einsum("i,ijk->jk", r, np.asarray(jax.jacfwd(jax.jacfwd(residual, 0), 0)(b, d)))
+    S_bd = np.einsum("i,ijk->jk", r, np.asarray(jax.jacfwd(jax.jacfwd(residual, 0), 1)(b, d)))
+    return (fvc._least_squares_sensitivity(J_b, J_d, S_bb, S_bd), fvc._least_squares_sensitivity(J_b, J_d),
+            J_b, J_d)
+
+
+@pytest.mark.parametrize("which", ["state_curvature", "mixed"])
+def test_least_squares_sensitivity_needs_the_curvature_terms(which):
+    """Two analytic least squares at b = 0, d = 0 where the residual does not vanish: exact db/dd = 1.25, Gauss-Newton
+    1.  r = (b - d, sqrt(0.1)(b^2 - 1)) needs S_bb; r = (b - d, (b d - 1)/2) needs only the mixed S_bd.  The exact
+    sensitivity matches central differences of the re-solved minimum; the gradient's multipliers are Gauss-Newton."""
+    import scipy.optimize
+
+    if which == "state_curvature":
+        def residual(b, d):
+            return jnp.stack([b[0] - d[0], jnp.sqrt(0.1) * (b[0] ** 2 - 1.0)])
+    else:
+        def residual(b, d):
+            return jnp.stack([b[0] - d[0], 0.5 * (b[0] * d[0] - 1.0)])
+    zero = jnp.zeros(1)
+    exact, gauss_newton, J_b, J_d = _exact_and_gauss_newton_sensitivity(residual, zero, zero)
+    assert exact[0, 0] == pytest.approx(1.25, rel=1e-12) and gauss_newton[0, 0] == pytest.approx(1.0, rel=1e-12)
+
+    def solved(d):
+        return scipy.optimize.least_squares(lambda b: np.asarray(residual(jnp.asarray(b), jnp.asarray([d]))),
+                                            np.zeros(1), xtol=1e-15, ftol=1e-15, gtol=1e-15).x[0]
+
+    for h in (1e-2, 1e-3, 1e-4):  # a plateau
+        assert (solved(h) - solved(-h)) / (2 * h) == pytest.approx(1.25, rel=1e-3)
+    G_b = np.array([[1.0]])  # h = b: the design gradient through the multipliers is Gauss-Newton's
+    lam = fvc._residual_multipliers(J_b, G_b)
+    assert float(-(lam.T @ J_d)[0, 0]) == pytest.approx(float((G_b @ gauss_newton)[0, 0]), rel=1e-12)
+
+
+def test_residual_multipliers_equal_the_forward_gauss_newton_sensitivity():
+    """The adjoint form of the gradient (multipliers, one per row) equals the forward Gauss-Newton sensitivity."""
+    rng = np.random.default_rng(0)
+    J_b, J_d, G_b = rng.normal(size=(30, 7)), rng.normal(size=(30, 4)), rng.normal(size=(3, 7))
+    lam = fvc._residual_multipliers(J_b, G_b)
+    np.testing.assert_allclose(-lam.T @ J_d, G_b @ fvc._least_squares_sensitivity(J_b, J_d), rtol=1e-10, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Reduced (variable-projection) Levenberg-Marquardt and least-squares sensitivities (PR #121 review)
+# ---------------------------------------------------------------------------
+
+
+def _stiff_closure(weight=100.0):
+    """r(b, c) = (b - 1, b - 1/2, weight (c - b^2)): c a stiff closure of b, nonlinear in b."""
+    def evaluate(x):
+        b, c = x
+        return np.array([b - 1.0, b - 0.5, weight * (c - b * b)]), None
+
+    def jacobian(x):
+        b, _ = x
+        return np.array([[1.0, 0.0], [1.0, 0.0], [-2 * weight * b, weight]])
+
+    return evaluate, jacobian
+
+
+def test_projected_levenberg_marquardt_predicts_the_composite_step():
+    """With the closure eliminated, the model is that of the evaluated composite step (boundary step, closure
+    re-solved): the step from a stale Jacobian converges to the minimum, the gain ratio of the first step is near
+    one, and the closure is conditionally stationary at every accepted point.  Holding the closure in the joint
+    model instead stalls on the curvature of its rows."""
+    evaluate, jacobian = _stiff_closure()
+    x0 = np.array([3.0, 9.0])  # closure-consistent start, far from the minimum b = 3/4
+    r0, _ = evaluate(x0)
+    log = []
+
+    def logged(x):
+        out = evaluate(x)
+        log.append((np.array(x), 0.5 * out[0] @ out[0]))
+        return out
+
+    out = fvc._levenberg_marquardt(logged, x0, r0, None, jacobian(x0), ftol=1e-12, max_nfev=40, verbose=0,
+                                   project=np.array([1]))
+    assert out["converged"] and out["reason"] == "ftol"
+    np.testing.assert_allclose(out["x"], [0.75, 0.5625], rtol=1e-6)
+    assert out["projections"] == 0
+    joint = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-12, max_nfev=40, verbose=0)
+    assert not joint["converged"] and abs(joint["x"][0] - 0.75) > 1e-2
+
+
+def test_project_stops_at_conditional_stationarity():
+    evaluate, jacobian = _stiff_closure()
+    x = np.array([0.75, 0.0])
+    Q, R = np.linalg.qr(jacobian(x)[:, [1]])
+    xs, got, used, stationary = fvc._project(evaluate, x, evaluate(x), Q, R, np.array([1]), 10, 1e-20)
+    assert stationary and used == 1  # linear in c: one correction
+    np.testing.assert_allclose(xs, [0.75, 0.5625], rtol=1e-14)
+    _, _, used, stationary = fvc._project(evaluate, xs, got, Q, R, np.array([1]), 10, 1e-20)
+    assert stationary and used == 0
+
+
+@pytest.mark.parametrize("residual", [
+    lambda b, d: jnp.stack([b - d, jnp.sqrt(0.1) * (b * b - 1.0)]),  # state curvature
+    lambda b, d: jnp.stack([b - d, 0.5 * (b * d - 1.0)]),  # mixed term only
+])
+def test_least_squares_sensitivity_exact_vs_gauss_newton(residual):
+    """At the stationary point b = 0 of d = 0, exact db/dd = 1.25; Gauss-Newton (no second-order terms) gives
+    1, the error the problem's gradient carries at a nonzero residual.  The exact value matches re-solved finite
+    differences."""
+    import jax
+    import scipy.optimize
+
+    b, d = 0.0, 0.0
+    r = np.asarray(residual(b, d))
+    J_y = np.asarray(jax.jacfwd(residual, 0)(b, d))[:, None]
+    J_d = np.asarray(jax.jacfwd(residual, 1)(b, d))
+    hess = jax.hessian(residual, (0, 1))(b, d)  # ((d2/db2, d2/db dd), ...), each per residual component
+    S_yy, S_yd = r @ np.asarray(hess[0][0]), r @ np.asarray(hess[0][1])
+    assert np.asarray(jax.grad(lambda y: 0.5 * jnp.sum(residual(y, d) ** 2))(b)) == 0.0
+    exact = fvc.least_squares_sensitivity(J_y, J_d, S_yy, S_yd)
+    np.testing.assert_allclose(exact, [[1.25]], rtol=1e-13)
+    np.testing.assert_allclose(fvc.least_squares_sensitivity(J_y, J_d), [[1.0]], rtol=1e-13)
+    h = 1e-5
+    stationarity = jax.grad(lambda y, dd: 0.5 * jnp.sum(residual(y, dd) ** 2))
+    solved = [scipy.optimize.brentq(lambda y, dd=dd: float(stationarity(y, dd)), -0.1, 0.1, xtol=1e-15)
+              for dd in (-h, h)]
+    assert (solved[1] - solved[0]) / (2 * h) == pytest.approx(1.25, rel=1e-6)
+
+
+@needs_vc
+@pytest.mark.full
+def test_standalone_and_optimization_accept_the_same_equilibrium(monkeypatch):
+    """One definition of solved: at the same deck, field and fit settings the standalone solve and the
+    optimization's seed record are both certified by the same rule and land on the same stationary point (within
+    their Gauss-Newton steps); a finish that only stalled, far from it, is not converged."""
+    inp, field = _small_vacuum()
+    problem = _small_problem(boundary_ftol=1e-4, boundary_max_nfev=60)
+    record = problem._record(problem.x0)
+    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, ftol=1e-4, max_nfev=60, **SMALL)
+    assert fit.converged and fit.certificate is not None and "certified" in fit.message
+    for certificate in (fit.certificate, record["certificate"]):
+        assert certificate["stationarity"] <= 1e-4
+    scaled = np.linalg.norm((fit.x - record["x"]) / problem.model.x_scale)
+    assert scaled <= fit.certificate["step"] + record["certificate"]["step"] + 1e-8
+
+    def stall(evaluate, x, r, aux, J, **kwargs):
+        return dict(x=x, rows=r, aux=aux, nfev=1, accepted=0, converged=False, radius=kwargs.get("radius"),
+                    reason="stalled", projections=0)
+
+    monkeypatch.setattr(fvc, "_levenberg_marquardt", stall)
+    stalled = fvc.solve_free_boundary_three_term(inp, external_field=field, ftol=1e-4, max_nfev=2, **SMALL)
+    assert not stalled.converged and not stalled.success and "not certified" in stalled.message
+    assert stalled.certificate is None

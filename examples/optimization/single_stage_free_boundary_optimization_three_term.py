@@ -135,6 +135,8 @@ CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5,
 # objective_functions.B_regularized_pure); None: no force rows.
 FORCE_LIMIT, CONDUCTOR_RADIUS, FORCE_MARGIN = None, 0.01, 1e-3  # N/m, m, relative
 FORCE_POINTS = 128  # samples per coil of the force rows (targets and sources)
+# Set: one row on the total length of the base coils (one half period) instead of a row per coil.
+TOTAL_LENGTH_LIMIT = None  # m
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -984,12 +986,20 @@ def force_rows(coils, *, points=True):
     return (FORCE_LIMIT * (1 - FORCE_MARGIN) - force) / FORCE_LIMIT
 
 
+def length_rows(length):
+    """Per-coil length rows, or the one total-length row with TOTAL_LENGTH_LIMIT."""
+    import jax.numpy as jnp
+
+    if TOTAL_LENGTH_LIMIT is not None:
+        return jnp.atleast_1d((TOTAL_LENGTH_LIMIT - LENGTH_MARGIN - jnp.sum(length)) / TOTAL_LENGTH_LIMIT)
+    return (LENGTH_LIMIT - LENGTH_MARGIN - length) / LENGTH_LIMIT
+
+
 def coil_inequalities(coils):
     import jax.numpy as jnp
 
     m = coil_metrics(coils)
-    return jnp.concatenate((force_rows(coils, points=False),
-        (LENGTH_LIMIT-LENGTH_MARGIN-m['length'])/LENGTH_LIMIT,
+    return jnp.concatenate((force_rows(coils, points=False), length_rows(m['length']),
         (CURVATURE_LIMIT-CURVATURE_MARGIN-m['peak'])/CURVATURE_LIMIT,
         (MSC_LIMIT-MSC_MARGIN-m['msc'])/MSC_LIMIT,
         jnp.atleast_1d((m['coil_distance']-COIL_DISTANCE_LIMIT-DISTANCE_MARGIN)/COIL_DISTANCE_LIMIT),
@@ -1020,7 +1030,7 @@ def coil_point_inequalities(coils):
         return jnp.min(others, axis=0), own
 
     coil_distance, self_distance = map(jnp.concatenate, zip(*[per_point(b) for b in range(nbase)]))
-    return jnp.concatenate((force_rows(coils), (LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+    return jnp.concatenate((force_rows(coils), length_rows(base.length),
                             jnp.ravel(CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT,
                             (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
                             / MSC_LIMIT,
@@ -1082,6 +1092,8 @@ def parse_args(argv=None):
     parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
                         "(curvature, coil-coil and self distance) instead of each coil's extreme")
     parser.add_argument("--length-limit", type=float, help="per-coil length limit in m (default: the case's)")
+    parser.add_argument("--total-length-limit", type=float, help="limit on the summed length of the base coils (one "
+                        "half period), m; replaces the per-coil length rows")
     parser.add_argument("--curvature-limit", type=float, help="peak curvature limit in 1/m (default: the case's)")
     parser.add_argument("--msc-limit", type=float, help="mean squared curvature limit in 1/m^2 (default: the case's)")
     parser.add_argument("--force-limit", type=float, help="Lorentz force per unit length limit on every coil point, "
@@ -1278,13 +1290,14 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS
+    global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT
     args = parse_args(argv)
     LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
     CURVATURE_LIMIT = args.curvature_limit or CURVATURE_LIMIT
     MSC_LIMIT = args.msc_limit or MSC_LIMIT
     FORCE_LIMIT = args.force_limit or FORCE_LIMIT
     CONDUCTOR_RADIUS = args.conductor_radius or CONDUCTOR_RADIUS
+    TOTAL_LENGTH_LIMIT = args.total_length_limit or TOTAL_LENGTH_LIMIT
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:

@@ -127,6 +127,22 @@ def test_condensation_rows_vanish_on_a_uniformly_labelled_circle():
     assert float(jnp.max(jnp.abs(rows(theta + 0.2 * jnp.sin(2 * theta))))) > 0.1
 
 
+def test_equal_arc_phase_has_one_branch():
+    """The phase rows vanish for the natural angle of a circle and not for that angle shifted by pi (equal arc
+    holds for both)."""
+    phi, theta = jnp.meshgrid(jnp.linspace(0.0, jnp.pi / 2, 16, endpoint=False),
+                              jnp.linspace(0.0, 2 * jnp.pi, 32, endpoint=False), indexing="ij")
+
+    def rows(angle):
+        R = 1.0 + 0.2 * jnp.cos(angle)
+        return fvc._equal_arc_rows(jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), 0.2 * jnp.sin(angle)]))
+
+    for shift, phase in ((0.0, 0.0), (jnp.pi, jnp.pi)):
+        arc, rows_phase = rows(theta + shift)
+        assert float(jnp.max(jnp.abs(arc))) < 1e-12
+        np.testing.assert_allclose(np.abs(np.asarray(rows_phase)), phase, atol=1e-12)
+
+
 def test_levenberg_marquardt_finish():
     """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
     and reports why it stopped."""
@@ -369,6 +385,75 @@ def test_trial_values_come_from_the_tightly_solved_state():
 
 @needs_vc
 @pytest.mark.full
+def test_a_design_with_edge_pressure_is_rejected():
+    """The three-term problem needs zero edge pressure: the model refuses a deck with edge pressure, and a design
+    whose plasma map gives the edge a pressure is a rejected trial, not a solve that ignores it."""
+    from vmex.core.freeboundary_problem import FreeBoundaryProblem
+
+    inp, field = _small_vacuum()
+    with pytest.raises(ValueError, match="edge pressure"):
+        fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False, am=np.r_[1.0e3, np.zeros(20)]), **SMALL)
+    problem = FreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: field,
+        plasma_from_parameters=lambda params, x: replace(params, am=params.am.at[0].add(1.0e3 * x[1])),
+        boundary_condition="three_term", three_term_options=SMALL)
+    assert problem._solve(np.array([0.0, 0.01])) is None
+    with pytest.raises(TrialRejected, match="edge pressure"):
+        problem.fun(np.array([0.0, 0.01]))
+    problem.close()
+
+
+def _short_trial_fits(monkeypatch, model):
+    """Trial boundary fits that end short of their stationary point (the polish then moves them), as the
+    production fits do in soft directions."""
+    solve_boundary = model.solve_boundary
+
+    def short(params, field, **kwargs):
+        fit = solve_boundary(params, field, **kwargs)
+        if kwargs.get("ftol") == fvc.POLISH_FTOL:
+            return fit
+        x = fit["x"] + 1e-3 * np.asarray(model.x_scale)
+        rows, aux = model.evaluate(x, params, field)
+        return dict(fit, x=x, rows=rows, aux=aux)
+
+    monkeypatch.setattr(model, "solve_boundary", short)
+
+
+@needs_vc
+@pytest.mark.full
+def test_a_gradient_never_changes_the_value(monkeypatch):
+    """A design has one record: its value, constraint values and boundary are the same before and after its
+    gradient is asked for (the gradient used to polish the boundary and overwrite the value already returned)."""
+    problem = _small_problem(boundary_ftol=1e-2)
+    _short_trial_fits(monkeypatch, problem.model)
+    x = problem.x0 + 0.01
+    value, constraints = problem.fun(x), problem.constraint_values(x)
+    boundary = problem._record(x)["x"].copy()
+    assert problem.value_and_grad(x)[0] == value and problem.fun(x) == value
+    np.testing.assert_array_equal(problem.constraint_values(x), constraints)
+    np.testing.assert_array_equal(problem._record(x)["x"], boundary)
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
+def test_the_residual_check_sees_the_final_state(monkeypatch):
+    """boundary_max_residual judges the state the values come from (re-solved tight, polished), not the
+    boundary fit's trial state."""
+    problem = _small_problem(boundary_ftol=1e-2, trial_ftol=1e-6, boundary_max_residual=1.0)
+    model, seen = problem.model, []
+    _short_trial_fits(monkeypatch, model)
+    residual = model.boundary_residual
+    monkeypatch.setattr(model, "boundary_residual", lambda state, *args: seen.append(state) or residual(state, *args))
+    sol = problem._record(problem.x0 + 0.01)
+    problem._linearize(problem.x0 + 0.01, sol)
+    assert seen and seen[-1] is sol["state"]
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
 def test_rejected_trial_leaves_the_continuation(monkeypatch):
     """A rejected trial that changed the boundary fit's trust radius and linearization does not change what the
     next trial starts from."""
@@ -452,7 +537,7 @@ def test_interior_state_does_not_depend_on_its_start():
     results = []
     for seed in (None, near, perturbed):
         for cfg in {model.cfg, model.cfg_trial}:  # a genuine cold or seeded solve: no memo, no hot restart
-            for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED):
+            for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED, im._LAST_REFINED):
                 cache.pop(cfg, None)
         model._linearization = None
         rows, aux = model.evaluate(x, params, field, seed=seed, tight=True)
@@ -488,6 +573,10 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     np.testing.assert_allclose(fresh._record(x1)["values"], saved, rtol=1e-6)
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
+    other, field = _small_problem(), _small_vacuum()[1]  # same settings, another coil-field map
+    other.field = lambda x: replace(field, currents=field.currents * (1 + 0.06 * x[0]))
+    with pytest.raises(ValueError, match="coil field"):
+        other.restore_checkpoint(path)
     # and in a fresh process: nothing but the checkpoint carries the state over
     import subprocess
     import sys

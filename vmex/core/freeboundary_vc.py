@@ -141,6 +141,14 @@ def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
     return float(p[-1]), float(np.max(np.abs(p)))
 
 
+def _edge_pressure_error(inp: VmecInput):
+    """Why ``inp`` is outside the three-term problem (a nonzero edge pressure), or ``None``."""
+    p_edge, p_max = _edge_pressure(inp)
+    if abs(p_edge) > 1e-8 * p_max:
+        return f"edge pressure is {p_edge:g} Pa: without a sheet current the boundary pressure must vanish"
+    return None
+
+
 def _axis_loop(wout):
     """Points ``(3, n)``, tangent and spacing of the magnetic axis of ``wout``: a closed curve inside the coils."""
     phi = np.linspace(0.0, 2.0 * np.pi, 720, endpoint=False)
@@ -164,10 +172,12 @@ def _coil_net_current(external_field, wout) -> float:
 
 def _equal_arc_rows(gamma):
     """Rows that vanish when the boundary's poloidal angle is equal-arc on every toroidal cut and the m = 1 part of
-    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.
+    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.  The phase is
+    the angle of that part, in (-pi, pi]: zero on one branch only (``Im c1 / |c1|`` also vanished for the angle
+    shifted by pi), and not finite where the part vanishes (a rejected trial).
 
     ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points.  Returns ``(arc, phase)``: ``|d gamma/d theta|`` relative to
-    its mean on each cut, minus one, ``(nphi, ntheta)``; and ``Im c1 / |c1|`` per cut, ``(nphi,)``.
+    its mean on each cut, minus one, ``(nphi, ntheta)``; and the phase of ``c1`` per cut, ``(nphi,)``.
     """
     ntheta = gamma.shape[-1]
     wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
@@ -175,7 +185,7 @@ def _equal_arc_rows(gamma):
     speed = jnp.linalg.norm(e_theta, axis=0)
     arc = speed / jnp.mean(speed, axis=-1, keepdims=True) - 1.0
     c1 = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]) + 1j * gamma[2], axis=-1)[..., 1]
-    return arc, jnp.imag(c1) / jnp.abs(c1)
+    return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
 
 
 def _condensation_rows(gamma, mpol, ntor):
@@ -205,7 +215,7 @@ def _condensation_rows(gamma, mpol, ntor):
 POLISH_FTOL = 1e-4
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
-CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/1"
+CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/2"
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
@@ -306,10 +316,8 @@ def solve_free_boundary_three_term(
 
     if bool(inp.lasym):
         raise NotImplementedError("the virtual-casing free boundary supports lasym = False only")
-    p_edge, p_max = _edge_pressure(inp)
-    if abs(p_edge) > 1e-8 * p_max:
-        raise ValueError(f"edge pressure is {p_edge:g} Pa: without a sheet current the "
-                         "boundary pressure must vanish")
+    if _edge_pressure_error(inp):
+        raise ValueError(_edge_pressure_error(inp))
     if external_field is None:  # tricubic: virtual casing samples between the mgrid planes, where the trilinear
         # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
         external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
@@ -420,6 +428,8 @@ class ThreeTermFreeBoundaryModel:
                             bootstrap=None if bootstrap is None else type(bootstrap).__name__,
                             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
                             fixed_boundary=bool(fixed_boundary), labelling=labelling)
+        if _edge_pressure_error(inp):
+            raise ValueError(_edge_pressure_error(inp))
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
@@ -820,10 +830,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
-        relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient
-        first polishes its trial with its own Jacobian.  With ``boundary_max_residual`` a fit that ends with
+        relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; every trial is then
+        re-solved tight, polished with its own Jacobian and certified before it has a value (one record per
+        design: a gradient never moves it).  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.  With ``boundary_xtol`` a gradient's certified fit must also be within that (scaled) length of
+        rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
@@ -897,13 +908,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
-        self._cache, self._anchor = {}, {}
+        self._cache, self._rejections, self._anchor = {}, {}, {}
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           max_condition=0.0)
         self._continuation = None
-        if self._solve(x0) is None:
-            raise VmecError("the seed design has no three-term free boundary")
-        self._continuation = self._checkpoint()
+        seed = self._solve(x0)
+        if seed is None:
+            raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
+        self._promote(seed)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
@@ -925,8 +937,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             else:
                 im._HOT_CACHE[cfg] = state
 
-    def _solve(self, x, starts=None):
-        """The trial at ``x`` (cached): boundary fit, state and rows, or ``None``.
+    def _solve(self, x, starts=None, polish=True):
+        """The trial at ``x`` (cached): its final record (:meth:`_finalize`), or ``None`` (the reason in
+        ``_rejections``).
 
         Every trial starts from the continuation of the accepted point, so neither a rejected trial nor the order
         of trials changes what a later trial starts from.
@@ -939,6 +952,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
+        if self._plasma.size:  # the plasma map may move the pressure: the problem needs it zero at the edge
+            error = _edge_pressure_error(self.model._im.input_with_params(self.model.fixed, params))
+            if error:
+                return self._reject(key, error)
         anchor, J = self._anchor, None
         if starts is not None:  # given starts (a restore: the saved boundary)
             anchor = {}
@@ -972,73 +989,55 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     continue
             break
         if fit is None:
-            self.stats["failed"] += 1
-            self._cache[key] = None
-            return None
+            return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
-        state, mask, params_b, tight = fit["aux"]
-        if not tight:  # values from the state its gradient will use: the fit's looser trial equilibrium, re-solved
-            solved = self.model.solve(params_b, seed=state)
-            if solved is None:
-                self.stats["failed"] += 1
-                self._cache[key] = None
-                return None
-            state, mask = solved
-            fit = dict(fit, aux=(state, mask, params_b, True), rows=np.asarray(self.model._rows(state, params_b, field)))
-        try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
-            values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
-        except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError
-            values = None
-        if values is None or not (np.all(np.isfinite(values)) and np.all(np.isfinite(fit["rows"]))):
-            self.stats["failed"] += 1
-            self._cache[key] = None
-            return None
-        self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
-        return self._cache[key]
-
-    def _record(self, x):
-        sol = self._solve(self._x(x))
-        if sol is None:
-            self.metadata["holder"]["failed_trials"] += 1
-            raise TrialRejected("no three-term free boundary at this design point")
+        try:
+            sol = self._finalize(x, params, field, fit, polish)
+        except TrialRejected as error:
+            return self._reject(key, str(error))
+        self._cache[key] = sol
         return sol
 
-    def _linearize(self, x, sol, polish=True):
-        """Every row's design gradient at ``sol`` (cached), re-solved tight and (``polish``) polished with its own
-        Jacobian."""
-        if "gradients" in sol:
-            return sol["gradients"]
-        model, xj = self.model, jnp.asarray(x)
-        field, nb = self.field(xj), model.x0.size
+    def _reject(self, key, reason):
+        self.stats["failed"] += 1
+        self._cache[key], self._rejections[key] = None, reason
+        return None
 
-        def tight():
-            extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+    def _finalize(self, x, params, field, fit, polish=True):
+        """A trial's one record: its fit re-solved to the deck's tolerance, polished with its own Jacobian
+        (``polish``), certified, and only then valued.  Every value, gradient, acceptance and checkpoint of ``x``
+        uses this record; differentiating it adds gradients and never moves its boundary.  Raises
+        :class:`~vmex.core.errors.TrialRejected`."""
+        model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
+        extra = self._plasma_directions(params, xj) if self._plasma.size else None
+
+        def tight(b, aux):
             try:  # the trial's state may not tighten to the deck's tolerance, or a row's own solve may fail
-                J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
-                state, mask, params, _ = aux
-                rows, values = np.asarray(model._rows(state, params, field)), np.asarray(self._rows(state, params, xj))
-            except (VmecError, RuntimeError) as error:
+                J, _, _, aux = model.linearize(b, aux, field, extra=extra)
+                state, mask, params_b, _ = aux
+                rows, values = np.asarray(model._rows(state, params_b, field)), np.asarray(self._rows(state, params_b, xj))
+            except (VmecError, RuntimeError) as error:  # RuntimeError: the relayed sentinel of a VmecError
                 raise TrialRejected(str(error)) from error
+            J = np.asarray(J)
             if not (np.all(np.isfinite(J)) and np.all(np.isfinite(rows)) and np.all(np.isfinite(values))):
-                raise TrialRejected("nonfinite rows or boundary Jacobian at the tightened state")
-            sol.update(aux=aux, state=state, mask=mask, params=params, rows=rows, values=values)
+                raise TrialRejected("nonfinite rows, values or boundary Jacobian at the tightened state")
             self.stats["linearizations"] += 1
-            return J
+            return dict(x=np.asarray(b), aux=aux, state=state, mask=mask, params=params_b, rows=rows, values=values,
+                        J=J)
 
-        J = tight()
-        polished = None
+        sol = dict(fit, **tight(fit["x"], fit["aux"]))
         if polish:
             try:  # a failed polish leaves the trial's own fit, which the certificate below still checks
-                polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb],
+                polished = model.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :nb],
                                                 ftol=POLISH_FTOL, max_nfev=20)
             except (VmecError, RuntimeError):
+                polished = None
                 self.stats["failed_polishes"] = self.stats.get("failed_polishes", 0) + 1
-        if polished is not None:
-            self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished is not None and polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
-            sol.update(x=polished["x"], aux=polished["aux"])  # the same fit, nearer its stationary point
-            J = tight()
-        J_b, J_p = J[:, :nb], J[:, nb:]
+            if polished is not None:
+                self.stats["boundary_evaluations"] += polished["nfev"]
+                if polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
+                    sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
+        J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
         self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
         if certificate["rank_deficient"]:
@@ -1050,6 +1049,31 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if self.boundary_xtol is not None and certificate["step"] > self.boundary_xtol:
             raise TrialRejected(f"boundary fit not stationary: its Gauss-Newton step is {certificate['step']:.2e} "
                                 f"(scaled) long, above boundary_xtol")
+        if self.boundary_max_residual is not None:  # on the final state, not the fit's trial one
+            residual = model.boundary_residual(sol["state"], sol["params"], field)
+            if max(residual.normal, residual.pressure, residual.sheet_current) > self.boundary_max_residual:
+                raise TrialRejected("the certified fit is not a free boundary: an interface residual is above "
+                                    "boundary_max_residual")
+        # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
+        sol.update(continuation=self._checkpoint(), anchor=dict(
+            x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=sol["state"],
+            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"]))
+        return sol
+
+    def _record(self, x):
+        x = np.asarray(self._x(x), dtype=float)
+        sol = self._solve(x)
+        if sol is None:
+            self.metadata["holder"]["failed_trials"] += 1
+            raise TrialRejected(self._rejections[x.tobytes()])
+        return sol
+
+    def _linearize(self, x, sol):
+        """Every row's design gradient at the record ``sol`` (cached): its certified Jacobian, one reverse pass."""
+        if "gradients" in sol:
+            return sol["gradients"]
+        xj, nb = jnp.asarray(x), self.model.x0.size
+        J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         state, params = sol["state"], sol["params"]
         try:
             params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -1063,13 +1087,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         gradients[:, self._plasma] -= lam.T @ J_p
         if not np.all(np.isfinite(gradients)):
             raise TrialRejected("nonfinite design gradient")
-        # Differentiation augments the trial's record; only acceptance (accept_x) makes it the anchor and the
-        # continuation that later trials start from.
-        sol.update(gradients=gradients, continuation=self._checkpoint(),
-                   anchor=dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
-                               params=params, cost=0.5 * sol["rows"] @ sol["rows"]))
-        if hasattr(self, "accepted") and np.array_equal(np.asarray(x, dtype=float), self.accepted.parameters):
-            self._promote(sol)
+        sol["gradients"] = gradients
         return gradients
 
     def _promote(self, sol):
@@ -1099,8 +1117,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
     def accept_x(self, x):
-        """Promote an evaluated point after the optimizer accepts it (its anchor and continuation, once it is
-        differentiated, become what later trials start from); drop the other trials."""
+        """Promote an evaluated point after the optimizer accepts it (its anchor and continuation become what
+        later trials start from); drop the other trials."""
         key = np.asarray(self._x(x), dtype=float).tobytes()
         if self._cache.get(key) is None:
             raise ValueError("evaluate the candidate before accepting it")
@@ -1152,16 +1170,20 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             boundary_xtol=self.boundary_xtol,
             design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
 
+    def _maps(self, x):
+        """Hash of what ``x`` maps to: its coil field and plasma parameters (the design maps of the problem)."""
+        xj = jnp.asarray(x, dtype=float)
+        return _fingerprint(self.field(xj), self._params_at(xj))
+
     def save_checkpoint(self, path):
         """Save the accepted point (``.npz``): its design, certified boundary and interior state, values and
         certificate, and the problem's definition.  :meth:`restore_checkpoint` re-solves it; the optimizer's own
         history is not saved, so a restart is a warm restart of the accepted equilibrium."""
         x = self.accepted.parameters
         sol = self._record(x)
-        self._linearize(x, sol)
         leaves = jax.tree.leaves(sol["state"])
         meta = dict(schema=CHECKPOINT_SCHEMA, accepted_step=self.accepted_step, definition=self._definition(),
-                    certificate=sol.get("certificate"), state_leaves=len(leaves))
+                    maps=self._maps(x), certificate=sol.get("certificate"), state_leaves=len(leaves))
         np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
                  meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
 
@@ -1184,25 +1206,34 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if differ:
             raise ValueError(f"the checkpoint is of a different problem: {', '.join(differ)} differ")
         model, x = self.model, np.asarray(data["x"], dtype=float)
+        if meta["maps"] != self._maps(x):
+            raise ValueError("the checkpoint is of a different problem: its design's coil field or plasma "
+                             "parameters differ")
         state = jax.tree.unflatten(jax.tree.structure(model.seed[0]),
                                    [jnp.asarray(data[f"state{i}"]) for i in range(meta["state_leaves"])])
-        self._continuation = dict(linearization=None, radius=None,
-                                  hot={cfg: state for cfg in {model.cfg, model.cfg_trial}})
-        self._cache.pop(x.tobytes(), None)
-        self._restore(self._continuation)
-        b, xj = np.asarray(data["b"], dtype=float), jnp.asarray(x)
-        got = model.evaluate(b, self._params_at(xj), self.field(xj), seed=state, tight=True)
-        if got is None:
-            raise VmecError("the checkpoint's boundary has no certified equilibrium from its saved state")
-        rows, aux = got
-        st, mk, params_b, _ = aux
-        sol = dict(x=b, rows=rows, aux=aux, nfev=1, njev=0, accepted=0, converged=True, radius=None, reason="restored",
-                   state=st, mask=mk, params=params_b, values=np.asarray(self._rows(st, params_b, xj)))
-        self._linearize(x, sol, polish=False)
-        saved = np.asarray(data["values"])
-        change = float(np.max(np.abs(sol["values"] - saved) / np.maximum(np.abs(saved), 1e-300)))
-        if not change <= rtol:
-            raise VmecError(f"the restored equilibrium changes the saved values by {change:.2e} (> {rtol:g})")
+        previous = self._continuation  # back in place unless the saved point restores and validates
+        self._restore(dict(linearization=None, radius=None, hot={cfg: state for cfg in {model.cfg, model.cfg_trial}}))
+        try:
+            b, xj = np.asarray(data["b"], dtype=float), jnp.asarray(x)
+            params, field = self._params_at(xj), self.field(xj)
+            got = model.evaluate(b, params, field, seed=state, tight=True)
+            if got is None:
+                raise VmecError("the checkpoint's boundary has no certified equilibrium from its saved state")
+            rows, aux = got
+            fit = dict(x=b, rows=rows, aux=aux, nfev=1, njev=0, accepted=0, converged=True, radius=None,
+                       reason="restored")
+            try:
+                sol = self._finalize(x, params, field, fit, polish=False)
+            except TrialRejected as error:
+                raise VmecError(f"the checkpoint's boundary is not certified: {error}") from error
+            saved = np.asarray(data["values"])
+            change = float(np.max(np.abs(sol["values"] - saved) / np.maximum(np.abs(saved), 1e-300)))
+            if not change <= rtol:
+                raise VmecError(f"the restored equilibrium changes the saved values by {change:.2e} (> {rtol:g})")
+        except Exception:
+            if previous is not None:
+                self._restore(previous)
+            raise
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), int(meta["accepted_step"])
         self._promote(sol)
         self._cache = {x.tobytes(): sol}

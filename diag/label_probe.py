@@ -473,8 +473,121 @@ def kkt(problem, constraints=(), **_):
     sys.exit(0)
 
 
+def stall(problem, **_):
+    """Why a boundary fit stalls (review 2026-10-21, section 6.4), at the restart design.
+
+    1. Replay: the trial fit, then a fit with every residual solved to the deck's tolerance (cfg_trial = cfg), from
+       the trial fit's boundary (ftol 1e-12, up to STALL_MAX_NFEV evaluations).
+    2. At that fit's end, with its own (tight) Jacobian: the Gauss-Newton step p and the three weakest right singular
+       vectors.  Along each: central differences of the rows against J d over step lengths (Jacobian accuracy), the
+       normal share of the boundary motion and its normal displacement over the minor radius.
+    3. Along p: predicted (|r + a J p|^2) against actual cost over a in 1 .. 1e-3, split into interface, labelling
+       and the other rows."""
+    import jax.numpy as jnp
+    from vmex.core.optimize import boundary_arrays_from_x
+
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    nb, scale = model.n_boundary, np.asarray(model.x_scale)
+    xj = jnp.asarray(x0)
+    field, P = problem.field(xj), problem._params_at(xj)
+    sol = problem._solve(x0)
+    report = dict(trial=dict(reason=sol.get("reason"), nfev=int(sol.get("nfev", -1)),
+                             cost=float(sol["rows"] @ sol["rows"])))
+    model.cfg_trial = model.cfg  # every residual tight from here on
+    t0 = time.time()
+    fit = model.solve_boundary(P, field, x0=sol["x"], ftol=1e-12, jacobian_ftol=1e-12,
+                               max_nfev=int(os.environ.get("STALL_MAX_NFEV", "200")), refresh_on_stall=True)
+    b, aux = np.asarray(fit["x"]), fit["aux"]
+    state, _, params_b, _ = aux
+    J = np.asarray(model.linearize(b, aux, field)[0])[:, :nb]
+    model._last_linearize = None
+    r = np.asarray(model._rows(state, params_b, field))
+    values, _ = model._terms(state, params_b, field)
+    n = int(np.asarray(values)[0].size)
+    blocks = dict(interface=slice(0, 5 * n), label=slice(5 * n, 6 * n), other=slice(6 * n, r.size))
+    split = lambda v: {k: float(v[s] @ v[s]) for k, s in blocks.items()}  # noqa: E731
+    Js = J[:, :nb] * scale[None, :nb]
+    U, sv, Vt = np.linalg.svd(Js, full_matrices=False)
+    p_s = -np.linalg.lstsq(Js, r, rcond=None)[0]
+    report["tight_fit"] = dict(reason=fit.get("reason"), nfev=int(fit["nfev"]), njev=int(fit.get("njev", -1)),
+                               seconds=time.time() - t0, cost=float(r @ r), cost_split=split(r),
+                               boundary_move=float(np.linalg.norm((b - sol["x"])[:nb] / scale[:nb])),
+                               gn_step=float(np.linalg.norm(p_s)), condition=float(sv[0] / sv[-1]),
+                               singular_values_low=sv[-6:].tolist(), singular_values_high=sv[:3].tolist(),
+                               stationarity=float(np.linalg.norm(Js.T @ r) / (sv[0] * np.linalg.norm(r))))
+    print(json.dumps(report), flush=True)
+
+    nfp, ntor = int(model.fixed.nfp), int(model.fixed.ntor)
+    theta, phi = np.meshgrid(np.linspace(0, 2 * np.pi, 96, endpoint=False),
+                             np.linspace(0, 2 * np.pi / nfp, 64, endpoint=False), indexing="ij")
+
+    def surface(x):
+        rbc, zbs = (np.asarray(a) for a in boundary_arrays_from_x(model.fixed, x[:nb], model.max_mode,
+                                                                  vary_major_radius=True))
+        R = Z = Rt = Zt = Rp = Zp = 0.0
+        for i in range(rbc.shape[0]):
+            for m in range(rbc.shape[1]):
+                arg = m * theta - (i - ntor) * nfp * phi
+                c, s = np.cos(arg), np.sin(arg)
+                R, Z = R + rbc[i, m] * c, Z + zbs[i, m] * s
+                Rt, Zt = Rt - m * rbc[i, m] * s, Zt + m * zbs[i, m] * c
+                Rp, Zp = Rp + (i - ntor) * nfp * rbc[i, m] * s, Zp - (i - ntor) * nfp * zbs[i, m] * c
+        return R, Z, Rt, Zt, Rp, Zp, float(rbc[ntor, 1])
+
+    R, Z, Rt, Zt, Rp, Zp, minor = surface(b)
+    # (R, phi, Z) components: X_theta = (Rt, 0, Zt), X_phi = (Rp, R, Zp); n = X_theta x X_phi
+    nvec = np.stack([-Zt * R, Zt * Rp - Rt * Zp, Rt * R])
+    nvec /= np.linalg.norm(nvec, axis=0)
+
+    def motion(d):
+        Rd, Zd = (a - c for a, c in zip(surface(b + d)[:2], (R, Z)))
+        normal = Rd * nvec[0] + Zd * nvec[2]
+        return dict(normal_share=float(np.sqrt(np.mean(normal**2) / np.mean(Rd**2 + Zd**2))),
+                    normal_rms_over_a=float(np.sqrt(np.mean(normal**2)) / abs(minor)),
+                    normal_max_over_a=float(np.max(np.abs(normal)) / abs(minor)))
+
+    def rows_at(x):
+        got = model.evaluate(x, P, field, tight=True)
+        return None if got is None else np.asarray(got[0])
+
+    directions = dict(gn=p_s * scale[:nb], **{f"weak{k}": Vt[-1 - k] * scale[:nb] for k in range(3)})
+    report["directions"] = {}
+    for name, d in directions.items():
+        d = np.r_[d, np.zeros(b.size - nb)]
+        Jd, entry = J @ d, dict(scaled_length=float(np.linalg.norm(d[:nb] / scale[:nb])), **motion(d))
+        unit = d / entry["scaled_length"]
+        for t in (1e-1, 1e-2, 1e-3, 1e-4):
+            hi, lo = rows_at(b + t * unit), rows_at(b - t * unit)
+            if hi is None or lo is None:
+                entry[f"fd_{t:g}"] = "failed"
+                continue
+            fd = (hi - lo) / (2 * t)
+            Ju = Jd / entry["scaled_length"]
+            entry[f"fd_{t:g}"] = dict(rel_error=float(np.linalg.norm(fd - Ju) / np.linalg.norm(Ju)),
+                                      **{f"rel_error_{k}": float(np.linalg.norm((fd - Ju)[s]) /
+                                                                 max(np.linalg.norm(Ju[s]), 1e-300))
+                                         for k, s in blocks.items()})
+        report["directions"][name] = entry
+        print(json.dumps({name: entry}), flush=True)
+
+    p = np.r_[p_s * scale[:nb], np.zeros(b.size - nb)]
+    Jp, line = J @ p, []
+    for a in (1.0, 0.5, 0.25, 0.1, 0.03, 0.01, 1e-3):
+        actual = rows_at(b + a * p)
+        predicted = r + a * Jp
+        line.append(dict(a=a, predicted=float(predicted @ predicted), predicted_split=split(predicted),
+                         actual=None if actual is None else float(actual @ actual),
+                         actual_split=None if actual is None else split(actual)))
+        print(json.dumps(line[-1]), flush=True)
+    report["line"], report["cost0"] = line, float(r @ r)
+    (out / "stall.json").write_text(json.dumps(report, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
+elif mode == "stall":
+    opt.minimize = stall
 elif mode == "cold":
     opt.minimize = cold
 elif mode == "noise":

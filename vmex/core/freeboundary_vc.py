@@ -211,7 +211,7 @@ def _condensation_rows(gamma, mpol, ntor):
     return jnp.concatenate([jnp.real(rows).ravel(), jnp.imag(rows).ravel()])
 
 
-#: Relative cost change at which a gradient's polish of its trial fit stops (with the trial's own Jacobian).
+#: Stationarity (the gain a Gauss-Newton step predicts) a trial's polish rounds aim at.
 POLISH_FTOL = 1e-4
 #: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
 POLISH_ROUNDS = 5
@@ -953,8 +953,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         key = np.asarray(x, dtype=float).tobytes()
         if key in self._cache:
             return self._cache[key]
-        if self._continuation is not None:
-            self._restore(self._continuation)
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
@@ -974,6 +972,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             starts = [None]
         fit = None
         for start in starts:
+            if self._continuation is not None:  # every start from the accepted point's continuation
+                self._restore(self._continuation)
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev, refresh_on_stall=True,
@@ -1032,20 +1032,21 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                         J=J)
 
         sol = dict(fit, **tight(fit["x"], fit["aux"]))
-        gate = max(self.boundary_ftol, POLISH_FTOL)  # what the fit and polish aim at
+        gate = max(self.boundary_ftol, POLISH_FTOL)  # beyond it a fit is rejected; the polish aims at POLISH_FTOL
         for round_ in range(POLISH_ROUNDS + 1):
             J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
             sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
             self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
             if certificate["rank_deficient"]:
                 raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
-            stationary = certificate["stationarity"] <= gate and (self.boundary_xtol is None
-                                                                  or certificate["step"] <= self.boundary_xtol)
-            if stationary or not polish or round_ == POLISH_ROUNDS:
+            done = certificate["stationarity"] <= POLISH_FTOL and (self.boundary_xtol is None
+                                                                   or certificate["step"] <= self.boundary_xtol)
+            if done or not polish or round_ == POLISH_ROUNDS:
                 break
-            # Not there yet: polish with this (fresh, tight) Jacobian, to a tenth of the gate, and certify again.
+            # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
             try:
-                polished = model.solve_boundary(params, field, x0=sol["x"], jacobian=J_b, ftol=0.1 * gate, max_nfev=20)
+                polished = model.solve_boundary(params, field, x0=sol["x"], jacobian=J_b, ftol=0.1 * POLISH_FTOL,
+                                                max_nfev=20)
             except (VmecError, RuntimeError):
                 self.stats["failed_polishes"] = self.stats.get("failed_polishes", 0) + 1
                 break

@@ -558,10 +558,11 @@ def stall(problem, **_):
         got = model.evaluate(x, P, field, tight=True)
         return None if got is None else np.asarray(got[0])
 
-    if os.environ.get("STALL_MODE") == "project":  # the GN boundary step with the other coordinates re-solved
+    if os.environ.get("STALL_MODE") in ("project", "project_stale"):  # the GN boundary step, other coordinates re-solved
         p = p_s * scale
+        stale = os.environ["STALL_MODE"] == "project_stale"  # with the start point's knot columns, no new Jacobian
         report["project"] = []
-        for a in (1.0, 0.5, 0.25):
+        for a in (1.0, 0.5, 0.25, 0.1):
             x = b.copy()
             x[:nb] += a * p[:nb]  # the boundary part of the step only
             for k in range(4):
@@ -574,8 +575,11 @@ def stall(problem, **_):
                 print(json.dumps(report["project"][-1]), flush=True)
                 if k == 3:
                     break
-                Jk = np.asarray(model.linearize(x, aux_k, field)[0])[:, nb:nall]
-                model._last_linearize = None
+                if stale:
+                    Jk = J[:, nb:nall]
+                else:
+                    Jk = np.asarray(model.linearize(x, aux_k, field)[0])[:, nb:nall]
+                    model._last_linearize = None
                 x[nb:] -= np.linalg.lstsq(Jk, rows, rcond=None)[0]
         (out / "stall.json").write_text(json.dumps(report, indent=1))
         sys.exit(0)

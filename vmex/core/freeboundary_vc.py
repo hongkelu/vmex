@@ -741,13 +741,15 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, refresh_on_stall=False, verbose=0):
+                       target_cost=None, refresh_on_stall=False, tight=False, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`);
         with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
+        ``tight`` evaluates every point at the deck's tolerance instead of the trial one (:meth:`certify`'s polish:
+        the stiff bootstrap rows amplify a trial state's error far above a certificate's gate).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -756,10 +758,10 @@ class ThreeTermFreeBoundaryModel:
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
         if jacobian is not None:
-            first = self.evaluate(x, params, field)
+            first = self.evaluate(x, params, field, tight=tight)
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
-            out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
+            out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, *first, jacobian,
                                        ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
@@ -767,7 +769,7 @@ class ThreeTermFreeBoundaryModel:
                 return dict(out, jacobian=jacobian, njev=0)
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
-            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
+            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux1, J1,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
@@ -777,7 +779,7 @@ class ThreeTermFreeBoundaryModel:
         memo = {}
 
         def fun(z):
-            got = self.evaluate(z, params, field)
+            got = self.evaluate(z, params, field, tight=tight)
             if got is None:  # no state here: a Jacobian asked at z must not linearize another point's state
                 memo.update(key=z.tobytes(), rows=None, aux=None)
                 return np.full(memo.get("size", 1), 1e6)
@@ -801,12 +803,12 @@ class ThreeTermFreeBoundaryModel:
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
-        out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
+        out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), fit.x, memo["rows"], memo["aux"], J,
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
-            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
+            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux, J,
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
             self._radius, njev = again["radius"], njev + 1
             # Still stalled on a fresh Jacobian: possibly stationary, but only a certificate at the final state
@@ -856,8 +858,11 @@ class ThreeTermFreeBoundaryModel:
                 break
             # Not there yet: polish with this (fresh, tight) Jacobian, to a tenth of the gate, and certify again.
             try:
+                # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones
+                # (QH 2.5%: trial FTOL 1e-11 against the deck's 1e-15) Redl's target differs enough that the
+                # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
                 polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
-                                               ftol=0.1 * gate, max_nfev=20)
+                                               ftol=0.1 * gate, max_nfev=20, tight=True)
             except (VmecError, RuntimeError):
                 stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
                 break

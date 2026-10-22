@@ -1287,11 +1287,13 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
-        pin_profiles(args.restart)
+        if args.bootstrap:  # kinetic profiles exist only for bootstrap runs
+            pin_profiles(args.restart)
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
-        pin_profiles(args.seed_run)
+        if args.bootstrap:  # kinetic profiles exist only for bootstrap runs
+            pin_profiles(args.seed_run)
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"

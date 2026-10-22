@@ -1,0 +1,12 @@
+alpha -0.50: fsq 3.766e-13 1.049e-14 1.780e-14
+alpha  0.00: fsq 9.541e-14 3.224e-15 5.120e-15
+alpha  0.25: fsq 2.549e-14 1.224e-15 1.685e-15
+alpha  0.50: fsq 2.503e-15 2.775e-16 1.741e-16
+alpha  0.75: fsq 2.642e-14 3.777e-16 5.810e-16
+alpha  1.00: fsq 9.727e-14 1.537e-15 2.900e-15
+alpha  1.50: fsq 3.803e-13 7.166e-15 1.325e-14
+restart from alpha 0.25: to cold 4.30e-05 (iota 1.3e-06), to warm 1.29e-04 (iota 3.8e-06)
+restart from alpha 0.5: to cold 8.61e-05 (iota 2.5e-06), to warm 8.61e-05 (iota 2.5e-06)
+restart from alpha 0.75: to cold 1.29e-04 (iota 3.8e-06), to warm 4.30e-05 (iota 1.3e-06)
+cold vs warm 1.72e-04 (iota 5.0e-06); cold repeat 0.00e+00
+EXIT 0

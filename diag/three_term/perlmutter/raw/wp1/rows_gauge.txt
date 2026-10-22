@@ -1,0 +1,3 @@
+plain {'near_vs_cold_rows_max_rel': 0.0013770517572704506, 'perturbed_vs_cold_rows_max_rel': 0.0006825886023308791}
+gauged {'cold_condition_after': 2.7755575615628914e-17, 'near_condition_after': 2.7755575615628914e-17, 'perturbed_condition_after': 1.734723475976807e-17, 'near_vs_cold_rows_max_rel': 0.0010658642678561161, 'perturbed_vs_cold_rows_max_rel': 0.0006347345427129985}
+EXIT 0

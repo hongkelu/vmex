@@ -1,0 +1,8 @@
+   1 round     r0 cost 1.1124e-07 gain 7.516e-04 cond 1.18e+05 B.n 2.246e-04 pressure 1.500e-04 K 2.739e-04 GN normal/a 2.04e-05 loss 0.466340
+   2 round     r1 cost 1.1117e-07 gain 5.447e-04 cond 1.17e+05 B.n 2.246e-04 pressure 1.496e-04 K 2.738e-04 GN normal/a 1.93e-05 loss 0.466352 dvalues 3.7e-03
+   3 round     r2 cost 1.1114e-07 gain 4.756e-04 cond 1.17e+05 B.n 2.246e-04 pressure 1.495e-04 K 2.738e-04 GN normal/a 1.43e-05 loss 0.466343 dvalues 1.8e-03
+   4 round     r3 cost 1.1112e-07 gain 3.968e-04 cond 1.16e+05 B.n 2.246e-04 pressure 1.494e-04 K 2.738e-04 GN normal/a 1.29e-05 loss 0.466338 dvalues 1.2e-03
+   5 round     r4 cost 1.1108e-07 gain 2.373e-04 cond 1.15e+05 B.n 2.246e-04 pressure 1.491e-04 K 2.738e-04 GN normal/a 1.33e-05 loss 0.466327 dvalues 2.1e-03
+   6 round     r5 cost 1.1105e-07 gain 1.323e-04 cond 1.14e+05 B.n 2.247e-04 pressure 1.490e-04 K 2.738e-04 GN normal/a 1.17e-05 loss 0.466317 dvalues 1.6e-03
+   7 certified r6 cost 1.1105e-07 gain 1.323e-04 cond 1.14e+05 B.n 2.247e-04 pressure 1.490e-04 K 2.738e-04
+status: certified

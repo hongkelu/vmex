@@ -1,0 +1,8 @@
+   1 round     r0 cost 1.5542e-08 gain 9.717e-02 cond 5.09e+05 B.n 4.719e-05 pressure 3.349e-05 K 5.732e-05 GN normal/a 3.14e-05 loss 0.079297
+   2 round     r1 cost 1.5132e-08 gain 8.139e-02 cond 4.98e+05 B.n 4.641e-05 pressure 3.277e-05 K 5.663e-05 GN normal/a 2.43e-05 loss 0.079292 dvalues 1.6e-04
+   3 round     r2 cost 1.4891e-08 gain 7.166e-02 cond 4.82e+05 B.n 4.628e-05 pressure 3.298e-05 K 5.672e-05 GN normal/a 2.19e-05 loss 0.079290 dvalues 6.4e-05
+   4 round     r3 cost 1.4690e-08 gain 6.284e-02 cond 4.67e+05 B.n 4.642e-05 pressure 3.315e-05 K 5.690e-05 GN normal/a 1.82e-05 loss 0.079289 dvalues 2.6e-05
+   5 round     r4 cost 1.4517e-08 gain 5.504e-02 cond 4.55e+05 B.n 4.680e-05 pressure 3.341e-05 K 5.729e-05 GN normal/a 1.69e-05 loss 0.079289 dvalues 2.8e-05
+   6 round     r5 cost 1.4364e-08 gain 4.811e-02 cond 4.48e+05 B.n 4.731e-05 pressure 3.373e-05 K 5.783e-05 GN normal/a 1.56e-05 loss 0.079289 dvalues 2.5e-05
+   7 rejected  r6 cost 1.4364e-08 gain 4.811e-02 cond 4.48e+05 B.n 4.731e-05 pressure 3.373e-05 K 5.783e-05 | boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 4.81e-02 of the cost and moves the boundary
+status: rejected

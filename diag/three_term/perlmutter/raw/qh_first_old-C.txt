@@ -1,0 +1,3 @@
+TREE 095edbec Thu Oct 22 08:30:47 AM PDT 2026
+    raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
+vmex.core.errors.VmecError: the seed design has no three-term free boundary: boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 9.92e-01 of the cost

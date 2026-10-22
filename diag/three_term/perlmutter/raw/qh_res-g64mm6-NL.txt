@@ -1,0 +1,41 @@
+POLISH_ROUNDS 12
+MAX_MODE 6
+[lm] reason stalled nfev 34 accepted 4 cost 2.225927e-06 project True misses 0
+[lm] reason stalled nfev 24 accepted 6 cost 1.054014e-06 project True misses 0
+[trajectory] cost 5.317939e-05 B.n 9.50202e-04 K 9.61184e-04 loss 6.56967753e-01
+[cert 1] cost 5.317939e-05 stationarity 9.874e-01 step 3.380e-01 condition 9.442e+06 normal_step 0.001894172208642073
+[lm] reason stalled nfev 16 accepted 4 cost 8.045348e-07 project True misses 0
+[trajectory] cost 8.045348e-07 B.n 7.73501e-04 K 8.44416e-04 loss 6.63482380e-01; values rel change 9.916e-03 (loss 9.916e-03)
+[cert 2] cost 8.045348e-07 stationarity 2.941e-01 step 2.540e-01 condition 7.350e+06 normal_step 0.0012937850999881393
+[lm] reason stalled nfev 15 accepted 3 cost 6.381957e-07 project True misses 0
+[trajectory] cost 6.381957e-07 B.n 6.93436e-04 K 7.51308e-04 loss 6.62711152e-01; values rel change 3.136e-03 (loss 1.162e-03)
+[cert 3] cost 6.381957e-07 stationarity 1.735e-01 step 1.789e-01 condition 7.825e+06 normal_step 0.0008455795965672456
+[lm] reason stalled nfev 12 accepted 3 cost 5.678115e-07 project True misses 0
+[trajectory] cost 5.678115e-07 B.n 6.43821e-04 K 7.13685e-04 loss 6.65789559e-01; values rel change 4.645e-03 (loss 4.645e-03)
+[cert 4] cost 5.678115e-07 stationarity 8.876e-02 step 1.669e-01 condition 7.888e+06 normal_step 0.0006376718150596906
+[lm] reason stalled nfev 9 accepted 2 cost 5.384837e-07 project True misses 0
+[trajectory] cost 5.384837e-07 B.n 6.28221e-04 K 6.97444e-04 loss 6.65432041e-01; values rel change 2.405e-03 (loss 5.370e-04)
+[cert 5] cost 5.384837e-07 stationarity 5.737e-02 step 1.288e-01 condition 8.146e+06 normal_step 0.0003492643381403881
+[lm] reason stalled nfev 10 accepted 2 cost 5.197597e-07 project True misses 0
+[trajectory] cost 5.197597e-07 B.n 6.19045e-04 K 6.87019e-04 loss 6.66624656e-01; values rel change 1.792e-03 (loss 1.792e-03)
+[cert 6] cost 5.197597e-07 stationarity 3.607e-02 step 9.773e-02 condition 8.203e+06 normal_step 0.0002356114556785645
+[lm] reason stalled nfev 10 accepted 2 cost 5.081039e-07 project True misses 0
+[trajectory] cost 5.081039e-07 B.n 6.13945e-04 K 6.80973e-04 loss 6.67328727e-01; values rel change 2.194e-03 (loss 1.056e-03)
+[cert 7] cost 5.081039e-07 stationarity 1.884e-02 step 4.321e-02 condition 7.982e+06 normal_step 0.0001544839336112153
+[lm] reason stalled nfev 8 accepted 2 cost 5.018304e-07 project True misses 0
+[trajectory] cost 5.018304e-07 B.n 6.10155e-04 K 6.77763e-04 loss 6.67640340e-01; values rel change 1.426e-03 (loss 4.670e-04)
+[cert 8] cost 5.018304e-07 stationarity 1.100e-02 step 3.504e-02 condition 7.899e+06 normal_step 0.00010931924768198842
+[lm] reason stalled nfev 7 accepted 2 cost 4.974341e-07 project True misses 0
+[trajectory] cost 4.974341e-07 B.n 6.08239e-04 K 6.75735e-04 loss 6.68180501e-01; values rel change 1.775e-03 (loss 8.091e-04)
+[cert 9] cost 4.974341e-07 stationarity 6.244e-03 step 2.203e-02 condition 7.941e+06 normal_step 9.880745685613898e-05
+[lm] reason stalled nfev 7 accepted 3 cost 4.941557e-07 project True misses 0
+[trajectory] cost 4.941557e-07 B.n 6.05762e-04 K 6.73350e-04 loss 6.68833217e-01; values rel change 9.769e-04 (loss 9.769e-04)
+[cert 10] cost 4.941557e-07 stationarity 5.073e-03 step 1.730e-02 condition 7.945e+06 normal_step 0.00015545878710586502
+[lm] reason ftol nfev 5 accepted 2 cost 4.909129e-07 project True misses 0
+[trajectory] cost 4.909129e-07 B.n 6.06117e-04 K 6.71735e-04 loss 6.69694907e-01; values rel change 1.288e-03 (loss 1.288e-03)
+[cert 11] cost 4.909129e-07 stationarity 1.435e-03 step 1.456e-02 condition 7.976e+06 normal_step 5.086511206052773e-05
+[lm] reason ftol nfev 5 accepted 2 cost 4.898395e-07 project True misses 0
+[trajectory] cost 4.898395e-07 B.n 6.05693e-04 K 6.70845e-04 loss 6.69960694e-01; values rel change 3.969e-04 (loss 3.969e-04)
+[cert 12] cost 4.898395e-07 stationarity 9.278e-04 step 1.419e-02 condition 7.964e+06 normal_step 7.232581170017749e-05
+[model] 169 boundary and 53 bootstrap-current coordinates, 229 design coordinates; built in 2179 s
+[step 0] QH=1.339921e+00 iota=1.14317 vacuum iota=1.0770 (axis 1.0773) B_axis=0.99896 iota_I=0.1892 DMerc_min=-709.204 R=1.00011 aspect=8.0052 clearance=0.1505 coil_slack=-0.0299 redl(max rel)=5.8e-10 B.n=6.1e-04 K=6.7e-04 label_ratio=7.99 cond=645543 0.3s (trials 1, boundary evaluations 173, peak 4.2 GiB)

@@ -426,7 +426,7 @@ def _short_trial_fits(monkeypatch, model):
 
     def short(params, field, **kwargs):
         fit = solve_boundary(params, field, **kwargs)
-        if kwargs.get("ftol") == fvc.POLISH_FTOL:
+        if not kwargs.get("refresh_on_stall"):  # a polish, not a trial's fit
             return fit
         x = fit["x"] + 1e-3 * np.asarray(model.x_scale)
         rows, aux = model.evaluate(x, params, field)

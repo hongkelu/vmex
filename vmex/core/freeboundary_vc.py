@@ -213,6 +213,8 @@ def _condensation_rows(gamma, mpol, ntor):
 
 #: Relative cost change at which a gradient's polish of its trial fit stops (with the trial's own Jacobian).
 POLISH_FTOL = 1e-4
+#: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
+POLISH_ROUNDS = 5
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/2"
@@ -1030,23 +1032,29 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                         J=J)
 
         sol = dict(fit, **tight(fit["x"], fit["aux"]))
-        if polish:
-            try:  # a failed polish leaves the trial's own fit, which the certificate below still checks
-                polished = model.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :nb],
-                                                ftol=POLISH_FTOL, max_nfev=20)
+        gate = max(self.boundary_ftol, POLISH_FTOL)  # what the fit and polish aim at
+        for round_ in range(POLISH_ROUNDS + 1):
+            J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
+            sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
+            self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
+            if certificate["rank_deficient"]:
+                raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
+            stationary = certificate["stationarity"] <= gate and (self.boundary_xtol is None
+                                                                  or certificate["step"] <= self.boundary_xtol)
+            if stationary or not polish or round_ == POLISH_ROUNDS:
+                break
+            # Not there yet: polish with this (fresh, tight) Jacobian, to a tenth of the gate, and certify again.
+            try:
+                polished = model.solve_boundary(params, field, x0=sol["x"], jacobian=J_b, ftol=0.1 * gate, max_nfev=20)
             except (VmecError, RuntimeError):
-                polished = None
                 self.stats["failed_polishes"] = self.stats.get("failed_polishes", 0) + 1
-            if polished is not None:
-                self.stats["boundary_evaluations"] += polished["nfev"]
-                if polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
-                    sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
-        J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
-        sol["certificate"] = certificate = _fit_certificate(J_b * np.asarray(model.x_scale)[None], sol["rows"])
-        self.stats["max_condition"] = max(self.stats["max_condition"], certificate["condition"])
-        if certificate["rank_deficient"]:
-            raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
-        if certificate["stationarity"] > max(self.boundary_ftol, POLISH_FTOL):  # what the fit and polish aimed at
+                break
+            self.stats["boundary_evaluations"] += polished["nfev"]
+            if not polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
+                break  # the polish gains nothing: the certificate below decides
+            sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
+            self.stats["polish_rounds"] = self.stats.get("polish_rounds", 0) + 1
+        if certificate["stationarity"] > gate:
             raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
                                 f"{certificate['stationarity']:.2e} of the cost")
         self.stats["max_step"] = max(self.stats.get("max_step", 0.0), certificate["step"])

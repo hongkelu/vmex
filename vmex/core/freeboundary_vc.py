@@ -904,16 +904,21 @@ class ThreeTermFreeBoundaryModel:
             settled = certificate["stationarity"] <= gate or (
                 normal_tol is not None and certificate["normal_step"] is not None
                 and certificate["normal_step"] <= normal_tol)
-            stationary = settled and (xtol is None or certificate["step"] <= xtol)
-            if stationary or not polish or round_ == POLISH_ROUNDS:
+            # The polish aims at POLISH_FTOL; the gate (or normal_tol) only decides rejection below (#121 7d73da7:
+            # stopping at the gate left most trials at 1e-3 and the plasma-map derivative test 1.8% off).
+            done = (certificate["stationarity"] <= min(gate, POLISH_FTOL)
+                    or (settled and certificate["stationarity"] > gate)) and (
+                xtol is None or certificate["step"] <= xtol)
+            if done or not polish or round_ == POLISH_ROUNDS:
                 break
-            # Not there yet: polish with this (fresh, tight) Jacobian, to a tenth of the gate, and certify again.
+            # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
             try:
                 # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones
                 # (QH 2.5%: trial FTOL 1e-11 against the deck's 1e-15) Redl's target differs enough that the
                 # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
                 polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
-                                               ftol=0.1 * gate, max_nfev=POLISH_MAX_NFEV, tight=True)
+                                               ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
+                                               tight=True)
             except (VmecError, RuntimeError):
                 stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
                 break

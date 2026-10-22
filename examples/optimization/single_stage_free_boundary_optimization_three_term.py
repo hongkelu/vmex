@@ -137,6 +137,9 @@ FORCE_LIMIT, CONDUCTOR_RADIUS, FORCE_MARGIN = None, 0.01, 1e-3  # N/m, m, relati
 FORCE_POINTS = 128  # samples per coil of the force rows (targets and sources)
 # Set: one row on the total length of the base coils (one half period) instead of a row per coil.
 TOTAL_LENGTH_LIMIT = None  # m
+# Set: the loss adds LENGTH_WEIGHT / 2 (L / L0)^2, L the summed base-coil length (one half period) and L0 the
+# starting design's (--length-weight); 0: no penalty.
+LENGTH_WEIGHT = 0.0
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -1092,6 +1095,8 @@ def parse_args(argv=None):
     parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
                         "(curvature, coil-coil and self distance) instead of each coil's extreme")
     parser.add_argument("--length-limit", type=float, help="per-coil length limit in m (default: the case's)")
+    parser.add_argument("--length-weight", type=float, help="weight w of the loss term w/2 (L/L0)^2 on the summed "
+                        "base-coil length L (L0: the starting design's); default 0")
     parser.add_argument("--total-length-limit", type=float, help="limit on the summed length of the base coils (one "
                         "half period), m; replaces the per-coil length rows")
     parser.add_argument("--curvature-limit", type=float, help="peak curvature limit in 1/m (default: the case's)")
@@ -1290,7 +1295,7 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT
+    global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT, LENGTH_WEIGHT
     args = parse_args(argv)
     LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
     CURVATURE_LIMIT = args.curvature_limit or CURVATURE_LIMIT
@@ -1298,6 +1303,7 @@ def main(argv=None):
     FORCE_LIMIT = args.force_limit or FORCE_LIMIT
     CONDUCTOR_RADIUS = args.conductor_radius or CONDUCTOR_RADIUS
     TOTAL_LENGTH_LIMIT = args.total_length_limit or TOTAL_LENGTH_LIMIT
+    LENGTH_WEIGHT = args.length_weight or LENGTH_WEIGHT
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:
@@ -1382,10 +1388,18 @@ def main(argv=None):
     def extension_cost(state, runtime):
         return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
 
+    length0 = float(jnp.sum(resampled(chart.coils_from_x(chart.x0), CURVATURE_POINTS, symmetric=False).length))
+
+    def length_cost(x):
+        if not LENGTH_WEIGHT:
+            return 0.0
+        length = jnp.sum(resampled(chart.coils_from_x(x), CURVATURE_POINTS, symmetric=False).length)
+        return 0.5 * LENGTH_WEIGHT * (length / length0) ** 2
+
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
-        return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
+        return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime) + length_cost(x)
 
     def clearance(state, runtime, x):
         return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
@@ -1487,7 +1501,10 @@ def main(argv=None):
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
         ext_values, ext_cost = extension_values(state_x, params_x)
         row = dict(step=problem.accepted_step,
-                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
+                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost)
+                   - 2 * float(length_cost(jnp.asarray(x))),
+                   total_coil_length_m=float(jnp.sum(resampled(chart.coils_from_x(jnp.asarray(x)), CURVATURE_POINTS,
+                                                               symmetric=False).length)),
                    **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),

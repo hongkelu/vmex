@@ -508,7 +508,10 @@ class ThreeTermFreeBoundaryModel:
             dR, dZ = jax.jacfwd(surface)(x)
             th_axis, ph_axis = 0, 1
             k = jnp.fft.fftfreq(48, 1.0 / 48)
-            d = lambda f, ax: jnp.real(jnp.fft.ifft(1j * k * jnp.fft.fft(f, axis=ax), axis=ax))  # noqa: E731
+            def d(f, ax):  # spectral derivative along axis ax (the wavenumbers broadcast along that axis)
+                kk = k[:, None] if ax == 0 else k[None, :]
+                return jnp.real(jnp.fft.ifft(1j * kk * jnp.fft.fft(f, axis=ax), axis=ax))
+
             R_t, Z_t = d(R, th_axis), d(Z, th_axis)
             R_p, Z_p = d(R, ph_axis) * int(fixed.nfp), d(Z, ph_axis) * int(fixed.nfp)
             cross = jnp.stack([-R * Z_t, Z_t * R_p - R_t * Z_p, R * R_t])  # e_theta x e_phi, cylindrical

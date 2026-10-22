@@ -1,5 +1,16 @@
 # PR #121 working plan (from the 2026-10-21 review)
 
+> **Status 2026-10-23.** The Perlmutter session's results are in [perlmutter/RESULTS.md](perlmutter/RESULTS.md); the
+> next program is the 2026-10-23 brief (work packages 0-6). Superseded below:
+> - "QI fits are healthy; the QH stall is specific to the stiff bootstrap block": the bootstrap part is fixed in #122
+>   (polish on tight states; the gain falls from 0.98 to 0.02-0.08); the remaining QH non-stationarity is slow
+>   convergence along weak boundary directions that move the objective (open).
+> - No production certification is complete: the QH 2.5% seed does not pass the strict certificate; the six fixtures
+>   were accepted under the opt-in `boundary_normal_tol` 1e-3, which is being removed (work package 2).
+> - The interior near-flat direction (night entry) is characterized in RESULTS section 6: an m = 0 relabelling whose
+>   force-residual response is quadratic to measurement precision (a near-null direction; exact singularity is not
+>   established).
+
 Source: `review-2026-10-21.md` (same folder). All code work stays on PR #121 (`tt1-robust-fb`); probes and harness on `exp-c-run`. Update the Status column as items land; mirror it in the PR description.
 
 Review claims checked against `tt1-robust-fb` @ 0b7535a (all four confirmed):

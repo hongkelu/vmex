@@ -1,5 +1,10 @@
 # Results: Perlmutter session 2026-10-22
 
+> **Status 2026-10-23.** Corrections: (1) no fixture seed and no QH evaluation here passed the strict certificate; the
+> "accepted" rows used the opt-in `boundary_normal_tol` 1e-3, which work package 2 removes as an acceptance rule;
+> (2) the interior "null" is a near-null direction measured to the probe's precision, not an established exact
+> singularity; (3) the mpol attribution of two interior-scan logs is uncertain (section 6).
+
 All runs used one frozen fixture per case (`fixtures/`), on 40/80 GB A100s, with jax 0.12.0.1 and solvax 0.31.0
 (README). "C" is `labelling="equal_arc"`; "NL" is no labelling rows (`label_weight 0`). "Gain" is the certificate's
 stationarity, the relative cost reduction a Gauss-Newton step with a fresh Jacobian predicts (gate 1e-3).
@@ -26,7 +31,7 @@ stationarity, the relative cost reduction a Gauss-Newton step with a fresh Jacob
 | 96ece254 (projection, polish on trial states) | refused, 0.982 | refused, 0.986 | |
 | 71497038 (tight polish), 5 rounds | refused, 0.040 | refused, 0.080 | refused, 0.0072 (6 rounds) |
 | tight polish, 25 rounds | plateau 0.024 | plateau about 0.075 | |
-| + `boundary_normal_tol` 1e-3 | accepted (round 2) | accepted | accepted |
+| + `boundary_normal_tol` 1e-3 (opt-in; **not** the strict certificate) | accepted (round 2) | accepted | accepted |
 
 ### Where the refused gain sat (round 1, C 1e-3; `analyze.py`)
 The cost is |r|^2 = 5.30e-5 over 13926 rows (255 boundary and 53 current columns).
@@ -170,13 +175,15 @@ All solves report fsq <= 1e-13 and `converged`.
   ns 15 run reproduces another exactly.
 - **What every run shows:** the difference does not shrink with ns, mpol, FTOL or the m = 0 lambda preconditioner,
   and repeat cold solves are bitwise identical (`repeat.py`).
-- **The residual along the chord** (`valley.py`) is exactly quadratic, fsq(alpha) ~ [alpha(alpha - 1)]^2:
+- **The residual along the chord** (`valley.py`) follows fsq(alpha) ~ [alpha(alpha - 1)]^2 to the measured precision:
 
   | alpha | 0 | 0.25 | 0.5 | 1 | 1.5 | 3 |
   |---|---|---|---|---|---|---|
   | fsqr | 9.6e-14 | 2.2e-11 | 3.8e-11 | 9.9e-14 | 3.4e-10 | 2.2e-8 |
 
-  The linear term vanishes: the Jacobian is singular along the difference.
+  The linear term is below the measurement's resolution: the force Jacobian is nearly singular along the difference
+  (a near-null direction). Eight points do not establish an exact null; the relabelling-generator test of work
+  package 1 is the direct check.
 - **Decomposition** (`gauge.py`, ns 15): on each surface, 84-97% of |dX|^2 is the m = 0 relabelling theta ->
   theta + f(s, phi) and 95-100% is tangential. The normal part is 1.5-10 um; iota differs by 1.3e-5. With the m = 1
   Z force kept, the difference is 100% tangential, the normal part 0.2-1.3 um, iota 2e-6.
@@ -190,7 +197,7 @@ All solves report fsq <= 1e-13 and `converged`.
 
 ## 7. Fixtures
 
-| fixture | case | step 0 (at `boundary_normal_tol` 1e-3, C 1e-3) |
+| fixture | case | step 0 (seed accepted under the opt-in `boundary_normal_tol` 1e-3, C 1e-3: **not** strictly certified) |
 |---|---|---|
 | qh25 | qh4-beta-A8-merc, 2.5%, Redl | QH 1.3154, B.n 4.7e-4, K 5.7e-4, condition 8.6e5 at step 0 (5e7 in the fits) |
 | qa25 | qa4-beta-merc, 2.5%, Redl, vacuum iota floor 0.31, iota ceiling 0.495 | QA 0.1168, B.n 2.4e-4, K 2.7e-4, Redl max rel 4.3e-5 |

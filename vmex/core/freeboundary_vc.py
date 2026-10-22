@@ -221,6 +221,10 @@ POLISH_MAX_NFEV = 20
 #: cost (the Jacobian no longer describes the rows there).
 STALL_STEPS = 3
 STALL_GAIN = 0.05
+#: What counts as a stalled step: ``"gain"`` (it gained under STALL_GAIN of the cost, the default) or ``"model"`` (its
+#: gain ratio, actual over predicted reduction, is under 0.25: the Jacobian no longer describes the rows; a step the
+#: model predicted well continues however small its gain, the trust radius growing after full steps).
+STALL_RULE = "gain"
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
@@ -255,7 +259,6 @@ def solve_free_boundary_three_term(
     bootstrap_weight: float = 100.0,
     previous=None,
     max_residual: float = ACCEPTED_RESIDUAL,
-    normal_tol: float | None = None,
     verbose: int = 0,
 ):
     """Free-boundary equilibrium of ``inp`` from the three interface conditions.
@@ -305,8 +308,7 @@ def solve_free_boundary_three_term(
     ``converged`` means certified, by the same rule as every trial of the optimization
     (:meth:`ThreeTermFreeBoundaryModel.certify`): the fit's final point, re-solved to the deck's tolerance and
     polished with fresh Jacobians, predicts a Gauss-Newton gain of at most ``max(ftol, POLISH_FTOL)`` of its cost
-    (``certificate``; ``message`` says why not), or with ``normal_tol`` a Gauss-Newton step that moves the
-    boundary normally by at most that fraction of the minor radius.  A stalled finish is not convergence by itself.  A stationary
+    (``certificate``; ``message`` says why not).  A stalled finish is not convergence by itself.  A stationary
     point need not be the free boundary (a wrong local minimum is one too), and the interface rows cannot reach
     zero at a finite resolution (spectral truncation, the virtual-casing grid: VMEC2000's own CTH-like free
     boundary scores 6e-4 in vacuum and 2.4e-3 at finite beta), so ``success`` also requires every RMS interface
@@ -353,7 +355,7 @@ def solve_free_boundary_three_term(
                                max_nfev=max_nfev, refresh_on_stall=True, verbose=verbose)
     stats: dict[str, Any] = {}
     try:  # the optimization's acceptance rule: one definition of a solved free boundary
-        out = model.certify(model.params0, external_field, out, gate=max(ftol, POLISH_FTOL), normal_tol=normal_tol,
+        out = model.certify(model.params0, external_field, out, gate=max(ftol, POLISH_FTOL),
                             stats=stats)
         converged, why = True, f"certified (Gauss-Newton gain {out['certificate']['stationarity']:.1e})"
         jacobian_out = out["J"][:, :model.x0.size]
@@ -765,6 +767,26 @@ class ThreeTermFreeBoundaryModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
+    def current_columns(self, x, aux, field):
+        """The bootstrap-current columns of the rows at ``x`` (a fresh Jacobian block, at the deck's tolerance):
+        ``(J_c, aux)``, ``J_c`` of shape ``(rows, n_current)``.  Used to certify the conditional stationarity of the
+        current that the Levenberg-Marquardt steps reach with a nearby Jacobian's columns."""
+        if self.bootstrap is None:
+            raise ValueError("current_columns needs a bootstrap current")
+        state, mask, params_x, tight = aux
+        if not tight:
+            solved = self.solve(params_x, seed=state)
+            if solved is None:
+                raise RuntimeError("the state does not converge to the deck's tolerance")
+            state, mask = solved
+            aux = (state, mask, params_x, True)
+        nb = self.n_boundary
+        directions = jax.tree.map(lambda a: a[nb:], self.boundary_directions(params_x, x))
+        dz, certified = self._tangents(params_x, state, mask, directions)
+        if not np.asarray(certified).all():
+            raise RuntimeError("the current block's tangent solves are not certified")
+        return np.asarray(self._push_rows(state, mask, params_x, dz, directions, field)).T, aux
+
     def linearize(self, x, aux, field, extra=None):
         """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).
 
@@ -821,7 +843,7 @@ class ThreeTermFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, refresh_on_stall=False, tight=False, verbose=0):
+                       target_cost=None, refresh_on_stall=False, tight=False, fresh_current=False, verbose=0):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
@@ -829,7 +851,9 @@ class ThreeTermFreeBoundaryModel:
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`);
         with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
         ``tight`` evaluates every point at the deck's tolerance instead of the trial one (:meth:`certify`'s polish:
-        the stiff bootstrap rows amplify a trial state's error far above a certificate's gate).
+        the stiff bootstrap rows amplify a trial state's error far above a certificate's gate).  ``fresh_current``
+        certifies each finish's conditional current stationarity with a fresh current block
+        (:meth:`current_columns`; see :func:`_levenberg_marquardt`).
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
@@ -837,12 +861,15 @@ class ThreeTermFreeBoundaryModel:
 
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
+        columns = ((lambda z, aux: self.current_columns(z, aux, field))
+                   if fresh_current and self._projected is not None else None)
         if jacobian is not None:
             first = self.evaluate(x, params, field, tight=tight)
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
+                                   current_columns=columns)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"]) and close:
@@ -850,7 +877,8 @@ class ThreeTermFreeBoundaryModel:
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
+                                   current_columns=columns)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -884,30 +912,31 @@ class ThreeTermFreeBoundaryModel:
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
+                                   current_columns=columns)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
+                                   current_columns=columns)
             self._radius, njev = again["radius"], njev + 1
             # Still stalled on a fresh Jacobian: possibly stationary, but only a certificate at the final state
             # says so (:meth:`certify`); ``converged`` stays the finish's own cost-change test.
             out = dict(again, nfev=out["nfev"] + again["nfev"])
         return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
 
-    def certify(self, params, field, fit, *, gate, xtol=None, normal_tol=None, polish=True, max_residual=None,
+    def certify(self, params, field, fit, *, gate, xtol=None, polish=True, max_residual=None,
                 extra=None, values=None, stats=None):
         """The one record of a boundary fit that counts as solved, or :class:`~vmex.core.errors.TrialRejected`.
 
         The fit's point is re-solved to the deck's tolerance and linearized there (with the ``extra`` parameter
         tangents' columns); with ``polish`` it is polished with that fresh Jacobian, up to ``POLISH_ROUNDS`` times,
         until its certificate (:func:`_fit_certificate`, on the model coordinates: boundary and any bootstrap
-        current together) predicts a Gauss-Newton gain of at most ``gate`` of the cost -- or, with ``normal_tol``,
-        a Gauss-Newton step that moves the boundary normally by at most ``normal_tol`` of the minor radius (RMS;
-        the certificate's ``normal_step``): the rest of such a step relabels the surface along itself, which the
-        interface rows barely see and the physical outputs do not -- and a Gauss-Newton step of at most ``xtol``
-        (scaled) if given.  Every finite rows/Jacobian check, the certificate and
+        current together) predicts a Gauss-Newton gain of at most ``gate`` of the cost, and a Gauss-Newton step of
+        at most ``xtol`` (scaled) if given.  The certificate also reports the step's normal displacement of the
+        boundary (``normal_step``, a diagnostic only: a small normal step does not bound the outputs' error, which
+        keep moving along weak directions while it is small).  Every finite rows/Jacobian check, the certificate and
         ``max_residual`` (each :class:`BoundaryResidual` term) apply to the final state, whose ``values(state,
         params)`` are computed only then.  The standalone solve (:func:`solve_free_boundary_three_term`) and the
         optimization (:class:`ThreeTermFreeBoundaryProblem`) accept a state through this one method.  ``stats``
@@ -923,7 +952,7 @@ class ThreeTermFreeBoundaryModel:
             if self.recorder is None:
                 return
             entry = dict(kind=kind, round=rounds[0], reason=reason, gate=float(gate), polish_target=float(
-                min(gate, POLISH_FTOL)), xtol=xtol, normal_tol=normal_tol, certificate=certificate,
+                min(gate, POLISH_FTOL)), xtol=xtol, certificate=certificate,
                 resolution=self.resolution(), row_blocks=self.row_blocks, column_blocks=self.column_blocks,
                 options=self.options)
             if sol is not None:
@@ -968,13 +997,10 @@ class ThreeTermFreeBoundaryModel:
                 stats["max_condition"] = max(stats.get("max_condition", 0.0), certificate["condition"])
                 if certificate["rank_deficient"]:
                     raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
-                settled = certificate["stationarity"] <= gate or (
-                    normal_tol is not None and certificate["normal_step"] is not None
-                    and certificate["normal_step"] <= normal_tol)
-                # The polish aims at POLISH_FTOL; the gate (or normal_tol) only decides rejection below (#121 7d73da7:
-                # stopping at the gate left most trials at 1e-3 and the plasma-map derivative test 1.8% off).
-                done = (certificate["stationarity"] <= min(gate, POLISH_FTOL)
-                        or (settled and certificate["stationarity"] > gate)) and (
+                settled = certificate["stationarity"] <= gate
+                # The polish aims at POLISH_FTOL; the gate only decides rejection below (#121 7d73da7: stopping at
+                # the gate left most trials at 1e-3 and the plasma-map derivative test 1.8% off).
+                done = certificate["stationarity"] <= min(gate, POLISH_FTOL) and (
                     xtol is None or certificate["step"] <= xtol)
                 if done or not polish or round_ == POLISH_ROUNDS:
                     break
@@ -985,7 +1011,7 @@ class ThreeTermFreeBoundaryModel:
                     # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
                     polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
                                                    ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
-                                                   tight=True)
+                                                   tight=True, fresh_current=True)
                 except (VmecError, RuntimeError):
                     stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
                     break
@@ -1049,7 +1075,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, boundary_normal_tol=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -1059,10 +1085,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         design: a gradient never moves it).  With ``boundary_max_residual`` a fit that ends with
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
-        its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  With
-        ``boundary_normal_tol`` a fit also counts as stationary when its remaining Gauss-Newton step moves the boundary
-        normally by at most that fraction of the minor radius (:meth:`ThreeTermFreeBoundaryModel.certify`;
-        ``stats["max_normal_step"]``).
+        its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  The
+        certificate's normal displacement of that step is recorded too (``stats["max_normal_step"]``).
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -1075,18 +1099,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol,
-                   boundary_normal_tol=boundary_normal_tol)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, boundary_normal_tol=None):
+                 boundary_xtol=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
-        self.boundary_normal_tol = None if boundary_normal_tol is None else float(boundary_normal_tol)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
@@ -1239,7 +1261,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
-                            normal_tol=self.boundary_normal_tol,
                             polish=polish, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
@@ -1355,7 +1376,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return json.loads(json.dumps(dict(
             deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
             boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
-            boundary_xtol=self.boundary_xtol, boundary_normal_tol=self.boundary_normal_tol,
+            boundary_xtol=self.boundary_xtol,
             design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
 
     def _maps(self, x):
@@ -1528,7 +1549,12 @@ def _project(evaluate, x, got, Q_c, R_c, index, budget, tol):
     return x, got, used, False
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, project=None):
+#: A current block whose smallest singular value is below this fraction of its largest is rank-deficient.
+CURRENT_BLOCK_RCOND = 1e-12
+
+
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, project=None,
+                         current_columns=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -1548,6 +1574,13 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     stationarity.  The predicted reduction is that of this composite step, ``|r|^2 - |(I - P_c)(r + J_b db)|^2``
     (halved), so the gain ratio compares the model and the evaluations of one and the same proposal.
     ``projections`` counts the steps whose re-solve did not reach conditional stationarity.
+
+    The current block must have full rank (smallest singular value above ``CURRENT_BLOCK_RCOND`` of the largest), or
+    this raises ``RuntimeError`` (a rejected trial).  The corrections use the columns of ``J``, which rotate as the
+    boundary moves; with ``current_columns`` (``(x, aux) -> (J_c, aux)``, a fresh current block) the finish is
+    certified with the current operator: if the fresh columns show a conditional gain above ``0.1 ftol``, the
+    corrections are rerun with them, and a finish that still misses it reports ``reason = "projection_unconverged"``
+    and is not converged.  ``projection_certified`` is True, False, or None (no fresh check).
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -1559,6 +1592,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         project = np.asarray(project)
         free = np.setdiff1d(np.arange(n), project)
         Q_c, R_c = np.linalg.qr(J[:, project])
+        block_sv = np.linalg.svd(R_c, compute_uv=False)
+        if not (np.all(np.isfinite(block_sv)) and block_sv[-1] > CURRENT_BLOCK_RCOND * block_sv[0]):
+            raise RuntimeError(f"rank-deficient current block (singular values {block_sv[0]:.2e} .. {block_sv[-1]:.2e})")
         J_free = J[:, free] - Q_c @ (Q_c.T @ J[:, free])  # the reduced Jacobian of the boundary coordinates
     norms = np.linalg.norm(J_free, axis=0)
     norms[norms == 0.0] = 1.0
@@ -1618,7 +1654,10 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
+        if STALL_RULE == "model":
+            slow = slow + 1 if rho < 0.25 else 0
+        else:
+            slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
         if cost_new < cost:
             x, (r, aux), accepted = x_new, got, accepted + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
@@ -1627,5 +1666,23 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         if slow >= STALL_STEPS:  # steps in a row gained under STALL_GAIN: the Jacobian no longer describes the rows
             reason = "stalled"
             break
+    certified_projection = None
+    if project is not None and current_columns is not None:
+        gate = 0.1 * ftol
+
+        def fresh(x, aux, r):
+            J_c, aux = current_columns(x, aux)
+            Q, R = np.linalg.qr(np.asarray(J_c))
+            g = Q.T @ r
+            return Q, R, aux, bool(g @ g <= gate * (r @ r))
+
+        Q_f, R_f, aux, certified_projection = fresh(x, aux, r)
+        if not certified_projection:  # the stale columns' stationarity is not the current operator's: refresh
+            budget = max(min(PROJECTION_CORRECTIONS, max_nfev - nfev), 1)
+            x, (r, aux), used, _ = _project(evaluate, x, (r, aux), Q_f, R_f, project, budget, gate)
+            nfev += used
+            Q_f, R_f, aux, certified_projection = fresh(x, aux, r)
+            if not certified_projection:
+                converged, reason = False, "projection_unconverged"
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
-                reason=reason, projections=unprojected)
+                reason=reason, projections=unprojected, projection_certified=certified_projection)

@@ -1189,3 +1189,78 @@ def test_certificate_records_are_complete_and_match_the_row_layout():
     np.testing.assert_array_equal(records[-1]["rows"], sol["rows"])
     model.recorder = None
     problem.close()
+
+
+def _rotating_current(weight=30.0):
+    """Rows (b - 1, b - 1/2, w (c - b^2), w b (c - 1)): the current column (1, b) rotates as b moves."""
+    def evaluate(x):
+        b, c = x
+        return np.array([b - 1.0, b - 0.5, weight * (c - b * b), weight * b * (c - 1.0)]), None
+
+    def jacobian(x):
+        b, c = x
+        return np.array([[1.0, 0.0], [1.0, 0.0], [-2 * weight * b, weight], [weight * (c - 1.0), weight * b]])
+
+    def conditional_gain(x):
+        r = evaluate(x)[0]
+        Q, _ = np.linalg.qr(jacobian(x)[:, [1]])
+        g = Q.T @ r
+        return float(g @ g / (r @ r))
+
+    return evaluate, jacobian, conditional_gain
+
+
+def test_projection_is_certified_with_fresh_current_columns():
+    """Corrections with a stale Jacobian's current columns stop short of conditional stationarity when the columns
+    rotate; the finish's fresh-column check refreshes them and certifies the result."""
+    evaluate, jacobian, conditional_gain = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    r0 = evaluate(x0)[0]
+    stale = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                     project=np.array([1]))
+    assert stale["projection_certified"] is None and conditional_gain(stale["x"]) > 1e-6
+    fresh = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                     project=np.array([1]), current_columns=lambda x, aux: (jacobian(x)[:, [1]], aux))
+    assert fresh["projection_certified"] is True and conditional_gain(fresh["x"]) <= 1e-11
+
+
+def test_projection_unconverged_is_not_converged():
+    """When the fresh-column corrections cannot reach conditional stationarity the finish says so."""
+    evaluate, jacobian, _ = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    r0 = evaluate(x0)[0]
+    out = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                   project=np.array([1]),
+                                   current_columns=lambda x, aux: (jacobian(x)[:, [1]] + np.array([[0.0], [5.0], [0.0],
+                                                                                                   [0.0]]), aux))
+    assert out["projection_certified"] is False
+    assert out["reason"] == "projection_unconverged" and not out["converged"]
+
+
+def test_rank_deficient_current_block_rejects():
+    evaluate, jacobian, _ = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    J = jacobian(x0)
+    J[:, 1] = 0.0
+    with pytest.raises(RuntimeError, match="rank-deficient current block"):
+        fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-10, max_nfev=10, verbose=0,
+                                 project=np.array([1]))
+
+
+@pytest.mark.parametrize("rule, converged", [("gain", False), ("model", True)])
+def test_stall_rule_model_continues_well_predicted_small_gains(monkeypatch, rule, converged):
+    """A linear problem with a large irreducible residual: every step is predicted exactly (gain ratio 1) but gains
+    far under 5% of the cost.  The gain rule calls it stalled; the model rule lets the radius grow and converges."""
+    def evaluate(x):
+        return np.array([x[0] - 1.0, x[1] - 2.0, 100.0]), None
+
+    J = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+    x0 = np.array([3.0, -1.0])
+    monkeypatch.setattr(fvc, "STALL_RULE", rule)
+    out = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-12, max_nfev=60, verbose=0,
+                                   radius=1e-3)
+    assert out["converged"] is converged
+    if converged:
+        np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
+    else:
+        assert out["reason"] == "stalled"

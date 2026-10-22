@@ -27,6 +27,17 @@ del sys.argv[1:4]
 out.mkdir(parents=True, exist_ok=True)
 import os  # noqa: E402
 
+if os.environ.get("TRIAL_JACOBIAN_FTOL"):  # trial fits' fresh-Jacobian trust region run to this relative gain
+    _solve_boundary = fv.ThreeTermFreeBoundaryModel.solve_boundary
+
+    def _tight_trial_fit(self, params, field, **kwargs):
+        if kwargs.get("refresh_on_stall"):  # a trial's fit, not a polish
+            kwargs["jacobian_ftol"] = float(os.environ["TRIAL_JACOBIAN_FTOL"])
+            kwargs["jacobian"] = None  # always the trust region (fresh Jacobians), from the given start
+        return _solve_boundary(self, params, field, **kwargs)
+
+    fv.ThreeTermFreeBoundaryModel.solve_boundary = _tight_trial_fit
+
 if os.environ.get("LM_TRACE"):  # every Levenberg-Marquardt finish verbose, every projection logged
     _lm, _proj = fv._levenberg_marquardt, getattr(fv, "_project", None)
 

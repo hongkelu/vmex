@@ -130,6 +130,11 @@ COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
 COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m, to the current plasma boundary
 # Interior margins of the sampled constraints; endpoint checks use the limits.
 CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5, 0.001
+# Lorentz force per unit length on every point of each coil, |I t x (B_self + B_others)|, with the self field
+# regularized for a circular conductor of CONDUCTOR_RADIUS (Hurwitz, Landreman & Antonsen 2024; ESSOS
+# objective_functions.B_regularized_pure); None: no force rows.
+FORCE_LIMIT, CONDUCTOR_RADIUS, FORCE_MARGIN = None, 0.01, 1e-3  # N/m, m, relative
+FORCE_POINTS = 128  # samples per coil of the force rows (targets and sources)
 
 if CASE == "ellipse5-beta7":
     # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
@@ -941,11 +946,50 @@ def coil_metrics(coils, *, curvature_points=CURVATURE_POINTS, distance_points=DI
                 coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
 
 
+def coil_forces(coils, points=FORCE_POINTS):
+    """|dF/dl| (N/m) at ``points`` samples of each base coil: its current times the field of every other coil,
+    symmetry copies included, plus its own regularized self field."""
+    import jax
+    import jax.numpy as jnp
+    from essos.objective_functions import B_regularized_pure, regularization_circ
+
+    curves = resampled(coils, points)  # base coils first, then their symmetry copies
+    gamma, dash, ddash = curves.gamma, curves.gamma_dash, curves.gamma_dashdash
+    currents = jnp.asarray(coils.currents)
+    nbase = resampled(coils, points, symmetric=False).gamma.shape[0]
+    quadpoints = jnp.linspace(0.0, 1.0, points, endpoint=False)
+    regularization = regularization_circ(CONDUCTOR_RADIUS)
+
+    def one(b):
+        r = gamma[b][:, None, None, :] - gamma[None]                                  # (target, coil, source, 3)
+        kernel = jnp.cross(dash[None], r) / jnp.maximum(jnp.sum(r * r, axis=-1), 1e-30)[..., None] ** 1.5
+        others = jnp.arange(gamma.shape[0]) != b
+        B = 1e-7 * jnp.sum(jnp.where(others[None, :, None], currents[None, :, None], 0.0)
+                           * jnp.mean(kernel, axis=2), axis=1)
+        B = B + B_regularized_pure(gamma[b], dash[b], ddash[b], quadpoints, currents[b], regularization)
+        tangent = dash[b] / jnp.linalg.norm(dash[b], axis=-1)[:, None]
+        return jnp.linalg.norm(jnp.cross(currents[b] * tangent, B), axis=-1)
+
+    return jnp.stack([one(b) for b in range(nbase)])
+
+
+def force_rows(coils, *, points=True):
+    """Force rows (FORCE_LIMIT - F) / FORCE_LIMIT: every sample point, or each coil's largest force."""
+    import jax.numpy as jnp
+
+    if FORCE_LIMIT is None:
+        return jnp.zeros(0)
+    force = coil_forces(coils)
+    force = jnp.ravel(force) if points else jnp.max(force, axis=1)
+    return (FORCE_LIMIT * (1 - FORCE_MARGIN) - force) / FORCE_LIMIT
+
+
 def coil_inequalities(coils):
     import jax.numpy as jnp
 
     m = coil_metrics(coils)
-    return jnp.concatenate(((LENGTH_LIMIT-LENGTH_MARGIN-m['length'])/LENGTH_LIMIT,
+    return jnp.concatenate((force_rows(coils, points=False),
+        (LENGTH_LIMIT-LENGTH_MARGIN-m['length'])/LENGTH_LIMIT,
         (CURVATURE_LIMIT-CURVATURE_MARGIN-m['peak'])/CURVATURE_LIMIT,
         (MSC_LIMIT-MSC_MARGIN-m['msc'])/MSC_LIMIT,
         jnp.atleast_1d((m['coil_distance']-COIL_DISTANCE_LIMIT-DISTANCE_MARGIN)/COIL_DISTANCE_LIMIT),
@@ -976,7 +1020,7 @@ def coil_point_inequalities(coils):
         return jnp.min(others, axis=0), own
 
     coil_distance, self_distance = map(jnp.concatenate, zip(*[per_point(b) for b in range(nbase)]))
-    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
+    return jnp.concatenate((force_rows(coils), (LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
                             jnp.ravel(CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT,
                             (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
                             / MSC_LIMIT,
@@ -1037,6 +1081,13 @@ def parse_args(argv=None):
                         "directions (gradient_check.json), then stop")
     parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
                         "(curvature, coil-coil and self distance) instead of each coil's extreme")
+    parser.add_argument("--length-limit", type=float, help="per-coil length limit in m (default: the case's)")
+    parser.add_argument("--curvature-limit", type=float, help="peak curvature limit in 1/m (default: the case's)")
+    parser.add_argument("--msc-limit", type=float, help="mean squared curvature limit in 1/m^2 (default: the case's)")
+    parser.add_argument("--force-limit", type=float, help="Lorentz force per unit length limit on every coil point, "
+                        "N/m (default: none; see FORCE_LIMIT)")
+    parser.add_argument("--conductor-radius", type=float, help="radius of the circular conductor regularizing the "
+                        f"self force, m (default {CONDUCTOR_RADIUS})")
     parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
                         "on the equilibrium (see load_extension)")
     parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -1222,7 +1273,13 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
+    global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS
     args = parse_args(argv)
+    LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
+    CURVATURE_LIMIT = args.curvature_limit or CURVATURE_LIMIT
+    MSC_LIMIT = args.msc_limit or MSC_LIMIT
+    FORCE_LIMIT = args.force_limit or FORCE_LIMIT
+    CONDUCTOR_RADIUS = args.conductor_radius or CONDUCTOR_RADIUS
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:
@@ -1423,6 +1480,7 @@ def main(argv=None):
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
+                   coil_max_force_n_per_m=float(jnp.max(coil_forces(chart.coils_from_x(jnp.asarray(x))))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),

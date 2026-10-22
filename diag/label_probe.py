@@ -503,8 +503,11 @@ def stall(problem, **_):
     model._last_linearize = None
     r = np.asarray(model._rows(state, params_b, field))
     values, _ = model._terms(state, params_b, field)
-    n = int(np.asarray(values)[0].size)
-    blocks = dict(interface=slice(0, 5 * n), label=slice(5 * n, 6 * n), other=slice(6 * n, r.size))
+    n, nphi = int(np.asarray(values)[0].size), int(np.asarray(values).shape[1])
+    nboot = r.size - 6 * n - nphi - 1  # after the phase rows and the net-current row
+    blocks = dict(interface=slice(0, 5 * n), label=slice(5 * n, 6 * n), other=slice(6 * n, r.size),
+                  phase=slice(6 * n, 6 * n + nphi), net_current=slice(6 * n + nphi, 6 * n + nphi + 1),
+                  bootstrap=slice(r.size - nboot, r.size))
     split = lambda v: {k: float(v[s] @ v[s]) for k, s in blocks.items()}  # noqa: E731
     Js = J * scale[None]
     U, sv, Vt = np.linalg.svd(Js, full_matrices=False)
@@ -555,6 +558,27 @@ def stall(problem, **_):
         got = model.evaluate(x, P, field, tight=True)
         return None if got is None else np.asarray(got[0])
 
+    if os.environ.get("STALL_MODE") == "project":  # the GN boundary step with the other coordinates re-solved
+        p = p_s * scale
+        report["project"] = []
+        for a in (1.0, 0.5, 0.25):
+            x = b.copy()
+            x[:nb] += a * p[:nb]  # the boundary part of the step only
+            for k in range(4):
+                got = model.evaluate(x, P, field, tight=True)
+                if got is None:
+                    report["project"].append(dict(a=a, iteration=k, failed=True))
+                    break
+                rows, aux_k = got
+                report["project"].append(dict(a=a, iteration=k, cost=float(rows @ rows), split=split(rows)))
+                print(json.dumps(report["project"][-1]), flush=True)
+                if k == 3:
+                    break
+                Jk = np.asarray(model.linearize(x, aux_k, field)[0])[:, nb:nall]
+                model._last_linearize = None
+                x[nb:] -= np.linalg.lstsq(Jk, rows, rcond=None)[0]
+        (out / "stall.json").write_text(json.dumps(report, indent=1))
+        sys.exit(0)
     directions = dict(gn=p_s * scale, **{f"weak{k}": Vt[-1 - k] * scale for k in range(3)})
     report["directions"] = {}
     for name, d in directions.items():

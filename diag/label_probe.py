@@ -434,6 +434,45 @@ def exactdir(problem, **_):
     sys.exit(0)
 
 
+def kkt(problem, constraints=(), **_):
+    """Is the restart design a constrained stationary point?  In SLSQP's scaled coordinates: the loss gradient, the
+    constraints' values and Jacobians, the active set (within KKT_TOL of a bound, relative to the bound's scale), and
+    non-negative multipliers by NNLS; reports |grad f + A^T mu| / |grad f| and each constraint's margin."""
+    from scipy.optimize import nnls
+
+    x0 = np.asarray(problem.accepted.parameters, dtype=float)
+    scales = np.asarray(problem.scales)
+    f0, g = problem.value_and_grad(x0)
+    g = np.asarray(g) * scales
+    tol = float(os.environ.get("KKT_TOL", "1e-3"))
+    rows, active = [], []
+    for c in constraints if isinstance(constraints, (list, tuple)) else [constraints]:
+        values = np.atleast_1d(np.asarray(c.fun(x0), dtype=float))
+        J = np.atleast_2d(np.asarray(c.jac(x0), dtype=float)) * scales[None]
+        lo, hi = np.broadcast_to(c.lb, values.shape), np.broadcast_to(c.ub, values.shape)
+        for k, v in enumerate(values):
+            size = max(abs(lo[k]) if np.isfinite(lo[k]) else 0.0, abs(hi[k]) if np.isfinite(hi[k]) else 0.0, 1e-12)
+            lo_gap, hi_gap = (v - lo[k]) / size, (hi[k] - v) / size
+            rows.append(dict(value=float(v), lower=float(lo[k]), upper=float(hi[k]), lower_gap=float(lo_gap),
+                             upper_gap=float(hi_gap)))
+            if np.isfinite(lo[k]) and lo_gap <= tol:
+                active.append(-J[k])  # c >= lo active: its outward normal is -grad c
+            if np.isfinite(hi[k]) and hi_gap <= tol:
+                active.append(J[k])
+    if active:
+        A = np.array(active)
+        mu, _ = nnls(A.T, -g)
+        residual = g + A.T @ mu
+    else:
+        mu, residual = np.zeros(0), g
+    row = dict(loss=float(f0), grad_norm=float(np.linalg.norm(g)), n_active=len(active),
+               kkt_residual=float(np.linalg.norm(residual) / np.linalg.norm(g)), multipliers=mu.tolist(),
+               constraints=rows)
+    print(json.dumps(row), flush=True)
+    (out / "kkt.json").write_text(json.dumps(row, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
 elif mode == "cold":
@@ -450,5 +489,7 @@ elif mode == "plasmaparts":
     opt.minimize = plasmaparts
 elif mode == "exactdir":
     opt.minimize = exactdir
+elif mode == "kkt":
+    opt.minimize = kkt
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

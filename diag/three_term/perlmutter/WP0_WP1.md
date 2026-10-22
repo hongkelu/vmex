@@ -90,6 +90,25 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
    The test asks for 1e-6. The remaining freedom is m >= 1 relabelling, which spectral condensation pins only weakly.
    The rows are that sensitive because the boundary's B_in comes from the interior surfaces next to the edge.
 
+8. **The rows' start dependence does not converge with radial resolution** (small deck, FTOL 1e-13;
+   `raw/wp1/rows_scan/`):
+
+   | | ns 7 | ns 15 | ns 31 | ns 51 |
+   |---|---|---|---|---|
+   | mpol 2, near vs cold | 1.37e-3 | 1.64e-3 | 1.63e-3 | 1.68e-3 |
+   | mpol 2, perturbed vs cold | 6.8e-4 | 5.8e-4 | 1.4e-15 | 2.1e-15 |
+   | mpol 4, near vs cold | 1.41e-3 | 2.59e-3 | 2.88e-3 | 1.46e-3 |
+   | mpol 4, perturbed vs cold | 4.7e-3 | 3.1e-3 | 1.7e-2 | 2.5e-2 |
+
+   - **By block:** B.n, pressure and K all carry it, while the label rows are identical. The m = 0 gauge reduces it by
+     at most 3.5x.
+   - **The boundary field (B_in) is evaluated from half-mesh contravariant components** B^u, B^v, extrapolated to the
+     edge in VMEC angles. In the continuum a relabelling with f = 0 at the boundary leaves the boundary field
+     unchanged: X_s changes only by a tangent multiple, so sqrt(g) = X_s . (X_theta x X_zeta) is invariant, and
+     lambda_zeta, lambda_theta at s = 1 are unchanged. The half-mesh Jacobian and the edge extrapolation are invariant
+     only to O(h).
+   - **So gauge-equivalent interiors whose surfaces agree to under 1 um (QH) give B_in rows that differ by 1e-3 to 1e-2.**
+
 **WP1 status:**
 - **Diagnosed:**
   - a coordinate freedom (the m = 0 relabelling, plus an m >= 1 part weakly held by condensation);
@@ -97,8 +116,12 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
   - no branches.
 - **Not yet implemented: the repair.** The candidate (m = 0 lambda gauge) fixes the physical reproducibility but not the
   interface rows at the 1e-6 level, and keeping the m = 1 force breaks the implicit layer's frozen-m = 1 assumption.
-- **Next:**
-  - a gauge for the full relabelling (m = 0 condition plus an m >= 1 condition consistent with condensation), applied in the forward solve, the refinement, tangents and adjoints (with the derivative of the gauge reference);
-  - or a gauge-invariant evaluation of B_in at the boundary.
+- **Repair options (decision pending):**
+  - (a) a gauge for the full relabelling (m = 0, done as a probe, plus an m >= 1 condition consistent with
+    condensation), through the forward solve, the refinement, tangents and adjoints;
+  - (b) a gauge-invariant evaluation of B_in at the boundary (boundary-local geometry, the normal part of X_s, and
+    lambda at s = 1).
 
-  Decide by the rows test and the fixed-branch derivative check.
+  The scan favours (b): the rows' sensitivity sits in the boundary-field evaluation, which does not converge with ns,
+  while the physical state is reproducible. (b) departs from the discretization the force balance uses, so it needs
+  an independent reference (DESC, or field-line tracing in vacuum) before it can become the default.

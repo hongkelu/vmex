@@ -1161,3 +1161,31 @@ def test_normal_operator_is_the_surface_normal_displacement():
     n /= np.linalg.norm(n, axis=0)
     fd = np.sum((points(np.asarray(x) + dx)[0] - points(np.asarray(x) - dx)[0])[:, :, 1:-1] / 2 * n, axis=0)
     np.testing.assert_allclose((N @ dx).reshape(48, 48)[:, 1:-1], fd, atol=2e-2 * np.max(np.abs(fd)))
+
+
+@needs_vc
+@pytest.mark.full
+def test_certificate_records_are_complete_and_match_the_row_layout():
+    """The recorder sees every certificate round and the outcome: the full Jacobian, rows, coordinates, interior
+    state, scales, boundary arrays and the effective resolution; the runtime row layout covers the rows exactly."""
+    problem = _small_problem()
+    model, records = problem.model, []
+    model.recorder = records.append
+    sol = problem._solve(problem.x0 + 0.01)
+    assert sol is not None
+    assert [r["kind"] for r in records][-1] == "certified"
+    assert all(r["kind"] == "round" for r in records[:-1]) and len(records) >= 2
+    last_row = model.row_blocks[-1][2]
+    names = [name for name, _, _ in model.row_blocks]
+    assert names[:6] == ["B.n", "pressure", "K_x", "K_y", "K_z", "label"] and "net_current" in names
+    for r in records:
+        assert r["rows"].size == last_row
+        assert r["J"].shape[0] == last_row and r["J"].shape[1] >= model.x0.size
+        assert r["x"].size == model.x0.size and r["x_scale"].size == model.x0.size
+        assert len(r["state"]) == len(jax.tree.leaves(model.seed[0]))
+        assert r["resolution"]["mpol"] == int(model.fixed.mpol) and r["resolution"]["nphi"] == SMALL["nphi"]
+        assert r["certificate"] is not None and np.isfinite(r["certificate"]["stationarity"])
+    assert "values" in records[0] and records[0]["values"] is not None
+    np.testing.assert_array_equal(records[-1]["rows"], sol["rows"])
+    model.recorder = None
+    problem.close()

@@ -434,8 +434,164 @@ def exactdir(problem, **_):
     sys.exit(0)
 
 
+def kkt(problem, constraints=(), **_):
+    """Is the restart design a constrained stationary point?  In SLSQP's scaled coordinates: the loss gradient, the
+    constraints' values and Jacobians, the active set (within KKT_TOL of a bound, relative to the bound's scale), and
+    non-negative multipliers by NNLS; reports |grad f + A^T mu| / |grad f| and each constraint's margin."""
+    from scipy.optimize import nnls
+
+    x0 = np.asarray(problem.accepted.parameters, dtype=float)
+    scales = np.asarray(problem.scales)
+    f0, g = problem.value_and_grad(x0)
+    g = np.asarray(g) * scales
+    tol = float(os.environ.get("KKT_TOL", "1e-3"))
+    rows, active = [], []
+    for c in constraints if isinstance(constraints, (list, tuple)) else [constraints]:
+        values = np.atleast_1d(np.asarray(c.fun(x0), dtype=float))
+        J = np.atleast_2d(np.asarray(c.jac(x0), dtype=float)) * scales[None]
+        lo, hi = np.broadcast_to(c.lb, values.shape), np.broadcast_to(c.ub, values.shape)
+        for k, v in enumerate(values):
+            size = max(abs(lo[k]) if np.isfinite(lo[k]) else 0.0, abs(hi[k]) if np.isfinite(hi[k]) else 0.0, 1e-12)
+            lo_gap, hi_gap = (v - lo[k]) / size, (hi[k] - v) / size
+            rows.append(dict(value=float(v), lower=float(lo[k]), upper=float(hi[k]), lower_gap=float(lo_gap),
+                             upper_gap=float(hi_gap)))
+            if np.isfinite(lo[k]) and lo_gap <= tol:
+                active.append(-J[k])  # c >= lo active: its outward normal is -grad c
+            if np.isfinite(hi[k]) and hi_gap <= tol:
+                active.append(J[k])
+    if active:
+        A = np.array(active)
+        mu, _ = nnls(A.T, -g)
+        residual = g + A.T @ mu
+    else:
+        mu, residual = np.zeros(0), g
+    row = dict(loss=float(f0), grad_norm=float(np.linalg.norm(g)), n_active=len(active),
+               kkt_residual=float(np.linalg.norm(residual) / np.linalg.norm(g)), multipliers=mu.tolist(),
+               constraints=rows)
+    print(json.dumps(row), flush=True)
+    (out / "kkt.json").write_text(json.dumps(row, indent=1))
+    sys.exit(0)
+
+
+def stall(problem, **_):
+    """Why a boundary fit stalls (review 2026-10-21, section 6.4), at the restart design.
+
+    1. Replay: the trial fit, then a fit with every residual solved to the deck's tolerance (cfg_trial = cfg), from
+       the trial fit's boundary (ftol 1e-12, up to STALL_MAX_NFEV evaluations).
+    2. At that fit's end, with its own (tight) Jacobian: the Gauss-Newton step p and the three weakest right singular
+       vectors.  Along each: central differences of the rows against J d over step lengths (Jacobian accuracy), the
+       normal share of the boundary motion and its normal displacement over the minor radius.
+    3. Along p: predicted (|r + a J p|^2) against actual cost over a in 1 .. 1e-3, split into interface, labelling
+       and the other rows."""
+    import jax.numpy as jnp
+    from vmex.core.optimize import boundary_arrays_from_x
+
+    model, x0 = problem.model, np.asarray(problem.accepted.parameters, dtype=float)
+    nb, nall, scale = model.n_boundary, model.x0.size, np.asarray(model.x_scale)
+    xj = jnp.asarray(x0)
+    field, P = problem.field(xj), problem._params_at(xj)
+    sol = problem._solve(x0)
+    report = dict(trial=dict(reason=sol.get("reason"), nfev=int(sol.get("nfev", -1)),
+                             cost=float(sol["rows"] @ sol["rows"])))
+    model.cfg_trial = model.cfg  # every residual tight from here on
+    t0 = time.time()
+    fit = model.solve_boundary(P, field, x0=sol["x"], ftol=1e-12, jacobian_ftol=1e-12,
+                               max_nfev=int(os.environ.get("STALL_MAX_NFEV", "200")), refresh_on_stall=True)
+    b, aux = np.asarray(fit["x"]), fit["aux"]
+    state, _, params_b, _ = aux
+    J = np.asarray(model.linearize(b, aux, field)[0])[:, :nall]
+    model._last_linearize = None
+    r = np.asarray(model._rows(state, params_b, field))
+    values, _ = model._terms(state, params_b, field)
+    n = int(np.asarray(values)[0].size)
+    blocks = dict(interface=slice(0, 5 * n), label=slice(5 * n, 6 * n), other=slice(6 * n, r.size))
+    split = lambda v: {k: float(v[s] @ v[s]) for k, s in blocks.items()}  # noqa: E731
+    Js = J * scale[None]
+    U, sv, Vt = np.linalg.svd(Js, full_matrices=False)
+    p_s = -np.linalg.lstsq(Js, r, rcond=None)[0]
+    report["tight_fit"] = dict(reason=fit.get("reason"), nfev=int(fit["nfev"]), njev=int(fit.get("njev", -1)),
+                               seconds=time.time() - t0, cost=float(r @ r), cost_split=split(r),
+                               boundary_move=float(np.linalg.norm((b - sol["x"]) / scale)),
+                               top_singular_vector_coordinates=np.argsort(-np.abs(Vt[0]))[:5].tolist(),
+                               boundary_coordinates=int(nb),
+                               equilibrated_condition=float(np.linalg.cond(Js / np.linalg.norm(Js, axis=0)[None])),
+                               boundary_only_condition=float(np.linalg.cond(Js[:, :nb])),
+                               gn_step=float(np.linalg.norm(p_s)), condition=float(sv[0] / sv[-1]),
+                               singular_values_low=sv[-6:].tolist(), singular_values_high=sv[:3].tolist(),
+                               stationarity=float(np.linalg.norm(Js.T @ r) / (sv[0] * np.linalg.norm(r))))
+    print(json.dumps(report), flush=True)
+
+    nfp, ntor = int(model.fixed.nfp), int(model.fixed.ntor)
+    theta, phi = np.meshgrid(np.linspace(0, 2 * np.pi, 96, endpoint=False),
+                             np.linspace(0, 2 * np.pi / nfp, 64, endpoint=False), indexing="ij")
+
+    def surface(x):
+        rbc, zbs = (np.asarray(a) for a in boundary_arrays_from_x(model.fixed, x[:nb], model.max_mode,
+                                                                  vary_major_radius=True))
+        R = Z = Rt = Zt = Rp = Zp = 0.0
+        for i in range(rbc.shape[0]):
+            for m in range(rbc.shape[1]):
+                arg = m * theta - (i - ntor) * nfp * phi
+                c, s = np.cos(arg), np.sin(arg)
+                R, Z = R + rbc[i, m] * c, Z + zbs[i, m] * s
+                Rt, Zt = Rt - m * rbc[i, m] * s, Zt + m * zbs[i, m] * c
+                Rp, Zp = Rp + (i - ntor) * nfp * rbc[i, m] * s, Zp - (i - ntor) * nfp * zbs[i, m] * c
+        return R, Z, Rt, Zt, Rp, Zp, float(rbc[ntor, 1])
+
+    R, Z, Rt, Zt, Rp, Zp, minor = surface(b)
+    # (R, phi, Z) components: X_theta = (Rt, 0, Zt), X_phi = (Rp, R, Zp); n = X_theta x X_phi
+    nvec = np.stack([-Zt * R, Zt * Rp - Rt * Zp, Rt * R])
+    nvec /= np.linalg.norm(nvec, axis=0)
+
+    def motion(d):
+        Rd, Zd = (a - c for a, c in zip(surface(b + d)[:2], (R, Z)))
+        normal = Rd * nvec[0] + Zd * nvec[2]
+        return dict(normal_share=float(np.sqrt(np.mean(normal**2) / max(np.mean(Rd**2 + Zd**2), 1e-300))),
+                    boundary_share=float(np.linalg.norm(d[:nb] / scale[:nb]) / np.linalg.norm(d / scale)),
+                    normal_rms_over_a=float(np.sqrt(np.mean(normal**2)) / abs(minor)),
+                    normal_max_over_a=float(np.max(np.abs(normal)) / abs(minor)))
+
+    def rows_at(x):
+        got = model.evaluate(x, P, field, tight=True)
+        return None if got is None else np.asarray(got[0])
+
+    directions = dict(gn=p_s * scale, **{f"weak{k}": Vt[-1 - k] * scale for k in range(3)})
+    report["directions"] = {}
+    for name, d in directions.items():
+        Jd, entry = J @ d, dict(scaled_length=float(np.linalg.norm(d / scale)), **motion(d))
+        unit = d / entry["scaled_length"]
+        for t in (1e-1, 1e-2, 1e-3, 1e-4):
+            hi, lo = rows_at(b + t * unit), rows_at(b - t * unit)
+            if hi is None or lo is None:
+                entry[f"fd_{t:g}"] = "failed"
+                continue
+            fd = (hi - lo) / (2 * t)
+            Ju = Jd / entry["scaled_length"]
+            entry[f"fd_{t:g}"] = dict(rel_error=float(np.linalg.norm(fd - Ju) / np.linalg.norm(Ju)),
+                                      **{f"rel_error_{k}": float(np.linalg.norm((fd - Ju)[s]) /
+                                                                 max(np.linalg.norm(Ju[s]), 1e-300))
+                                         for k, s in blocks.items()})
+        report["directions"][name] = entry
+        print(json.dumps({name: entry}), flush=True)
+
+    p = p_s * scale
+    Jp, line = J @ p, []
+    for a in (1.0, 0.5, 0.25, 0.1, 0.03, 0.01, 1e-3):
+        actual = rows_at(b + a * p)
+        predicted = r + a * Jp
+        line.append(dict(a=a, predicted=float(predicted @ predicted), predicted_split=split(predicted),
+                         actual=None if actual is None else float(actual @ actual),
+                         actual_split=None if actual is None else split(actual)))
+        print(json.dumps(line[-1]), flush=True)
+    report["line"], report["cost0"] = line, float(r @ r)
+    (out / "stall.json").write_text(json.dumps(report, indent=1))
+    sys.exit(0)
+
+
 if mode == "twostart":
     opt.minimize = twostart
+elif mode == "stall":
+    opt.minimize = stall
 elif mode == "cold":
     opt.minimize = cold
 elif mode == "noise":
@@ -450,5 +606,7 @@ elif mode == "plasmaparts":
     opt.minimize = plasmaparts
 elif mode == "exactdir":
     opt.minimize = exactdir
+elif mode == "kkt":
+    opt.minimize = kkt
 sys.argv[0] = "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 runpy.run_path(sys.argv[0], run_name="__main__")

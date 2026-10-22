@@ -1118,6 +1118,8 @@ def parse_args(argv=None):
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
+    parser.add_argument("--refit-coils", type=Path, help="with --restart: start from these coils instead (e.g. another "
+                        "coil count), their currents scaled and the coils fitted to the restart's equilibrium")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -1147,7 +1149,7 @@ def parse_args(argv=None):
                         "rows' (default: the model's)")
     args = parser.parse_args(argv)
     if args.restart is not None:
-        args.coils = args.restart / "coils.json"
+        args.coils = args.refit_coils or args.restart / "coils.json"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     return args
@@ -1355,10 +1357,12 @@ def main(argv=None):
     inp.to_indata(out / "input.run")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
-    if args.restart is None and args.seed_run is None:
-        coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
+    seed_wout = (vj.read_wout(args.restart / "wout.nc") if args.refit_coils is not None
+                 else fixed.wout if args.restart is None and args.seed_run is None else None)
+    if seed_wout is not None:
+        coils = scale_coil_currents(coils, abs(float(seed_wout.rbtor)))
         if args.beta > 0 and not args.no_coil_fit:
-            coils = fit_coils_to_plasma(coils, fixed.wout, inp)
+            coils = fit_coils_to_plasma(coils, seed_wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold else None

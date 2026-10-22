@@ -27,6 +27,26 @@ del sys.argv[1:4]
 out.mkdir(parents=True, exist_ok=True)
 import os  # noqa: E402
 
+if os.environ.get("LM_TRACE"):  # every Levenberg-Marquardt finish verbose, every projection logged
+    _lm, _proj = fv._levenberg_marquardt, getattr(fv, "_project", None)
+
+    def _traced_lm(*args, **kwargs):
+        kwargs["verbose"] = 1
+        out = _lm(*args, **kwargs)
+        print(f"[lm] reason {out['reason']} nfev {out['nfev']} accepted {out['accepted']} "
+              f"cost {0.5 * out['rows'] @ out['rows']:.6e} project {kwargs.get('project') is not None}", flush=True)
+        return out
+
+    fv._levenberg_marquardt = _traced_lm
+    if _proj is not None:
+        def _traced_project(evaluate, x, got, *args):
+            before = 0.5 * got[0] @ got[0]
+            x, got, used = _proj(evaluate, x, got, *args)
+            print(f"[project] cost {before:.6e} -> {0.5 * got[0] @ got[0]:.6e} ({used} evaluations)", flush=True)
+            return x, got, used
+
+        fv._project = _traced_project
+
 if os.environ.get("BOUNDARY_FTOL") or os.environ.get("BOUNDARY_MAX_NFEV"):  # the problem's trial fits, tightened
     from_loss = fv.ThreeTermFreeBoundaryProblem.from_loss.__func__
 

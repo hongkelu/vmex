@@ -1225,7 +1225,10 @@ class BootstrapPicardResult:
     ``f_boot``) describes that same iterate, also when the iterations ran out.
     ``delta`` is the self-consistency error
     ``max|I'_Redl - I'_applied| / max|I'_Redl|`` between the Redl-implied and
-    the applied current profile (the fitted one the equilibrium was solved with).
+    the applied current profile; in the power-series lane ``I'_applied`` is the
+    profile before its polynomial fit, and ``fit_error`` (relative to the same
+    scale) how far the fitted polynomial the equilibrium was solved with is
+    from it.
     """
 
     input: VmecInput
@@ -1323,7 +1326,8 @@ def self_consistent_bootstrap(
         raise ValueError(f"profile must be 'power_series' or 'half_mesh', got {profile!r}")
     history: list[dict] = []
     state = None
-    dIds_applied = None   # I'(s_full) currently driving the equilibrium
+    dIds_applied = None   # I'(s_full) currently driving the equilibrium (before its fit)
+    fit_error = 0.0       # max|fit - I'_applied| / max|I'_new| of the polynomial the equilibrium sees
     eq = None
     converged = False
     solved = inp
@@ -1371,7 +1375,7 @@ def self_consistent_bootstrap(
         delta = (np.inf if dIds_applied is None
                  else float(np.max(np.abs(dIds_new - dIds_applied))) / scale)
         f_boot = float(mismatch.total(w))
-        history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=f_boot))
+        history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=f_boot, fit_error=fit_error))
         if verbose:
             print(f"[self_consistent_bootstrap] it {it}: curtor={inp.curtor:.6e} "
                   f"delta={delta:.3e} f_boot={f_boot:.3e}", flush=True)
@@ -1387,12 +1391,13 @@ def self_consistent_bootstrap(
         coeffs = np.polynomial.polynomial.polyfit(s_full, dIds_use, deg)
         ac = np.zeros(max(21, deg + 1))
         ac[:deg + 1] = coeffs
-        # The equilibrium sees the fitted polynomial: CURTOR is its exact integral, and the next delta is
-        # measured against it, not against the samples it was fitted to.
+        # The equilibrium sees the fitted polynomial: CURTOR is its exact integral (the samples' trapezoid
+        # rule rescaled it), and fit_error records how far it is from the samples it was fitted to.
         curtor = float(np.sum(coeffs / np.arange(1, deg + 2)))
         inp = dataclasses.replace(inp, ncurr=1, pcurr_type="power_series",
                                   ac=ac, curtor=curtor)
-        dIds_applied = np.polynomial.polynomial.polyval(s_full, coeffs)
+        fit_error = float(np.max(np.abs(np.polynomial.polynomial.polyval(s_full, coeffs) - dIds_use))) / scale
+        dIds_applied = dIds_use
 
     return BootstrapPicardResult(
         input=solved, equilibrium=eq, converged=converged,

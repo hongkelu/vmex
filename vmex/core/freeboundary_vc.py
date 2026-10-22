@@ -62,6 +62,7 @@ import jax
 import jax.numpy as jnp
 
 from . import virtual_casing as vc
+from .bootstrap import CLOSURE_ATOL, CLOSURE_RTOL
 from .errors import TrialRejected, VmecError
 from .input import VmecInput
 from .problem import FunctionProblem
@@ -743,10 +744,14 @@ class ThreeTermFreeBoundaryModel:
         return summarize_boundary_residual(*map(np.asarray, self._terms(state, params, field)))
 
     def bootstrap_residual(self, state, params) -> float:
-        """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
-        difference, target = map(np.asarray, self.bootstrap.mismatch(
-            state, self._im.runtime_from_params(params, self.cfg), params))
-        return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
+        """``max_j |I'(s_j) - I'_Redl(s_j)|`` over ``max_j |I'_Redl(s_j)|`` (floored: finite for a zero drive,
+        :func:`~vmex.core.bootstrap.closure_scale`) of a solved state (with ``bootstrap``)."""
+        return self.bootstrap_closure(state, params)["relative"]
+
+    def bootstrap_closure(self, state, params) -> dict:
+        """The physical closure of the bootstrap current at a solved state
+        (:meth:`~vmex.core.bootstrap.HalfMeshCurrent.closure`)."""
+        return self.bootstrap.closure(state, self._im.runtime_from_params(params, self.cfg), params)
 
     def evaluate(self, x, params, field, seed=None, tight=False):
         """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
@@ -960,7 +965,7 @@ class ThreeTermFreeBoundaryModel:
                              x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
                              rbc=np.asarray(sol["params"].rbc), zbs=np.asarray(sol["params"].zbs),
                              curtor=float(np.asarray(sol["params"].curtor)),
-                             ac_aux_f=np.asarray(sol["params"].ac_aux_f))
+                             ac_aux_f=np.asarray(sol["params"].ac_aux_f), closure=sol.get("closure"))
                 if normal is not None:
                     entry["normal"] = normal
                 if values is not None and kind == "round":  # a diagnostic only: the record's values come last
@@ -1037,6 +1042,12 @@ class ThreeTermFreeBoundaryModel:
                     residual.normal, residual.pressure, residual.sheet_current) > max_residual:
                 raise TrialRejected("the certified fit is not a free boundary: an interface residual is above "
                                     "boundary_max_residual")
+            if self.bootstrap is not None:  # a separate gate: a stationary finite-weight fit need not close
+                sol["closure"] = closure = self.bootstrap_closure(sol["state"], sol["params"])
+                if not closure["passed"]:
+                    raise TrialRejected(f"the bootstrap current does not close: max |I' - I'_Redl| "
+                                        f"{closure['max_abs']:.3e} A above {CLOSURE_ATOL:g} + {CLOSURE_RTOL:g} "
+                                        f"x {closure['target_inf']:.3e}")
             if values is not None:
                 try:
                     sol["values"] = np.asarray(values(sol["state"], sol["params"]))

@@ -592,6 +592,17 @@ def trapped_fraction_from_state(
 # ===========================================================================
 
 
+#: Physical closure of a solved bootstrap current: ``max|I' - I'_Redl| <= CLOSURE_ATOL + CLOSURE_RTOL max|I'_Redl|``,
+#: ``I'`` in A per unit normalized flux.  The absolute floor keeps a zero drive (flat profiles) finite and closable.
+CLOSURE_ATOL = 1e-3
+CLOSURE_RTOL = 1e-6
+
+
+def closure_scale(target) -> float:
+    """The finite reference of a relative closure error: ``max|target|``, floored at ``CLOSURE_ATOL / CLOSURE_RTOL``."""
+    return max(float(np.max(np.abs(np.asarray(target)))) if np.size(target) else 0.0, CLOSURE_ATOL / CLOSURE_RTOL)
+
+
 #: Prefactor conventions of the quasisymmetry isomorphism in :func:`j_dot_B_redl`.
 G_CONVENTIONS = ("simsopt", "isomorphism")
 
@@ -945,6 +956,20 @@ class HalfMeshCurrent:
         target = self.target(state, runtime)
         return params.ac_aux_f[1 : 1 + target.size] - target, target
 
+    def closure(self, state, runtime, params):
+        """The physical closure of the applied current at a solved state (host floats): ``max_abs`` and ``target_inf``
+        (A per unit s), ``relative`` (over :func:`closure_scale`), the enclosed-current mismatch ``curtor`` [A] between
+        the applied profile and the Redl target on the same knots, and ``passed`` (``max_abs <= CLOSURE_ATOL +
+        CLOSURE_RTOL target_inf``)."""
+        difference, target = map(np.asarray, self.mismatch(state, runtime, params))
+        values = np.asarray(params.ac_aux_f)
+        target_values = np.asarray(self.values(jnp.asarray(target)))
+        applied, redl = float(self.current(jnp.asarray(values), 1.0)), float(self.current(jnp.asarray(target_values), 1.0))
+        max_abs, target_inf = float(np.max(np.abs(difference))), float(np.max(np.abs(target)))
+        return dict(max_abs=max_abs, target_inf=target_inf, relative=max_abs / closure_scale(target),
+                    curtor_applied=applied, curtor_redl=redl, curtor=abs(applied - redl),
+                    passed=bool(max_abs <= CLOSURE_ATOL + CLOSURE_RTOL * target_inf))
+
     def rows(self, state, runtime, params):
         """The self-consistency rows ``weight (I' - I'_Redl) / I'_ref / sqrt(ns - 1)`` (traceable)."""
         return self.weight * self.mismatch(state, runtime, params)[0] / self.ref
@@ -1102,7 +1127,11 @@ class RedlBootstrapMismatch:
         ntheta: int = 64,
         nphi: int = 65,
         n_lambda: int = N_LAMBDA,
+        g_convention: str = "simsopt",
     ):
+        if g_convention not in G_CONVENTIONS:
+            raise ValueError(f"g_convention must be one of {G_CONVENTIONS}, got {g_convention!r}")
+        self.g_convention = g_convention
         self.profiles = profiles
         self.helicity_n = int(helicity_n)
         self.surfaces = np.atleast_1d(np.asarray(
@@ -1128,7 +1157,7 @@ class RedlBootstrapMismatch:
         surfaces = _as_1d(self.surfaces)
         geom = redl_geometry_from_wout(wout, surfaces, ntheta=self.ntheta,
                                        nphi=self.nphi, n_lambda=self.n_lambda)
-        jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n)
+        jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n, g_convention=self.g_convention)
         s_full = jnp.linspace(0.0, 1.0, int(wout.ns))
         jv = jnp.interp(surfaces, s_full,
                         _as_1d(np.asarray(wout.jdotb, dtype=float)))
@@ -1169,7 +1198,7 @@ class RedlBootstrapMismatch:
         surfaces = _as_1d(self.surfaces)
         hm = _half_mesh_fields(state, rt)
         geom = _geometry_from_half(hm, surfaces, n_lambda=self.n_lambda)
-        jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n)
+        jr, _ = j_dot_B_redl(self.profiles, geom, self.helicity_n, g_convention=self.g_convention)
         jv = _jv_from_half(hm, surfaces)
         return self._residual_vector(jv, jr)
 
@@ -1189,19 +1218,21 @@ class RedlBootstrapMismatch:
 # ===========================================================================
 
 
-def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax, solve_kwargs, verbose):
+def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax, solve_kwargs, verbose,
+                      g_convention="simsopt"):
     """:func:`self_consistent_bootstrap` on a :class:`HalfMeshCurrent` profile: ``I' <- I'_Redl`` per surface."""
     from . import optimize as opt
 
-    block = HalfMeshCurrent(inp, profiles, helicity_n)
+    block = HalfMeshCurrent(inp, profiles, helicity_n, g_convention=g_convention)
     inp, v = block.deck, block.x0
     history, state, eq, converged, solved = [], None, None, False, inp
     for it in range(int(n_iter)):
         eq = opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {}))
         state, solved = eq.state, inp
         target = np.asarray(block.target(eq.solution, eq.solver_context))
-        delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
-        history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=float(mismatch.total(eq.wout))))
+        delta = float(np.max(np.abs(target - v)) / closure_scale(target))  # finite for a zero drive
+        history.append(dict(curtor=float(inp.curtor), delta=delta, closure_error=delta,
+                            f_boot=float(mismatch.total(eq.wout))))
         if verbose:
             print(f"[self_consistent_bootstrap] it {it}: curtor={inp.curtor:.6e} delta={delta:.3e}", flush=True)
         if delta <= float(tol):
@@ -1212,7 +1243,7 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
         v = (1.0 - relax) * v + relax * target
         inp = block.deck_with(inp, v)
     return BootstrapPicardResult(input=solved, equilibrium=eq, converged=converged, iterations=len(history),
-                                 history=tuple(history))
+                                 history=tuple(history), status="converged" if converged else "not_converged")
 
 
 @dataclass(frozen=True)
@@ -1228,7 +1259,12 @@ class BootstrapPicardResult:
     the applied current profile; in the power-series lane ``I'_applied`` is the
     profile before its polynomial fit, and ``fit_error`` (relative to the same
     scale) how far the fitted polynomial the equilibrium was solved with is
-    from it.
+    from it.  ``closure_error`` is the closure of the iterate itself: Redl's ``I'`` against the profile the
+    equilibrium was actually solved with (the fitted polynomial in the power-series lane, the knot values in the
+    half-mesh one).  ``status`` is ``"converged"`` (``delta`` and ``closure_error`` at most ``tol``),
+    ``"projection_limited"`` (the iteration converged, but the polynomial cannot represent Redl's profile to ``tol``:
+    raise ``degree`` or use ``profile="half_mesh"``) or ``"not_converged"``.  Relative errors use
+    :func:`closure_scale` (finite for a zero drive).
     """
 
     input: VmecInput
@@ -1236,6 +1272,7 @@ class BootstrapPicardResult:
     converged: bool
     iterations: int
     history: tuple
+    status: str = "not_converged"
 
 
 def _picard_dds_matrix(ns: int, ds: float) -> np.ndarray:
@@ -1270,6 +1307,7 @@ def self_consistent_bootstrap(
     solve_kwargs: dict | None = None,
     verbose: bool = False,
     profile: str = "power_series",
+    g_convention: str = "simsopt",
 ) -> BootstrapPicardResult:
     """Fixed-boundary Picard iteration to a bootstrap-consistent current profile.
 
@@ -1318,16 +1356,17 @@ def self_consistent_bootstrap(
         raise ValueError(f"relax must be in (0, 1], got {relax}")
 
     mismatch = RedlBootstrapMismatch(profiles, helicity_n,
-                                     surfaces=np.clip(s_eval, 0.05, 0.95))
+                                     surfaces=np.clip(s_eval, 0.05, 0.95), g_convention=g_convention)
     if profile == "half_mesh":
         return _half_mesh_picard(inp, profiles, helicity_n, mismatch, n_iter=n_iter, tol=tol, relax=relax,
-                                 solve_kwargs=solve_kwargs, verbose=verbose)
+                                 solve_kwargs=solve_kwargs, verbose=verbose, g_convention=g_convention)
     if profile != "power_series":
         raise ValueError(f"profile must be 'power_series' or 'half_mesh', got {profile!r}")
     history: list[dict] = []
     state = None
     dIds_applied = None   # I'(s_full) currently driving the equilibrium (before its fit)
     fit_error = 0.0       # max|fit - I'_applied| / max|I'_new| of the polynomial the equilibrium sees
+    applied_poly = None   # the polynomial coefficients the current equilibrium was solved with
     eq = None
     converged = False
     solved = inp
@@ -1349,7 +1388,7 @@ def self_consistent_bootstrap(
         s_half = s_full[1:] - 0.5 * ds
 
         geom = redl_geometry_from_wout(w, s_eval)
-        jr, _ = j_dot_B_redl(profiles, geom, helicity_n)
+        jr, _ = j_dot_B_redl(profiles, geom, helicity_n, g_convention=g_convention)
         jr_full = np.interp(s_full, np.concatenate([[0.0], s_eval, [1.0]]),
                             np.concatenate([[0.0], np.asarray(jr), [0.0]]))
         fsa_B2_full = np.interp(s_full, s_eval, np.asarray(geom.fsa_B2))
@@ -1371,11 +1410,14 @@ def self_consistent_bootstrap(
         I_solve = np.linalg.solve(matrix, rhs)
         dIds_new = (jr_full * 2 * np.pi * psi_a - MU0 * I_solve * dpds) / fsa_B2_full
 
-        scale = max(float(np.max(np.abs(dIds_new))), np.finfo(float).tiny)
+        scale = closure_scale(dIds_new)  # finite for a zero drive
         delta = (np.inf if dIds_applied is None
                  else float(np.max(np.abs(dIds_new - dIds_applied))) / scale)
+        closure_error = (np.inf if applied_poly is None else float(np.max(np.abs(
+            dIds_new - np.polynomial.polynomial.polyval(s_full, applied_poly)))) / scale)
         f_boot = float(mismatch.total(w))
-        history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=f_boot, fit_error=fit_error))
+        history.append(dict(curtor=float(inp.curtor), delta=delta, f_boot=f_boot, fit_error=fit_error,
+                            closure_error=closure_error))
         if verbose:
             print(f"[self_consistent_bootstrap] it {it}: curtor={inp.curtor:.6e} "
                   f"delta={delta:.3e} f_boot={f_boot:.3e}", flush=True)
@@ -1397,8 +1439,14 @@ def self_consistent_bootstrap(
         inp = dataclasses.replace(inp, ncurr=1, pcurr_type="power_series",
                                   ac=ac, curtor=curtor)
         fit_error = float(np.max(np.abs(np.polynomial.polynomial.polyval(s_full, coeffs) - dIds_use))) / scale
-        dIds_applied = dIds_use
+        dIds_applied, applied_poly = dIds_use, coeffs
 
+    if not converged:
+        status = "not_converged"
+    elif history and history[-1]["closure_error"] <= float(tol):
+        status = "converged"
+    else:
+        status = "projection_limited"
     return BootstrapPicardResult(
         input=solved, equilibrium=eq, converged=converged,
-        iterations=len(history), history=tuple(history))
+        iterations=len(history), history=tuple(history), status=status)

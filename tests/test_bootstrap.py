@@ -731,6 +731,10 @@ def test_self_consistent_bootstrap_picard_converges():
         inp, TOKAMAK_PROFILES, 0, n_iter=10, tol=1e-3, relax=0.5, degree=6,
         s_eval=np.linspace(0.02, 0.98, 25))
     assert res.converged and res.iterations <= 10
+    # the closure of the iterate against the polynomial it was solved with: converged, or limited by the fit
+    assert res.status in ("converged", "projection_limited")
+    assert np.isfinite(res.history[-1]["closure_error"])
+    assert (res.status == "converged") == (res.history[-1]["closure_error"] <= 1e-3)
     assert res.input.ncurr == 1 and res.input.pcurr_type == "power_series"
     # fixed point: ~0.38 MA of bootstrap current, sign preserved
     assert 2e5 < -res.input.curtor < 6e5
@@ -919,7 +923,8 @@ def test_half_mesh_picard_makes_the_current_redls():
     profiles = _paper_profiles(n0, T0)
     result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh",
                                           verbose=True)
-    assert result.converged and result.input.pcurr_type == "line_segment_ip"
+    assert result.converged and result.input.pcurr_type == "line_segment_ip" and result.status == "converged"
+    assert np.isfinite(result.history[-1]["closure_error"]) and result.history[-1]["closure_error"] <= 1e-4
     assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
     state, rt = result.equilibrium.solution, result.equilibrium.solver_context
     # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
@@ -1186,3 +1191,27 @@ def test_picard_returns_the_iterate_it_solved_when_out_of_iterations(profile):
     assert result.input.curtor == result.history[-1]["curtor"]
     again = opt.solve_equilibrium(result.input, initial_state=result.equilibrium.state)
     np.testing.assert_allclose(float(again.wout.ctor), float(result.equilibrium.wout.ctor), rtol=1e-6)
+
+
+def test_zero_drive_picard_and_closure_are_finite():
+    """Flat n and T: Redl's current vanishes.  The half-mesh Picard's relative errors stay finite (the closure scale's
+    absolute floor), it converges to zero current, and closure_scale never divides by zero."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+        mpol=3, ntor=3, ntheta=12, nzeta=12)
+    inp = dataclasses.replace(inp, ns_array=np.array([13]), ftol_array=np.array([1e-12]),
+                              niter_array=np.array([10000]))
+    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * 1.5e20)
+    flat = bs.KineticProfiles(ne_coeffs=np.array([1.5e20]), Te_coeffs=np.array([T0]), Ti_coeffs=np.array([T0]))
+    result = bs.self_consistent_bootstrap(inp, flat, 0, n_iter=4, tol=1e-8, relax=1.0, profile="half_mesh")
+    deltas = [h["delta"] for h in result.history]
+    assert all(np.isfinite(d) for d in deltas)
+    assert result.converged and result.status == "converged" and abs(float(result.input.curtor)) < 1e-6
+    assert bs.closure_scale(np.zeros(5)) == bs.CLOSURE_ATOL / bs.CLOSURE_RTOL
+
+
+def test_g_convention_threads_through_the_mismatch():
+    """RedlBootstrapMismatch carries the convention; an unknown one is refused."""
+    profiles = _paper_profiles(1e20, 2e3)
+    assert bs.RedlBootstrapMismatch(profiles, 1, g_convention="isomorphism").g_convention == "isomorphism"
+    with pytest.raises(ValueError, match="g_convention"):
+        bs.RedlBootstrapMismatch(profiles, 1, g_convention="raw")

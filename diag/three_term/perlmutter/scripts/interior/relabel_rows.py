@@ -23,6 +23,7 @@ sys.path.insert(0, "tests")
 import test_freeboundary_vc as t  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import implicit as im  # noqa: E402
 from vmex.core.restart import state_from_wout  # noqa: E402
 from vmex.core.solver import evaluate_forces  # noqa: E402
 
@@ -75,14 +76,22 @@ def main():
     rt = eq.solver_context
     base = np.asarray(model._rows(jax.device_put(eq.solution, jax.devices()[0]), params_x, field))
     out = dict(resolution=model.resolution(), cases=[])
+    mask = im._fixed_boundary_dof_mask(model.cfg)
+    base_refined = np.asarray(model._rows(im._refined_state(model.cfg, params_x, jax.device_put(
+        eq.solution, jax.devices()[0]), mask), params_x, field))
     for m_f, n_f in ((0, 1), (1, 0), (1, 1), (2, 1)):
         for eps in (1e-4, 1e-3, 1e-2):
             w, proj_err = relabel(eq.wout, eps, m_f, n_f)
             relabelled = jax.device_put(state_from_wout(w, inp=model.fixed), jax.devices()[0])
             _, res, _ = evaluate_forces(relabelled, rt)
             rows = np.asarray(model._rows(relabelled, params_x, field))
+            # the control: the relabelled state refined back onto the discrete equilibrium (complement held)
+            refined = im._refined_state(model.cfg, params_x, relabelled, mask)
+            rows_refined = np.asarray(model._rows(refined, params_x, field))
             row = dict(m=m_f, n=n_f, eps=eps, projection_error=proj_err, fsqr=float(res.fsqr), fsqz=float(res.fsqz),
-                       fsql=float(res.fsql), rows_max_rel=float(np.max(np.abs(rows - base)) / np.max(np.abs(base))))
+                       fsql=float(res.fsql), rows_max_rel=float(np.max(np.abs(rows - base)) / np.max(np.abs(base))),
+                       refined_rows_max_rel=float(np.max(np.abs(rows_refined - base_refined))
+                                                  / np.max(np.abs(base_refined))))
             for block, start, stop in model.row_blocks:
                 d = rows[start:stop] - base[start:stop]
                 row[block] = float(np.sqrt(np.mean(d**2)) / max(np.sqrt(np.mean(base[start:stop] ** 2)), 1e-300))

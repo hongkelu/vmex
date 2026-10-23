@@ -1755,6 +1755,8 @@ def main(argv=None):
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
             problem.save_checkpoint(out / "checkpoint.npz")
 
+    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient):
+        problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_exact_gradient:
         t0 = time.monotonic()
         got = problem.exact_design_gradient(problem.accepted.parameters, h=args.exact_gradient_h)

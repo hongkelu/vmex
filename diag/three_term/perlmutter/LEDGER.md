@@ -91,6 +91,9 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     bears on "no bias" and on option 5.
 - **Reference check (exact gradient vs its difference step h):** QA 2.5% prescribed, h 1e-4 vs 1e-5: the exact
   vectors agree to **3e-4 relative** (GN identical to 2e-13). The exact gradient does not depend on h there.
+  **qivac, h 1e-4 vs 1e-5: the exact vectors differ by 1.7%** (GN identical; GN vs exact 2.8% / 2.4%). On QI vacuum
+  the reference is uncertain at about 2%, the size of the GN error it is meant to measure. "GN 2.8% off on qivac" is
+  not resolved; h 3e-5 is running to see the trend. QH 2.5% (35-55%) is far above this uncertainty.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

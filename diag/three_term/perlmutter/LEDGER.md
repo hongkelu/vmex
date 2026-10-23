@@ -55,6 +55,12 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
 - **First reference independent of differences: qivac, equal arc, polish target 1e-5.** The exact stationarity gradient
   **converged** (CG 26, residual 6.6e-9, certificate 9.8e-6). **GN vs exact: 2.8% (max component 4.4%), cosine
   0.9996.** GN is about 3% off on QI vacuum too.
+- **QH 2.5% prescribed, equal arc 1e-3, target 1e-5: the exact gradient converged** (CG 26, residual 4.1e-9). Along
+  the check's direction: **exact -2.702**; differences from trials that moved -2.847 (h 3e-5) and -2.929 (h 1e-4),
+  within 5-8% of exact; **Gauss-Newton -4.196, 55% off** (over all components 37%, cosine 0.953). The h 1e-5
+  "match" (-4.196) was the circular predicted trial.
+  - So on QH 2.5% GN is wrong by tens of percent and the converged exact derivative is right.
+  - With equal arc it converges in 26 iterations; with NL it had not in 30.
 
 **C5b day3 gradient checks** (gate 1e-5, re-solved central differences at h 1e-4 / 3e-5 / 1e-5; `raw/wp5/day3/`):
 - qavac, 3 directions: loss matches to 7e-9..8e-8 at h 1e-5. With the **continuous clearance** (22e60e13) its row's

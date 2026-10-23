@@ -194,6 +194,15 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
 
       The mpol 4 truncation error dominates. The K-frozen difference (42 um) is 2% of it, so the choice costs
       nothing measurable in accuracy. K is preferred because it is deterministic and a complete root.
+    - **Derivatives (WP5):** with K, the implicit derivative is an independent re-solve FD's (li383_low_res, mean
+      iota, h 5e-4; `test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved`):
+
+      | | d/dRBC(1,1) | d/dZBS(-1,1) |
+      |---|---|---|
+      | frozen: implicit vs re-solve gap | 1.0e-2 | 2.8e-2 (closed only by adding the m = 1 family's drift) |
+      | **solved (K)** | **9.9e-7** | **2.9e-6** |
+
+      The frozen test is kept with `M1_COMPLEMENT = "frozen"` (closures 2.3e-6, 1.6e-5).
     - **Implemented in #122:** `implicit.M1_COMPLEMENT = "solved"` (default; `"frozen"` restores VMEC's
       behaviour). It applies to 3D stellarator-symmetric runs; `lasym` is unchanged. The host solver is unchanged:
       the Newton refinement moves the complement from wherever the host left it.

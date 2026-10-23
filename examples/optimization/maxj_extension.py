@@ -47,5 +47,13 @@ print(f"[maxj] pitches 1/lambda = {np.round(1 / PITCH, 5).tolist()} T, weight {W
       f"surfaces {SURFACES.tolist()}, {ACTION}", flush=True)
 _maxj = MaximumJResidual(SURFACES, PITCH, mboz=MBOZ, nboz=MBOZ, target=TARGET, **ACTION)
 
+def maximum_j_rows(state, rt):
+    """The residual rows with a pitch that is untrapped on a surface pair (NaN in MaximumJResidual) set to 0:
+    the pitch drops out there instead of making the loss NaN. The NaN is a constant branch: the gradient stays
+    finite."""
+    rows = _maxj.residuals_state(state, rt)
+    return jnp.where(jnp.isnan(rows), 0.0, rows)
+
+
 ROWS = {}
-TERMS = {"maximum_j": (_maxj.residuals_state, WEIGHT)}
+TERMS = {"maximum_j": (maximum_j_rows, WEIGHT)}

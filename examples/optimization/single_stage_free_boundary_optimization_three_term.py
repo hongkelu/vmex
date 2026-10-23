@@ -1046,16 +1046,19 @@ def surface_distance(coils, surface):
 
 
 def continuous_surface_distance(points, rbc, zbs, nfp, *, grid=(48, 48), iterations=10):
-    """Coil-to-plasma clearance on the continuous surface and along the coil (E3), and the runner-up gap.
+    """Coil-to-plasma clearance between the continuous coil and the continuous surface (E3), and the runner-up gap.
 
-    ``points`` (curves, samples, 3) are coil samples in order along each closed curve; ``rbc``/``zbs``
-    ``(2 ntor + 1, mpol)`` the boundary, ``R + i Z = sum (rbc cos + i zbs sin)(m theta - n nfp phi)``.  A grid search
-    over the whole torus finds each sample's nearest surface point; the seven best samples are refined onto the
-    continuous surface and the closest is kept; for it and its two neighbours the
-    surface point is refined by Newton on ``(theta, phi)`` (the minimizer held fixed for differentiation: the
-    envelope theorem), and the clearance is the vertex of the parabola through their three distances, which is
-    continuous along the coil.  Returns ``(clearance, gap)``: ``gap`` is how much farther the nearest sample more
-    than two samples away (on any coil) is, so a small ``gap`` flags a closest-pair switch nearby.
+    ``points`` (curves, samples, 3) are coil samples, uniform in the parameter of each closed curve; the curve is
+    their periodic (trigonometric) interpolant, exact for a Fourier curve sampled above its Nyquist rate.
+    ``rbc``/``zbs`` ``(2 ntor + 1, mpol)`` are the boundary, ``R + i Z = sum (rbc cos + i zbs sin)(m theta - n nfp
+    phi)``.  A grid search over the whole torus finds each sample's nearest surface point; from the seven best
+    samples, Newton on ``(s, theta, phi)`` (coil parameter and surface angles) refines the closest pair of the
+    continuous curve and surface, and the smallest of the seven is the clearance.  The pair is held fixed for
+    differentiation (the envelope theorem).  The value is a minimum of local minima, continuous in the coils and the
+    boundary; it has a kink, but no jump, where the closest pair switches (the parabola through three samples used
+    before jumped by about 1e-5 when the closest sample changed).  Returns ``(clearance, gap)``: ``gap`` is how much
+    farther the nearest sample more than two samples away (on any coil) is, so a small ``gap`` flags a closest-pair
+    switch nearby.
     """
     import jax
     import jax.numpy as jnp
@@ -1080,34 +1083,44 @@ def continuous_surface_distance(points, rbc, zbs, nfp, *, grid=(48, 48), iterati
     d2 = jax.lax.map(lambda q: jnp.min(jnp.sum((q - S) ** 2, axis=1)), flat)
     nearest = jax.lax.map(lambda q: jnp.argmin(jnp.sum((q - S) ** 2, axis=1)), jax.lax.stop_gradient(flat))
     order = jnp.argsort(jax.lax.stop_gradient(d2))[:7]  # the coarse search's best candidates, refined below
+    coef = jnp.fft.fft(pts, axis=1) / nsample  # (curves, wavenumbers, 3): the trigonometric interpolant
+    wave = jnp.fft.fftfreq(nsample, 1.0 / nsample)
+    if nsample % 2 == 0:  # the Nyquist term split evenly between +-N/2 keeps the interpolant real and smooth
+        coef = coef.at[:, nsample // 2].multiply(0.5)
+        coef = jnp.concatenate([coef, coef[:, nsample // 2:nsample // 2 + 1]], axis=1)
+        wave = jnp.concatenate([wave, -wave[nsample // 2:nsample // 2 + 1]])
 
-    def refined(q, j):
-        """Distance from ``q`` to the surface, its closest point refined from grid point ``j`` (fixed for AD)."""
-        t, f = jax.lax.stop_gradient(TH.ravel()[j]), jax.lax.stop_gradient(PH.ravel()[j])
-        qs = jax.lax.stop_gradient(q)
-        half = lambda tf: 0.5 * jnp.sum((surface(tf[0], tf[1]) - qs) ** 2)  # noqa: E731
-        tf = jnp.array([t, f])
+    def curve(c, u, coef=coef):
+        """Point of curve ``c`` at parameter ``u`` (sample units: u = i is sample i)."""
+        return jnp.real(jnp.sum(coef[c] * jnp.exp(2j * jnp.pi * wave * u / nsample)[:, None], axis=0))
+
+    def pair(j):
+        """Distance between coil ``c`` and the surface, the closest pair refined by Newton from sample ``j`` and
+        its nearest grid point (held fixed for AD)."""
+        c = j // nsample
+        z0 = jnp.array([(j % nsample).astype(float), TH.ravel()[nearest[j]], PH.ravel()[nearest[j]]])
+        fixed = jax.lax.stop_gradient(coef)
+        half = lambda z: 0.5 * jnp.sum((curve(c, z[0], fixed) - surface(z[1], z[2])) ** 2)  # noqa: E731
+        z = jax.lax.stop_gradient(z0)
         for _ in range(iterations):
-            # Newton on |q - S|^2 / 2: Gauss-Newton converges slowly or not at all when the distance is comparable to
-            # the surface's radius of curvature (its dropped term, the residual times the curvature, is then as large)
-            g, H = jax.grad(half)(tf), jax.hessian(half)(tf)
-            newton = -jnp.linalg.solve(H + 1e-14 * jnp.eye(2), g)
+            # Newton on |C - S|^2 / 2 (Gauss-Newton fails when the distance is comparable to a radius of curvature);
+            # a gradient step where the Hessian is not positive definite
+            g, H = jax.grad(half)(z), jax.hessian(half)(z)
+            newton = -jnp.linalg.solve(H + 1e-14 * jnp.eye(3), g)
             ok = (jnp.linalg.eigvalsh(H)[0] > 0) & jnp.all(jnp.isfinite(newton))
-            tf = tf + jnp.where(ok, newton, -g / jnp.maximum(jnp.linalg.norm(jax.hessian(half)(tf)), 1e-300))
-        tf = jax.lax.stop_gradient(tf)
-        return jnp.sqrt(jnp.sum((q - surface(tf[0], tf[1])) ** 2) + 1e-30)
+            z = z + jnp.where(ok, newton, -g / jnp.maximum(jnp.linalg.norm(H), 1e-300))
+        z = jax.lax.stop_gradient(z)
+        return jnp.sqrt(jnp.sum((curve(c, z[0]) - surface(z[1], z[2])) ** 2) + 1e-30)
 
-    cand = jnp.stack([jax.lax.stop_gradient(refined(flat[j], nearest[j])) for j in order])
-    k = order[jnp.argmin(cand)]  # the closest sample on the continuous surface
+    cand = jnp.stack([pair(j) for j in order])
+    best = jnp.argmin(jax.lax.stop_gradient(cand))
+    clearance = cand[best]
+    k = order[best]
     c, i = k // nsample, k % nsample
-    idx = [c * nsample + (i + o) % nsample for o in (-1, 0, 1)]
-    dm, d0, dp = (refined(flat[j], nearest[j]) for j in idx)
-    curv = dp - 2 * d0 + dm
-    vertex = jnp.where(curv > 0, d0 - (dp - dm) ** 2 / (8 * jnp.maximum(curv, 1e-300)), d0)
     sample = jnp.arange(ncurve * nsample)
     near = (sample // nsample == c) & (jnp.abs(((sample % nsample) - i + nsample // 2) % nsample - nsample // 2) <= 2)
     second = jnp.sqrt(jnp.min(jnp.where(near, jnp.inf, jax.lax.stop_gradient(d2))))
-    return vertex, second - jax.lax.stop_gradient(vertex)
+    return clearance, second - jax.lax.stop_gradient(clearance)
 
 
 def coil_constraint(coils_from_x):

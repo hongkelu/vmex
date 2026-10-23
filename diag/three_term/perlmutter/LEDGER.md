@@ -109,9 +109,18 @@ deck start):
 | **qi25** | random, scale | **0.25 mm, 1.26 mm** | **0.95%, 2.7%** |
 
 - Identical starts reproduce to 1e-13 m. The vacuum spreads are consistent with the slack a 1e-3 gate leaves.
-- **qi25 is not.** Two certified equilibria 1.26 mm apart, with outputs 2.7% apart, are either distinct branches or a
-  physically flat direction the certificate does not resolve. Open: compare at a tighter gate and examine the
-  difference direction (normal vs tangential, current).
+- **qi25: distinct local minima** (day1, 1e-5 gate, dffc59aa). The deck start and random start 1 both certify
+  (stationarity 9.4e-6 and 6.3e-6) and stay **0.27 mm** apart (values 0.22%), as at the 1e-3 gate, so this is not
+  fit slack.
+  - The costs differ by 1.0% (1.1014e-7 vs 1.0903e-7).
+  - The difference lies 81% in the 5 weakest singular directions (97% in 20). The linear model predicts a cost
+    change of 25x the cost along it, so each minimum is outside the other's linear regime.
+  - So the finite-resolution three-term least squares has several minima along a flat, nonconvex valley (the
+    multigrid docstring's "several minima").
+  - The scaled start did not reach the 1e-5 gate in 60 rounds (1.3e-4).
+  - **Selection rule:** among certified fits from several starts, the lowest cost (A6's `_best_three_term_fit`
+    ranking).
+  - Open: whether the minima merge with resolution (G2), and an outputs-error budget for them.
 - The tighter-gate qhvac pair could not certify at 1e-5: QH vacuum's stationarity floor is about 3e-5.
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override

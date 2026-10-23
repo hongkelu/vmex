@@ -233,3 +233,13 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
   The scan favours (b): the rows' sensitivity sits in the boundary-field evaluation, which does not converge with ns,
   while the physical state is reproducible. (b) departs from the discretization the force balance uses, so it needs
   an independent reference (DESC, or field-line tracing in vacuum) before it can become the default.
+
+## WP6: checkpoint / restore wiring (8e2956e6)
+- `ThreeTermFreeBoundaryProblem.from_loss(..., checkpoint=PATH)` builds the problem from a saved accepted point:
+  it skips the seed solve, then restores and certifies the saved equilibrium. A different definition is refused.
+- `save_checkpoint` writes atomically.
+- Driver:
+  - `--checkpoint-every N` (default 1) saves `OUTPUT/checkpoint.npz`;
+  - `--resume CHECKPOINT` continues from one. The problem must be built the same way, e.g. `--seed-run` the
+    checkpoint's run. SciPy's SLSQP state is not saved, so the optimizer restarts from the restored point.
+- GPU test: `test_checkpoint_restores_the_accepted_equilibrium` (now also builds from the checkpoint), passed.

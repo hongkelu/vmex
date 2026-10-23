@@ -44,6 +44,20 @@ round; `paper/runs/wp2`):
     (WP3) or a curvature-aware step on the weak subspace (method 4).
   - Before K, each tight evaluation's history-dependent complement moved the rows by about 1e-3 relative. That
     is the same order as the per-round gain the GN model could no longer realise.
+- **Gauss-Newton step extrapolation (`GN_EXTRAPOLATE`, 8e2956e6) gives no gain.** In the K runs consecutive
+  round steps are nearly parallel (cosine 0.93-0.99 for NL; C zig-zags, -0.6 to 0.5), each about the full GN
+  step (0.05 scaled). Doubling accepted undamped steps while the cost falls:
+  - NL-KX2 reaches 2.294e-7 at round 19, against 2.299e-7 without it, and is slightly slower per minute;
+  - C-KX2 matches C-K40.
+
+  It stays off by default (unit test `test_gauss_newton_extrapolation_follows_a_step_the_model_undershoots`).
+- **The fixtures with K** (8e2956e6, default 5 polish rounds, strict gate):
+
+  | fixture | before K | with K |
+  |---|---|---|
+  | qhvac | rejected (1.7e-3) | **certified**: stationarity 7.1e-3, 5.4e-3, 3.5e-3, 1.9e-3, 8.4e-4, 2.5e-4 |
+  | qa25 | rejected (9.1e-2) | rejected: monotone 0.16 to 0.072 in 5 rounds |
+  | qavac, qi25 | (rejected, certified) | running |
 - **A finer boundary (10 x 10) converges more slowly per minute** than 8 x 8 (more coordinates, more tangential
   freedom; WP3).
 - **Broyden updates are not faster per minute** (C 0.063 at 14 min against 0.030 for the default). The

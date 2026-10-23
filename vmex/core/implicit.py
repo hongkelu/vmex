@@ -1442,7 +1442,7 @@ _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
 # equilibrium solve also skips the second frozen-residual measurement.
 # ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float]] = weakref.WeakKeyDictionary()
 
 # cfg -> whether its latest _refined_state call stopped at _REFINE_FAR_STALL.
 _ANCHOR_STALLED: dict[int, bool] = {}

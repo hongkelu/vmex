@@ -1146,6 +1146,10 @@ def parse_args(argv=None):
     parser.add_argument("--seed-start", nargs="+", metavar="KIND",
                         help="fit the seed's boundary from another start (start-dependence qualification): "
                         "'random EPS SEED' or 'scale EPS'; the deck stays the reference")
+    parser.add_argument("--polish-rounds", type=int, help="certificate polish rounds per trial (default: the model's, "
+                        "freeboundary_vc.POLISH_ROUNDS); a finite-beta seed can need about 100")
+    parser.add_argument("--polish-ftol", type=float, help="the polish target (default freeboundary_vc.POLISH_FTOL); "
+                        "derivative qualification needs about 1e-5")
     parser.add_argument("--clearance", choices=("continuous", "points"), default="continuous",
                         help="coil-plasma clearance: the continuous closest point (default; smooth where the closest "
                         "pair is unique) or the minimum over sampled coil and surface points (non-smooth at every closest-pair switch)")
@@ -1591,6 +1595,12 @@ def main(argv=None):
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
+    from vmex.core import freeboundary_vc as fvc
+
+    if args.polish_rounds is not None:
+        fvc.POLISH_ROUNDS = int(args.polish_rounds)
+    if args.polish_ftol is not None:
+        fvc.POLISH_FTOL = float(args.polish_ftol)
     tt_options = dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
                       quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                       trial_ftol=args.trial_forward_ftol, bootstrap=profiles,

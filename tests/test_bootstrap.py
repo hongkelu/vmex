@@ -1202,7 +1202,8 @@ def test_zero_drive_picard_and_closure_are_finite():
                               niter_array=np.array([10000]))
     T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * 1.5e20)
     flat = bs.KineticProfiles(ne_coeffs=np.array([1.5e20]), Te_coeffs=np.array([T0]), Ti_coeffs=np.array([T0]))
-    result = bs.self_consistent_bootstrap(inp, flat, 0, n_iter=4, tol=1e-8, relax=1.0, profile="half_mesh")
+    # the zero-drive iteration contracts about 1000-fold per step (delta 1e2, 0.5, 1e-3, 1.5e-6, ...)
+    result = bs.self_consistent_bootstrap(inp, flat, 0, n_iter=8, tol=1e-8, relax=1.0, profile="half_mesh")
     deltas = [h["delta"] for h in result.history]
     assert all(np.isfinite(d) for d in deltas)
     assert result.converged and result.status == "converged" and abs(float(result.input.curtor)) < 1e-6

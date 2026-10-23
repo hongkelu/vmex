@@ -121,6 +121,14 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
             f"(rel {rel:.2e}) — the implicit gradient must match the frozen path")
 
 
+def _clear_implicit_caches():
+    """Drop JAX's compiled executables and the implicit layer's memoized solves, states and factors."""
+    jax.clear_caches()
+    for name in ("_HOT_CACHE", "_LAST_SOLVE", "_PERTURB_SEED", "_LAST_REFINED", "_LAST_ANCHOR_FACTORS",
+                 "_LAST_REFINEMENT_CORRECTION", "_FACTOR_STRUCTS", "_MASK_CACHE"):
+        getattr(im, name).clear()
+
+
 def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
     """Mean iota: with the m=1 complement solved at the root (``M1_COMPLEMENT``,
     the default) no entry is frozen at a path-dependent value, so the implicit
@@ -162,7 +170,7 @@ def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
         assert gap < 1e-4
 
 
-def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch):
+def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch, request):
     """Mean iota: the implicit derivative against an independent re-solve FD,
     with the m=1 complement frozen as VMEC2000 leaves it (``M1_COMPLEMENT =
     "frozen"``).
@@ -181,7 +189,11 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch
     derivative plus the iota response to moving only that family by the
     re-solves' own drift.  Measured closures: 2.3e-6 and 1.6e-5.
     """
+    # M1_COMPLEMENT is read when the residual and projector are traced, and configs are canonical (shared): drop
+    # every compiled executable and memoized solve so this test traces and solves the frozen problem afresh
+    _clear_implicit_caches()
     monkeypatch.setattr(im, "M1_COMPLEMENT", "frozen")
+    request.addfinalizer(_clear_implicit_caches)
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
     cfg = im.make_config(inp, **CASES[name])

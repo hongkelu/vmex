@@ -57,7 +57,7 @@ round; `paper/runs/wp2`):
   |---|---|---|
   | qhvac | rejected (1.7e-3) | **certified**: stationarity 7.1e-3, 5.4e-3, 3.5e-3, 1.9e-3, 8.4e-4, 2.5e-4 |
   | qa25 | rejected (9.1e-2) | rejected: monotone 0.16 to 0.072 in 5 rounds |
-  | qavac | rejected (4.8e-2) | rejected: monotone 0.15 to 0.081 |
+  | qavac | rejected (4.8e-2) | rejected after 5 rounds (0.081); **certified with 60 allowed: 9.7e-5 at round 24** |
   | qivac | certified | **certified** |
   | qi25 | certified (7.5e-4 at round 0) | rejected: starts at 5.0e-3, 4.9e-3 after 5 rounds |
 
@@ -101,3 +101,19 @@ boundary coordinates by least squares on an oversampled grid:
 - **Next for WP3:** a chart whose surface is given to the equilibrium at a higher boundary resolution than mpol 8 (an
   oversampled boundary), or a measured truncation error budget. Validate by the output and derivative changes after
   recharting, as the brief requires.
+
+## WP5: the polish's boundary Jacobian is exact (`scripts/wp5/boundary_jacobian_fd.py`, `raw/wp5/`)
+The small deck at mpol 2 / ns 7 and mpol 4 / ns 15, three random directions. `model.linearize` against central
+differences of tight `model.evaluate`, error relative to |J d|:
+
+| h | 1e-2 | 1e-3 | 1e-4 |
+|---|---|---|---|
+| rel. error | 1.3e-3 to 4.7e-3 | about 5e-5 | about 4.5e-7 |
+
+The error falls as h^2, so J is the derivative of the tight rows. The slow QH/QI finite-beta polish is therefore
+not a Jacobian error: it is the nonlinearity of the rows in the boundary coordinates (WP3).
+
+**Not yet verified: the full single-stage design gradient through the free boundary.**
+`test_plasma_map_derivatives_at_nonzero_offsets` (design gradient against an FD of `problem.fun`, whose
+evaluations re-fit the boundary at the trial tolerance 1e-3) still fails with K. Before K it was -1.453 against
+-1.480 (1.8%). Next: a variant whose FD uses tightly converged fits, to separate FD noise from a gradient error.

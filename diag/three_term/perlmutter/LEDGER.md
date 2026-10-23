@@ -83,6 +83,12 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   check direction: GN -0.067266, exact -0.066541, one-step cold trials -0.067458. The partly moved trials sit nearer
   GN than exact, so even "moving" differences are not a reference.
 - **QH vacuum NL (target 3e-4): exact gradient converged** (CG 19): **GN vs exact 1.6%** (max component 1.2%).
+- **QH 2.5% prescribed NL: exact gradient converged** (CG 34, 90 allowed): identical to the 30-iteration value
+  (-3.6005 along the check direction; vector difference < 1e-3). **GN vs exact 35%.**
+  - **Labelling changes the design gradient on QH 2.5%:** converged exact, NL seed -3.60; equal-arc 1e-3 seed -2.70.
+    That is 25% between two certified fits of the same deck that differ only in the labelling rows.
+  - So equal arc 1e-3 is not physically negligible for QH 2.5% derivatives, even though values agree to 0.07%. This
+    bears on "no bias" and on option 5.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

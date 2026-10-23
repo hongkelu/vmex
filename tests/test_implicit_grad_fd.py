@@ -349,3 +349,32 @@ def test_multigrid_gradient_vs_frozen_path_fd():
           f"(Newton res {res:.0e})")
     assert res < 1e-8, f"frozen solve not converged (res {res:.1e})"
     assert rel <= 1e-6
+
+
+def test_status_certifies_the_refined_root_not_the_host_solve(monkeypatch):
+    """The status lane certifies the returned state in the config's equations (the solved m=1 complement
+    included): a successful refinement is status 0 with its residual recorded under refine_tol; a refinement that
+    returns the host state (a moderate stall: the host solve is converged, the expanded equations are not) and a
+    non-finite refined state are status 4, not a certified derivative point."""
+    inp = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
+    cfg = im.make_config(inp, **CASES["li383_low_res"])
+    params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), im.params_from_input(inp))
+
+    def status():
+        im._LAST_REFINED.pop(cfg, None)
+        im._LAST_REFINEMENT_CORRECTION.pop(cfg, None)
+        return int(im._host_solve_and_mask_status(cfg, params_np)[2])
+
+    assert status() == 0
+    assert im._LAST_REFINED[cfg][3] <= cfg.refine_tol
+    original = im._refined_state
+    monkeypatch.setattr(im, "_refined_state", lambda cfg, params, state, mask, **kw: state)
+    assert status() == 4  # the frozen host root does not solve the complement's equation
+    assert im._LAST_REFINED[cfg][3] > cfg.refine_tol
+    monkeypatch.setattr(im, "_refined_state", lambda cfg, params, state, mask, **kw: jax.tree.map(
+        lambda a: a * np.nan if jnp.issubdtype(a.dtype, jnp.inexact) else a, original(cfg, params, state, mask)))
+    assert status() == 4
+    assert im._LAST_REFINED[cfg][3] == np.inf
+    with pytest.raises(ValueError, match="finite refine_tol"):
+        im.make_config(inp, refine_tol=np.inf)
+    im.make_config(inp, refine_tol=np.inf, m1_complement="frozen")  # the unrefined host root is the frozen one

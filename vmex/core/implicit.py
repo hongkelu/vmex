@@ -433,6 +433,10 @@ def make_config(
     refine_tol = float(refine_tol)
     if not refine_tol > 0.0:
         raise ValueError("refine_tol must be positive or numpy.inf")
+    if m1_complement == "solved" and not np.isfinite(refine_tol) and int(resolution.ntor) > 0 \
+            and not bool(resolution.lasym) and bool(lconm1):
+        raise ValueError("m1_complement='solved' is a root of the refined equations: it needs a finite refine_tol "
+                         "(use m1_complement='frozen' to skip the refinement)")
     return _canonical_config(ImplicitConfig(
         inp=inp, resolution=resolution, ftol=float(ftol),
         max_iterations=int(max_iterations), mode=str(mode),
@@ -1624,6 +1628,9 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
                 initial_correction=_LAST_REFINEMENT_CORRECTION.get(cfg),
             )
             stalled = _ANCHOR_STALLED.pop(id(cfg), False)
+            # The root certificate: the returned state's own residual in the selected equations (the solved m=1
+            # complement included), measured independently of the refinement's bookkeeping.
+            residual = _refined_residual(cfg, params, refined, dof_mask)
             correction = jax.tree.map(jnp.subtract, refined, state)
             correction_norm = float(_tree_norm(correction))
             factors = _BLOCK_FACTORS_BUILT.pop(id(cfg), None)
@@ -1635,9 +1642,18 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
             _LAST_REFINEMENT_CORRECTION[cfg] = correction
         else:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
-        hit = (key, refined, stalled)
+        hit = (key, refined, stalled, residual)
         _LAST_REFINED[cfg] = hit
     return hit[1]
+
+
+def _refined_residual(cfg: ImplicitConfig, params: ImplicitParams, state: SpectralState,
+                      dof_mask: SpectralState) -> float:
+    """``|F(P x, p)|`` of ``state`` in the config's equations (inf if not finite): the root certificate."""
+    state, params, dof_mask = commit_to_single_device((state, params, dof_mask))
+    F = residual_fn(cfg, state, dof_mask)
+    value = float(_tree_norm(F(_dof_projector(cfg, dof_mask)(state), params)))
+    return value if np.isfinite(value) else float("inf")
 
 
 # One staged Newton refinement step per config (the ``_adjoint_gcrot_core``
@@ -2026,7 +2042,10 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
 
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
     when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
-    3 when the fixed-point anchor stalled far from the root.
+    3 when the fixed-point anchor stalled far from the root, and 4 when the
+    returned (refined) state's residual in the config's equations -- the
+    solved m=1 complement included -- is above ``refine_tol`` or not finite:
+    a best-effort state, not a certified derivative point.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
     residual is the host solver's own, from before the fixed-point refinement
@@ -2079,6 +2098,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
+        if (status == 0 and refined is not None and refined[0] == hit[0]
+                and np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol):
+            status = 4  # the returned state is not a root of the selected equations to refine_tol
         if status != 0:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         return state, mask, np.int32(status), np.float64(fsq), np.float64(ratio)

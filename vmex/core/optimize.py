@@ -3894,7 +3894,8 @@ def _least_squares_implicit(
         if refined is None or refined[0] != hit[0]:
             imp._host_solve_and_mask_status(cfg, params_np)
             refined = imp._LAST_REFINED.get(cfg)
-        if refined is None or refined[0] != hit[0] or refined[2]:
+        if (refined is None or refined[0] != hit[0] or refined[2]
+                or (np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol)):
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )

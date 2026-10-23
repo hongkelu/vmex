@@ -151,9 +151,9 @@ def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
         for sign in (1.0, -1.0):
             p = jax.tree.map(lambda a, d, s=sign: a + s * h * d, p0, tangent)
             x, _ = im.solve_implicit_with_aux(p, cfg)
-            # nothing outside the evolved dofs and the edge moves
+            # nothing outside the evolved dofs and the edge moves (to round-off)
             assert max(float(jnp.max(jnp.abs(a - b))) for a, b in zip(
-                jax.tree.leaves(frozen_part(x)), jax.tree.leaves(frozen_part(x0)))) == 0.0
+                jax.tree.leaves(frozen_part(x)), jax.tree.leaves(frozen_part(x0)))) < 1e-14
             values.append(float(mean_iota(x, im.runtime_from_params(p, cfg))))
         resolve = (values[0] - values[1]) / (2 * h)
         gap = abs(implicit / resolve - 1.0)

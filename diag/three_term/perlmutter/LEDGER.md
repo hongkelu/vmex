@@ -110,7 +110,17 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   - **QI 2.5% DKX: GN 9.2%; k=20 13.6% (worse).**
   - The curvature that matters is not on the weak scaled directions, and a truncated curvature model can spoil the
     multipliers.
-  - Next: the exact-vs-GN multiplier correction by singular direction (fa2974d0, running) shows where it lives.
+  - **Diagnosis (QA 2.5%, fa2974d0):** the multiplier correction mu_exact - mu_GN *is* concentrated in the weak
+    scaled directions: the weakest 10 / 20 / 40 / 80 of 255 hold 45% / 88% / 98% / 99.9% of it (largest shares at
+    ranks 236-253).
+    - What the subspace mode misses is the **mixed design curvature on the strong part of mu**. It applies S_bd^T
+      only to P mu, but mu (the GN multiplier itself) is large in the strong directions. That is the brief's point:
+      the yy correction alone is not exact.
+    - Hence k=40 recovers 98% of the multiplier correction but only 80% of the gradient error (4.08% -> 0.83%).
+    - It also explains why the full CG converges in 16-34 iterations.
+  - **Superseded by the full stationarity derivative** (166d0c36: `stationarity_design_gradient`, every row).
+    F_d^T mu is taken on the whole mu, and the H and F_d products come from one tight solve and one reverse pass per
+    point, not a full linearization. Qualification is running (G3, g3e).
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

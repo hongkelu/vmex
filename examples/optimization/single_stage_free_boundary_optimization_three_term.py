@@ -1066,6 +1066,8 @@ def parse_args(argv=None):
                         help="compare the model's implicit boundary Jacobian with central differences of tight "
                         "rows along N random directions and the weakest one (jacobian_check.json), at the seed "
                         "boundary or --jacobian-at, without solving the free boundary; then stop")
+    parser.add_argument("--jacobian-dump", action="store_true",
+                        help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
     parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
                         help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
@@ -1164,7 +1166,7 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4)):
+def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4), dump=False):
     """The model's implicit boundary Jacobian against central differences of tight rows (WP5/C5).
 
     At the seed design's field and plasma parameters and the seed boundary (or ``record``'s model coordinates),
@@ -1193,16 +1195,18 @@ def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-
     rng = np.random.default_rng(0)
     dirs = [rng.standard_normal(b.size) for _ in range(directions)]
     dirs.append(vt[-1] / np.linalg.norm(Js, axis=0))
-    records = []
+    records, arrays = [], {}
     for k, d in enumerate(dirs):
         d = d / np.linalg.norm(d) * scale
         Jd = J @ d
+        arrays[f"Jd_{k}"] = Jd
         for h in steps:
             pair = [model.evaluate(b + sign * h * d, params, field, tight=True) for sign in (1, -1)]
             if any(p is None for p in pair):
                 records.append(dict(direction=k, h=h, failed=True))
                 continue
             diff = (np.asarray(pair[0][0]) - np.asarray(pair[1][0])) / (2 * h)
+            arrays[f"diff_{k}_{h:.0e}"] = diff
             row = dict(direction=k, kind="weakest" if k == directions else "random", h=h,
                        relative=float(np.linalg.norm(diff - Jd) / np.linalg.norm(Jd)))
             for block, b0, b1 in model.row_blocks:
@@ -1215,6 +1219,9 @@ def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-
     meta = dict(resolution=model.resolution(), singular_values=[float(sv[0]), float(sv[-1])],
                 record=None if record is None else str(record), options=model.options)
     (out / "jacobian_check.json").write_text(json.dumps(dict(meta=meta, checks=records), indent=1, default=str) + "\n")
+    if dump:
+        blocks = {name: np.array([b0, b1]) for name, b0, b1 in model.row_blocks}
+        np.savez(out / "jacobian_check.npz", rows=np.asarray(rows), **arrays, **{f"block_{k}": v for k, v in blocks.items()})
 
 
 def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
@@ -1436,7 +1443,7 @@ def main(argv=None):
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
-        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at)
+        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump)
         return
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,

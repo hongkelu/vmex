@@ -80,9 +80,10 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | qivac | **certified** | wp2/fx-qivac-K |
 | qavac | **certified** at 9.7e-5 (24 rounds; reproduced in a fresh allocation) | wp2/fx-qavac-K60, night/qavac-K40 |
 | qi25 | **certified** at 8.1e-5 (21 rounds; reproduced) | wp2/fx-qi25-K40, night/qi25-K40 |
-| qa25 | 6.2e-3 after 29 rounds (40 allowed) | night/qa25-K40 (running) |
+| qa25 | 6.2e-3 after 29 rounds; cut by the allocation's end | night/qa25-K40 |
 | qh25, prescribed current (fixture deck and current, no `--bootstrap`) | **certified** at 8.9e-5, cost 1.405e-7, after 74 rounds (36 min, 038065f3) | night/QH-presc80 |
-| qh25, bootstrap (Redl) | not certified: NL 46 min, cost 1.90e-7 and falling, stationarity 1.4e-2; C 47 min, 1.1e-2 | night/NL-K90, C-K90 (running) |
+| qh25, bootstrap (Redl), NL labelling | **certified** at 5.6e-4 (gate 1e-3) after 91 polish rounds (87 min, 038065f3, job 60144384); **bootstrap closure passed**: relative 1.9e-10, CURTOR applied -14743.890978 A vs Redl -14743.890977 A; cost 1.435e-7; condition 3.6e7 | night/NL-K90 |
+| qh25, bootstrap (Redl), equal-arc labelling | at the gate (1.0e-3) after 90 rounds when the allocation ended (cost 1.849e-7) | night/C-K90 |
 
 **Reproducibility across allocations** (fresh processes, different nodes, pins 8e2956e6 vs 038065f3;
 `scripts/compare_starts.py`, `raw/g1/`):

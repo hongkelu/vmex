@@ -71,6 +71,11 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 - **NL seeds in vacuum: 5 of 5 failed to certify in 120 polish rounds.** qivac x3 (gain 1.77e-3, normal step 1.4e-6
   of the minor radius; identical in three processes on two allocations), qavac x2 (7.6e-3, 1.2e-6). The surfaces
   converged; what remains is relabelling (D5). The equal-arc seeds of the same fixtures certified in about 15 min.
+- **NL started from the equal-arc fit's certified boundary does not certify either** (qivac, 120 rounds): gain
+  9.55e-2, normal step 1.0e-5. That is further from certified than the cold NL start (1.77e-3). Without labelling
+  rows the valley's minimum is not where the equal-arc fit sits but where the discretization effects put it, and
+  Levenberg-Marquardt drifts slowly toward it. A good start does not cure NL; the relabelling freedom itself is the
+  problem (gauge), consistent with D5 and the QH gradient.
 - **QH 2.5% prescribed: exact stationarity gradient** (G3 exact-qhpresc, the same deterministic seed: GN . d reproduces
   -5.6988). Along the difference check's direction: **Gauss-Newton -5.70, exact -3.60, re-solved differences -4.62 to
   -4.83**. The exact gradient is **not converged** (CG 30 iterations, residual 1.4e-7; 1657 s). Over all 229

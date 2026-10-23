@@ -1829,6 +1829,10 @@ def main(argv=None):
                       componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
                       cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], seconds=time.monotonic() - t0, h=args.exact_gradient_h,
+                      multiplier=np.asarray(got["multiplier"]).tolist(),
+                      gauss_newton_multiplier=np.asarray(got["gauss_newton_multiplier"]).tolist(),
+                      singular_values=np.asarray(got["singular_values"]).tolist(),
+                      correction_by_singular_direction=np.asarray(got["correction_by_singular_direction"]).tolist(),
                       maxiter=args.exact_gradient_maxiter, row=args.exact_gradient_row,
                       certificate=problem._record(problem.accepted.parameters).get("certificate"))
         (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")

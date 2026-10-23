@@ -1556,6 +1556,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return np.linalg.solve(R, np.linalg.solve(R.T, v))
 
         mu = precondition(Q_b)  # the Gauss-Newton multiplier: the initial guess
+        mu_gauss_newton = mu.copy()
         res = Q_b - hessian(mu)
         z = precondition(res)
         d = z.copy()
@@ -1587,8 +1588,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         Fd_mu = (design_gradient_of_cost(b0 + eps * mu) - design_gradient_of_cost(b0 - eps * mu)) / (2 * eps)
         direct = np.asarray(self._direct(state, params_b, xj))[row]
         exact = direct + G_x[row] - Fd_mu
+        # where the curvature correction of the multiplier lives: its coordinates along the scaled boundary
+        # Jacobian's right singular directions (strongest first), to choose a low-rank subspace
+        _, sv, Vt = np.linalg.svd(J_b0 * scale, full_matrices=False)
+        correction = Vt @ ((mu - mu_gauss_newton) / scale)
         return dict(gradient=exact, gauss_newton=np.asarray(gradients[row]), cg_iterations=iterations,
-                    cg_converged=bool(converged), cg_residual=float(np.linalg.norm(res)) / max(norm0, 1e-300))
+                    cg_converged=bool(converged), cg_residual=float(np.linalg.norm(res)) / max(norm0, 1e-300),
+                    multiplier=mu, gauss_newton_multiplier=mu_gauss_newton, singular_values=sv,
+                    correction_by_singular_direction=correction)
 
     def _promote(self, sol):
         if "anchor" in sol:

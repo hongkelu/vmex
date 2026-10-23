@@ -57,7 +57,21 @@ round; `paper/runs/wp2`):
   |---|---|---|
   | qhvac | rejected (1.7e-3) | **certified**: stationarity 7.1e-3, 5.4e-3, 3.5e-3, 1.9e-3, 8.4e-4, 2.5e-4 |
   | qa25 | rejected (9.1e-2) | rejected: monotone 0.16 to 0.072 in 5 rounds |
-  | qavac, qi25 | (rejected, certified) | running |
+  | qavac | rejected (4.8e-2) | rejected: monotone 0.15 to 0.081 |
+  | qivac | certified | **certified** |
+  | qi25 | certified (7.5e-4 at round 0) | rejected: starts at 5.0e-3, 4.9e-3 after 5 rounds |
+
+  qi25's seed boundary was fitted under the frozen-complement equilibrium, where it already sat at 7.5e-4; under
+  K the equilibrium differs, so the seed starts farther from stationarity and then descends as slowly as the
+  others.
+- **The bootstrap coupling is not the cause.** QH 2.5% with the current prescribed (no `--bootstrap`, `QH-presc`)
+  shows the same slow descent: cost 1.89e-7 to 1.52e-7 over 20 rounds (about 1% per round), stationarity 2.4e-2
+  to 7.9e-3, rejected. QA vacuum shows it too. Only QH and QI vacuum converge in a few rounds.
+- **Why steps cannot be longer:** across one round, the reduced linear model predicts the row change with
+  34-97% relative error (NL-K40, current block projected out). Each round's step is already at the edge of the
+  linear regime, which is why extrapolation and Broyden cannot help.
+- **The outputs still move:** NL-K40's values drift 0.8% (C-K40: 0.05%) over the last 6 rounds, and NL and C end
+  1% apart. The rejections are correct.
 - **A finer boundary (10 x 10) converges more slowly per minute** than 8 x 8 (more coordinates, more tangential
   freedom; WP3).
 - **Broyden updates are not faster per minute** (C 0.063 at 14 min against 0.030 for the default). The

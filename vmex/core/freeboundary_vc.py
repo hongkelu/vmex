@@ -722,10 +722,23 @@ class ThreeTermFreeBoundaryModel:
                 parts.append(jax.lax.map(row, c))
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
-        self.pullback = pullback
+        def primed_pullback(*args, **kwargs):
+            self._prime()
+            return pullback(*args, **kwargs)
+
+        self.pullback = primed_pullback
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+
+    def _prime(self):
+        """(Re)build the configs' template runtimes and boundary tables concretely, before any jitted function of
+        this model reads them under a trace.  They are cached (bounded caches): another config's work in the same
+        process -- a Picard loop's per-iterate configs, say -- can evict them, and a traced function cannot rebuild
+        them (their host-side setup is not traceable)."""
+        for cfg in {self.cfg, self.cfg_trial}:
+            self._im._template_runtime(cfg)
+            self._im._boundary_pack_tables(cfg)
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -733,6 +746,7 @@ class ThreeTermFreeBoundaryModel:
         ``tight=False`` solves to the trial tolerance, without the Newton refinement that certifies a state for
         differentiation (:meth:`linearize` re-solves tight first).
         """
+        self._prime()
         im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
@@ -773,6 +787,7 @@ class ThreeTermFreeBoundaryModel:
     def evaluate(self, x, params, field, seed=None, tight=False):
         """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
         failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
+        self._prime()
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
@@ -793,6 +808,7 @@ class ThreeTermFreeBoundaryModel:
         """The bootstrap-current columns of the rows at ``x`` (a fresh Jacobian block, at the deck's tolerance):
         ``(J_c, aux)``, ``J_c`` of shape ``(rows, n_current)``.  Used to certify the conditional stationarity of the
         current that the Levenberg-Marquardt steps reach with a nearby Jacobian's columns."""
+        self._prime()
         if self.bootstrap is None:
             raise ValueError("current_columns needs a bootstrap current")
         state, mask, params_x, tight = aux
@@ -818,6 +834,7 @@ class ThreeTermFreeBoundaryModel:
         boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
         when not asked for): a polish that stalls asks again for the Jacobian it was given.
         """
+        self._prime()
         state, mask, params_x, tight = aux
         key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
         last = self._last_linearize

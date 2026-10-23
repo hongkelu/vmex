@@ -109,6 +109,28 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
      only to O(h).
    - **So gauge-equivalent interiors whose surfaces agree to under 1 um (QH) give B_in rows that differ by 1e-3 to 1e-2.**
 
+9. **An exact relabelling with the boundary fixed: which parts the discrete equilibrium undoes** (small deck,
+   `scripts/interior/relabel_rows.py`, `raw/wp1/relabel/`). The relabelling is theta' = theta + eps s(1-s) sin(m theta - n Nfp phi).
+   The relabelled state is evaluated as is, and again after the implicit Newton refinement (frozen complement held).
+   Rows: maximum relative change, at eps = 1e-3.
+
+   | (m, n) of f | mpol 2, ns 7: as is / refined | ns 15 | ns 31 | mpol 4, ns 15 |
+   |---|---|---|---|---|
+   | (0, 1) | 2.2e-3 / **6.1e-4** | 2.4e-3 / **6.3e-4** | 2.4e-3 / **6.4e-4** | 2.7e-4 / 4.8e-4 |
+   | (1, 0) | 4.4e-3 / 1.4e-8 | 4.7e-3 / 3.5e-9 | 4.8e-3 / 1.0e-9 | 2.2e-3 / 2.8e-5 |
+   | (1, 1) | 4.0e-3 / 2.7e-9 | 4.2e-3 / 7.0e-10 | 4.3e-3 / 1.9e-10 | 2.3e-3 / 4.2e-5 |
+   | (2, 1) | 5.9e-3 / 1.7e-5 | 6.2e-3 / 1.7e-5 | 6.2e-3 / 1.7e-5 | 5.0e-2 / 2.2e-5 |
+
+   - The relabelled state is not a discrete equilibrium: fsq grows as eps^2.
+   - **The m >= 1 relabellings are undone by the refinement.** Their remaining change is the relabelling's
+     projection error (2.5e-4 per 1e-3 of eps for (2, 1)) or falls with ns.
+   - **The m = 0 relabelling survives the refinement at about 0.6x eps and does not fall with ns.** It is the
+     discrete equilibrium's near-null family, and the B_in rows move along it.
+   - **This corrects the reading of item 8.** The boundary-field evaluation is not gauge-sensitive at O(1) along
+     m >= 1 relabellings; only the m = 0 relabelling is a free direction. So the repair is a gauge for the m = 0
+     family that the rows actually see, plus the frozen m = 1 complement (next probe:
+     `scripts/interior/complement_swap.py`). Option (b) below is not supported by this test.
+
 **WP1 status:**
 - **Diagnosed:**
   - a coordinate freedom (the m = 0 relabelling, plus an m >= 1 part weakly held by condensation);

@@ -47,6 +47,15 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | C4 | Parameter ownership: `with_boundary(params_at(P0, d), y)` overwrite; plasma-coordinate detection probed only at x0 | **unreviewed** | | r = w x regressions; explicit design-family metadata |
 | C5 | Production design gradients against central differences of re-solved trials (`--check-gradient`, gate 1e-5, steps 1e-4 / 3e-5 / 1e-5, one random direction; `raw/wp5/production/`) | **verified, every row, three fixtures**: qavac loss 2.6e-8, rows 4e-11 to 5e-10; qivac loss 9.1e-4, rows 2e-11 to 4e-8; **qi25 (DKX current as a design variable) loss 6.1e-6 and 7 of 8 rows 4e-9 to 2e-6, including the DKX mismatch row**. The exception is qi25 **row 6, the coil-plasma clearance**: implicit -0.050 against an FD that does not converge (+0.087, +0.084, +0.129). That was the point-cloud minimum's closest-pair switch; **with the continuous clearance (E3) every qi25 row matches (worst 1.5e-6, clearance 2.6e-8)** | QH 2.5% (bootstrap) still to check (its seed does not certify); more directions and design families |
 
+**C5c CORRECTION (10-23 13:35): the warm gradient checks' small-h matches were circular.** Difference trials start
+from the Gauss-Newton boundary prediction. Where it already certifies (nfev 1, accepted 0: qavac every late trial,
+qivac and qi25 most), the difference reproduces the GN formula by construction. So the C5 / C5b "matches" (qavac,
+qivac, qi25, QA/QI 2.5% prescribed) **do not verify the gradient**, and "QH-specific" is withdrawn. The QH failures
+were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial steps are recorded.
+- **First reference independent of differences: qivac, equal arc, polish target 1e-5.** The exact stationarity gradient
+  **converged** (CG 26, residual 6.6e-9, certificate 9.8e-6). **GN vs exact: 2.8% (max component 4.4%), cosine
+  0.9996.** GN is about 3% off on QI vacuum too.
+
 **C5b day3 gradient checks** (gate 1e-5, re-solved central differences at h 1e-4 / 3e-5 / 1e-5; `raw/wp5/day3/`):
 - qavac, 3 directions: loss matches to 7e-9..8e-8 at h 1e-5. With the **continuous clearance** (22e60e13) its row's
   differences grew as 1/h (f(x+h) - f(x-h) = -7.6e-6 scaled at every h): the parabola vertex jumped when the closest

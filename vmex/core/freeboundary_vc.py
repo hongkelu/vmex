@@ -1128,12 +1128,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
                   boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
-                  **model_options):
+                  seed_start=None, **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
         :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
         of what the callbacks compute: a checkpoint restores only into a problem with the same declaration, since
-        callbacks that agree at one design can still differ in their derivatives.
+        callbacks that agree at one design can still differ in their derivatives.  ``seed_start`` (start-dependence
+        qualification) fits the seed design's boundary from another start than the deck's boundary, the deck staying
+        the reference: ``("random", eps, seed)`` adds ``eps`` times a standard normal vector in the scaled boundary
+        coordinates; ``("scale", eps)`` scales every boundary coefficient but the major radius by ``1 + eps``.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
@@ -1157,11 +1160,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint,
-                   semantic_identity=semantic_identity)
+                   semantic_identity=semantic_identity, seed_start=seed_start)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, checkpoint=None, semantic_identity=None):
+                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -1235,11 +1238,29 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0  # the layout restore_checkpoint checks
             self.restore_checkpoint(checkpoint)
         else:
-            seed = self._solve(x0)
+            seed = self._solve(x0, starts=None if seed_start is None else [self._seed_start(seed_start)])
             if seed is None:
                 raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
             self._promote(seed)
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
+
+    def _seed_start(self, spec):
+        """The model coordinates of a perturbed seed start (``from_loss(seed_start=...)``)."""
+        model = self.model
+        b = np.array(model.x0, dtype=float)
+        nb = int(model.n_boundary)
+        kind = spec[0]
+        if kind == "random":
+            eps, seed = float(spec[1]), int(spec[2])
+            b[:nb] += eps * np.asarray(model.x_scale, dtype=float)[:nb] * np.random.default_rng(seed).standard_normal(nb)
+        elif kind == "scale":
+            r00 = int(np.argmax(np.abs(b[:nb])))  # the major radius: the largest coordinate
+            keep = b[r00]
+            b[:nb] *= 1.0 + float(spec[1])
+            b[r00] = keep
+        else:
+            raise ValueError(f"seed_start kind must be 'random' or 'scale', got {kind!r}")
+        return b
 
     def _checkpoint(self):
         """The continuation a trial starts from: the boundary fit's latest linearization and trust radius, and the

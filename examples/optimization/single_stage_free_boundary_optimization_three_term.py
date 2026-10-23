@@ -1078,6 +1078,9 @@ def parse_args(argv=None):
                         help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
     parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
                         help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
+    parser.add_argument("--seed-start", nargs="+", metavar="KIND",
+                        help="fit the seed's boundary from another start (start-dependence qualification): "
+                        "'random EPS SEED' or 'scale EPS'; the deck stays the reference")
     parser.add_argument("--check-exact-gradient", action="store_true",
                         help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
@@ -1194,7 +1197,7 @@ def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-
 
     model_options = {k: v for k, v in options.items()
                      if k not in ("boundary_ftol", "boundary_max_nfev", "boundary_max_residual", "boundary_xtol",
-                                  "checkpoint")}
+                                  "checkpoint", "seed_start", "semantic_identity")}
     model = ThreeTermFreeBoundaryModel(inp, **model_options)
     x_design = jnp.asarray(chart.x0)
     params, field = chart.plasma_params_at(model.params0, x_design), chart(x_design)
@@ -1517,6 +1520,7 @@ def main(argv=None):
                       bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
                       boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
+                      seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,

@@ -24,10 +24,21 @@ round; `paper/runs/wp2`):
 |---|---|---|
 | repaired default (gain stall rule, 20 evaluations per round) | 0.170 @4.7 min, 0.040 @12 min, 0.024 @20 min (12 rounds): rejected | 0.236 @4.7, 0.080 @12.7, 0.065 @23 min: rejected |
 | model-aware stall rule, 60 evaluations per round | 0.169 @7.3, 0.082 @12.2, 0.033 @30 min | 0.222 @8.0, 0.115 @13.9, 0.088 @28 min |
-| Broyden updates | running | running |
+| 10 x 10 boundary modes (before K) | 0.315 @6, 0.21 @22, 0.142 @38 min: rejected | 0.297 @6, 0.144 @20, 0.086 @35 min: rejected |
+| **m = 1 complement solved (K, 0a59e653)** | 0.221 @4.7, 0.078 @9.8, 0.033 @16, **0.0155 @22 min**: rejected | 0.27 @4.8, 0.074 @10.5, 0.032 @15, **0.028 @19 min**: rejected |
+| Broyden updates | 0.274 @4.6, 0.112 @7.9, 0.063 @14 min (stopped at 6 rounds) | 0.277 @4.7, 0.101 @8.2, 0.100 @15 min (stopped) |
 
 - **The repaired default reproduces the 10-22 trajectory exactly.** The fresh-column check confirms the projection;
   the projection was already good there.
+- **Solving the m = 1 complement (WP1 item 12) removes the NL plateau.** NL's stationarity now falls
+  monotonically, where it bounced between 0.07 and 0.09 for 20 minutes before. C ends 12 rounds at 0.0155 against
+  0.0235 before. Both are still above the 1e-3 gate; 40-round runs are in progress (`C-K40`, `NL-K40`).
+  - Before K, each tight evaluation's history-dependent complement moved the rows by about 1e-3 relative. That
+    is the same order as the per-round gain the GN model could no longer realise.
+- **A finer boundary (10 x 10) converges more slowly per minute** than 8 x 8 (more coordinates, more tangential
+  freedom; WP3).
+- **Broyden updates are not faster per minute** (C 0.063 at 14 min against 0.030 for the default). The
+  runs were stopped after 6 rounds each.
 - **The model-aware rule is slower per minute:** a fresh Jacobian costs about 1.3 min per round, which is cheap
   compared with the extra evaluations.
 - **The plateau is not stationarity:** the GN model keeps predicting a 2-7% gain while about 0.1% is realised per

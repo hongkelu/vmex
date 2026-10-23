@@ -149,6 +149,7 @@ __all__ = [
     "make_problem",
     "Equilibrium",
     "solve_equilibrium",
+    "refine_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
     "major_radius",
@@ -450,6 +451,39 @@ def _select_jax_jacobian(
         lambda _: reverse_candidate(),
         operand=None,
     )
+
+
+def refine_equilibrium(eq: "Equilibrium", *, m1_complement: str = "solved") -> "Equilibrium":
+    """``eq`` refined onto the root of the selected interior equations, certified.
+
+    The host solver (:func:`solve_equilibrium`) releases the constrained m=1
+    Z force near convergence (VMEC2000's ``constrain_m1``), so its state is a
+    root of the ``"frozen"`` equations with a path-dependent complement.  With
+    ``m1_complement="solved"`` this Newton-refines the state (the implicit
+    layer's :func:`~vmex.core.implicit._refined_state`) onto the root where
+    the complement's force vanishes too -- the state every implicit
+    derivative, the three-term model and its bootstrap closure use -- and
+    certifies it: the refined residual in those equations must be within the
+    config's ``refine_tol`` or this raises
+    :class:`~vmex.core.errors.VmecConvergenceError`.  ``"frozen"``, or a
+    configuration without the m=1 pair (2D, ``lasym``), returns ``eq``
+    unchanged.
+    """
+    from . import implicit as im
+
+    cfg = im.make_config(eq.inp, m1_complement=m1_complement)
+    if not im._m1_solved(cfg):
+        return eq
+    params = im.params_from_input(eq.inp)
+    mask = im._fixed_boundary_dof_mask(cfg)
+    refined = im._refined_state(cfg, params, eq.state, mask)
+    residual = im._refined_residual(cfg, params, refined, mask)
+    if not residual <= cfg.refine_tol:
+        raise VmecConvergenceError(
+            f"the equilibrium does not refine onto the {m1_complement!r} root "
+            f"(|F| = {residual:.3e} > refine_tol {cfg.refine_tol:.1e})",
+            hint="tighten the forward solve (ftol) or raise the iteration cap")
+    return dataclasses.replace(eq, state=jax.tree.map(jnp.asarray, refined))
 
 
 def solve_equilibrium(

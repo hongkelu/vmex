@@ -1219,7 +1219,7 @@ class RedlBootstrapMismatch:
 
 
 def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax, solve_kwargs, verbose,
-                      g_convention="simsopt"):
+                      g_convention="simsopt", m1_complement="solved"):
     """:func:`self_consistent_bootstrap` on a :class:`HalfMeshCurrent` profile: ``I' <- I'_Redl`` per surface."""
     from . import optimize as opt
 
@@ -1227,7 +1227,8 @@ def _half_mesh_picard(inp, profiles, helicity_n, mismatch, *, n_iter, tol, relax
     inp, v = block.deck, block.x0
     history, state, eq, converged, solved = [], None, None, False, inp
     for it in range(int(n_iter)):
-        eq = opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {}))
+        eq = opt.refine_equilibrium(opt.solve_equilibrium(inp, initial_state=state, **dict(solve_kwargs or {})),
+                                    m1_complement=m1_complement)
         state, solved = eq.state, inp
         target = np.asarray(block.target(eq.solution, eq.solver_context))
         delta = float(np.max(np.abs(target - v)) / closure_scale(target))  # finite for a zero drive
@@ -1308,6 +1309,7 @@ def self_consistent_bootstrap(
     verbose: bool = False,
     profile: str = "power_series",
     g_convention: str = "simsopt",
+    m1_complement: str = "solved",
 ) -> BootstrapPicardResult:
     """Fixed-boundary Picard iteration to a bootstrap-consistent current profile.
 
@@ -1344,6 +1346,15 @@ def self_consistent_bootstrap(
     (under-relaxed), with no fit and no ``s_eval``; ``delta`` is the same
     relative error, on the half-mesh surfaces.  ``input`` is then on that
     ``line_segment_ip`` profile.
+
+    Every iterate's equilibrium is the root of the same interior equations
+    the three-term model and the implicit derivatives use:
+    ``m1_complement`` (default ``"solved"``) refines each host solve with
+    :func:`~vmex.core.optimize.refine_equilibrium` before the current is
+    read from it; ``"frozen"`` keeps the host solver's released complement.
+    The bootstrap current depends on that choice at the 1% level on a coarse
+    deck (LP QA beta 0.5%, mpol 3: the two treatments' converged currents
+    differ by 0.95%), so a comparison across code paths must use one policy.
     """
     from . import optimize as opt
 
@@ -1359,7 +1370,8 @@ def self_consistent_bootstrap(
                                      surfaces=np.clip(s_eval, 0.05, 0.95), g_convention=g_convention)
     if profile == "half_mesh":
         return _half_mesh_picard(inp, profiles, helicity_n, mismatch, n_iter=n_iter, tol=tol, relax=relax,
-                                 solve_kwargs=solve_kwargs, verbose=verbose, g_convention=g_convention)
+                                 solve_kwargs=solve_kwargs, verbose=verbose, g_convention=g_convention,
+                                 m1_complement=m1_complement)
     if profile != "power_series":
         raise ValueError(f"profile must be 'power_series' or 'half_mesh', got {profile!r}")
     history: list[dict] = []
@@ -1378,6 +1390,7 @@ def self_consistent_bootstrap(
             if state is None:
                 raise
             eq = opt.solve_equilibrium(inp, **solve_kwargs)  # cold fallback
+        eq = opt.refine_equilibrium(eq, m1_complement=m1_complement)
         state, solved = eq.state, inp
         w = eq.wout
         ns = int(w.ns)

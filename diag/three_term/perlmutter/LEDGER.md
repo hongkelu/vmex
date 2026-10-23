@@ -67,6 +67,20 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
 - **qavac exact gradient converged** (CG 16, equal arc, target 1e-4, from a later step of the same optimization):
   **GN vs exact 0.24% (max component 0.38%), cosine 0.999997.** The magnitude matches the cold check. The two
   lanes copied the checkpoint at different steps, so they are not compared along one direction.
+- **Cold checks: the second flaw.** A cold trial with **0 accepted steps** never left the seed boundary: the seed
+  already passes the gate at the perturbed design, because the leftover is relabelling. Its difference is the
+  **fixed-boundary** derivative, with no boundary response.
+  - QI 2.5% prescribed: [0, 0] at both h. Not valid.
+  - QH 2.5% equal arc: h 3e-5 [3, 1] gives -3.10; h 1e-5 [0, 0] gives -4.33. Exact (converged) is -2.70; GN -4.20.
+  - QH 2.5% NL: h 3e-5 [1, 1] gives -4.55; h 1e-5 [0, 0] gives -5.57. GN -5.70.
+  - QA 2.5% prescribed: [1, 1] at both h, stable. Loss 0.28% off GN; rows within 0.1-16% except row 5 (0.74 vs 1.37).
+  - **Conclusion: at the certificate's gate, the re-solved map is not determined along the weak directions.** A trial
+    stops where its start and the gate put it: the GN prediction (giving GN), the seed (giving the fixed-boundary
+    derivative), or part way. **Finite differences of re-solved trials are not a reference on these problems; the
+    converged exact stationarity derivative is.** The optimizer, too, sees whatever the solver does along those
+    directions.
+  - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
+    is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5
   and 1e-5). **Loss: GN 0.28% off.** Rows: iota 0.6%, R 14% (small magnitude: 0.0056 vs 0.0065), B 2.9%, mirror
   0.2%, max iota 0.2%, **vacuum-iota floor 46% (GN 0.738 vs 1.365)**, clearance 1.3%, aspect 4%.

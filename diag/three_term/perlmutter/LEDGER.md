@@ -64,6 +64,13 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 - **QI 2.5%, prescribed current** (G3, 54140c07; seed built in 33 min): **Gauss-Newton matches** at h 1e-5: loss 1.3e-6
   / 2.5e-5, quantities 1.5e-8 / 4.2e-9 (2 directions; larger h is the fit's nonlinearity). So the QH 2.5% failure is
   not general to finite beta. QA 2.5% prescribed, QH vacuum (target 3e-4) and the exact-gradient checks are running.
+- **QA 2.5%, prescribed current**: **Gauss-Newton matches** at h 3e-5 and 1e-5: loss 4e-9 to 9e-9, quantities
+  2.5e-8 to 3.7e-7. QA and QI at finite beta are fine; QH is the exception.
+- **QH vacuum, equal arc 1e-3, target 3e-4**: loss **2.3e-3** and quantities **1.7e-2** off, the same at h 3e-5 and
+  1e-5 (systematic, not noise). So the QH error exists in vacuum, about 10x smaller than QH 2.5%'s 12-23%.
+- **NL seeds in vacuum: 5 of 5 failed to certify in 120 polish rounds.** qivac x3 (gain 1.77e-3, normal step 1.4e-6
+  of the minor radius; identical in three processes on two allocations), qavac x2 (7.6e-3, 1.2e-6). The surfaces
+  converged; what remains is relabelling (D5). The equal-arc seeds of the same fixtures certified in about 15 min.
 - Speed observation (G3): with no labelling rows (NL), the vacuum seeds' certificates are much slower than with equal
   arc. qivac NL was still polishing after 45 min, while qivac equal arc built in 14 min and is at step 5.
 

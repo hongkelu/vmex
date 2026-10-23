@@ -1417,6 +1417,85 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol["gradients"] = gradients
         return gradients
 
+    def subspace_design_gradient(self, x, k=20, *, h=1e-4):
+        """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).
+
+        The Gauss-Newton gradient (:meth:`_linearize`) drops ``S = sum_i r_i d2r_i`` from the stationarity
+        derivative of :meth:`exact_design_gradient`.  ``S`` matters where ``J_b^T J_b`` is small: the fit's weak
+        directions (mostly boundary relabellings).  This computes ``S`` exactly on the ``k`` weakest right singular
+        directions ``W`` of the scaled boundary Jacobian (orthonormal in the scaled coordinates, ``P`` the projector
+        onto them) and uses the symmetric rank-``2k`` model ``S ~ S P + P^T S - P^T S P``, exact on ``W`` and on its
+        coupling to every other direction.  Then ``H = J_b^T J_b + S`` is solved densely for all rows at once, and
+        the design coupling is ``F_d^T mu = J_d^T J_b mu + S_bd^T (P mu)``.
+        Both curvature terms come from the same evaluations: each ``w`` in ``W`` costs one tight solve and
+        linearization at ``b +- eps w`` (central differences, step ``h`` in the scaled coordinates), so the cost is
+        ``2 k`` linearizations for every row together.  With ``k = 0`` this is the Gauss-Newton gradient.
+        Returns ``dict(gradients, gauss_newton, k, singular_values)``; ``gradients`` has :meth:`_linearize`'s shape.
+        """
+        model, nb = self.model, self.model.x0.size
+        x = np.asarray(x, dtype=float)
+        xj = jnp.asarray(x)
+        sol = self._record(x)
+        gn = np.asarray(self._linearize(x, sol))
+        params, field = self._params_at(xj), self.field(xj)
+        extra = self._plasma_directions(params, xj) if self._plasma.size else None
+        b0, J_full = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])
+        J_b0 = J_full[:, :nb]
+        scale = np.asarray(model.x_scale, dtype=float)
+        state, params_b = sol["state"], sol["params"]
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        direct = np.asarray(self._direct(state, params_b, xj))
+
+        def design_coupling(bb_state, bb_params, rows, J_p):
+            """J_d^T rows: the design gradient of |r|^2 / 2 at a fixed boundary (field VJP, plasma columns)."""
+            out = np.asarray(self._field_vjp(bb_state, bb_params, xj, jnp.asarray(rows)))
+            if J_p is not None:
+                out = out.copy()
+                out[self._plasma] += J_p.T @ rows
+            return out
+
+        def at(bb):
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                raise TrialRejected("a subspace-gradient difference point has no certified interior root")
+            rows, aux = got
+            J, _, _, aux = model.linearize(bb, aux, field, extra=extra)
+            J, rows = np.asarray(J), np.asarray(rows)
+            st, _, pb, _ = aux
+            J_p = J[:, nb:] if extra is not None else None
+            return J[:, :nb].T @ rows, design_coupling(st, pb, rows, J_p)
+
+        Js = J_b0 * scale  # scaled boundary Jacobian
+        _, sv, Vt = np.linalg.svd(Js, full_matrices=False)
+        k = int(min(max(k, 0), Vt.shape[0]))
+        Ws = Vt[Vt.shape[0] - k:].T if k else np.zeros((nb, 0))  # weakest directions, scaled-orthonormal
+        W = Ws * scale[:, None]  # the same directions in model coordinates
+        A = J_b0.T @ J_b0
+        DW = np.zeros((nb, k))  # (H - J^T J) w
+        SbdW = np.zeros((x.size, k))  # S_bd^T w = d/db (J_d^T r) w - J_d^T J_b w
+        for j in range(k):
+            w = W[:, j]
+            eps = h / max(float(np.linalg.norm(w / scale)), 1e-300)
+            (gp, cp), (gm, cm) = at(b0 + eps * w), at(b0 - eps * w)
+            DW[:, j] = (gp - gm) / (2 * eps) - A @ w
+            Jd_Jw = design_coupling(state, params_b, J_b0 @ w, J_full[:, nb:] if extra is not None else None)
+            SbdW[:, j] = (cp - cm) / (2 * eps) - Jd_Jw
+        mu, MW = _low_rank_multipliers(J_b0, G_b, W, DW, scale)  # one column per row
+        lam = J_b0 @ mu
+        gradients = direct + G_x
+        gradients = gradients - np.stack([np.asarray(self._field_vjp(state, params_b, xj, jnp.asarray(c)))
+                                          for c in lam.T])
+        if extra is not None:
+            gradients[:, self._plasma] -= lam.T @ J_full[:, nb:]
+        gradients = gradients - (SbdW @ (MW.T @ mu)).T  # S_bd^T P mu
+        if k == 0 and not np.allclose(gradients, gn, rtol=1e-8, atol=1e-12 * max(np.abs(gn).max(), 1.0)):
+            raise RuntimeError("subspace_design_gradient(k=0) differs from the Gauss-Newton gradient")
+        return dict(gradients=gradients, gauss_newton=gn, k=k, singular_values=sv[sv.size - k:].tolist())
+
     def exact_design_gradient(self, x, row=0, *, h=1e-4, rtol=1e-8, maxiter=30):
         """The exact design gradient of value row ``row`` at ``x`` (qualification reference; costly).
 
@@ -1705,6 +1784,25 @@ def _residual_multipliers(J_b, G_b):
     gradient, ``G_b`` times :func:`_least_squares_sensitivity` without curvature terms.  By a QR of ``J_b``."""
     Q, R = np.linalg.qr(J_b)
     return Q @ np.linalg.solve(R.T, np.asarray(G_b).T)
+
+
+def _low_rank_multipliers(J_b, G_b, W, DW, scale):
+    """Multipliers ``mu = H^-1 G_b^T`` (a column per row) with the fit's curvature on the directions ``W``.
+
+    ``H = J_b^T J_b + S``; ``S`` is known only through ``DW = S W`` on the columns of ``W`` (model coordinates,
+    orthonormal in the scaled metric ``diag(1 / scale^2)``), and is modelled by the symmetric rank-``2k``
+    ``S P + P^T S - P^T S P`` with ``P = W W^T diag(1 / scale^2)``: exact on ``W`` and on its coupling to every
+    other direction, zero on the complement of ``W`` (the Gauss-Newton approximation there).  With no columns
+    this is the Gauss-Newton multiplier ``(J_b^T J_b)^-1 G_b^T``.  Returns ``(mu, MW)``, ``MW = diag(1/scale^2) W``
+    (``MW.T @ mu`` are ``mu``'s coordinates along ``W``).
+    """
+    J_b, G_b, W, DW = map(np.asarray, (J_b, G_b, W, DW))
+    MW = W / np.asarray(scale, dtype=float)[:, None] ** 2
+    K = W.T @ DW
+    K = 0.5 * (K + K.T)
+    D = DW @ MW.T + MW @ DW.T - MW @ K @ MW.T
+    H = J_b.T @ J_b + 0.5 * (D + D.T)
+    return np.linalg.solve(H, G_b.T), MW
 
 
 def _least_squares_sensitivity(J_b, J_d, S_bb=None, S_bd=None):

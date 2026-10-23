@@ -1189,6 +1189,9 @@ def parse_args(argv=None):
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
     parser.add_argument("--exact-gradient-row", type=int, default=0,
                         help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
+    parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
+                        help="every row's design gradient with the fit's curvature on its K weakest directions "
+                        "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
     parser.add_argument("--exact-gradient-maxiter", type=int, default=30,
                         help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
     parser.add_argument("--exact-gradient-h", type=float, default=1e-4,
@@ -1803,8 +1806,19 @@ def main(argv=None):
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
             problem.save_checkpoint(out / "checkpoint.npz")
 
-    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient):
+    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_subspace_gradient:  # the low-rank curvature gradient (every row) for each requested k
+        record = dict(h=args.exact_gradient_h, runs=[])
+        for k in args.check_subspace_gradient:
+            t0 = time.monotonic()
+            got = problem.subspace_design_gradient(problem.accepted.parameters, k=k, h=args.exact_gradient_h)
+            record["runs"].append(dict(k=got["k"], gradients=np.asarray(got["gradients"]).tolist(),
+                                       gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
+                                       singular_values=got["singular_values"], seconds=time.monotonic() - t0))
+            (out / "subspace_gradient_check.json").write_text(json.dumps(record) + "\n")
+            print(f"[subspace gradient] k={got['k']}: {record['runs'][-1]['seconds']:.0f} s", flush=True)
+        return
     if args.check_exact_gradient:
         t0 = time.monotonic()
         got = problem.exact_design_gradient(problem.accepted.parameters, row=args.exact_gradient_row,

@@ -1,0 +1,35 @@
+{
+ "resolution": {
+  "mpol": 2,
+  "ntor": 2,
+  "nfp": 2,
+  "ns": [
+   31
+  ],
+  "ftol": [
+   1e-13
+  ],
+  "max_mode": 1,
+  "nphi": 12,
+  "ntheta": 12,
+  "quadrature": [
+   96,
+   24
+  ],
+  "digits": 4,
+  "trial_ftol": null,
+  "n_boundary": 9,
+  "n_coordinates": 9
+ },
+ "complement_rms": 0.006229721623189047,
+ "near": {
+  "complement_gap": 4.963478161860123e-06,
+  "rows_max_rel_plain": 0.001633455600888394,
+  "rows_max_rel_swapped": 1.6838062442475406e-12
+ },
+ "perturbed": {
+  "complement_gap": 0.0,
+  "rows_max_rel_plain": 1.793776304461374e-15,
+  "rows_max_rel_swapped": 7.84053836304891e-15
+ }
+}

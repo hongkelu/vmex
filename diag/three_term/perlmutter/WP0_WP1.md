@@ -31,7 +31,7 @@ The slow weak-direction convergence (WP2) affects QA and QH in vacuum too, with 
 2.5%.
 
 Tests at c155c27d (10 GPUs): **88 passed, 2 failed** (`test_interior_state_does_not_depend_on_its_start`,
-`test_plasma_map_derivatives_at_nonzero_offsets`, both from WP1's interior freedom), 10 skipped.
+`test_plasma_map_derivatives_at_nonzero_offsets`, both from WP1's interior freedom), 10 skipped. At af30041d (4 GPUs): **92 passed, the same 2 failed**, 10 skipped.
 
 ## WP1: interior equilibrium and gauge (findings; the repair is open)
 
@@ -128,8 +128,34 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
      discrete equilibrium's near-null family, and the B_in rows move along it.
    - **This corrects the reading of item 8.** The boundary-field evaluation is not gauge-sensitive at O(1) along
      m >= 1 relabellings; only the m = 0 relabelling is a free direction. So the repair is a gauge for the m = 0
-     family that the rows actually see, plus the frozen m = 1 complement (next probe:
-     `scripts/interior/complement_swap.py`). Option (b) below is not supported by this test.
+     family that the rows actually see, plus the frozen m = 1 complement (item 10). Option (b) below is not
+     supported by this test.
+10. **The frozen m = 1 complement is the whole start dependence of the rows** (`scripts/interior/complement_swap.py`,
+    `raw/wp1/complement/`). Each start's solved state is refined as is, and again with its complement replaced by
+    the cold state's. Rows: maximum relative difference from cold (refined).
+
+    | deck | start | complement gap | rows, as is | rows, cold complement |
+    |---|---|---|---|---|
+    | mpol 2, ns 7 | near | 3.9e-6 | 1.4e-3 | **1.8e-13** |
+    | mpol 2, ns 7 | perturbed | 3.0e-5 | 6.8e-4 | **4.3e-13** |
+    | mpol 2, ns 31 | near | 5.0e-6 | 1.6e-3 | **1.7e-12** |
+    | mpol 4, ns 15 | near | 4.0e-6 | 2.6e-3 | **1.1e-11** |
+    | mpol 4, ns 15 | perturbed | 4.7e-5 | 3.1e-3 | **8.5e-12** |
+    | mpol 4, ns 31 | near | 4.8e-6 | 2.9e-3 | **2.3e-11** |
+    | mpol 4, ns 31 | perturbed | 3.9e-5 | 1.7e-2 | **1.3e-11** |
+
+    - With the same complement, every start refines to the same discrete equilibrium to round-off. There are no
+      other free directions, no branches, and nothing else history-dependent.
+    - **The cause:** VMEC's m = 1 rule (`residue.f90` `constrain_m1`: the constrained Z force is zeroed once
+      fsqz < 1e-6) freezes the complement wherever the iteration has it when the gate first fires. That depends
+      on the start.
+    - **What the complement is:** for a near-circular cross-section, zcs_int = (rss - zcs)/2 is the theta-origin
+      rotation theta -> theta + c(s) sin(n Nfp phi), i.e. the m = 0 relabelling of item 9. In the continuum it is a
+      gauge. The discrete rows respond to it at about 400x the coefficient change.
+    - **The repair:** a deterministic gauge for the complement, a smooth function of the boundary (its edge value
+      times a fixed radial profile), imposed after every solve before the refinement. This keeps the dof
+      projector's frozen-complement assumption, so the tangents and adjoints carry it with no change except the
+      complement's derivative with respect to the boundary. Probe: `scripts/interior/complement_gauge.py`.
 
 **WP1 status:**
 - **Diagnosed:**

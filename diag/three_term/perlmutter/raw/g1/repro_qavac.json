@@ -1,0 +1,38 @@
+{
+ "reference": "../paper/runs/wp2/fx-qavac-K60",
+ "nfp": 3,
+ "runs": {
+  "../paper/runs/wp2/fx-qavac-K60": {
+   "certified": true,
+   "stationarity": 9.69417563889182e-05,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 1.099388935710967e-06,
+    "pressure": 7.664795186342545e-07,
+    "K_x": 9.087382407585246e-07,
+    "K_y": 8.223365733053248e-07,
+    "K_z": 5.306873416342576e-07,
+    "label": 2.8076829245068634e-06,
+    "phase": 4.855693412914781e-07,
+    "net_current": 8.400465409717126e-06
+   }
+  },
+  "../paper/runs/night/qavac-K40": {
+   "certified": true,
+   "stationarity": 9.694175793572305e-05,
+   "surface_distance_m": 1.1531733562074307e-13,
+   "values_max_rel": 8.440079392304005e-13,
+   "blocks_rms": {
+    "B.n": 1.0993889358748281e-06,
+    "pressure": 7.66479518625255e-07,
+    "K_x": 9.087382408214882e-07,
+    "K_y": 8.223365734147012e-07,
+    "K_z": 5.306873415762723e-07,
+    "label": 2.8076829244420632e-06,
+    "phase": 4.855693400935884e-07,
+    "net_current": 8.400465430610913e-06
+   }
+  }
+ }
+}

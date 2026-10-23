@@ -84,6 +84,14 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | qh25, prescribed current (fixture deck and current, no `--bootstrap`) | **certified** at 8.9e-5, cost 1.405e-7, after 74 rounds (36 min, 038065f3) | night/QH-presc80 |
 | qh25, bootstrap (Redl) | not certified: NL 46 min, cost 1.90e-7 and falling, stationarity 1.4e-2; C 47 min, 1.1e-2 | night/NL-K90, C-K90 (running) |
 
+**Reproducibility across allocations** (fresh processes, different nodes, pins 8e2956e6 vs 038065f3;
+`scripts/compare_starts.py`, `raw/g1/`):
+- qavac: surfaces 1.2e-13 m, values 8.4e-13;
+- qi25: surfaces 1.8e-11 m, values 2.8e-9.
+
+**G1 start dependence:** `--seed-start random EPS SEED | scale EPS` (18fb4ab4); qhvac and qivac from three
+perturbed starts are queued (job 60145562).
+
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.
 

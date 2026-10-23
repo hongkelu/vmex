@@ -1295,6 +1295,11 @@ def main(argv=None):
         if args.bootstrap:  # kinetic profiles exist only for bootstrap runs
             pin_profiles(args.seed_run)
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+        if (int(inp.mpol), int(inp.ntor)) != tuple(RESOLUTION[:2]):  # --modes applies to a seed run too
+            inp = inp.change_resolution(mpol=RESOLUTION[0], ntor=RESOLUTION[1], ntheta=GRID[0], nzeta=GRID[1])
+        if int(np.atleast_1d(inp.ns_array)[-1]) != int(RESOLUTION[2]):
+            inp = replace(inp, ns_array=np.array([int(RESOLUTION[2])]),
+                          ftol_array=np.atleast_1d(inp.ftol_array)[-1:], niter_array=np.atleast_1d(inp.niter_array)[-1:])
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:

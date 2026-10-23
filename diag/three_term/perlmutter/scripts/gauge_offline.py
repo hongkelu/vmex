@@ -79,7 +79,24 @@ def main():
     inside = np.linalg.norm(Qt.T @ V, axis=0)
     rnd = np.random.default_rng(0).standard_normal((nb, 200))
     rnd /= np.linalg.norm(rnd, axis=0)
-    out = dict(n_relabel=int(T.shape[1]), n_boundary=nb, relabel_projection_error_max=float(max(errors)),
+    # the fit restricted to the complement of the relabelling span (the exact gauge's physics step)
+    P = np.eye(nb) - Qt @ Qt.T
+    _, sp, _ = np.linalg.svd(P, full_matrices=False)
+    keep = sp > 0.5
+    U_p, _, _ = np.linalg.svd(P, full_matrices=False)
+    B = U_p[:, keep]  # orthonormal basis of the complement (scaled coordinates)
+    JB = Jb @ B
+    nB = np.linalg.norm(JB, axis=0)
+    sB = np.linalg.svd(JB / nB, compute_uv=False)
+    r = np.asarray(data["rows"])
+    if J.shape[1] > nb:
+        r = r - Qc @ (Qc.T @ r)
+    gain_full = float(np.sum((np.linalg.svd(Jb / norms, full_matrices=False)[0].T @ r) ** 2) / (r @ r))
+    UB = np.linalg.svd(JB / nB, full_matrices=False)[0]
+    gain_complement = float(np.sum((UB.T @ r) ** 2) / (r @ r))
+    out_extra = dict(condition_full=float(sv[0] / sv[-1]), condition_complement=float(sB[0] / sB[-1]),
+                     n_complement=int(B.shape[1]), gain_full=gain_full, gain_complement=gain_complement)
+    out = dict(**out_extra, n_relabel=int(T.shape[1]), n_boundary=nb, relabel_projection_error_max=float(max(errors)),
                relabel_projection_error_median=float(np.median(errors)),
                weakest_sv=[float(v) for v in sv[-K:]], weak_in_relabel_span=[float(v) for v in inside],
                random_in_relabel_span_median=float(np.median(np.linalg.norm(Qt.T @ rnd, axis=0))))

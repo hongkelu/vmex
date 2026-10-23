@@ -1,0 +1,44 @@
+{
+ "reference": "wp2/fx-qhvac-K",
+ "nfp": 4,
+ "runs": {
+  "wp2/fx-qhvac-K": {
+   "certified": true,
+   "stationarity": 0.0002502426420377074,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 3.0350144828113567e-06,
+    "pressure": 3.410481376874848e-06,
+    "K_x": 2.47124383302135e-06,
+    "K_y": 2.4322606533377653e-06,
+    "K_z": 2.5453733439185384e-06,
+    "label": 6.704188263300054e-06,
+    "phase": 4.253261100765714e-06,
+    "net_current": 3.4838936743421703e-06
+   }
+  },
+  "day3/res-qhvac-m10": {
+   "certified": false
+  },
+  "day3/res-qhvac-m10-r": {
+   "certified": true,
+   "stationarity": 1.691421346094394e-05,
+   "surface_distance_m": 0.0005349551441031218,
+   "values_max_rel": 0.002157985759696483,
+   "blocks_rms": {
+    "B.n": 9.91496091946107e-07,
+    "pressure": 2.2501350104382743e-06,
+    "K_x": 1.367618355862086e-06,
+    "K_y": 1.334569356294424e-06,
+    "K_z": 1.4847698705137934e-06,
+    "label": 5.608136226106612e-06,
+    "phase": 1.039964265509794e-06,
+    "net_current": 3.073862438061461e-06
+   }
+  },
+  "day3/res-qhvac-vc64": {
+   "certified": false
+  }
+ }
+}

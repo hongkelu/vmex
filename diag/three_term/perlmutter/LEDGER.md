@@ -131,6 +131,23 @@ deck start):
     selected.
 - The tighter-gate qhvac pair could not certify at 1e-5: QH vacuum's stationarity floor is about 3e-5.
 
+**G2 resolution** (day3, pins 5faa0684 / 1749e663; certified at the default 1e-3 gate, compared with the certified
+8 x 8 / VC 48 / ns 51 reference by `scripts/compare_starts.py`; `raw/g2/`):
+
+| fixture | change | surface distance | largest value change |
+|---|---|---|---|
+| qivac | VC grid 48 -> 64 | 0.6 um | 0.13% |
+| qivac | modes 8 x 8 -> 10 x 10 | 32 um | 0.45% |
+| qhvac | modes 8 x 8 -> 10 x 10 | 0.53 mm | 0.22% |
+| qavac | modes 8 x 8 -> 10 x 10 | 0.12 mm | 0.49% |
+
+- The interface quadrature (VC 48) is converged; the boundary's mode count moves the outputs by 0.2-0.5%, so 8 x 8 is
+  the optimization resolution and every final design is validated at 12 x 12 (as planned).
+- At the default 5 polish rounds three of the higher-resolution seeds ran out still converging (qivac ns 101:
+  stationarity 0.147 -> 0.017; qivac 10 x 10: 0.39 -> 0.076; qhvac VC 64); rerun with 40 rounds. The record then said
+  `rejected`; 36976442 names the exhausted budget and fbrecord classifies it as `budget_exhausted`.
+- Pending: qivac/qavac ns 101, qhvac VC 64 (40 rounds).
+
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.
 

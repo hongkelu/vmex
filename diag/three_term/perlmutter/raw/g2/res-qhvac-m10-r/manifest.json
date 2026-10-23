@@ -1,0 +1,78 @@
+{
+ "run_id": "20261023T094323-f9e57900",
+ "argv": [
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/vmex-pin-1749e663/diag/three_term/perlmutter/scripts/fbrecord.py",
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/runs/day3/res-qhvac-m10-r",
+  "--modes",
+  "8",
+  "8",
+  "--ns",
+  "51",
+  "--coil-point-rows",
+  "--max-iterations",
+  "20000",
+  "--seed-run",
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/vmex-pin-1749e663/diag/three_term/perlmutter/fixtures/qhvac",
+  "--steps",
+  "0",
+  "--save-every",
+  "1",
+  "--labelling",
+  "equal_arc",
+  "--label-weight",
+  "1e-3",
+  "--modes",
+  "10",
+  "10"
+ ],
+ "cwd": "/pscratch/sd/h/hongkelu/freeboundary-single-stage/vmex-pin-1749e663",
+ "started": "2026-10-23T09:43:24.730863",
+ "git_revision": "1749e663bfd30e1bf1c18b792a63c39de93824bd",
+ "git_dirty_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "git_status": "",
+ "sha256": {
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/vmex-pin-1749e663/diag/three_term/perlmutter/scripts/fbrecord.py": "3aefb679e1665b6ff5be291fc67711a6c035892effe8194865c03dcca0d2eb58",
+  "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "ad9034deb7aee13dde6e7a679795f934e99548005f6ef23cef03c8473be53a1b",
+  "vmex/core/freeboundary_vc.py": "85d83b2921b784c8861538168f68f9c5446fbf1d248a959799c024c1822bebba",
+  "vmex/core/bootstrap.py": "d54539640a811a3844d9360348018cfdde93c4227cab8b023370d7c2148bdcbe",
+  "vmex/core/implicit.py": "e0229ee3a4e3b39a08062695f7bbc82cd5fcdd2abe9c257572fa7133755a3cf1"
+ },
+ "versions": {
+  "jax": "0.12.0.1",
+  "jaxlib": "0.12.0.1",
+  "jax-cuda13-plugin": "0.12.0.1",
+  "numpy": "2.5.4",
+  "scipy": "1.18.1",
+  "solvax": "0.31.0",
+  "booz_xform_jax": "0.5.0",
+  "essos": "0.21.0",
+  "dkx": "2.11.0",
+  "simsopt": "1.11.1",
+  "netCDF4": "1.7.5",
+  "equinox": "0.13.8",
+  "lineax": "0.1.1"
+ },
+ "python": "3.12.15 (main, Oct  6 2026, 23:50:18) [GCC 15.3.0]",
+ "host": "nid200476",
+ "slurm_job": "60161306",
+ "gpu": {
+  "cuda_visible_devices": "0",
+  "devices": [
+   "0, NVIDIA A100-SXM4-80GB, GPU-77c1326b-9ee3-c628-ac33-d55d6a08200a, 81920 MiB, 580.178.04",
+   "1, NVIDIA A100-SXM4-80GB, GPU-8678e9e0-8ab3-805b-3159-c9da243232d5, 81920 MiB, 580.178.04",
+   "2, NVIDIA A100-SXM4-80GB, GPU-3fed2171-bb89-288b-b060-c6d78e38fc9c, 81920 MiB, 580.178.04",
+   "3, NVIDIA A100-SXM4-80GB, GPU-3bc92b44-8524-9d68-0716-e4191210b1b5, 81920 MiB, 580.178.04"
+  ]
+ },
+ "overrides": {},
+ "environment": {
+  "JAX_COMPILATION_CACHE_DIR": "/pscratch/sd/h/hongkelu/freeboundary-single-stage/jax_cache",
+  "XLA_PYTHON_CLIENT_PREALLOCATE": "true",
+  "CUDA_HOME": "/opt/nvidia/hpc_sdk/Linux_x86_64/26.5/cuda/13.2",
+  "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9",
+  "JAX_ENABLE_X64": "1",
+  "CUDA_VISIBLE_DEVICES": "0",
+  "CUDATOOLKIT_HOME": "/opt/nvidia/hpc_sdk/Linux_x86_64/26.5/cuda/13.2",
+  "COIL_CASE": "qh"
+ }
+}

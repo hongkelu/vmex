@@ -188,6 +188,15 @@ CPU lanes and the two-device lane pass):
 - `test_implicit_grad.py::test_raw_residual_jvp_is_exactly_nearest_neighbor` (x3);
 - `test_optimize.py::test_equilibrium_from_x_is_the_state_the_objective_read` (x2);
 - `test_optimize.py::test_certified_trial_guards_reject_stale_or_missing_memo`.
+- `test_optimize.py::test_from_loss_honors_bound_scalar_method_literally`,
+  `test_least_squares_implicit_jac_solver_block`, `test_equilibrium_exterior_field_sizes_its_source_grid` (same
+  device-placement `ValueError`; day3 run of the whole file).
+
+`test_optimize.py::test_reverse_lane_factors_once_per_point` returns a NaN gradient ([nan, nan] against
+[2.609, 0.867]) identically at af30041d and at 54140c07 (day3, same GPU node, byte-identical output): pre-existing.
+
+Day3 GPU suites (pin 5faa0684): `test_freeboundary_implicit.py` 35 passed, 1 skipped (53 min);
+`test_implicit_multi_rhs.py` 20 passed (72 min); `test_optimize.py` 42 passed, 7 failed (all listed above).
 
 `test_implicit_grad_fd.py::test_typed_error_through_pure_callback` fails identically at af30041d: solovev converges
 in 3 iterations, so the expected error is never raised. These are environment and test-setup issues, tracked here.

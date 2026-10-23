@@ -87,6 +87,20 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | E3 | Coil-plasma clearance: point-cloud minimum (`surface_distance`: 192 coil points x 61 x 64 surface grid) | **implemented**: `continuous_surface_distance` (driver default `--clearance continuous`; `points` keeps the old one). Coarse grid search, the 7 best samples refined onto the continuous surface by Newton (Gauss-Newton fails when the distance is comparable to the surface's curvature radius), parabola vertex along the coil, envelope-theorem derivative, runner-up gap reported. Analytic torus/coil (`tests/test_three_term_clearance.py`, CPU, 4 passed): error 9e-7 / 1.7e-7 / 3e-9 at 32 / 64 / 128 samples (cube of the spacing), d/da = -1 to 1e-8, and below the point cloud | **requalified at production**: qi25 with the continuous clearance (22e60e13, day1), all 8 rows at h 1e-5 match the re-solved FD (clearance 2.6e-8; worst row 1.5e-6), loss 6.1e-6 |
 | E2 | SOLVAX operator certification (dense/QR references, transposes, warm/cold, multi-RHS) | partly covered by A3's raw certificate; dedicated tests **open** | |
 
+**E4 CTH filament field (benchmark coils, `paper/runs/cth`)**:
+- The CTH-like coils (MAKEGRID polygons, `coils.cth_like`) were sampled by arclength at 2048 points per coil. Samples
+  straddled the polygon corners, so the midpoint rule converged only linearly: **1.5e-4 of |B|** at the plasma against
+  the exact straight-segment (Hanson-Hirshman) field, the size of the interface residuals being compared.
+- Fix (`make_coils.py`): whole sub-segments per straight side. The convergence is quadratic (4.1e-5 / 2.1e-6 / 1.3e-7
+  at 2048 / 8192 / 32768). The benchmark uses 8192 (2.1e-6).
+- DESC (`desc_coils.py`): linear `SplineXYZCoil` through the same polygons, densified to 8180 collinear vertices
+  (DESC integrates on the knots: with the 200 original vertices it was 1.6e-4 off). It is 1.0e-7 from exact and
+  2.0e-6 from the vmex filaments.
+- So all codes see the same field to 2e-6. Every earlier CTH result (10-20) used the 2048 arclength field and is not
+  compared.
+- The 4x segments made the 12x12 three-term solve ask for a 39.7 GB temporary. `DirectCoilField` now sums over
+  chunks of at most 512 points (`3ac4aeda`; benchmark copy identical to 3e-16 in value and gradient).
+
 ## Package F: restart and export
 
 | id | issue | status | evidence |
@@ -188,6 +202,10 @@ CPU lanes and the two-device lane pass):
 - `test_implicit_grad.py::test_raw_residual_jvp_is_exactly_nearest_neighbor` (x3);
 - `test_optimize.py::test_equilibrium_from_x_is_the_state_the_objective_read` (x2);
 - `test_optimize.py::test_certified_trial_guards_reject_stale_or_missing_memo`.
+- `test_optimize.py::test_from_loss_honors_bound_scalar_method_literally`, `test_least_squares_implicit_jac_solver_block`,
+  `test_equilibrium_exterior_field_sizes_its_source_grid` (the same device-placement `ValueError`) and
+  `test_reverse_lane_factors_once_per_point` (NaN in the block-tridiagonal fallback): **identical at af30041d and
+  54140c07** (day3/G3 baseline lane, `paper/runs/g3/tests-baseline.log`).
 - `test_optimize.py::test_from_loss_honors_bound_scalar_method_literally`,
   `test_least_squares_implicit_jac_solver_block`, `test_equilibrium_exterior_field_sizes_its_source_grid` (same
   device-placement `ValueError`; day3 run of the whole file).

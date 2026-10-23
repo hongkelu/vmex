@@ -1345,6 +1345,100 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol["gradients"] = gradients
         return gradients
 
+    def exact_design_gradient(self, x, row=0, *, h=1e-4, rtol=1e-8, maxiter=30):
+        """The exact design gradient of value row ``row`` at ``x`` (qualification reference; costly).
+
+        The optimizer's gradient (:meth:`_linearize`) differentiates the boundary fit with the Gauss-Newton
+        sensitivity ``-(J_b^T J_b)^-1 J_b^T J_d``, exact only at a zero residual.  This is the derivative of the
+        fit's stationarity condition ``g(b, d) = J_b^T r = 0`` itself:
+
+            dQ/dd = Q_d - F_d^T mu,   H mu = Q_b^T,   H = dg/db = J_b^T J_b + sum_i r_i d2r_i/db2,
+            F_d = dg/dd = J_b^T J_d + sum_i r_i d2r_i/db dd,
+
+        with ``mu`` by conjugate gradients preconditioned with ``J_b^T J_b``.  Each product with ``H`` is a
+        central difference (step ``h`` in the scaled coordinates) of ``g`` at boundaries ``b +- eps v`` (tight
+        interior solves at fixed boundaries and design, no fits), and ``F_d^T mu`` the central difference along
+        ``mu`` of the fixed-boundary design gradient of ``|r|^2 / 2`` (the coil field's VJP and the plasma
+        columns).  With the curvature terms dropped this is exactly the Gauss-Newton gradient.  Cost: two
+        linearizations per CG iteration and two for ``F_d^T mu``.
+        """
+        model, nb = self.model, self.model.x0.size
+        x = np.asarray(x, dtype=float)
+        xj = jnp.asarray(x)
+        sol = self._record(x)
+        gradients = self._linearize(x, sol)  # the Gauss-Newton gradients (and G_b, direct terms below)
+        params, field = self._params_at(xj), self.field(xj)
+        extra = self._plasma_directions(params, xj) if self._plasma.size else None
+        b0, J_b0 = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])[:, :nb]
+        scale = np.asarray(model.x_scale, dtype=float)
+        state, params_b = sol["state"], sol["params"]
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        Q_b = G_b[row]
+
+        def at(bb):
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                raise TrialRejected("an exact-gradient difference point has no certified interior root")
+            rows, aux = got
+            J, _, _, aux = model.linearize(bb, aux, field, extra=extra)
+            J = np.asarray(J)
+            return np.asarray(rows), J[:, :nb], (J[:, nb:] if extra is not None else None), aux
+
+        def step(v):
+            return h / max(float(np.linalg.norm(v / scale)), 1e-300)
+
+        def g(bb):
+            rows, J_b, _, _ = at(bb)
+            return J_b.T @ rows
+
+        def hessian(v):
+            eps = step(v)
+            return (g(b0 + eps * v) - g(b0 - eps * v)) / (2 * eps)
+
+        Q, R = np.linalg.qr(J_b0)
+
+        def precondition(v):  # (J_b^T J_b)^-1 v
+            return np.linalg.solve(R, np.linalg.solve(R.T, v))
+
+        mu = precondition(Q_b)  # the Gauss-Newton multiplier: the initial guess
+        res = Q_b - hessian(mu)
+        z = precondition(res)
+        d = z.copy()
+        rz = res @ z
+        norm0 = float(np.linalg.norm(Q_b))
+        iterations = 0
+        for iterations in range(1, maxiter + 1):
+            if float(np.linalg.norm(res)) <= rtol * norm0:
+                break
+            Hd = hessian(d)
+            alpha = rz / (d @ Hd)
+            mu = mu + alpha * d
+            res = res - alpha * Hd
+            z = precondition(res)
+            rz, rz_old = res @ z, rz
+            d = z + (rz / rz_old) * d
+        converged = float(np.linalg.norm(res)) <= rtol * norm0
+
+        def design_gradient_of_cost(bb):
+            rows, _, J_p, aux = at(bb)
+            st, _, pb, _ = aux
+            out = np.asarray(self._field_vjp(st, pb, xj, jnp.asarray(rows)))
+            if J_p is not None:
+                out = out.copy()
+                out[self._plasma] += J_p.T @ rows
+            return out
+
+        eps = step(mu)
+        Fd_mu = (design_gradient_of_cost(b0 + eps * mu) - design_gradient_of_cost(b0 - eps * mu)) / (2 * eps)
+        direct = np.asarray(self._direct(state, params_b, xj))[row]
+        exact = direct + G_x[row] - Fd_mu
+        return dict(gradient=exact, gauss_newton=np.asarray(gradients[row]), cg_iterations=iterations,
+                    cg_converged=bool(converged), cg_residual=float(np.linalg.norm(res)) / max(norm0, 1e-300))
+
     def _promote(self, sol):
         if "anchor" in sol:
             self._anchor, self._continuation = sol["anchor"], sol["continuation"]

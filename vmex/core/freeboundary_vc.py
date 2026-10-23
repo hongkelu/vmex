@@ -230,6 +230,14 @@ STALL_RULE = "gain"
 #: (a rank-one secant update after every accepted step; every certificate still uses a fresh Jacobian).
 JACOBIAN_UPDATE = "none"
 
+#: Extrapolate an accepted Gauss-Newton step: after an undamped step that gained over three quarters of its
+#: prediction, try 2, 4, 8, ... times it (one evaluation each, current coordinates re-solved), keeping each that
+#: lowers the cost.  For a nonzero-residual fit whose Gauss-Newton steps point the same way round after round
+#: (the model's curvature along the step too high), this covers in a few evaluations what fresh Jacobians do in
+#: as many rounds.
+GN_EXTRAPOLATE = False
+GN_EXTRAPOLATE_MAX = 6  # doublings at most
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
 
@@ -1625,7 +1633,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         return Q_c, R_c, norms, U, sv, Vt
 
     Q_c, R_c, norms, U, sv, Vt = decompose(J)
-    updates = 0
+    updates = extrapolated = 0
     nfev, accepted, converged, slow, reason, unprojected = 1, 0, False, 0, "max_nfev", 0
     started = time.perf_counter()
 
@@ -1689,7 +1697,28 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
                     J = J + np.outer(dr - J @ dx, dx) / (dx @ dx)
                     Q_c, R_c, norms, U, sv, Vt = decompose(J)
                     updates += 1
+            x_prev = x
             x, (r, aux), accepted = x_new, got, accepted + 1
+            if GN_EXTRAPOLATE and lam == 0.0 and rho > 0.75:
+                d, factor = x_new - x_prev, 1.0
+                for _ in range(GN_EXTRAPOLATE_MAX):
+                    if nfev >= max_nfev:
+                        break
+                    factor *= 2.0
+                    x_try = x_prev + factor * d
+                    trial = evaluate(x_try)
+                    nfev += 1
+                    if trial is not None and Q_c is not None:
+                        x_try, trial, used, stationary = _project(evaluate, x_try, trial, Q_c, R_c, project,
+                                                                  max_nfev - nfev, 0.1 * ftol)
+                        nfev += used
+                        unprojected += not stationary
+                    cost_try = np.inf if trial is None else 0.5 * trial[0] @ trial[0]
+                    if verbose:
+                        print(f"  extrapolated x{factor:.0f}: cost {cost_new:.6e} -> {cost_try:.6e}", flush=True)
+                    if not cost_try < cost_new:
+                        break
+                    x, (r, aux), cost_new, extrapolated = x_try, trial, cost_try, extrapolated + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
@@ -1716,4 +1745,4 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
                 converged, reason = False, "projection_unconverged"
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
                 reason=reason, projections=unprojected, projection_certified=certified_projection,
-                jacobian_updates=updates)
+                jacobian_updates=updates, extrapolated=extrapolated)

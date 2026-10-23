@@ -1282,3 +1282,23 @@ def test_broyden_update_cuts_the_evaluations_of_a_stale_jacobian(monkeypatch):
         np.testing.assert_allclose(runs[mode]["x"], [np.sqrt(2), 3 ** (1 / 3)], rtol=1e-10)
     assert runs["broyden"]["jacobian_updates"] > 0 and runs["none"]["jacobian_updates"] == 0
     assert runs["broyden"]["nfev"] * 3 < runs["none"]["nfev"]
+
+
+def test_gauss_newton_extrapolation_follows_a_step_the_model_undershoots(monkeypatch):
+    """r(x) = 1/x^2 from x = 1: the Gauss-Newton step (gain ratio 0.80) undershoots a cost that keeps falling along
+    it, so doubling the accepted step lowers the cost further for the same evaluations; without the extrapolation
+    the fixed Jacobian's steps do not."""
+    def evaluate(x):
+        return np.array([1.0 / x[0] ** 2]), None
+
+    x0 = np.array([1.0])
+    J = np.array([[-2.0]])
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(fvc, "GN_EXTRAPOLATE", on)
+        out[on] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-14, max_nfev=6,
+                                           verbose=0)
+    cost = {on: 0.5 * float(out[on]["rows"] @ out[on]["rows"]) for on in out}
+    assert out[False]["extrapolated"] == 0 and out[True]["extrapolated"] >= 2
+    assert out[True]["nfev"] <= 6
+    assert cost[True] < 0.1 * cost[False]

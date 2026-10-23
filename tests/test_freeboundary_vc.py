@@ -493,11 +493,18 @@ def test_rejected_trial_leaves_the_continuation(monkeypatch):
 
 @needs_vc
 @pytest.mark.full
-def test_plasma_map_derivatives_at_nonzero_offsets():
+def test_plasma_map_derivatives_at_nonzero_offsets(monkeypatch):
     """The design gradient differentiates the plasma map itself, phiedge0 (1 + x1/2) + x2^2 / 100: at a nonzero
-    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0."""
+    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0.
+
+    The reference is a central difference of tightly re-solved fits (boundary_ftol and the polish target 1e-9): at
+    the default 1e-3 the fits' own error dominates a difference.  Against it, the exact stationarity derivative
+    (exact_design_gradient) agrees to 1e-3 (measured 8e-5); the optimizer's Gauss-Newton fit sensitivity stays within
+    its documented 1e-2 budget (measured 6.7e-3: the curvature term it drops, nonzero at a nonzero residual)."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
+    monkeypatch.setattr(fvc, "POLISH_FTOL", 1e-9)
+    monkeypatch.setattr(fvc, "POLISH_ROUNDS", 20)
     inp, field = _small_vacuum()
     base = field.currents
     problem = FreeBoundaryProblem.from_loss(
@@ -505,14 +512,16 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        boundary_condition="three_term", three_term_options=SMALL)
+        boundary_condition="three_term", three_term_options=dict(SMALL, boundary_ftol=1e-9, boundary_max_nfev=400))
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, grad = problem.value_and_grad(x)
+    exact = problem.exact_design_gradient(x)["gradient"]
     h = 1e-3
     for k in (1, 2):
         e = np.eye(3)[k] * h
         fd = (problem.fun(x + e) - problem.fun(x - e)) / (2 * h)
+        assert exact[k] == pytest.approx(fd, rel=1e-3), k
         assert grad[k] == pytest.approx(fd, rel=1e-2), k
     problem.close()
 

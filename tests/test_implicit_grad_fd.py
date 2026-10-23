@@ -121,8 +121,51 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
             f"(rel {rel:.2e}) — the implicit gradient must match the frozen path")
 
 
-def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
-    """Mean iota: the implicit derivative against an independent re-solve FD.
+def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
+    """Mean iota: with the m=1 complement solved at the root (``M1_COMPLEMENT``,
+    the default) no entry is frozen at a path-dependent value, so the implicit
+    derivative IS an independent re-solve FD's -- the gap the frozen treatment
+    leaves (1.0% / 2.8%, next test) closes without any correction."""
+    assert im.M1_COMPLEMENT == "solved"
+    name = "li383_low_res"
+    inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
+    cfg = im.make_config(inp, **CASES[name])
+    p0 = im.params_from_input(inp)
+    ntor = int(inp.ntor)
+    grad = jax.grad(lambda p: mean_iota(
+        im.solve_implicit(p, cfg), im.runtime_from_params(p, cfg)))(p0)
+    x0, mask = im.solve_implicit_with_aux(p0, cfg)
+    project = im._dof_projector(cfg, mask)
+    edge = im._edge_mask(cfg)
+
+    def frozen_part(x):
+        return jax.tree.map(lambda a, b, e: (a - b) * (1.0 - e), x, project(x), edge)
+
+    h = 5e-4
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    for field, n in (("rbc", 1), ("zbs", -1)):
+        tangent = dataclasses.replace(zero, **{field: getattr(zero, field).at[ntor + n, 1].set(1.0)})
+        implicit = float(sum(jnp.vdot(a, b) for a, b in zip(
+            jax.tree.leaves(grad), jax.tree.leaves(tangent))))
+        values = []
+        for sign in (1.0, -1.0):
+            p = jax.tree.map(lambda a, d, s=sign: a + s * h * d, p0, tangent)
+            x, _ = im.solve_implicit_with_aux(p, cfg)
+            # nothing outside the evolved dofs and the edge moves
+            assert max(float(jnp.max(jnp.abs(a - b))) for a, b in zip(
+                jax.tree.leaves(frozen_part(x)), jax.tree.leaves(frozen_part(x0)))) == 0.0
+            values.append(float(mean_iota(x, im.runtime_from_params(p, cfg))))
+        resolve = (values[0] - values[1]) / (2 * h)
+        gap = abs(implicit / resolve - 1.0)
+        print(f"\n[{name}] d(mean iota)/d({field.upper()}(n={n:+d},m=1)): "
+              f"implicit {implicit:+.6e} re-solve {resolve:+.6e} (gap {gap:.1e})")
+        assert gap < 1e-4
+
+
+def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch):
+    """Mean iota: the implicit derivative against an independent re-solve FD,
+    with the m=1 complement frozen as VMEC2000 leaves it (``M1_COMPLEMENT =
+    "frozen"``).
 
     The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
     2.8% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
@@ -138,6 +181,7 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     derivative plus the iota response to moving only that family by the
     re-solves' own drift.  Measured closures: 2.3e-6 and 1.6e-5.
     """
+    monkeypatch.setattr(im, "M1_COMPLEMENT", "frozen")
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
     cfg = im.make_config(inp, **CASES[name])

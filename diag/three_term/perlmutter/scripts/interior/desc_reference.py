@@ -10,11 +10,13 @@ cuts of 256 theta points.
 import json
 import sys
 
+import desc
 import numpy as np
 from netCDF4 import Dataset
 
-from desc.grid import Grid
-from desc.vmec import VMECIO
+desc.set_device("gpu")
+from desc.grid import Grid  # noqa: E402
+from desc.vmec import VMECIO  # noqa: E402
 
 
 def wout_surfaces(path, rho, phis, th):

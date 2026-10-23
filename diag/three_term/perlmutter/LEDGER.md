@@ -54,6 +54,14 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | D1 | Rejected without new evidence: Broyden, GN extrapolation, 10 x 10, model-aware stall rule | **superseded** | WP2_WP3 tables | do not revisit |
 | D2 | Normal chart: condition 30 vs 2.8e3, but representation error 0.36-0.79 | candidate, not qualified | `chart_offline.py` | D2 qualification only if D1 shows the weak directions are relabelling |
 
+## Package E: dependencies and environment
+
+| id | issue | status | evidence |
+|---|---|---|---|
+| E0 | One reproducible runtime artifact | **recorded**: `ENVIRONMENT.md`, `raw/env/` (ESSOS 0.21.0, SOLVAX 0.31.0, JAX 0.12.0.1 CUDA 13, DKX 2.11.0; vmex always from a pinned tree) | |
+| E1 | ESSOS `DirectCoilField` vs native ESSOS parity (field, JVP/VJP, nfp, symmetry, currents) and its stale rationale | **open** | |
+| E2 | SOLVAX operator certification (dense/QR references, transposes, warm/cold, multi-RHS) | partly covered by A3's raw certificate; dedicated tests **open** | |
+
 ## Package F: restart and export
 
 | id | issue | status | evidence |

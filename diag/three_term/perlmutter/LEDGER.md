@@ -61,6 +61,9 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   "match" (-4.196) was the circular predicted trial.
   - So on QH 2.5% GN is wrong by tens of percent and the converged exact derivative is right.
   - With equal arc it converges in 26 iterations; with NL it had not in 30.
+- **First valid cold-difference check: qavac** (equal arc, target 1e-4, at the optimization's step-11 checkpoint; 4e4c8eb1).
+  Every trial moved (one accepted step from the seed boundary). The differences are stable in h (-0.0235105 at
+  3e-5 and 1e-5). **GN: loss 1.0e-3, quantities 8.9e-3 off.** So GN is approximate on QA vacuum too (0.1-0.9%).
 
 **C5b day3 gradient checks** (gate 1e-5, re-solved central differences at h 1e-4 / 3e-5 / 1e-5; `raw/wp5/day3/`):
 - qavac, 3 directions: loss matches to 7e-9..8e-8 at h 1e-5. With the **continuous clearance** (22e60e13) its row's

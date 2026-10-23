@@ -1207,8 +1207,10 @@ def parse_args(argv=None):
                         "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
     parser.add_argument("--exact-gradient-maxiter", type=int, default=30,
                         help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
-    parser.add_argument("--exact-gradient-h", type=float, default=1e-4,
-                        help="the central-difference step (scaled coordinates) of --check-exact-gradient's products")
+    parser.add_argument("--exact-gradient-h", type=float, default=1e-3,
+                        help="the central-difference step (scaled coordinates) of the stationarity products "
+                        "(exact/stationarity gradients, Newton polish); 1e-4 is noise-limited along the weakest "
+                        "directions, 1e-2 truncation-limited (--check-products)")
     parser.add_argument("--check-gradient-cold", action="store_true",
                         help="--check-gradient trials start from the seed's boundary, not the Gauss-Newton prediction "
                         "(a predicted start that already certifies makes the difference reproduce the formula)")
@@ -1685,7 +1687,8 @@ def main(argv=None):
                       boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
-                      newton_polish=None if args.newton_polish is None else dict(step_tol=args.newton_polish),
+                      newton_polish=None if args.newton_polish is None else dict(step_tol=args.newton_polish,
+                                                                                 h=args.exact_gradient_h),
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,

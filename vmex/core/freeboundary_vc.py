@@ -1407,7 +1407,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         record, its Jacobian and its values come from the same code as every other trial.  ``sol["newton"]``
         records the steps.
         """
-        opt = dict(step_tol=1e-8, max_steps=10, h=1e-4, cg_rtol=1e-6, cg_maxiter=80)
+        opt = dict(step_tol=1e-8, max_steps=10, h=1e-3, cg_rtol=1e-6, cg_maxiter=80)
         opt.update(self.newton_polish or {})
         model, nb = self.model, self.model.x0.size
         scale = np.asarray(model.x_scale, dtype=float)
@@ -1534,7 +1534,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         c = np.asarray(x_bar)[0] + np.asarray(self._field_vjp(state, params_b, jnp.asarray(x), r))
         return g, c, np.asarray(rows)
 
-    def stationarity_design_gradient(self, x, rows=None, *, h=1e-4, rtol=1e-10, maxiter=200, richardson=False):
+    def stationarity_design_gradient(self, x, rows=None, *, h=1e-3, rtol=1e-10, maxiter=200, richardson=False):
         """Every requested row's exact design gradient: the derivative of the converged stationarity ``J_b^T r = 0``.
 
         For each value row ``Q``: ``H mu = Q_b^T`` with ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` (conjugate gradients
@@ -1544,6 +1544,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         ``F_d^T v`` are central differences (step ``h`` in the scaled coordinates; ``richardson`` extrapolates steps
         ``h`` and ``h/2`` to cancel the second-order error) of ``g`` and ``c`` (:meth:`_cost_gradients`), each one
         tight solve and one reverse pass.  The Gauss-Newton gradient is the same formula without the curvature.
+        The step: products along the fit's weakest directions change ``g`` by about ``sigma_min^2 h``, which at
+        ``h = 1e-4`` sits under the tight solves' noise (qavac, weakest direction: the reverse-pass and linearization
+        products differ by 4.4e-2 in ``H v`` and 4.9e-1 in ``F_d^T v``), while ``h = 1e-2`` adds truncation error
+        (2e-2 spurious curvature along the strongest direction); at ``h = 1e-3`` the two implementations agree to
+        2.3e-4 and 2.1e-3 there and to 1e-10 elsewhere (driver ``--check-products``).
         It is the same mathematics as :meth:`exact_design_gradient`, whose products come from full linearizations
         instead: an independent implementation for qualification.  Returns ``dict(gradients, gauss_newton,
         cg_iterations, cg_converged, cg_residual, evaluations)`` (rows of ``gradients`` as :meth:`_linearize`).
@@ -1694,7 +1699,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise RuntimeError("subspace_design_gradient(k=0) differs from the Gauss-Newton gradient")
         return dict(gradients=gradients, gauss_newton=gn, k=k, singular_values=sv[sv.size - k:].tolist())
 
-    def exact_design_gradient(self, x, row=0, *, h=1e-4, rtol=1e-8, maxiter=30):
+    def exact_design_gradient(self, x, row=0, *, h=1e-3, rtol=1e-8, maxiter=30):
         """The exact design gradient of value row ``row`` at ``x`` (qualification reference; costly).
 
         The optimizer's gradient (:meth:`_linearize`) differentiates the boundary fit with the Gauss-Newton

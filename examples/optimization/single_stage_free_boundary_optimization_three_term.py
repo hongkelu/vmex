@@ -1074,6 +1074,8 @@ def parse_args(argv=None):
                         help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
     parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
                         help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
+    parser.add_argument("--check-gradient-steps", type=float, nargs="+", default=[1e-2, 1e-3, 1e-4], metavar="H",
+                        help="central-difference steps of --check-gradient")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -1576,7 +1578,7 @@ def main(argv=None):
             problem.save_checkpoint(out / "checkpoint.npz")
 
     if args.check_gradient:
-        check_gradient(problem, args.check_gradient, out)
+        check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps))
         return
     log_step()
     while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point

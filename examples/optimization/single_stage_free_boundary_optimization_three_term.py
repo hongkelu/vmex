@@ -1191,6 +1191,9 @@ def parse_args(argv=None):
                         help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
     parser.add_argument("--exact-gradient-h", type=float, default=1e-4,
                         help="the central-difference step (scaled coordinates) of --check-exact-gradient's products")
+    parser.add_argument("--check-gradient-cold", action="store_true",
+                        help="--check-gradient trials start from the seed's boundary, not the Gauss-Newton prediction "
+                        "(a predicted start that already certifies makes the difference reproduce the formula)")
     parser.add_argument("--check-gradient-steps", type=float, nargs="+", default=[1e-2, 1e-3, 1e-4], metavar="H",
                         help="central-difference steps of --check-gradient")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
@@ -1410,11 +1413,17 @@ def _check_jacobian_following(model, params, field, b, rows0, aux0, J, scale, di
                                                  + "\n")
 
 
-def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
+def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), cold=False):
     """Implicit design gradients of the loss and every quantity at the seed against central differences of
     re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
     ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector)."""
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector).
+
+    By default a trial starts from the accepted point's first-order (Gauss-Newton) boundary prediction; a trial whose
+    prediction already passes the certificate is accepted without a step, and its difference then reproduces the
+    Gauss-Newton formula by construction (not an independent check). Every trial's fit evaluations and accepted steps
+    are recorded (``trials``) so that can be seen. ``cold`` starts every trial from the seed's own boundary instead,
+    so each fit has to move by the whole response: the difference is then the solver's actual response."""
     x = np.asarray(problem.accepted.parameters, dtype=float)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
@@ -1425,15 +1434,32 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
         d /= np.linalg.norm(d)
         implicit = np.r_[grad @ d, jac @ d]
         for h in steps:
+            trials = []
+            for s in (1, -1):
+                key = np.asarray(problem._x(x + s * h * d), dtype=float)
+                if cold:  # from the seed's boundary, without the Gauss-Newton prediction or its Jacobian
+                    problem._solve(key, starts=[np.asarray(problem._anchor["b"])])
+                sol = problem._cache.get(key.tobytes()) if hasattr(problem, "_cache") else None
+                trials.append(None if sol is None else dict(nfev=sol.get("nfev"), accepted=sol.get("accepted"),
+                                                           reason=sol.get("reason")))
             values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
+            for s, t in zip((1, -1), trials):
+                if t is None:
+                    key = np.asarray(problem._x(x + s * h * d), dtype=float).tobytes()
+                    sol = problem._cache.get(key) if hasattr(problem, "_cache") else None
+                    trials[(1 - s) // 2] = None if sol is None else dict(
+                        nfev=sol.get("nfev"), accepted=sol.get("accepted"), reason=sol.get("reason"))
             fd = (values[0] - values[1]) / (2 * h)
             loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
             rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)
             records.append(dict(direction=k, h=h, loss_implicit=float(implicit[0]), loss_difference=float(fd[0]),
                                 loss_relative=float(loss), rows_relative=float(rows),
-                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist()))
+                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist(),
+                                cold=bool(cold), trials=trials))
+            moved = [t["accepted"] for t in trials if t is not None]
             print(f"[gradient check] direction {k} h={h:.0e}: loss {implicit[0]:.6e} vs {fd[0]:.6e} "
-                  f"(relative {loss:.1e}), quantities relative {rows:.1e}", flush=True)
+                  f"(relative {loss:.1e}), quantities relative {rows:.1e}"
+                  f"{' (cold)' if cold else ''} trial steps {moved}", flush=True)
     (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
 
 
@@ -1795,7 +1821,8 @@ def main(argv=None):
               f"(converged {got['cg_converged']}), {record['seconds']:.0f} s", flush=True)
         return
     if args.check_gradient:
-        check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps))
+        check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps),
+                       cold=args.check_gradient_cold)
         return
     log_step()
     while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point

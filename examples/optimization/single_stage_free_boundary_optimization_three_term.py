@@ -1070,6 +1070,10 @@ def parse_args(argv=None):
                         help="compare the model's implicit boundary Jacobian with central differences of tight "
                         "rows along N random directions and the weakest one (jacobian_check.json), at the seed "
                         "boundary or --jacobian-at, without solving the free boundary; then stop")
+    parser.add_argument("--jacobian-following", action="store_true",
+                        help="--check-jacobian along boundary-only directions with the bootstrap current re-solved to "
+                        "conditional stationarity at every point (the response the variable projection follows), "
+                        "against the reduced model (I - P_c) J_b d and against the fixed-current difference")
     parser.add_argument("--jacobian-dump", action="store_true",
                         help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
     parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
@@ -1175,7 +1179,8 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4), dump=False):
+def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4), dump=False,
+                   following=False):
     """The model's implicit boundary Jacobian against central differences of tight rows (WP5/C5).
 
     At the seed design's field and plasma parameters and the seed boundary (or ``record``'s model coordinates),
@@ -1199,6 +1204,8 @@ def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-
     rows, aux = model.evaluate(b, params, field, tight=True)
     J = np.asarray(model.linearize(b, aux, field)[0])[:, :b.size]
     scale = np.asarray(model.x_scale, dtype=float)
+    if following:
+        return _check_jacobian_following(model, params, field, b, rows, aux, J, scale, directions, out, steps, record)
     Js = J * scale
     _, sv, vt = np.linalg.svd(Js / np.linalg.norm(Js, axis=0), full_matrices=False)
     rng = np.random.default_rng(0)
@@ -1231,6 +1238,66 @@ def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-
     if dump:
         blocks = {name: np.array([b0, b1]) for name, b0, b1 in model.row_blocks}
         np.savez(out / "jacobian_check.npz", rows=np.asarray(rows), **arrays, **{f"block_{k}": v for k, v in blocks.items()})
+
+
+def _check_jacobian_following(model, params, field, b, rows0, aux0, J, scale, directions, out, steps, record):
+    """--jacobian-following: boundary-only directions, the current re-solved to conditional stationarity."""
+    nb = int(model.n_boundary)
+    cur = np.arange(nb, b.size)
+    J_b, J_c = J[:, :nb], J[:, nb:]
+    Q, _ = np.linalg.qr(J_c)
+    reduced = J_b - Q @ (Q.T @ J_b)  # Kaufman: the response with the current following, to first order
+
+    def follow(bb):
+        """``bb`` with its current coordinates at conditional stationarity (Gauss-Newton, fresh columns)."""
+        got = model.evaluate(bb, params, field, tight=True)
+        for _ in range(20):
+            if got is None:
+                return None, None
+            r, aux = got
+            Jc, aux = model.current_columns(bb, aux, field)
+            Qc, Rc = np.linalg.qr(np.asarray(Jc))
+            g = Qc.T @ np.asarray(r)
+            if g @ g <= 1e-14 * (np.asarray(r) @ np.asarray(r)):
+                return bb, np.asarray(r)
+            bb = bb.copy()
+            bb[cur] -= np.linalg.solve(Rc, g)
+            got = model.evaluate(bb, params, field, tight=True)
+        return bb, None
+
+    b0, r0 = follow(b)
+    rs = reduced * scale[:nb]
+    _, sv, vt = np.linalg.svd(rs / np.linalg.norm(rs, axis=0), full_matrices=False)
+    rng = np.random.default_rng(0)
+    dirs = [rng.standard_normal(nb) for _ in range(directions)] + [vt[-1] / np.linalg.norm(rs, axis=0)]
+    records = []
+    for k, d in enumerate(dirs):
+        d = d / np.linalg.norm(d) * scale[:nb]
+        full = np.zeros(b.size)
+        full[:nb] = d
+        Rd, Jd = reduced @ d, J_b @ d
+        for h in steps:
+            plus, minus = follow(b0 + h * full), follow(b0 - h * full)
+            fixed = [model.evaluate(b0 + s * h * full, params, field, tight=True) for s in (1, -1)]
+            row = dict(direction=k, kind="weakest" if k == directions else "random", h=h)
+            if plus[1] is not None and minus[1] is not None:
+                diff = (plus[1] - minus[1]) / (2 * h)
+                row["following"] = float(np.linalg.norm(diff - Rd) / np.linalg.norm(Rd))
+                for block, b0_, b1_ in model.row_blocks:
+                    nrm = float(np.linalg.norm(Rd[b0_:b1_]))
+                    if nrm > 0:
+                        row["following_" + block] = float(np.linalg.norm(diff[b0_:b1_] - Rd[b0_:b1_]) / nrm)
+            if all(f is not None for f in fixed):
+                diff = (np.asarray(fixed[0][0]) - np.asarray(fixed[1][0])) / (2 * h)
+                row["fixed_current"] = float(np.linalg.norm(diff - Jd) / np.linalg.norm(Jd))
+            records.append(row)
+            print(f"[jacobian following] direction {k} ({row['kind']}) h={h:.0e}: following "
+                  f"{row.get('following', float('nan')):.2e}, fixed current {row.get('fixed_current', float('nan')):.2e}",
+                  flush=True)
+    meta = dict(resolution=model.resolution(), record=None if record is None else str(record), options=model.options,
+                base_closure_converged=r0 is not None)
+    (out / "jacobian_following.json").write_text(json.dumps(dict(meta=meta, checks=records), indent=1, default=str)
+                                                 + "\n")
 
 
 def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
@@ -1452,7 +1519,8 @@ def main(argv=None):
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
-        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump)
+        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,
+                       following=args.jacobian_following)
         return
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,

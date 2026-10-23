@@ -1,0 +1,41 @@
+{
+ "reference": "../paper/runs/wp2/fx-qhvac-K",
+ "nfp": 4,
+ "runs": {
+  "../paper/runs/wp2/fx-qhvac-K": {
+   "certified": true,
+   "stationarity": 0.0002502426420377074,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 3.0350144828113567e-06,
+    "pressure": 3.410481376874848e-06,
+    "K_x": 2.47124383302135e-06,
+    "K_y": 2.4322606533377653e-06,
+    "K_z": 2.5453733439185384e-06,
+    "label": 6.704188263300054e-06,
+    "phase": 4.253261100765714e-06,
+    "net_current": 3.4838936743421703e-06
+   }
+  },
+  "../paper/runs/night2/start-qhvac-r1": {
+   "certified": true,
+   "stationarity": 0.0002597052435652791,
+   "surface_distance_m": 6.54101756862295e-05,
+   "values_max_rel": 0.00015926059079896025,
+   "blocks_rms": {
+    "B.n": 2.9860331484694437e-06,
+    "pressure": 3.392219312708743e-06,
+    "K_x": 2.465450485434629e-06,
+    "K_y": 2.4185073086700014e-06,
+    "K_z": 2.507954532891295e-06,
+    "label": 6.730514920372033e-06,
+    "phase": 5.087407902884854e-06,
+    "net_current": 3.5371996318629756e-06
+   }
+  },
+  "../paper/runs/night2/start-qhvac-r2": {
+   "certified": false
+  }
+ }
+}

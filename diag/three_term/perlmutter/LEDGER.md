@@ -95,8 +95,12 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 - qavac: surfaces 1.2e-13 m, values 8.4e-13;
 - qi25: surfaces 1.8e-11 m, values 2.8e-9.
 
-**G1 start dependence:** `--seed-start random EPS SEED | scale EPS` (18fb4ab4); qhvac and qivac from three
-perturbed starts are queued (job 60145562).
+**G1 start dependence:** `--seed-start random EPS SEED | scale EPS` (18fb4ab4), `raw/g1/`.
+- **qhvac:** the random start (1e-3, seed 1) certifies at 2.6e-4. Against the deck start (2.5e-4) its surface is
+  **65 um** away (4e-4 of the minor radius) and its values differ by **1.6e-4**.
+- So the 1e-3 gate admits start dependence of that size, compared with 1e-13 between identical starts.
+- Whether this is within the fit's numerical uncertainty is open: the same comparison at a tighter gate is next.
+- Running: the second random start and the scaled start; qivac, qavac and qi25 starts are queued.
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.

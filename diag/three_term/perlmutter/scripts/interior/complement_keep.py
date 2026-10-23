@@ -5,7 +5,7 @@ usage: python complement_keep.py OUT.npz   (cwd: a vmex tree; a GPU; env MPOL, N
 KEEP=1: residue.f90's constrain_m1 release is disabled in the host solver and the implicit residual, and the dof
 projector is the elementwise mask (the m = 1 pair is not symmetrized), so the Newton refinement solves for the
 complement too.  KEEP unset: the code as is.  Saved per start (cold, near, perturbed): the refined state's rows,
-and for the cold start iota and the surfaces (interior_gauge.py's measures) and the refined residual norm.
+and for the cold start its wout (OUT_wout.nc), iota and the surfaces (interior_gauge.py's measures) and the refined residual norm.
 Compare two runs with complement_keep_compare.py.
 """
 import dataclasses
@@ -27,6 +27,7 @@ from vmex.core import freeboundary_vc as fvc  # noqa: E402
 from vmex.core import implicit as im  # noqa: E402
 from vmex.core import solver as _solver  # noqa: E402
 from vmex.core.solver import SpectralState  # noqa: E402
+from vmex.core.wout import write_wout  # noqa: E402
 
 KEEP = bool(os.environ.get("KEEP"))
 if KEEP:
@@ -70,7 +71,9 @@ def main():
         out[f"residual_{name}"] = float(im._tree_norm(F(P(refined), params_x)))
         print(name, "residual", out[f"residual_{name}"], flush=True)
         if name == "cold":
-            ph = physical(opt.solve_equilibrium(model.fixed, initial_state=refined).wout)
+            wout = opt.solve_equilibrium(model.fixed, initial_state=refined).wout
+            write_wout(str(sys.argv[1]).replace(".npz", "_wout.nc"), wout)
+            ph = physical(wout)
             out["iota"], out["surfaces"] = ph["iota"], np.asarray(ph["surfaces"])
             out["bmin"], out["bmax"] = ph["bmin"], ph["bmax"]
         model._last_linearize = None

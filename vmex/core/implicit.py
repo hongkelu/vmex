@@ -98,6 +98,10 @@ iota depends on it only through discretization error.  On
 and -2.5261 from the re-solves (1.0%).  Adding the iota response to that
 drift alone closes the gap to 2e-6
 (``test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family``).
+With ``M1_COMPLEMENT = "solved"`` (the default for 3D stellarator-symmetric
+runs) that combination is no longer released at the root: its force is kept
+and the refinement solves for it, so the refined state -- and the re-solve FD
+-- no longer depend on any solve's path.
 The gap does not fall monotonically as ``mpol``/``ntor``/``ns`` are refined.
 Over ``mpol`` 4-8 and ``ns`` 16-64 it spans 0.06-1.0% on ``RBC(1,1)`` and
 0.1-2.8% on ``ZBS(-1,1)``.  The finest case tested, ``mpol = 8`` and
@@ -878,6 +882,28 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
                          L_cos=mk(z), L_sin=mk(z))
 
 
+#: The m=1 complement ``zcs_int = (rss - zcs)/2`` of ``residue.f90``'s
+#: ``lconm1`` basis at the root the implicit layer refines to.  ``"frozen"``
+#: (VMEC2000): its force is released once ``fsqz < 1e-6`` and the complement
+#: stays wherever the iteration had it then, so the root depends on the
+#: solve's start (interface rows 1e-3 to 2e-2 apart between warm and cold
+#: starts).  ``"solved"``: its force is kept and the Newton refinement solves
+#: for it with the evolved dofs -- every force equation holds and the refined
+#: state is a function of the parameters alone (rows to 1e-11 from any start).
+#: 3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
+M1_COMPLEMENT = "solved"
+
+#: ``evaluate_forces``' ``iteration`` at which the m=1 Z force is not released
+#: (``residuals.m1_zero_condition``: released while ``iter2 < 2``).
+_M1_KEEP_ITERATION = 2
+
+
+def _m1_solved(resolution, lconm1) -> bool:
+    """Whether the refinement solves for the m=1 complement (:data:`M1_COMPLEMENT`)."""
+    return bool(M1_COMPLEMENT == "solved" and bool(lconm1) and int(resolution.ntor) > 0
+                and not bool(resolution.lasym))
+
+
 def _m1_pair_columns(cfg: ImplicitConfig) -> tuple[np.ndarray, np.ndarray]:
     """Signed-packing column indices of the m=1 ``(+n, -n)`` pairs."""
     modes = _static_tables(cfg.resolution)[0]
@@ -949,11 +975,14 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
     antisymmetrizes ``Z_cos`` (``lasym``, where ``force_Z_cc`` is zeroed and
     the gather is ``(cc +/- ss)/2``).  The mask is pre-equalized on the pair
     columns (see :func:`_dof_mask`), so ``P`` is symmetric and idempotent.
+    With the complement solved (:data:`M1_COMPLEMENT`) the pair entries are
+    ordinary dofs and ``P`` is the elementwise mask.
     """
     lconm1 = bool(cfg.lconm1)
     lthreed = int(cfg.resolution.ntor) > 0
     lasym = bool(cfg.resolution.lasym)
-    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed)
+    # With the complement solved (M1_COMPLEMENT) the pair is two ordinary dofs.
+    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed and not _m1_solved(cfg.resolution, lconm1))
                 else (np.zeros(0, int), np.zeros(0, int)))
 
     def P(t: SpectralState) -> SpectralState:
@@ -1083,7 +1112,7 @@ def _raw_force_state(
     )
     released = zero_m1_z_force(
         m1_residue_rotation(spectral, lconm1=setup.lconm1),
-        jnp.asarray(True),
+        jnp.asarray(not _m1_solved(rt.resolution, setup.lconm1)),
     )
     return _force_to_state(
         scalxc_scale_force(released, s=s, scaling=scalxc), rt
@@ -1171,7 +1200,8 @@ def _preconditioned_residual_lane(z: SpectralState, params: ImplicitParams,
     P = _dof_projector(cfg, dof_mask)
     rt_p = runtime_from_params(params, cfg)
     x = _assemble(z, rt_p, frozen, P, edge_mask)
-    gc, _, _ = evaluate_forces(x, rt_p)
+    keep = _m1_solved(rt_p.resolution, rt_p.setup.lconm1)
+    gc, _, _ = evaluate_forces(x, rt_p, iteration=_M1_KEEP_ITERATION if keep else 1)
     return P(gc)
 
 

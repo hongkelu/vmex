@@ -30,6 +30,16 @@ Run at c155c27d on one 4-node allocation:
 The slow weak-direction convergence (WP2) affects QA and QH in vacuum too, with far smaller output drift than at
 2.5%.
 
+Tests with K (0a59e653, 4 GPUs; the targeted runs completed, the full suite was still running):
+- **`test_interior_state_does_not_depend_on_its_start` now passes.**
+- `test_plasma_map_derivatives_at_nonzero_offsets` still fails.
+- The failures in `test_implicit_grad.py` and in `test_typed_error_through_pure_callback` fail identically at
+  af30041d:
+  - `three_surface_raw_kernel` and `raw_residual_jvp_is_exactly_nearest_neighbor`: a device-placement
+    `ValueError` under the GPU runtime;
+  - `typed_error`: solovev no longer fails to converge in 3 iterations.
+- The li383 m = 1 tests (K and frozen) pass.
+
 Tests at c155c27d (10 GPUs): **88 passed, 2 failed** (`test_interior_state_does_not_depend_on_its_start`,
 `test_plasma_map_derivatives_at_nonzero_offsets`, both from WP1's interior freedom), 10 skipped. At af30041d (4 GPUs): **92 passed, the same 2 failed**, 10 skipped.
 

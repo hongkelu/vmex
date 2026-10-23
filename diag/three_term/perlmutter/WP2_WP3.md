@@ -32,7 +32,16 @@ round; `paper/runs/wp2`):
   the projection was already good there.
 - **Solving the m = 1 complement (WP1 item 12) removes the NL plateau.** NL's stationarity now falls
   monotonically, where it bounced between 0.07 and 0.09 for 20 minutes before. C ends 12 rounds at 0.0155 against
-  0.0235 before. Both are still above the 1e-3 gate; 40-round runs are in progress (`C-K40`, `NL-K40`).
+  0.0235 before. Both are still above the 1e-3 gate.
+- **40 rounds with K** (`C-K40`, `NL-K40`):
+  - They reproduce the 12-round runs digit for digit.
+  - The cost now falls every round. NL went from 2.30e-7 to 1.96e-7 over rounds 19-41, at about 0.5-1.4% per
+    round and accelerating. C went from 2.80e-7 to 2.45e-7.
+  - Stationarity stays at 2e-3 to 2e-2 (NL's minimum is 2.0e-3 at round 30), and NL ends rejected at 8.2e-3.
+  - **This is no longer noise; it is slow descent.** The realised decrease per round is about the predicted one
+    and keeps coming, so the fit is moving along a long, curved valley, not stalled at a near-stationary point.
+  - The strict certificate is not reachable at this rate within a 2 h run. The next lever is the coordinates
+    (WP3) or a curvature-aware step on the weak subspace (method 4).
   - Before K, each tight evaluation's history-dependent complement moved the rows by about 1e-3 relative. That
     is the same order as the per-round gain the GN model could no longer realise.
 - **A finer boundary (10 x 10) converges more slowly per minute** than 8 x 8 (more coordinates, more tangential

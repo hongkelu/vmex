@@ -70,8 +70,9 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | qivac | **certified** | wp2/fx-qivac-K |
 | qavac | **certified** at 9.7e-5 (24 rounds; reproduced in a fresh allocation) | wp2/fx-qavac-K60, night/qavac-K40 |
 | qi25 | **certified** at 8.1e-5 (21 rounds; reproduced) | wp2/fx-qi25-K40, night/qi25-K40 |
-| qa25 | 5.1e-3 after 20 rounds, monotone | night/qa25-K40 running |
-| qh25 | not certified after 40 rounds (8e-3 to 1e-2); prescribed current went below the gate (6.7e-4) before rising | night/NL-K90, C-K90, QH-presc80 running |
+| qa25 | 6.2e-3 after 29 rounds (40 allowed) | night/qa25-K40 (running) |
+| qh25, prescribed current (fixture deck and current, no `--bootstrap`) | **certified** at 8.9e-5, cost 1.405e-7, after 74 rounds (36 min, 038065f3) | night/QH-presc80 |
+| qh25, bootstrap (Redl) | not certified: NL 46 min, cost 1.90e-7 and falling, stationarity 1.4e-2; C 47 min, 1.1e-2 | night/NL-K90, C-K90 (running) |
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.

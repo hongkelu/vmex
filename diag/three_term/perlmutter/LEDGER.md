@@ -102,6 +102,15 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   - **Summary:** GN misses the 1e-3 target everywhere. It meets the 1e-2 release requirement only in QA vacuum
     (0.24%) and QH vacuum (1.6% at target 3e-4, marginal); at finite beta it is 4-55% off. Per brief C3 the finite-beta
     domain needs the accurate response.
+- **The low-rank (subspace) gradient does not fix GN** (3454a0c5, k weakest scaled directions, same seeds as the
+  converged exact references):
+  - QA 2.5%: GN 4.08%; k=10 4.04%.
+  - QH 2.5% equal arc: GN 36.7%; k=10 35.6%; k=20 31.1%.
+  - QH 2.5% NL: GN 35.2%; k=10 34.8%; k=20 35.2%.
+  - **QI 2.5% DKX: GN 9.2%; k=20 13.6% (worse).**
+  - The curvature that matters is not on the weak scaled directions, and a truncated curvature model can spoil the
+    multipliers.
+  - Next: the exact-vs-GN multiplier correction by singular direction (fa2974d0, running) shows where it lives.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

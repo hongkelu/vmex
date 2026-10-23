@@ -183,8 +183,17 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
 
     - **Deterministic:** the root is a function of the parameters alone, from every start, at round-off.
     - **A complete root:** the frozen VMEC state leaves the complement's own force unbalanced; K satisfies it.
-    - **It differs from the cold VMEC root** by tens of um and iota 1e-5 on these coarse decks. Which is closer to
-      the continuum is checked against DESC (`desc_reference.py`, same boundary, fixed boundary, zero current).
+    - **It differs from the cold VMEC root** by tens of um and iota 1e-5 on these coarse decks.
+    - **DESC reference** (`desc_reference.py`, `raw/wp1/complement/keep/desc_m4_ns31.json`): same boundary, fixed
+      boundary, zero current, DESC L 16 / M 8 / N 8, against the mpol 4, ns 31 roots:
+
+      | | iota max diff | surface max distance |
+      |---|---|---|
+      | frozen (VMEC) | 3.35e-3 | 2.18 mm |
+      | solved (K) | 3.37e-3 | 2.15 mm |
+
+      The mpol 4 truncation error dominates. The K-frozen difference (42 um) is 2% of it, so the choice costs
+      nothing measurable in accuracy. K is preferred because it is deterministic and a complete root.
     - **Implemented in #122:** `implicit.M1_COMPLEMENT = "solved"` (default; `"frozen"` restores VMEC's
       behaviour). It applies to 3D stellarator-symmetric runs; `lasym` is unchanged. The host solver is unchanged:
       the Newton refinement moves the complement from wherever the host left it.

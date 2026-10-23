@@ -76,3 +76,15 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.
+
+## Pre-existing failures (not caused by this work; identical at af30041d)
+
+Under the GPU-default runtime on Perlmutter these tests fail with a CPU/GPU device-placement `ValueError` (CI's
+CPU lanes and the two-device lane pass):
+- `test_implicit_grad.py::test_three_surface_raw_kernel_matches_global_nonlinear_rows` (x2);
+- `test_implicit_grad.py::test_raw_residual_jvp_is_exactly_nearest_neighbor` (x3);
+- `test_optimize.py::test_equilibrium_from_x_is_the_state_the_objective_read` (x2);
+- `test_optimize.py::test_certified_trial_guards_reject_stale_or_missing_memo`.
+
+`test_implicit_grad_fd.py::test_typed_error_through_pure_callback` fails identically at af30041d: solovev converges
+in 3 iterations, so the expected error is never raised. These are environment and test-setup issues, tracked here.

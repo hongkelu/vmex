@@ -1074,6 +1074,9 @@ def parse_args(argv=None):
                         help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
     parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
                         help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
+    parser.add_argument("--check-exact-gradient", action="store_true",
+                        help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
+                        "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
     parser.add_argument("--check-gradient-steps", type=float, nargs="+", default=[1e-2, 1e-3, 1e-4], metavar="H",
                         help="central-difference steps of --check-gradient")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
@@ -1577,6 +1580,20 @@ def main(argv=None):
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
             problem.save_checkpoint(out / "checkpoint.npz")
 
+    if args.check_exact_gradient:
+        t0 = time.monotonic()
+        got = problem.exact_design_gradient(problem.accepted.parameters)
+        gn, exact = np.asarray(got["gauss_newton"]), np.asarray(got["gradient"])
+        record = dict(gauss_newton=gn.tolist(), exact=exact.tolist(),
+                      relative=float(np.linalg.norm(gn - exact) / np.linalg.norm(exact)),
+                      componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
+                      cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
+                      cg_residual=got["cg_residual"], seconds=time.monotonic() - t0)
+        (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        print(f"[exact gradient] Gauss-Newton vs exact: relative {record['relative']:.2e} "
+              f"(max component {record['componentwise_max']:.2e}), CG {got['cg_iterations']} iterations "
+              f"(converged {got['cg_converged']}), {record['seconds']:.0f} s", flush=True)
+        return
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps))
         return

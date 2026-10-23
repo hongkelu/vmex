@@ -71,6 +71,16 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 - **NL seeds in vacuum: 5 of 5 failed to certify in 120 polish rounds.** qivac x3 (gain 1.77e-3, normal step 1.4e-6
   of the minor radius; identical in three processes on two allocations), qavac x2 (7.6e-3, 1.2e-6). The surfaces
   converged; what remains is relabelling (D5). The equal-arc seeds of the same fixtures certified in about 15 min.
+- **QH 2.5% prescribed: exact stationarity gradient** (G3 exact-qhpresc, the same deterministic seed: GN . d reproduces
+  -5.6988). Along the difference check's direction: **Gauss-Newton -5.70, exact -3.60, re-solved differences -4.62 to
+  -4.83**. The exact gradient is **not converged** (CG 30 iterations, residual 1.4e-7; 1657 s). Over all 229
+  components: GN vs exact 35%, cosine 0.962.
+  - The three disagree by 20-25%, so none is the reference yet.
+  - Exact needs H^-1 along the relabelling directions, where H is nearly singular.
+  - The differences come from trials that stop about 2e-3 off the stationary point along the same directions (D5).
+  - So on QH the stationary point's derivative is ill-conditioned in the relabelling directions.
+  - Next: a converged exact gradient (`--exact-gradient-maxiter 90`, from the saved seed, 1b8eb81b), and a physical
+    (relabelling-free) sensitivity and certificate (option 5), where GN, exact and differences should agree.
 - Speed observation (G3): with no labelling rows (NL), the vacuum seeds' certificates are much slower than with equal
   arc. qivac NL was still polishing after 45 min, while qivac equal arc built in 14 min and is at step 5.
 

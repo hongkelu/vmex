@@ -61,6 +61,11 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
   -4.83 against -5.70). A uniform error points to the Gauss-Newton fit sensitivity (the dropped residual-curvature
   term, which a tighter gate does not remove at a nonzero-residual fit). Next: `--check-exact-gradient` at the same
   seed (queued, G3 allocation); if confirmed, production needs the exact sensitivity on QH 2.5%.
+- **QI 2.5%, prescribed current** (G3, 54140c07; seed built in 33 min): **Gauss-Newton matches** at h 1e-5: loss 1.3e-6
+  / 2.5e-5, quantities 1.5e-8 / 4.2e-9 (2 directions; larger h is the fit's nonlinearity). So the QH 2.5% failure is
+  not general to finite beta. QA 2.5% prescribed, QH vacuum (target 3e-4) and the exact-gradient checks are running.
+- Speed observation (G3): with no labelling rows (NL), the vacuum seeds' certificates are much slower than with equal
+  arc. qivac NL was still polishing after 45 min, while qivac equal arc built in 14 min and is at step 5.
 
 ## Package D: boundary coordinates and steps
 

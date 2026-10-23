@@ -198,7 +198,8 @@ def main():
     except Exception as error:  # classified below; anything unrecognized is an unexpected error
         text = str(error)
         if type(error).__name__ == "VmecError" and "has no three-term free boundary" in text:
-            exhausted = all("ran out of evaluations" in part for part in text.split(": ", 1)[-1].split("; "))
+            exhausted = all("ran out of evaluations" in part or "polish budget" in part
+                            for part in text.split(": ", 1)[-1].split("; "))
             status.update(status="budget_exhausted" if exhausted else "rejected", reason=text)
         else:
             status.update(status="unexpected_error", reason=f"{type(error).__name__}: {text}",

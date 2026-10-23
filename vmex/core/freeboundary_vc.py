@@ -1039,6 +1039,7 @@ class ThreeTermFreeBoundaryModel:
         sol = certificate = None
         try:
             sol = dict(fit, **tight(fit["x"], fit["aux"]))
+            out_of_rounds = False  # the loop ended on the polish budget, not on a stalled or failed polish
             for round_ in range(POLISH_ROUNDS + 1):
                 normal = None
                 if self._normal_operator is not None:  # the remaining step's motion of the surface itself
@@ -1056,6 +1057,7 @@ class ThreeTermFreeBoundaryModel:
                 done = certificate["stationarity"] <= min(gate, POLISH_FTOL) and (
                     xtol is None or certificate["step"] <= xtol)
                 if done or not polish or round_ == POLISH_ROUNDS:
+                    out_of_rounds = polish and not done and round_ == POLISH_ROUNDS
                     break
                 # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
                 try:
@@ -1078,8 +1080,9 @@ class ThreeTermFreeBoundaryModel:
             if not settled:
                 normal_note = "" if certificate["normal_step"] is None else (
                     f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
+                budget_note = f" when the polish budget of {POLISH_ROUNDS} rounds ran out" if out_of_rounds else ""
                 raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
-                                    f"{certificate['stationarity']:.2e} of the cost{normal_note}")
+                                    f"{certificate['stationarity']:.2e} of the cost{normal_note}{budget_note}")
             if certificate["normal_step"] is not None:
                 stats["max_normal_step"] = max(stats.get("max_normal_step", 0.0), certificate["normal_step"])
             stats["max_step"] = max(stats.get("max_step", 0.0), certificate["step"])

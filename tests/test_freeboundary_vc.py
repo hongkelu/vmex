@@ -1151,6 +1151,20 @@ def test_certify_polishes_on_tight_states(monkeypatch):
 
 @needs_vc
 @pytest.mark.full
+def test_an_exhausted_polish_budget_is_named_in_the_rejection(monkeypatch):
+    """A fit still short of stationarity when the polish rounds run out is rejected with the budget named (so a
+    record can be classified as budget-exhausted rather than as a fit with no stationary point)."""
+    problem = _small_problem()
+    real = fvc._fit_certificate
+    monkeypatch.setattr(fvc, "_fit_certificate", lambda J, r, *args: dict(real(J, r, *args), stationarity=1.0))
+    monkeypatch.setattr(fvc, "POLISH_ROUNDS", 0)
+    with pytest.raises(TrialRejected, match="polish budget of 0 rounds ran out"):
+        problem.value_and_grad(problem.x0 + 0.01)
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
 def test_normal_operator_is_the_surface_normal_displacement():
     """N @ dx is the normal displacement of the boundary surface for a coordinate change dx (finite differences of
     the surface against its numerical normal, periodic central differences), a the RMS minor radius."""

@@ -1347,3 +1347,24 @@ def test_geodesic_acceleration_follows_curved_rows(monkeypatch):
     assert out[False]["accelerated"] == 0 and out[True]["accelerated"] >= 1
     assert out[True]["converged"] and np.allclose(out[True]["x"], [1.0, 1.0], atol=1e-6)
     assert out[True]["nfev"] < out[False]["nfev"]
+
+
+def test_projection_gate_and_seed_start(monkeypatch):
+    """PROJECTION_GATE caps the current projection's gate (0.1 ftol by default); seed_start perturbs only the
+    boundary coordinates ('random': eps x_scale N(0, 1); 'scale': 1 + eps on every coefficient but the major
+    radius), and an unknown kind is refused."""
+    from types import SimpleNamespace
+
+    assert fvc._projection_gate(1e-4) == pytest.approx(1e-5)
+    monkeypatch.setattr(fvc, "PROJECTION_GATE", 1e-12)
+    assert fvc._projection_gate(1e-4) == 1e-12
+    model = SimpleNamespace(x0=np.array([1.0, 0.2, -0.1, 0.05, 7.0]), x_scale=np.full(5, 0.5), n_boundary=4)
+    owner = SimpleNamespace(model=model)
+    b = fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("random", 1e-3, 3))
+    expected = model.x0.copy()
+    expected[:4] += 1e-3 * 0.5 * np.random.default_rng(3).standard_normal(4)
+    np.testing.assert_allclose(b, expected)
+    b = fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("scale", 1e-3))
+    np.testing.assert_allclose(b, [1.0, 0.2 * 1.001, -0.1 * 1.001, 0.05 * 1.001, 7.0])
+    with pytest.raises(ValueError, match="seed_start"):
+        fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))

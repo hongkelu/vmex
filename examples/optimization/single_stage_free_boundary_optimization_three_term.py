@@ -1084,6 +1084,8 @@ def parse_args(argv=None):
     parser.add_argument("--check-exact-gradient", action="store_true",
                         help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
+    parser.add_argument("--exact-gradient-h", type=float, default=1e-4,
+                        help="the central-difference step (scaled coordinates) of --check-exact-gradient's products")
     parser.add_argument("--check-gradient-steps", type=float, nargs="+", default=[1e-2, 1e-3, 1e-4], metavar="H",
                         help="central-difference steps of --check-gradient")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
@@ -1654,13 +1656,14 @@ def main(argv=None):
 
     if args.check_exact_gradient:
         t0 = time.monotonic()
-        got = problem.exact_design_gradient(problem.accepted.parameters)
+        got = problem.exact_design_gradient(problem.accepted.parameters, h=args.exact_gradient_h)
         gn, exact = np.asarray(got["gauss_newton"]), np.asarray(got["gradient"])
         record = dict(gauss_newton=gn.tolist(), exact=exact.tolist(),
                       relative=float(np.linalg.norm(gn - exact) / np.linalg.norm(exact)),
                       componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
                       cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
-                      cg_residual=got["cg_residual"], seconds=time.monotonic() - t0)
+                      cg_residual=got["cg_residual"], seconds=time.monotonic() - t0, h=args.exact_gradient_h,
+                      certificate=problem._record(problem.accepted.parameters).get("certificate"))
         (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
         print(f"[exact gradient] Gauss-Newton vs exact: relative {record['relative']:.2e} "
               f"(max component {record['componentwise_max']:.2e}), CG {got['cg_iterations']} iterations "

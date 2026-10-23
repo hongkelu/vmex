@@ -1,0 +1,77 @@
+# Three-term free boundary and single-stage optimization: work ledger
+
+This ledger is the authoritative status. It is linked from `README.md`, `WP0_WP1.md` and `WP2_WP3.md`. One row per
+issue.
+- **Status:** present / fixed (evidence) / unresolved / superseded / outside the supported model.
+- **Cause:** "hypothesis" until demonstrated.
+- **Tolerances and iteration budgets:** changes to them are listed separately from algorithmic fixes.
+
+Heads at the start of the 2026-10-22 night program:
+- PR #121 (`tt1-robust-fb`): `92b721c8`.
+- PR #122 (`fix/pr121-bootstrap-cert`): `6079d1e5`.
+
+Run artifacts are under `paper/runs/{wp0,wp1,wp2,night}` on Perlmutter scratch; compact copies are in `raw/`. GPU budget
+for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
+
+## Package A: equation identity and certification
+
+| id | issue | status | evidence / reproduction | next action |
+|---|---|---|---|---|
+| A0 | Interior start dependence (rows 7e-4 to 1.7e-2 between starts) | **fixed**: cause demonstrated as the frozen m = 1 complement (`constrain_m1` release) | WP0_WP1 items 9-12; swap 1e-13 to 2e-11; K spread 2e-13 to 2e-11; DESC shows no accuracy cost; `test_interior_state_does_not_depend_on_its_start` passes (GPU, 038065f3) | A1 |
+| A1 | `M1_COMPLEMENT` is a mutable module global: residual and projector read it at trace time, and configs are canonical (shared), so switching in one process reuses stale executables and solves | **present** | CI: the frozen-variant li383 test passed on GPU and failed on CI (closure 0.21) until caches were cleared (5c200092, a test-setup change, not a fix) | make the policy an immutable `ImplicitConfig` field in cfg identity, residual/projector, caches, checkpoint, manifest; test K -> frozen -> K in one process against fresh-process references |
+| A2 | The final interior root is not certified in the expanded (K) equations: the status lane uses the pre-refinement host residual, and a stalled refinement can be returned | **present** (code review) | `_host_solve_and_mask_status` docstring: "That residual is the host solver's own, from before the fixed-point refinement" | measure the final selected residual and complement residual; certified only if the declared root criterion passes |
+| A3 | Raw tangent-response acceptance: preconditioned convergence OR `raw_ok`, so a preconditioned pass can override a failed raw residual | **present** (brief's audit; to verify) | `_raw_certified_report`, `_implicit_evolved_tangent_multi_rhs` | govern acceptance by the raw residual (abs + rel); test the four pass/fail combinations, multi-RHS, nonfinite and budget cases; record raw residuals on the production probes |
+| A4 | Same equations across trial, finalization, Picard and export: `self_consistent_bootstrap` and `opt.solve_equilibrium` (host VMEC) keep the frozen complement, while the model's tight states are K | **present**; suspected cause of B1 | B1 probe launched (e9cc5dc2, job 60144384) | route Picard and export through the K equilibrium (or recertify) |
+| A5 | NESTOR path: `_edge_basis` and raw/preconditioned complement treatment versus the K projector | **present** (unreviewed) | `freeboundary_implicit.py` | make the NESTOR path explicitly frozen (legacy) until it is upgraded consistently; test basis completeness |
+| A6 | Public API: symmetry and edge-pressure checks at every constructor; `start="best"` ranking; NESTOR seed failure must not erase another seed | **unreviewed** | | review and test |
+
+## Package B: bootstrap current
+
+| id | issue | status | evidence | next action |
+|---|---|---|---|---|
+| B1 | `test_fixed_boundary_bootstrap_model_matches_picard`: 26/29 entries off, max 3.98% (CI at 5c200092 and 6079d1e5). It passed in the pre-K GPU suite (af30041d) | **present**; hypothesis A4 | `scripts/wpB/model_vs_picard.py`, M1 = solved / frozen, fresh processes | cross-evaluate both currents' closure in one evaluator; then fix A4 |
+| B2 | Finite-weight joint stationarity does not imply exact closure | open (by construction) | the certificate already has a separate closure gate (`CLOSURE_ATOL/RTOL`) | verify closure is reported separately in every status; test a case with stationarity but no closure |
+| B3 | Model semantics: prescribed / inner bootstrap / outer design with a mismatch constraint; Redl only for QA/QH; DKX for QI | partly documented | memory rule: Redl only QA/QH; QI fixtures use DKX | document and test each mode |
+| B4 | Conventions (G, sign, helicity, nfp, units) on converged fixed-boundary states | `G_CONVENTIONS` exist; no paired re-solved comparison | | run on fixed-boundary states now |
+| B5 | Zero-drive Picard test: 4 iterations against tol 1e-8 (contracts about 1000-fold per step) | **fixed (test setup)**: 8 iterations | GPU pass (job 60144384, t1.log) | none |
+
+## Package C: differentiation
+
+| id | issue | status | evidence | next action |
+|---|---|---|---|---|
+| C0 | Fixed-boundary implicit derivative vs re-solve FD | **fixed** with K: 9.9e-7 / 2.9e-6 (frozen: 1.0e-2 / 2.8e-2) | `test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved` | |
+| C1 | Small-deck design gradient vs converged FD: 0.67%, uniform across the three coordinates (all act through one combination) | **unresolved**; hypothesis: the Gauss-Newton fit sensitivity drops sum r_i d2 r_i (yy and yd) | `raw/wp5/design_grad.json`: boundary_ftol 1e-3, 1e-6, 1e-9; FD settles at 1e-6 | small exact reference (C3); confirm or reject GN as the cause |
+| C2 | The design gradient is Gauss-Newton (documented in `_least_squares_sensitivity`), exact only at zero residual | **present** (by design) | | exact KKT/stationarity derivative, or a qualified GN error budget per domain |
+| C3 | The boundary Jacobian (raw rows) is exact on the small vacuum deck: h^2 to 4.5e-7 (mpol 2 and 4, 9 boundary coordinates, 3 directions); the `BETA` option was documented but not implemented | partial | `raw/wp5/jfd_m*.json` | fix the probe (fixture loading); production QH 2.5% raw and current-coupled Jacobians |
+| C4 | Parameter ownership: `with_boundary(params_at(P0, d), y)` overwrite; plasma-coordinate detection probed only at x0 | **unreviewed** | | r = w x regressions; explicit design-family metadata |
+| C5 | Production design gradients (`--check-gradient`) on qhvac and qivac with tight fits | running (job 60144384: gc-qhvac, gc-qivac) | | collect; extend to 2.5% and the design families |
+
+## Package D: boundary coordinates and steps
+
+| id | issue | status | evidence | next action |
+|---|---|---|---|---|
+| D0 | Slow polish (about 1% of cost per round) on QH 2.5% and the 2.5% fixtures; NL plateau | NL plateau **fixed** by K; slow descent **present** | WP2_WP3; the reduced linear model mispredicts one round's row change by 34-97%; Jacobian exact (C3) | D1 diagnosis of the weak directions at production |
+| D1 | Rejected without new evidence: Broyden, GN extrapolation, 10 x 10, model-aware stall rule | **superseded** | WP2_WP3 tables | do not revisit |
+| D2 | Normal chart: condition 30 vs 2.8e3, but representation error 0.36-0.79 | candidate, not qualified | `chart_offline.py` | D2 qualification only if D1 shows the weak directions are relabelling |
+
+## Package F: restart and export
+
+| id | issue | status | evidence |
+|---|---|---|---|
+| F1 | Atomic checkpoint; build from checkpoint with no seed solve; driver `--checkpoint-every`/`--resume` | **implemented**, GPU test passes (8e2956e6) | `test_checkpoint_restores_the_accepted_equilibrium` |
+| F2 | Problem identity is field/plasma values at the saved design only | **present** | | versioned semantic specification (policy, chart, coordinates, current model, tolerances, caller identity) |
+| F3 | Export (`equilibrium_from_x`) re-solves with the host solver (frozen), a warning only | **present** (same root as A4) | | export the certified state or recertify under the same policy |
+
+## Package G: qualification (strict certificate, K)
+
+| fixture | status | evidence |
+|---|---|---|
+| qhvac | **certified** (5 rounds) | wp2/fx-qhvac-K |
+| qivac | **certified** | wp2/fx-qivac-K |
+| qavac | **certified** at 9.7e-5 (24 rounds; reproduced in a fresh allocation) | wp2/fx-qavac-K60, night/qavac-K40 |
+| qi25 | **certified** at 8.1e-5 (21 rounds; reproduced) | wp2/fx-qi25-K40, night/qi25-K40 |
+| qa25 | 5.1e-3 after 20 rounds, monotone | night/qa25-K40 running |
+| qh25 | not certified after 40 rounds (8e-3 to 1e-2); prescribed current went below the gate (6.7e-4) before rising | night/NL-K90, C-K90, QH-presc80 running |
+
+Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
+(6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.

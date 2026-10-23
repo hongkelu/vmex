@@ -261,6 +261,7 @@ def solve_free_boundary_three_term(
     net_current_weight: float = 1.0,
     label_weight: float = 1e-2,
     labelling: str = "start",
+    m1_complement: str = "solved",
     ftol: float = 1e-4,
     jacobian_ftol: float | None = 1e-2,
     max_nfev: int = 60,
@@ -300,6 +301,9 @@ def solve_free_boundary_three_term(
     boundary's poloidal labelling, which the interface conditions leave free;
     ``labelling="equal_arc"`` replaces them by equal arc length of the current surface, and
     ``labelling="condensed"`` by VMEC's spectral-condensation condition (:func:`_condensation_rows`).
+    ``m1_complement`` is the interior's m = 1 complement policy (``ImplicitConfig.m1_complement``):
+    ``"solved"`` (default) refines it with the evolved dofs so the interior root is unique; ``"frozen"`` is
+    VMEC2000's released complement.
     ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
     the net poloidal current (edge ``rbtor`` against the external field's
     circulation around the seed's magnetic axis), the direction the
@@ -358,7 +362,7 @@ def solve_free_boundary_three_term(
                                    label_weight=label_weight, labelling=labelling, quadrature=quadrature,
                                    trial_ftol=trial_ftol,
                                    chunk=chunk, bootstrap=bootstrap, bootstrap_helicity=bootstrap_helicity,
-                                   bootstrap_weight=bootstrap_weight)
+                                   bootstrap_weight=bootstrap_weight, m1_complement=m1_complement)
         x0 = jacobian = None
     seed_state = model.seed[0] if previous is None else previous.aux[0]
     seed_params = model.params0 if previous is None else previous.aux[2]
@@ -449,7 +453,7 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt"):
+                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt", m1_complement="solved"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -467,7 +471,7 @@ class ThreeTermFreeBoundaryModel:
                             quadrature=None if quadrature is None else list(quadrature),
                             bootstrap=None if self.bootstrap is None else self.bootstrap.identity(),
                             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
-                            fixed_boundary=bool(fixed_boundary), labelling=labelling)
+                            fixed_boundary=bool(fixed_boundary), labelling=labelling, m1_complement=m1_complement)
         self.fixed_boundary = bool(fixed_boundary)
         if labelling not in ("start", "equal_arc", "condensed"):
             raise ValueError(f"labelling must be 'start', 'equal_arc' or 'condensed', got {labelling!r}")
@@ -477,7 +481,7 @@ class ThreeTermFreeBoundaryModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
-        cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
+        cfg = im.make_config(fixed, multigrid=True, hot_restart=True, m1_complement=m1_complement)
         self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
         # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
         # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
@@ -485,7 +489,8 @@ class ThreeTermFreeBoundaryModel:
         if trial_ftol is not None:
             ftols = np.array(fixed.ftol_array, dtype=float)
             ftols[-1] = max(float(trial_ftol), ftols[-1])
-            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
+            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True,
+                                   m1_complement=m1_complement)
             self.cfg_trial = im._canonical_config(replace(loose, device=device))
             im._template_runtime(self.cfg_trial)
         self.params0 = im.params_from_input(fixed, device=device)

@@ -121,20 +121,48 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
             f"(rel {rel:.2e}) — the implicit gradient must match the frozen path")
 
 
-def _clear_implicit_caches():
-    """Drop JAX's compiled executables and the implicit layer's memoized solves, states and factors."""
-    jax.clear_caches()
-    for name in ("_HOT_CACHE", "_LAST_SOLVE", "_PERTURB_SEED", "_LAST_REFINED", "_LAST_ANCHOR_FACTORS",
-                 "_LAST_REFINEMENT_CORRECTION", "_FACTOR_STRUCTS", "_MASK_CACHE"):
-        getattr(im, name).clear()
+def _li383_mean_iota_grad(m1_complement):
+    """``d(mean iota)/d(RBC(1,1), ZBS(-1,1))`` (implicit) and the refined state on li383_low_res."""
+    inp = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
+    cfg = im.make_config(inp, **CASES["li383_low_res"], m1_complement=m1_complement)
+    p0 = im.params_from_input(inp)
+    grad = jax.grad(lambda p: mean_iota(im.solve_implicit(p, cfg), im.runtime_from_params(p, cfg)))(p0)
+    ntor = int(inp.ntor)
+    x, _ = im.solve_implicit_with_aux(p0, cfg)
+    return np.array([float(grad.rbc[ntor + 1, 1]), float(grad.zbs[ntor - 1, 1])]), np.asarray(x.Z_sin)
+
+
+def test_m1_policy_is_part_of_the_config_identity():
+    """K -> frozen -> K in one process, no cache clearing: each config solves and differentiates its own equations
+    (the policy is a field of ImplicitConfig, so compiled residuals and memoized solves cannot cross over), and the
+    frozen values equal a fresh process's."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    k1, zk1 = _li383_mean_iota_grad("solved")
+    f1, zf1 = _li383_mean_iota_grad("frozen")
+    k2, zk2 = _li383_mean_iota_grad("solved")
+    np.testing.assert_array_equal(k1, k2)
+    np.testing.assert_array_equal(zk1, zk2)
+    assert np.max(np.abs(f1 / k1 - 1.0)) > 1e-3  # different equations, different derivatives (0.9% / 2.5%)
+    script = ("import sys; sys.path.insert(0, 'tests'); import numpy as np; "
+              "import json; from test_implicit_grad_fd import _li383_mean_iota_grad; "
+              "g, z = _li383_mean_iota_grad('frozen'); print('grad', json.dumps(g.tolist()))")
+    done = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+                          capture_output=True, text=True, check=True)
+    fresh = np.array(json.loads(done.stdout.split("grad")[-1].strip()))
+    np.testing.assert_allclose(f1, fresh, rtol=1e-9)
+    with pytest.raises(ValueError, match="m1_complement"):
+        im.make_config(VmecInput.from_file(str(DATA_DIR / "input.li383_low_res")), m1_complement="gauge")
 
 
 def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
-    """Mean iota: with the m=1 complement solved at the root (``M1_COMPLEMENT``,
+    """Mean iota: with the m=1 complement solved at the root (``ImplicitConfig.m1_complement``,
     the default) no entry is frozen at a path-dependent value, so the implicit
     derivative IS an independent re-solve FD's -- the gap the frozen treatment
     leaves (1.0% / 2.8%, next test) closes without any correction."""
-    assert im.M1_COMPLEMENT == "solved"
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
     cfg = im.make_config(inp, **CASES[name])
@@ -170,9 +198,9 @@ def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved():
         assert gap < 1e-4
 
 
-def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch, request):
+def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     """Mean iota: the implicit derivative against an independent re-solve FD,
-    with the m=1 complement frozen as VMEC2000 leaves it (``M1_COMPLEMENT =
+    with the m=1 complement frozen as VMEC2000 leaves it (``m1_complement=
     "frozen"``).
 
     The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
@@ -189,14 +217,9 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family(monkeypatch
     derivative plus the iota response to moving only that family by the
     re-solves' own drift.  Measured closures: 2.3e-6 and 1.6e-5.
     """
-    # M1_COMPLEMENT is read when the residual and projector are traced, and configs are canonical (shared): drop
-    # every compiled executable and memoized solve so this test traces and solves the frozen problem afresh
-    _clear_implicit_caches()
-    monkeypatch.setattr(im, "M1_COMPLEMENT", "frozen")
-    request.addfinalizer(_clear_implicit_caches)
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
-    cfg = im.make_config(inp, **CASES[name])
+    cfg = im.make_config(inp, **CASES[name], m1_complement="frozen")
     p0 = im.params_from_input(inp)
     ntor = int(inp.ntor)
     assert int(inp.ncurr) == 1

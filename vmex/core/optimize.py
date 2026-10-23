@@ -482,6 +482,10 @@ def refine_state(inp: VmecInput, state: SpectralState, *, m1_complement: str = "
     cfg = im.make_config(inp, m1_complement=m1_complement)
     if not im._m1_solved(cfg):
         return state
+    # Prime the config's template runtime and boundary tables concretely (as the host solve callback does): the
+    # traced residual reads them, and their host-side setup cannot run under a trace.
+    im._template_runtime(cfg)
+    im._boundary_pack_tables(cfg)
     params = im.params_from_input(inp)
     mask = im._fixed_boundary_dof_mask(cfg)
     refined = im._refined_state(cfg, params, state, mask)

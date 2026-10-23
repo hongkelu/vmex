@@ -1140,7 +1140,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
                   boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
-                  seed_start=None, **model_options):
+                  seed_start=None, newton_polish=None, **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
         :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
@@ -1172,16 +1172,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint,
-                   semantic_identity=semantic_identity, seed_start=seed_start)
+                   semantic_identity=semantic_identity, seed_start=seed_start, newton_polish=newton_polish)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None):
+                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None, newton_polish=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
+        #: Newton refinement of every certified fit on its stationarity (:meth:`_newton_refine`): None, or a dict of
+        #: its options (step_tol, max_steps, h, cg_rtol, cg_maxiter).  Opt-in; it changes no accepted point's rule.
+        self.newton_polish = None if newton_polish is None else dict(newton_polish)
         self.semantic_identity = json.loads(json.dumps(semantic_identity))
         self._n_rows = 1 + len(quantities) + len(parameter_quantities)
         x0 = np.asarray(x0, dtype=float)
@@ -1374,12 +1377,98 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
                             polish=polish, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        if self.newton_polish is not None:  # converge the stationarity in every direction, then certify there
+            sol = self._newton_refine(x, params, field, sol, extra)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
         sol.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=sol["state"],
             params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"]))
         return sol
+
+    def _newton_refine(self, x, params, field, sol, extra):
+        """Newton steps on the fit's stationarity ``g(b) = J_b^T r = 0`` from a certified fit, then its certificate.
+
+        The Levenberg-Marquardt polish (Gauss-Newton) converges linearly along the weak directions, so a fit certified
+        by its gain can still be far (in the scaled step) from its stationary point there; the response of the
+        stationary point is then not determined by the fit.  Each step solves ``H d = -g`` with ``H = J_b^T J_b +
+        sum_i r_i d2r_i/db2`` by conjugate gradients preconditioned with ``J_b^T J_b``.  The products are central
+        differences of ``g`` (:meth:`_cost_gradients`, one tight solve and one reverse pass each).  It accepts the
+        largest of ``1, 1/2, 1/4, 1/8`` of the step that lowers the preconditioned stationarity norm
+        ``(g^T (J_b^T J_b)^-1 g)^(1/2)``, until the scaled Newton step is at most ``step_tol``.  The final point is
+        certified by :meth:`ThreeTermFreeBoundaryModel.certify` (re-solved, linearized, no further polish), so the
+        record, its Jacobian and its values come from the same code as every other trial.  ``sol["newton"]``
+        records the steps.
+        """
+        opt = dict(step_tol=1e-8, max_steps=10, h=1e-4, cg_rtol=1e-6, cg_maxiter=80)
+        opt.update(self.newton_polish or {})
+        model, nb = self.model, self.model.x0.size
+        scale = np.asarray(model.x_scale, dtype=float)
+        _, R = np.linalg.qr(np.asarray(sol["J"])[:, :nb])
+
+        def precondition(v):
+            return np.linalg.solve(R, np.linalg.solve(R.T, v))
+
+        def stationarity(bb):
+            return self._cost_gradients(bb, params, field, x)[0]
+
+        b = np.asarray(sol["x"], dtype=float).copy()
+        g = stationarity(b)
+        merit = float(np.sqrt(max(g @ precondition(g), 0.0)))
+        history, evaluations, converged = [], 1, False
+        for _ in range(int(opt["max_steps"])):
+            def hv(v, b=b):
+                eps = opt["h"] / max(float(np.linalg.norm(v / scale)), 1e-300)
+                return (stationarity(b + eps * v) - stationarity(b - eps * v)) / (2 * eps)
+
+            # preconditioned CG on H d = -g (stops at negative curvature with the iterate so far)
+            d, res = np.zeros(nb), -g
+            z = precondition(res)
+            direction, rz = z.copy(), res @ z
+            norm0 = max(float(np.linalg.norm(g)), 1e-300)
+            for _ in range(int(opt["cg_maxiter"])):
+                Hp = hv(direction)
+                evaluations += 2
+                curvature = direction @ Hp
+                if not curvature > 0:
+                    if not d.any():
+                        d = -precondition(g)  # the Gauss-Newton step, if the first direction already fails
+                    break
+                alpha = rz / curvature
+                d, res = d + alpha * direction, res - alpha * Hp
+                if float(np.linalg.norm(res)) <= opt["cg_rtol"] * norm0:
+                    break
+                z = precondition(res)
+                rz, rz_old = res @ z, rz
+                direction = z + (rz / rz_old) * direction
+            step = float(np.linalg.norm(d / scale))
+            history.append(dict(step=step, merit=merit))
+            if step <= opt["step_tol"]:
+                converged = True
+                break
+            for t in (1.0, 0.5, 0.25, 0.125):
+                g_try = stationarity(b + t * d)
+                evaluations += 1
+                merit_try = float(np.sqrt(max(g_try @ precondition(g_try), 0.0)))
+                if merit_try < merit:
+                    b, g, merit = b + t * d, g_try, merit_try
+                    break
+            else:  # no fraction of the Newton step lowers the stationarity: the floor of the differences
+                history[-1]["stalled"] = True
+                break
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the Newton-refined boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        return out
 
     def _record(self, x):
         x = np.asarray(self._x(x), dtype=float)

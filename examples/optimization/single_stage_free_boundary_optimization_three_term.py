@@ -1189,6 +1189,10 @@ def parse_args(argv=None):
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
     parser.add_argument("--exact-gradient-row", type=int, default=0,
                         help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
+    parser.add_argument("--newton-polish", type=float, metavar="STEP_TOL",
+                        help="after its certificate, refine every fit by Newton steps on its stationarity (exact "
+                        "curvature) until the scaled step is at most STEP_TOL, so the fit's response is determined "
+                        "(ThreeTermFreeBoundaryProblem._newton_refine; default: off)")
     parser.add_argument("--check-stationarity-gradient", action="store_true",
                         help="every row's exact derivative of the converged stationarity (ThreeTermFreeBoundaryProblem."
                         "stationarity_design_gradient; stationarity_gradient_check.json, with the reverse-pass vs "
@@ -1678,6 +1682,7 @@ def main(argv=None):
                       boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
+                      newton_polish=None if args.newton_polish is None else dict(step_tol=args.newton_polish),
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,

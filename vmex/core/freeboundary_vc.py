@@ -1229,6 +1229,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         self._pullback = jax.jit(pullback)
 
+        def cost_pullback(state, mask, params, r, x):
+            """``ImplicitParams`` gradient of ``r . rows(state, params, field(x))`` through the equilibrium (``r``: the
+            rows themselves, so this is the gradient of ``|r|^2 / 2`` at a fixed boundary); jitted once."""
+            return model.pullback(model.rows, state, mask, params, r[None, :], field_from_parameters(x))
+
+        self._cost_pullback = jax.jit(cost_pullback)
+
         @jax.jit
         def coordinates(params, b, x, params_bar):
             """``ImplicitParams`` cotangents onto the model coordinates ``b`` and onto ``x`` (plasma parameters)."""
@@ -1521,7 +1528,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         rows, aux = got
         state, mask, params_b, _ = aux
         r = jnp.asarray(rows)
-        params_bar = model.pullback(model.rows, state, mask, params_b, r[None, :], field)
+        params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
         b_bar, x_bar = self._coordinates(params_b, jnp.asarray(b), jnp.asarray(x), params_bar)
         g = np.asarray(b_bar)[0]
         c = np.asarray(x_bar)[0] + np.asarray(self._field_vjp(state, params_b, jnp.asarray(x), r))

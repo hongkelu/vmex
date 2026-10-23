@@ -121,6 +121,27 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   - **Superseded by the full stationarity derivative** (166d0c36: `stationarity_design_gradient`, every row).
     F_d^T mu is taken on the whole mu, and the H and F_d products come from one tight solve and one reverse pass per
     point, not a full linearization. Qualification is running (G3, g3e).
+  - **Products** (`--check-products`, qavac, d6c7578a): reverse-pass H v and F_d^T v against full linearizations
+    of the same point and v. Strongest and random directions: 1e-10. Weakest direction, by difference step:
+    h 1e-4: 4.4e-2 / 4.9e-1; **h 1e-3: 2.3e-4 / 2.1e-3**; h 1e-2: 1.1e-2 / 9.8e-2 (noise-limited, optimal,
+    truncation-limited). Defaults set to h 1e-3 (d729887e) for both derivatives and the Newton polish.
+  - **Two implementations, same seed, h 1e-4** (`scripts/stationarity_vs_exact.py`; stationarity: every row,
+    reverse-pass products; exact: one row, linearization products; `g3e/stat-*-j`):
+
+    | seed | stationarity vs exact | GN vs exact | CG iterations |
+    |---|---|---|---|
+    | QA 2.5% NL, loss | 7.9e-4 | 4.1e-2 | 27 |
+    | QA 2.5% NL, vacuum-iota row | 1.0e-3 | 8.5e-2 | 28 |
+    | QH 2.5% NL | 1.5e-5 | 3.5e-1 | 40 |
+    | QH 2.5% C3 | 2.6e-3 | 3.7e-1 | 29 |
+    | QI 2.5% C3 | 1.3e-5 | 9.2e-2 | 36 |
+    | QA vacuum C3 | 2.1e-3 (1.7e-4 vs exact at h 1e-5) | 2.4e-3 | 20 |
+    | QI vacuum C3 | 1.6e-2 (9.9e-4 vs exact at h 1e-5) | 2.8e-2 | 30 |
+
+    - At finite beta the two agree to 1e-5..3e-3 while GN is 4-37% off.
+    - In vacuum the curvature correction is small (GN 0.2-3% off), and the exact reference at h 1e-4 itself moves
+      by 1e-2 against h 1e-5: noise in the weak-direction products. Richardson does not change it (QI vac 1.6e-2).
+    - Rerunning both at h 1e-3 (pin d729887e, `-h3` lanes), then against Newton-converged differences.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

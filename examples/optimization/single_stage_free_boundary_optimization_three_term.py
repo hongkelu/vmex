@@ -1189,6 +1189,12 @@ def parse_args(argv=None):
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
     parser.add_argument("--exact-gradient-row", type=int, default=0,
                         help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
+    parser.add_argument("--check-stationarity-gradient", action="store_true",
+                        help="every row's exact derivative of the converged stationarity (ThreeTermFreeBoundaryProblem."
+                        "stationarity_design_gradient; stationarity_gradient_check.json, with the reverse-pass vs "
+                        "linearization consistency check), then stop")
+    parser.add_argument("--stationarity-richardson", action="store_true",
+                        help="Richardson-extrapolate the stationarity products over steps h and h/2")
     parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
                         help="every row's design gradient with the fit's curvature on its K weakest directions "
                         "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
@@ -1806,8 +1812,35 @@ def main(argv=None):
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
             problem.save_checkpoint(out / "checkpoint.npz")
 
-    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient):
+    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
+                                  or args.check_stationarity_gradient):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_stationarity_gradient:  # every row's exact derivative of the converged stationarity
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb = problem.model.x0.size
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        g0, c0, r0 = problem._cost_gradients(sol["x"], params_s, field_s, x_seed)  # the reverse-pass products
+        J0 = np.asarray(sol["J"])
+        g_lin = J0[:, :nb].T @ np.asarray(sol["rows"])  # the same from the stored linearization (independent)
+        consistency = dict(stationarity=float(np.linalg.norm(g0 - g_lin) / max(np.linalg.norm(g_lin), 1e-300)),
+                           rows=float(np.linalg.norm(r0 - np.asarray(sol["rows"])) / np.linalg.norm(sol["rows"])))
+        print(f"[stationarity gradient] reverse-pass g vs linearization J^T r: {consistency['stationarity']:.2e}, "
+              f"rows {consistency['rows']:.2e}", flush=True)
+        t0 = time.monotonic()
+        got = problem.stationarity_design_gradient(x_seed, h=args.exact_gradient_h,
+                                                   maxiter=args.exact_gradient_maxiter,
+                                                   richardson=args.stationarity_richardson)
+        record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
+                      gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
+                      rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
+                      cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,
+                      certificate=sol.get("certificate"))
+        (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
+        print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "
+              f"{got['cg_converged']}, {got['evaluations']} evaluations, {record['seconds']:.0f} s", flush=True)
+        return
     if args.check_subspace_gradient:  # the low-rank curvature gradient (every row) for each requested k
         record = dict(h=args.exact_gradient_h, runs=[])
         for k in args.check_subspace_gradient:

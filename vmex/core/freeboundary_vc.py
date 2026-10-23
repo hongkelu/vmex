@@ -1417,6 +1417,108 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol["gradients"] = gradients
         return gradients
 
+    def _cost_gradients(self, b, params, field, x):
+        """At boundary coordinates ``b`` (fixed design ``x``): ``g = J_b^T r`` (the fit's stationarity), ``c = J_d^T r``
+        (the design gradient of ``|r|^2 / 2`` at that fixed boundary: coil field and plasma parameters) and ``r``.
+
+        One tight interior solve and one reverse pass through the equilibrium (:meth:`ThreeTermFreeBoundaryModel.pullback`
+        with the rows as cotangent), instead of the Jacobian's every column: the products of the stationarity
+        derivatives (:meth:`stationarity_design_gradient`) are central differences of ``g`` and ``c``.
+        """
+        model = self.model
+        got = model.evaluate(np.asarray(b, dtype=float), params, field, tight=True)
+        if got is None:
+            raise TrialRejected("a stationarity difference point has no certified interior root")
+        rows, aux = got
+        state, mask, params_b, _ = aux
+        r = jnp.asarray(rows)
+        params_bar = model.pullback(model.rows, state, mask, params_b, r[None, :], field)
+        b_bar, x_bar = self._coordinates(params_b, jnp.asarray(b), jnp.asarray(x), params_bar)
+        g = np.asarray(b_bar)[0]
+        c = np.asarray(x_bar)[0] + np.asarray(self._field_vjp(state, params_b, jnp.asarray(x), r))
+        return g, c, np.asarray(rows)
+
+    def stationarity_design_gradient(self, x, rows=None, *, h=1e-4, rtol=1e-10, maxiter=200, richardson=False):
+        """Every requested row's exact design gradient: the derivative of the converged stationarity ``J_b^T r = 0``.
+
+        For each value row ``Q``: ``H mu = Q_b^T`` with ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` (conjugate gradients
+        preconditioned with ``J_b^T J_b``, the Gauss-Newton model, which is also the starting guess), then
+        ``dQ/dd = Q_d - F_d^T mu`` with ``F_d = J_b^T J_d + sum_i r_i d2r_i/db dd``.  Both curvature blocks, the
+        interior equilibrium's response and the coupled bootstrap-current coordinates are included: ``H v`` and
+        ``F_d^T v`` are central differences (step ``h`` in the scaled coordinates; ``richardson`` extrapolates steps
+        ``h`` and ``h/2`` to cancel the second-order error) of ``g`` and ``c`` (:meth:`_cost_gradients`), each one
+        tight solve and one reverse pass.  The Gauss-Newton gradient is the same formula without the curvature.
+        It is the same mathematics as :meth:`exact_design_gradient`, whose products come from full linearizations
+        instead: an independent implementation for qualification.  Returns ``dict(gradients, gauss_newton,
+        cg_iterations, cg_converged, cg_residual, evaluations)`` (rows of ``gradients`` as :meth:`_linearize`).
+        """
+        model, nb = self.model, self.model.x0.size
+        x = np.asarray(x, dtype=float)
+        xj = jnp.asarray(x)
+        sol = self._record(x)
+        gn = np.asarray(self._linearize(x, sol))
+        params, field = self._params_at(xj), self.field(xj)
+        b0, J_b0 = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])[:, :nb]
+        scale = np.asarray(model.x_scale, dtype=float)
+        state, params_b = sol["state"], sol["params"]
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        direct = np.asarray(self._direct(state, params_b, xj))
+        rows = range(G_b.shape[0]) if rows is None else rows
+        count = [0]
+
+        def central(v, step):
+            eps = step / max(float(np.linalg.norm(v / scale)), 1e-300)
+            gp, cp, _ = self._cost_gradients(b0 + eps * v, params, field, x)
+            gm, cm, _ = self._cost_gradients(b0 - eps * v, params, field, x)
+            count[0] += 2
+            return (gp - gm) / (2 * eps), (cp - cm) / (2 * eps)
+
+        def products(v):  # (H v, F_d^T v)
+            if not richardson:
+                return central(v, h)
+            (h1, f1), (h2, f2) = central(v, h), central(v, h / 2)
+            return (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
+
+        _, R = np.linalg.qr(J_b0)
+
+        def precondition(v):  # (J_b^T J_b)^-1 v
+            return np.linalg.solve(R, np.linalg.solve(R.T, v))
+
+        out, iterations, converged, residuals = [], [], [], []
+        for row in rows:
+            Q_b = G_b[row]
+            mu = precondition(Q_b)  # the Gauss-Newton multiplier
+            res = Q_b - products(mu)[0]
+            z = precondition(res)
+            d = z.copy()
+            rz = res @ z
+            norm0 = max(float(np.linalg.norm(Q_b)), 1e-300)
+            it = 0
+            for it in range(1, maxiter + 1):
+                if float(np.linalg.norm(res)) <= rtol * norm0:
+                    break
+                Hd = products(d)[0]
+                curvature = d @ Hd
+                if not curvature > 0:  # H need not be definite: stop rather than step along negative curvature
+                    break
+                alpha = rz / curvature
+                mu = mu + alpha * d
+                res = res - alpha * Hd
+                z = precondition(res)
+                rz, rz_old = res @ z, rz
+                d = z + (rz / rz_old) * d
+            residual = float(np.linalg.norm(res)) / norm0
+            out.append(direct[row] + G_x[row] - products(mu)[1])  # Q_d - F_d^T mu
+            iterations.append(it)
+            converged.append(residual <= rtol)
+            residuals.append(residual)
+        return dict(gradients=np.array(out), gauss_newton=gn[list(rows)], rows=list(rows), cg_iterations=iterations,
+                    cg_converged=converged, cg_residual=residuals, evaluations=count[0])
+
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
         """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).
 

@@ -595,6 +595,10 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     np.testing.assert_allclose(resumed._record(x1)["values"], saved, rtol=1e-6)
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
+    with pytest.raises(ValueError, match="semantic_identity"):  # the caller declares other callbacks
+        _small_problem(semantic_identity={"objective": "aspect", "version": 2}).restore_checkpoint(path)
+    with pytest.raises(ValueError, match="model"):  # another interior equation set
+        _small_problem(m1_complement="frozen").restore_checkpoint(path)
     other, field = _small_problem(), _small_vacuum()[1]  # same settings, another coil-field map
     other.field = lambda x: replace(field, currents=field.currents * (1 + 0.06 * x[0]))
     with pytest.raises(ValueError, match="coil field"):

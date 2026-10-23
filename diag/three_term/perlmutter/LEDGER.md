@@ -59,7 +59,7 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | id | issue | status | evidence |
 |---|---|---|---|
 | F1 | Atomic checkpoint; build from checkpoint with no seed solve; driver `--checkpoint-every`/`--resume` | **implemented**, GPU test passes (8e2956e6) | `test_checkpoint_restores_the_accepted_equilibrium` |
-| F2 | Problem identity is field/plasma values at the saved design only | **present** | | versioned semantic specification (policy, chart, coordinates, current model, tolerances, caller identity) |
+| F2 | Problem identity is field/plasma values at the saved design only | **implemented** (schema 4): the definition adds coordinate names and scales, value-row count, the m = 1 policy (model options) and a caller-supplied `semantic_identity`; tests refuse other identity and other policy (GPU pending) | |
 | F3 | Export (`equilibrium_from_x`) re-solves with the host solver (frozen), a warning only | **present** (same root as A4) | | export the certified state or recertify under the same policy |
 
 ## Package G: qualification (strict certificate, K)

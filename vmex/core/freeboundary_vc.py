@@ -240,7 +240,7 @@ GN_EXTRAPOLATE = False
 GN_EXTRAPOLATE_MAX = 6  # doublings at most
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
-CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/3"
+CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
@@ -1103,9 +1103,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, checkpoint=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
+                  **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
-        :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).
+        :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
+        JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
+        of what the callbacks compute: a checkpoint restores only into a problem with the same declaration, since
+        callbacks that agree at one design can still differ in their derivatives.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
@@ -1128,16 +1132,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint,
+                   semantic_identity=semantic_identity)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, checkpoint=None):
+                 boundary_xtol=None, checkpoint=None, semantic_identity=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
+        self.semantic_identity = json.loads(json.dumps(semantic_identity))
+        self._n_rows = 1 + len(quantities) + len(parameter_quantities)
         x0 = np.asarray(x0, dtype=float)
         if checkpoint is not None:  # the saved design is the accepted point; no seed solve
             saved = np.asarray(np.load(checkpoint, allow_pickle=False)["x"], dtype=float)
@@ -1197,6 +1204,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           max_condition=0.0)
         self._continuation = None
+        # The base problem only stores the layout (names, scales), which the checkpoint definition includes.
+        super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
+                         metadata={"holder": {"failed_trials": 0}})
         if checkpoint is not None:
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0  # the layout restore_checkpoint checks
             self.restore_checkpoint(checkpoint)
@@ -1206,8 +1216,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
             self._promote(seed)
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
-        super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
-                         metadata={"holder": {"failed_trials": 0}})
 
     def _checkpoint(self):
         """The continuation a trial starts from: the boundary fit's latest linearization and trust radius, and the
@@ -1408,8 +1416,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return eq
 
     def _definition(self):
-        """What a checkpoint must match: the deck the model was built on (its labelling reference, quadrature plan
-        and axis come from it), the model and fit settings, and the design layout."""
+        """What a checkpoint must match (schema 4): the deck the model was built on (its labelling reference,
+        quadrature plan and axis come from it), the model settings (including the m = 1 complement policy), the fit
+        settings, the design layout (size, coordinate names and scales, plasma coordinates), the number of value
+        rows, and the caller's ``semantic_identity``."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as folder:
@@ -1418,7 +1428,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
             boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
             boundary_xtol=self.boundary_xtol,
-            design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
+            design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist(),
+            names=list(self.names), scales=np.asarray(self.scales, dtype=float).tolist(), rows=self._n_rows,
+            semantic_identity=self.semantic_identity)))
 
     def _maps(self, x):
         """Hash of what ``x`` maps to: its coil field and plasma parameters (the design maps of the problem)."""

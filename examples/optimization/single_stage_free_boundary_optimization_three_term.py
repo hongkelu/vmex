@@ -1193,6 +1193,9 @@ def parse_args(argv=None):
                         help="after its certificate, refine every fit by Newton steps on its stationarity (exact "
                         "curvature) until the scaled step is at most STEP_TOL, so the fit's response is determined "
                         "(ThreeTermFreeBoundaryProblem._newton_refine; default: off)")
+    parser.add_argument("--check-products", action="store_true",
+                        help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
+                        "with those from full linearizations, along the weakest, strongest and a random direction")
     parser.add_argument("--check-stationarity-gradient", action="store_true",
                         help="every row's exact derivative of the converged stationarity (ThreeTermFreeBoundaryProblem."
                         "stationarity_design_gradient; stationarity_gradient_check.json, with the reverse-pass vs "
@@ -1820,6 +1823,51 @@ def main(argv=None):
     if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
                                   or args.check_stationarity_gradient):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_products:  # H v and F_d^T v from reverse passes vs from full linearizations, same v
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        extra = problem._plasma_directions(params_s, xj) if problem._plasma.size else None
+        b0 = np.asarray(sol["x"], dtype=float)
+
+        def by_linearization(bb):
+            rows, aux = problem.model.evaluate(bb, params_s, field_s, tight=True)
+            J, _, _, aux = problem.model.linearize(bb, aux, field_s, extra=extra)
+            J, rows = np.asarray(J), np.asarray(rows)
+            st, _, pb, _ = aux
+            c = np.asarray(problem._field_vjp(st, pb, xj, jnp.asarray(rows)))
+            if extra is not None:
+                c = c.copy()
+                c[problem._plasma] += J[:, nb:].T @ rows
+            return J[:, :nb].T @ rows, c
+
+        def by_pullback(bb):
+            g, c, _ = problem._cost_gradients(bb, params_s, field_s, x_seed)
+            return g, c
+
+        _, _, Vt = np.linalg.svd(np.asarray(sol["J"])[:, :nb] * scale, full_matrices=False)
+        rng = np.random.default_rng(0)
+        directions = dict(weakest=Vt[-1] * scale, strong=Vt[0] * scale, random=rng.standard_normal(nb) * scale)
+        record = dict(h=args.exact_gradient_h, directions={})
+        for name, v in directions.items():
+            eps = args.exact_gradient_h / float(np.linalg.norm(v / scale))
+            prod = {}
+            for label, f in (("linearization", by_linearization), ("pullback", by_pullback)):
+                (gp, cp), (gm, cm) = f(b0 + eps * v), f(b0 - eps * v)
+                prod[label] = ((gp - gm) / (2 * eps), (cp - cm) / (2 * eps))
+            (Hl, Fl), (Hp, Fp) = prod["linearization"], prod["pullback"]
+            A_v = np.asarray(sol["J"])[:, :nb].T @ (np.asarray(sol["J"])[:, :nb] @ v)
+            rec = dict(H=float(np.linalg.norm(Hp - Hl) / np.linalg.norm(Hl)),
+                       F=float(np.linalg.norm(Fp - Fl) / max(np.linalg.norm(Fl), 1e-300)),
+                       S_lin=float(np.linalg.norm(Hl - A_v) / np.linalg.norm(Hl)),
+                       S_pull=float(np.linalg.norm(Hp - A_v) / np.linalg.norm(Hl)))
+            record["directions"][name] = rec
+            print(f"[products] {name}: H pullback vs linearization {rec['H']:.2e}, F_d^T {rec['F']:.2e}; "
+                  f"|S v|/|H v| linearization {rec['S_lin']:.2e}, pullback {rec['S_pull']:.2e}", flush=True)
+        (out / "products_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
     if args.check_stationarity_gradient:  # every row's exact derivative of the converged stationarity
         x_seed = problem.accepted.parameters
         sol = problem._record(x_seed)

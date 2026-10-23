@@ -1718,7 +1718,9 @@ def main(argv=None):
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        last.update(time=now)
+        phases = {k: problem.stats.get(f"seconds_{k}", 0.0) for k in ("fit", "certify", "gradient")}
+        row.update({f"step_seconds_{k}": v - last.get(k, 0.0) for k, v in phases.items()})
+        last.update(time=now, **phases)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
@@ -1731,8 +1733,9 @@ def main(argv=None):
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
-              + f"{row['step_seconds']:.1f}s "
-              f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
+              + f"{row['step_seconds']:.1f}s (fit {row['step_seconds_fit']:.1f}s, "
+              f"certify {row['step_seconds_certify']:.1f}s, gradient {row['step_seconds_gradient']:.1f}s; "
+              f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")

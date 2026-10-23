@@ -1240,7 +1240,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
+        # seconds_*: wall time per phase (trial fits; certificates with their polish; design gradients)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
+                          seconds_fit=0.0, seconds_certify=0.0, seconds_gradient=0.0,
                           max_condition=0.0)
         self._continuation = None
         # The base problem only stores the layout (names, scales), which the checkpoint definition includes.
@@ -1322,6 +1324,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for i, start in enumerate(starts):
             if self._continuation is not None:  # every start from the accepted point's continuation
                 self._restore(self._continuation)
+            t0 = time.perf_counter()
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev, refresh_on_stall=True,
@@ -1329,6 +1332,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             except (VmecError, RuntimeError) as error:  # an uncertified equilibrium: try the next start
                 why.append(f"start {i}: {error}")
                 continue
+            finally:
+                self.stats["seconds_fit"] += time.perf_counter() - t0
             reasons = self.stats["fit_reasons"]
             reasons[fit["reason"]] = reasons.get(fit["reason"], 0) + 1
             self.stats["boundary_evaluations"] += fit["nfev"]
@@ -1341,11 +1346,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 if max(residual.normal, residual.pressure, residual.sheet_current) > 2 * self.boundary_max_residual:
                     why.append(f"start {i}: the fit stopped away from the free boundary")
                     continue
+            t0 = time.perf_counter()
             try:  # the certificate decides (a stall on a fresh Jacobian may be stationary)
                 sol = self._finalize(x, params, field, fit, polish)
                 break
             except TrialRejected as error:
                 why.append(f"start {i}: {error}")
+            finally:
+                self.stats["seconds_certify"] += time.perf_counter() - t0
         if sol is None:
             return self._reject(key, "; ".join(why) or "no three-term free boundary at this design point")
         self._cache[key] = sol
@@ -1385,6 +1393,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         """Every row's design gradient at the record ``sol`` (cached): its certified Jacobian, one reverse pass."""
         if "gradients" in sol:
             return sol["gradients"]
+        t0 = time.perf_counter()
+        try:
+            return self._linearize_uncached(x, sol)
+        finally:
+            self.stats["seconds_gradient"] += time.perf_counter() - t0
+
+    def _linearize_uncached(self, x, sol):
         xj, nb = jnp.asarray(x), self.model.x0.size
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         state, params = sol["state"], sol["params"]

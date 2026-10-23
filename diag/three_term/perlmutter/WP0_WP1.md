@@ -152,10 +152,42 @@ scaled by 1 + 1e-3); perturbed (cold state times 1 + 1e-3 cos k). FTOL 1e-13 unl
     - **What the complement is:** for a near-circular cross-section, zcs_int = (rss - zcs)/2 is the theta-origin
       rotation theta -> theta + c(s) sin(n Nfp phi), i.e. the m = 0 relabelling of item 9. In the continuum it is a
       gauge. The discrete rows respond to it at about 400x the coefficient change.
-    - **The repair:** a deterministic gauge for the complement, a smooth function of the boundary (its edge value
-      times a fixed radial profile), imposed after every solve before the refinement. This keeps the dof
-      projector's frozen-complement assumption, so the tangents and adjoints carry it with no change except the
-      complement's derivative with respect to the boundary. Probe: `scripts/interior/complement_gauge.py`.
+11. **A prescribed complement profile is deterministic but moves the physics** (`complement_gauge.py`,
+    `complement_physics.py`). The complement is set to its edge value times w(s), then refined:
+    - w = rho (VMEC's m = 1 initial-guess scaling): the rows' spread across starts is 2e-13 to 2e-11;
+    - w = s and w = rho^3 at mpol 4: the jump is too large and the refinement fails (spread 1e-2).
+    - The cold complement is about rho for low n but up to 2-3x rho at n = 3-4.
+
+    The rho-gauged root against the cold VMEC root:
+
+    | deck | surfaces | iota | B_min | rows (max rel) |
+    |---|---|---|---|---|
+    | mpol 2, ns 7 | 0.23 mm | 1.4e-5 | 8.7e-4 T | 2.1e-2 |
+    | mpol 2, ns 31 | 0.27 mm | 1.3e-5 | 9.3e-4 T | 2.1e-2 |
+    | mpol 4, ns 15 | 0.21 mm | 2.9e-5 | 6.2e-5 T | 3.0e-2 |
+    | mpol 4, ns 31 | 0.21 mm | 2.7e-5 | 5.9e-5 T | 3.0e-2 |
+
+    The physical difference between starts is about 1 um, so a prescribed profile is not a pure gauge in the
+    discrete problem. **Rejected (no accuracy trade-offs).**
+12. **Option K: keep the complement's force and solve for it** (`complement_keep.py`, `raw/wp1/complement/keep/`).
+    The constrained m = 1 Z force is never released in the implicit residual, and the refinement's dof projector is
+    elementwise, so Newton solves for the complement with the evolved dofs. Every force equation then holds at the
+    root.
+
+    | deck | rows' spread across starts (K) | as is | refined residual (K) | K vs cold VMEC: surfaces | iota | rows |
+    |---|---|---|---|---|---|---|
+    | mpol 2, ns 7 | **2.2e-13** | 1.4e-3 | 1.4e-15 | 26 um | 6.3e-6 | 4.0e-3 |
+    | mpol 2, ns 31 | **1.5e-12** | 1.6e-3 | 1.0e-13 | 71 um | 1.1e-5 | 7.6e-3 |
+    | mpol 4, ns 15 | **1.2e-11** | 3.1e-3 | 4.4e-14 | 45 um | 5.1e-5 | 1.4e-2 |
+    | mpol 4, ns 31 | **2.0e-11** | 1.7e-2 | 3.0e-13 | 42 um | 2.1e-5 | 1.1e-2 |
+
+    - **Deterministic:** the root is a function of the parameters alone, from every start, at round-off.
+    - **A complete root:** the frozen VMEC state leaves the complement's own force unbalanced; K satisfies it.
+    - **It differs from the cold VMEC root** by tens of um and iota 1e-5 on these coarse decks. Which is closer to
+      the continuum is checked against DESC (`desc_reference.py`, same boundary, fixed boundary, zero current).
+    - **Implemented in #122:** `implicit.M1_COMPLEMENT = "solved"` (default; `"frozen"` restores VMEC's
+      behaviour). It applies to 3D stellarator-symmetric runs; `lasym` is unchanged. The host solver is unchanged:
+      the Newton refinement moves the complement from wherever the host left it.
 
 **WP1 status:**
 - **Diagnosed:**

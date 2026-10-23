@@ -68,7 +68,8 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
   2.5e-8 to 3.7e-7. QA and QI at finite beta are fine; QH is the exception.
 - **QH vacuum, equal arc 1e-3, target 3e-4**: loss **2.3e-3** and quantities **1.7e-2** off, the same at h 3e-5 and
   1e-5 (systematic, not noise). So the QH error exists in vacuum, about 10x smaller than QH 2.5%'s 12-23%.
-- **NL seeds in vacuum: 5 of 5 failed to certify in 120 polish rounds.** qivac x3 (gain 1.77e-3, normal step 1.4e-6
+- **NL seeds in QA/QI vacuum: 6 of 6 failed to certify in 120-160 polish rounds** (QH vacuum NL seeds do certify:
+  3 of 3, point spacing 8.8 against equal arc's 5.45). qivac x3 (gain 1.77e-3, normal step 1.4e-6
   of the minor radius; identical in three processes on two allocations), qavac x2 (7.6e-3, 1.2e-6). The surfaces
   converged; what remains is relabelling (D5). The equal-arc seeds of the same fixtures certified in about 15 min.
 - **NL started from the equal-arc fit's certified boundary does not certify either** (qivac, 120 rounds): gain

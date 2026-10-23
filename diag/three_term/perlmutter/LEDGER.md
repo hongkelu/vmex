@@ -117,6 +117,16 @@ deck start):
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.
 
+## Test status at the latest commits (GPU)
+
+- `test_freeboundary_vc.py`, full run (night4, 821eab8d): 54 passed, 1 failed, 2 skipped. The failure was
+  `test_plasma_map_derivatives_at_nonzero_offsets`, now **rewritten and passing** (dffc59aa, day1): tight re-solved FD,
+  exact derivative within 1e-3, GN within its 1e-2 budget. The interior-state, bootstrap-vs-Picard and checkpoint
+  tests all pass.
+- `test_bootstrap.py`: 49 passed (Picard refines every iterate).
+- `test_implicit_grad_fd.py`: all pass except the pre-existing typed-error test (below).
+- `test_three_term_clearance.py` (CPU): 4 passed.
+
 ## Pre-existing failures (not caused by this work; identical at af30041d)
 
 Under the GPU-default runtime on Perlmutter these tests fail with a CPU/GPU device-placement `ValueError` (CI's

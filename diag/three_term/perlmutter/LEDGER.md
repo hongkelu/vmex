@@ -140,13 +140,17 @@ deck start):
 | qivac | modes 8 x 8 -> 10 x 10 | 32 um | 0.45% |
 | qhvac | modes 8 x 8 -> 10 x 10 | 0.53 mm | 0.22% |
 | qavac | modes 8 x 8 -> 10 x 10 | 0.12 mm | 0.49% |
+| qivac | ns 51 -> 101 | 14 um | 0.80% (min iota 0.5990 -> 0.6038; objective 0.013%) |
+| qavac | ns 51 -> 101 | 21 um | 0.79% (min iota 0.4525 -> 0.4561; objective 0.16%) |
 
 - The interface quadrature (VC 48) is converged; the boundary's mode count moves the outputs by 0.2-0.5%, so 8 x 8 is
   the optimization resolution and every final design is validated at 12 x 12 (as planned).
 - At the default 5 polish rounds three of the higher-resolution seeds ran out still converging (qivac ns 101:
   stationarity 0.147 -> 0.017; qivac 10 x 10: 0.39 -> 0.076; qhvac VC 64); rerun with 40 rounds. The record then said
   `rejected`; 36976442 names the exhausted budget and fbrecord classifies it as `budget_exhausted`.
-- Pending: qivac/qavac ns 101, qhvac VC 64 (40 rounds).
+- ns 101 moves the boundary by only 14-21 um, but the minimum iota by +0.8% (both cases): ns 51 reads iota low, so
+  the iota limit at ns 51 is conservative by about 0.8%; the objective moves 0.01-0.16%.
+- Pending: qhvac VC 64 (40 rounds).
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.

@@ -1045,6 +1045,71 @@ def surface_distance(coils, surface):
                                points.reshape(-1,3)))
 
 
+def continuous_surface_distance(points, rbc, zbs, nfp, *, grid=(48, 48), iterations=10):
+    """Coil-to-plasma clearance on the continuous surface and along the coil (E3), and the runner-up gap.
+
+    ``points`` (curves, samples, 3) are coil samples in order along each closed curve; ``rbc``/``zbs``
+    ``(2 ntor + 1, mpol)`` the boundary, ``R + i Z = sum (rbc cos + i zbs sin)(m theta - n nfp phi)``.  A grid search
+    over the whole torus finds each sample's nearest surface point; the seven best samples are refined onto the
+    continuous surface and the closest is kept; for it and its two neighbours the
+    surface point is refined by Newton on ``(theta, phi)`` (the minimizer held fixed for differentiation: the
+    envelope theorem), and the clearance is the vertex of the parabola through their three distances, which is
+    continuous along the coil.  Returns ``(clearance, gap)``: ``gap`` is how much farther the nearest sample more
+    than two samples away (on any coil) is, so a small ``gap`` flags a closest-pair switch nearby.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    ntor = (rbc.shape[0] - 1) // 2
+    m = jnp.arange(rbc.shape[1])
+    n = (jnp.arange(rbc.shape[0]) - ntor) * nfp
+
+    def surface(theta, phi):
+        angle = m[None, :] * theta - n[:, None] * phi
+        R = jnp.sum(rbc * jnp.cos(angle))
+        Z = jnp.sum(zbs * jnp.sin(angle))
+        return jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), Z])
+
+    th = jnp.linspace(0, 2 * jnp.pi, grid[0], endpoint=False)
+    ph = jnp.linspace(0, 2 * jnp.pi, grid[1] * nfp, endpoint=False)
+    TH, PH = jnp.meshgrid(th, ph, indexing="ij")
+    S = jax.vmap(jax.vmap(surface))(TH, PH).reshape(-1, 3)
+    pts = jnp.asarray(points)
+    ncurve, nsample = pts.shape[0], pts.shape[1]
+    flat = pts.reshape(-1, 3)
+    d2 = jax.lax.map(lambda q: jnp.min(jnp.sum((q - S) ** 2, axis=1)), flat)
+    nearest = jax.lax.map(lambda q: jnp.argmin(jnp.sum((q - S) ** 2, axis=1)), jax.lax.stop_gradient(flat))
+    order = jnp.argsort(jax.lax.stop_gradient(d2))[:7]  # the coarse search's best candidates, refined below
+
+    def refined(q, j):
+        """Distance from ``q`` to the surface, its closest point refined from grid point ``j`` (fixed for AD)."""
+        t, f = jax.lax.stop_gradient(TH.ravel()[j]), jax.lax.stop_gradient(PH.ravel()[j])
+        qs = jax.lax.stop_gradient(q)
+        half = lambda tf: 0.5 * jnp.sum((surface(tf[0], tf[1]) - qs) ** 2)  # noqa: E731
+        tf = jnp.array([t, f])
+        for _ in range(iterations):
+            # Newton on |q - S|^2 / 2: Gauss-Newton converges slowly or not at all when the distance is comparable to
+            # the surface's radius of curvature (its dropped term, the residual times the curvature, is then as large)
+            g, H = jax.grad(half)(tf), jax.hessian(half)(tf)
+            newton = -jnp.linalg.solve(H + 1e-14 * jnp.eye(2), g)
+            ok = (jnp.linalg.eigvalsh(H)[0] > 0) & jnp.all(jnp.isfinite(newton))
+            tf = tf + jnp.where(ok, newton, -g / jnp.maximum(jnp.linalg.norm(jax.hessian(half)(tf)), 1e-300))
+        tf = jax.lax.stop_gradient(tf)
+        return jnp.sqrt(jnp.sum((q - surface(tf[0], tf[1])) ** 2) + 1e-30)
+
+    cand = jnp.stack([jax.lax.stop_gradient(refined(flat[j], nearest[j])) for j in order])
+    k = order[jnp.argmin(cand)]  # the closest sample on the continuous surface
+    c, i = k // nsample, k % nsample
+    idx = [c * nsample + (i + o) % nsample for o in (-1, 0, 1)]
+    dm, d0, dp = (refined(flat[j], nearest[j]) for j in idx)
+    curv = dp - 2 * d0 + dm
+    vertex = jnp.where(curv > 0, d0 - (dp - dm) ** 2 / (8 * jnp.maximum(curv, 1e-300)), d0)
+    sample = jnp.arange(ncurve * nsample)
+    near = (sample // nsample == c) & (jnp.abs(((sample % nsample) - i + nsample // 2) % nsample - nsample // 2) <= 2)
+    second = jnp.sqrt(jnp.min(jnp.where(near, jnp.inf, jax.lax.stop_gradient(d2))))
+    return vertex, second - jax.lax.stop_gradient(vertex)
+
+
 def coil_constraint(coils_from_x):
     """Pure-coil rows require no equilibrium solves or adjoint right-hand sides."""
     import jax
@@ -1081,6 +1146,9 @@ def parse_args(argv=None):
     parser.add_argument("--seed-start", nargs="+", metavar="KIND",
                         help="fit the seed's boundary from another start (start-dependence qualification): "
                         "'random EPS SEED' or 'scale EPS'; the deck stays the reference")
+    parser.add_argument("--clearance", choices=("continuous", "points"), default="continuous",
+                        help="coil-plasma clearance: the continuous closest point (default; smooth where the closest "
+                        "pair is unique) or the minimum over sampled coil and surface points (non-smooth at every closest-pair switch)")
     parser.add_argument("--check-exact-gradient", action="store_true",
                         help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
@@ -1493,11 +1561,15 @@ def main(argv=None):
     vacuum = vacuum_iota(inp)
     vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
 
-    def boundary_surface(state, runtime):
+    def boundary_arrays(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
         rows, cols = np.asarray(runtime.modes.n) + ntor, np.asarray(runtime.modes.m)
         rbc = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(rmnc)
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
+        return rbc, zbs
+
+    def boundary_surface(state, runtime):
+        rbc, zbs = boundary_arrays(state, runtime)
         return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
 
     ext_rows, ext_terms = load_extension(args.extension)
@@ -1511,7 +1583,10 @@ def main(argv=None):
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
     def clearance(state, runtime, x):
-        return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
+        if args.clearance == "points":
+            return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
+        points = resampled(chart.coils_from_x(x), DISTANCE_POINTS).gamma
+        return continuous_surface_distance(points, *boundary_arrays(state, runtime), int(inp.nfp))[0]
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)

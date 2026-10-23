@@ -221,12 +221,23 @@ _STATE_FIELDS = ("R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin")
 
 
 class LinearResponseReport(NamedTuple):
-    """Per-right-hand-side residual certificate for an implicit response."""
+    """Per-right-hand-side residual certificate for an implicit response.
+
+    ``converged`` is the acceptance.  Where a raw-operator certificate was
+    measured (:func:`_raw_certified_report`) it is that certificate alone --
+    the independently measured residual of the returned response in the
+    original (raw) equations against ``raw_tolerance`` -- and
+    ``preconditioned_converged`` keeps the iterative solve's own flag as a
+    diagnostic.
+    """
 
     residual_norm: Array
     tolerance: Array
     iterations: Array
     converged: Array
+    raw_residual_norm: Array | None = None
+    raw_tolerance: Array | None = None
+    preconditioned_converged: Array | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -2483,10 +2494,15 @@ def _tree_norm(tree):
     ))
 
 
-def _raw_certified_report(report: LinearResponseReport, raw_ok):
-    """Mark a column converged when the raw-operator residual accepts it."""
-    return report._replace(
-        converged=jnp.logical_or(report.converged, raw_ok))
+def _raw_certified_report(report: LinearResponseReport, raw_norm, raw_tolerance):
+    """Accept a column by its raw-operator residual alone (the preconditioned flag becomes a diagnostic).
+
+    A preconditioned pass cannot override a failed raw residual, and a raw pass
+    stands although the preconditioned solve missed its own (different) norm.
+    """
+    raw_ok = jnp.logical_and(jnp.isfinite(raw_norm), raw_norm <= raw_tolerance)
+    return report._replace(converged=raw_ok, raw_residual_norm=raw_norm, raw_tolerance=raw_tolerance,
+                           preconditioned_converged=report.converged)
 
 
 def _linear_response_report(sol, rhs, cfg: ImplicitConfig, rtol=None):
@@ -3164,11 +3180,9 @@ def _implicit_evolved_tangent_multi_rhs(
         # response or accept an inaccurate one.
         raw_defect = jax.tree.map(
             jnp.subtract, raw_rhs(tangent), system.operator(solution))
-        raw_norm = _tree_norm(raw_rhs(tangent))
-        raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(
-            cfg, raw_norm, certify_rtol)
+        raw_tolerance = _adjoint_acceptance(cfg, _tree_norm(raw_rhs(tangent)), certify_rtol)
         return solution, _raw_certified_report(_linear_response_report(
-            krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
+            krylov, rhs, cfg, rtol=certify_rtol), _tree_norm(raw_defect), raw_tolerance)
 
     solution, report = chunk_map(
         correct, (tangent_batch, initial),
@@ -3183,12 +3197,13 @@ def _implicit_evolved_tangent_multi_rhs(
         for _ in range(_BLOCK_REFINEMENT_PASSES):
             defect = jax.tree.map(jnp.subtract, b, system.operator(x))
             x = jax.tree.map(jnp.add, x, _raw_block_apply(system, defect))
-        ok = _tree_norm(jax.tree.map(jnp.subtract, b, system.operator(x))) <= \
-            _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
-        return x, jnp.logical_and(ok, jnp.logical_not(converged))
+        norm = _tree_norm(jax.tree.map(jnp.subtract, b, system.operator(x)))
+        ok = jnp.logical_and(jnp.isfinite(norm),
+                             norm <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol))
+        return x, jnp.logical_and(ok, jnp.logical_not(converged)), norm
 
     def refine_uncertified(_):
-        refined, gained = chunk_map(
+        refined, gained, norms = chunk_map(
             refine, (tangent_batch, solution, report.converged),
             chunk_size=max(1, int(response_chunk_size)),
         )
@@ -3196,8 +3211,10 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda new, old: jnp.where(
                 gained.reshape((-1,) + (1,) * (new.ndim - 1)), new, old),
             refined, solution)
+        # The certificate describes the response actually returned: the refined column's raw residual where kept.
         return kept, report._replace(
-            converged=jnp.logical_or(report.converged, gained))
+            converged=jnp.logical_or(report.converged, gained),
+            raw_residual_norm=jnp.where(gained, norms, report.raw_residual_norm))
 
     # Paid only when a column misses: a fixed number of passes, so a hard
     # point costs a few block solves instead of the reverse lane's row map.

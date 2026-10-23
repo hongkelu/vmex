@@ -13,6 +13,7 @@ import numpy as np
 
 
 def main():
+    """Print the per-k errors of every SUBSPACE_DIR against EXACT_DIR."""
     ap = argparse.ArgumentParser()
     ap.add_argument("dirs", nargs="+")
     ap.add_argument("--exact", required=True)

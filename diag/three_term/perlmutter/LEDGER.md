@@ -89,6 +89,8 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     That is 25% between two certified fits of the same deck that differ only in the labelling rows.
   - So equal arc 1e-3 is not physically negligible for QH 2.5% derivatives, even though values agree to 0.07%. This
     bears on "no bias" and on option 5.
+- **Reference check (exact gradient vs its difference step h):** QA 2.5% prescribed, h 1e-4 vs 1e-5: the exact
+  vectors agree to **3e-4 relative** (GN identical to 2e-13). The exact gradient does not depend on h there.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

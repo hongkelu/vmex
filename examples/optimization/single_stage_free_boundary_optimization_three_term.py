@@ -757,12 +757,16 @@ SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
 class DirectCoilField:
     """Biot-Savart field of filament coils, as a differentiable pytree.
 
-    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
-    static ``self``, so every new coil geometry recompiles and no derivative
-    flows back to the coil arrays. This pytree carries the arrays as leaves
-    instead: one compiled program serves every trial and JAX differentiates
-    the field with respect to the coil parameters. The field is the mean over
-    each coil's quadrature points of the filament Biot-Savart integrand.
+    ESSOS 0.21.0's ``BiotSavart`` is a pytree, but its ``Coils`` carries arrays
+    in the pytree metadata (its current normalization), so a jitted function of
+    new coil values fails JAX's cache-key comparison: a second geometry under one
+    ``jit`` raises, and its JVP through ``Coils(Curves(dofs), currents)`` differs
+    from central differences by 1-12% (``diag/three_term/perlmutter/scripts/wpE/
+    essos_parity.py``).  This pytree carries ``gamma``, ``gamma_dash`` and the
+    currents as leaves: one compiled program serves every trial, its JVP matches
+    central differences to 2e-8, and its values equal ESSOS' to 4e-16 (the same
+    integrand: the mean over each coil's quadrature points of the filament
+    Biot-Savart term).
     ``gamma``/``gamma_dash`` are ESSOS' points and tangents, shape
     ``(coils, points, 3)`` in metres; ``currents`` are in amperes.
     """

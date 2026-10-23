@@ -59,7 +59,7 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | id | issue | status | evidence |
 |---|---|---|---|
 | E0 | One reproducible runtime artifact | **recorded**: `ENVIRONMENT.md`, `raw/env/` (ESSOS 0.21.0, SOLVAX 0.31.0, JAX 0.12.0.1 CUDA 13, DKX 2.11.0; vmex always from a pinned tree) | |
-| E1 | ESSOS `DirectCoilField` vs native ESSOS parity (field, JVP/VJP, nfp, symmetry, currents) and its stale rationale | **open** | |
+| E1 | ESSOS `DirectCoilField` vs native ESSOS parity (field, JVP/VJP, nfp, symmetry, currents) and its stale rationale | **resolved, adapter kept** (`scripts/wpE/essos_parity.py`, `raw/wpE/`, qh25 nfp 4 and qavac nfp 3, positive and negated currents). Values agree to 4e-16; the adapter's JVP matches central differences to 2e-8; native ESSOS 0.21.0 JVP through `Coils(Curves(dofs), currents)` differs by 1.3-12%, and native coils cannot be re-traced under one `jit` (array pytree metadata). Adapter under `jit`: one compilation, 6 ms warm. Rationale docstring corrected | coil-quadrature convergence and clearance (point-cloud vs continuous) still open |
 | E2 | SOLVAX operator certification (dense/QR references, transposes, warm/cold, multi-RHS) | partly covered by A3's raw certificate; dedicated tests **open** | |
 
 ## Package F: restart and export

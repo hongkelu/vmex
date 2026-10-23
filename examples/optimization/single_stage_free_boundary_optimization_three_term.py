@@ -1187,6 +1187,8 @@ def parse_args(argv=None):
     parser.add_argument("--check-exact-gradient", action="store_true",
                         help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
                         "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
+    parser.add_argument("--exact-gradient-row", type=int, default=0,
+                        help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
     parser.add_argument("--exact-gradient-maxiter", type=int, default=30,
                         help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
     parser.add_argument("--exact-gradient-h", type=float, default=1e-4,
@@ -1805,15 +1807,15 @@ def main(argv=None):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_exact_gradient:
         t0 = time.monotonic()
-        got = problem.exact_design_gradient(problem.accepted.parameters, h=args.exact_gradient_h,
-                                            maxiter=args.exact_gradient_maxiter)
+        got = problem.exact_design_gradient(problem.accepted.parameters, row=args.exact_gradient_row,
+                                            h=args.exact_gradient_h, maxiter=args.exact_gradient_maxiter)
         gn, exact = np.asarray(got["gauss_newton"]), np.asarray(got["gradient"])
         record = dict(gauss_newton=gn.tolist(), exact=exact.tolist(),
                       relative=float(np.linalg.norm(gn - exact) / np.linalg.norm(exact)),
                       componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
                       cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], seconds=time.monotonic() - t0, h=args.exact_gradient_h,
-                      maxiter=args.exact_gradient_maxiter,
+                      maxiter=args.exact_gradient_maxiter, row=args.exact_gradient_row,
                       certificate=problem._record(problem.accepted.parameters).get("certificate"))
         (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
         print(f"[exact gradient] Gauss-Newton vs exact: relative {record['relative']:.2e} "

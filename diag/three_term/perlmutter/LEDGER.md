@@ -120,7 +120,15 @@ deck start):
   - The scaled start did not reach the 1e-5 gate in 60 rounds (1.3e-4).
   - **Selection rule:** among certified fits from several starts, the lowest cost (A6's `_best_three_term_fit`
     ranking).
-  - Open: whether the minima merge with resolution (G2), and an outputs-error budget for them.
+  - **Two minima, both reproducible** (day1, 1e-5 gate):
+    - two independent random starts (seeds 1 and 2) reach the same lower minimum: 7.4 um apart, values 1.5e-4, cost
+      1.0903e-7 both;
+    - the deck start reaches the higher one (1.1014e-7);
+    - that higher minimum is stable in the virtual-casing grid: 48 -> 64 moves it 3.6 um, values 1.7e-5.
+
+    So the two are genuine minima of the problem at this resolution, not quadrature artefacts. The physical gap
+    between them (0.27 mm, 0.2% in outputs) is the size of the qualification uncertainty unless the global one is
+    selected.
 - The tighter-gate qhvac pair could not certify at 1e-5: QH vacuum's stationarity floor is about 3e-5.
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override

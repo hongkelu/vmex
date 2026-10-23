@@ -776,20 +776,38 @@ class DirectCoilField:
     currents: Any
 
     def b_cyl(self, r, phi, z):
-        """Evaluate the filament field in cylindrical coordinates, in tesla."""
+        """Evaluate the filament field in cylindrical coordinates, in tesla.
+
+        The sum runs over chunks of at most 512 quadrature points per coil (a scan whose body is recomputed in
+        reverse mode), so memory is points x coils x chunk, not points x coils x quadrature points: 8192-point
+        filaments on a 12 x 12 interface grid needed a 39.7 GB temporary.  Up to 512 points it is one chunk,
+        the plain sum."""
+        import jax
         import jax.numpy as jnp
 
         rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
         cosine, sine = jnp.cos(pp), jnp.sin(pp)
         xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
-        differential = differential * inv_radius3[..., None]
-        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
+        gamma, gamma_dash = jnp.asarray(self.gamma), jnp.asarray(self.gamma_dash)
+        currents = jnp.asarray(self.currents)
+        ncoil, nseg = gamma.shape[0], gamma.shape[1]
+        chunk = nseg if nseg <= 512 else next(c for c in (512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if nseg % c == 0)
+
+        def split(a):
+            return jnp.swapaxes(a.reshape(ncoil, nseg // chunk, chunk, 3), 0, 1)
+
+        @jax.checkpoint
+        def body(total, pair):
+            g, dg = pair
+            displacement = xyz[..., None, None, :] - g
+            radius2 = jnp.sum(displacement * displacement, axis=-1)
+            inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
+            differential = jnp.cross(dg, displacement) * inv_radius3[..., None]
+            weighted = differential * jnp.reshape(currents, (1,) * (xyz.ndim - 1) + (-1, 1, 1))
+            return total + jnp.sum(weighted, axis=(-3, -2)), None
+
+        total, _ = jax.lax.scan(body, jnp.zeros(xyz.shape, dtype=xyz.dtype), (split(gamma), split(gamma_dash)))
+        bxyz = 1.0e-7 * total / nseg
         br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
         bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
         return br, bphi, bxyz[..., 2]

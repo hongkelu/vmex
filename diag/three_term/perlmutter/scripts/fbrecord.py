@@ -120,6 +120,8 @@ def main():
         fv.STALL_RULE = os.environ["STALL_RULE"]
     if "JACOBIAN_UPDATE" in os.environ:
         fv.JACOBIAN_UPDATE = os.environ["JACOBIAN_UPDATE"]
+    if "PROJECTION_GATE" in os.environ:
+        fv.PROJECTION_GATE = float(os.environ["PROJECTION_GATE"])
     if "POLISH_FTOL" in os.environ:
         fv.POLISH_FTOL = float(os.environ["POLISH_FTOL"])
     if "GEODESIC" in os.environ:

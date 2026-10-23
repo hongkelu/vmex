@@ -1728,6 +1728,16 @@ class _AcceptedPoint:
 #: Most Gauss-Newton corrections of the projected (bootstrap-current) coordinates after one boundary step.
 PROJECTION_CORRECTIONS = 4
 
+#: An absolute ceiling on the conditional-stationarity gate of the projected (current) coordinates: the gate is
+#: ``min(0.1 ftol, PROJECTION_GATE)`` (None: ``0.1 ftol``).  Along the current-following path the rows are close to
+#: their reduced linear model, but a current left at ``0.1 ftol`` adds evaluation noise of that order.
+PROJECTION_GATE = None
+
+
+def _projection_gate(ftol):
+    """The conditional-stationarity gate of the projected coordinates (:data:`PROJECTION_GATE`)."""
+    return 0.1 * ftol if PROJECTION_GATE is None else min(0.1 * ftol, float(PROJECTION_GATE))
+
 
 def _project(evaluate, x, got, Q_c, R_c, index, budget, tol):
     """Gauss-Newton corrections of the coordinates ``index`` of ``x`` (``J_c = Q_c R_c``, the columns of a nearby
@@ -1870,7 +1880,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         nfev += 1
         if got is not None and Q_c is not None:
             x_new, got, used, stationary = _project(evaluate, x_new, got, Q_c, R_c, project, max_nfev - nfev,
-                                                    0.1 * ftol)
+                                                    _projection_gate(ftol))
             nfev += used
             unprojected += not stationary
         cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
@@ -1907,7 +1917,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
                     nfev += 1
                     if trial is not None and Q_c is not None:
                         x_try, trial, used, stationary = _project(evaluate, x_try, trial, Q_c, R_c, project,
-                                                                  max_nfev - nfev, 0.1 * ftol)
+                                                                  max_nfev - nfev, _projection_gate(ftol))
                         nfev += used
                         unprojected += not stationary
                     cost_try = np.inf if trial is None else 0.5 * trial[0] @ trial[0]
@@ -1924,7 +1934,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             break
     certified_projection = None
     if project is not None and current_columns is not None:
-        gate = 0.1 * ftol
+        gate = _projection_gate(ftol)
 
         def fresh(x, aux, r):
             J_c, aux = current_columns(x, aux)

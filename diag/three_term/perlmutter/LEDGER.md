@@ -67,6 +67,13 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
 - **qavac exact gradient converged** (CG 16, equal arc, target 1e-4, from a later step of the same optimization):
   **GN vs exact 0.24% (max component 0.38%), cosine 0.999997.** The magnitude matches the cold check. The two
   lanes copied the checkpoint at different steps, so they are not compared along one direction.
+- **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5
+  and 1e-5). **Loss: GN 0.28% off.** Rows: iota 0.6%, R 14% (small magnitude: 0.0056 vs 0.0065), B 2.9%, mirror
+  0.2%, max iota 0.2%, **vacuum-iota floor 46% (GN 0.738 vs 1.365)**, clearance 1.3%, aspect 4%.
+  - The vacuum-iota row (a nested vacuum fixed-boundary solve, min over surfaces) is far outside the others: it is
+    a suspect row-specific derivative defect.
+  - Running: its exact derivative, `--exact-gradient-row 6`, 4ab973c0.
+  - The earlier warm "match" here (1e-8) was the circular check.
 
 **C5b day3 gradient checks** (gate 1e-5, re-solved central differences at h 1e-4 / 3e-5 / 1e-5; `raw/wp5/day3/`):
 - qavac, 3 directions: loss matches to 7e-9..8e-8 at h 1e-5. With the **continuous clearance** (22e60e13) its row's

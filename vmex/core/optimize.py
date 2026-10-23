@@ -150,6 +150,7 @@ __all__ = [
     "Equilibrium",
     "solve_equilibrium",
     "refine_equilibrium",
+    "refine_state",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
     "major_radius",
@@ -469,21 +470,28 @@ def refine_equilibrium(eq: "Equilibrium", *, m1_complement: str = "solved") -> "
     configuration without the m=1 pair (2D, ``lasym``), returns ``eq``
     unchanged.
     """
+    refined = refine_state(eq.inp, eq.state, m1_complement=m1_complement)
+    return eq if refined is eq.state else dataclasses.replace(eq, state=refined)
+
+
+def refine_state(inp: VmecInput, state: SpectralState, *, m1_complement: str = "solved") -> SpectralState:
+    """A host-solved ``state`` of ``inp`` refined onto the selected interior root and certified
+    (:func:`refine_equilibrium`); ``state`` itself when the policy needs no refinement."""
     from . import implicit as im
 
-    cfg = im.make_config(eq.inp, m1_complement=m1_complement)
+    cfg = im.make_config(inp, m1_complement=m1_complement)
     if not im._m1_solved(cfg):
-        return eq
-    params = im.params_from_input(eq.inp)
+        return state
+    params = im.params_from_input(inp)
     mask = im._fixed_boundary_dof_mask(cfg)
-    refined = im._refined_state(cfg, params, eq.state, mask)
+    refined = im._refined_state(cfg, params, state, mask)
     residual = im._refined_residual(cfg, params, refined, mask)
     if not residual <= cfg.refine_tol:
         raise VmecConvergenceError(
             f"the equilibrium does not refine onto the {m1_complement!r} root "
             f"(|F| = {residual:.3e} > refine_tol {cfg.refine_tol:.1e})",
             hint="tighten the forward solve (ftol) or raise the iteration cap")
-    return dataclasses.replace(eq, state=jax.tree.map(jnp.asarray, refined))
+    return jax.tree.map(jnp.asarray, refined)
 
 
 def solve_equilibrium(

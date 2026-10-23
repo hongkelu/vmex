@@ -1309,3 +1309,19 @@ def test_gauss_newton_extrapolation_follows_a_step_the_model_undershoots(monkeyp
     assert out[False]["extrapolated"] == 0 and out[True]["extrapolated"] >= 2
     assert out[True]["nfev"] <= 6
     assert cost[True] < 0.1 * cost[False]
+
+
+def test_best_start_ranks_successful_fits_before_cost():
+    """start='best': a lower-cost fit that failed never displaces a successful one; among equals, lower cost."""
+    from types import SimpleNamespace
+
+    from vmex.core.multigrid import _best_three_term_fit
+
+    good = SimpleNamespace(success=True, cost=2.0)
+    failed = SimpleNamespace(success=False, cost=1.0)
+    better = SimpleNamespace(success=True, cost=1.5)
+    assert _best_three_term_fit([failed, good]) is good
+    assert _best_three_term_fit([good, failed, better]) is better
+    assert _best_three_term_fit([failed]) is failed
+    with pytest.raises(ValueError):
+        _best_three_term_fit([])

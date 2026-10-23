@@ -1062,6 +1062,12 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--check-jacobian", type=int, default=0, metavar="N",
+                        help="compare the model's implicit boundary Jacobian with central differences of tight "
+                        "rows along N random directions and the weakest one (jacobian_check.json), at the seed "
+                        "boundary or --jacobian-at, without solving the free boundary; then stop")
+    parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
+                        help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -1107,6 +1113,9 @@ def parse_args(argv=None):
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
                         "equal arc length of the current surface (equal_arc), or VMEC's spectral condensation (condensed); "
                         "see ThreeTermFreeBoundaryModel")
+    parser.add_argument("--m1-complement", choices=("solved", "frozen"), default="solved",
+                        help="the interior's m = 1 complement: solved with the evolved dofs (unique root, default) "
+                        "or VMEC2000's released (frozen) complement")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
     args = parser.parse_args(argv)
@@ -1153,6 +1162,59 @@ def fit_coils_to_plasma(coils, wout, inp):
     print(f"[coil fit] {fit.nit} L-BFGS-B iterations ({fit.message}): (B_coils + B_plasma).n/|B| RMS "
           f"{before:.3e} -> {float(normal_field_rms(fitted)):.3e} on the fixed-boundary seed", flush=True)
     return fitted
+
+
+def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4)):
+    """The model's implicit boundary Jacobian against central differences of tight rows (WP5/C5).
+
+    At the seed design's field and plasma parameters and the seed boundary (or ``record``'s model coordinates),
+    without solving the free boundary.  Directions: ``directions`` random unit vectors in the scaled model
+    coordinates, then the weakest right singular vector of the column-scaled Jacobian.  For each and each step:
+    ``|D - J d| / |J d|`` over all rows and by row block, with ``D`` the central difference.  Each perturbed
+    interior root is solved tight (certified).  Written to ``jacobian_check.json``."""
+    import jax.numpy as jnp
+
+    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+
+    model_options = {k: v for k, v in options.items()
+                     if k not in ("boundary_ftol", "boundary_max_nfev", "boundary_max_residual", "boundary_xtol",
+                                  "checkpoint")}
+    model = ThreeTermFreeBoundaryModel(inp, **model_options)
+    x_design = jnp.asarray(chart.x0)
+    params, field = chart.plasma_params_at(model.params0, x_design), chart(x_design)
+    b = np.asarray(model.x0, dtype=float)
+    if record is not None:
+        b = np.asarray(np.load(record, allow_pickle=False)["x"], dtype=float)
+    rows, aux = model.evaluate(b, params, field, tight=True)
+    J = np.asarray(model.linearize(b, aux, field)[0])[:, :b.size]
+    scale = np.asarray(model.x_scale, dtype=float)
+    Js = J * scale
+    _, sv, vt = np.linalg.svd(Js / np.linalg.norm(Js, axis=0), full_matrices=False)
+    rng = np.random.default_rng(0)
+    dirs = [rng.standard_normal(b.size) for _ in range(directions)]
+    dirs.append(vt[-1] / np.linalg.norm(Js, axis=0))
+    records = []
+    for k, d in enumerate(dirs):
+        d = d / np.linalg.norm(d) * scale
+        Jd = J @ d
+        for h in steps:
+            pair = [model.evaluate(b + sign * h * d, params, field, tight=True) for sign in (1, -1)]
+            if any(p is None for p in pair):
+                records.append(dict(direction=k, h=h, failed=True))
+                continue
+            diff = (np.asarray(pair[0][0]) - np.asarray(pair[1][0])) / (2 * h)
+            row = dict(direction=k, kind="weakest" if k == directions else "random", h=h,
+                       relative=float(np.linalg.norm(diff - Jd) / np.linalg.norm(Jd)))
+            for block, b0, b1 in model.row_blocks:
+                nrm = float(np.linalg.norm(Jd[b0:b1]))
+                if nrm > 0:
+                    row[block] = float(np.linalg.norm(diff[b0:b1] - Jd[b0:b1]) / nrm)
+            records.append(row)
+            print(f"[jacobian check] direction {k} ({row['kind']}) h={h:.0e}: relative {row['relative']:.2e}",
+                  flush=True)
+    meta = dict(resolution=model.resolution(), singular_values=[float(sv[0]), float(sv[-1])],
+                record=None if record is None else str(record), options=model.options)
+    (out / "jacobian_check.json").write_text(json.dumps(dict(meta=meta, checks=records), indent=1, default=str) + "\n")
 
 
 def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
@@ -1366,6 +1428,16 @@ def main(argv=None):
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
+    tt_options = dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+                      quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
+                      trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
+                      bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
+                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
+                      checkpoint=args.resume, m1_complement=args.m1_complement,
+                      **({} if args.label_weight is None else {"label_weight": args.label_weight}))
+    if args.check_jacobian:
+        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at)
+        return
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
@@ -1374,13 +1446,7 @@ def main(argv=None):
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
-        three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
-                                quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
-                                trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                                boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
-                                checkpoint=args.resume,
-                                **({} if args.label_weight is None else {"label_weight": args.label_weight})))
+        three_term_options=tt_options)
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

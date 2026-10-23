@@ -1329,3 +1329,21 @@ def test_best_start_ranks_successful_fits_before_cost():
     assert _best_three_term_fit([failed]) is failed
     with pytest.raises(ValueError):
         _best_three_term_fit([])
+
+
+def test_geodesic_acceleration_follows_curved_rows(monkeypatch):
+    """Rosenbrock rows from (0.5, 0) with one fixed Jacobian: the geodesic correction (one extra evaluation for the
+    rows' second directional derivative along the step) reaches the root in fewer evaluations than the plain
+    Levenberg-Marquardt steps, which stall short of it."""
+    def evaluate(x):
+        return np.array([x[0] - 1.0, 10.0 * (x[1] - x[0] ** 2)]), None
+
+    x0 = np.array([0.5, 0.0])
+    J = np.array([[1.0, 0.0], [-20.0 * x0[0], 10.0]])
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(fvc, "GEODESIC", on)
+        out[on] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-14, max_nfev=30, verbose=0)
+    assert out[False]["accelerated"] == 0 and out[True]["accelerated"] >= 1
+    assert out[True]["converged"] and np.allclose(out[True]["x"], [1.0, 1.0], atol=1e-6)
+    assert out[True]["nfev"] < out[False]["nfev"]

@@ -239,6 +239,15 @@ JACOBIAN_UPDATE = "none"
 GN_EXTRAPOLATE = False
 GN_EXTRAPOLATE_MAX = 6  # doublings at most
 
+#: Geodesic acceleration (Transtrum & Sethna 2012) of each Levenberg-Marquardt step: one extra evaluation at
+#: ``x + GEODESIC_H dx`` estimates the rows' second directional derivative ``r''(dx, dx)``; the correction ``a``
+#: solves the same damped (reduced) model for it, and the trial is ``x + dx + a / 2`` when ``|a| <= GEODESIC_ALPHA
+#: |dx|`` (Marquardt-scaled).  For rows that curve at the step's own scale (the Redl bootstrap rows at 2.5%: the
+#: linear model misses by 4-60% at a 1e-2 step) the second-order step follows the curved valley.
+GEODESIC = False
+GEODESIC_H = 0.1
+GEODESIC_ALPHA = 0.75
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
@@ -998,7 +1007,7 @@ class ThreeTermFreeBoundaryModel:
                 entry["fit"] = {k: (v if isinstance(v, (str, bool, type(None))) else float(v))
                                 for k, v in sol.items() if k in ("nfev", "accepted", "reason", "projections",
                                                                   "projection_certified", "jacobian_updates",
-                                                                  "extrapolated")}
+                                                                  "extrapolated", "accelerated")}
             if sol is not None:
                 entry.update(x=np.asarray(sol["x"]), rows=np.asarray(sol["rows"]), J=np.asarray(sol["J"]),
                              x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
@@ -1064,7 +1073,7 @@ class ThreeTermFreeBoundaryModel:
                     break  # the polish gains nothing: the certificate below decides
                 sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
                 sol.update({k: polished[k] for k in ("nfev", "accepted", "reason", "projections", "projection_certified",
-                                                      "jacobian_updates", "extrapolated") if k in polished})
+                                                      "jacobian_updates", "extrapolated", "accelerated") if k in polished})
                 stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
             if not settled:
                 normal_note = "" if certificate["normal_step"] is None else (
@@ -1806,7 +1815,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         return Q_c, R_c, norms, U, sv, Vt
 
     Q_c, R_c, norms, U, sv, Vt = decompose(J)
-    updates = extrapolated = 0
+    updates = extrapolated = accelerated = 0
     nfev, accepted, converged, slow, reason, unprojected = 1, 0, False, 0, "max_nfev", 0
     started = time.perf_counter()
 
@@ -1842,6 +1851,21 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         x_new[free] += db
         if Q_c is not None:  # the projected coordinates' linear correction along the composite step
             x_new[project] -= np.linalg.lstsq(R_c, Q_c.T @ (r + J[:, free] @ db), rcond=None)[0]
+        if GEODESIC and nfev + 2 <= max_nfev:
+            dx = x_new - x
+            probe = evaluate(x + GEODESIC_H * dx)
+            nfev += 1
+            if probe is not None:
+                r2 = (2.0 / GEODESIC_H) * ((np.asarray(probe[0]) - r) / GEODESIC_H - J @ dx)
+                g2 = U.T @ (r2 if Q_c is None else r2 - Q_c @ (Q_c.T @ r2))
+                a_z = step(g2, lam)
+                a = np.zeros(n)
+                a[free] = (Vt.T @ a_z) / norms
+                if Q_c is not None:
+                    a[project] -= np.linalg.lstsq(R_c, Q_c.T @ (r2 + J[:, free] @ a[free]), rcond=None)[0]
+                if np.all(np.isfinite(a)) and np.linalg.norm(a_z) <= GEODESIC_ALPHA * np.linalg.norm(z):
+                    x_new = x_new + 0.5 * a
+                    accelerated += 1
         got = evaluate(x_new)
         nfev += 1
         if got is not None and Q_c is not None:
@@ -1918,4 +1942,4 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
                 converged, reason = False, "projection_unconverged"
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
                 reason=reason, projections=unprojected, projection_certified=certified_projection,
-                jacobian_updates=updates, extrapolated=extrapolated)
+                jacobian_updates=updates, extrapolated=extrapolated, accelerated=accelerated)

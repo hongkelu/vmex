@@ -94,6 +94,14 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   **qivac, h 1e-4 vs 1e-5: the exact vectors differ by 1.7%** (GN identical; GN vs exact 2.8% / 2.4%). On QI vacuum
   the reference is uncertain at about 2%, the size of the GN error it is meant to measure. "GN 2.8% off on qivac" is
   not resolved; h 3e-5 is running to see the trend. QH 2.5% (35-55%) is far above this uncertainty.
+- **More converged exact gradients** (all rows' GN vs exact, all components):
+  - QI 2.5% prescribed (NL): **14%** (CG 32);
+  - **QI 2.5% DKX, the production case (equal arc): 9.2%** (CG 32);
+  - **QA 2.5% row 6 (vacuum-iota floor), exact derivative of that row alone: GN 8.5% off** (CG 28). The 46-85% from
+    differences was partly-moved trials; the row is not defective.
+  - **Summary:** GN misses the 1e-3 target everywhere. It meets the 1e-2 release requirement only in QA vacuum
+    (0.24%) and QH vacuum (1.6% at target 3e-4, marginal); at finite beta it is 4-55% off. Per brief C3 the finite-beta
+    domain needs the accurate response.
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5
@@ -194,6 +202,13 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
 | F1 | Atomic checkpoint; build from checkpoint with no seed solve; driver `--checkpoint-every`/`--resume` | **implemented**, GPU test passes (8e2956e6) | `test_checkpoint_restores_the_accepted_equilibrium` |
 | F2 | Problem identity is field/plasma values at the saved design only | **implemented** (schema 4): the definition adds coordinate names and scales, value-row count, the m = 1 policy (model options) and a caller-supplied `semantic_identity`; tests refuse other identity and other policy (GPU pending) | |
 | F3 | Export (`equilibrium_from_x`) re-solves with the host solver (frozen), a warning only | **present** (same root as A4) | | export the certified state or recertify under the same policy |
+
+## Milestone 1: checkpoint reproduction
+
+**Passed** (G3, 10-23). Two independent resumes of one byte-identical qavac equal-arc checkpoint (separate processes,
+different GPUs and allocations' nodes) produced 8 identical optimization steps (17-24). Largest relative difference
+over objective, B.n, aspect, clearance, iota and spacing: **6.3e-10**. Step times match (289/257, 27/26, 74/72, 50/49,
+559/557 s). Lanes g3d/qavac-c3-p4 and g3d/resume2-qavac-c3.
 
 ## Package G: qualification (strict certificate, K)
 

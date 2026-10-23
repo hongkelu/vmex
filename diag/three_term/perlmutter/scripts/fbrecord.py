@@ -82,11 +82,14 @@ def versions():
 
 
 def requested(argv):
-    """The resolution the driver was asked for (--modes M N, --ns NS, --vc-grid G)."""
+    """The resolution the driver was asked for (--modes M N, --ns NS, --vc-grid G).
+
+    A flag given more than once takes its last value, as argparse does (a fixture's stored arguments come first and
+    the command line's overrides after them)."""
     def value(flag, count=1):
         if flag not in argv:
             return None
-        i = argv.index(flag)
+        i = len(argv) - 1 - argv[::-1].index(flag)
         return [int(v) for v in argv[i + 1:i + 1 + count]]
     return dict(modes=value("--modes", 2), ns=value("--ns"), vc_grid=value("--vc-grid"))
 

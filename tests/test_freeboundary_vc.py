@@ -586,6 +586,13 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     assert fresh.restore_checkpoint(path) <= 1e-6
     assert np.array_equal(fresh.accepted.parameters, x1) and fresh.accepted_step == 1
     np.testing.assert_allclose(fresh._record(x1)["values"], saved, rtol=1e-6)
+    # built from the checkpoint: no seed solve at x0, the accepted point is the saved one
+    for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED):
+        cache.clear()
+    resumed = _small_problem(checkpoint=path)
+    assert np.array_equal(resumed.accepted.parameters, x1) and resumed.accepted_step == 1
+    assert problem.x0.tobytes() not in resumed._cache
+    np.testing.assert_allclose(resumed._record(x1)["values"], saved, rtol=1e-6)
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
     other, field = _small_problem(), _small_vacuum()[1]  # same settings, another coil-field map

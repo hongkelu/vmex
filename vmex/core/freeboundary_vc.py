@@ -52,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -1097,8 +1098,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, **model_options):
-        """Solve the seed design's free boundary.
+                  boundary_max_residual=None, boundary_xtol=None, checkpoint=None, **model_options):
+        """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
+        :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
         ``quadrature``, ``chunk``, ``trial_ftol``, ``bootstrap``, ...).  A trial's boundary fit stops at a
@@ -1121,17 +1123,22 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None):
+                 boundary_xtol=None, checkpoint=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
         x0 = np.asarray(x0, dtype=float)
+        if checkpoint is not None:  # the saved design is the accepted point; no seed solve
+            saved = np.asarray(np.load(checkpoint, allow_pickle=False)["x"], dtype=float)
+            if saved.shape != x0.shape:
+                raise ValueError(f"the checkpoint's design has {saved.size} coordinates, this problem {x0.size}")
+            x0 = saved
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
         self._params_at = jax.jit(lambda x: params_at(model.params0, x))
 
@@ -1185,11 +1192,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           max_condition=0.0)
         self._continuation = None
-        seed = self._solve(x0)
-        if seed is None:
-            raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        self._promote(seed)
-        self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
+        if checkpoint is not None:
+            self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0  # the layout restore_checkpoint checks
+            self.restore_checkpoint(checkpoint)
+        else:
+            seed = self._solve(x0)
+            if seed is None:
+                raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
+            self._promote(seed)
+            self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
 
@@ -1415,8 +1426,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         leaves = jax.tree.leaves(sol["state"])
         meta = dict(schema=CHECKPOINT_SCHEMA, accepted_step=self.accepted_step, definition=self._definition(),
                     maps=self._maps(x), certificate=sol.get("certificate"), state_leaves=len(leaves))
-        np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
+        path = Path(path)
+        partial = path.with_name(path.name + ".partial.npz")  # atomic: a killed run leaves the last whole file
+        np.savez(partial, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
                  meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
+        os.replace(partial, path)
 
     def restore_checkpoint(self, path, *, rtol=1e-6):
         """Make a saved accepted point (:meth:`save_checkpoint`) this problem's accepted point.

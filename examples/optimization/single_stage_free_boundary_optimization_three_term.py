@@ -1075,6 +1075,12 @@ def parse_args(argv=None):
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument("--checkpoint-every", type=int, default=1,
+                        help="save the accepted point to OUTPUT/checkpoint.npz every N accepted steps (0: never)")
+    parser.add_argument("--resume", type=Path, metavar="CHECKPOINT",
+                        help="continue from a checkpoint.npz instead of solving the seed design: the problem must be "
+                        "built the same way (e.g. --seed-run with the checkpoint's run), or this stops; the "
+                        "accepted equilibrium is restored and certified, the optimizer starts afresh from it")
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
@@ -1234,7 +1240,7 @@ def write_run_record(out, args):
         return [r for r in rows if visible is None or r["uuid"] in visible.split(",")]
 
     inputs = {}
-    for name in ("seed_run", "restart", "coils"):
+    for name in ("seed_run", "restart", "coils", "resume"):
         path = getattr(args, name, None)
         if path is not None and Path(path).exists():
             files = [p for p in Path(path).rglob("*") if p.is_file()] if Path(path).is_dir() else [Path(path)]
@@ -1373,6 +1379,7 @@ def main(argv=None):
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
                                 boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
+                                checkpoint=args.resume,
                                 **({} if args.label_weight is None else {"label_weight": args.label_weight})))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
@@ -1488,6 +1495,8 @@ def main(argv=None):
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
+        if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
+            problem.save_checkpoint(out / "checkpoint.npz")
 
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out)

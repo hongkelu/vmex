@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 DRIVER = Path("examples/optimization/single_stage_free_boundary_optimization_three_term.py")
-OVERRIDES = ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "STALL_RULE", "JACOBIAN_UPDATE", "GN_EXTRAPOLATE", "POLISH_FTOL", "MAX_MODE")
+OVERRIDES = ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "STALL_RULE", "JACOBIAN_UPDATE", "GN_EXTRAPOLATE", "POLISH_FTOL", "PROJECTION_CORRECTIONS", "MAX_MODE")
 PACKAGES = ("jax", "jaxlib", "jax-cuda13-plugin", "jax-cuda12-plugin", "numpy", "scipy", "solvax", "booz_xform_jax",
             "essos", "dkx", "simsopt", "netCDF4", "equinox", "lineax")
 
@@ -113,7 +113,7 @@ def main():
 
     from vmex.core import freeboundary_vc as fv
 
-    for name in ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS"):
+    for name in ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "PROJECTION_CORRECTIONS"):
         if name in os.environ:
             setattr(fv, name, int(os.environ[name]))
     if "STALL_RULE" in os.environ:

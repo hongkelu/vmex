@@ -977,6 +977,11 @@ class ThreeTermFreeBoundaryModel:
                 min(gate, POLISH_FTOL)), xtol=xtol, certificate=certificate,
                 resolution=self.resolution(), row_blocks=self.row_blocks, column_blocks=self.column_blocks,
                 options=self.options)
+            if sol is not None:  # the fit (Levenberg-Marquardt) that produced this point: diagnostics only
+                entry["fit"] = {k: (v if isinstance(v, (str, bool, type(None))) else float(v))
+                                for k, v in sol.items() if k in ("nfev", "accepted", "reason", "projections",
+                                                                  "projection_certified", "jacobian_updates",
+                                                                  "extrapolated")}
             if sol is not None:
                 entry.update(x=np.asarray(sol["x"]), rows=np.asarray(sol["rows"]), J=np.asarray(sol["J"]),
                              x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
@@ -1041,6 +1046,8 @@ class ThreeTermFreeBoundaryModel:
                 if not polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
                     break  # the polish gains nothing: the certificate below decides
                 sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
+                sol.update({k: polished[k] for k in ("nfev", "accepted", "reason", "projections", "projection_certified",
+                                                      "jacobian_updates", "extrapolated") if k in polished})
                 stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
             if not settled:
                 normal_note = "" if certificate["normal_step"] is None else (

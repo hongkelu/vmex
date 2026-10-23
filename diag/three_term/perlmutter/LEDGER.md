@@ -42,10 +42,10 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 | C0 | Fixed-boundary implicit derivative vs re-solve FD | **fixed** with K: 9.9e-7 / 2.9e-6 (frozen: 1.0e-2 / 2.8e-2) | `test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_solved` | |
 | C1 | Small-deck design gradient vs converged FD: 0.67%, uniform across the three coordinates (all act through one combination) | **cause demonstrated: the Gauss-Newton fit sensitivity** (`scripts/wp5/exact_sensitivity.py`, `raw/wp5/exact_sens.json`). The exact stationarity derivative (H = J^T J + S_bb and F_d by central differences of g = J^T r at fixed boundaries) matches the re-solved FD to 7.9e-5; the problem's gradient is 0.674% off; GN rebuilt from the same differences equals the problem's gradient to 3e-7 (no other defect). S_bb is 0.27% of J^T J. GN meets the 1e-2 release requirement here and misses the 1e-3 target | decide GN-with-budget vs exact per domain from production measurements (C5); exact reference mode for qualification |
 | C2 | The design gradient is Gauss-Newton (documented in `_least_squares_sensitivity`), exact only at zero residual | **decision**: GN stays the optimizer's documented approximate mode; `ThreeTermFreeBoundaryProblem.exact_design_gradient` (GN-preconditioned CG, differenced H products, F_d^T mu along mu) is the qualification reference, **verified**: 8.0e-5 vs the converged re-solved FD (GN 6.7e-3; job 60144384 t11) | measure the GN error per domain (C5) |
-| C2b | GN vs exact at production (`--check-exact-gradient`, default gate, h 1e-4): qavac 2.0e-3, qivac 2.1e-2 (CG 20 / 28 iterations, 15-17 min) | **unresolved**: the qivac value conflicts with the direct check (GN vs converged FD 9.1e-4 along a random direction, at a 1e-5 gate). Either the reference's differenced Hessian products are noise-limited at production, or the two points differ in stationarity | h-sensitivity runs (h 1e-3, 1e-5) on job 60147351 |
+| C2b | GN vs exact at production (`--check-exact-gradient`, default 1e-3 gate) | **the reference is stable in h** (qivac: 1.88e-2 / 2.07e-2 / 1.89e-2 at h 1e-3 / 1e-4 / 1e-5). Values: qavac 2.0e-3, qivac 2.1e-2, qi25 4.6e-2, qhvac 6.7e-2 (CG not converged in 30). At the 1e-5 gate the GN gradients equal converged FD to 1e-8..1e-6 (C5), so at the 1e-3 gate both formulas linearize a non-stationary fit; neither is the derivative of the re-solved map. **Consequence: derivative qualification requires the 1e-5 gate**; an optimizer run at the 1e-3 gate gets gradients off by up to several percent | decide the production gate (cost vs gradient accuracy); exact check at the 1e-5 gate to close the comparison |
 | C3 | Raw boundary Jacobian vs tight central differences | **exact at production** (`raw/wp5/jacobian/`, 8 x 8, ns 51, 3 random + weakest direction, h 1e-2/1e-3/1e-4): QI 2.5% 2e-8 to 3e-7 at h 1e-4; QH 2.5% seed and late NL record 5e-7 to 2e-4; QA 2.5% 2e-5 to 1e-3, all converging about as h^2 to the rows' noise floor (QA weakest direction: floor 4.4e-3 against a tiny Jd). **The Redl bootstrap rows are strongly nonlinear**: at h 1e-2 (below a polish round's step, about 0.05) the linear model misses by 4-60%, almost entirely in the bootstrap block | D1: current-following response and step strategy for the bootstrap rows |
 | C4 | Parameter ownership: `with_boundary(params_at(P0, d), y)` overwrite; plasma-coordinate detection probed only at x0 | **unreviewed** | | r = w x regressions; explicit design-family metadata |
-| C5 | Production design gradients (`--check-gradient`) and boundary Jacobians (`--check-jacobian`) | **QI vacuum: full design gradient verified** (gate 1e-5, one random direction, `raw/wp5/production/`): loss implicit vs FD 4.0e-2 / 3.2e-3 / **9.1e-4** at h 1e-4 / 3e-5 / 1e-5; constraint rows 8.4e-3 / 7.4e-9 / **1.4e-8**. The larger values at bigger h were FD curvature; the GN error is negligible here (tiny vacuum residual). The deterministic K solves are what make h = 1e-5 usable | QH/QA/QI 2.5% (bootstrap) and more directions/design families; GN vs exact at production (`--check-exact-gradient`, next allocation) |
+| C5 | Production design gradients against central differences of re-solved trials (`--check-gradient`, gate 1e-5, steps 1e-4 / 3e-5 / 1e-5, one random direction; `raw/wp5/production/`) | **verified, every row, three fixtures**: qavac loss 2.6e-8, rows 4e-11 to 5e-10; qivac loss 9.1e-4, rows 2e-11 to 4e-8; **qi25 (DKX current as a design variable) loss 6.1e-6 and 7 of 8 rows 4e-9 to 2e-6, including the DKX mismatch row**. The exception is qi25 **row 6, the coil-plasma clearance**: implicit -0.050 against an FD that does not converge (+0.087, +0.084, +0.129). That is the point-cloud minimum's closest-pair switch (192 coil points x a 61 x 64 surface grid), see E3 | QH 2.5% (bootstrap) still to check (its seed does not certify); more directions and design families |
 
 ## Package D: boundary coordinates and steps
 
@@ -67,6 +67,7 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 |---|---|---|---|
 | E0 | One reproducible runtime artifact | **recorded**: `ENVIRONMENT.md`, `raw/env/` (ESSOS 0.21.0, SOLVAX 0.31.0, JAX 0.12.0.1 CUDA 13, DKX 2.11.0; vmex always from a pinned tree) | |
 | E1 | ESSOS `DirectCoilField` vs native ESSOS parity (field, JVP/VJP, nfp, symmetry, currents) and its stale rationale | **resolved, adapter kept** (`scripts/wpE/essos_parity.py`, `raw/wpE/`, qh25 nfp 4 and qavac nfp 3, positive and negated currents). Values agree to 4e-16; the adapter's JVP matches central differences to 2e-8; native ESSOS 0.21.0 JVP through `Coils(Curves(dofs), currents)` differs by 1.3-12%, and native coils cannot be re-traced under one `jit` (array pytree metadata). Adapter under `jit`: one compilation, 6 ms warm. Rationale docstring corrected | coil-quadrature convergence and clearance (point-cloud vs continuous) still open |
+| E3 | Coil-plasma clearance: point-cloud minimum (`surface_distance`: 192 coil points x 61 x 64 surface grid) | **present**: not differentiable across closest-pair switches; on qi25 the implicit derivative has the wrong sign against an FD that does not converge with h (C5). The brief also notes a point cloud can overestimate the continuous clearance | continuous closest point (local refinement on the coil curve and surface parametrizations), derivative by the envelope theorem, switches reported |
 | E2 | SOLVAX operator certification (dense/QR references, transposes, warm/cold, multi-RHS) | partly covered by A3's raw certificate; dedicated tests **open** | |
 
 ## Package F: restart and export
@@ -95,12 +96,21 @@ for this program: at most 4 nodes / 16 GPUs at once, including running jobs.
 - qavac: surfaces 1.2e-13 m, values 8.4e-13;
 - qi25: surfaces 1.8e-11 m, values 2.8e-9.
 
-**G1 start dependence:** `--seed-start random EPS SEED | scale EPS` (18fb4ab4), `raw/g1/`.
-- **qhvac:** the random start (1e-3, seed 1) certifies at 2.6e-4. Against the deck start (2.5e-4) its surface is
-  **65 um** away (4e-4 of the minor radius) and its values differ by **1.6e-4**.
-- So the 1e-3 gate admits start dependence of that size, compared with 1e-13 between identical starts.
-- Whether this is within the fit's numerical uncertainty is open: the same comparison at a tighter gate is next.
-- Running: the second random start and the scaled start; qivac, qavac and qi25 starts are queued.
+**G1 start dependence** (`--seed-start`, `raw/g1/`; all starts certified at the default 1e-3 gate; compared with the
+deck start):
+
+| fixture | starts | surface distance | largest value change |
+|---|---|---|---|
+| qavac | random 1e-3, scale 1e-3 | 6-7 um | 1.2-1.8e-5 |
+| qivac | 2 random, scale | 2-17 um | 0.5-2.6e-5 |
+| qhvac | 2 random, scale | 28-65 um | 0.7-1.6e-4 |
+| **qi25** | random, scale | **0.25 mm, 1.26 mm** | **0.95%, 2.7%** |
+
+- Identical starts reproduce to 1e-13 m. The vacuum spreads are consistent with the slack a 1e-3 gate leaves.
+- **qi25 is not.** Two certified equilibria 1.26 mm apart, with outputs 2.7% apart, are either distinct branches or a
+  physically flat direction the certificate does not resolve. Open: compare at a tighter gate and examine the
+  difference direction (normal vs tangential, current).
+- The tighter-gate qhvac pair could not certify at 1e-5: QH vacuum's stationarity floor is about 3e-5.
 
 Tolerance and budget changes (not algorithmic): POLISH_ROUNDS raised per run (fbrecord env), POLISH_FTOL override
 (6079d1e5), zero-drive Picard iterations 4 to 8, the frozen li383 test's cache clearing.

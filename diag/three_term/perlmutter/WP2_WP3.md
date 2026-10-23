@@ -117,3 +117,19 @@ not a Jacobian error: it is the nonlinearity of the rows in the boundary coordin
 `test_plasma_map_derivatives_at_nonzero_offsets` (design gradient against an FD of `problem.fun`, whose
 evaluations re-fit the boundary at the trial tolerance 1e-3) still fails with K. Before K it was -1.453 against
 -1.480 (1.8%). Next: a variant whose FD uses tightly converged fits, to separate FD noise from a gradient error.
+
+### C1 resolved: the remaining design-gradient gap is the Gauss-Newton fit sensitivity
+`scripts/wp5/exact_sensitivity.py` (boundary_ftol 1e-9). At the certified fit, central differences of tight
+evaluations at fixed boundaries give H = dg/db and F_d = dg/dd for g = J_b^T r, plus Q_b and Q_d:
+
+| gradient | vs the converged re-solved FD |
+|---|---|
+| exact: Q_d - Q_b H^-1 F_d | **7.9e-5** (three coordinates) |
+| the problem's (Gauss-Newton: H = J^T J, F_d = J^T J_d) | 6.74e-3 |
+| Gauss-Newton rebuilt from the same differences, against the problem's | 3e-7 |
+
+- S_bb = H - J^T J is 0.27% of J^T J, yet it moves the gradient by 0.67%.
+- The problem's derivative machinery is otherwise exact: no other defect.
+- The brief's rule: Gauss-Newton may stay as a documented approximate mode where it meets the error budget (release
+  1e-2: met here; target 1e-3: missed). That needs production measurements; the exact reference is the
+  qualification tool.

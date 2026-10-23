@@ -288,8 +288,9 @@ def test_response_acceptance_is_the_raw_residual(monkeypatch, case):
               "nonfinite": (np.nan, True)}[case]
 
     def corrector(A, b, cfg, *, x0=None, max_restarts=None, rtol=None):
+        # the preconditioned report: passing (residual 0 <= 1) or failing (1e30 > 0) its own norm
         return jax.tree.map(lambda value: damage[0] * value, x0), im.LinearResponseReport(
-            residual_norm=jnp.asarray(0.0), tolerance=jnp.asarray(1.0),
+            residual_norm=jnp.asarray(0.0 if damage[1] else 1e30), tolerance=jnp.asarray(1.0 if damage[1] else 0.0),
             iterations=jnp.asarray(1, jnp.int32), converged=jnp.asarray(damage[1]))
 
     monkeypatch.setattr(im, "_adjoint_solve", corrector)

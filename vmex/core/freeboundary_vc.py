@@ -229,6 +229,11 @@ GEODESIC_ALPHA = 0.75
 #: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
 EXACT_PRODUCTS_CHUNK = 16
 
+#: A Krylov Newton step that needs this many exact products refreshes its preconditioner with the iterate's own dense
+#: exact Hessian (255 columns cost ~50 single products): along the flat directions the accepted point's eigenvalues
+#: (~1e-9) change by their own size between nearby points, and CG then runs to its limit (QA 2.5%: 40 per step).
+KRYLOV_REFRESH_PRODUCTS = 20
+
 #: The design gradient by block conjugate gradients on exact products (``_krylov_gradients``) uses the accepted
 #: point's exact Hessian as preconditioner while it is at most this many accepted steps old; then a dense one.
 KRYLOV_HESSIAN_AGE = 5
@@ -1727,17 +1732,22 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, nb = self.model, self.model.x0.size
         scale = np.asarray(model.x_scale, dtype=float)
         rtol, maxiter = float(opt.get("cg_rtol", 1e-3)), int(opt.get("cg_maxiter", 40))
-        Ms = np.asarray(M) * np.outer(scale, scale)
-        lam, Q = np.linalg.eigh(0.5 * (Ms + Ms.T))
-        lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
+        pre = {}
 
-        Ms = Q @ (lam[:, None] * Q.T)  # the preconditioner itself (|eigenvalues|): the trust region's metric
+        def set_preconditioner(H):  # its |eigenvalues| (scaled): the CG preconditioner and the trust region's metric
+            Hs = np.asarray(H) * np.outer(scale, scale)
+            lam, Q = np.linalg.eigh(0.5 * (Hs + Hs.T))
+            lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
+            pre.update(lam=lam, Q=Q, Ms=Q @ (lam[:, None] * Q.T), H=np.asarray(H))
+
+        set_preconditioner(M)
 
         def precondition(r):
+            Q, lam = pre["Q"], pre["lam"]
             return Q @ ((Q.T @ r) / lam)
 
         def mnorm(v):  # the trust region is ||d||_M: along the flat directions a long move is a short one in M
-            return float(np.sqrt(max(v @ (Ms @ v), 0.0)))
+            return float(np.sqrt(max(v @ (pre["Ms"] @ v), 0.0)))
 
         def point(bb):  # (cost, g, sol-like record) at bb, or None
             got = model.evaluate(bb, params, field, tight=True)
@@ -1766,7 +1776,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 used += 1
                 dHd = float(d @ Hd)
                 if dHd <= 0 or mnorm(z + (ry / dHd) * d) >= radius:  # to the boundary along d (M-norm)
-                    Md = Ms @ d
+                    Md = pre["Ms"] @ d
                     a, bq, cq = float(d @ Md), 2 * float(z @ Md), mnorm(z) ** 2 - radius**2
                     tau = (-bq + np.sqrt(max(bq * bq - 4 * a * cq, 0.0))) / (2 * a)
                     return z + tau * d, Hz + tau * Hd, used, False
@@ -1786,13 +1796,21 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # The trust radius (M-norm) starts at the preconditioned Newton step's own length: a good model takes the
         # whole step at once, and the actual/predicted test shrinks the radius where it is not.
         radius = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
-        history, evaluations, converged, products, seconds_products = [], 1, False, 0, 0.0
+        history, evaluations, converged, products, seconds_products, refreshes = [], 1, False, 0, 0.0, 0
         for _ in range(int(opt["max_steps"])):
             gs = g * scale
             th = time.perf_counter()
             ds, Hds, used, interior = steihaug(rec, gs, radius)
             seconds_products += time.perf_counter() - th
             products += used
+            if used >= KRYLOV_REFRESH_PRODUCTS:  # the preconditioner is stale here: this iterate's exact Hessian
+                th = time.perf_counter()
+                set_preconditioner(self.dense_hessian(x, rec)[0])
+                refreshes += 1
+                radius = float(np.sqrt(max(gs @ precondition(gs), 0.0))) or 1e-300  # the new metric's Newton step
+                ds, Hds, used, interior = steihaug(rec, gs, radius)
+                seconds_products += time.perf_counter() - th
+                products += used
             step, step_m = float(np.linalg.norm(ds)), mnorm(ds)
             predicted = -(gs @ ds + 0.5 * ds @ Hds)
             history.append(dict(cost=cost, step=step, radius=radius, interior=interior, products=used,
@@ -1800,7 +1818,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if opt.get("verbose"):
                 print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
                       f"({'interior' if interior else 'boundary'}), radius (M) {radius:.1e}, {used} products, "
-                      f"{seconds_products:.0f} s in products", flush=True)
+                      f"{seconds_products:.0f} s in products, {refreshes} preconditioner refreshes", flush=True)
             if interior and step <= opt["step_tol"]:
                 converged = True
                 break
@@ -1844,7 +1862,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
                              products="krylov", product_calls=products, seconds_hessian=seconds_products,
-                             seconds=time.perf_counter() - t0, warm=False)
+                             seconds=time.perf_counter() - t0, warm=False, refreshes=refreshes)
+        if refreshes:  # the last refreshed exact Hessian, near this record: the next trials' preconditioner
+            out["hessian"] = pre["H"]
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["newton_products"] = self.stats.get("newton_products", 0) + products
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
@@ -2178,7 +2198,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         (:meth:`_krylov_gradients`, every row's column in one product call per iteration); otherwise, or when those
         miss, from the dense exact Hessian (:meth:`_exact_dense_gradients`), which then becomes the anchor's.  Either
         way the true residual ``|Q_b - H mu| / |Q_b|`` is at most 1e-6, or this raises."""
-        anchor = self._anchor or {}
+        own = sol.get("anchor") if isinstance(sol.get("anchor"), dict) else {}
+        anchor = own if isinstance(own.get("hessian"), np.ndarray) else (self._anchor or {})  # the freshest Hessian
         M = anchor.get("hessian")
         if (isinstance(M, np.ndarray) and M.shape == (self.model.x0.size,) * 2 and self.model._projected is None
                 and getattr(self, "_hessian", None) is None and anchor.get("hessian_age", 0) < KRYLOV_HESSIAN_AGE):

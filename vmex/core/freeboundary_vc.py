@@ -1742,7 +1742,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def steihaug(rec, gs, radius):
             """``(ds, Hs ds, products, interior)``: truncated preconditioned CG on ``Hs ds = -gs`` within ``radius``."""
             def hs(v):
-                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False, chunk=1)[0])[:, 0]
+                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False)[0])[:, 0]
 
             z, Hz = np.zeros(nb), np.zeros(nb)
             r = gs.copy()
@@ -2265,10 +2265,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if getattr(self, "_exact_products_core", None) is None:
             self._exact_products_core = jax.jit(self._exact_products_traced, static_argnames=("chunk",))
         V = np.asarray(V, dtype=float).reshape(self.model.x0.size, -1)
+        single = V.shape[1] == 1
+        if single:  # a one-column call compiles without the product loop (one trip): QI 2.5% asked for 119 GB
+            V = np.repeat(V, 2, axis=1)
         chunk = None if chunk is None or int(chunk) >= V.shape[1] else max(int(chunk), 1)
         got = self._exact_products_core(sol["state"], sol["mask"], jnp.asarray(x, dtype=float),
                                         jnp.asarray(sol["x"], dtype=float), jnp.asarray(V), chunk=chunk)
         HV, FdV, L_b, L_x, mu_ok, tangent_ok, adjoint_ok = got
+        if single:
+            HV, FdV = HV[:, :1], FdV[:, :1]
+            tangent_ok, adjoint_ok = np.asarray(tangent_ok)[:1], np.asarray(adjoint_ok)[:1]
         if not (bool(mu_ok) and np.asarray(tangent_ok).all() and np.asarray(adjoint_ok).all()):
             raise RuntimeError(f"an exact-product linear solve missed: multiplier {bool(mu_ok)}, tangents "
                                f"{np.asarray(tangent_ok).tolist()}, adjoints {np.asarray(adjoint_ok).tolist()}")

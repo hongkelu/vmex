@@ -219,6 +219,23 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
       iota is strongly labelling-sensitive. Which labelling is more accurate needs a 12 x 12 / 16 x 16 re-solve.
     - The exact condensation gauge (KKT Newton + KKT gradient, `gauge="condensation"`) is under test; its
       Jacobian has rank 110 / 110 with relabelling singular values 0.8 .. 4e-4 (`scripts/gauge_check.py`).
+  - **Labelling accuracy and the exact gauge** (10-23 late):
+    - Resolution referee (`scripts/labelling_resolution.py`, QA 2.5%, the same boundaries re-solved at M = 8 / 12 / 16):
+      - vacuum iota_min: converged NL 0.30892 / 0.30914 / 0.30915; condensation 1e-2 0.30978 / 0.30980 / 0.30980. The
+        "17-20%" vacuum-iota row gap was the row's margin scaling: the surfaces differ by 0.2%, and both are resolved
+        at 8 x 8.
+      - finite-beta iota_min: NL 0.3603 / 0.3666 / 0.3698 (converging); condensation 0.3585 / 0.3701 / 0.3822 (still
+        moving). The condensation-pinned boundary is not more accurate than NL.
+    - Condensation penalty, QI 2.5%: 1e-2 vs 1e-1 still moves values 0.6% and gradients up to 140% (no plateau);
+      cond(H) 5.6e6 / 1.6e5.
+    - **Exact condensation gauge (KKT): failed as built.**
+      - The reduced Hessian is 100-250x stiffer than NL's soft modes (smallest 6e-7 .. 5e-6).
+      - But the move from NL's labelling onto the gauge is large and nonlinear (scaled 0.9-2.8). The first line search
+        on the l1 merit accepted a step that raised the cost 1e4x, and the reduced Hessian became indefinite.
+      - It needs a feasibility restoration within the relabelling span first. **Parked**: NL is at least as
+        accurate, and its converged gradient is stable.
+    - Decision: production = NL + full Newton (exact Hessian); speed by partial Hessian refresh
+      (`--newton-partial K`) and reuse.
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

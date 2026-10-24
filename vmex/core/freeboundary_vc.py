@@ -229,6 +229,12 @@ GEODESIC_ALPHA = 0.75
 #: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
 EXACT_PRODUCTS_CHUNK = 16
 
+#: The design gradient by block conjugate gradients on exact products (``_krylov_gradients``) uses the accepted
+#: point's exact Hessian as preconditioner while it is at most this many accepted steps old; then a dense one.
+KRYLOV_HESSIAN_AGE = 5
+#: Most block conjugate-gradient iterations of ``_krylov_gradients`` before the dense Hessian is built instead.
+KRYLOV_GRADIENT_MAXITER = 30
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
@@ -2060,15 +2066,94 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     def _exact_gradients(self, x, sol, rows=None):
         """The exact derivative of the converged stationarity ``J_b^T r = 0`` for every requested row: ``dQ/dd = Q_d -
         F_d^T mu``, ``H mu = Q_b^T``, with both curvature blocks, the interior equilibrium's response and the coupled
-        bootstrap-current coordinates (:meth:`_exact_dense_gradients`).  A kept Hessian whose multipliers miss
-        (true residual above 1e-6) is rebuilt at this record; a fresh one that misses raises."""
+        bootstrap-current coordinates.
+
+        With a recent exact Hessian of the accepted point (the anchor's, at most :data:`KRYLOV_HESSIAN_AGE` steps
+        old), the multipliers come from block conjugate gradients on exact products preconditioned by it
+        (:meth:`_krylov_gradients`, every row's column in one product call per iteration); otherwise, or when those
+        miss, from the dense exact Hessian (:meth:`_exact_dense_gradients`), which then becomes the anchor's.  Either
+        way the true residual ``|Q_b - H mu| / |Q_b|`` is at most 1e-6, or this raises."""
+        anchor = self._anchor or {}
+        M = anchor.get("hessian")
+        if (isinstance(M, np.ndarray) and M.shape == (self.model.x0.size,) * 2 and self.model._projected is None
+                and getattr(self, "_hessian", None) is None and anchor.get("hessian_age", 0) < KRYLOV_HESSIAN_AGE):
+            got = self._krylov_gradients(x, sol, rows, M)
+            if got is not None:
+                if isinstance(sol.get("anchor"), dict):  # the preconditioner carries over, one step older
+                    sol["anchor"].update(hessian=M, hessian_age=anchor.get("hessian_age", 0) + 1)
+                return got
         got = self._exact_dense_gradients(x, sol, rows)
         if max(got["true_residual"]) > 1e-6 and getattr(self, "_hessian", None) is not None:
             self._hessian = None
             got = self._exact_dense_gradients(x, sol, rows)
         if max(got["true_residual"]) > 1e-6:
             raise RuntimeError(f"dense exact multipliers missed: true residuals {got['true_residual']}")
+        if isinstance(sol.get("anchor"), dict):
+            sol["anchor"]["hessian_age"] = 0
         return got
+
+    def _krylov_gradients(self, x, sol, rows, M, rtol=1e-8, maxiter=KRYLOV_GRADIENT_MAXITER):
+        """:meth:`_exact_dense_gradients` by block preconditioned conjugate gradients: each iteration one
+        :meth:`exact_products` call on every unconverged row's search direction, preconditioned by ``M`` (a nearby
+        exact Hessian), in the scaled coordinates, until each row's residual is at most ``rtol``; then the
+        multipliers' true residual and ``F_d^T mu`` from one more exact call.  None when a row does not converge, a
+        direction has nonpositive curvature, or the true residual exceeds 1e-6 (the caller builds the dense
+        Hessian)."""
+        xj = jnp.asarray(x)
+        state, params_b = sol["state"], sol["params"]
+        b0 = np.asarray(sol["x"], dtype=float)
+        t0 = time.perf_counter()
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        direct = np.asarray(self._direct(state, params_b, xj))
+        rows = list(range(G_b.shape[0]) if rows is None else rows)
+        scale = np.asarray(self.model.x_scale, dtype=float)
+        lam, V = np.linalg.eigh(0.5 * (M + M.T) * np.outer(scale, scale))
+        if lam[0] <= 0:
+            return None
+        Q = G_b[rows].T * scale[:, None]  # scaled right-hand sides, a column per row
+
+        def products(D):
+            return scale[:, None] * np.asarray(self.exact_products(x, sol, D * scale[:, None], check=False)[0])
+
+        def precondition(R):
+            return V @ ((V.T @ R) / lam[:, None])
+
+        mu, R = np.zeros_like(Q), Q.copy()
+        Z = precondition(R)
+        D, rz = Z.copy(), np.sum(R * Z, axis=0)
+        norms = np.maximum(np.linalg.norm(Q, axis=0), 1e-300)
+        active, calls = np.linalg.norm(R, axis=0) > rtol * norms, 0
+        for _ in range(maxiter):
+            if not active.any():
+                break
+            HD = np.zeros_like(D)
+            HD[:, active] = products(D[:, active])
+            calls += 1
+            curvature = np.sum(D * HD, axis=0)
+            if np.any(curvature[active] <= 0):
+                return None
+            alpha = np.where(active, rz / np.where(active, curvature, 1.0), 0.0)
+            mu, R = mu + alpha * D, R - alpha * HD
+            Z = precondition(R)
+            rz_new = np.sum(R * Z, axis=0)
+            D = np.where(active, Z + (rz_new / np.where(active, rz, 1.0)) * D, D)
+            rz = np.where(active, rz_new, rz)
+            active &= np.linalg.norm(R, axis=0) > rtol * norms
+        if active.any():
+            return None
+        mu = mu * scale[:, None]  # model coordinates
+        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
+        true = (np.linalg.norm(G_b[rows].T - H_mu, axis=0) / np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300))
+        if max(true) > 1e-6:
+            return None
+        self.stats["krylov_gradient_calls"] = self.stats.get("krylov_gradient_calls", 0) + calls + 1
+        return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true.tolist(),
+                    asymmetry=0.0, condition=float(lam[-1] / lam[0]), seconds_hessian=time.perf_counter() - t0,
+                    krylov_calls=calls + 1)
 
     def exact_products(self, x, sol, V, check=True, chunk=None):
         """``H V`` and ``F_d^T V`` exactly, by the second-order adjoint of the fit's cost at the record ``sol``.

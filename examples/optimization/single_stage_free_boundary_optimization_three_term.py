@@ -25,6 +25,12 @@ boundary fit, without recompiling when the coils or plasma parameters change.
         --modes 8 8 --ns 51 --output runs/three-term-qa4
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
+``--resume <dir>/checkpoint.npz`` continues a run from its accepted point; with
+the ``slsqp_state.npz`` written beside every checkpoint (SciPy SLSQP's whole
+state at that point: quasi-Newton Hessian, multipliers, coordinates;
+``opt.save_slsqp_state``) SLSQP continues with its Hessian instead of the
+identity, so a run chained over 2 h segments takes the uninterrupted run's
+steps. A state of another point is refused (an identity Hessian, logged).
 ``metrics.jsonl`` adds the three interface residuals (``bn``,
 ``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
 counts and the peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
@@ -1272,7 +1278,8 @@ def parse_args(argv=None):
     parser.add_argument("--resume", type=Path, metavar="CHECKPOINT",
                         help="continue from a checkpoint.npz instead of solving the seed design: the problem must be "
                         "built the same way (e.g. --seed-run with the checkpoint's run), or this stops; the "
-                        "accepted equilibrium is restored and certified, the optimizer starts afresh from it")
+                        "accepted equilibrium is restored and certified; SLSQP continues with its Hessian when "
+                        "slsqp_state.npz beside the checkpoint is of that point, else it starts afresh from it")
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
@@ -1900,6 +1907,15 @@ def main(argv=None):
             save(f".step{row['step']}")
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
             problem.save_checkpoint(out / "checkpoint.npz")
+            # SLSQP's whole state at this accepted point, saved atomically beside the checkpoint: --resume continues
+            # with its Hessian. Without a snapshot of this point (the start, or a call restarted after a rejected
+            # trial before its first step) an older state would be of another point: removed
+            snapshot = slsqp_latest.get("state")
+            if snapshot is not None and np.array_equal(snapshot["accepted"], x):
+                opt.save_slsqp_state(out / "slsqp_state.tmp.npz", snapshot)
+                os.replace(out / "slsqp_state.tmp.npz", out / "slsqp_state.npz")
+            elif (out / "slsqp_state.npz").exists():
+                os.remove(out / "slsqp_state.npz")
 
     if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
                                   or args.check_stationarity_gradient or args.check_exact_products
@@ -2112,12 +2128,59 @@ def main(argv=None):
         check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps),
                        cold=args.check_gradient_cold)
         return
+    slsqp_latest = {}  # the latest SLSQP snapshot (opt.minimize's state_callback), saved with each checkpoint
     log_step()
-    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+    # --resume: SLSQP continues with the saved state of the restored point (slsqp_state.npz beside the checkpoint),
+    # i.e. with its quasi-Newton Hessian instead of the identity; a finite-beta step is 45-60 min, so a 2 h segment
+    # is 1-3 steps, too few to rebuild it. The state is taken only when it is of the restored accepted point exactly
+    # (bitwise: the design vector the checkpoint restored). --newton-polish's refine_accepted() above Newton-refines
+    # that point's equilibrium but keeps its design vector, so the state is still of this point: SciPy evaluates the
+    # objective, constraints and gradients at its start itself, and the resumed method takes those refined values
+    # there as if its last evaluation had returned them (its BFGS pair is then the saved step and the refined
+    # gradient difference). Anything else (another point or problem size, a missing or unreadable file): an
+    # identity Hessian, logged.
+    resume, resume_reason = None, "no --resume"
+    if args.resume is not None:
+        state_file = Path(args.resume).parent / "slsqp_state.npz"
+        if not state_file.exists():
+            resume_reason = f"no {state_file}"
+        else:
+            try:
+                resume = opt.load_slsqp_state(state_file)
+            except Exception as error:  # noqa: BLE001 -- an unreadable state is not worth stopping the run
+                resume_reason = f"{state_file} unreadable: {error}"
+            else:
+                if not np.array_equal(resume["accepted"], problem.accepted.parameters):
+                    resume_reason = (f"{state_file} is of another point (largest difference "
+                                     f"{np.max(np.abs(resume['accepted'] - problem.accepted.parameters)):.1e})"
+                                     if resume["accepted"].shape == problem.accepted.parameters.shape
+                                     else f"{state_file} is of another problem size")
+                    resume = None
+    if resume is not None:
+        print(f"[slsqp] continuing with the saved state of {state_file} (SLSQP iteration "
+              f"{int(resume['state']['iter'])}, accepted step {problem.accepted_step})", flush=True)
+    else:
+        print(f"[slsqp] identity Hessian ({resume_reason})", flush=True)
+    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point (an identity Hessian)
         before = problem.accepted_step
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                              callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+        options = dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL,
+                       state_callback=lambda state: slsqp_latest.update(state=state))
+        resumed = resume is not None
+        try:
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                                  callback=lambda x: log_step(),
+                                  options=dict(options, **({"resume": resume} if resumed else {})))
+        except ValueError as error:
+            if not resumed or "the SLSQP state is of another" not in str(error):
+                raise
+            print(f"[slsqp] identity Hessian (the saved state is refused: {error})", flush=True)
+            resume = None
+            continue
+        resume = None
+        if resumed and result.stop_reason == "equilibrium_trial_rejected" and problem.accepted_step == before:
+            # the saved state's next trial was rejected: as an uninterrupted run would, restart from the identity
+            print("[slsqp] identity Hessian (the resumed state's trial was rejected)", flush=True)
+            continue
         if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                 or problem.accepted_step >= args.steps):
             break

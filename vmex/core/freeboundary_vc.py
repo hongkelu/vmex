@@ -1718,7 +1718,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 break
             # The cost's own floor: a Newton step whose predicted decrease is below the cost's rounding cannot be
             # told from noise by the actual/predicted ratio; the point is stationary to the cost's precision.
-            if definite and 0.5 * float(gs @ -newton) <= opt.get("floor", 1e-13) * max(cost, 1e-300):
+            if definite and (0.5 * float(gs @ -newton) <= opt.get("floor", 1e-12) * max(cost, 1e-300)
+                             or (radius < 1e-6 and step_newton < 1e-5)):
                 converged = True
                 history[-1]["floor"] = True
                 break

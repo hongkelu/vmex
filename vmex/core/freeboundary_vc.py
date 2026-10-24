@@ -248,6 +248,10 @@ GEODESIC = False
 GEODESIC_H = 0.1
 GEODESIC_ALPHA = 0.75
 
+#: Columns per state-tangent solve of :meth:`ThreeTermFreeBoundaryProblem.dense_hessian`: every column's tangent at
+#: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
+EXACT_PRODUCTS_CHUNK = 16
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
@@ -1733,20 +1737,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         got["gauss_newton"] = np.asarray(self._gauss_newton_gradients(x, sol))[got["rows"]]
         return got
 
-    def dense_hessian(self, x, sol, chunk=16):
-        """The fit's exact Hessian ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` at the record ``sol``, column by column
-        from :meth:`exact_products` (unit columns in the model coordinates, ``chunk`` per call -- 64 exceeds an 80 GB GPU
-        at 8 x 8 -- the last padded so
-        one compilation serves every call).  Returns ``(H, asymmetry)``: ``H`` symmetrized and the relative norm of
-        its antisymmetric part (zero up to round-off for exact products)."""
-        nb = self.model.x0.size
-        columns = []
-        for start in range(0, nb, chunk):
-            E = np.zeros((nb, chunk))
-            width = min(chunk, nb - start)
-            E[start:start + width, :width] = np.eye(width)
-            columns.append(self.exact_products(x, sol, E, check=False)[0][:, :width])
-        H = np.concatenate(columns, axis=1)
+    def dense_hessian(self, x, sol, chunk=None):
+        """The fit's exact Hessian ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` at the record ``sol``: every unit column (in
+        the model coordinates) from one call of :meth:`exact_products`, so its block factorization and multiplier are
+        paid once per Hessian, with the state tangents solved ``chunk`` columns at a time (default
+        :data:`EXACT_PRODUCTS_CHUNK`).  Returns ``(H, asymmetry)``: ``H`` symmetrized and the relative norm of its
+        antisymmetric part (zero up to round-off for exact products)."""
+        chunk = EXACT_PRODUCTS_CHUNK if chunk is None else chunk
+        H = self.exact_products(x, sol, np.eye(self.model.x0.size), check=False, chunk=chunk)[0]
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         return 0.5 * (H + H.T), asymmetry
 
@@ -1905,7 +1903,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     cg_converged=converged, cg_residual=residuals, true_residual=true_residuals, cg_reasons=reasons,
                     evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations, rebuilt=rebuilt)
 
-    def exact_products(self, x, sol, V, check=True):
+    def exact_products(self, x, sol, V, check=True, chunk=None):
         """``H V`` and ``F_d^T V`` exactly, by the second-order adjoint of the fit's cost at the record ``sol``.
 
         The cost ``f(z, b, x) = |r|^2 / 2`` of the interface rows is written in the projected equilibrium state
@@ -1915,14 +1913,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         -F_b v``; ``u = d/dt grad L (z + t dz, b + t v, x)`` (one forward-over-reverse pass); ``F_z^T dmu = u_z``;
         then ``H v = u_b - F_b^T dmu`` and ``F_d^T v = u_x - F_x^T dmu``.  Two linear solves on one block
         factorization per column, no re-solved equilibria and no difference step.  One jitted function (compiled
-        per column count) does the whole point.  Returns ``(HV, FdV, consistency)``: ``consistency`` compares
-        ``L_b``, ``L_x`` with :meth:`_cost_gradients` at the same point; every linear solve is certified (raises).
+        per column count) does the whole point; with ``chunk`` the state tangents are solved that many columns at a
+        time inside it (the last chunk padded with copies of the last column), else all at once.  Returns ``(HV, FdV,
+        consistency)``: ``consistency`` compares ``L_b``, ``L_x`` with :meth:`_cost_gradients` at the same point;
+        every linear solve is certified (raises).
         """
         if getattr(self, "_exact_products_core", None) is None:
-            self._exact_products_core = jax.jit(self._exact_products_traced)
+            self._exact_products_core = jax.jit(self._exact_products_traced, static_argnames=("chunk",))
         V = np.asarray(V, dtype=float).reshape(self.model.x0.size, -1)
+        chunk = None if chunk is None or int(chunk) >= V.shape[1] else max(int(chunk), 1)
         got = self._exact_products_core(sol["state"], sol["mask"], jnp.asarray(x, dtype=float),
-                                        jnp.asarray(sol["x"], dtype=float), jnp.asarray(V))
+                                        jnp.asarray(sol["x"], dtype=float), jnp.asarray(V), chunk=chunk)
         HV, FdV, L_b, L_x, mu_ok, tangent_ok, adjoint_ok = got
         if not (bool(mu_ok) and np.asarray(tangent_ok).all() and np.asarray(adjoint_ok).all()):
             raise RuntimeError(f"an exact-product linear solve missed: multiplier {bool(mu_ok)}, tangents "
@@ -1937,7 +1938,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                            c=float(np.linalg.norm(np.asarray(L_x) - c_ref) / max(np.linalg.norm(c_ref), 1e-300)))
         return np.asarray(HV), np.asarray(FdV), consistency
 
-    def _exact_products_traced(self, state, mask, xj, b0, V):
+    def _exact_products_traced(self, state, mask, xj, b0, V, chunk=None):
         """The traced body of :meth:`exact_products` (the block system holds callables, so it is built here)."""
         model = self.model
         im, cfg = model._im, model.cfg
@@ -1978,17 +1979,30 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         grad_L = jax.grad(lagrangian, argnums=(0, 1, 2))
         _, L_b, L_x = grad_L(z0, b0, xj)
         _, vjp_bx = jax.vjp(lambda b, xx: force(z0, b, xx), b0, xj)
-        dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(V.T)
-        dz_batch, tangent_ok = model._tangents(params0, state, mask, dprm)
 
         def column(args):
             dz, v = args
-            _, (u_z, u_b, u_x) = jax.jvp(grad_L, (z0, b0, xj), (P(dz), v, jnp.zeros_like(xj)))
+            # The design is not moved: its tangent is a symbolic zero, so nothing is pushed through the coil field
+            # (jax.linearize once for every column is slower and holds 2x the memory: 69 GB for 16 QA columns).
+            _, (u_z, u_b, u_x) = jax.jvp(lambda z, b: grad_L(z, b, xj), (z0, b0), (P(dz), v))
             dmu, ok = adjoint(u_z)
             back_b, back_x = vjp_bx(dmu)
             return u_b - back_b, u_x - back_x, ok
 
-        HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, V.T))
+        def columns(W):  # the columns' state tangents (one solve for all of W), then column by column
+            dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(W)
+            dz_batch, tangent_ok = model._tangents(params0, state, mask, dprm)
+            HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, W))
+            return HV, FdV, tangent_ok, adjoint_ok
+
+        m = V.shape[1]
+        if chunk is None:
+            HV, FdV, tangent_ok, adjoint_ok = columns(V.T)
+        else:
+            pad = -m % chunk
+            W = jnp.concatenate([V.T, jnp.repeat(V.T[-1:], pad, axis=0)]).reshape(-1, chunk, V.shape[0])
+            HV, FdV, tangent_ok, adjoint_ok = (a.reshape((-1,) + a.shape[2:])[:m]
+                                               for a in jax.lax.map(columns, W))
         return HV.T, FdV.T, L_b, L_x, mu_ok, tangent_ok, adjoint_ok
 
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):

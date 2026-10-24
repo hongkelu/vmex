@@ -1695,6 +1695,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break
+            if len(history) == 1 and opt.get("H0") is not None and step_newton > opt.get("warm_max_step", 0.05):
+                # the warm prediction is outside Newton's fast region (a large design step): the caller fits instead
+                history[-1]["warm_too_far"] = True
+                break
             # The cost's own floor: a Newton step whose predicted decrease is below the cost's rounding cannot be
             # told from noise by the actual/predicted ratio; the point is stationary to the cost's precision.
             if definite and 0.5 * float(gs @ -newton) <= opt.get("floor", 1e-13) * max(cost, 1e-300):

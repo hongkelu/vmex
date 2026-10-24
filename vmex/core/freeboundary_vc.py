@@ -213,6 +213,32 @@ def _condensation_rows(gamma, mpol, ntor):
     return jnp.concatenate([jnp.real(rows).ravel(), jnp.imag(rows).ravel()])
 
 
+def _gauge_rows(R, Z, mpol, ntor):
+    """The exact gauge of the boundary's poloidal angle: VMEC's spectral condensation (Hirshman & Meier 1985,
+    Hirshman & Breslau 1998) as equations, not penalty rows.
+
+    ``R``, ``Z`` are ``(ntheta, nphi)`` on a uniform grid over one field period.  ``G = R_theta sum m (m - 1) R_mn
+    cos(m theta - n N phi) + Z_theta sum m (m - 1) Z_mn sin(...)``, relative to the mean ``R_theta^2 + Z_theta^2``, is
+    odd for a stellarator-symmetric surface, so its sine components carry every condition: those with
+    ``m = 1 .. mpol - 2`` and ``|n| <= ntor`` fix the ``m >= 1`` relabellings.  The ``m = 0`` relabellings (a
+    shift of theta on each toroidal cut) leave ``G`` unchanged; the phase of the ``m = 1`` part of ``R + i Z`` per cut
+    (odd in phi) fixes them, by its sine components ``n = 1 .. ntor``.  Returns the conditions, flattened.
+    """
+    ntheta, nphi = R.shape
+    k = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[:, None]
+    FR, FZ = jnp.fft.fft(R, axis=0), jnp.fft.fft(Z, axis=0)
+    R_theta, Z_theta = (jnp.real(jnp.fft.ifft(1j * k * F, axis=0)) for F in (FR, FZ))
+    R_c, Z_c = (jnp.real(jnp.fft.ifft(jnp.abs(k) * (jnp.abs(k) - 1) * F, axis=0)) for F in (FR, FZ))
+    G = (R_c * R_theta + Z_c * Z_theta) / jnp.mean(R_theta**2 + Z_theta**2)
+    spectrum = jnp.fft.fft2(G) / G.size
+    toroidal = np.r_[0:ntor + 1, nphi - ntor:nphi]
+    condensation = jnp.imag(spectrum[1:mpol - 1][:, toroidal]).ravel()
+    c1 = jnp.fft.fft(R + 1j * Z, axis=0)[1]
+    phase = jnp.arctan2(jnp.imag(c1), jnp.real(c1))
+    phase_sine = -jnp.imag(jnp.fft.fft(phase))[1:ntor + 1] / nphi
+    return jnp.concatenate([condensation, phase_sine])
+
+
 #: Stationarity (the gain a Gauss-Newton step predicts) a trial's polish rounds aim at.
 POLISH_FTOL = 1e-4
 #: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
@@ -462,7 +488,8 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt", m1_complement="solved"):
+                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt", m1_complement="solved",
+                 gauge=None):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -482,6 +509,13 @@ class ThreeTermFreeBoundaryModel:
                             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
                             fixed_boundary=bool(fixed_boundary), labelling=labelling, m1_complement=m1_complement)
         self.fixed_boundary = bool(fixed_boundary)
+        #: The exact gauge of the boundary's poloidal angle (:func:`_gauge_rows`): None (the labelling is whatever
+        #: the fit reaches) or "condensation" (equations held exactly by the Newton polish; the certificate is taken
+        #: on the gauge's null space).  Not part of ``options``: a checkpoint of either restores into the other, and
+        #: the Newton polish then moves it onto (or off) the gauge.
+        if gauge not in (None, "condensation"):
+            raise ValueError(f"gauge must be None or 'condensation', got {gauge!r}")
+        self.gauge = gauge
         if labelling not in ("start", "equal_arc", "condensed"):
             raise ValueError(f"labelling must be 'start', 'equal_arc' or 'condensed', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
@@ -557,6 +591,16 @@ class ThreeTermFreeBoundaryModel:
             return N, a
 
         self._normal_operator = jax.jit(normal_operator) if nb else None
+        if self.gauge is not None and nb:
+            mpol_g, ntor_g = int(fixed.mpol), int(fixed.ntor)
+
+            def gauge_rows(x):
+                R, Z = surface(x[:nb])
+                return _gauge_rows(R, Z, mpol_g, ntor_g)
+
+            self.gauge_rows = jax.jit(gauge_rows)
+            self.gauge_jacobian = jax.jit(jax.jacfwd(gauge_rows))
+            self.gauge_curvature = jax.jit(lambda x, lam: jax.hessian(lambda y: jnp.vdot(lam, gauge_rows(y)))(x))
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -1045,7 +1089,15 @@ class ThreeTermFreeBoundaryModel:
                 if self._normal_operator is not None:  # the remaining step's motion of the surface itself
                     N, a = map(np.asarray, self._normal_operator(jnp.asarray(sol["x"])))
                     normal = np.hstack([N * scale[:, :N.shape[1]], np.zeros((N.shape[0], n - N.shape[1]))]) / a
-                sol["certificate"] = certificate = _fit_certificate(sol["J"][:, :n] * scale, sol["rows"], normal)
+                Js = sol["J"][:, :n] * scale
+                if self.gauge is not None:  # stationarity among the gauge-respecting directions only
+                    import scipy.linalg
+
+                    C = np.asarray(self.gauge_jacobian(jnp.asarray(sol["x"]))) * scale
+                    Zn = scipy.linalg.null_space(C)
+                    Js = Js @ Zn
+                    normal = None if normal is None else normal @ Zn
+                sol["certificate"] = certificate = _fit_certificate(Js, sol["rows"], normal)
                 record("round", sol, certificate, normal)
                 rounds[0] += 1
                 stats["max_condition"] = max(stats.get("max_condition", 0.0), certificate["condition"])
@@ -1387,8 +1439,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         never moves its boundary.  Raises :class:`~vmex.core.errors.TrialRejected`."""
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
-        sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
-                            polish=polish, max_residual=self.boundary_max_residual, extra=extra,
+        gauged = model.gauge is not None and newton and self.newton_polish is not None
+        if model.gauge is not None and newton and self.newton_polish is None:
+            raise ValueError("a gauge is held by the Newton polish: pass newton_polish (with exact products)")
+        # Under a gauge the fit's own polish (Levenberg-Marquardt, unconstrained) would only crawl along the
+        # relabellings the gauge removes: the tight state is linearized and the gauge's Newton polish certifies it.
+        sol = model.certify(params, field, fit, gate=np.inf if gauged else max(self.boundary_ftol, POLISH_FTOL),
+                            xtol=None if gauged else self.boundary_xtol, polish=polish and not gauged,
+                            max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         if newton and self.newton_polish is not None:  # converge the stationarity in every direction, certify there
             sol = self._newton_refine(x, params, field, sol, extra)
@@ -1428,7 +1486,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         g = stationarity(b)
         history, evaluations, converged = [], 1, False
         if opt.get("products", (self.exact_gradient or {}).get("products")) == "exact":
+            if self.model.gauge is not None:
+                return self._newton_refine_gauge(x, params, field, sol, extra, b, opt, t0)
             return self._newton_refine_exact(x, params, field, sol, extra, b, g, opt, t0)
+        if self.model.gauge is not None:
+            raise ValueError("a gauge needs the exact-products Newton polish (products='exact')")
         k = int(min(max(opt["subspace"], 0), nb))
         if k:  # the curvature on the k weakest directions, measured here; kept for this point's exact gradient
             import scipy.linalg
@@ -1631,6 +1693,116 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
 
+    def _newton_refine_gauge(self, x, params, field, sol, extra, b, opt, t0):
+        """Newton on the fit's cost under the exact gauge ``c(b) = 0`` (:attr:`ThreeTermFreeBoundaryModel.gauge`).
+
+        Each step solves the KKT system ``[[H + d2(lam.c), C^T], [C, 0]] [d; lam+] = -[g; c]`` in the scaled
+        coordinates, with the dense exact Hessian (:meth:`dense_hessian`, refreshed each step) and the gauge's
+        curvature and Jacobian by autodiff (geometry only), and accepts the largest of ``1, 1/2, ..., 1/64`` of the
+        step that satisfies Armijo's condition on the merit ``|r|^2/2 + rho |c|_1`` (``rho`` twice the largest
+        multiplier).  Stops when the scaled step is at most ``step_tol`` and the gauge holds to 1e-10.  The last
+        Lagrangian Hessian, gauge Jacobian and multipliers are kept for the record's exact gradient.  Then certified
+        on the gauge's null space."""
+        import scipy.linalg
+
+        model = self.model
+        scale = np.asarray(model.x_scale, dtype=float)
+        n = scale.size
+
+        def point(bb):
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
+            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
+            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
+                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
+
+        def gauge(bb):
+            return np.asarray(model.gauge_rows(jnp.asarray(bb))), np.asarray(model.gauge_jacobian(jnp.asarray(bb)))
+
+        here = point(b)
+        if here is None:
+            raise TrialRejected("the fit has no tight interior root for its gauge polish")
+        cost, g, rec = here
+        c, C = gauge(b)
+        lam = -np.linalg.lstsq(C.T, g, rcond=None)[0]
+        history, evaluations, converged, seconds_hessian = [], 1, False, 0.0
+        H_L = None
+        for _ in range(int(opt["max_steps"])):
+            th = time.perf_counter()
+            H, asymmetry = self.dense_hessian(x, rec)
+            seconds_hessian += time.perf_counter() - th
+            H_L = H + np.asarray(model.gauge_curvature(jnp.asarray(b), jnp.asarray(lam)))
+            Hs, Cs, gs = H_L * np.outer(scale, scale), C * scale, g * scale
+            m = Cs.shape[0]
+            K = np.block([[Hs, Cs.T], [Cs, np.zeros((m, m))]])
+            sol_kkt = scipy.linalg.solve(K, -np.r_[gs, c], assume_a="sym")
+            ds, lam_new = sol_kkt[:n], sol_kkt[n:]
+            step = float(np.linalg.norm(ds))
+            reduced = scipy.linalg.null_space(Cs)
+            eig = np.linalg.eigvalsh(reduced.T @ Hs @ reduced)
+            history.append(dict(cost=cost, step=step, gauge=float(np.abs(c).max()), evaluations=evaluations,
+                                asymmetry=asymmetry, reduced_smallest=eig[:5].tolist(),
+                                reduced_condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf")))
+            if opt.get("track"):
+                history[-1]["gradients"] = self._exact_dense_gradients(
+                    x, rec, H=H_L, gauge=dict(C=C, lam=lam_new))["gradients"].tolist()
+            if opt.get("verbose"):
+                drift = ""
+                if opt.get("track") and len(history) > 1:
+                    G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
+                    drift = (" gradient change vs previous iterate max "
+                             f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
+                print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, gauge "
+                      f"{history[-1]['gauge']:.1e}, reduced Hessian smallest {eig[0]:.2e} condition "
+                      f"{history[-1]['reduced_condition']:.1e}, Hessian {seconds_hessian:.0f} s total{drift}",
+                      flush=True)
+            if step <= opt["step_tol"] and np.abs(c).max() <= 1e-10:
+                lam = lam_new
+                converged = True
+                break
+            rho = 2.0 * float(np.abs(lam_new).max()) + 1e-300
+            merit = cost + rho * float(np.abs(c).sum())
+            slope = float(gs @ ds) - rho * float(np.abs(c).sum())
+            for t in (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625):
+                trial = point(b + t * ds * scale)
+                evaluations += 1
+                if trial is None:
+                    continue
+                c_try, _ = gauge(b + t * ds * scale)
+                if trial[0] + rho * float(np.abs(c_try).sum()) <= merit + 1e-4 * t * min(slope, 0.0):
+                    b = b + t * ds * scale
+                    cost, g, rec = trial
+                    lam = lam + t * (lam_new - lam)
+                    history[-1]["taken"] = t
+                    break
+            else:
+                history[-1]["stalled"] = True
+                break
+            c, C = gauge(b)
+        self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=H_L,
+                             gauge=dict(C=C, lam=lam)) if converged else None
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the gauge-polished boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton-gauge",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
+                             subspace=n, products="exact", gauge=model.gauge, seconds_hessian=seconds_hessian,
+                             seconds=time.perf_counter() - t0)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
+        return out
+
     def _record(self, x):
         x = np.asarray(self._x(x), dtype=float)
         sol = self._solve(x)
@@ -1759,7 +1931,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         return 0.5 * (H + H.T), asymmetry
 
-    def _exact_dense_gradients(self, x, sol, rows=None, H=None):
+    def _exact_dense_gradients(self, x, sol, rows=None, H=None, gauge=None):
         """Every row's exact design gradient with the dense exact Hessian: ``mu = H^-1 Q_b^T`` (one factorization for
         every row), then ``Q_d - F_d^T mu`` and each row's true residual ``|Q_b - H mu| / |Q_b|`` from one more exact
         call on the multipliers.  No difference step, no iteration; the Hessian is kept (``self._hessian``)."""
@@ -1780,18 +1952,38 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         scale = np.asarray(self.model.x_scale, dtype=float)
         if H is not None:
             asymmetry = 0.0
+            if self.model.gauge is not None and gauge is None:
+                raise ValueError("under a gauge, a given Hessian needs its gauge (C, lam)")
         elif (kept is not None and np.array_equal(kept["x"], np.asarray(x, dtype=float))
                 and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
             H, asymmetry = kept["H"], 0.0  # the converged Newton polish's Hessian at this record
+            gauge = kept.get("gauge")
         else:
             H, asymmetry = self.dense_hessian(x, sol)
+        if self.model.gauge is not None and gauge is None:  # the multipliers of this record (a KKT point)
+            g, _, _ = self._cost_gradients(b0, sol["params"], self.field(xj), np.asarray(x, dtype=float))
+            C = np.asarray(self.model.gauge_jacobian(jnp.asarray(b0)))
+            lam = -np.linalg.lstsq(C.T, g, rcond=None)[0]
+            gauge = dict(C=C, lam=lam)
+            H = H + np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
         seconds_hessian = time.perf_counter() - t0
-        factor = scipy.linalg.lu_factor(H)
-        mu = scipy.linalg.lu_solve(factor, G_b[rows].T)  # a column per row
+        Q = G_b[rows].T  # a column per row
+        if gauge is None:
+            factor = scipy.linalg.lu_factor(H)
+            mu = scipy.linalg.lu_solve(factor, Q)
+            curvature_mu = 0.0
+        else:  # the KKT system of the gauged fit: [[H_L, C^T], [C, 0]] [mu; nu] = [Q_b^T; 0]
+            C = gauge["C"]
+            m = C.shape[0]
+            K = np.block([[H, C.T], [C, np.zeros((m, m))]])
+            kkt = scipy.linalg.solve(K, np.r_[Q, np.zeros((m, Q.shape[1]))], assume_a="sym")
+            mu, nu = kkt[:nb], kkt[nb:]
+            curvature_mu = np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(gauge["lam"]))) @ mu \
+                + C.T @ nu
         H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
         gradients = direct[rows] + G_x[rows] - Fd_mu.T
         norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
-        true = (np.linalg.norm(G_b[rows].T - H_mu, axis=0) / norms).tolist()
+        true = (np.linalg.norm(Q - H_mu - curvature_mu, axis=0) / norms).tolist()
         self._hessian = dict(b=b0, x=np.asarray(x, dtype=float).copy(), H=H)
         return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry,
                     condition=float(np.linalg.cond(H)), seconds_hessian=seconds_hessian,

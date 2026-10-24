@@ -114,19 +114,6 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
-def test_condensation_rows_vanish_on_a_uniformly_labelled_circle():
-    """VMEC's condensation condition holds for a circle in its natural angle, not once that angle is distorted."""
-    phi, theta = jnp.meshgrid(jnp.linspace(0.0, jnp.pi / 2, 16, endpoint=False),
-                              jnp.linspace(0.0, 2 * jnp.pi, 32, endpoint=False), indexing="ij")
-
-    def rows(angle):
-        R = 1.0 + 0.2 * jnp.cos(angle)
-        return fvc._condensation_rows(jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), 0.2 * jnp.sin(angle)]), 6, 3)
-
-    assert float(jnp.max(jnp.abs(rows(theta)))) < 1e-12
-    assert float(jnp.max(jnp.abs(rows(theta + 0.2 * jnp.sin(2 * theta))))) > 0.1
-
-
 def test_equal_arc_phase_has_one_branch():
     """The phase rows vanish for the natural angle of a circle and not for that angle shifted by pi (equal arc
     holds for both)."""
@@ -498,25 +485,32 @@ def test_plasma_map_derivatives_at_nonzero_offsets(monkeypatch):
     offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0.
 
     The reference is a central difference of tightly re-solved fits (boundary_ftol and the polish target 1e-9): at
-    the default 1e-3 the fits' own error dominates a difference.  Against it, the exact stationarity derivative
-    (exact_design_gradient) agrees to 1e-3 (measured 8e-5); the optimizer's Gauss-Newton fit sensitivity stays within
-    its documented 1e-2 budget (measured 6.7e-3: the curvature term it drops, nonzero at a nonzero residual)."""
+    the default 1e-3 the fits' own error dominates a difference.  Against it, the exact derivative of the converged
+    stationarity (Newton polish with the exact Hessian, exact_gradient) agrees to 1e-3; the Gauss-Newton fit
+    sensitivity stays within its documented 1e-2 budget (measured 6.7e-3: the curvature term it drops, nonzero at a
+    nonzero residual)."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
     monkeypatch.setattr(fvc, "POLISH_FTOL", 1e-9)
     monkeypatch.setattr(fvc, "POLISH_ROUNDS", 20)
     inp, field = _small_vacuum()
     base = field.currents
-    problem = FreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(3),
-        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
-        plasma_from_parameters=lambda params, x: replace(
-            params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        boundary_condition="three_term", three_term_options=dict(SMALL, boundary_ftol=1e-9, boundary_max_nfev=400))
+
+    def build(**options):
+        return FreeBoundaryProblem.from_loss(
+            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(3),
+            field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+            plasma_from_parameters=lambda params, x: replace(
+                params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
+            boundary_condition="three_term",
+            three_term_options=dict(SMALL, boundary_ftol=1e-9, boundary_max_nfev=400, **options))
+
+    problem = build()
+    exact_problem = build(newton_polish=dict(step_tol=1e-8, max_steps=30), exact_gradient=True)
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, grad = problem.value_and_grad(x)
-    exact = problem.exact_design_gradient(x)["gradient"]
+    _, exact = exact_problem.value_and_grad(x)
     h = 1e-3
     for k in (1, 2):
         e = np.eye(3)[k] * h
@@ -524,6 +518,7 @@ def test_plasma_map_derivatives_at_nonzero_offsets(monkeypatch):
         assert exact[k] == pytest.approx(fd, rel=1e-3), k
         assert grad[k] == pytest.approx(fd, rel=1e-2), k
     problem.close()
+    exact_problem.close()
 
 
 @needs_vc

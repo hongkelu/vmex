@@ -39,16 +39,12 @@ from test_freeboundary_vc import _vacuum_flux_surface  # noqa: E402
 
 DATA = Path("examples/data")
 N = 64
-METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(labelling="start", label_weight=0.0),
-           # D: VMEC's spectral-condensation rows (branch exp-label-condensed), fixed or automatic weight
-           "D": dict(labelling="condensed", label_weight=1e-3),
-           **{f"Dauto{r:g}": dict(labelling="condensed", label_weight="auto", label_ratio=r)
-              for r in (1e-4, 1e-3, 1e-2, 1e-1)}}
+METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(labelling="start", label_weight=0.0)}
 # The fits' tolerances (solve_free_boundary_three_term's defaults; FBB_FTOL=1e-10 FBB_MAX_NFEV=300 for tight fits)
 FIT = dict(ftol=float(os.environ.get("FBB_FTOL", "1e-4")), jacobian_ftol=float(os.environ.get("FBB_JACOBIAN_FTOL", "1e-2")),
            max_nfev=int(os.environ.get("FBB_MAX_NFEV", "60")))
-LABELLINGS = {"A": "start", "C": "equal_arc", "D": "condensed", "M": "condensed_modal"}
-if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,D:1e-2 (label:weight for A, C, D or M = modal D)
+LABELLINGS = {"A": "start", "C": "equal_arc"}
+if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,A:1e-2 (label:weight for A or C)
     METHODS = {k: METHODS[k] if k in METHODS else dict(labelling=LABELLINGS[k.split(":")[0]],
                                                        label_weight=float(k.split(":")[1]))
                for k in os.environ["FBB_METHODS"].split(",")}

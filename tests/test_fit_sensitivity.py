@@ -5,9 +5,8 @@ minimum, a nearly flat direction (``y3 - y4`` enters only through a small term, 
 non-unit coordinate scale.  Exact derivatives come from JAX; the reference is a central difference of the tightly
 re-solved minimizer.  Checked: the exact stationarity derivative (with the mixed design curvature) matches the
 reference and Gauss-Newton does not; Hessian-vector products, mixed partials and the symmetry of ``H``; central
-differences of ``g = J^T r`` (the production H products) against the exact ones; and
-``freeboundary_vc._low_rank_multipliers``: Gauss-Newton with no directions, exact with all of them, and most of the
-correction from the weak direction alone.
+differences of ``g = J^T r`` against the exact ones; and ``freeboundary_vc._projected_solve`` (the block solve of
+the Hessian with a stiff current block eliminated).
 """
 import numpy as np
 import pytest
@@ -100,13 +99,6 @@ def gauss_newton_gradient(p):
     return p["Q_d"] - (p["J_y"].T @ p["J_d"]).T @ mu
 
 
-def low_rank_gradient(p, W, DW, SbdW):
-    """The production assembly: ``Q_d - J_d^T J_y mu - S_bd^T (P mu)`` with the helper's multipliers."""
-    mu, MW = fvc._low_rank_multipliers(p["J_y"], p["Q_y"][None, :], W, DW, SCALE)
-    mu = mu[:, 0]
-    return p["Q_d"] - p["J_d"].T @ (p["J_y"] @ mu) - SbdW @ (MW.T @ mu)
-
-
 def weak_directions(p, k):
     """The ``k`` weakest right singular directions of the scaled Jacobian, in model coordinates."""
     _, _, Vt = np.linalg.svd(p["J_y"] * SCALE, full_matrices=False)
@@ -160,74 +152,6 @@ def test_differenced_hessian_columns_match_the_exact_ones(point):
         eps = 1e-4 / np.linalg.norm(w / SCALE)
         gp, gm = (np.asarray(point["g"](yj + s * eps * jnp.asarray(w), dj)) for s in (1, -1))
         np.testing.assert_allclose((gp - gm) / (2 * eps) - A @ w, DW[:, j], rtol=1e-6, atol=1e-8)
-
-
-def test_low_rank_is_gauss_newton_with_no_directions_and_exact_with_all(point):
-    zero = np.zeros((5, 0))
-    np.testing.assert_allclose(low_rank_gradient(point, zero, zero, np.zeros((3, 0))),
-                               gauss_newton_gradient(point), rtol=1e-9, atol=1e-12)  # cond^2 eps: about 1e-10
-    W = weak_directions(point, 5)
-    DW, SbdW = curvature_columns(point, W)
-    np.testing.assert_allclose(low_rank_gradient(point, W, DW, SbdW), exact_gradient(point), rtol=1e-9,
-                               atol=1e-12)
-
-
-def test_preconditioned_cg_solves_the_exact_multiplier(point):
-    """The production solver (``_preconditioned_cg``) reaches ``H^-1 Q_y`` with the Gauss-Newton preconditioner."""
-    H, A = point["H"], point["J_y"].T @ point["J_y"]
-    mu, it, res, reason = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(A, v), point["Q_y"], 1e-12, 50)
-    np.testing.assert_allclose(mu, np.linalg.solve(H, point["Q_y"]), rtol=1e-9, atol=1e-12)
-    assert it <= 5 and reason == "converged" and np.linalg.norm(res) <= 1e-12 * np.linalg.norm(point["Q_y"])
-
-
-def test_subspace_preconditioner_is_exact_with_every_direction_and_cuts_iterations(point):
-    """``_low_rank_model``: H itself when W spans everything (CG then needs no iteration), and fewer iterations than
-    Gauss-Newton with the weak direction alone; the multiplier is the exact one either way."""
-    H, A, q = point["H"], point["J_y"].T @ point["J_y"], point["Q_y"]
-    W = weak_directions(point, 5)
-    DW, _ = curvature_columns(point, W)
-    np.testing.assert_allclose(fvc._low_rank_model(point["J_y"], W, DW, SCALE), H, rtol=1e-10, atol=1e-12)
-    counts = {}
-    for k in (0, 1):
-        Wk = weak_directions(point, k)
-        M = fvc._low_rank_model(point["J_y"], Wk, curvature_columns(point, Wk)[0], SCALE) if k else A
-        mu, counts[k], _, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(M, v), q, 1e-10, 50)
-        np.testing.assert_allclose(mu, np.linalg.solve(H, q), rtol=1e-8, atol=1e-11)
-    mu5, it5, _, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(H, v), q, 1e-10, 50)
-    assert it5 == 1  # the first guess is already the answer: the loop only checks the residual
-    assert counts[1] <= counts[0]
-
-
-def test_preconditioned_cg_reports_an_indefinite_system(point):
-    """An indefinite ``H`` stops conjugate gradients with a reason and an unconverged residual (never silently)."""
-    H = np.diag([1.0, 2.0, -0.5, 3.0, 1.5])
-    q = np.ones(5)
-    mu, _, res, reason = fvc._preconditioned_cg(lambda v: H @ v, lambda v: v, q, 1e-12, 50)
-    assert reason in ("curvature", "preconditioner") or np.linalg.norm(q - H @ mu) <= 1e-10
-
-
-def test_trust_region_newton_follows_a_curved_valley():
-    """``_trust_region_newton`` (exact Hessian at the start, BFGS after) minimizes scaled Rosenbrock least squares
-    -- a curved valley like the fit's relabelling directions -- monotonically, to its minimum."""
-    scale = np.array([1.0, 3.0])
-
-    def residual(b):
-        return jnp.stack([10.0 * (b[1] / 3.0 - b[0] ** 2), 1.0 - b[0]])
-
-    def evaluate(b):
-        r = residual(jnp.asarray(b))
-        g = jax.jacfwd(residual)(jnp.asarray(b)).T @ r
-        return np.asarray(g), 0.5 * float(r @ r)
-
-    b0 = np.array([-1.2, 3.0])
-    g0, f0 = evaluate(b0)
-    H0 = np.asarray(jax.hessian(lambda b: 0.5 * jnp.sum(residual(b) ** 2))(jnp.asarray(b0)))
-    b, g, f, history, converged, evaluations = fvc._trust_region_newton(
-        evaluate, H0, b0, g0, f0, scale, step_tol=1e-10, max_steps=200, radius=0.5)
-    assert converged and evaluations < 200
-    np.testing.assert_allclose(b, [1.0, 3.0], atol=1e-8)
-    costs = [h["cost"] for h in history]
-    assert all(c2 <= c1 for c1, c2 in zip(costs, costs[1:]))
 
 
 def test_projected_solve_matches_the_joint_solve_and_survives_a_stiff_block():

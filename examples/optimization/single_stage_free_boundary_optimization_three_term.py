@@ -1190,33 +1190,26 @@ def parse_args(argv=None):
     parser.add_argument("--clearance", choices=("continuous", "points"), default="continuous",
                         help="coil-plasma clearance: the continuous closest point (default; smooth where the closest "
                         "pair is unique) or the minimum over sampled coil and surface points (non-smooth at every closest-pair switch)")
-    parser.add_argument("--check-exact-gradient", action="store_true",
-                        help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
-                        "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
-    parser.add_argument("--exact-gradient-row", type=int, default=0,
-                        help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
-    parser.add_argument("--newton-polish", type=float, metavar="STEP_TOL",
-                        help="after its certificate, refine every fit by Newton steps on its stationarity (exact "
-                        "curvature) until the scaled step is at most STEP_TOL, so the fit's response is determined "
-                        "(ThreeTermFreeBoundaryProblem._newton_refine; default: off)")
+    parser.add_argument("--newton-polish", type=float, default=1e-8, metavar="STEP_TOL",
+                        help="refine every certified fit by Newton steps on its cost with the exact Hessian until the "
+                        "scaled step is at most STEP_TOL (or the cost's floor), so the fit's stationary point and its "
+                        "exact design gradient are determined (ThreeTermFreeBoundaryProblem._newton_refine)")
     parser.add_argument("--check-exact-products", action="store_true",
                         help="compare the second-order adjoint products H v, F_d^T v (ThreeTermFreeBoundaryProblem."
-                        "exact_products) with Richardson difference products along the weakest, strongest and a random "
-                        "direction, with timings (exact_products_check.json), then stop")
+                        "exact_products) with Richardson difference products (step --difference-h) along the weakest, "
+                        "strongest and a random direction, with timings (exact_products_check.json), then stop")
     parser.add_argument("--exact-products-timing", type=int, nargs="*", default=[], metavar="M",
                         help="with --check-exact-products: also time compiled calls of M random columns")
     parser.add_argument("--newton-track", action="store_true",
-                        help="with --newton-polish --exact-products: record the exact gradient at every Newton iterate")
-    parser.add_argument("--newton-max-steps", type=int, default=10, help="Newton polish steps at most")
-    parser.add_argument("--newton-quasi", action="store_true",
+                        help="record the exact gradient at every Newton iterate")
+    parser.add_argument("--newton-max-steps", type=int, default=60, help="Newton polish steps at most")
+    parser.add_argument("--newton-quasi", action=argparse.BooleanOptionalAction, default=True,
                         help="Newton polish: the first step with the exact Hessian, then damped BFGS updates from the "
-                        "exact stationarity (one tight solve per step); the record's gradient still uses the exact Hessian")
+                        "exact gradient (one tight solve per step), refreshed exactly when stalled or every 10 steps; "
+                        "the record's design gradient still uses the exact Hessian (--no-newton-quasi: exact every step)")
     parser.add_argument("--newton-warm", action="store_true",
                         help="trials start Newton from the accepted point's converged boundary with its kept Hessian "
                         "(no fit; falls back to the fit when Newton does not converge)")
-    parser.add_argument("--newton-partial", type=int, default=0, metavar="K",
-                        help="Newton polish: after the first full exact Hessian, refresh only its K weakest directions "
-                        "each step (exact columns, symmetric low-rank correction); 0 refreshes it fully")
     parser.add_argument("--check-rows-c2", action="store_true",
                         help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
                         "separately) along a random state direction: autodiff vs central differences of its exact "
@@ -1225,40 +1218,13 @@ def parse_args(argv=None):
                         help="the fit's stationarity g at the accepted boundary from three equilibrium starts (hot, "
                         "cold, the record's own state), and the scaled Newton step their differences imply "
                         "(g_noise_check.json), then stop")
-    parser.add_argument("--check-products", action="store_true",
-                        help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
-                        "with those from full linearizations, along the weakest, strongest and a random direction")
     parser.add_argument("--check-stationarity-gradient", action="store_true",
-                        help="every row's exact derivative of the converged stationarity (ThreeTermFreeBoundaryProblem."
-                        "stationarity_design_gradient; stationarity_gradient_check.json, with the reverse-pass vs "
-                        "linearization consistency check), then stop")
-    parser.add_argument("--stationarity-richardson", action="store_true",
-                        help="Richardson-extrapolate the stationarity products over steps h and h/2")
-    parser.add_argument("--exact-gradient", type=int, metavar="K",
-                        help="optimize with the exact derivative of the converged stationarity (both curvature blocks), "
-                        "conjugate gradients preconditioned with the curvature on the fit's K weakest directions, kept "
-                        "between steps (ThreeTermFreeBoundaryProblem._stationarity_gradients); default: Gauss-Newton. "
-                        "Its step, Richardson, tolerance and iterations: --exact-gradient-h, --stationarity-richardson, "
-                        "--stationarity-rtol, --exact-gradient-maxiter")
-    parser.add_argument("--exact-products", action="store_true",
-                        help="the stationarity derivative (--exact-gradient, --check-stationarity-gradient) from the dense "
-                        "exact Hessian of second-order adjoint products (ThreeTermFreeBoundaryProblem.exact_products): "
-                        "no difference step, no conjugate gradients")
-    parser.add_argument("--stationarity-subspace", type=int, default=0, metavar="K",
-                        help="precondition --check-stationarity-gradient's conjugate gradients with the curvature on the "
-                        "fit's K weakest directions (0: Gauss-Newton preconditioner)")
-    parser.add_argument("--stationarity-rtol", type=float,
-                        help="relative residual of the stationarity conjugate gradients (default 1e-10 for "
-                        "--check-stationarity-gradient, 1e-6 for --exact-gradient)")
-    parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
-                        help="every row's design gradient with the fit's curvature on its K weakest directions "
-                        "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
-    parser.add_argument("--exact-gradient-maxiter", type=int, default=30,
-                        help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
-    parser.add_argument("--exact-gradient-h", type=float, default=1e-3,
-                        help="the central-difference step (scaled coordinates) of the stationarity products "
-                        "(exact/stationarity gradients, Newton polish); 1e-4 is noise-limited along the weakest "
-                        "directions, 1e-2 truncation-limited (--check-products)")
+                        help="every row's exact derivative of the converged stationarity at the seed, with the "
+                        "Gauss-Newton one (ThreeTermFreeBoundaryProblem.stationarity_design_gradient; "
+                        "stationarity_gradient_check.json, with the reverse-pass vs linearization consistency check), "
+                        "then stop")
+    parser.add_argument("--difference-h", type=float, default=1e-3,
+                        help="central-difference step (scaled coordinates) of --check-exact-products' reference")
     parser.add_argument("--check-gradient-cold", action="store_true",
                         help="--check-gradient trials start from the seed's boundary, not the Gauss-Newton prediction "
                         "(a predicted start that already certifies makes the difference reproduce the formula)")
@@ -1306,14 +1272,9 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--gauge", choices=("condensation",), default=None,
-                        help="hold the boundary's poloidal angle exactly by VMEC's spectral condensation (equations, not "
-                        "penalty rows; ThreeTermFreeBoundaryModel.gauge): needs --exact-products --newton-polish; use "
-                        "with --labelling start --label-weight 0")
-    parser.add_argument("--labelling", choices=("start", "equal_arc", "condensed"), default="start",
+    parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
-                        "equal arc length of the current surface (equal_arc), or VMEC's spectral condensation (condensed); "
-                        "see ThreeTermFreeBoundaryModel")
+                        "equal arc length of the current surface (equal_arc); see ThreeTermFreeBoundaryModel")
     parser.add_argument("--m1-complement", choices=("solved", "frozen"), default="solved",
                         help="the interior's m = 1 complement: solved with the evolved dofs (unique root, default) "
                         "or VMEC2000's released (frozen) complement")
@@ -1737,20 +1698,13 @@ def main(argv=None):
                       quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                       trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                       bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling, gauge=args.gauge,
+                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(
-                          step_tol=args.newton_polish, h=args.exact_gradient_h,
-                          products="exact" if args.exact_products else "difference", track=args.newton_track,
-                          verbose=args.newton_track, partial=args.newton_partial, warm=args.newton_warm,
-                          quasi=args.newton_quasi,
-                          max_steps=args.newton_max_steps),
-                      exact_gradient=None if args.exact_gradient is None else dict(
-                          subspace=args.exact_gradient, h=args.exact_gradient_h,
-                          rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
-                          richardson=args.stationarity_richardson, maxiter=args.exact_gradient_maxiter,
-                          products="exact" if args.exact_products else "difference"),
+                          step_tol=args.newton_polish, track=args.newton_track, verbose=args.newton_track,
+                          warm=args.newton_warm, quasi=args.newton_quasi, max_steps=args.newton_max_steps),
+                      exact_gradient=args.newton_polish is not None,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,
@@ -1896,17 +1850,13 @@ def main(argv=None):
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
               + f"{row['step_seconds']:.1f}s (fit {row['step_seconds_fit']:.1f}s, "
               f"certify {row['step_seconds_certify']:.1f}s, gradient {row['step_seconds_gradient']:.1f}s; "
-              + (f"exact gradient: {row['exact_gradient_evaluations'] - last.get('eg_ev', 0)} evaluations, CG "
-                 f"{row['exact_gradient_cg_iterations'] - last.get('eg_cg', 0)}, rebuilds "
-                 f"{row['exact_gradient_rebuilds']}, residual {row['exact_gradient_true_residual']:.1e}; "
-                 if "exact_gradient_evaluations" in row else "")
+              + (f"exact gradient residual {row['exact_gradient_true_residual']:.1e}; "
+                 if "exact_gradient_true_residual" in row else "")
               + (f"warm Newton trials {row.get('warm_newton_trials', 0)} (unconverged "
                  f"{row.get('warm_newton_unconverged', 0)}, failed {row.get('warm_newton_failed', 0)}), "
                  if "warm_newton_trials" in row or "warm_newton_failed" in row else "")
               + f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
-        if "exact_gradient_evaluations" in row:
-            last.update(eg_ev=row["exact_gradient_evaluations"], eg_cg=row["exact_gradient_cg_iterations"])
         if row.get("last_rejection") and row["last_rejection"] != last.get("rejection"):
             print(f"[trial rejected] {row['last_rejection']}", flush=True)
             last["rejection"] = row["last_rejection"]
@@ -1924,8 +1874,7 @@ def main(argv=None):
             elif (out / "slsqp_state.npz").exists():
                 os.remove(out / "slsqp_state.npz")
 
-    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
-                                  or args.check_stationarity_gradient or args.check_exact_products
+    if args.checkpoint_every and (args.check_gradient or args.check_stationarity_gradient or args.check_exact_products
                                   or args.check_g_noise or args.check_rows_c2):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
@@ -2023,7 +1972,7 @@ def main(argv=None):
         print(f"[exact products] first-order consistency: g {consistency['g']:.2e}, c {consistency['c']:.2e}; "
               f"compile+3 columns {t1 - t0:.0f} s, 3 columns (compiled, incl. the consistency evaluation) "
               f"{t2 - t1:.1f} s", flush=True)
-        record = dict(consistency=consistency, seconds_first=t1 - t0, seconds_three=t2 - t1, h=args.exact_gradient_h,
+        record = dict(consistency=consistency, seconds_first=t1 - t0, seconds_three=t2 - t1, h=args.difference_h,
                       directions={})
         for j, name in enumerate(names):
             v = V[:, j]
@@ -2033,7 +1982,7 @@ def main(argv=None):
                 gm, cm, _ = problem._cost_gradients(b0 - eps * v, params_s, field_s, x_seed)
                 return (gp - gm) / (2 * eps), (cp - cm) / (2 * eps)
             t3 = time.monotonic()
-            (h1, f1), (h2, f2) = central(args.exact_gradient_h), central(args.exact_gradient_h / 2)
+            (h1, f1), (h2, f2) = central(args.difference_h), central(args.difference_h / 2)
             t4 = time.monotonic()
             Hr, Fr = (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
             rec = dict(H=float(np.linalg.norm(HV[:, j] - Hr) / np.linalg.norm(Hr)),
@@ -2053,51 +2002,6 @@ def main(argv=None):
             print(f"[exact products] {m} columns: {record['timing'][m]:.1f} s (compiled)", flush=True)
         (out / "exact_products_check.json").write_text(json.dumps(record, indent=1) + "\n")
         return
-    if args.check_products:  # H v and F_d^T v from reverse passes vs from full linearizations, same v
-        x_seed = problem.accepted.parameters
-        sol = problem._record(x_seed)
-        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
-        xj = jnp.asarray(x_seed)
-        params_s, field_s = problem._params_at(xj), problem.field(xj)
-        extra = problem._plasma_directions(params_s, xj) if problem._plasma.size else None
-        b0 = np.asarray(sol["x"], dtype=float)
-
-        def by_linearization(bb):
-            rows, aux = problem.model.evaluate(bb, params_s, field_s, tight=True)
-            J, _, _, aux = problem.model.linearize(bb, aux, field_s, extra=extra)
-            J, rows = np.asarray(J), np.asarray(rows)
-            st, _, pb, _ = aux
-            c = np.asarray(problem._field_vjp(st, pb, xj, jnp.asarray(rows)))
-            if extra is not None:
-                c = c.copy()
-                c[problem._plasma] += J[:, nb:].T @ rows
-            return J[:, :nb].T @ rows, c
-
-        def by_pullback(bb):
-            g, c, _ = problem._cost_gradients(bb, params_s, field_s, x_seed)
-            return g, c
-
-        _, _, Vt = np.linalg.svd(np.asarray(sol["J"])[:, :nb] * scale, full_matrices=False)
-        rng = np.random.default_rng(0)
-        directions = dict(weakest=Vt[-1] * scale, strong=Vt[0] * scale, random=rng.standard_normal(nb) * scale)
-        record = dict(h=args.exact_gradient_h, directions={})
-        for name, v in directions.items():
-            eps = args.exact_gradient_h / float(np.linalg.norm(v / scale))
-            prod = {}
-            for label, f in (("linearization", by_linearization), ("pullback", by_pullback)):
-                (gp, cp), (gm, cm) = f(b0 + eps * v), f(b0 - eps * v)
-                prod[label] = ((gp - gm) / (2 * eps), (cp - cm) / (2 * eps))
-            (Hl, Fl), (Hp, Fp) = prod["linearization"], prod["pullback"]
-            A_v = np.asarray(sol["J"])[:, :nb].T @ (np.asarray(sol["J"])[:, :nb] @ v)
-            rec = dict(H=float(np.linalg.norm(Hp - Hl) / np.linalg.norm(Hl)),
-                       F=float(np.linalg.norm(Fp - Fl) / max(np.linalg.norm(Fl), 1e-300)),
-                       S_lin=float(np.linalg.norm(Hl - A_v) / np.linalg.norm(Hl)),
-                       S_pull=float(np.linalg.norm(Hp - A_v) / np.linalg.norm(Hl)))
-            record["directions"][name] = rec
-            print(f"[products] {name}: H pullback vs linearization {rec['H']:.2e}, F_d^T {rec['F']:.2e}; "
-                  f"|S v|/|H v| linearization {rec['S_lin']:.2e}, pullback {rec['S_pull']:.2e}", flush=True)
-        (out / "products_check.json").write_text(json.dumps(record, indent=1) + "\n")
-        return
     if args.check_stationarity_gradient:  # every row's exact derivative of the converged stationarity
         x_seed = problem.accepted.parameters
         sol = problem._record(x_seed)
@@ -2112,64 +2016,20 @@ def main(argv=None):
         print(f"[stationarity gradient] reverse-pass g vs linearization J^T r: {consistency['stationarity']:.2e}, "
               f"rows {consistency['rows']:.2e}", flush=True)
         t0 = time.monotonic()
-        got = problem.stationarity_design_gradient(x_seed, h=args.exact_gradient_h,
-                                                   maxiter=args.exact_gradient_maxiter,
-                                                   richardson=args.stationarity_richardson,
-                                                   subspace=args.stationarity_subspace,
-                                                   products="exact" if args.exact_products else "difference",
-                                                   rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol)
-        record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
-                      subspace=got["subspace"], subspace_evaluations=got["subspace_evaluations"],
-                      rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol,
-                      true_residual=got["true_residual"], products="exact" if args.exact_products else "difference",
-                      asymmetry=got.get("asymmetry"), hessian_condition=got.get("condition"),
-                      seconds_hessian=got.get("seconds_hessian"),
+        got = problem.stationarity_design_gradient(x_seed)
+        record = dict(consistency=consistency, true_residual=got["true_residual"], asymmetry=got.get("asymmetry"),
+                      hessian_condition=got.get("condition"), seconds_hessian=got.get("seconds_hessian"),
                       gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
-                      rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
-                      cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,
-                      certificate=sol.get("certificate"), newton=sol.get("newton"))
+                      rows=got["rows"], seconds=time.monotonic() - t0, certificate=sol.get("certificate"),
+                      newton=sol.get("newton"))
         if sol.get("newton"):
             nw = sol["newton"]
             print(f"[newton polish] {len(nw['steps'])} steps, converged {nw['converged']}, {nw['evaluations']} "
-                  f"evaluations (subspace {nw['subspace']}, products {nw.get('products', 'difference')}, Hessian "
-                  f"{nw.get('seconds_hessian', 0):.0f} s), {nw['seconds']:.0f} s; scaled steps "
+                  f"evaluations (Hessian {nw.get('seconds_hessian', 0):.0f} s), {nw['seconds']:.0f} s; scaled steps "
                   + " ".join(f"{st['step']:.1e}" for st in nw["steps"]), flush=True)
         (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
-        print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "
-              f"{got['cg_converged']}, true residual max {max(got['true_residual']):.1e}, {got['evaluations']} evaluations "
-              f"({got['subspace_evaluations']} for the subspace), {record['seconds']:.0f} s", flush=True)
-        return
-    if args.check_subspace_gradient:  # the low-rank curvature gradient (every row) for each requested k
-        record = dict(h=args.exact_gradient_h, runs=[])
-        for k in args.check_subspace_gradient:
-            t0 = time.monotonic()
-            got = problem.subspace_design_gradient(problem.accepted.parameters, k=k, h=args.exact_gradient_h)
-            record["runs"].append(dict(k=got["k"], gradients=np.asarray(got["gradients"]).tolist(),
-                                       gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
-                                       singular_values=got["singular_values"], seconds=time.monotonic() - t0))
-            (out / "subspace_gradient_check.json").write_text(json.dumps(record) + "\n")
-            print(f"[subspace gradient] k={got['k']}: {record['runs'][-1]['seconds']:.0f} s", flush=True)
-        return
-    if args.check_exact_gradient:
-        t0 = time.monotonic()
-        got = problem.exact_design_gradient(problem.accepted.parameters, row=args.exact_gradient_row,
-                                            h=args.exact_gradient_h, maxiter=args.exact_gradient_maxiter)
-        gn, exact = np.asarray(got["gauss_newton"]), np.asarray(got["gradient"])
-        record = dict(gauss_newton=gn.tolist(), exact=exact.tolist(),
-                      relative=float(np.linalg.norm(gn - exact) / np.linalg.norm(exact)),
-                      componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
-                      cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
-                      cg_residual=got["cg_residual"], seconds=time.monotonic() - t0, h=args.exact_gradient_h,
-                      multiplier=np.asarray(got["multiplier"]).tolist(),
-                      gauss_newton_multiplier=np.asarray(got["gauss_newton_multiplier"]).tolist(),
-                      singular_values=np.asarray(got["singular_values"]).tolist(),
-                      correction_by_singular_direction=np.asarray(got["correction_by_singular_direction"]).tolist(),
-                      maxiter=args.exact_gradient_maxiter, row=args.exact_gradient_row,
-                      certificate=problem._record(problem.accepted.parameters).get("certificate"))
-        (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
-        print(f"[exact gradient] Gauss-Newton vs exact: relative {record['relative']:.2e} "
-              f"(max component {record['componentwise_max']:.2e}), CG {got['cg_iterations']} iterations "
-              f"(converged {got['cg_converged']}), {record['seconds']:.0f} s", flush=True)
+        print(f"[stationarity gradient] {len(got['rows'])} rows, true residual max {max(got['true_residual']):.1e}, "
+              f"Hessian condition {got['condition']:.1e}, {record['seconds']:.0f} s", flush=True)
         return
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps),

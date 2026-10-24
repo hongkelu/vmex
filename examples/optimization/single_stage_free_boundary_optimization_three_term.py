@@ -1709,8 +1709,9 @@ def main(argv=None):
                       boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
-                      newton_polish=None if args.newton_polish is None else dict(step_tol=args.newton_polish,
-                                                                                 h=args.exact_gradient_h),
+                      newton_polish=None if args.newton_polish is None else dict(
+                          step_tol=args.newton_polish, h=args.exact_gradient_h,
+                          products="exact" if args.exact_products else "difference"),
                       exact_gradient=None if args.exact_gradient is None else dict(
                           subspace=args.exact_gradient, h=args.exact_gradient_h,
                           rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
@@ -1986,7 +1987,8 @@ def main(argv=None):
         if sol.get("newton"):
             nw = sol["newton"]
             print(f"[newton polish] {len(nw['steps'])} steps, converged {nw['converged']}, {nw['evaluations']} "
-                  f"evaluations (subspace {nw['subspace']}), {nw['seconds']:.0f} s; scaled steps "
+                  f"evaluations (subspace {nw['subspace']}, products {nw.get('products', 'difference')}, Hessian "
+                  f"{nw.get('seconds_hessian', 0):.0f} s), {nw['seconds']:.0f} s; scaled steps "
                   + " ".join(f"{st['step']:.1e}" for st in nw["steps"]), flush=True)
         (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
         print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "

@@ -1427,6 +1427,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         b = np.asarray(sol["x"], dtype=float).copy()
         g = stationarity(b)
         history, evaluations, converged = [], 1, False
+        if opt.get("products", (self.exact_gradient or {}).get("products")) == "exact":
+            return self._newton_refine_exact(x, params, field, sol, extra, b, g, opt, t0)
         k = int(min(max(opt["subspace"], 0), nb))
         if k:  # the curvature on the k weakest directions, measured here; kept for this point's exact gradient
             import scipy.linalg
@@ -1502,6 +1504,59 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit, subspace=k,
+                             seconds=time.perf_counter() - t0)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
+        return out
+
+    def _newton_refine_exact(self, x, params, field, sol, extra, b, g, opt, t0):
+        """:meth:`_newton_refine` with the dense exact Hessian (:meth:`dense_hessian`) at the certified fit: each step
+        is ``d = -H^-1 g`` (H kept: a chord Newton method, its rate set by how much ``H`` changes over the polish)
+        and costs one tight solve and one reverse pass for ``g`` at the trial point.  Accepts the largest of ``1,
+        1/2, 1/4, 1/8`` of the step that lowers ``(g^T H^-1 g)^(1/2)``, until the scaled step is at most
+        ``step_tol``; then certified as every other record."""
+        import scipy.linalg
+
+        model, nb = self.model, self.model.x0.size
+        scale = np.asarray(model.x_scale, dtype=float)
+        H, asymmetry = self.dense_hessian(x, sol)
+        seconds_hessian = time.perf_counter() - t0
+        factor = scipy.linalg.lu_factor(H)
+
+        def stationarity(bb):
+            return self._cost_gradients(bb, params, field, x)[0]
+
+        merit = float(np.sqrt(abs(g @ scipy.linalg.lu_solve(factor, g))))
+        history, evaluations, converged = [], 1, False
+        for _ in range(int(opt["max_steps"])):
+            d = -scipy.linalg.lu_solve(factor, g)
+            step = float(np.linalg.norm(d / scale))
+            history.append(dict(step=step, merit=merit, evaluations=evaluations))
+            if step <= opt["step_tol"]:
+                converged = True
+                break
+            for t in (1.0, 0.5, 0.25, 0.125):
+                g_try = stationarity(b + t * d)
+                evaluations += 1
+                merit_try = float(np.sqrt(abs(g_try @ scipy.linalg.lu_solve(factor, g_try))))
+                if merit_try < merit:
+                    b, g, merit = b + t * d, g_try, merit_try
+                    break
+            else:
+                history[-1]["stalled"] = True
+                break
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the Newton-refined boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit,
+                             subspace=nb, products="exact", asymmetry=asymmetry, seconds_hessian=seconds_hessian,
                              seconds=time.perf_counter() - t0)
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]

@@ -1455,6 +1455,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         b = np.asarray(sol["x"], dtype=float).copy()
         if self.model._projected is not None:
             return self._newton_refine_projected(x, params, field, extra, b, opt, t0)
+        M = (self._anchor or {}).get("hessian")
+        if opt.get("krylov", True) and isinstance(M, np.ndarray) and M.shape == (b.size, b.size):
+            return self._newton_refine_krylov(x, params, field, extra, b, opt, t0, M)
         return self._newton_refine_exact(x, params, field, extra, b, opt, t0)
 
     def _newton_refine_exact(self, x, params, field, extra, b, opt, t0):
@@ -1622,6 +1625,124 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if quasi:  # a quasi-Newton matrix is not the exact Hessian: the record's gradient builds that afresh
             self._hessian = None
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
+        return out
+
+    def _newton_refine_krylov(self, x, params, field, extra, b, opt, t0, M):
+        """:meth:`_newton_refine_exact` without dense Hessians: each step by truncated conjugate gradients (Steihaug)
+        on exact Hessian products (:meth:`exact_products`, one column per product), preconditioned by ``M``, the
+        accepted point's exact Hessian (a trial is a small design step from it, so few products are needed).
+
+        The step is the exact Newton step to ``cg_rtol`` (or the trust-region boundary, or a direction of negative
+        curvature) and the trust region judges it on the actual cost, as the dense polish; it converges on the same
+        tests (scaled step at most ``step_tol``, or the cost's floor).  No Hessian is kept: the record's exact
+        gradient builds the dense one only for a point the optimizer differentiates."""
+        model, nb = self.model, self.model.x0.size
+        scale = np.asarray(model.x_scale, dtype=float)
+        rtol, maxiter = float(opt.get("cg_rtol", 1e-3)), int(opt.get("cg_maxiter", 40))
+        Ms = np.asarray(M) * np.outer(scale, scale)
+        lam, Q = np.linalg.eigh(0.5 * (Ms + Ms.T))
+        lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
+
+        def precondition(r):
+            return Q @ ((Q.T @ r) / lam)
+
+        def point(bb):  # (cost, g, sol-like record) at bb, or None
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
+            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
+            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
+                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
+
+        def steihaug(rec, gs, radius):
+            """``(ds, Hs ds, products, interior)``: truncated preconditioned CG on ``Hs ds = -gs`` within ``radius``."""
+            def hs(v):
+                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False)[0])[:, 0]
+
+            z, Hz = np.zeros(nb), np.zeros(nb)
+            r = gs.copy()
+            y = precondition(r)
+            d = -y
+            ry, norm0, used = float(r @ y), float(np.linalg.norm(gs)), 0
+            for _ in range(maxiter):
+                Hd = hs(d)
+                used += 1
+                dHd = float(d @ Hd)
+                if dHd <= 0 or np.linalg.norm(z + (ry / dHd) * d) >= radius:  # to the boundary along d
+                    a, bq, cq = float(d @ d), 2 * float(z @ d), float(z @ z) - radius**2
+                    tau = (-bq + np.sqrt(max(bq * bq - 4 * a * cq, 0.0))) / (2 * a)
+                    return z + tau * d, Hz + tau * Hd, used, False
+                alpha = ry / dHd
+                z, Hz, r = z + alpha * d, Hz + alpha * Hd, r + alpha * Hd
+                if float(np.linalg.norm(r)) <= rtol * norm0:
+                    return z, Hz, used, True
+                y = precondition(r)
+                ry_new = float(r @ y)
+                d, ry = -y + (ry_new / ry) * d, ry_new
+            return z, Hz, used, True
+
+        here = point(b)
+        if here is None:
+            raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
+        cost, g, rec = here
+        radius = float(opt.get("radius", 1e-1))
+        history, evaluations, converged, products, seconds_products = [], 1, False, 0, 0.0
+        for _ in range(int(opt["max_steps"])):
+            gs = g * scale
+            th = time.perf_counter()
+            ds, Hds, used, interior = steihaug(rec, gs, radius)
+            seconds_products += time.perf_counter() - th
+            products += used
+            step = float(np.linalg.norm(ds))
+            predicted = -(gs @ ds + 0.5 * ds @ Hds)
+            history.append(dict(cost=cost, step=step, radius=radius, interior=interior, products=used,
+                                evaluations=evaluations))
+            if opt.get("verbose"):
+                print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
+                      f"({'interior' if interior else 'boundary'}), radius {radius:.1e}, {used} products, "
+                      f"{seconds_products:.0f} s in products", flush=True)
+            if interior and step <= opt["step_tol"]:
+                converged = True
+                break
+            if interior and (predicted <= opt.get("floor", 1e-12) * max(cost, 1e-300)
+                             or (radius < 1e-6 and step < 1e-5)):
+                converged = True
+                history[-1]["floor"] = True
+                break
+            trial = point(b + ds * scale)
+            evaluations += 1
+            rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
+            history[-1]["rho"] = float(rho)
+            if rho > 0.1:
+                b, (cost, g, rec) = b + ds * scale, trial
+                if rho > 0.75 and not interior:
+                    radius *= 2
+            else:
+                radius = 0.25 * min(radius, step)
+                if radius < 1e-10:
+                    history[-1]["stalled"] = True
+                    break
+        self._hessian = None
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the Newton-refined boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
+                             products="krylov", product_calls=products, seconds_hessian=seconds_products,
+                             seconds=time.perf_counter() - t0, warm=False)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["newton_products"] = self.stats.get("newton_products", 0) + products
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
 

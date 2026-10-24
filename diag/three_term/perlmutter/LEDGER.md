@@ -158,6 +158,34 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
       truncation error. QH 2.5% NL moves by 6.7e-3 between h 1e-4 and 1e-3 while each pair agrees to 1e-5..2e-4.
       Next: a step sequence and Richardson on QH NL and QA 2.5% (3e-4, 1e-3, 3e-3), and the independent
       Newton-converged differences (`newton-*-fd2`, cold, steps 1e-3..1e-4).
+  - **Step study at finite beta** (stationarity gradient, same seed; reference: h^2 extrapolation of the two
+    smallest steps). The differences scale as h^2 (step ratios 3.2x and 10x for predicted 3.1x and 11x): truncation,
+    not noise. QA 2.5%: h 1e-3 error up to 3.4e-3 (rows 5, 6), **Richardson at 1e-3: 2.2e-4** (10-20x lower, 2x the
+    evaluations). QH 2.5% NL: h 1e-3 up to 1.1e-2, Richardson 2.0e-4 (loss), 1.0e-4 (row 4). GN: 9-35%.
+  - **Weak-subspace preconditioner** (bb04c2dd, `subspace=k`: H measured on the k weakest directions, M = J^T J +
+    rank-2k curvature, factored once; CG still solves to rtol; `scripts/subspace_vs_full.py`, same seed and h 1e-3):
+
+    | seed | full CG / evaluations | subspace / evaluations | max diff vs full | GN max |
+    |---|---|---|---|---|
+    | QA vacuum, k 20, rtol 1e-6 | 20-27 / 298 | 8-12 / 176 | 3.4e-4 | 2.4e-2 |
+    | QA vacuum, k 20, rtol 1e-4 | | 4-9 / 132 | 3.4e-4 | |
+    | QA vacuum, k 40 | | 7-11 / 200 | 3.6e-4 | |
+    | QI 2.5% C3, k 40, rtol 1e-6 | 40-53 / 838 | 11-16 / 342 | 4.1e-4 | 1.6e-1 |
+
+    The true residual (from each row's final product) is floored by the products' noise, 1-4e-4: rtol 1e-4 loses
+    nothing. Production path: `exact_gradient` / `--exact-gradient K` (b91aad50) keeps W and S W between steps.
+  - **Labelling changes the derivative far more than the value** (cold solves of the fixture design at 8 x 8,
+    prescribed current; `scripts/labelling_invariance.py`; cold reruns reproduce the earlier seeds to 7e-10):
+
+    | case, NL vs C 1e-3 | values | exact gradients | GN error (C3) |
+    |---|---|---|---|
+    | QI 2.5% | 2.6e-3 (loss), <= 1.4e-3 | 0.5-16%, **row 6 140%** | 0.6-10% |
+    | QA 2.5% | 1.9e-3 (loss), **vacuum-iota row 10%** | 0.2-31% | 0.4-13% |
+
+    The vacuum-iota row depends only on the boundary and a fixed-boundary vacuum solve: the 8 x 8 equilibrium itself
+    depends on the boundary's poloidal labelling. Each labelling is its own discrete map; the maps differ by
+    0.1-0.3% in value but their slopes by up to 140%, so the difference varies quickly with the design. Pending:
+    C 1e-4 (does the label weight cause it?), QH, and which map is smoother along a design line.
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

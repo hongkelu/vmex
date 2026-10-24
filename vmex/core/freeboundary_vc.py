@@ -1560,6 +1560,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                                 evaluations=evaluations, asymmetry=asymmetry))
             if opt.get("track"):  # the exact gradient at every iterate: does it settle as the point converges?
                 history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=H)["gradients"].tolist()
+            if opt.get("verbose"):
+                drift = ""
+                if opt.get("track") and len(history) > 1:
+                    G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
+                    drift = (" gradient change vs previous iterate max "
+                             f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
+                print(f"[newton] iterate {len(history) - 1}: cost {cost:.12e}, Newton step {step_newton:.2e}, "
+                      f"definite {definite}, radius {radius:.1e}, Hessian {seconds_hessian:.0f} s total{drift}",
+                      flush=True)
             if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break

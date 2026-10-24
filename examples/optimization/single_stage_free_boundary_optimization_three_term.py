@@ -1715,6 +1715,7 @@ def main(argv=None):
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, h=args.exact_gradient_h,
                           products="exact" if args.exact_products else "difference", track=args.newton_track,
+                          verbose=args.newton_track,
                           max_steps=args.newton_max_steps),
                       exact_gradient=None if args.exact_gradient is None else dict(
                           subspace=args.exact_gradient, h=args.exact_gradient_h,

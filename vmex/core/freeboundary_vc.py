@@ -1684,7 +1684,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             E = np.zeros((nb, chunk))
             width = min(chunk, nb - start)
             E[start:start + width, :width] = np.eye(width)
-            columns.append(self.exact_products(x, sol, E)[0][:, :width])
+            columns.append(self.exact_products(x, sol, E, check=False)[0][:, :width])
         H = np.concatenate(columns, axis=1)
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         return 0.5 * (H + H.T), asymmetry
@@ -1710,7 +1710,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         seconds_hessian = time.perf_counter() - t0
         factor = scipy.linalg.lu_factor(H)
         mu = scipy.linalg.lu_solve(factor, G_b[rows].T)  # a column per row
-        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu)
+        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
         gradients = direct[rows] + G_x[rows] - Fd_mu.T
         norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
         true = (np.linalg.norm(G_b[rows].T - H_mu, axis=0) / norms).tolist()
@@ -1836,7 +1836,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     cg_converged=converged, cg_residual=residuals, true_residual=true_residuals, cg_reasons=reasons,
                     evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations, rebuilt=rebuilt)
 
-    def exact_products(self, x, sol, V):
+    def exact_products(self, x, sol, V, check=True):
         """``H V`` and ``F_d^T V`` exactly, by the second-order adjoint of the fit's cost at the record ``sol``.
 
         The cost ``f(z, b, x) = |r|^2 / 2`` of the interface rows is written in the projected equilibrium state
@@ -1858,6 +1858,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if not (bool(mu_ok) and np.asarray(tangent_ok).all() and np.asarray(adjoint_ok).all()):
             raise RuntimeError(f"an exact-product linear solve missed: multiplier {bool(mu_ok)}, tangents "
                                f"{np.asarray(tangent_ok).tolist()}, adjoints {np.asarray(adjoint_ok).tolist()}")
+        if not check:
+            return np.asarray(HV), np.asarray(FdV), None
         xj = jnp.asarray(x, dtype=float)
         params0 = self.model.with_boundary(self._params_at(xj), jnp.asarray(sol["x"], dtype=float))
         g_ref, c_ref, _ = self._cost_gradients(np.asarray(sol["x"], dtype=float), params0, self.field(xj),

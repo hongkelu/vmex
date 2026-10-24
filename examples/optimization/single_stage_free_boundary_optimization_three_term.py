@@ -1088,6 +1088,7 @@ def parse_args(argv=None):
                         "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
+    parser.add_argument("--iota-floor", type=float, help="floor on min |iota| (default: IOTA_FLOOR)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
@@ -1120,6 +1121,8 @@ def parse_args(argv=None):
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
     parser.add_argument("--refit-coils", type=Path, help="with --restart: start from these coils instead (e.g. another "
                         "coil count), their currents scaled and the coils fitted to the restart's equilibrium")
+    parser.add_argument("--boundary-from", type=Path, help="seed with this run's wout.nc boundary and PHIEDGE "
+                        "instead of SEED's; the beta ramp and the coil fit (to --coils) run as for a fresh start")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -1296,7 +1299,7 @@ def write_run_record(out, args):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT, LENGTH_WEIGHT
     args = parse_args(argv)
     LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
@@ -1310,6 +1313,8 @@ def main(argv=None):
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:
         VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
+    if args.iota_floor is not None:
+        IOTA_FLOOR = args.iota_floor
     if args.iota_ceiling is not None:
         IOTA_CEILING = args.iota_ceiling
     if args.aspect_range is not None:
@@ -1336,6 +1341,9 @@ def main(argv=None):
     started = time.monotonic()
     mpol, ntor, ns = RESOLUTION
     inp, redl = seed_input(), None
+    if args.boundary_from is not None:
+        seed = vj.read_wout(args.boundary_from / "wout.nc")
+        inp = replace(boundary_from_wout(inp, seed), phiedge=float(seed.phi[-1]))
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:

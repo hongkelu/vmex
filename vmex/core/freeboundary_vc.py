@@ -1527,6 +1527,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if opt.get("products", (self.exact_gradient or {}).get("products")) == "exact":
             if self.model.gauge is not None:
                 return self._newton_refine_gauge(x, params, field, sol, extra, b, opt, t0)
+            if self.model._projected is not None:
+                return self._newton_refine_projected(x, params, field, extra, b, opt, t0)
             return self._newton_refine_exact(x, params, field, sol, extra, b, g, opt, t0)
         if self.model.gauge is not None:
             raise ValueError("a gauge needs the exact-products Newton polish (products='exact')")
@@ -1788,6 +1790,156 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
 
+    def _newton_refine_projected(self, x, params, field, extra, b, opt, t0):
+        """:meth:`_newton_refine_exact` with a bootstrap current: Newton on the boundary with the current projected.
+
+        The joint Hessian is round-off at the bootstrap weight (:meth:`projected_hessian`), so each step is taken on
+        the reduced cost ``min_c f(b, c)``: its gradient ``g_b - K^T g_c`` and Hessian ``H_red`` (exact at every
+        iterate), in the same trust region on the cost. The current follows with ``-K d_b - H_cc^-1 g_c`` and is then
+        re-solved at the trial boundary by Newton steps on its own block (``H_cc``, at most
+        :data:`PROJECTION_CORRECTIONS`), so the trust region judges the reduced cost. Converged as the exact polish
+        (Newton step or the cost's floor); the last projected Hessian is kept for the record's exact gradient."""
+        import scipy.linalg
+
+        model = self.model
+        scale = np.asarray(model.x_scale, dtype=float)
+        c = np.asarray(model._projected)
+        bi = np.setdiff1d(np.arange(model.x0.size), c)
+        sb = scale[bi]
+
+        def point(bb):  # (cost, g, sol-like record) at bb, or None
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
+            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
+            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
+                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
+
+        def project(bb, here, Hcc):  # the current re-solved at this boundary: Newton on its block
+            used = 0
+            for _ in range(PROJECTION_CORRECTIONS):
+                dc = -np.linalg.solve(Hcc, here[1][c])
+                if -0.5 * float(here[1][c] @ dc) <= 1e-14 * max(here[0], 1e-300):
+                    break
+                trial = bb.copy()
+                trial[c] += dc
+                got = point(trial)
+                used += 1
+                if got is None or got[0] >= here[0]:
+                    break
+                bb, here = trial, got
+            return bb, here, used
+
+        here = point(b)
+        if here is None:
+            raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
+        cost, g, rec = here
+        radius = float(opt.get("radius", 1e-1))
+        history, evaluations, converged, seconds_hessian, P = [], 1, False, 0.0, None
+        for _ in range(int(opt["max_steps"])):
+            th = time.perf_counter()
+            P, asymmetry = self.projected_hessian(x, rec)
+            seconds_hessian += time.perf_counter() - th
+            Hs = P["Hred"] * np.outer(sb, sb)
+            gs = (g[bi] - P["K"].T @ g[c]) * sb
+            current_gain = 0.5 * float(g[c] @ np.linalg.solve(P["Hcc"], g[c]))
+            try:
+                newton = -scipy.linalg.solve(Hs, gs, assume_a="sym")
+                eigenvalues, eigenvectors = np.linalg.eigh(Hs)
+                definite = bool(np.all(eigenvalues > 0))
+            except np.linalg.LinAlgError:
+                newton, definite, eigenvalues, eigenvectors = None, False, None, None
+            step_newton = float(np.linalg.norm(newton)) if newton is not None else np.inf
+            history.append(dict(cost=cost, step=step_newton, radius=radius, definite=definite,
+                                stationarity=float(abs(gs @ newton)) if newton is not None else np.inf,
+                                evaluations=evaluations, asymmetry=asymmetry, leak=P["leak"],
+                                current_gain=current_gain))
+            if eigenvalues is not None:
+                history[-1].update(smallest_eigenvalues=eigenvalues[:5].tolist(),
+                                   largest_eigenvalue=float(eigenvalues[-1]))
+            if opt.get("track"):
+                history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=P)["gradients"].tolist()
+            if opt.get("verbose"):
+                drift = ""
+                if opt.get("track") and len(history) > 1:
+                    G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
+                    drift = (" gradient change vs previous iterate max "
+                             f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
+                eig = "" if eigenvalues is None else (" smallest eigenvalues " + " ".join(
+                    f"{e:.2e}" for e in eigenvalues[:5]) + f" largest {eigenvalues[-1]:.2e}")
+                print(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
+                      f"{step_newton:.2e}, definite {definite}, radius {radius:.1e}, current gain {current_gain:.1e}, "
+                      f"leak {P['leak']:.1e}, Hessian {seconds_hessian:.0f} s total{drift}{eig}", flush=True)
+            if definite and step_newton <= opt["step_tol"]:
+                converged = True
+                break
+            if definite and (0.5 * float(gs @ -newton) + current_gain <= opt.get("floor", 1e-12) * max(cost, 1e-300)
+                             or (radius < 1e-6 and step_newton < 1e-5)):
+                converged = True
+                history[-1]["floor"] = True
+                break
+            accepted = False
+            for _ in range(8):
+                if definite and step_newton <= radius:
+                    ds = newton
+                else:  # the trust-region step: raise lam until the step fits
+                    eye = np.eye(bi.size)
+                    lam_lo, lam_hi = 0.0, max(1.0, float(np.abs(np.diag(Hs)).max()))
+                    while np.linalg.norm(scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")) > radius:
+                        lam_hi *= 10
+                    for _ in range(40):
+                        lam = 0.5 * (lam_lo + lam_hi)
+                        ds = scipy.linalg.solve(Hs + lam * eye, -gs, assume_a="sym")
+                        if np.linalg.norm(ds) > radius or not np.all(np.isfinite(ds)):
+                            lam_lo = lam
+                        else:
+                            lam_hi = lam
+                    ds = scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")
+                predicted = -(gs @ ds + 0.5 * ds @ Hs @ ds) + current_gain
+                d = np.zeros_like(b)
+                d[bi] = ds * sb
+                d[c] = -P["K"] @ d[bi] - np.linalg.solve(P["Hcc"], g[c])
+                trial = point(b + d)
+                evaluations += 1
+                b_try = b + d
+                if trial is not None:
+                    b_try, trial, used = project(b_try, trial, P["Hcc"])
+                    evaluations += used
+                rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
+                if rho > 0.1:
+                    b, (cost, g, rec) = b_try, trial
+                    if rho > 0.75 and np.linalg.norm(ds) > 0.9 * radius:
+                        radius *= 2
+                    accepted = True
+                    history[-1].update(taken=float(np.linalg.norm(ds)), rho=float(rho))
+                    break
+                radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
+            if not accepted:
+                history[-1]["stalled"] = True
+                break
+        self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=P) \
+            if converged else None
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the Newton-refined boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
+                             subspace=bi.size, products="exact", seconds_hessian=seconds_hessian,
+                             seconds=time.perf_counter() - t0, warm=False, projected=True)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
+        return out
+
     def _newton_refine_gauge(self, x, params, field, sol, extra, b, opt, t0):
         """Newton on the fit's cost under the exact gauge ``c(b) = 0`` (:attr:`ThreeTermFreeBoundaryModel.gauge`).
 
@@ -2020,6 +2172,32 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         return 0.5 * (H + H.T), asymmetry
 
+    def projected_hessian(self, x, sol, chunk=None):
+        """With a bootstrap current: the fit's exact Hessian with the stiff current block eliminated, as a dict.
+
+        The current rows carry ``bootstrap_weight`` (squared in ``H``), so in one matrix with the boundary's
+        relabelling valley the condition number reaches ~1e12 and the dense solve and eigenvalues are round-off
+        (indefinite at the minimum). Instead: the current columns ``H[:, c]`` (one :meth:`exact_products` call),
+        ``K = H_cc^-1 H_cb``, then the products along the current-following directions ``[I; -K]`` give the reduced
+        Hessian ``H_red = H_bb - H_bc K`` directly: along them the weighted current rows' first-order change cancels
+        inside each product, not in a difference of large entries. ``H = T^T diag(H_red, H_cc) T`` with ``T = [[I,
+        0], [K, I]]`` (:func:`_projected_solve`). ``leak`` is the relative size of the current rows of those
+        products, zero up to round-off."""
+        chunk = EXACT_PRODUCTS_CHUNK if chunk is None else chunk
+        n, c = self.model.x0.size, np.asarray(self.model._projected)
+        bi = np.setdiff1d(np.arange(n), c)
+        E = np.eye(n)
+        Hc = np.asarray(self.exact_products(x, sol, E[:, c], check=False, chunk=chunk)[0])
+        Hcc = 0.5 * (Hc[c] + Hc[c].T)
+        K = np.linalg.solve(Hcc, Hc[bi].T)
+        V = E[:, bi].copy()
+        V[c] = -K
+        HP = np.asarray(self.exact_products(x, sol, V, check=False, chunk=chunk)[0])
+        Hred = HP[bi]
+        asymmetry = float(np.linalg.norm(Hred - Hred.T) / max(np.linalg.norm(Hred), 1e-300))
+        leak = float(np.linalg.norm(HP[c]) / max(np.linalg.norm(Hc[c]), 1e-300))
+        return dict(Hred=0.5 * (Hred + Hred.T), Hcc=Hcc, K=K, b=bi, c=c, leak=leak), asymmetry
+
     def _exact_dense_gradients(self, x, sol, rows=None, H=None, gauge=None):
         """Every row's exact design gradient with the dense exact Hessian: ``mu = H^-1 Q_b^T`` (one factorization for
         every row), then ``Q_d - F_d^T mu`` and each row's true residual ``|Q_b - H mu| / |Q_b|`` from one more exact
@@ -2047,6 +2225,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
             H, asymmetry = kept["H"], 0.0  # the converged Newton polish's Hessian at this record
             gauge = kept.get("gauge")
+        elif self.model._projected is not None and self.model.gauge is None:
+            H, asymmetry = self.projected_hessian(x, sol)
         else:
             H, asymmetry = self.dense_hessian(x, sol)
         if self.model.gauge is not None and gauge is None:  # the multipliers of this record (a KKT point)
@@ -2057,7 +2237,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             H = H + np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
         seconds_hessian = time.perf_counter() - t0
         Q = G_b[rows].T  # a column per row
-        if gauge is None:
+        if isinstance(H, dict):  # the current block eliminated (projected_hessian)
+            mu, curvature_mu = _projected_solve(H, Q), 0.0
+        elif gauge is None:
             factor = scipy.linalg.lu_factor(H)
             mu = scipy.linalg.lu_solve(factor, Q)
             curvature_mu = 0.0
@@ -2074,12 +2256,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
         true = (np.linalg.norm(Q - H_mu - curvature_mu, axis=0) / norms).tolist()
         self._hessian = dict(b=b0, x=np.asarray(x, dtype=float).copy(), H=H)
-        if gauge is None:  # the exact Hessian of this record: the anchor's first Newton step for later trials
+        condition = float(np.linalg.cond(H["Hred"] if isinstance(H, dict) else H))
+        if gauge is None and not isinstance(H, dict):  # this record's exact Hessian: later trials' first Newton step
             sol["hessian"] = H
             if isinstance(sol.get("anchor"), dict):
                 sol["anchor"]["hessian"] = H
         return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry,
-                    condition=float(np.linalg.cond(H)), seconds_hessian=seconds_hessian,
+                    condition=condition, seconds_hessian=seconds_hessian,
                     cg_iterations=[0] * len(rows), cg_converged=[True] * len(rows), cg_residual=true,
                     cg_reasons=["dense"] * len(rows), evaluations=0, subspace=nb, subspace_evaluations=0,
                     rebuilt=True)
@@ -2911,6 +3094,17 @@ PROJECTION_GATE = None
 def _projection_gate(ftol):
     """The conditional-stationarity gate of the projected coordinates (:data:`PROJECTION_GATE`)."""
     return 0.1 * ftol if PROJECTION_GATE is None else min(0.1 * ftol, float(PROJECTION_GATE))
+
+
+def _projected_solve(P, rhs):
+    """``H^-1 rhs`` for a Hessian with its current block eliminated (``projected_hessian``): with ``H = T^T diag(H_red,
+    H_cc) T``, ``T = [[I, 0], [K, I]]``, each block solved on its own (no solve mixes their scales)."""
+    rhs = np.asarray(rhs, dtype=float)
+    b, c, K = P["b"], P["c"], P["K"]
+    z_b = np.linalg.solve(P["Hred"], rhs[b] - K.T @ rhs[c])
+    out = np.empty_like(rhs)
+    out[b], out[c] = z_b, np.linalg.solve(P["Hcc"], rhs[c]) - K @ z_b
+    return out
 
 
 def _project(evaluate, x, got, Q_c, R_c, index, budget, tol):

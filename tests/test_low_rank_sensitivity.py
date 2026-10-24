@@ -228,3 +228,33 @@ def test_trust_region_newton_follows_a_curved_valley():
     np.testing.assert_allclose(b, [1.0, 3.0], atol=1e-8)
     costs = [h["cost"] for h in history]
     assert all(c2 <= c1 for c1, c2 in zip(costs, costs[1:]))
+
+
+def test_projected_solve_matches_the_joint_solve_and_survives_a_stiff_block():
+    """A stiff (weighted) current block on a soft boundary block: the projected Hessian's block solve is the joint
+    solve where that is accurate, and stays accurate (residual relative to the reduced blocks) at a weight where the
+    joint matrix is near-singular in double precision."""
+    rng = np.random.default_rng(3)
+    nb, nc, m = 12, 4, 30
+    J_b = rng.standard_normal((m, nb)) @ np.diag(np.logspace(0, -4, nb))  # a soft (relabelling-like) tail
+    A_b, A_c = rng.standard_normal((nc, nb)), rng.standard_normal((nc, nc)) + 3 * np.eye(nc)
+    J_c = rng.standard_normal((m, nc))
+    for weight, joint_ok in ((1.0, True), (1e6, False)):
+        J = np.r_[np.c_[J_b, J_c], weight * np.c_[A_b, A_c]]  # interface rows; weighted closure rows
+        H = J.T @ J
+        b, c = np.arange(nb), np.arange(nb, nb + nc)
+        Hcc = H[np.ix_(c, c)]
+        K = np.linalg.solve(Hcc, H[np.ix_(c, b)])
+        # the reduced Hessian as projected_hessian forms it: products along [I; -K] (here the closure cancels in J)
+        JP = J[:, b] - J[:, c] @ K
+        P = dict(Hred=JP.T @ JP, Hcc=Hcc, K=K, b=b, c=c)
+        rhs = rng.standard_normal(nb + nc)
+        x = fvc._projected_solve(P, rhs)
+        exact = np.linalg.solve(H, rhs) if joint_ok else None
+        if joint_ok:
+            np.testing.assert_allclose(x, exact, rtol=1e-8, atol=1e-10 * np.abs(exact).max())
+        # the reduced equation holds at any weight: H_red x_b = rhs_b - K^T rhs_c
+        np.testing.assert_allclose(P["Hred"] @ x[b], rhs[b] - K.T @ rhs[c], rtol=1e-8,
+                                   atol=1e-10 * np.abs(rhs).max())
+        if not joint_ok:  # where the joint matrix is round-off: its condition number says so
+            assert np.linalg.cond(H) > 1e14 > 1e2 * np.linalg.cond(P["Hred"])

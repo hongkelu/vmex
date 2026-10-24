@@ -1617,8 +1617,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 HV = np.asarray(self.exact_products(x, rec, V * scale[:, None], check=False)[0]) * scale[:, None]
                 D = HV - Hs_old @ V
                 Hs_new = Hs_old + D @ V.T + V @ D.T - V @ (V.T @ D) @ V.T
-                H = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
+                Hs_new = 0.5 * (Hs_new + Hs_new.T)
                 asymmetry = float(np.linalg.norm(V.T @ D - D.T @ V) / max(np.linalg.norm(V.T @ HV), 1e-300))
+                if np.linalg.eigvalsh(Hs_new)[0] > 0:
+                    H = Hs_new / np.outer(scale, scale)
+                else:  # a stale direction outside the refreshed ones turned the model indefinite: refresh it all
+                    H, asymmetry = self.dense_hessian(x, rec)
             seconds_hessian += time.perf_counter() - th
             Hs = H * (scale[:, None] * scale[None, :])  # scaled coordinates
             gs = g * scale

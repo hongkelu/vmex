@@ -1726,6 +1726,80 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     cg_converged=converged, cg_residual=residuals, true_residual=true_residuals, cg_reasons=reasons,
                     evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations, rebuilt=rebuilt)
 
+    def exact_products(self, x, sol, V):
+        """``H V`` and ``F_d^T V`` exactly, by the second-order adjoint of the fit's cost at the record ``sol``.
+
+        The cost ``f(z, b, x) = |r|^2 / 2`` of the interface rows is written in the projected equilibrium state
+        ``z``, the model coordinates ``b`` and the design ``x`` (plasma parameters and coil field), with the
+        equilibrium ``F(z, b, x) = 0`` (raw force).  With the multiplier ``F_z^T mu = f_z`` and the Lagrangian
+        ``L = f - mu^T F``, ``g = L_b`` and ``c = L_x``.  Along a column ``v``: the state tangent ``F_z dz =
+        -F_b v``; ``u = d/dt grad L (z + t dz, b + t v, x)`` (one forward-over-reverse pass); ``F_z^T dmu = u_z``;
+        then ``H v = u_b - F_b^T dmu`` and ``F_d^T v = u_x - F_x^T dmu``.  Two linear solves on one block
+        factorization per column, no re-solved equilibria and no difference step.  Returns ``(HV, FdV,
+        consistency)``: ``consistency`` compares ``L_b``, ``L_x`` with :meth:`_cost_gradients` (same point).
+        """
+        model = self.model
+        im, cfg = model._im, model.cfg
+        xj = jnp.asarray(x, dtype=float)
+        b0 = jnp.asarray(sol["x"], dtype=float)
+        state, mask = sol["state"], sol["mask"]
+        frozen = jax.lax.stop_gradient(state)
+        P = im._dof_projector(cfg, mask)
+        edge = im._edge_mask(cfg)
+        F_raw = im.residual_fn(cfg, frozen, mask, formulation="raw")
+        z0 = P(frozen)
+        params_at, field_at = self._params_at, self.field
+
+        def prm(b, xx):
+            return model.with_boundary(params_at(xx), b)
+
+        def cost(z, b, xx):
+            p = prm(b, xx)
+            r = model.rows(im._assemble(z, im.runtime_from_params(p, cfg), frozen, P, edge), p, field_at(xx))
+            return 0.5 * jnp.vdot(r, r)
+
+        def force(z, b, xx):
+            return F_raw(z, prm(b, xx))
+
+        def tree_dot(a, c):
+            return sum(jnp.vdot(u, w) for u, w in zip(jax.tree.leaves(a), jax.tree.leaves(c)))
+
+        system = im._raw_block_system(prm(b0, xj), cfg, frozen, mask, im._active_state_fields(cfg), model.chunk)
+        _, vjp_z = jax.vjp(lambda z: force(z, b0, xj), z0)
+
+        def adjoint(rhs):
+            mu, residual, tolerance = im._block_adjoint(system, lambda w: vjp_z(w)[0], system.project(rhs), cfg)
+            if not float(residual) <= float(tolerance):
+                raise RuntimeError(f"second-order adjoint solve missed: {float(residual):.2e} > {float(tolerance):.2e}")
+            return mu
+
+        mu = adjoint(jax.grad(cost, 0)(z0, b0, xj))
+
+        def lagrangian(z, b, xx):
+            return cost(z, b, xx) - tree_dot(mu, force(z, b, xx))
+
+        grad_L = jax.grad(lagrangian, argnums=(0, 1, 2))
+        _, L_b, L_x = grad_L(z0, b0, xj)
+        params0 = prm(b0, xj)
+        g_ref, c_ref, _ = self._cost_gradients(np.asarray(b0), params0, field_at(xj), np.asarray(xj))
+        consistency = dict(
+            g=float(np.linalg.norm(np.asarray(L_b) - g_ref) / max(np.linalg.norm(g_ref), 1e-300)),
+            c=float(np.linalg.norm(np.asarray(L_x) - c_ref) / max(np.linalg.norm(c_ref), 1e-300)))
+        _, vjp_bx = jax.vjp(lambda b, xx: force(z0, b, xx), b0, xj)
+        HV, FdV = [], []
+        for v in np.asarray(V, dtype=float).T:
+            vj = jnp.asarray(v)
+            dprm = jax.jvp(lambda b: prm(b, xj), (b0,), (vj,))[1]
+            dz, certified = model._tangents(params0, state, mask, jax.tree.map(lambda a: a[None], dprm))
+            if not np.asarray(certified).all():
+                raise RuntimeError("the state tangent of an exact product is not certified")
+            dz = P(jax.tree.map(lambda a: a[0], dz))
+            _, (u_z, u_b, u_x) = jax.jvp(grad_L, (z0, b0, xj), (dz, vj, jnp.zeros_like(xj)))
+            back_b, back_x = vjp_bx(adjoint(u_z))
+            HV.append(np.asarray(u_b - back_b))
+            FdV.append(np.asarray(u_x - back_x))
+        return np.array(HV).T, np.array(FdV).T, consistency
+
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
         """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).
 

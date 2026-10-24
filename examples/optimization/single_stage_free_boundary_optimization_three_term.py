@@ -1193,6 +1193,10 @@ def parse_args(argv=None):
                         help="after its certificate, refine every fit by Newton steps on its stationarity (exact "
                         "curvature) until the scaled step is at most STEP_TOL, so the fit's response is determined "
                         "(ThreeTermFreeBoundaryProblem._newton_refine; default: off)")
+    parser.add_argument("--check-exact-products", action="store_true",
+                        help="compare the second-order adjoint products H v, F_d^T v (ThreeTermFreeBoundaryProblem."
+                        "exact_products) with Richardson difference products along the weakest, strongest and a random "
+                        "direction, with timings (exact_products_check.json), then stop")
     parser.add_argument("--check-products", action="store_true",
                         help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
                         "with those from full linearizations, along the weakest, strongest and a random direction")
@@ -1846,8 +1850,48 @@ def main(argv=None):
             problem.save_checkpoint(out / "checkpoint.npz")
 
     if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
-                                  or args.check_stationarity_gradient):
+                                  or args.check_stationarity_gradient or args.check_exact_products):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_exact_products:  # second-order adjoint products vs Richardson difference products
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        _, _, Vt = np.linalg.svd(np.asarray(sol["J"])[:, :nb] * scale, full_matrices=False)
+        rng = np.random.default_rng(0)
+        names = ("weakest", "strongest", "random")
+        V = np.stack([Vt[-1] * scale, Vt[0] * scale, rng.standard_normal(nb) * scale], axis=1)
+        t0 = time.monotonic()
+        problem.exact_products(x_seed, sol, V[:, :1])  # compile
+        t1 = time.monotonic()
+        HV, FdV, consistency = problem.exact_products(x_seed, sol, V)
+        t2 = time.monotonic()
+        print(f"[exact products] first-order consistency: g {consistency['g']:.2e}, c {consistency['c']:.2e}; "
+              f"compile+1 column {t1 - t0:.0f} s, 3 columns {t2 - t1:.1f} s", flush=True)
+        record = dict(consistency=consistency, seconds_first=t1 - t0, seconds_three=t2 - t1, h=args.exact_gradient_h,
+                      directions={})
+        for j, name in enumerate(names):
+            v = V[:, j]
+            def central(step):
+                eps = step / float(np.linalg.norm(v / scale))
+                gp, cp, _ = problem._cost_gradients(b0 + eps * v, params_s, field_s, x_seed)
+                gm, cm, _ = problem._cost_gradients(b0 - eps * v, params_s, field_s, x_seed)
+                return (gp - gm) / (2 * eps), (cp - cm) / (2 * eps)
+            t3 = time.monotonic()
+            (h1, f1), (h2, f2) = central(args.exact_gradient_h), central(args.exact_gradient_h / 2)
+            t4 = time.monotonic()
+            Hr, Fr = (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
+            rec = dict(H=float(np.linalg.norm(HV[:, j] - Hr) / np.linalg.norm(Hr)),
+                       F=float(np.linalg.norm(FdV[:, j] - Fr) / max(np.linalg.norm(Fr), 1e-300)),
+                       H_plain=float(np.linalg.norm(HV[:, j] - h1) / np.linalg.norm(h1)),
+                       seconds_richardson=t4 - t3)
+            record["directions"][name] = rec
+            print(f"[exact products] {name}: exact vs Richardson H {rec['H']:.2e}, F_d^T {rec['F']:.2e} "
+                  f"(vs plain h: H {rec['H_plain']:.2e}); Richardson pair {t4 - t3:.1f} s", flush=True)
+        (out / "exact_products_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
     if args.check_products:  # H v and F_d^T v from reverse passes vs from full linearizations, same v
         x_seed = problem.accepted.parameters
         sol = problem._record(x_seed)

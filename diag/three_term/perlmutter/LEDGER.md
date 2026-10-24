@@ -256,6 +256,23 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     - Hessian batching (subagent, be072650/e013349e): one block system and multiplier per Hessian, 9-12% faster
       (QA 132 -> 116 s, QH 224 -> 203 s), agreement 1e-12. vmap is out of memory: the virtual-casing jvp-of-grad
       holds about 25 GB per column.
+  - **Independent finite-difference validation of the exact gradient: PASSED (QA 2.5%, prescribed current, NL).**
+    Re-solved central differences along a random design direction, each trial Newton-converged (warm start + hybrid
+    BFGS polish), against the exact (dense second-order adjoint) gradient at the converged point (`fdx-qa25-v3`):
+
+    | h | loss | constraint rows |
+    |---|---|---|
+    | 1e-3 | 8.9e-7 | 5.5e-3 |
+    | 3e-4 | 2.1e-5 | 8.5e-4 |
+    | 1e-4 | 1.0e-6 | 6.7e-5 |
+
+    The rows converge as h^2 (6.5x, 12.7x); the loss agrees at 1e-6 (2e-5 at 3e-4 is trial-value noise). It is
+    reproducible across segments. QH 2.5% is running.
+  - **Redl rows are not twice differentiable** (`--check-rows-c2`): the interface rows' exact second derivative
+    matches differences of their gradient as h^2 (7e-3, 7e-5, 7e-7). The bootstrap rows' does not (0.88, 0.15, 0.15
+    at h 1e-4, 1e-5, 1e-6: a kink, curvature 1e4x larger). Gauss-Newton curvature for the Redl rows (16d61389)
+    leaves the products unchanged (r_B ~ 0), so the 1.6-5% product mismatch is in the difference reference across
+    the kinks. Redl is to be judged by the end-to-end finite-difference check from a converged Redl seed (dev2).
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

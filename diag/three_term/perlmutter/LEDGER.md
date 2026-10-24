@@ -331,6 +331,21 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
 - Speed observation (G3): with no labelling rows (NL), the vacuum seeds' certificates are much slower than with equal
   arc. qivac NL was still polishing after 45 min, while qivac equal arc built in 14 min and is at step 5.
 
+### 10-24 Redl exact Newton: conditioning, not a kink (5b3d9fe2)
+
+- **Kink probe** (`scripts/redl_kink_probe.py`, Redl QA/QH 2.5% seed decks, dev2 job 60218579): the global |B| maximum
+  has exact stellarator-symmetric twins (gap ~1e-15) on 11 (QA) and 48 (QH) of 50 surfaces. Along a
+  symmetry-breaking |B| change the twins split: Bmax, f_t and Redl's <J.B> kink (one-sided slopes differ 100%).
+  Along stellarator-symmetric changes (every design) they are C1: forward/backward slopes agree to O(t)
+  (QA jdotB 2e-4, 2e-5, 2e-6 at t = 1e-4, 1e-5, 1e-6). The Redl model is not the obstacle.
+- **Cause**: the bootstrap-weighted current rows (weight 100, 1e4 in H) share one Hessian with the 1e-9-soft
+  relabelling valley: rcond 3e-18, so the dense solve and eigenvalues are round-off (indefinite, gradient change
+  O(1)-20 between iterates at radius 1e-4; QH BFGS reached an eigenvalue -1.2e9). Without Redl cond is ~1e8.
+- **Fix**: `projected_hessian` (current columns, `K = H_cc^-1 H_cb`, products along `[I; -K]` give `H_red` with
+  no cancellation of large entries); `_newton_refine_projected` (Newton on the boundary, current re-solved on its
+  block); design gradient by block solve (`_projected_solve`). Same 308 products per Hessian. Unit test passes;
+  cold Redl solves dxp-qa25/dxp-qh25 running.
+
 ## Package D: boundary coordinates and steps
 
 | id | issue | status | evidence | next action |

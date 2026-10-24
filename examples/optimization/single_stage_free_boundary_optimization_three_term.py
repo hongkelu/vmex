@@ -1211,6 +1211,10 @@ def parse_args(argv=None):
     parser.add_argument("--newton-partial", type=int, default=0, metavar="K",
                         help="Newton polish: after the first full exact Hessian, refresh only its K weakest directions "
                         "each step (exact columns, symmetric low-rank correction); 0 refreshes it fully")
+    parser.add_argument("--check-rows-c2", action="store_true",
+                        help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
+                        "separately) along a random state direction: autodiff vs central differences of its exact "
+                        "gradient (rows_c2_check.json), then stop")
     parser.add_argument("--check-g-noise", action="store_true",
                         help="the fit's stationarity g at the accepted boundary from three equilibrium starts (hot, "
                         "cold, the record's own state), and the scaled Newton step their differences imply "
@@ -1903,8 +1907,48 @@ def main(argv=None):
 
     if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
                                   or args.check_stationarity_gradient or args.check_exact_products
-                                  or args.check_g_noise):
+                                  or args.check_g_noise or args.check_rows_c2):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        model = problem.model
+        cfg = model.cfg
+        frozen = jax.lax.stop_gradient(sol["state"])
+        P = im._dof_projector(cfg, sol["mask"])
+        edge = im._edge_mask(cfg)
+        params_b, field_s = sol["params"], problem.field(jnp.asarray(x_seed))
+        z0 = P(frozen)
+        parts = dict(interface=lambda st, rt, p: model.rows_at(st, rt, field_s))
+        if model.bootstrap is not None:
+            parts["bootstrap"] = lambda st, rt, p: model.bootstrap.rows(st, rt, p)
+        rng = np.random.default_rng(0)
+        leaves, tree = jax.tree.flatten(z0)
+        direction = jax.tree.unflatten(tree, [jnp.asarray(rng.standard_normal(np.shape(a))) for a in leaves])
+        direction = P(direction)
+        norm = float(np.sqrt(sum(float(jnp.vdot(a, a)) for a in jax.tree.leaves(direction))))
+        direction = jax.tree.map(lambda a: a / norm, direction)
+        record = {}
+        for name, rows_of in parts.items():
+            def f(z, rows_of=rows_of):
+                st = im._assemble(z, im.runtime_from_params(params_b, cfg), frozen, P, edge)
+                r = rows_of(st, im.runtime_from_params(params_b, cfg), params_b)
+                return 0.5 * jnp.vdot(r, r)
+            grad = jax.jit(jax.grad(f))
+            exact = jax.jvp(grad, (z0,), (direction,))[1]
+            flat = lambda t: np.concatenate([np.ravel(np.asarray(a)) for a in jax.tree.leaves(t)])  # noqa: E731
+            e = flat(exact)
+            rows = []
+            for h in (1e-3, 1e-4, 1e-5, 1e-6):
+                plus = grad(jax.tree.map(lambda a, d: a + h * d, z0, direction))
+                minus = grad(jax.tree.map(lambda a, d: a - h * d, z0, direction))
+                fd = (flat(plus) - flat(minus)) / (2 * h)
+                rows.append(dict(h=h, relative=float(np.linalg.norm(fd - e) / max(np.linalg.norm(e), 1e-300))))
+            record[name] = rows
+            print(f"[rows C2] {name}: |d2 f v| {np.linalg.norm(e):.3e}; exact vs differences of the exact gradient: "
+                  + " ".join(f"h={r['h']:.0e} {r['relative']:.1e}" for r in rows), flush=True)
+        (out / "rows_c2_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
     if args.check_g_noise:  # the fit's stationarity g from two equilibrium starts at one boundary, and its Newton effect
         import scipy.linalg
         x_seed = problem.accepted.parameters

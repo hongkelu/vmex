@@ -1242,6 +1242,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
+        self._krylov_radius = 0.0  # the trials' trust radius carried between Newton polishes
         # seconds_*: wall time per phase (trial fits; certificates with their polish; design gradients)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           seconds_fit=0.0, seconds_certify=0.0, seconds_gradient=0.0,
@@ -1696,7 +1697,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if here is None:
             raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
         cost, g, rec = here
-        radius = float(opt.get("radius", 1e-1))
+        # The trust radius starts where the previous trial's polish ended its first phase (its largest accepted
+        # step): consecutive trials move the boundary along the same flat directions by similar amounts.
+        radius = max(float(opt.get("radius", 1e-1)), getattr(self, "_krylov_radius", 0.0))
         history, evaluations, converged, products, seconds_products = [], 1, False, 0, 0.0
         for _ in range(int(opt["max_steps"])):
             gs = g * scale
@@ -1726,6 +1729,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             history[-1]["rho"] = float(rho)
             if rho > 0.1:
                 b, (cost, g, rec) = b + ds * scale, trial
+                self._krylov_radius = max(getattr(self, "_krylov_radius", 0.0), 0.5 * step)
                 if rho > 0.75 and not interior:
                     radius *= 2
             else:

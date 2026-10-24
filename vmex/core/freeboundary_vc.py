@@ -2258,6 +2258,23 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def force(z, b, xx):
             return F_raw(z, prm(b, xx))
 
+        # The bootstrap (Redl) rows enter the curvature by Gauss-Newton, J_B^T J_B: they are a closure driven to zero
+        # at every solution (residual ~1e-10), where that is the exact Hessian of the smooth model, while the
+        # discrete trapped fraction's own second derivative is near-singular at grid points with |B| ~ Bmax
+        # (sqrt(1 - lambda B) with both small) and, times even that residual, would dominate the product.
+        def bootstrap_rows(z, b, xx):
+            p = prm(b, xx)
+            st = im._assemble(z, im.runtime_from_params(p, cfg), frozen, P, edge)
+            return model.bootstrap.rows(st, im.runtime_from_params(p, cfg), p)
+
+        def interface_cost(z, b, xx):
+            p = prm(b, xx)
+            r = model.rows_at(im._assemble(z, im.runtime_from_params(p, cfg), frozen, P, edge),
+                              im.runtime_from_params(p, cfg), field_at(xx))
+            return 0.5 * jnp.vdot(r, r)
+
+        split = model.bootstrap is not None and not model.fixed_boundary
+
         def tree_dot(a, c):
             return sum(jnp.vdot(u, w) for u, w in zip(jax.tree.leaves(a), jax.tree.leaves(c)))
 
@@ -2276,13 +2293,24 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         grad_L = jax.grad(lagrangian, argnums=(0, 1, 2))
         _, L_b, L_x = grad_L(z0, b0, xj)
+        if split:
+            grad_second = jax.grad(lambda z, b, xx: interface_cost(z, b, xx) - tree_dot(mu, force(z, b, xx)),
+                                   argnums=(0, 1, 2))
+            _, vjp_boot = jax.vjp(bootstrap_rows, z0, b0, xj)
+        else:
+            grad_second = grad_L
         _, vjp_bx = jax.vjp(lambda b, xx: force(z0, b, xx), b0, xj)
 
         def column(args):
             dz, v = args
             # The design is not moved: its tangent is a symbolic zero, so nothing is pushed through the coil field
             # (jax.linearize once for every column is slower and holds 2x the memory: 69 GB for 16 QA columns).
-            _, (u_z, u_b, u_x) = jax.jvp(lambda z, b: grad_L(z, b, xj), (z0, b0), (P(dz), v))
+            _, (u_z, u_b, u_x) = jax.jvp(lambda z, b: grad_second(z, b, xj), (z0, b0), (P(dz), v))
+            if split:  # + J_B^T (J_B t): the bootstrap rows' Gauss-Newton curvature
+                Jt = jax.jvp(lambda z, b: bootstrap_rows(z, b, xj), (z0, b0), (P(dz), v))[1]
+                gz, gb, gx = vjp_boot(Jt)
+                u_z = jax.tree.map(jnp.add, u_z, gz)
+                u_b, u_x = u_b + gb, u_x + gx
             dmu, ok = adjoint(u_z)
             back_b, back_x = vjp_bx(dmu)
             return u_b - back_b, u_x - back_x, ok

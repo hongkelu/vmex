@@ -235,6 +235,12 @@ KRYLOV_HESSIAN_AGE = 5
 #: Most block conjugate-gradient iterations of ``_krylov_gradients`` before the dense Hessian is built instead.
 KRYLOV_GRADIENT_MAXITER = 30
 
+#: The Newton polishes' floor: a predicted decrease at most this fraction of the cost is stationarity to the cost's
+#: resolution (tight interior solves resolve it to ~1e-10, QI 2.5%: a restored point's last steps changed it by
+#: 1e-18..1e-17 of 6.6e-8). The step it leaves lies along the flattest directions (~1e-4 scaled), where the design
+#: gradient changes by ~1e-5.
+NEWTON_FLOOR = 1e-9
+
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
 PIN_FLAT_RTOL = 1e-6
@@ -1622,8 +1628,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 break
             # The cost's own floor: a Newton step whose predicted decrease is below the cost's rounding cannot be
             # told from noise by the actual/predicted ratio; the point is stationary to the cost's precision.
-            if definite and (0.5 * float(gs @ -newton) <= opt.get("floor", 1e-12) * max(cost, 1e-300)
-                             or (radius < 1e-6 and step_newton < 1e-5)):
+            if definite and (0.5 * float(gs @ -newton) <= opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300)
+                             or radius < 1e-6):
                 converged = True
                 history[-1]["floor"] = True
                 break
@@ -1782,7 +1788,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if interior and step <= opt["step_tol"]:
                 converged = True
                 break
-            if interior and predicted <= opt.get("floor", 1e-12) * max(cost, 1e-300):
+            if interior and predicted <= opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300):
                 converged = True
                 history[-1]["floor"] = True
                 break
@@ -1796,8 +1802,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     radius *= 2
             else:
                 radius = 0.25 * min(radius, step_m)
-                if radius < 1e-14 * max(float(np.sqrt(2 * cost)), 1e-300):
-                    history[-1]["stalled"] = True
+                # A step whose M-norm is r predicts a decrease of about r^2 / 2: below the cost's resolution the
+                # trust region cannot tell the model from noise, and the point is stationary to that precision.
+                if 0.5 * radius**2 <= opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300):
+                    converged = True
+                    history[-1]["floor"] = True
                     break
         self._hessian = None
         if not converged:
@@ -1911,8 +1920,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break
-            if definite and (0.5 * float(gs @ -newton) + current_gain <= opt.get("floor", 1e-12) * max(cost, 1e-300)
-                             or (radius < 1e-6 and step_newton < 1e-5)):
+            if definite and (0.5 * float(gs @ -newton) + current_gain <= opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300)
+                             or radius < 1e-6):
                 converged = True
                 history[-1]["floor"] = True
                 break

@@ -1242,7 +1242,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
-        self._krylov_radius = 0.0  # the trials' trust radius carried between Newton polishes
         # seconds_*: wall time per phase (trial fits; certificates with their polish; design gradients)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           seconds_fit=0.0, seconds_certify=0.0, seconds_gradient=0.0,
@@ -1651,8 +1650,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         lam, Q = np.linalg.eigh(0.5 * (Ms + Ms.T))
         lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
 
+        Ms = Q @ (lam[:, None] * Q.T)  # the preconditioner itself (|eigenvalues|): the trust region's metric
+
         def precondition(r):
             return Q @ ((Q.T @ r) / lam)
+
+        def mnorm(v):  # the trust region is ||d||_M: along the flat directions a long move is a short one in M
+            return float(np.sqrt(max(v @ (Ms @ v), 0.0)))
 
         def point(bb):  # (cost, g, sol-like record) at bb, or None
             got = model.evaluate(bb, params, field, tight=True)
@@ -1680,8 +1684,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 Hd = hs(d)
                 used += 1
                 dHd = float(d @ Hd)
-                if dHd <= 0 or np.linalg.norm(z + (ry / dHd) * d) >= radius:  # to the boundary along d
-                    a, bq, cq = float(d @ d), 2 * float(z @ d), float(z @ z) - radius**2
+                if dHd <= 0 or mnorm(z + (ry / dHd) * d) >= radius:  # to the boundary along d (M-norm)
+                    Md = Ms @ d
+                    a, bq, cq = float(d @ Md), 2 * float(z @ Md), mnorm(z) ** 2 - radius**2
                     tau = (-bq + np.sqrt(max(bq * bq - 4 * a * cq, 0.0))) / (2 * a)
                     return z + tau * d, Hz + tau * Hd, used, False
                 alpha = ry / dHd
@@ -1697,9 +1702,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if here is None:
             raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
         cost, g, rec = here
-        # The trust radius starts where the previous trial's polish ended its first phase (its largest accepted
-        # step): consecutive trials move the boundary along the same flat directions by similar amounts.
-        radius = max(float(opt.get("radius", 1e-1)), getattr(self, "_krylov_radius", 0.0))
+        # The trust radius (M-norm) starts at the preconditioned Newton step's own length: a good model takes the
+        # whole step at once, and the actual/predicted test shrinks the radius where it is not.
+        radius = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
         history, evaluations, converged, products, seconds_products = [], 1, False, 0, 0.0
         for _ in range(int(opt["max_steps"])):
             gs = g * scale
@@ -1707,19 +1712,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             ds, Hds, used, interior = steihaug(rec, gs, radius)
             seconds_products += time.perf_counter() - th
             products += used
-            step = float(np.linalg.norm(ds))
+            step, step_m = float(np.linalg.norm(ds)), mnorm(ds)
             predicted = -(gs @ ds + 0.5 * ds @ Hds)
             history.append(dict(cost=cost, step=step, radius=radius, interior=interior, products=used,
                                 evaluations=evaluations))
             if opt.get("verbose"):
                 print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
-                      f"({'interior' if interior else 'boundary'}), radius {radius:.1e}, {used} products, "
+                      f"({'interior' if interior else 'boundary'}), radius (M) {radius:.1e}, {used} products, "
                       f"{seconds_products:.0f} s in products", flush=True)
             if interior and step <= opt["step_tol"]:
                 converged = True
                 break
-            if interior and (predicted <= opt.get("floor", 1e-12) * max(cost, 1e-300)
-                             or (radius < 1e-6 and step < 1e-5)):
+            if interior and predicted <= opt.get("floor", 1e-12) * max(cost, 1e-300):
                 converged = True
                 history[-1]["floor"] = True
                 break
@@ -1729,12 +1733,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             history[-1]["rho"] = float(rho)
             if rho > 0.1:
                 b, (cost, g, rec) = b + ds * scale, trial
-                self._krylov_radius = max(getattr(self, "_krylov_radius", 0.0), 0.5 * step)
                 if rho > 0.75 and not interior:
                     radius *= 2
             else:
-                radius = 0.25 * min(radius, step)
-                if radius < 1e-10:
+                radius = 0.25 * min(radius, step_m)
+                if radius < 1e-14 * max(float(np.sqrt(2 * cost)), 1e-300):
                     history[-1]["stalled"] = True
                     break
         self._hessian = None

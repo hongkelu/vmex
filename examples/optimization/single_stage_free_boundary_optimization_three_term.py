@@ -1202,6 +1202,10 @@ def parse_args(argv=None):
     parser.add_argument("--newton-track", action="store_true",
                         help="with --newton-polish --exact-products: record the exact gradient at every Newton iterate")
     parser.add_argument("--newton-max-steps", type=int, default=10, help="Newton polish steps at most")
+    parser.add_argument("--check-g-noise", action="store_true",
+                        help="the fit's stationarity g at the accepted boundary from three equilibrium starts (hot, "
+                        "cold, the record's own state), and the scaled Newton step their differences imply "
+                        "(g_noise_check.json), then stop")
     parser.add_argument("--check-products", action="store_true",
                         help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
                         "with those from full linearizations, along the weakest, strongest and a random direction")
@@ -1881,8 +1885,45 @@ def main(argv=None):
             problem.save_checkpoint(out / "checkpoint.npz")
 
     if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
-                                  or args.check_stationarity_gradient or args.check_exact_products):
+                                  or args.check_stationarity_gradient or args.check_exact_products
+                                  or args.check_g_noise):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_g_noise:  # the fit's stationarity g from two equilibrium starts at one boundary, and its Newton effect
+        import scipy.linalg
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        model = problem.model
+        outs = {}
+        for name, seed in (("hot", None), ("cold", model.seed[0]), ("record", sol["state"])):
+            for memo in (im._LAST_SOLVE, im._LAST_REFINED):  # a fresh solve from this start, not the memo
+                memo.pop(model.cfg, None)
+            got = model.evaluate(b0, params_s, field_s, seed=seed, tight=True)
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = problem._cost_pullback(state, mask, params_b, r, xj)
+            b_bar, _ = problem._coordinates(params_b, jnp.asarray(b0), xj, params_bar)
+            outs[name] = (np.asarray(rows), np.asarray(b_bar)[0])
+        H, asym = problem.dense_hessian(x_seed, sol)
+        record = dict(asymmetry=asym, pairs={})
+        for a, b in (("hot", "cold"), ("hot", "record"), ("cold", "record")):
+            (ra, ga), (rb, gb) = outs[a], outs[b]
+            dg = ga - gb
+            step = scipy.linalg.solve(H, dg, assume_a="sym") / scale
+            rec = dict(rows=float(np.linalg.norm(ra - rb) / np.linalg.norm(rb)),
+                       g=float(np.linalg.norm(dg) / max(np.linalg.norm(gb), 1e-300)),
+                       newton_step_from_noise=float(np.linalg.norm(step)),
+                       newton_step_from_g=float(np.linalg.norm(scipy.linalg.solve(H, gb, assume_a="sym") / scale)))
+            record["pairs"][f"{a}-{b}"] = rec
+            print(f"[g noise] {a} vs {b}: rows {rec['rows']:.1e}, g {rec['g']:.1e}; scaled Newton step of the "
+                  f"difference {rec['newton_step_from_noise']:.1e} (of g itself {rec['newton_step_from_g']:.1e})",
+                  flush=True)
+        (out / "g_noise_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
     if args.check_exact_products:  # second-order adjoint products vs Richardson difference products
         x_seed = problem.accepted.parameters
         sol = problem._record(x_seed)

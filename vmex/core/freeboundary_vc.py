@@ -1464,6 +1464,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1
+        self.stats["last_rejection"] = str(reason)[:400]
         self._cache[key], self._rejections[key] = None, reason
         return None
 

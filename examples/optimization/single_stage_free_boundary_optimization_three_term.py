@@ -1907,6 +1907,9 @@ def main(argv=None):
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if "exact_gradient_evaluations" in row:
             last.update(eg_ev=row["exact_gradient_evaluations"], eg_cg=row["exact_gradient_cg_iterations"])
+        if row.get("last_rejection") and row["last_rejection"] != last.get("rejection"):
+            print(f"[trial rejected] {row['last_rejection']}", flush=True)
+            last["rejection"] = row["last_rejection"]
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:

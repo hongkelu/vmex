@@ -1551,13 +1551,18 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             gs = g * scale
             try:
                 newton = -scipy.linalg.solve(Hs, gs, assume_a="sym")
-                definite = bool(np.all(np.linalg.eigvalsh(Hs) > 0))
+                eigenvalues, eigenvectors = np.linalg.eigh(Hs)
+                definite = bool(np.all(eigenvalues > 0))
             except np.linalg.LinAlgError:
-                newton, definite = None, False
+                newton, definite, eigenvalues, eigenvectors = None, False, None, None
             step_newton = float(np.linalg.norm(newton)) if newton is not None else np.inf
             history.append(dict(cost=cost, step=step_newton, radius=radius, definite=definite,
                                 stationarity=float(abs(gs @ newton)) if newton is not None else np.inf,
                                 evaluations=evaluations, asymmetry=asymmetry))
+            if eigenvalues is not None and newton is not None:  # where the Newton step lives (degenerate minimum?)
+                share = (eigenvectors[:, :5].T @ newton) / max(float(np.linalg.norm(newton)), 1e-300)
+                history[-1].update(smallest_eigenvalues=eigenvalues[:5].tolist(),
+                                   largest_eigenvalue=float(eigenvalues[-1]), step_share_weakest=share.tolist())
             if opt.get("track"):  # the exact gradient at every iterate: does it settle as the point converges?
                 history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=H)["gradients"].tolist()
             if opt.get("verbose"):
@@ -1566,8 +1571,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
                     drift = (" gradient change vs previous iterate max "
                              f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
+                eig = ""
+                if "smallest_eigenvalues" in history[-1]:
+                    eig = (" smallest eigenvalues " + " ".join(f"{e:.2e}" for e in history[-1]["smallest_eigenvalues"])
+                           + " step share on them " + " ".join(f"{abs(c):.2f}" for c in history[-1]["step_share_weakest"]))
                 print(f"[newton] iterate {len(history) - 1}: cost {cost:.12e}, Newton step {step_newton:.2e}, "
-                      f"definite {definite}, radius {radius:.1e}, Hessian {seconds_hessian:.0f} s total{drift}",
+                      f"definite {definite}, radius {radius:.1e}, Hessian {seconds_hessian:.0f} s total{drift}{eig}",
                       flush=True)
             if definite and step_newton <= opt["step_tol"]:
                 converged = True

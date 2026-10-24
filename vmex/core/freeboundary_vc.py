@@ -1386,7 +1386,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if error:
                 return self._reject(key, error)
         anchor, J = self._anchor, None
-        if starts is None and anchor and anchor.get("hessian") is not None and self.newton_polish is not None:
+        if (starts is None and anchor and anchor.get("hessian") is not None and self.newton_polish is not None
+                and self.newton_polish.get("warm")):
             # From the accepted point's converged boundary, its Hessian's Newton step is the exact first-order
             # prediction of this trial's boundary; Newton (fresh Hessians) converges it, no fit needed.
             if self._continuation is not None:

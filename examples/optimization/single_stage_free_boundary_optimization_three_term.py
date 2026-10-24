@@ -1202,6 +1202,9 @@ def parse_args(argv=None):
     parser.add_argument("--newton-track", action="store_true",
                         help="with --newton-polish --exact-products: record the exact gradient at every Newton iterate")
     parser.add_argument("--newton-max-steps", type=int, default=10, help="Newton polish steps at most")
+    parser.add_argument("--newton-warm", action="store_true",
+                        help="trials start Newton from the accepted point's converged boundary with its kept Hessian "
+                        "(no fit; falls back to the fit when Newton does not converge)")
     parser.add_argument("--newton-partial", type=int, default=0, metavar="K",
                         help="Newton polish: after the first full exact Hessian, refresh only its K weakest directions "
                         "each step (exact columns, symmetric low-rank correction); 0 refreshes it fully")
@@ -1726,7 +1729,7 @@ def main(argv=None):
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, h=args.exact_gradient_h,
                           products="exact" if args.exact_products else "difference", track=args.newton_track,
-                          verbose=args.newton_track, partial=args.newton_partial,
+                          verbose=args.newton_track, partial=args.newton_partial, warm=args.newton_warm,
                           max_steps=args.newton_max_steps),
                       exact_gradient=None if args.exact_gradient is None else dict(
                           subspace=args.exact_gradient, h=args.exact_gradient_h,

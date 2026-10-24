@@ -1654,6 +1654,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break
+            # The cost's own floor: a Newton step whose predicted decrease is below the cost's rounding cannot be
+            # told from noise by the actual/predicted ratio; the point is stationary to the cost's precision.
+            if definite and 0.5 * float(gs @ -newton) <= opt.get("floor", 1e-13) * max(cost, 1e-300):
+                converged = True
+                history[-1]["floor"] = True
+                break
             accepted = False
             for _ in range(8):
                 if definite and step_newton <= radius:

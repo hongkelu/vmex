@@ -1,0 +1,57 @@
+{
+ "starts": {
+  "cold": {
+   "f_max_per_iteration": [
+    0.02316749370897716,
+    2.49366499671666e-16,
+    2.5543803183758484e-16
+   ],
+   "condition_after": 2.454633718507182e-16,
+   "projection_error": 5.593398175185449e-08,
+   "residual_before_refine": 0.002626417880784308,
+   "residual_after_refine": 1.97689967972461e-11
+  },
+  "warm": {
+   "f_max_per_iteration": [
+    0.023613183337955118,
+    2.47198095326695e-16,
+    2.2681509448396753e-16
+   ],
+   "condition_after": 2.5457067009959644e-16,
+   "projection_error": 5.8448352491247135e-08,
+   "residual_before_refine": 0.002587835152430162,
+   "residual_after_refine": 1.6728438106731483e-11
+  },
+  "perturbed": {
+   "f_max_per_iteration": [
+    0.021780707632309746,
+    2.498001805406602e-16,
+    2.3071822230491534e-16
+   ],
+   "condition_after": 2.6020852139652106e-16,
+   "projection_error": 2.951449615942736e-06,
+   "residual_before_refine": 0.0026984134716749094,
+   "residual_after_refine": 1.6214383486831626e-11
+  }
+ },
+ "plain_refined": {
+  "cold-warm": 0.0002867268879539102,
+  "cold-perturbed": 0.0010657618404717175,
+  "warm-perturbed": 0.00134584409700197
+ },
+ "gauged_refined": {
+  "cold-warm": 0.00023895358058334537,
+  "cold-perturbed": 1.3904836986277508e-05,
+  "warm-perturbed": 0.000248229793158361
+ },
+ "gauged_physical": {
+  "cold-warm": {
+   "iota": 2.459479823357924e-06,
+   "surface": 6.627492462686694e-07
+  },
+  "cold-perturbed": {
+   "iota": 2.031539839020269e-06,
+   "surface": 5.024190396025755e-07
+  }
+ }
+}

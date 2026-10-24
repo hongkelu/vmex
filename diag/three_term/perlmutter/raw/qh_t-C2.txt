@@ -1,0 +1,15 @@
+[lm] reason stalled nfev 30 accepted 4 cost 6.049522e-06 project True misses 0
+[lm] reason stalled nfev 26 accepted 5 cost 4.093023e-06 project True misses 1
+[cert 1] cost 3.505771e-03 stationarity 9.991e-01 step 4.624e-01 condition 4.960e+07
+[lm] reason stalled nfev 13 accepted 4 cost 3.459539e-06 project True misses 0
+[cert 2] cost 3.459539e-06 stationarity 1.662e-01 step 5.336e-01 condition 5.084e+07
+[lm] reason stalled nfev 15 accepted 3 cost 2.983126e-06 project True misses 0
+[cert 3] cost 2.983126e-06 stationarity 1.191e-01 step 5.254e-01 condition 5.216e+07
+[lm] reason stalled nfev 13 accepted 3 cost 2.645012e-06 project True misses 0
+[cert 4] cost 2.645012e-06 stationarity 2.071e-01 step 5.842e-01 condition 5.305e+07
+[lm] reason stalled nfev 13 accepted 4 cost 2.030750e-06 project True misses 0
+[cert 5] cost 2.030750e-06 stationarity 7.820e-02 step 3.888e-01 condition 5.335e+07
+[lm] reason stalled nfev 12 accepted 4 cost 1.847149e-06 project True misses 0
+[cert 6] cost 1.847149e-06 stationarity 7.223e-03 step 1.450e-01 condition 5.334e+07
+    raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
+vmex.core.errors.VmecError: the seed design has no three-term free boundary: start 0: boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 7.22e-03 of the cost

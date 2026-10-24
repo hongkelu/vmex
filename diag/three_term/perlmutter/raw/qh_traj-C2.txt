@@ -1,0 +1,28 @@
+POLISH_ROUNDS 12
+[lm] reason stalled nfev 30 accepted 4 cost 6.049522e-06 project True misses 0
+[lm] reason stalled nfev 26 accepted 5 cost 4.093023e-06 project True misses 1
+[trajectory] cost 3.505770e-03 B.n 6.93892e-04 K 8.31172e-04 loss 6.27026310e-01
+[cert 1] cost 3.505770e-03 stationarity 9.991e-01 step 4.624e-01 condition 4.960e+07 normal_step 0.003518721456421017
+[lm] reason stalled nfev 13 accepted 4 cost 3.459539e-06 project True misses 0
+[trajectory] cost 3.459539e-06 B.n 6.08010e-04 K 7.24885e-04 loss 6.48215937e-01; values rel change 4.911e-02 (loss 3.379e-02)
+[cert 2] cost 3.459539e-06 stationarity 1.662e-01 step 5.336e-01 condition 5.084e+07 normal_step 0.004067154011884971
+[lm] reason stalled nfev 15 accepted 3 cost 2.983126e-06 project True misses 0
+[trajectory] cost 2.983126e-06 B.n 6.59774e-04 K 7.66366e-04 loss 6.58380619e-01; values rel change 3.822e-02 (loss 1.568e-02)
+[cert 3] cost 2.983126e-06 stationarity 1.191e-01 step 5.254e-01 condition 5.216e+07 normal_step 0.0026897914871320664
+[lm] reason stalled nfev 13 accepted 3 cost 2.645012e-06 project True misses 0
+[trajectory] cost 2.645012e-06 B.n 6.22900e-04 K 7.92619e-04 loss 6.62330779e-01; values rel change 3.220e-02 (loss 6.000e-03)
+[cert 4] cost 2.645012e-06 stationarity 2.071e-01 step 5.842e-01 condition 5.305e+07 normal_step 0.0023110801600334857
+[lm] reason stalled nfev 13 accepted 4 cost 2.030750e-06 project True misses 0
+[trajectory] cost 2.030750e-06 B.n 6.03568e-04 K 7.35926e-04 loss 6.92811110e-01; values rel change 1.017e-01 (loss 4.602e-02)
+[cert 5] cost 2.030750e-06 stationarity 7.820e-02 step 3.888e-01 condition 5.335e+07 normal_step 0.00047461575654225924
+[lm] reason stalled nfev 12 accepted 4 cost 1.847149e-06 project True misses 0
+[trajectory] cost 1.847149e-06 B.n 5.56742e-04 K 6.26780e-04 loss 6.95649194e-01; values rel change 2.059e-02 (loss 4.096e-03)
+[cert 6] cost 1.847149e-06 stationarity 7.223e-03 step 1.450e-01 condition 5.334e+07 normal_step 0.0001906084493202006
+[lm] reason ftol nfev 5 accepted 2 cost 1.828537e-06 project True misses 0
+[trajectory] cost 1.828537e-06 B.n 5.56908e-04 K 6.24743e-04 loss 6.96172384e-01; values rel change 4.172e-03 (loss 7.521e-04)
+[cert 7] cost 1.828537e-06 stationarity 1.808e-03 step 7.374e-02 condition 5.206e+07 normal_step 0.00013599935435681742
+[lm] reason ftol nfev 3 accepted 1 cost 1.823590e-06 project True misses 0
+[trajectory] cost 1.823590e-06 B.n 5.56056e-04 K 6.22212e-04 loss 6.94496255e-01; values rel change 4.465e-03 (loss 2.408e-03)
+[cert 8] cost 1.823590e-06 stationarity 7.285e-04 step 4.530e-02 condition 5.241e+07 normal_step 8.822124329572761e-05
+[model] 255 boundary and 53 bootstrap-current coordinates, 229 design coordinates; built in 2901 s
+[step 0] QH=1.388993e+00 iota=1.13807 vacuum iota=1.0517 (axis 1.0517) B_axis=0.99871 iota_I=0.1884 DMerc_min=-751.471 R=1.00015 aspect=8.0070 clearance=0.1506 coil_slack=-0.0299 redl(max rel)=3.2e-08 B.n=5.6e-04 K=6.2e-04 label_ratio=3.20 cond=352289 0.2s (trials 1, boundary evaluations 149, peak 4.2 GiB)

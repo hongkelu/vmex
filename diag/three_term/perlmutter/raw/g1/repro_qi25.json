@@ -1,0 +1,38 @@
+{
+ "reference": "../paper/runs/wp2/fx-qi25-K40",
+ "nfp": 4,
+ "runs": {
+  "../paper/runs/wp2/fx-qi25-K40": {
+   "certified": true,
+   "stationarity": 8.062209008021392e-05,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 4.615174121548952e-06,
+    "pressure": 3.1678153594824055e-06,
+    "K_x": 3.4838217054155186e-06,
+    "K_y": 3.526213741877911e-06,
+    "K_z": 2.6825577814840027e-06,
+    "label": 5.645848823388465e-06,
+    "phase": 5.732422800796427e-06,
+    "net_current": 4.14375901106561e-06
+   }
+  },
+  "../paper/runs/night/qi25-K40": {
+   "certified": true,
+   "stationarity": 8.062209310683787e-05,
+   "surface_distance_m": 1.7612819713186435e-11,
+   "values_max_rel": 2.834154647855178e-09,
+   "blocks_rms": {
+    "B.n": 4.615174119939443e-06,
+    "pressure": 3.167815362021163e-06,
+    "K_x": 3.483821704885469e-06,
+    "K_y": 3.5262137413643436e-06,
+    "K_z": 2.6825577834992317e-06,
+    "label": 5.6458488230964525e-06,
+    "phase": 5.732422694891903e-06,
+    "net_current": 4.1437571411504825e-06
+   }
+  }
+ }
+}

@@ -1,0 +1,69 @@
+{
+ "reference": "wp2/fx-qivac-K",
+ "nfp": 4,
+ "runs": {
+  "wp2/fx-qivac-K": {
+   "certified": true,
+   "stationarity": 0.00012425760272839604,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 5.532512987609403e-07,
+    "pressure": 4.1148371724477554e-07,
+    "K_x": 4.278551026063152e-07,
+    "K_y": 4.333999885861608e-07,
+    "K_z": 2.9032076683207985e-07,
+    "label": 1.9856791470305234e-06,
+    "phase": 8.25000201390706e-08,
+    "net_current": 7.496485103659791e-06
+   }
+  },
+  "day3/res-qivac-m10": {
+   "certified": false
+  },
+  "day3/res-qivac-m10-r": {
+   "certified": false
+  },
+  "day3/res-qivac-m10-r40": {
+   "certified": true,
+   "stationarity": 1.7662163304592164e-05,
+   "surface_distance_m": 3.161173824322912e-05,
+   "values_max_rel": 0.004543073529139466,
+   "blocks_rms": {
+    "B.n": 3.480317401508454e-07,
+    "pressure": 3.4165741712618727e-07,
+    "K_x": 2.92914007809361e-07,
+    "K_y": 2.9708764495123695e-07,
+    "K_z": 2.3807663170936625e-07,
+    "label": 1.285644566920906e-06,
+    "phase": 5.643383625507322e-08,
+    "net_current": 7.550342665409441e-06
+   }
+  },
+  "day3/res-qivac-ns101": {
+   "certified": false
+  },
+  "day3/res-qivac-ns101-r": {
+   "certified": false
+  },
+  "day3/res-qivac-ns101-r40": {
+   "certified": false
+  },
+  "day3/res-qivac-vc64": {
+   "certified": true,
+   "stationarity": 0.0001015475126803809,
+   "surface_distance_m": 6.099295590429359e-07,
+   "values_max_rel": 0.0012740887442733294,
+   "blocks_rms": {
+    "B.n": 4.1481395995946223e-07,
+    "pressure": 3.0728248233479013e-07,
+    "K_x": 3.210592346434788e-07,
+    "K_y": 3.238562269004724e-07,
+    "K_z": 2.16412454560901e-07,
+    "label": 1.4891214258303519e-06,
+    "phase": 7.275799590385114e-08,
+    "net_current": 7.746348992309078e-06
+   }
+  }
+ }
+}

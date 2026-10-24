@@ -1,0 +1,18 @@
+[lm] reason stalled nfev 34 accepted 6 cost 2.480734e-06 project True misses 0
+[lm] reason stalled nfev 23 accepted 6 cost 4.553482e-07 project True misses 0
+[cert 1] cost 1.925843e-05 stationarity 9.828e-01 step 4.836e-01 condition 4.986e+07 normal_step 0.002223409282250292
+[lm] reason stalled nfev 13 accepted 4 cost 3.766567e-07 project True misses 0
+[cert 2] cost 3.766567e-07 stationarity 2.360e-01 step 4.684e-01 condition 4.565e+07 normal_step 0.0008207984622702208
+[calibrate] certificate {'stationarity': 0.23604294923335425, 'step': 0.4683690214193003, 'normal_step': 0.0008207984622702208, 'condition': 45648139.072121985, 'rank_deficient': False}
+[calibrate] values [ 6.588905e-01  1.146144e+00  1.000102e+00  9.989342e-01 -7.207624e+02
+[calibrate] alpha 0.5: cost 5.875655e-03 (was 3.766567e-07); B.n 4.9858e-04 K 7.2248e-04; values max rel change 7.071e-03 (loss 3.466e-03); per value [3.47e-03 1.04e-03 2.70e-05 2.48e-04 7.07e-03 6.09e-04 8.52e-05]
+[calibrate] alpha 1.0: cost 8.548375e-02 (was 3.766567e-07); B.n 8.6667e-04 K 1.9212e-03; values max rel change 2.216e-02 (loss 7.057e-03); per value [7.06e-03 2.40e-03 9.42e-05 9.58e-04 2.22e-02 9.72e-04 4.66e-04]
+[model] 255 boundary and 53 bootstrap-current coordinates, 229 design coordinates; built in 1159 s
+[step 0] QH=1.317781e+00 iota=1.14614 vacuum iota=1.0695 (axis 1.0695) B_axis=0.99893 iota_I=0.1889 DMerc_min=-720.762 R=1.00010 aspect=8.0039 clearance=0.1508 coil_slack=-0.0299 redl(max rel)=1.9e-08 B.n=4.9e-04 K=6.0e-04 label_ratio=6.66 cond=865504 0.2s (trials 1, boundary evaluations 96, peak 4.1 GiB)
+[lm] reason stalled nfev 9 accepted 1 cost 3.617630e-03 project True misses 0
+[lm] reason stalled nfev 14 accepted 3 cost 2.749915e-03 project True misses 1
+[lm] reason stalled nfev 20 accepted 3 cost 2.398664e-03 project True misses 2
+[lm] reason stalled nfev 13 accepted 2 cost 2.132066e-03 project True misses 0
+[cert 3] cost 2.380759e-03 stationarity 5.282e-01 step 1.362e+01 condition 1.005e+07 normal_step 0.13151426654455742
+[lm] reason stalled nfev 20 accepted 4 cost 2.158695e-03 project True misses 0
+[cert 4] cost 2.158695e-03 stationarity 4.786e-01 step 1.303e+01 condition 7.748e+06 normal_step 0.1809072169824478

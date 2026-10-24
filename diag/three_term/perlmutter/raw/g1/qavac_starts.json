@@ -1,0 +1,54 @@
+{
+ "reference": "../paper/runs/wp2/fx-qavac-K60",
+ "nfp": 3,
+ "runs": {
+  "../paper/runs/wp2/fx-qavac-K60": {
+   "certified": true,
+   "stationarity": 9.69417563889182e-05,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 1.099388935710967e-06,
+    "pressure": 7.664795186342545e-07,
+    "K_x": 9.087382407585246e-07,
+    "K_y": 8.223365733053248e-07,
+    "K_z": 5.306873416342576e-07,
+    "label": 2.8076829245068634e-06,
+    "phase": 4.855693412914781e-07,
+    "net_current": 8.400465409717126e-06
+   }
+  },
+  "../paper/runs/night4/start-qavac-r1": {
+   "certified": true,
+   "stationarity": 7.61784679276457e-05,
+   "surface_distance_m": 6.862329382509575e-06,
+   "values_max_rel": 1.7655096523138233e-05,
+   "blocks_rms": {
+    "B.n": 1.0986948616479786e-06,
+    "pressure": 7.684867480101962e-07,
+    "K_x": 9.082089184393182e-07,
+    "K_y": 8.22857951238333e-07,
+    "K_z": 5.319825251846848e-07,
+    "label": 2.8061979711922916e-06,
+    "phase": 6.074199299999995e-07,
+    "net_current": 8.567954412153887e-06
+   }
+  },
+  "../paper/runs/night4/start-qavac-s": {
+   "certified": true,
+   "stationarity": 6.984719090672016e-05,
+   "surface_distance_m": 5.965645351795613e-06,
+   "values_max_rel": 1.1695435908508585e-05,
+   "blocks_rms": {
+    "B.n": 1.1003931614903996e-06,
+    "pressure": 7.711987530483009e-07,
+    "K_x": 9.107270715947269e-07,
+    "K_y": 8.248400115661713e-07,
+    "K_z": 5.310177964979395e-07,
+    "label": 2.803992151882892e-06,
+    "phase": 5.709535085128683e-07,
+    "net_current": 8.555115711448978e-06
+   }
+  }
+ }
+}

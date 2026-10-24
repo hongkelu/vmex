@@ -1,0 +1,26 @@
+{
+ "sign1": {
+  "value_rel": 3.1313730209841407e-16,
+  "jvp_rel": 0.014937916398003463,
+  "jvp_vs_fd": 1.5936718578872423e-08
+ },
+ "sign-1": {
+  "value_rel": 3.1313730209841407e-16,
+  "jvp_rel": 0.021615430615311418,
+  "jvp_vs_fd": 5.200760340719969e-09
+ },
+ "essos": {
+  "jit_error": "ValueError(\"Cache keys should be comparable using __eq__. The following error was raised when comparing two objects of types <class 'jaxlib._jax.jax_jit.ArgumentSignature'> and <class 'jaxlib._jax.jax_jit.ArgumentSignature'>. The error was:\\nValueError: Exception raised while checking equality of me"
+ },
+ "direct": {
+  "cache_size": 1,
+  "first_s": 0.40281394800695125,
+  "warm_s": 0.006475265006884001
+ },
+ "setup": {
+  "nfp": 4,
+  "stellsym": true,
+  "n_segments": 256,
+  "n_points": 64
+ }
+}

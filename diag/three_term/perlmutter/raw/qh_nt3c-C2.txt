@@ -1,0 +1,33 @@
+[lm] reason stalled nfev 30 accepted 4 cost 6.049522e-06 project True misses 0
+[lm] reason stalled nfev 26 accepted 5 cost 4.093023e-06 project True misses 1
+[cert 1] cost 3.505770e-03 stationarity 9.991e-01 step 4.624e-01 condition 4.960e+07 normal_step 0.0035187215622235874
+[lm] reason stalled nfev 13 accepted 4 cost 3.459539e-06 project True misses 0
+[cert 2] cost 3.459539e-06 stationarity 1.662e-01 step 5.336e-01 condition 5.084e+07 normal_step 0.004067153755674505
+[lm] reason stalled nfev 15 accepted 3 cost 2.983126e-06 project True misses 0
+[cert 3] cost 2.983126e-06 stationarity 1.191e-01 step 5.254e-01 condition 5.216e+07 normal_step 0.002689791204176621
+[lm] reason stalled nfev 13 accepted 3 cost 2.645012e-06 project True misses 0
+[cert 4] cost 2.645012e-06 stationarity 2.071e-01 step 5.842e-01 condition 5.305e+07 normal_step 0.002311079967770148
+[lm] reason stalled nfev 13 accepted 4 cost 2.030750e-06 project True misses 0
+[cert 5] cost 2.030750e-06 stationarity 7.820e-02 step 3.888e-01 condition 5.335e+07 normal_step 0.00047461577422946305
+[calibrate] certificate {'stationarity': 0.07820307904199258, 'step': 0.38882164614302017, 'normal_step': 0.00047461577422946305, 'condition': 53345793.86122688, 'rank_deficient': False}
+[calibrate] values [ 6.928111e-01  1.140371e+00  1.000133e+00  9.986896e-01 -7.675097e+02
+[calibrate] alpha 0.5: cost 2.747504e-04 (was 2.030750e-06); B.n 5.7428e-04 K 6.6401e-04; values max rel change 1.072e-02 (loss 1.654e-03); per value [1.65e-03 8.45e-04 1.02e-05 5.41e-06 1.07e-02 1.33e-04 6.81e-05]
+[calibrate] alpha 1.0: cost 3.670948e-03 (was 2.030750e-06); B.n 5.6108e-04 K 6.4097e-04; values max rel change 2.244e-02 (loss 1.922e-03); per value [1.92e-03 1.58e-03 1.96e-05 3.32e-05 2.24e-02 2.81e-04 1.09e-04]
+[model] 255 boundary and 53 bootstrap-current coordinates, 229 design coordinates; built in 1770 s
+[step 0] QH=1.385622e+00 iota=1.14037 vacuum iota=1.0549 (axis 1.0549) B_axis=0.99869 iota_I=0.1882 DMerc_min=-767.510 R=1.00013 aspect=8.0056 clearance=0.1506 coil_slack=-0.0299 redl(max rel)=7.2e-08 B.n=6.0e-04 K=7.4e-04 label_ratio=3.26 cond=348072 0.2s (trials 1, boundary evaluations 129, peak 4.2 GiB)
+[lm] reason stalled nfev 15 accepted 2 cost 7.794088e-03 project True misses 0
+[lm] reason stalled nfev 11 accepted 3 cost 6.487983e-03 project True misses 0
+[lm] reason stalled nfev 11 accepted 3 cost 5.630946e-03 project True misses 0
+[lm] reason stalled nfev 11 accepted 1 cost 5.090257e-03 project True misses 0
+[cert 6] cost 5.109478e-03 stationarity 3.422e-01 step 1.271e+01 condition 5.370e+06 normal_step 0.13887950398090693
+[lm] reason stalled nfev 12 accepted 2 cost 4.805453e-03 project True misses 0
+[cert 7] cost 4.805453e-03 stationarity 2.787e-01 step 1.191e+01 condition 5.287e+06 normal_step 0.13914787306567533
+[lm] reason stalled nfev 9 accepted 2 cost 4.661611e-03 project True misses 0
+[cert 8] cost 4.661611e-03 stationarity 2.551e-01 step 9.047e+00 condition 5.976e+06 normal_step 0.10651355111183823
+[lm] reason stalled nfev 6 accepted 1 cost 4.531335e-03 project True misses 0
+[cert 9] cost 4.531335e-03 stationarity 2.140e-01 step 8.579e+00 condition 5.778e+06 normal_step 0.10758898032580068
+[lm] reason stalled nfev 6 accepted 1 cost 4.489441e-03 project True misses 0
+[cert 10] cost 4.489441e-03 stationarity 2.078e-01 step 8.491e+00 condition 6.023e+06 normal_step 0.10856581991688018
+[lm] reason stalled nfev 6 accepted 1 cost 4.477909e-03 project True misses 0
+[cert 11] cost 4.477909e-03 stationarity 2.085e-01 step 8.307e+00 condition 6.235e+06 normal_step 0.10944252861274543
+[lm] reason stalled nfev 35 accepted 4 cost 7.407576e-05 project True misses 1

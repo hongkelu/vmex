@@ -1,0 +1,77 @@
+{
+ "plain": {
+  "near_vs_cold_rows_max_rel": 0.0016334556001849187,
+  "near_B.n_rms_diff": 3.767467695353198e-06,
+  "B.n_rms": 0.0027345544328404962,
+  "near_pressure_rms_diff": 8.360832728428696e-06,
+  "pressure_rms": 0.0026689508497797494,
+  "near_K_x_rms_diff": 2.5520587716300783e-06,
+  "K_x_rms": 0.0019880601159330004,
+  "near_K_y_rms_diff": 3.9355117872755995e-06,
+  "K_y_rms": 0.0035543652255494228,
+  "near_K_z_rms_diff": 6.873193615631215e-06,
+  "K_z_rms": 0.001570398711013232,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 5.510786565074946e-20,
+  "near_net_current_rms_diff": 2.8829765357282072e-06,
+  "net_current_rms": 0.008932820225080625,
+  "perturbed_vs_cold_rows_max_rel": 1.3597981662851176e-15,
+  "perturbed_B.n_rms_diff": 6.755870607625333e-18,
+  "perturbed_pressure_rms_diff": 7.15337680280417e-18,
+  "perturbed_K_x_rms_diff": 3.0477730630242796e-18,
+  "perturbed_K_y_rms_diff": 4.309406483149739e-18,
+  "perturbed_K_z_rms_diff": 4.5923276484471074e-18,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 0.0
+ },
+ "gauged": {
+  "cold_condition_after": 2.7755575615628914e-17,
+  "near_condition_after": 2.0816681711721685e-17,
+  "perturbed_condition_after": 2.7755575615628914e-17,
+  "near_vs_cold_rows_max_rel": 0.001301924095609605,
+  "near_B.n_rms_diff": 3.0046089297251903e-06,
+  "B.n_rms": 0.0027343050087625023,
+  "near_pressure_rms_diff": 6.682249890902655e-06,
+  "pressure_rms": 0.002668738279170501,
+  "near_K_x_rms_diff": 2.0402876960807405e-06,
+  "K_x_rms": 0.001988062210136013,
+  "near_K_y_rms_diff": 3.143277078021707e-06,
+  "K_y_rms": 0.0035538472462505032,
+  "near_K_z_rms_diff": 5.4933677753861914e-06,
+  "K_z_rms": 0.0015707954145884298,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 5.909956913157653e-18,
+  "near_net_current_rms_diff": 2.3057814220340395e-06,
+  "net_current_rms": 0.008933900993953074,
+  "perturbed_vs_cold_rows_max_rel": 2.0248957527408363e-15,
+  "perturbed_B.n_rms_diff": 8.062363227505487e-18,
+  "perturbed_pressure_rms_diff": 8.274850020763112e-18,
+  "perturbed_K_x_rms_diff": 3.338990842367224e-18,
+  "perturbed_K_y_rms_diff": 5.5034956132239646e-18,
+  "perturbed_K_z_rms_diff": 5.8006142725333905e-18,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 0.0
+ },
+ "resolution": {
+  "mpol": 2,
+  "ntor": 2,
+  "nfp": 2,
+  "ns": [
+   31
+  ],
+  "ftol": [
+   1e-13
+  ],
+  "max_mode": 1,
+  "nphi": 12,
+  "ntheta": 12,
+  "quadrature": [
+   96,
+   24
+  ],
+  "digits": 4,
+  "trial_ftol": null,
+  "n_boundary": 9,
+  "n_coordinates": 9
+ }
+}

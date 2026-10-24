@@ -25,6 +25,12 @@ boundary fit, without recompiling when the coils or plasma parameters change.
         --modes 8 8 --ns 51 --output runs/three-term-qa4
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
+``--resume <dir>/checkpoint.npz`` continues a run from its accepted point; with
+the ``slsqp_state.npz`` written beside every checkpoint (SciPy SLSQP's whole
+state at that point: quasi-Newton Hessian, multipliers, coordinates;
+``opt.save_slsqp_state``) SLSQP continues with its Hessian instead of the
+identity, so a run chained over 2 h segments takes the uninterrupted run's
+steps. A state of another point is refused (an identity Hessian, logged).
 ``metrics.jsonl`` adds the three interface residuals (``bn``,
 ``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
 counts and the peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
@@ -290,10 +296,40 @@ def redl_surfaces():
     return (np.arange(1, ns) - 0.5) / (ns - 1)
 
 
+#: The kinetic profiles of a run this one continues (``--restart``/``--seed-run``), read from its profiles.json: a
+#: restart keeps the physical problem instead of rebuilding n and T from the restored boundary's RBC(0,0).
+PINNED_PROFILES = None
+
+
+def save_profiles(profiles, path):
+    """Write the kinetic profiles' coefficients (profiles.json)."""
+    path.write_text(json.dumps({k: np.atleast_1d(np.asarray(getattr(profiles, k), dtype=float)).tolist()
+                                for k in ("ne_coeffs", "Te_coeffs", "Ti_coeffs", "Zeff_coeffs")}, indent=1) + "\n")
+
+
+def pin_profiles(run):
+    """Use the kinetic profiles of the run folder ``run``: its profiles.json, or, for a run from before it was
+    written, those of its own input.run (the deck it was launched with, not a restored boundary)."""
+    global PINNED_PROFILES
+    from vmex.core.bootstrap import KineticProfiles
+    import vmex as vj
+
+    if (run / "profiles.json").exists():
+        data = json.loads((run / "profiles.json").read_text())
+        PINNED_PROFILES = KineticProfiles(**{k: np.asarray(v, dtype=float) for k, v in data.items()})
+        return
+    print(f"warning: {run} has no profiles.json: kinetic profiles rebuilt from its input.run", flush=True)
+    PINNED_PROFILES = redl_profiles(vj.VmecInput.from_file(str(run / "input.run")))[0]
+
+
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch
+    (the pinned profiles of a continued run, :func:`pin_profiles`, when there are any)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
+    if PINNED_PROFILES is not None:
+        return PINNED_PROFILES, RedlBootstrapMismatch(PINNED_PROFILES, REDL_HELICITY, redl_surfaces(),
+                                                      n_lambda=REDL_N_LAMBDA)
     r0, b0 = float(inp.rbc[inp.ntor, 0]), B0
     t0 = REACTOR_T0 * (b0 / REACTOR_B0) ** (2 / 3) * (r0 / REACTOR_R0) ** (1 / 3)
     n0 = REACTOR_N0 * (b0 / REACTOR_B0) ** (4 / 3) * (REACTOR_R0 / r0) ** (1 / 3)
@@ -727,12 +763,16 @@ SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
 class DirectCoilField:
     """Biot-Savart field of filament coils, as a differentiable pytree.
 
-    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
-    static ``self``, so every new coil geometry recompiles and no derivative
-    flows back to the coil arrays. This pytree carries the arrays as leaves
-    instead: one compiled program serves every trial and JAX differentiates
-    the field with respect to the coil parameters. The field is the mean over
-    each coil's quadrature points of the filament Biot-Savart integrand.
+    ESSOS 0.21.0's ``BiotSavart`` is a pytree, but its ``Coils`` carries arrays
+    in the pytree metadata (its current normalization), so a jitted function of
+    new coil values fails JAX's cache-key comparison: a second geometry under one
+    ``jit`` raises, and its JVP through ``Coils(Curves(dofs), currents)`` differs
+    from central differences by 1-12% (``diag/three_term/perlmutter/scripts/wpE/
+    essos_parity.py``).  This pytree carries ``gamma``, ``gamma_dash`` and the
+    currents as leaves: one compiled program serves every trial, its JVP matches
+    central differences to 2e-8, and its values equal ESSOS' to 4e-16 (the same
+    integrand: the mean over each coil's quadrature points of the filament
+    Biot-Savart term).
     ``gamma``/``gamma_dash`` are ESSOS' points and tangents, shape
     ``(coils, points, 3)`` in metres; ``currents`` are in amperes.
     """
@@ -742,20 +782,38 @@ class DirectCoilField:
     currents: Any
 
     def b_cyl(self, r, phi, z):
-        """Evaluate the filament field in cylindrical coordinates, in tesla."""
+        """Evaluate the filament field in cylindrical coordinates, in tesla.
+
+        The sum runs over chunks of at most 512 quadrature points per coil (a scan whose body is recomputed in
+        reverse mode), so memory is points x coils x chunk, not points x coils x quadrature points: 8192-point
+        filaments on a 12 x 12 interface grid needed a 39.7 GB temporary.  Up to 512 points it is one chunk,
+        the plain sum."""
+        import jax
         import jax.numpy as jnp
 
         rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
         cosine, sine = jnp.cos(pp), jnp.sin(pp)
         xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
-        differential = differential * inv_radius3[..., None]
-        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
+        gamma, gamma_dash = jnp.asarray(self.gamma), jnp.asarray(self.gamma_dash)
+        currents = jnp.asarray(self.currents)
+        ncoil, nseg = gamma.shape[0], gamma.shape[1]
+        chunk = nseg if nseg <= 512 else next(c for c in (512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if nseg % c == 0)
+
+        def split(a):
+            return jnp.swapaxes(a.reshape(ncoil, nseg // chunk, chunk, 3), 0, 1)
+
+        @jax.checkpoint
+        def body(total, pair):
+            g, dg = pair
+            displacement = xyz[..., None, None, :] - g
+            radius2 = jnp.sum(displacement * displacement, axis=-1)
+            inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
+            differential = jnp.cross(dg, displacement) * inv_radius3[..., None]
+            weighted = differential * jnp.reshape(currents, (1,) * (xyz.ndim - 1) + (-1, 1, 1))
+            return total + jnp.sum(weighted, axis=(-3, -2)), None
+
+        total, _ = jax.lax.scan(body, jnp.zeros(xyz.shape, dtype=xyz.dtype), (split(gamma), split(gamma_dash)))
+        bxyz = 1.0e-7 * total / nseg
         br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
         bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
         return br, bphi, bxyz[..., 2]
@@ -1011,6 +1069,84 @@ def surface_distance(coils, surface):
                                points.reshape(-1,3)))
 
 
+def continuous_surface_distance(points, rbc, zbs, nfp, *, grid=(48, 48), iterations=10):
+    """Coil-to-plasma clearance between the continuous coil and the continuous surface (E3), and the runner-up gap.
+
+    ``points`` (curves, samples, 3) are coil samples, uniform in the parameter of each closed curve; the curve is
+    their periodic (trigonometric) interpolant, exact for a Fourier curve sampled above its Nyquist rate.
+    ``rbc``/``zbs`` ``(2 ntor + 1, mpol)`` are the boundary, ``R + i Z = sum (rbc cos + i zbs sin)(m theta - n nfp
+    phi)``.  A grid search over the whole torus finds each sample's nearest surface point; from the seven best
+    samples, Newton on ``(s, theta, phi)`` (coil parameter and surface angles) refines the closest pair of the
+    continuous curve and surface, and the smallest of the seven is the clearance.  The pair is held fixed for
+    differentiation (the envelope theorem).  The value is a minimum of local minima, continuous in the coils and the
+    boundary; it has a kink, but no jump, where the closest pair switches (the parabola through three samples used
+    before jumped by about 1e-5 when the closest sample changed).  Returns ``(clearance, gap)``: ``gap`` is how much
+    farther the nearest sample more than two samples away (on any coil) is, so a small ``gap`` flags a closest-pair
+    switch nearby.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    ntor = (rbc.shape[0] - 1) // 2
+    m = jnp.arange(rbc.shape[1])
+    n = (jnp.arange(rbc.shape[0]) - ntor) * nfp
+
+    def surface(theta, phi):
+        angle = m[None, :] * theta - n[:, None] * phi
+        R = jnp.sum(rbc * jnp.cos(angle))
+        Z = jnp.sum(zbs * jnp.sin(angle))
+        return jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), Z])
+
+    th = jnp.linspace(0, 2 * jnp.pi, grid[0], endpoint=False)
+    ph = jnp.linspace(0, 2 * jnp.pi, grid[1] * nfp, endpoint=False)
+    TH, PH = jnp.meshgrid(th, ph, indexing="ij")
+    S = jax.vmap(jax.vmap(surface))(TH, PH).reshape(-1, 3)
+    pts = jnp.asarray(points)
+    ncurve, nsample = pts.shape[0], pts.shape[1]
+    flat = pts.reshape(-1, 3)
+    d2 = jax.lax.map(lambda q: jnp.min(jnp.sum((q - S) ** 2, axis=1)), flat)
+    nearest = jax.lax.map(lambda q: jnp.argmin(jnp.sum((q - S) ** 2, axis=1)), jax.lax.stop_gradient(flat))
+    order = jnp.argsort(jax.lax.stop_gradient(d2))[:7]  # the coarse search's best candidates, refined below
+    coef = jnp.fft.fft(pts, axis=1) / nsample  # (curves, wavenumbers, 3): the trigonometric interpolant
+    wave = jnp.fft.fftfreq(nsample, 1.0 / nsample)
+    if nsample % 2 == 0:  # the Nyquist term split evenly between +-N/2 keeps the interpolant real and smooth
+        coef = coef.at[:, nsample // 2].multiply(0.5)
+        coef = jnp.concatenate([coef, coef[:, nsample // 2:nsample // 2 + 1]], axis=1)
+        wave = jnp.concatenate([wave, -wave[nsample // 2:nsample // 2 + 1]])
+
+    def curve(c, u, coef=coef):
+        """Point of curve ``c`` at parameter ``u`` (sample units: u = i is sample i)."""
+        return jnp.real(jnp.sum(coef[c] * jnp.exp(2j * jnp.pi * wave * u / nsample)[:, None], axis=0))
+
+    def pair(j):
+        """Distance between coil ``c`` and the surface, the closest pair refined by Newton from sample ``j`` and
+        its nearest grid point (held fixed for AD)."""
+        c = j // nsample
+        z0 = jnp.array([(j % nsample).astype(float), TH.ravel()[nearest[j]], PH.ravel()[nearest[j]]])
+        fixed = jax.lax.stop_gradient(coef)
+        half = lambda z: 0.5 * jnp.sum((curve(c, z[0], fixed) - surface(z[1], z[2])) ** 2)  # noqa: E731
+        z = jax.lax.stop_gradient(z0)
+        for _ in range(iterations):
+            # Newton on |C - S|^2 / 2 (Gauss-Newton fails when the distance is comparable to a radius of curvature);
+            # a gradient step where the Hessian is not positive definite
+            g, H = jax.grad(half)(z), jax.hessian(half)(z)
+            newton = -jnp.linalg.solve(H + 1e-14 * jnp.eye(3), g)
+            ok = (jnp.linalg.eigvalsh(H)[0] > 0) & jnp.all(jnp.isfinite(newton))
+            z = z + jnp.where(ok, newton, -g / jnp.maximum(jnp.linalg.norm(H), 1e-300))
+        z = jax.lax.stop_gradient(z)
+        return jnp.sqrt(jnp.sum((curve(c, z[0]) - surface(z[1], z[2])) ** 2) + 1e-30)
+
+    cand = jnp.stack([pair(j) for j in order])
+    best = jnp.argmin(jax.lax.stop_gradient(cand))
+    clearance = cand[best]
+    k = order[best]
+    c, i = k // nsample, k % nsample
+    sample = jnp.arange(ncurve * nsample)
+    near = (sample // nsample == c) & (jnp.abs(((sample % nsample) - i + nsample // 2) % nsample - nsample // 2) <= 2)
+    second = jnp.sqrt(jnp.min(jnp.where(near, jnp.inf, jax.lax.stop_gradient(d2))))
+    return clearance, second - jax.lax.stop_gradient(clearance)
+
+
 def coil_constraint(coils_from_x):
     """Pure-coil rows require no equilibrium solves or adjoint right-hand sides."""
     import jax
@@ -1032,6 +1168,102 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--check-jacobian", type=int, default=0, metavar="N",
+                        help="compare the model's implicit boundary Jacobian with central differences of tight "
+                        "rows along N random directions and the weakest one (jacobian_check.json), at the seed "
+                        "boundary or --jacobian-at, without solving the free boundary; then stop")
+    parser.add_argument("--jacobian-following", action="store_true",
+                        help="--check-jacobian along boundary-only directions with the bootstrap current re-solved to "
+                        "conditional stationarity at every point (the response the variable projection follows), "
+                        "against the reduced model (I - P_c) J_b d and against the fixed-current difference")
+    parser.add_argument("--jacobian-dump", action="store_true",
+                        help="--check-jacobian also saves every direction's J d and differences (jacobian_check.npz)")
+    parser.add_argument("--jacobian-at", type=Path, metavar="RECORD",
+                        help="a certificate record (.npz, fbrecord) whose model coordinates --check-jacobian uses")
+    parser.add_argument("--seed-start", nargs="+", metavar="KIND",
+                        help="fit the seed's boundary from another start (start-dependence qualification): "
+                        "'random EPS SEED' or 'scale EPS'; the deck stays the reference")
+    parser.add_argument("--polish-rounds", type=int, help="certificate polish rounds per trial (default: the model's, "
+                        "freeboundary_vc.POLISH_ROUNDS); a finite-beta seed can need about 100")
+    parser.add_argument("--polish-ftol", type=float, help="the polish target (default freeboundary_vc.POLISH_FTOL); "
+                        "derivative qualification needs about 1e-5")
+    parser.add_argument("--clearance", choices=("continuous", "points"), default="continuous",
+                        help="coil-plasma clearance: the continuous closest point (default; smooth where the closest "
+                        "pair is unique) or the minimum over sampled coil and surface points (non-smooth at every closest-pair switch)")
+    parser.add_argument("--check-exact-gradient", action="store_true",
+                        help="compare the seed's Gauss-Newton loss gradient with the exact stationarity derivative "
+                        "(ThreeTermFreeBoundaryProblem.exact_design_gradient; exact_gradient_check.json), then stop")
+    parser.add_argument("--exact-gradient-row", type=int, default=0,
+                        help="value row of --check-exact-gradient: 0 the loss, k >= 1 the k-th quantity")
+    parser.add_argument("--newton-polish", type=float, metavar="STEP_TOL",
+                        help="after its certificate, refine every fit by Newton steps on its stationarity (exact "
+                        "curvature) until the scaled step is at most STEP_TOL, so the fit's response is determined "
+                        "(ThreeTermFreeBoundaryProblem._newton_refine; default: off)")
+    parser.add_argument("--check-exact-products", action="store_true",
+                        help="compare the second-order adjoint products H v, F_d^T v (ThreeTermFreeBoundaryProblem."
+                        "exact_products) with Richardson difference products along the weakest, strongest and a random "
+                        "direction, with timings (exact_products_check.json), then stop")
+    parser.add_argument("--exact-products-timing", type=int, nargs="*", default=[], metavar="M",
+                        help="with --check-exact-products: also time compiled calls of M random columns")
+    parser.add_argument("--newton-track", action="store_true",
+                        help="with --newton-polish --exact-products: record the exact gradient at every Newton iterate")
+    parser.add_argument("--newton-max-steps", type=int, default=10, help="Newton polish steps at most")
+    parser.add_argument("--newton-quasi", action="store_true",
+                        help="Newton polish: the first step with the exact Hessian, then damped BFGS updates from the "
+                        "exact stationarity (one tight solve per step); the record's gradient still uses the exact Hessian")
+    parser.add_argument("--newton-warm", action="store_true",
+                        help="trials start Newton from the accepted point's converged boundary with its kept Hessian "
+                        "(no fit; falls back to the fit when Newton does not converge)")
+    parser.add_argument("--newton-partial", type=int, default=0, metavar="K",
+                        help="Newton polish: after the first full exact Hessian, refresh only its K weakest directions "
+                        "each step (exact columns, symmetric low-rank correction); 0 refreshes it fully")
+    parser.add_argument("--check-rows-c2", action="store_true",
+                        help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
+                        "separately) along a random state direction: autodiff vs central differences of its exact "
+                        "gradient (rows_c2_check.json), then stop")
+    parser.add_argument("--check-g-noise", action="store_true",
+                        help="the fit's stationarity g at the accepted boundary from three equilibrium starts (hot, "
+                        "cold, the record's own state), and the scaled Newton step their differences imply "
+                        "(g_noise_check.json), then stop")
+    parser.add_argument("--check-products", action="store_true",
+                        help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
+                        "with those from full linearizations, along the weakest, strongest and a random direction")
+    parser.add_argument("--check-stationarity-gradient", action="store_true",
+                        help="every row's exact derivative of the converged stationarity (ThreeTermFreeBoundaryProblem."
+                        "stationarity_design_gradient; stationarity_gradient_check.json, with the reverse-pass vs "
+                        "linearization consistency check), then stop")
+    parser.add_argument("--stationarity-richardson", action="store_true",
+                        help="Richardson-extrapolate the stationarity products over steps h and h/2")
+    parser.add_argument("--exact-gradient", type=int, metavar="K",
+                        help="optimize with the exact derivative of the converged stationarity (both curvature blocks), "
+                        "conjugate gradients preconditioned with the curvature on the fit's K weakest directions, kept "
+                        "between steps (ThreeTermFreeBoundaryProblem._stationarity_gradients); default: Gauss-Newton. "
+                        "Its step, Richardson, tolerance and iterations: --exact-gradient-h, --stationarity-richardson, "
+                        "--stationarity-rtol, --exact-gradient-maxiter")
+    parser.add_argument("--exact-products", action="store_true",
+                        help="the stationarity derivative (--exact-gradient, --check-stationarity-gradient) from the dense "
+                        "exact Hessian of second-order adjoint products (ThreeTermFreeBoundaryProblem.exact_products): "
+                        "no difference step, no conjugate gradients")
+    parser.add_argument("--stationarity-subspace", type=int, default=0, metavar="K",
+                        help="precondition --check-stationarity-gradient's conjugate gradients with the curvature on the "
+                        "fit's K weakest directions (0: Gauss-Newton preconditioner)")
+    parser.add_argument("--stationarity-rtol", type=float,
+                        help="relative residual of the stationarity conjugate gradients (default 1e-10 for "
+                        "--check-stationarity-gradient, 1e-6 for --exact-gradient)")
+    parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
+                        help="every row's design gradient with the fit's curvature on its K weakest directions "
+                        "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
+    parser.add_argument("--exact-gradient-maxiter", type=int, default=30,
+                        help="conjugate-gradient iterations of --check-exact-gradient (QH 2.5%% needs more than 30)")
+    parser.add_argument("--exact-gradient-h", type=float, default=1e-3,
+                        help="the central-difference step (scaled coordinates) of the stationarity products "
+                        "(exact/stationarity gradients, Newton polish); 1e-4 is noise-limited along the weakest "
+                        "directions, 1e-2 truncation-limited (--check-products)")
+    parser.add_argument("--check-gradient-cold", action="store_true",
+                        help="--check-gradient trials start from the seed's boundary, not the Gauss-Newton prediction "
+                        "(a predicted start that already certifies makes the difference reproduce the formula)")
+    parser.add_argument("--check-gradient-steps", type=float, nargs="+", default=[1e-2, 1e-3, 1e-4], metavar="H",
+                        help="central-difference steps of --check-gradient")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -1045,6 +1277,13 @@ def parse_args(argv=None):
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument("--checkpoint-every", type=int, default=1,
+                        help="save the accepted point to OUTPUT/checkpoint.npz every N accepted steps (0: never)")
+    parser.add_argument("--resume", type=Path, metavar="CHECKPOINT",
+                        help="continue from a checkpoint.npz instead of solving the seed design: the problem must be "
+                        "built the same way (e.g. --seed-run with the checkpoint's run), or this stops; the "
+                        "accepted equilibrium is restored and certified; SLSQP continues with its Hessian when "
+                        "slsqp_state.npz beside the checkpoint is of that point, else it starts afresh from it")
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
@@ -1067,10 +1306,17 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
+    parser.add_argument("--gauge", choices=("condensation",), default=None,
+                        help="hold the boundary's poloidal angle exactly by VMEC's spectral condensation (equations, not "
+                        "penalty rows; ThreeTermFreeBoundaryModel.gauge): needs --exact-products --newton-polish; use "
+                        "with --labelling start --label-weight 0")
     parser.add_argument("--labelling", choices=("start", "equal_arc", "condensed"), default="start",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
                         "equal arc length of the current surface (equal_arc), or VMEC's spectral condensation (condensed); "
                         "see ThreeTermFreeBoundaryModel")
+    parser.add_argument("--m1-complement", choices=("solved", "frozen"), default="solved",
+                        help="the interior's m = 1 complement: solved with the evolved dofs (unique root, default) "
+                        "or VMEC2000's released (frozen) complement")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
     args = parser.parse_args(argv)
@@ -1119,11 +1365,138 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
+def check_jacobian(inp, options, chart, directions, out, record=None, steps=(1e-2, 1e-3, 1e-4), dump=False,
+                   following=False):
+    """The model's implicit boundary Jacobian against central differences of tight rows (WP5/C5).
+
+    At the seed design's field and plasma parameters and the seed boundary (or ``record``'s model coordinates),
+    without solving the free boundary.  Directions: ``directions`` random unit vectors in the scaled model
+    coordinates, then the weakest right singular vector of the column-scaled Jacobian.  For each and each step:
+    ``|D - J d| / |J d|`` over all rows and by row block, with ``D`` the central difference.  Each perturbed
+    interior root is solved tight (certified).  Written to ``jacobian_check.json``."""
+    import jax.numpy as jnp
+
+    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+
+    model_options = {k: v for k, v in options.items()
+                     if k not in ("boundary_ftol", "boundary_max_nfev", "boundary_max_residual", "boundary_xtol",
+                                  "checkpoint", "seed_start", "semantic_identity")}
+    model = ThreeTermFreeBoundaryModel(inp, **model_options)
+    x_design = jnp.asarray(chart.x0)
+    params, field = chart.plasma_params_at(model.params0, x_design), chart(x_design)
+    b = np.asarray(model.x0, dtype=float)
+    if record is not None:
+        b = np.asarray(np.load(record, allow_pickle=False)["x"], dtype=float)
+    rows, aux = model.evaluate(b, params, field, tight=True)
+    J = np.asarray(model.linearize(b, aux, field)[0])[:, :b.size]
+    scale = np.asarray(model.x_scale, dtype=float)
+    if following:
+        return _check_jacobian_following(model, params, field, b, rows, aux, J, scale, directions, out, steps, record)
+    Js = J * scale
+    _, sv, vt = np.linalg.svd(Js / np.linalg.norm(Js, axis=0), full_matrices=False)
+    rng = np.random.default_rng(0)
+    dirs = [rng.standard_normal(b.size) for _ in range(directions)]
+    dirs.append(vt[-1] / np.linalg.norm(Js, axis=0))
+    records, arrays = [], {}
+    for k, d in enumerate(dirs):
+        d = d / np.linalg.norm(d) * scale
+        Jd = J @ d
+        arrays[f"Jd_{k}"] = Jd
+        for h in steps:
+            pair = [model.evaluate(b + sign * h * d, params, field, tight=True) for sign in (1, -1)]
+            if any(p is None for p in pair):
+                records.append(dict(direction=k, h=h, failed=True))
+                continue
+            diff = (np.asarray(pair[0][0]) - np.asarray(pair[1][0])) / (2 * h)
+            arrays[f"diff_{k}_{h:.0e}"] = diff
+            row = dict(direction=k, kind="weakest" if k == directions else "random", h=h,
+                       relative=float(np.linalg.norm(diff - Jd) / np.linalg.norm(Jd)))
+            for block, b0, b1 in model.row_blocks:
+                nrm = float(np.linalg.norm(Jd[b0:b1]))
+                if nrm > 0:
+                    row[block] = float(np.linalg.norm(diff[b0:b1] - Jd[b0:b1]) / nrm)
+            records.append(row)
+            print(f"[jacobian check] direction {k} ({row['kind']}) h={h:.0e}: relative {row['relative']:.2e}",
+                  flush=True)
+    meta = dict(resolution=model.resolution(), singular_values=[float(sv[0]), float(sv[-1])],
+                record=None if record is None else str(record), options=model.options)
+    (out / "jacobian_check.json").write_text(json.dumps(dict(meta=meta, checks=records), indent=1, default=str) + "\n")
+    if dump:
+        blocks = {name: np.array([b0, b1]) for name, b0, b1 in model.row_blocks}
+        np.savez(out / "jacobian_check.npz", rows=np.asarray(rows), **arrays, **{f"block_{k}": v for k, v in blocks.items()})
+
+
+def _check_jacobian_following(model, params, field, b, rows0, aux0, J, scale, directions, out, steps, record):
+    """--jacobian-following: boundary-only directions, the current re-solved to conditional stationarity."""
+    nb = int(model.n_boundary)
+    cur = np.arange(nb, b.size)
+    J_b, J_c = J[:, :nb], J[:, nb:]
+    Q, _ = np.linalg.qr(J_c)
+    reduced = J_b - Q @ (Q.T @ J_b)  # Kaufman: the response with the current following, to first order
+
+    def follow(bb):
+        """``bb`` with its current coordinates at conditional stationarity (Gauss-Newton, fresh columns)."""
+        got = model.evaluate(bb, params, field, tight=True)
+        for _ in range(20):
+            if got is None:
+                return None, None
+            r, aux = got
+            Jc, aux = model.current_columns(bb, aux, field)
+            Qc, Rc = np.linalg.qr(np.asarray(Jc))
+            g = Qc.T @ np.asarray(r)
+            if g @ g <= 1e-14 * (np.asarray(r) @ np.asarray(r)):
+                return bb, np.asarray(r)
+            bb = bb.copy()
+            bb[cur] -= np.linalg.solve(Rc, g)
+            got = model.evaluate(bb, params, field, tight=True)
+        return bb, None
+
+    b0, r0 = follow(b)
+    rs = reduced * scale[:nb]
+    _, sv, vt = np.linalg.svd(rs / np.linalg.norm(rs, axis=0), full_matrices=False)
+    rng = np.random.default_rng(0)
+    dirs = [rng.standard_normal(nb) for _ in range(directions)] + [vt[-1] / np.linalg.norm(rs, axis=0)]
+    records = []
+    for k, d in enumerate(dirs):
+        d = d / np.linalg.norm(d) * scale[:nb]
+        full = np.zeros(b.size)
+        full[:nb] = d
+        Rd, Jd = reduced @ d, J_b @ d
+        for h in steps:
+            plus, minus = follow(b0 + h * full), follow(b0 - h * full)
+            fixed = [model.evaluate(b0 + s * h * full, params, field, tight=True) for s in (1, -1)]
+            row = dict(direction=k, kind="weakest" if k == directions else "random", h=h)
+            if plus[1] is not None and minus[1] is not None:
+                diff = (plus[1] - minus[1]) / (2 * h)
+                row["following"] = float(np.linalg.norm(diff - Rd) / np.linalg.norm(Rd))
+                for block, b0_, b1_ in model.row_blocks:
+                    nrm = float(np.linalg.norm(Rd[b0_:b1_]))
+                    if nrm > 0:
+                        row["following_" + block] = float(np.linalg.norm(diff[b0_:b1_] - Rd[b0_:b1_]) / nrm)
+            if all(f is not None for f in fixed):
+                diff = (np.asarray(fixed[0][0]) - np.asarray(fixed[1][0])) / (2 * h)
+                row["fixed_current"] = float(np.linalg.norm(diff - Jd) / np.linalg.norm(Jd))
+            records.append(row)
+            print(f"[jacobian following] direction {k} ({row['kind']}) h={h:.0e}: following "
+                  f"{row.get('following', float('nan')):.2e}, fixed current {row.get('fixed_current', float('nan')):.2e}",
+                  flush=True)
+    meta = dict(resolution=model.resolution(), record=None if record is None else str(record), options=model.options,
+                base_closure_converged=r0 is not None)
+    (out / "jacobian_following.json").write_text(json.dumps(dict(meta=meta, checks=records), indent=1, default=str)
+                                                 + "\n")
+
+
+def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), cold=False):
     """Implicit design gradients of the loss and every quantity at the seed against central differences of
     re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
     ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector)."""
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector).
+
+    By default a trial starts from the accepted point's first-order (Gauss-Newton) boundary prediction; a trial whose
+    prediction already passes the certificate is accepted without a step, and its difference then reproduces the
+    Gauss-Newton formula by construction (not an independent check). Every trial's fit evaluations and accepted steps
+    are recorded (``trials``) so that can be seen. ``cold`` starts every trial from the seed's own boundary instead,
+    so each fit has to move by the whole response: the difference is then the solver's actual response."""
     x = np.asarray(problem.accepted.parameters, dtype=float)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
@@ -1134,15 +1507,32 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
         d /= np.linalg.norm(d)
         implicit = np.r_[grad @ d, jac @ d]
         for h in steps:
+            trials = []
+            for s in (1, -1):
+                key = np.asarray(problem._x(x + s * h * d), dtype=float)
+                if cold:  # from the seed's boundary, without the Gauss-Newton prediction or its Jacobian
+                    problem._solve(key, starts=[np.asarray(problem._anchor["b"])])
+                sol = problem._cache.get(key.tobytes()) if hasattr(problem, "_cache") else None
+                trials.append(None if sol is None else dict(nfev=sol.get("nfev"), accepted=sol.get("accepted"),
+                                                           reason=sol.get("reason")))
             values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
+            for s, t in zip((1, -1), trials):
+                if t is None:
+                    key = np.asarray(problem._x(x + s * h * d), dtype=float).tobytes()
+                    sol = problem._cache.get(key) if hasattr(problem, "_cache") else None
+                    trials[(1 - s) // 2] = None if sol is None else dict(
+                        nfev=sol.get("nfev"), accepted=sol.get("accepted"), reason=sol.get("reason"))
             fd = (values[0] - values[1]) / (2 * h)
             loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
             rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)
             records.append(dict(direction=k, h=h, loss_implicit=float(implicit[0]), loss_difference=float(fd[0]),
                                 loss_relative=float(loss), rows_relative=float(rows),
-                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist()))
+                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist(),
+                                cold=bool(cold), trials=trials))
+            moved = [t["accepted"] for t in trials if t is not None]
             print(f"[gradient check] direction {k} h={h:.0e}: loss {implicit[0]:.6e} vs {fd[0]:.6e} "
-                  f"(relative {loss:.1e}), quantities relative {rows:.1e}", flush=True)
+                  f"(relative {loss:.1e}), quantities relative {rows:.1e}"
+                  f"{' (cold)' if cold else ''} trial steps {moved}", flush=True)
     (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
 
 
@@ -1204,7 +1594,7 @@ def write_run_record(out, args):
         return [r for r in rows if visible is None or r["uuid"] in visible.split(",")]
 
     inputs = {}
-    for name in ("seed_run", "restart", "coils"):
+    for name in ("seed_run", "restart", "coils", "resume"):
         path = getattr(args, name, None)
         if path is not None and Path(path).exists():
             files = [p for p in Path(path).rglob("*") if p.is_file()] if Path(path).is_dir() else [Path(path)]
@@ -1257,10 +1647,19 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
+        if args.bootstrap:  # kinetic profiles exist only for bootstrap runs
+            pin_profiles(args.restart)
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
+        if args.bootstrap:  # kinetic profiles exist only for bootstrap runs
+            pin_profiles(args.seed_run)
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+        if (int(inp.mpol), int(inp.ntor)) != tuple(RESOLUTION[:2]):  # --modes applies to a seed run too
+            inp = inp.change_resolution(mpol=RESOLUTION[0], ntor=RESOLUTION[1], ntheta=GRID[0], nzeta=GRID[1])
+        if int(np.atleast_1d(inp.ns_array)[-1]) != int(RESOLUTION[2]):
+            inp = replace(inp, ns_array=np.array([int(RESOLUTION[2])]),
+                          ftol_array=np.atleast_1d(inp.ftol_array)[-1:], niter_array=np.atleast_1d(inp.niter_array)[-1:])
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:
@@ -1273,6 +1672,8 @@ def main(argv=None):
     if args.max_iterations:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
+    if args.bootstrap:
+        save_profiles(redl_profiles(inp)[0], out / "profiles.json")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
@@ -1296,11 +1697,15 @@ def main(argv=None):
     vacuum = vacuum_iota(inp)
     vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
 
-    def boundary_surface(state, runtime):
+    def boundary_arrays(state, runtime):
         rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
         rows, cols = np.asarray(runtime.modes.n) + ntor, np.asarray(runtime.modes.m)
         rbc = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(rmnc)
         zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
+        return rbc, zbs
+
+    def boundary_surface(state, runtime):
+        rbc, zbs = boundary_arrays(state, runtime)
         return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
 
     ext_rows, ext_terms = load_extension(args.extension)
@@ -1314,11 +1719,43 @@ def main(argv=None):
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
     def clearance(state, runtime, x):
-        return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
+        if args.clearance == "points":
+            return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
+        points = resampled(chart.coils_from_x(x), DISTANCE_POINTS).gamma
+        return continuous_surface_distance(points, *boundary_arrays(state, runtime), int(inp.nfp))[0]
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
+    from vmex.core import freeboundary_vc as fvc
+
+    if args.polish_rounds is not None:
+        fvc.POLISH_ROUNDS = int(args.polish_rounds)
+    if args.polish_ftol is not None:
+        fvc.POLISH_FTOL = float(args.polish_ftol)
+    tt_options = dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+                      quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
+                      trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
+                      bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
+                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling, gauge=args.gauge,
+                      checkpoint=args.resume, m1_complement=args.m1_complement,
+                      seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
+                      newton_polish=None if args.newton_polish is None else dict(
+                          step_tol=args.newton_polish, h=args.exact_gradient_h,
+                          products="exact" if args.exact_products else "difference", track=args.newton_track,
+                          verbose=args.newton_track, partial=args.newton_partial, warm=args.newton_warm,
+                          quasi=args.newton_quasi,
+                          max_steps=args.newton_max_steps),
+                      exact_gradient=None if args.exact_gradient is None else dict(
+                          subspace=args.exact_gradient, h=args.exact_gradient_h,
+                          rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
+                          richardson=args.stationarity_richardson, maxiter=args.exact_gradient_maxiter,
+                          products="exact" if args.exact_products else "difference"),
+                      **({} if args.label_weight is None else {"label_weight": args.label_weight}))
+    if args.check_jacobian:
+        check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,
+                       following=args.jacobian_following)
+        return
     problem = opt.FreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
@@ -1327,15 +1764,28 @@ def main(argv=None):
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
-        three_term_options=dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
-                                quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
-                                trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                                boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
-                                **({} if args.label_weight is None else {"label_weight": args.label_weight})))
+        three_term_options=tt_options)
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
+    if args.resume and args.newton_polish is not None:  # the restored record is exactly the saved one: refine it
+        t_refine = time.monotonic()
+        change = problem.refine_accepted()
+        nw = problem._record(problem.accepted.parameters).get("newton", {})
+        print(f"[newton polish] restored accepted point refined: values change {change:.2e}; "
+              f"{len(nw.get('steps', []))} steps, converged {nw.get('converged')}, {nw.get('evaluations')} "
+              f"evaluations, Hessian {nw.get('seconds_hessian', 0):.0f} s, {time.monotonic() - t_refine:.0f} s; "
+              "scaled steps " + " ".join(f"{st['step']:.1e}" for st in nw.get("steps", []))
+              + "; costs " + " ".join(f"{st.get('cost', np.nan):.6e}" for st in nw.get("steps", [])), flush=True)
+        steps = nw.get("steps", [])
+        if steps and "gradients" in steps[-1]:
+            last = np.array(steps[-1]["gradients"])
+            for k, st in enumerate(steps):
+                G = np.array(st["gradients"])
+                drift = np.linalg.norm(G - last, axis=1) / np.maximum(np.linalg.norm(last, axis=1), 1e-300)
+                print(f"[newton polish] iterate {k}: step {st['step']:.1e}, cost {st['cost']:.9e}, exact gradient vs "
+                      f"last iterate max {drift.max():.1e} (rows " + " ".join(f"{e:.0e}" for e in drift) + ")",
+                      flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
@@ -1429,7 +1879,9 @@ def main(argv=None):
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        last.update(time=now)
+        phases = {k: problem.stats.get(f"seconds_{k}", 0.0) for k in ("fit", "certify", "gradient")}
+        row.update({f"step_seconds_{k}": v - last.get(k, 0.0) for k, v in phases.items()})
+        last.update(time=now, **phases)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
@@ -1442,21 +1894,340 @@ def main(argv=None):
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
-              + f"{row['step_seconds']:.1f}s "
-              f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
+              + f"{row['step_seconds']:.1f}s (fit {row['step_seconds_fit']:.1f}s, "
+              f"certify {row['step_seconds_certify']:.1f}s, gradient {row['step_seconds_gradient']:.1f}s; "
+              + (f"exact gradient: {row['exact_gradient_evaluations'] - last.get('eg_ev', 0)} evaluations, CG "
+                 f"{row['exact_gradient_cg_iterations'] - last.get('eg_cg', 0)}, rebuilds "
+                 f"{row['exact_gradient_rebuilds']}, residual {row['exact_gradient_true_residual']:.1e}; "
+                 if "exact_gradient_evaluations" in row else "")
+              + (f"warm Newton trials {row.get('warm_newton_trials', 0)} (unconverged "
+                 f"{row.get('warm_newton_unconverged', 0)}, failed {row.get('warm_newton_failed', 0)}), "
+                 if "warm_newton_trials" in row or "warm_newton_failed" in row else "")
+              + f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
+        if "exact_gradient_evaluations" in row:
+            last.update(eg_ev=row["exact_gradient_evaluations"], eg_cg=row["exact_gradient_cg_iterations"])
+        if row.get("last_rejection") and row["last_rejection"] != last.get("rejection"):
+            print(f"[trial rejected] {row['last_rejection']}", flush=True)
+            last["rejection"] = row["last_rejection"]
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
+        if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
+            problem.save_checkpoint(out / "checkpoint.npz")
+            # SLSQP's whole state at this accepted point, saved atomically beside the checkpoint: --resume continues
+            # with its Hessian. Without a snapshot of this point (the start, or a call restarted after a rejected
+            # trial before its first step) an older state would be of another point: removed
+            snapshot = slsqp_latest.get("state")
+            if snapshot is not None and np.array_equal(snapshot["accepted"], x):
+                opt.save_slsqp_state(out / "slsqp_state.tmp.npz", snapshot)
+                os.replace(out / "slsqp_state.tmp.npz", out / "slsqp_state.npz")
+            elif (out / "slsqp_state.npz").exists():
+                os.remove(out / "slsqp_state.npz")
 
-    if args.check_gradient:
-        check_gradient(problem, args.check_gradient, out)
+    if args.checkpoint_every and (args.check_exact_gradient or args.check_gradient or args.check_subspace_gradient
+                                  or args.check_stationarity_gradient or args.check_exact_products
+                                  or args.check_g_noise or args.check_rows_c2):
+        problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
+    if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        model = problem.model
+        cfg = model.cfg
+        frozen = jax.lax.stop_gradient(sol["state"])
+        P = im._dof_projector(cfg, sol["mask"])
+        edge = im._edge_mask(cfg)
+        params_b, field_s = sol["params"], problem.field(jnp.asarray(x_seed))
+        z0 = P(frozen)
+        parts = dict(interface=lambda st, rt, p: model.rows_at(st, rt, field_s))
+        if model.bootstrap is not None:
+            parts["bootstrap"] = lambda st, rt, p: model.bootstrap.rows(st, rt, p)
+        rng = np.random.default_rng(0)
+        leaves, tree = jax.tree.flatten(z0)
+        direction = jax.tree.unflatten(tree, [jnp.asarray(rng.standard_normal(np.shape(a))) for a in leaves])
+        direction = P(direction)
+        norm = float(np.sqrt(sum(float(jnp.vdot(a, a)) for a in jax.tree.leaves(direction))))
+        direction = jax.tree.map(lambda a: a / norm, direction)
+        record = {}
+        for name, rows_of in parts.items():
+            def f(z, rows_of=rows_of):
+                st = im._assemble(z, im.runtime_from_params(params_b, cfg), frozen, P, edge)
+                r = rows_of(st, im.runtime_from_params(params_b, cfg), params_b)
+                return 0.5 * jnp.vdot(r, r)
+            grad = jax.jit(jax.grad(f))
+            exact = jax.jvp(grad, (z0,), (direction,))[1]
+            flat = lambda t: np.concatenate([np.ravel(np.asarray(a)) for a in jax.tree.leaves(t)])  # noqa: E731
+            e = flat(exact)
+            rows = []
+            for h in (1e-3, 1e-4, 1e-5, 1e-6):
+                plus = grad(jax.tree.map(lambda a, d: a + h * d, z0, direction))
+                minus = grad(jax.tree.map(lambda a, d: a - h * d, z0, direction))
+                fd = (flat(plus) - flat(minus)) / (2 * h)
+                rows.append(dict(h=h, relative=float(np.linalg.norm(fd - e) / max(np.linalg.norm(e), 1e-300))))
+            record[name] = rows
+            print(f"[rows C2] {name}: |d2 f v| {np.linalg.norm(e):.3e}; exact vs differences of the exact gradient: "
+                  + " ".join(f"h={r['h']:.0e} {r['relative']:.1e}" for r in rows), flush=True)
+        (out / "rows_c2_check.json").write_text(json.dumps(record, indent=1) + "\n")
         return
+    if args.check_g_noise:  # the fit's stationarity g from two equilibrium starts at one boundary, and its Newton effect
+        import scipy.linalg
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        model = problem.model
+        outs = {}
+        for name, seed in (("hot", None), ("cold", model.seed[0]), ("record", sol["state"])):
+            for memo in (im._LAST_SOLVE, im._LAST_REFINED):  # a fresh solve from this start, not the memo
+                memo.pop(model.cfg, None)
+            got = model.evaluate(b0, params_s, field_s, seed=seed, tight=True)
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = problem._cost_pullback(state, mask, params_b, r, xj)
+            b_bar, _ = problem._coordinates(params_b, jnp.asarray(b0), xj, params_bar)
+            outs[name] = (np.asarray(rows), np.asarray(b_bar)[0])
+        H, asym = problem.dense_hessian(x_seed, sol)
+        record = dict(asymmetry=asym, pairs={})
+        for a, b in (("hot", "cold"), ("hot", "record"), ("cold", "record")):
+            (ra, ga), (rb, gb) = outs[a], outs[b]
+            dg = ga - gb
+            step = scipy.linalg.solve(H, dg, assume_a="sym") / scale
+            rec = dict(rows=float(np.linalg.norm(ra - rb) / np.linalg.norm(rb)),
+                       g=float(np.linalg.norm(dg) / max(np.linalg.norm(gb), 1e-300)),
+                       newton_step_from_noise=float(np.linalg.norm(step)),
+                       newton_step_from_g=float(np.linalg.norm(scipy.linalg.solve(H, gb, assume_a="sym") / scale)))
+            record["pairs"][f"{a}-{b}"] = rec
+            print(f"[g noise] {a} vs {b}: rows {rec['rows']:.1e}, g {rec['g']:.1e}; scaled Newton step of the "
+                  f"difference {rec['newton_step_from_noise']:.1e} (of g itself {rec['newton_step_from_g']:.1e})",
+                  flush=True)
+        (out / "g_noise_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_exact_products:  # second-order adjoint products vs Richardson difference products
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        _, _, Vt = np.linalg.svd(np.asarray(sol["J"])[:, :nb] * scale, full_matrices=False)
+        rng = np.random.default_rng(0)
+        names = ("weakest", "strongest", "random")
+        V = np.stack([Vt[-1] * scale, Vt[0] * scale, rng.standard_normal(nb) * scale], axis=1)
+        t0 = time.monotonic()
+        problem.exact_products(x_seed, sol, V)  # compile and run
+        t1 = time.monotonic()
+        HV, FdV, consistency = problem.exact_products(x_seed, sol, V)
+        t2 = time.monotonic()
+        print(f"[exact products] first-order consistency: g {consistency['g']:.2e}, c {consistency['c']:.2e}; "
+              f"compile+3 columns {t1 - t0:.0f} s, 3 columns (compiled, incl. the consistency evaluation) "
+              f"{t2 - t1:.1f} s", flush=True)
+        record = dict(consistency=consistency, seconds_first=t1 - t0, seconds_three=t2 - t1, h=args.exact_gradient_h,
+                      directions={})
+        for j, name in enumerate(names):
+            v = V[:, j]
+            def central(step):
+                eps = step / float(np.linalg.norm(v / scale))
+                gp, cp, _ = problem._cost_gradients(b0 + eps * v, params_s, field_s, x_seed)
+                gm, cm, _ = problem._cost_gradients(b0 - eps * v, params_s, field_s, x_seed)
+                return (gp - gm) / (2 * eps), (cp - cm) / (2 * eps)
+            t3 = time.monotonic()
+            (h1, f1), (h2, f2) = central(args.exact_gradient_h), central(args.exact_gradient_h / 2)
+            t4 = time.monotonic()
+            Hr, Fr = (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
+            rec = dict(H=float(np.linalg.norm(HV[:, j] - Hr) / np.linalg.norm(Hr)),
+                       F=float(np.linalg.norm(FdV[:, j] - Fr) / max(np.linalg.norm(Fr), 1e-300)),
+                       H_plain=float(np.linalg.norm(HV[:, j] - h1) / np.linalg.norm(h1)),
+                       seconds_richardson=t4 - t3)
+            record["directions"][name] = rec
+            print(f"[exact products] {name}: exact vs Richardson H {rec['H']:.2e}, F_d^T {rec['F']:.2e} "
+                  f"(vs plain h: H {rec['H_plain']:.2e}); Richardson pair {t4 - t3:.1f} s", flush=True)
+        record["timing"] = {}
+        for m in args.exact_products_timing:  # the fixed per-call cost and the per-column cost
+            W = rng.standard_normal((nb, m)) * scale[:, None]
+            problem.exact_products(x_seed, sol, W)  # compile for m columns
+            t5 = time.monotonic()
+            problem.exact_products(x_seed, sol, W)
+            record["timing"][m] = time.monotonic() - t5
+            print(f"[exact products] {m} columns: {record['timing'][m]:.1f} s (compiled)", flush=True)
+        (out / "exact_products_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_products:  # H v and F_d^T v from reverse passes vs from full linearizations, same v
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb, scale = problem.model.x0.size, np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        extra = problem._plasma_directions(params_s, xj) if problem._plasma.size else None
+        b0 = np.asarray(sol["x"], dtype=float)
+
+        def by_linearization(bb):
+            rows, aux = problem.model.evaluate(bb, params_s, field_s, tight=True)
+            J, _, _, aux = problem.model.linearize(bb, aux, field_s, extra=extra)
+            J, rows = np.asarray(J), np.asarray(rows)
+            st, _, pb, _ = aux
+            c = np.asarray(problem._field_vjp(st, pb, xj, jnp.asarray(rows)))
+            if extra is not None:
+                c = c.copy()
+                c[problem._plasma] += J[:, nb:].T @ rows
+            return J[:, :nb].T @ rows, c
+
+        def by_pullback(bb):
+            g, c, _ = problem._cost_gradients(bb, params_s, field_s, x_seed)
+            return g, c
+
+        _, _, Vt = np.linalg.svd(np.asarray(sol["J"])[:, :nb] * scale, full_matrices=False)
+        rng = np.random.default_rng(0)
+        directions = dict(weakest=Vt[-1] * scale, strong=Vt[0] * scale, random=rng.standard_normal(nb) * scale)
+        record = dict(h=args.exact_gradient_h, directions={})
+        for name, v in directions.items():
+            eps = args.exact_gradient_h / float(np.linalg.norm(v / scale))
+            prod = {}
+            for label, f in (("linearization", by_linearization), ("pullback", by_pullback)):
+                (gp, cp), (gm, cm) = f(b0 + eps * v), f(b0 - eps * v)
+                prod[label] = ((gp - gm) / (2 * eps), (cp - cm) / (2 * eps))
+            (Hl, Fl), (Hp, Fp) = prod["linearization"], prod["pullback"]
+            A_v = np.asarray(sol["J"])[:, :nb].T @ (np.asarray(sol["J"])[:, :nb] @ v)
+            rec = dict(H=float(np.linalg.norm(Hp - Hl) / np.linalg.norm(Hl)),
+                       F=float(np.linalg.norm(Fp - Fl) / max(np.linalg.norm(Fl), 1e-300)),
+                       S_lin=float(np.linalg.norm(Hl - A_v) / np.linalg.norm(Hl)),
+                       S_pull=float(np.linalg.norm(Hp - A_v) / np.linalg.norm(Hl)))
+            record["directions"][name] = rec
+            print(f"[products] {name}: H pullback vs linearization {rec['H']:.2e}, F_d^T {rec['F']:.2e}; "
+                  f"|S v|/|H v| linearization {rec['S_lin']:.2e}, pullback {rec['S_pull']:.2e}", flush=True)
+        (out / "products_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_stationarity_gradient:  # every row's exact derivative of the converged stationarity
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        nb = problem.model.x0.size
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        g0, c0, r0 = problem._cost_gradients(sol["x"], params_s, field_s, x_seed)  # the reverse-pass products
+        J0 = np.asarray(sol["J"])
+        g_lin = J0[:, :nb].T @ np.asarray(sol["rows"])  # the same from the stored linearization (independent)
+        consistency = dict(stationarity=float(np.linalg.norm(g0 - g_lin) / max(np.linalg.norm(g_lin), 1e-300)),
+                           rows=float(np.linalg.norm(r0 - np.asarray(sol["rows"])) / np.linalg.norm(sol["rows"])))
+        print(f"[stationarity gradient] reverse-pass g vs linearization J^T r: {consistency['stationarity']:.2e}, "
+              f"rows {consistency['rows']:.2e}", flush=True)
+        t0 = time.monotonic()
+        got = problem.stationarity_design_gradient(x_seed, h=args.exact_gradient_h,
+                                                   maxiter=args.exact_gradient_maxiter,
+                                                   richardson=args.stationarity_richardson,
+                                                   subspace=args.stationarity_subspace,
+                                                   products="exact" if args.exact_products else "difference",
+                                                   rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol)
+        record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
+                      subspace=got["subspace"], subspace_evaluations=got["subspace_evaluations"],
+                      rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol,
+                      true_residual=got["true_residual"], products="exact" if args.exact_products else "difference",
+                      asymmetry=got.get("asymmetry"), hessian_condition=got.get("condition"),
+                      seconds_hessian=got.get("seconds_hessian"),
+                      gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
+                      rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
+                      cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,
+                      certificate=sol.get("certificate"), newton=sol.get("newton"))
+        if sol.get("newton"):
+            nw = sol["newton"]
+            print(f"[newton polish] {len(nw['steps'])} steps, converged {nw['converged']}, {nw['evaluations']} "
+                  f"evaluations (subspace {nw['subspace']}, products {nw.get('products', 'difference')}, Hessian "
+                  f"{nw.get('seconds_hessian', 0):.0f} s), {nw['seconds']:.0f} s; scaled steps "
+                  + " ".join(f"{st['step']:.1e}" for st in nw["steps"]), flush=True)
+        (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
+        print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "
+              f"{got['cg_converged']}, true residual max {max(got['true_residual']):.1e}, {got['evaluations']} evaluations "
+              f"({got['subspace_evaluations']} for the subspace), {record['seconds']:.0f} s", flush=True)
+        return
+    if args.check_subspace_gradient:  # the low-rank curvature gradient (every row) for each requested k
+        record = dict(h=args.exact_gradient_h, runs=[])
+        for k in args.check_subspace_gradient:
+            t0 = time.monotonic()
+            got = problem.subspace_design_gradient(problem.accepted.parameters, k=k, h=args.exact_gradient_h)
+            record["runs"].append(dict(k=got["k"], gradients=np.asarray(got["gradients"]).tolist(),
+                                       gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
+                                       singular_values=got["singular_values"], seconds=time.monotonic() - t0))
+            (out / "subspace_gradient_check.json").write_text(json.dumps(record) + "\n")
+            print(f"[subspace gradient] k={got['k']}: {record['runs'][-1]['seconds']:.0f} s", flush=True)
+        return
+    if args.check_exact_gradient:
+        t0 = time.monotonic()
+        got = problem.exact_design_gradient(problem.accepted.parameters, row=args.exact_gradient_row,
+                                            h=args.exact_gradient_h, maxiter=args.exact_gradient_maxiter)
+        gn, exact = np.asarray(got["gauss_newton"]), np.asarray(got["gradient"])
+        record = dict(gauss_newton=gn.tolist(), exact=exact.tolist(),
+                      relative=float(np.linalg.norm(gn - exact) / np.linalg.norm(exact)),
+                      componentwise_max=float(np.max(np.abs(gn - exact)) / np.max(np.abs(exact))),
+                      cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
+                      cg_residual=got["cg_residual"], seconds=time.monotonic() - t0, h=args.exact_gradient_h,
+                      multiplier=np.asarray(got["multiplier"]).tolist(),
+                      gauss_newton_multiplier=np.asarray(got["gauss_newton_multiplier"]).tolist(),
+                      singular_values=np.asarray(got["singular_values"]).tolist(),
+                      correction_by_singular_direction=np.asarray(got["correction_by_singular_direction"]).tolist(),
+                      maxiter=args.exact_gradient_maxiter, row=args.exact_gradient_row,
+                      certificate=problem._record(problem.accepted.parameters).get("certificate"))
+        (out / "exact_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        print(f"[exact gradient] Gauss-Newton vs exact: relative {record['relative']:.2e} "
+              f"(max component {record['componentwise_max']:.2e}), CG {got['cg_iterations']} iterations "
+              f"(converged {got['cg_converged']}), {record['seconds']:.0f} s", flush=True)
+        return
+    if args.check_gradient:
+        check_gradient(problem, args.check_gradient, out, steps=tuple(args.check_gradient_steps),
+                       cold=args.check_gradient_cold)
+        return
+    slsqp_latest = {}  # the latest SLSQP snapshot (opt.minimize's state_callback), saved with each checkpoint
     log_step()
-    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
+    # --resume: SLSQP continues with the saved state of the restored point (slsqp_state.npz beside the checkpoint),
+    # i.e. with its quasi-Newton Hessian instead of the identity; a finite-beta step is 45-60 min, so a 2 h segment
+    # is 1-3 steps, too few to rebuild it. The state is taken only when it is of the restored accepted point exactly
+    # (bitwise: the design vector the checkpoint restored). --newton-polish's refine_accepted() above Newton-refines
+    # that point's equilibrium but keeps its design vector, so the state is still of this point: SciPy evaluates the
+    # objective, constraints and gradients at its start itself, and the resumed method takes those refined values
+    # there as if its last evaluation had returned them (its BFGS pair is then the saved step and the refined
+    # gradient difference). Anything else (another point or problem size, a missing or unreadable file): an
+    # identity Hessian, logged.
+    resume, resume_reason = None, "no --resume"
+    if args.resume is not None:
+        state_file = Path(args.resume).parent / "slsqp_state.npz"
+        if not state_file.exists():
+            resume_reason = f"no {state_file}"
+        else:
+            try:
+                resume = opt.load_slsqp_state(state_file)
+            except Exception as error:  # noqa: BLE001 -- an unreadable state is not worth stopping the run
+                resume_reason = f"{state_file} unreadable: {error}"
+            else:
+                if not np.array_equal(resume["accepted"], problem.accepted.parameters):
+                    resume_reason = (f"{state_file} is of another point (largest difference "
+                                     f"{np.max(np.abs(resume['accepted'] - problem.accepted.parameters)):.1e})"
+                                     if resume["accepted"].shape == problem.accepted.parameters.shape
+                                     else f"{state_file} is of another problem size")
+                    resume = None
+    if resume is not None:
+        print(f"[slsqp] continuing with the saved state of {state_file} (SLSQP iteration "
+              f"{int(resume['state']['iter'])}, accepted step {problem.accepted_step})", flush=True)
+    else:
+        print(f"[slsqp] identity Hessian ({resume_reason})", flush=True)
+    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point (an identity Hessian)
         before = problem.accepted_step
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                              callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
+        options = dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL,
+                       state_callback=lambda state: slsqp_latest.update(state=state))
+        resumed = resume is not None
+        try:
+            result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                                  callback=lambda x: log_step(),
+                                  options=dict(options, **({"resume": resume} if resumed else {})))
+        except ValueError as error:
+            if not resumed or "the SLSQP state is of another" not in str(error):
+                raise
+            print(f"[slsqp] identity Hessian (the saved state is refused: {error})", flush=True)
+            resume = None
+            continue
+        resume = None
+        if resumed and result.stop_reason == "equilibrium_trial_rejected" and problem.accepted_step == before:
+            # the saved state's next trial was rejected: as an uninterrupted run would, restart from the identity
+            print("[slsqp] identity Hessian (the resumed state's trial was rejected)", flush=True)
+            continue
         if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
                 or problem.accepted_step >= args.steps):
             break

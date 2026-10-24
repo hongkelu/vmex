@@ -1,0 +1,41 @@
+{
+ "reference": "/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/runs/day1/qi25-tight-deck",
+ "nfp": 4,
+ "runs": {
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/runs/day1/qi25-tight-deck": {
+   "certified": true,
+   "stationarity": 9.382318716565297e-06,
+   "surface_distance_m": 0.0,
+   "values_max_rel": 0.0,
+   "blocks_rms": {
+    "B.n": 4.615603684510834e-06,
+    "pressure": 3.16812327470892e-06,
+    "K_x": 3.4828739146162967e-06,
+    "K_y": 3.525233192569564e-06,
+    "K_z": 2.685552454621616e-06,
+    "label": 5.647721032257927e-06,
+    "phase": 5.326237926168284e-06,
+    "net_current": 4.485417750098886e-06
+   }
+  },
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/runs/day1/qi25-tight-r1": {
+   "certified": true,
+   "stationarity": 6.34669734569976e-06,
+   "surface_distance_m": 0.0002691075812680817,
+   "values_max_rel": 0.0021869685510998564,
+   "blocks_rms": {
+    "B.n": 4.469000984990347e-06,
+    "pressure": 3.2121164560477465e-06,
+    "K_x": 3.3941516482391555e-06,
+    "K_y": 3.450298604766114e-06,
+    "K_z": 2.705263953856808e-06,
+    "label": 5.751696036307501e-06,
+    "phase": 4.985874709354295e-06,
+    "net_current": 4.520345439442878e-06
+   }
+  },
+  "/pscratch/sd/h/hongkelu/freeboundary-single-stage/paper/runs/day1/qi25-tight-s": {
+   "certified": false
+  }
+ }
+}

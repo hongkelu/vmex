@@ -1,0 +1,77 @@
+{
+ "plain": {
+  "near_vs_cold_rows_max_rel": 0.002585448810675887,
+  "near_B.n_rms_diff": 1.3131282687486908e-06,
+  "B.n_rms": 9.985964897239956e-05,
+  "near_pressure_rms_diff": 2.0232279401420793e-06,
+  "pressure_rms": 0.0003803043957116719,
+  "near_K_x_rms_diff": 8.504723538385522e-07,
+  "K_x_rms": 0.00024803179270647035,
+  "near_K_y_rms_diff": 1.4680598458857943e-06,
+  "K_y_rms": 0.0001762650039130702,
+  "near_K_z_rms_diff": 1.5395762672824095e-06,
+  "K_z_rms": 0.0002574614652587021,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 0.0,
+  "near_net_current_rms_diff": 1.2443569877306805e-08,
+  "net_current_rms": 0.0001964643661200122,
+  "perturbed_vs_cold_rows_max_rel": 0.003069278334470482,
+  "perturbed_B.n_rms_diff": 8.316581330522715e-07,
+  "perturbed_pressure_rms_diff": 1.4069460318359218e-06,
+  "perturbed_K_x_rms_diff": 5.617777581767439e-07,
+  "perturbed_K_y_rms_diff": 8.969983102313427e-07,
+  "perturbed_K_z_rms_diff": 1.1913157627622436e-06,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 2.201165365671204e-08
+ },
+ "gauged": {
+  "cold_condition_after": 1.0706496453294356e-16,
+  "near_condition_after": 9.860818758755663e-17,
+  "perturbed_condition_after": 1.0104764247564901e-16,
+  "near_vs_cold_rows_max_rel": 0.0012490282422229042,
+  "near_B.n_rms_diff": 6.813366528795356e-07,
+  "B.n_rms": 9.996633732060298e-05,
+  "near_pressure_rms_diff": 1.063432183653936e-06,
+  "pressure_rms": 0.0003803126760109633,
+  "near_K_x_rms_diff": 4.713849368825723e-07,
+  "K_x_rms": 0.00024810726960180075,
+  "near_K_y_rms_diff": 7.60753000779431e-07,
+  "K_y_rms": 0.00017627039452312103,
+  "near_K_z_rms_diff": 8.4148884648617e-07,
+  "K_z_rms": 0.0002574145825923318,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 4.906593993638167e-18,
+  "near_net_current_rms_diff": 1.7848150341026082e-09,
+  "net_current_rms": 0.00019657496026435835,
+  "perturbed_vs_cold_rows_max_rel": 0.0013437100042632973,
+  "perturbed_B.n_rms_diff": 3.032520212041455e-07,
+  "perturbed_pressure_rms_diff": 7.067996665051483e-07,
+  "perturbed_K_x_rms_diff": 2.5118817473871883e-07,
+  "perturbed_K_y_rms_diff": 3.759221535374493e-07,
+  "perturbed_K_z_rms_diff": 6.157441285494591e-07,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 2.959736539911279e-08
+ },
+ "resolution": {
+  "mpol": 4,
+  "ntor": 4,
+  "nfp": 2,
+  "ns": [
+   15
+  ],
+  "ftol": [
+   1e-13
+  ],
+  "max_mode": 1,
+  "nphi": 12,
+  "ntheta": 12,
+  "quadrature": [
+   96,
+   24
+  ],
+  "digits": 4,
+  "trial_ftol": null,
+  "n_boundary": 9,
+  "n_coordinates": 9
+ }
+}

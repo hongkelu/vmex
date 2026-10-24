@@ -493,11 +493,18 @@ def test_rejected_trial_leaves_the_continuation(monkeypatch):
 
 @needs_vc
 @pytest.mark.full
-def test_plasma_map_derivatives_at_nonzero_offsets():
+def test_plasma_map_derivatives_at_nonzero_offsets(monkeypatch):
     """The design gradient differentiates the plasma map itself, phiedge0 (1 + x1/2) + x2^2 / 100: at a nonzero
-    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0."""
+    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0.
+
+    The reference is a central difference of tightly re-solved fits (boundary_ftol and the polish target 1e-9): at
+    the default 1e-3 the fits' own error dominates a difference.  Against it, the exact stationarity derivative
+    (exact_design_gradient) agrees to 1e-3 (measured 8e-5); the optimizer's Gauss-Newton fit sensitivity stays within
+    its documented 1e-2 budget (measured 6.7e-3: the curvature term it drops, nonzero at a nonzero residual)."""
     from vmex.core.freeboundary_problem import FreeBoundaryProblem
 
+    monkeypatch.setattr(fvc, "POLISH_FTOL", 1e-9)
+    monkeypatch.setattr(fvc, "POLISH_ROUNDS", 20)
     inp, field = _small_vacuum()
     base = field.currents
     problem = FreeBoundaryProblem.from_loss(
@@ -505,14 +512,16 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        boundary_condition="three_term", three_term_options=SMALL)
+        boundary_condition="three_term", three_term_options=dict(SMALL, boundary_ftol=1e-9, boundary_max_nfev=400))
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, grad = problem.value_and_grad(x)
+    exact = problem.exact_design_gradient(x)["gradient"]
     h = 1e-3
     for k in (1, 2):
         e = np.eye(3)[k] * h
         fd = (problem.fun(x + e) - problem.fun(x - e)) / (2 * h)
+        assert exact[k] == pytest.approx(fd, rel=1e-3), k
         assert grad[k] == pytest.approx(fd, rel=1e-2), k
     problem.close()
 
@@ -586,8 +595,19 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     assert fresh.restore_checkpoint(path) <= 1e-6
     assert np.array_equal(fresh.accepted.parameters, x1) and fresh.accepted_step == 1
     np.testing.assert_allclose(fresh._record(x1)["values"], saved, rtol=1e-6)
+    # built from the checkpoint: no seed solve at x0, the accepted point is the saved one
+    for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED):
+        cache.clear()
+    resumed = _small_problem(checkpoint=path)
+    assert np.array_equal(resumed.accepted.parameters, x1) and resumed.accepted_step == 1
+    assert problem.x0.tobytes() not in resumed._cache
+    np.testing.assert_allclose(resumed._record(x1)["values"], saved, rtol=1e-6)
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
+    with pytest.raises(ValueError, match="semantic_identity"):  # the caller declares other callbacks
+        _small_problem(semantic_identity={"objective": "aspect", "version": 2}).restore_checkpoint(path)
+    with pytest.raises(ValueError, match="model"):  # another interior equation set
+        _small_problem(m1_complement="frozen").restore_checkpoint(path)
     other, field = _small_problem(), _small_vacuum()[1]  # same settings, another coil-field map
     other.field = lambda x: replace(field, currents=field.currents * (1 + 0.06 * x[0]))
     with pytest.raises(ValueError, match="coil field"):
@@ -681,7 +701,8 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
     again = fvc.solve_free_boundary_three_term(inp, external_field=field, previous=fit)
-    assert again.njev == 0 and again.cost <= fit.cost * (1 + 1e-6)
+    # no new Jacobian: the warm start's own certification reuses the latest linearization (counted once)
+    assert again.njev <= 1 and again.converged and again.cost <= fit.cost * (1 + 1e-6)
     assert _lcfs_distance(again.equilibrium.wout, walls[0]) < 1e-4
 
 
@@ -946,3 +967,427 @@ def test_three_term_on_the_cth_like_deck(case):
               f"(VMEC2000 {1e3 * drift_ref:.2f} mm)")
         assert bn < 5e-4 and bn < bn_ref
         assert drift < 1e-3  # absolute: at 5 x 4 modes VMEC2000's boundary drifts a little less (see above)
+
+
+def _exact_and_gauss_newton_sensitivity(residual, b, d):
+    """``db/dd`` of ``min_b |residual(b, d)|^2`` at a stationary ``b``: exact (curvature terms by AD) and
+    Gauss-Newton, both through :func:`fvc._least_squares_sensitivity`."""
+    r = np.asarray(residual(b, d))
+    J_b = np.asarray(jax.jacfwd(residual, 0)(b, d))
+    J_d = np.asarray(jax.jacfwd(residual, 1)(b, d))
+    S_bb = np.einsum("i,ijk->jk", r, np.asarray(jax.jacfwd(jax.jacfwd(residual, 0), 0)(b, d)))
+    S_bd = np.einsum("i,ijk->jk", r, np.asarray(jax.jacfwd(jax.jacfwd(residual, 0), 1)(b, d)))
+    return (fvc._least_squares_sensitivity(J_b, J_d, S_bb, S_bd), fvc._least_squares_sensitivity(J_b, J_d),
+            J_b, J_d)
+
+
+@pytest.mark.parametrize("which", ["state_curvature", "mixed"])
+def test_least_squares_sensitivity_needs_the_curvature_terms(which):
+    """Two analytic least squares at b = 0, d = 0 where the residual does not vanish: exact db/dd = 1.25, Gauss-Newton
+    1.  r = (b - d, sqrt(0.1)(b^2 - 1)) needs S_bb; r = (b - d, (b d - 1)/2) needs only the mixed S_bd.  The exact
+    sensitivity matches central differences of the re-solved minimum; the gradient's multipliers are Gauss-Newton."""
+    import scipy.optimize
+
+    if which == "state_curvature":
+        def residual(b, d):
+            return jnp.stack([b[0] - d[0], jnp.sqrt(0.1) * (b[0] ** 2 - 1.0)])
+    else:
+        def residual(b, d):
+            return jnp.stack([b[0] - d[0], 0.5 * (b[0] * d[0] - 1.0)])
+    zero = jnp.zeros(1)
+    exact, gauss_newton, J_b, J_d = _exact_and_gauss_newton_sensitivity(residual, zero, zero)
+    assert exact[0, 0] == pytest.approx(1.25, rel=1e-12) and gauss_newton[0, 0] == pytest.approx(1.0, rel=1e-12)
+
+    def solved(d):
+        return scipy.optimize.least_squares(lambda b: np.asarray(residual(jnp.asarray(b), jnp.asarray([d]))),
+                                            np.zeros(1), xtol=1e-15, ftol=1e-15, gtol=1e-15).x[0]
+
+    for h in (1e-2, 1e-3, 1e-4):  # a plateau
+        assert (solved(h) - solved(-h)) / (2 * h) == pytest.approx(1.25, rel=1e-3)
+    G_b = np.array([[1.0]])  # h = b: the design gradient through the multipliers is Gauss-Newton's
+    lam = fvc._residual_multipliers(J_b, G_b)
+    assert float(-(lam.T @ J_d)[0, 0]) == pytest.approx(float((G_b @ gauss_newton)[0, 0]), rel=1e-12)
+
+
+def test_residual_multipliers_equal_the_forward_gauss_newton_sensitivity():
+    """The adjoint form of the gradient (multipliers, one per row) equals the forward Gauss-Newton sensitivity."""
+    rng = np.random.default_rng(0)
+    J_b, J_d, G_b = rng.normal(size=(30, 7)), rng.normal(size=(30, 4)), rng.normal(size=(3, 7))
+    lam = fvc._residual_multipliers(J_b, G_b)
+    np.testing.assert_allclose(-lam.T @ J_d, G_b @ fvc._least_squares_sensitivity(J_b, J_d), rtol=1e-10, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Reduced (variable-projection) Levenberg-Marquardt and least-squares sensitivities (PR #121 review)
+# ---------------------------------------------------------------------------
+
+
+def _stiff_closure(weight=100.0):
+    """r(b, c) = (b - 1, b - 1/2, weight (c - b^2)): c a stiff closure of b, nonlinear in b."""
+    def evaluate(x):
+        b, c = x
+        return np.array([b - 1.0, b - 0.5, weight * (c - b * b)]), None
+
+    def jacobian(x):
+        b, _ = x
+        return np.array([[1.0, 0.0], [1.0, 0.0], [-2 * weight * b, weight]])
+
+    return evaluate, jacobian
+
+
+def test_projected_levenberg_marquardt_predicts_the_composite_step():
+    """With the closure eliminated, the model is that of the evaluated composite step (boundary step, closure
+    re-solved): the step from a stale Jacobian converges to the minimum, the gain ratio of the first step is near
+    one, and the closure is conditionally stationary at every accepted point.  Holding the closure in the joint
+    model instead stalls on the curvature of its rows."""
+    evaluate, jacobian = _stiff_closure()
+    x0 = np.array([3.0, 9.0])  # closure-consistent start, far from the minimum b = 3/4
+    r0, _ = evaluate(x0)
+    log = []
+
+    def logged(x):
+        out = evaluate(x)
+        log.append((np.array(x), 0.5 * out[0] @ out[0]))
+        return out
+
+    out = fvc._levenberg_marquardt(logged, x0, r0, None, jacobian(x0), ftol=1e-12, max_nfev=40, verbose=0,
+                                   project=np.array([1]))
+    assert out["converged"] and out["reason"] == "ftol"
+    np.testing.assert_allclose(out["x"], [0.75, 0.5625], rtol=1e-6)
+    assert out["projections"] == 0
+    joint = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-12, max_nfev=40, verbose=0)
+    assert not joint["converged"] and abs(joint["x"][0] - 0.75) > 1e-2
+
+
+def test_project_stops_at_conditional_stationarity():
+    evaluate, jacobian = _stiff_closure()
+    x = np.array([0.75, 0.0])
+    Q, R = np.linalg.qr(jacobian(x)[:, [1]])
+    xs, got, used, stationary = fvc._project(evaluate, x, evaluate(x), Q, R, np.array([1]), 10, 1e-20)
+    assert stationary and used == 1  # linear in c: one correction
+    np.testing.assert_allclose(xs, [0.75, 0.5625], rtol=1e-14)
+    _, _, used, stationary = fvc._project(evaluate, xs, got, Q, R, np.array([1]), 10, 1e-20)
+    assert stationary and used == 0
+
+
+@pytest.mark.parametrize("residual", [
+    lambda b, d: jnp.stack([b - d, jnp.sqrt(0.1) * (b * b - 1.0)]),  # state curvature
+    lambda b, d: jnp.stack([b - d, 0.5 * (b * d - 1.0)]),  # mixed term only
+])
+def test_least_squares_sensitivity_exact_vs_gauss_newton(residual):
+    """At the stationary point b = 0 of d = 0, exact db/dd = 1.25; Gauss-Newton (no second-order terms) gives
+    1, the error the problem's gradient carries at a nonzero residual.  The exact value matches re-solved finite
+    differences."""
+    import jax
+    import scipy.optimize
+
+    b, d = 0.0, 0.0
+    r = np.asarray(residual(b, d))
+    J_y = np.asarray(jax.jacfwd(residual, 0)(b, d))[:, None]
+    J_d = np.asarray(jax.jacfwd(residual, 1)(b, d))
+    hess = jax.hessian(residual, (0, 1))(b, d)  # ((d2/db2, d2/db dd), ...), each per residual component
+    S_yy, S_yd = r @ np.asarray(hess[0][0]), r @ np.asarray(hess[0][1])
+    assert np.asarray(jax.grad(lambda y: 0.5 * jnp.sum(residual(y, d) ** 2))(b)) == 0.0
+    exact = fvc.least_squares_sensitivity(J_y, J_d, S_yy, S_yd)
+    np.testing.assert_allclose(exact, [[1.25]], rtol=1e-13)
+    np.testing.assert_allclose(fvc.least_squares_sensitivity(J_y, J_d), [[1.0]], rtol=1e-13)
+    h = 1e-5
+    stationarity = jax.grad(lambda y, dd: 0.5 * jnp.sum(residual(y, dd) ** 2))
+    solved = [scipy.optimize.brentq(lambda y, dd=dd: float(stationarity(y, dd)), -0.1, 0.1, xtol=1e-15)
+              for dd in (-h, h)]
+    assert (solved[1] - solved[0]) / (2 * h) == pytest.approx(1.25, rel=1e-6)
+
+
+@needs_vc
+@pytest.mark.full
+def test_standalone_and_optimization_accept_the_same_equilibrium(monkeypatch):
+    """One definition of solved: at the same deck, field and fit settings the standalone solve and the
+    optimization's seed record are both certified by the same rule and land on the same stationary point (within
+    their Gauss-Newton steps); a finish that only stalled, far from it, is not converged."""
+    inp, field = _small_vacuum()
+    problem = _small_problem(boundary_ftol=1e-4, boundary_max_nfev=60)
+    record = problem._record(problem.x0)
+    fit = fvc.solve_free_boundary_three_term(inp, external_field=field, ftol=1e-4, max_nfev=60, **SMALL)
+    assert fit.converged and fit.certificate is not None and "certified" in fit.message
+    for certificate in (fit.certificate, record["certificate"]):
+        assert certificate["stationarity"] <= 1e-4
+    scaled = np.linalg.norm((fit.x - record["x"]) / problem.model.x_scale)
+    assert scaled <= fit.certificate["step"] + record["certificate"]["step"] + 1e-8
+
+    def stall(evaluate, x, r, aux, J, **kwargs):
+        return dict(x=x, rows=r, aux=aux, nfev=1, accepted=0, converged=False, radius=kwargs.get("radius"),
+                    reason="stalled", projections=0)
+
+    monkeypatch.setattr(fvc, "_levenberg_marquardt", stall)
+    stalled = fvc.solve_free_boundary_three_term(inp, external_field=field, ftol=1e-4, max_nfev=2, **SMALL)
+    assert not stalled.converged and not stalled.success and "not certified" in stalled.message
+    assert stalled.certificate is None
+
+
+@needs_vc
+@pytest.mark.full
+def test_certify_polishes_on_tight_states(monkeypatch):
+    """The polish of a trial that failed its certificate evaluates tight states (the ones the certificate judges),
+    while the trial's own fit stays on trial states."""
+    problem = _small_problem()
+    model, calls, original, real = problem.model, [], problem.model.solve_boundary, fvc._fit_certificate
+    count = {"n": 0}
+
+    def spy(*args, **kwargs):
+        calls.append(bool(kwargs.get("tight", False)))
+        return original(*args, **kwargs)
+
+    def first_fails(J, r, *args):
+        count["n"] += 1
+        certificate = real(J, r, *args)
+        return dict(certificate, stationarity=1.0) if count["n"] == 1 else certificate
+
+    monkeypatch.setattr(model, "solve_boundary", spy)
+    monkeypatch.setattr(fvc, "_fit_certificate", first_fails)
+    assert problem._solve(problem.x0 + 0.01) is not None
+    assert calls[0] is False and True in calls[1:]
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
+def test_an_exhausted_polish_budget_is_named_in_the_rejection(monkeypatch):
+    """A fit still short of stationarity when the polish rounds run out is rejected with the budget named (so a
+    record can be classified as budget-exhausted rather than as a fit with no stationary point)."""
+    problem = _small_problem()
+    real = fvc._fit_certificate
+    monkeypatch.setattr(fvc, "_fit_certificate", lambda J, r, *args: dict(real(J, r, *args), stationarity=1.0))
+    monkeypatch.setattr(fvc, "POLISH_ROUNDS", 0)
+    with pytest.raises(TrialRejected, match="polish budget of 0 rounds ran out"):
+        problem.value_and_grad(problem.x0 + 0.01)
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
+def test_normal_operator_is_the_surface_normal_displacement():
+    """N @ dx is the normal displacement of the boundary surface for a coordinate change dx (finite differences of
+    the surface against its numerical normal, periodic central differences), a the RMS minor radius."""
+    inp, field = _small_vacuum()
+    model = fvc.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    x = jnp.asarray(model.x0)
+    N, a = map(np.asarray, model._normal_operator(x))
+    assert 0.05 < a < 0.5 and N.shape == (48 * 48, x.size)
+    rng = np.random.default_rng(0)
+    dx = rng.normal(size=x.size) * np.asarray(model.x_scale) * 1e-3
+    from vmex.core.optimize import boundary_arrays_from_x
+
+    def points(z):
+        rbc, zbs = map(np.asarray, boundary_arrays_from_x(model.fixed, z, model.max_mode, vary_major_radius=True))
+        th, ph = np.meshgrid(np.linspace(0, 2 * np.pi, 48, endpoint=False),
+                             np.linspace(0, 2 * np.pi / int(inp.nfp), 48, endpoint=False), indexing="ij")
+        R = sum(rbc[i, m] * np.cos(m * th - (i - (rbc.shape[0] - 1) // 2) * int(inp.nfp) * ph)
+                for i in range(rbc.shape[0]) for m in range(rbc.shape[1]))
+        Z = sum(zbs[i, m] * np.sin(m * th - (i - (rbc.shape[0] - 1) // 2) * int(inp.nfp) * ph)
+                for i in range(rbc.shape[0]) for m in range(rbc.shape[1]))
+        return np.stack([R * np.cos(ph), R * np.sin(ph), Z]), th, ph
+
+    X, th, ph = points(np.asarray(x))
+    e_t = (np.roll(X, -1, axis=1) - np.roll(X, 1, axis=1)) / (2 * (th[1, 0] - th[0, 0]))
+    e_p = (X[:, :, 2:] - X[:, :, :-2]) / (2 * (ph[0, 1] - ph[0, 0]))  # one field period: interior points only
+    X, e_t = X[:, :, 1:-1], e_t[:, :, 1:-1]
+    n = np.cross(e_t, e_p, axis=0)
+    n /= np.linalg.norm(n, axis=0)
+    fd = np.sum((points(np.asarray(x) + dx)[0] - points(np.asarray(x) - dx)[0])[:, :, 1:-1] / 2 * n, axis=0)
+    np.testing.assert_allclose((N @ dx).reshape(48, 48)[:, 1:-1], fd, atol=2e-2 * np.max(np.abs(fd)))
+
+
+@needs_vc
+@pytest.mark.full
+def test_certificate_records_are_complete_and_match_the_row_layout():
+    """The recorder sees every certificate round and the outcome: the full Jacobian, rows, coordinates, interior
+    state, scales, boundary arrays and the effective resolution; the runtime row layout covers the rows exactly."""
+    problem = _small_problem()
+    model, records = problem.model, []
+    model.recorder = records.append
+    sol = problem._solve(problem.x0 + 0.01)
+    assert sol is not None
+    assert [r["kind"] for r in records][-1] == "certified"
+    assert all(r["kind"] == "round" for r in records[:-1]) and len(records) >= 2
+    last_row = model.row_blocks[-1][2]
+    names = [name for name, _, _ in model.row_blocks]
+    assert names[:6] == ["B.n", "pressure", "K_x", "K_y", "K_z", "label"] and "net_current" in names
+    for r in records:
+        assert r["rows"].size == last_row
+        assert r["J"].shape[0] == last_row and r["J"].shape[1] >= model.x0.size
+        assert r["x"].size == model.x0.size and r["x_scale"].size == model.x0.size
+        assert len(r["state"]) == len(jax.tree.leaves(model.seed[0]))
+        assert r["resolution"]["mpol"] == int(model.fixed.mpol) and r["resolution"]["nphi"] == SMALL["nphi"]
+        assert r["certificate"] is not None and np.isfinite(r["certificate"]["stationarity"])
+    assert "values" in records[0] and records[0]["values"] is not None
+    np.testing.assert_array_equal(records[-1]["rows"], sol["rows"])
+    model.recorder = None
+    problem.close()
+
+
+def _rotating_current(weight=30.0):
+    """Rows (b - 1, b - 1/2, w (c - b^2), w b (c - 1)): the current column (1, b) rotates as b moves."""
+    def evaluate(x):
+        b, c = x
+        return np.array([b - 1.0, b - 0.5, weight * (c - b * b), weight * b * (c - 1.0)]), None
+
+    def jacobian(x):
+        b, c = x
+        return np.array([[1.0, 0.0], [1.0, 0.0], [-2 * weight * b, weight], [weight * (c - 1.0), weight * b]])
+
+    def conditional_gain(x):
+        r = evaluate(x)[0]
+        Q, _ = np.linalg.qr(jacobian(x)[:, [1]])
+        g = Q.T @ r
+        return float(g @ g / (r @ r))
+
+    return evaluate, jacobian, conditional_gain
+
+
+def test_projection_is_certified_with_fresh_current_columns():
+    """Corrections with a stale Jacobian's current columns stop short of conditional stationarity when the columns
+    rotate; the finish's fresh-column check refreshes them and certifies the result."""
+    evaluate, jacobian, conditional_gain = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    r0 = evaluate(x0)[0]
+    stale = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                     project=np.array([1]))
+    assert stale["projection_certified"] is None and conditional_gain(stale["x"]) > 1e-6
+    fresh = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                     project=np.array([1]), current_columns=lambda x, aux: (jacobian(x)[:, [1]], aux))
+    assert fresh["projection_certified"] is True and conditional_gain(fresh["x"]) <= 1e-11
+
+
+def test_projection_unconverged_is_not_converged():
+    """When the fresh-column corrections cannot reach conditional stationarity the finish says so."""
+    evaluate, jacobian, _ = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    r0 = evaluate(x0)[0]
+    out = fvc._levenberg_marquardt(evaluate, x0, r0, None, jacobian(x0), ftol=1e-10, max_nfev=60, verbose=0,
+                                   project=np.array([1]),
+                                   current_columns=lambda x, aux: (jacobian(x)[:, [1]] + np.array([[0.0], [5.0], [0.0],
+                                                                                                   [0.0]]), aux))
+    assert out["projection_certified"] is False
+    assert out["reason"] == "projection_unconverged" and not out["converged"]
+
+
+def test_rank_deficient_current_block_rejects():
+    evaluate, jacobian, _ = _rotating_current()
+    x0 = np.array([2.0, 4.0])
+    J = jacobian(x0)
+    J[:, 1] = 0.0
+    with pytest.raises(RuntimeError, match="rank-deficient current block"):
+        fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-10, max_nfev=10, verbose=0,
+                                 project=np.array([1]))
+
+
+@pytest.mark.parametrize("rule, converged", [("gain", False), ("model", True)])
+def test_stall_rule_model_continues_well_predicted_small_gains(monkeypatch, rule, converged):
+    """A linear problem with a large irreducible residual: every step is predicted exactly (gain ratio 1) but gains
+    far under 5% of the cost.  The gain rule calls it stalled; the model rule lets the radius grow and converges."""
+    def evaluate(x):
+        return np.array([x[0] - 1.0, x[1] - 2.0, 100.0]), None
+
+    J = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+    x0 = np.array([3.0, -1.0])
+    monkeypatch.setattr(fvc, "STALL_RULE", rule)
+    out = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-12, max_nfev=60, verbose=0,
+                                   radius=1e-3)
+    assert out["converged"] is converged
+    if converged:
+        np.testing.assert_allclose(out["x"], [1.0, 2.0], atol=1e-5)
+    else:
+        assert out["reason"] == "stalled"
+
+
+def test_broyden_update_cuts_the_evaluations_of_a_stale_jacobian(monkeypatch):
+    """From a stale Jacobian, secant (Broyden) updates along the accepted steps reach the root in far fewer
+    evaluations than the fixed Jacobian."""
+    def evaluate(x):
+        return np.array([x[0] ** 2 - 2.0, x[1] ** 3 - 3.0, x[0] * x[1] - np.sqrt(2) * 3 ** (1 / 3)]), None
+
+    x0 = np.array([3.0, 3.0])
+    J0 = np.array([[2 * x0[0], 0.0], [0.0, 3 * x0[1] ** 2], [x0[1], x0[0]]])
+    runs = {}
+    for mode in ("none", "broyden"):
+        monkeypatch.setattr(fvc, "JACOBIAN_UPDATE", mode)
+        runs[mode] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J0, ftol=1e-14, max_nfev=200,
+                                              verbose=0)
+        np.testing.assert_allclose(runs[mode]["x"], [np.sqrt(2), 3 ** (1 / 3)], rtol=1e-10)
+    assert runs["broyden"]["jacobian_updates"] > 0 and runs["none"]["jacobian_updates"] == 0
+    assert runs["broyden"]["nfev"] * 3 < runs["none"]["nfev"]
+
+
+def test_gauss_newton_extrapolation_follows_a_step_the_model_undershoots(monkeypatch):
+    """r(x) = 1/x^2 from x = 1: the Gauss-Newton step (gain ratio 0.80) undershoots a cost that keeps falling along
+    it, so doubling the accepted step lowers the cost further for the same evaluations; without the extrapolation
+    the fixed Jacobian's steps do not."""
+    def evaluate(x):
+        return np.array([1.0 / x[0] ** 2]), None
+
+    x0 = np.array([1.0])
+    J = np.array([[-2.0]])
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(fvc, "GN_EXTRAPOLATE", on)
+        out[on] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-14, max_nfev=6,
+                                           verbose=0)
+    cost = {on: 0.5 * float(out[on]["rows"] @ out[on]["rows"]) for on in out}
+    assert out[False]["extrapolated"] == 0 and out[True]["extrapolated"] >= 2
+    assert out[True]["nfev"] <= 6
+    assert cost[True] < 0.1 * cost[False]
+
+
+def test_best_start_ranks_successful_fits_before_cost():
+    """start='best': a lower-cost fit that failed never displaces a successful one; among equals, lower cost."""
+    from types import SimpleNamespace
+
+    from vmex.core.multigrid import _best_three_term_fit
+
+    good = SimpleNamespace(success=True, cost=2.0)
+    failed = SimpleNamespace(success=False, cost=1.0)
+    better = SimpleNamespace(success=True, cost=1.5)
+    assert _best_three_term_fit([failed, good]) is good
+    assert _best_three_term_fit([good, failed, better]) is better
+    assert _best_three_term_fit([failed]) is failed
+    with pytest.raises(ValueError):
+        _best_three_term_fit([])
+
+
+def test_geodesic_acceleration_follows_curved_rows(monkeypatch):
+    """Rosenbrock rows from (0.5, 0) with one fixed Jacobian: the geodesic correction (one extra evaluation for the
+    rows' second directional derivative along the step) reaches the root in fewer evaluations than the plain
+    Levenberg-Marquardt steps, which stall short of it."""
+    def evaluate(x):
+        return np.array([x[0] - 1.0, 10.0 * (x[1] - x[0] ** 2)]), None
+
+    x0 = np.array([0.5, 0.0])
+    J = np.array([[1.0, 0.0], [-20.0 * x0[0], 10.0]])
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(fvc, "GEODESIC", on)
+        out[on] = fvc._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-14, max_nfev=30, verbose=0)
+    assert out[False]["accelerated"] == 0 and out[True]["accelerated"] >= 1
+    assert out[True]["converged"] and np.allclose(out[True]["x"], [1.0, 1.0], atol=1e-6)
+    assert out[True]["nfev"] < out[False]["nfev"]
+
+
+def test_projection_gate_and_seed_start(monkeypatch):
+    """PROJECTION_GATE caps the current projection's gate (0.1 ftol by default); seed_start perturbs only the
+    boundary coordinates ('random': eps x_scale N(0, 1); 'scale': 1 + eps on every coefficient but the major
+    radius), and an unknown kind is refused."""
+    from types import SimpleNamespace
+
+    assert fvc._projection_gate(1e-4) == pytest.approx(1e-5)
+    monkeypatch.setattr(fvc, "PROJECTION_GATE", 1e-12)
+    assert fvc._projection_gate(1e-4) == 1e-12
+    model = SimpleNamespace(x0=np.array([1.0, 0.2, -0.1, 0.05, 7.0]), x_scale=np.full(5, 0.5), n_boundary=4)
+    owner = SimpleNamespace(model=model)
+    b = fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("random", 1e-3, 3))
+    expected = model.x0.copy()
+    expected[:4] += 1e-3 * 0.5 * np.random.default_rng(3).standard_normal(4)
+    np.testing.assert_allclose(b, expected)
+    b = fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("scale", 1e-3))
+    np.testing.assert_allclose(b, [1.0, 0.2 * 1.001, -0.1 * 1.001, 0.05 * 1.001, 7.0])
+    with pytest.raises(ValueError, match="seed_start"):
+        fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))

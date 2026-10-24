@@ -1,0 +1,93 @@
+{
+ "resolution": {
+  "mpol": 8,
+  "ntor": 8,
+  "nfp": 3,
+  "ns": [
+   101
+  ],
+  "ftol": [
+   1e-15
+  ],
+  "max_mode": 8,
+  "nphi": 48,
+  "ntheta": 48,
+  "quadrature": [
+   576,
+   96
+  ],
+  "digits": 4,
+  "trial_ftol": 1e-11,
+  "n_boundary": 255,
+  "n_coordinates": 255
+ },
+ "labelling": "equal_arc",
+ "label_weight": 0.001,
+ "bootstrap": null,
+ "weights": [
+  1.0,
+  1.0,
+  1.0
+ ],
+ "net_current_weight": 1.0,
+ "row_blocks": [
+  [
+   "B.n",
+   0,
+   2304
+  ],
+  [
+   "pressure",
+   2304,
+   4608
+  ],
+  [
+   "K_x",
+   4608,
+   6912
+  ],
+  [
+   "K_y",
+   6912,
+   9216
+  ],
+  [
+   "K_z",
+   9216,
+   11520
+  ],
+  [
+   "label",
+   11520,
+   13824
+  ],
+  [
+   "phase",
+   13824,
+   13872
+  ],
+  [
+   "net_current",
+   13872,
+   13873
+  ]
+ ],
+ "column_blocks": [
+  [
+   "boundary",
+   0,
+   255
+  ]
+ ],
+ "requested": {
+  "modes": [
+   8,
+   8
+  ],
+  "ns": [
+   101
+  ],
+  "vc_grid": null
+ },
+ "mismatch": []
+}

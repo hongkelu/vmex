@@ -1,0 +1,77 @@
+{
+ "plain": {
+  "near_vs_cold_rows_max_rel": 0.0016835321377876803,
+  "near_B.n_rms_diff": 3.886143414855543e-06,
+  "B.n_rms": 0.002734567022753027,
+  "near_pressure_rms_diff": 8.625485865159139e-06,
+  "pressure_rms": 0.0026687404407416478,
+  "near_K_x_rms_diff": 2.634193079537929e-06,
+  "K_x_rms": 0.001988205429345052,
+  "near_K_y_rms_diff": 4.060656398593744e-06,
+  "K_y_rms": 0.003554540358961954,
+  "near_K_z_rms_diff": 7.09023629779265e-06,
+  "K_z_rms": 0.0015701413739472208,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 5.510786565074946e-20,
+  "near_net_current_rms_diff": 2.9773321335371805e-06,
+  "net_current_rms": 0.008933086261400398,
+  "perturbed_vs_cold_rows_max_rel": 2.1263788315532563e-15,
+  "perturbed_B.n_rms_diff": 6.6440912880555075e-18,
+  "perturbed_pressure_rms_diff": 9.014872015504927e-18,
+  "perturbed_K_x_rms_diff": 3.415721574699531e-18,
+  "perturbed_K_y_rms_diff": 5.080536474532782e-18,
+  "perturbed_K_z_rms_diff": 6.210826679013033e-18,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 0.0
+ },
+ "gauged": {
+  "cold_condition_after": 2.7755575615628914e-17,
+  "near_condition_after": 1.734723475976807e-17,
+  "perturbed_condition_after": 2.7755575615628914e-17,
+  "near_vs_cold_rows_max_rel": 0.0013484723589921096,
+  "near_B.n_rms_diff": 3.117896305493162e-06,
+  "B.n_rms": 0.002734317323927189,
+  "near_pressure_rms_diff": 6.931638293884167e-06,
+  "pressure_rms": 0.0026684935033580927,
+  "near_K_x_rms_diff": 2.1177522905904144e-06,
+  "K_x_rms": 0.001988163732791939,
+  "near_K_y_rms_diff": 3.2620789236689057e-06,
+  "K_y_rms": 0.0035539854314194153,
+  "near_K_z_rms_diff": 5.697226636782951e-06,
+  "K_z_rms": 0.0015705182119790276,
+  "near_label_rms_diff": 0.0,
+  "label_rms": 5.909956913157653e-18,
+  "near_net_current_rms_diff": 2.3962186107388816e-06,
+  "net_current_rms": 0.008934155541643611,
+  "perturbed_vs_cold_rows_max_rel": 1.6776770295300527e-15,
+  "perturbed_B.n_rms_diff": 7.206645946332234e-18,
+  "perturbed_pressure_rms_diff": 6.351763773635088e-18,
+  "perturbed_K_x_rms_diff": 2.8420482060330808e-18,
+  "perturbed_K_y_rms_diff": 3.6904641313074226e-18,
+  "perturbed_K_z_rms_diff": 4.334085312816525e-18,
+  "perturbed_label_rms_diff": 0.0,
+  "perturbed_net_current_rms_diff": 0.0
+ },
+ "resolution": {
+  "mpol": 2,
+  "ntor": 2,
+  "nfp": 2,
+  "ns": [
+   51
+  ],
+  "ftol": [
+   1e-13
+  ],
+  "max_mode": 1,
+  "nphi": 12,
+  "ntheta": 12,
+  "quadrature": [
+   96,
+   24
+  ],
+  "digits": 4,
+  "trial_ftol": null,
+  "n_boundary": 9,
+  "n_coordinates": 9
+ }
+}

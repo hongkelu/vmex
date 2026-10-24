@@ -98,6 +98,10 @@ iota depends on it only through discretization error.  On
 and -2.5261 from the re-solves (1.0%).  Adding the iota response to that
 drift alone closes the gap to 2e-6
 (``test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family``).
+With ``ImplicitConfig.m1_complement = "solved"`` (the default for 3D
+stellarator-symmetric runs) that combination is no longer released at the root: its force is kept
+and the refinement solves for it, so the refined state -- and the re-solve FD
+-- no longer depend on any solve's path.
 The gap does not fall monotonically as ``mpol``/``ntor``/``ns`` are refined.
 Over ``mpol`` 4-8 and ``ns`` 16-64 it spans 0.06-1.0% on ``RBC(1,1)`` and
 0.1-2.8% on ``ZBS(-1,1)``.  The finest case tested, ``mpol = 8`` and
@@ -217,12 +221,23 @@ _STATE_FIELDS = ("R_cos", "R_sin", "Z_cos", "Z_sin", "L_cos", "L_sin")
 
 
 class LinearResponseReport(NamedTuple):
-    """Per-right-hand-side residual certificate for an implicit response."""
+    """Per-right-hand-side residual certificate for an implicit response.
+
+    ``converged`` is the acceptance.  Where a raw-operator certificate was
+    measured (:func:`_raw_certified_report`) it is that certificate alone --
+    the independently measured residual of the returned response in the
+    original (raw) equations against ``raw_tolerance`` -- and
+    ``preconditioned_converged`` keeps the iterative solve's own flag as a
+    diagnostic.
+    """
 
     residual_norm: Array
     tolerance: Array
     iterations: Array
     converged: Array
+    raw_residual_norm: Array | None = None
+    raw_tolerance: Array | None = None
+    preconditioned_converged: Array | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +386,14 @@ class ImplicitConfig:
     #: gradient evaluated outside such a context creates its constants on
     #: JAX's default device and mixes devices with the committed state.
     device: Any = None
+    #: The m=1 complement policy (:data:`M1_COMPLEMENTS`): part of the
+    #: config's identity, so every compiled residual, projector and memoized
+    #: solve belongs to one equation set.
+    m1_complement: str = "solved"
+
+    def __post_init__(self):
+        if self.m1_complement not in M1_COMPLEMENTS:
+            raise ValueError(f"m1_complement must be one of {M1_COMPLEMENTS}, got {self.m1_complement!r}")
 
 
 def make_config(
@@ -393,8 +416,12 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
+    m1_complement: str = "solved",
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
+
+    ``m1_complement`` selects the m=1 complement treatment at the refined
+    root (:data:`M1_COMPLEMENTS`).
 
     ``max_fsq_ratio`` is the largest ``(fsqr + fsqz + fsql) / ftol`` at which
     an iteration-limited solve still counts as derivative-certified (status 0
@@ -417,6 +444,10 @@ def make_config(
     refine_tol = float(refine_tol)
     if not refine_tol > 0.0:
         raise ValueError("refine_tol must be positive or numpy.inf")
+    if m1_complement == "solved" and not np.isfinite(refine_tol) and int(resolution.ntor) > 0 \
+            and not bool(resolution.lasym) and bool(lconm1):
+        raise ValueError("m1_complement='solved' is a root of the refined equations: it needs a finite refine_tol "
+                         "(use m1_complement='frozen' to skip the refinement)")
     return _canonical_config(ImplicitConfig(
         inp=inp, resolution=resolution, ftol=float(ftol),
         max_iterations=int(max_iterations), mode=str(mode),
@@ -430,6 +461,7 @@ def make_config(
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
         hot_restart=bool(hot_restart), device=device,
+        m1_complement=str(m1_complement),
     ))
 
 
@@ -878,6 +910,30 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
                          L_cos=mk(z), L_sin=mk(z))
 
 
+#: The m=1 complement policies (``ImplicitConfig.m1_complement``): how
+#: ``zcs_int = (rss - zcs)/2`` of ``residue.f90``'s ``lconm1`` basis is treated
+#: at the root the implicit layer refines to.  ``"frozen"``
+#: (VMEC2000): its force is released once ``fsqz < 1e-6`` and the complement
+#: stays wherever the iteration had it then, so the root depends on the
+#: solve's start (interface rows 1e-3 to 2e-2 apart between warm and cold
+#: starts).  ``"solved"``: its force is kept and the Newton refinement solves
+#: for it with the evolved dofs -- every force equation holds and the refined
+#: state is a function of the parameters alone (rows to 1e-11 from any start).
+#: 3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
+M1_COMPLEMENTS = ("solved", "frozen")
+
+#: ``evaluate_forces``' ``iteration`` at which the m=1 Z force is not released
+#: (``residuals.m1_zero_condition``: released while ``iter2 < 2``).
+_M1_KEEP_ITERATION = 2
+
+
+def _m1_solved(cfg: ImplicitConfig) -> bool:
+    """Whether the refinement solves for the m=1 complement (``cfg.m1_complement``)."""
+    res = cfg.resolution
+    return bool(cfg.m1_complement == "solved" and bool(cfg.lconm1) and int(res.ntor) > 0
+                and not bool(res.lasym))
+
+
 def _m1_pair_columns(cfg: ImplicitConfig) -> tuple[np.ndarray, np.ndarray]:
     """Signed-packing column indices of the m=1 ``(+n, -n)`` pairs."""
     modes = _static_tables(cfg.resolution)[0]
@@ -949,11 +1005,14 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
     antisymmetrizes ``Z_cos`` (``lasym``, where ``force_Z_cc`` is zeroed and
     the gather is ``(cc +/- ss)/2``).  The mask is pre-equalized on the pair
     columns (see :func:`_dof_mask`), so ``P`` is symmetric and idempotent.
+    With the complement solved (``cfg.m1_complement``) the pair entries are
+    ordinary dofs and ``P`` is the elementwise mask.
     """
     lconm1 = bool(cfg.lconm1)
     lthreed = int(cfg.resolution.ntor) > 0
     lasym = bool(cfg.resolution.lasym)
-    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed)
+    # With the complement solved (cfg.m1_complement) the pair is two ordinary dofs.
+    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed and not _m1_solved(cfg))
                 else (np.zeros(0, int), np.zeros(0, int)))
 
     def P(t: SpectralState) -> SpectralState:
@@ -1011,8 +1070,14 @@ def _raw_force_state(
     ns_total: int | None = None,
     axis_closure: bool = True,
     include_edge: bool = False,
+    keep_m1: bool = False,
 ) -> SpectralState:
-    """Raw force for a full grid or radial segment, optionally keeping the edge."""
+    """Raw force for a full grid or radial segment, optionally keeping the edge.
+
+    ``keep_m1`` keeps the constrained m=1 Z force (the solved complement,
+    ``ImplicitConfig.m1_complement``); otherwise it is released as in
+    VMEC2000's converged branch.
+    """
     setup = rt.setup
     s = setup.s_full if s is None else s
     phips = setup.phips if phips is None else phips
@@ -1083,7 +1148,7 @@ def _raw_force_state(
     )
     released = zero_m1_z_force(
         m1_residue_rotation(spectral, lconm1=setup.lconm1),
-        jnp.asarray(True),
+        jnp.asarray(not keep_m1),
     )
     return _force_to_state(
         scalxc_scale_force(released, s=s, scaling=scalxc), rt
@@ -1097,6 +1162,7 @@ def _raw_residual_segment(
     *,
     axis_closure: bool = False,
     include_edge: bool = False,
+    keep_m1: bool = False,
 ) -> SpectralState:
     """Evaluate the nonlinear raw-force chain on exactly three surfaces.
 
@@ -1114,7 +1180,7 @@ def _raw_residual_segment(
         rcon0=take(rt.rcon0), zcon0=take(rt.zcon0),
         lamscale=setup.lamscale, scalxc=take(setup.scalxc),
         ns_total=rt.resolution.ns, axis_closure=axis_closure,
-        include_edge=include_edge,
+        include_edge=include_edge, keep_m1=keep_m1,
     )
 
 
@@ -1148,7 +1214,7 @@ def residual_fn(cfg: ImplicitConfig, frozen: SpectralState,
     def F_raw(z: SpectralState, params: ImplicitParams) -> SpectralState:
         rt_p = runtime_from_params(params, cfg)
         x = _assemble(z, rt_p, frozen, P, edge_mask)
-        return P(_raw_force_state(x, rt_p))
+        return P(_raw_force_state(x, rt_p, keep_m1=_m1_solved(cfg)))
 
     return F_raw
 
@@ -1171,7 +1237,7 @@ def _preconditioned_residual_lane(z: SpectralState, params: ImplicitParams,
     P = _dof_projector(cfg, dof_mask)
     rt_p = runtime_from_params(params, cfg)
     x = _assemble(z, rt_p, frozen, P, edge_mask)
-    gc, _, _ = evaluate_forces(x, rt_p)
+    gc, _, _ = evaluate_forces(x, rt_p, iteration=_M1_KEEP_ITERATION if _m1_solved(cfg) else 1)
     return P(gc)
 
 
@@ -1376,7 +1442,7 @@ _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
 # equilibrium solve also skips the second frozen-residual measurement.
 # ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float]] = weakref.WeakKeyDictionary()
 
 # cfg -> whether its latest _refined_state call stopped at _REFINE_FAR_STALL.
 _ANCHOR_STALLED: dict[int, bool] = {}
@@ -1573,6 +1639,9 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
                 initial_correction=_LAST_REFINEMENT_CORRECTION.get(cfg),
             )
             stalled = _ANCHOR_STALLED.pop(id(cfg), False)
+            # The root certificate: the returned state's own residual in the selected equations (the solved m=1
+            # complement included), measured independently of the refinement's bookkeeping.
+            residual = _refined_residual(cfg, params, refined, dof_mask)
             correction = jax.tree.map(jnp.subtract, refined, state)
             correction_norm = float(_tree_norm(correction))
             factors = _BLOCK_FACTORS_BUILT.pop(id(cfg), None)
@@ -1584,9 +1653,18 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
             _LAST_REFINEMENT_CORRECTION[cfg] = correction
         else:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
-        hit = (key, refined, stalled)
+        hit = (key, refined, stalled, residual)
         _LAST_REFINED[cfg] = hit
     return hit[1]
+
+
+def _refined_residual(cfg: ImplicitConfig, params: ImplicitParams, state: SpectralState,
+                      dof_mask: SpectralState) -> float:
+    """``|F(P x, p)|`` of ``state`` in the config's equations (inf if not finite): the root certificate."""
+    state, params, dof_mask = commit_to_single_device((state, params, dof_mask))
+    F = residual_fn(cfg, state, dof_mask)
+    value = float(_tree_norm(F(_dof_projector(cfg, dof_mask)(state), params)))
+    return value if np.isfinite(value) else float("inf")
 
 
 # One staged Newton refinement step per config (the ``_adjoint_gcrot_core``
@@ -1975,7 +2053,10 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
 
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
     when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
-    3 when the fixed-point anchor stalled far from the root.
+    3 when the fixed-point anchor stalled far from the root, and 4 when the
+    returned (refined) state's residual in the config's equations -- the
+    solved m=1 complement included -- is above ``refine_tol`` or not finite:
+    a best-effort state, not a certified derivative point.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
     residual is the host solver's own, from before the fixed-point refinement
@@ -2028,6 +2109,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
+        if (status == 0 and refined is not None and refined[0] == hit[0]
+                and np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol):
+            status = 4  # the returned state is not a root of the selected equations to refine_tol
         if status != 0:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         return state, mask, np.int32(status), np.float64(fsq), np.float64(ratio)
@@ -2410,10 +2494,15 @@ def _tree_norm(tree):
     ))
 
 
-def _raw_certified_report(report: LinearResponseReport, raw_ok):
-    """Mark a column converged when the raw-operator residual accepts it."""
-    return report._replace(
-        converged=jnp.logical_or(report.converged, raw_ok))
+def _raw_certified_report(report: LinearResponseReport, raw_norm, raw_tolerance):
+    """Accept a column by its raw-operator residual alone (the preconditioned flag becomes a diagnostic).
+
+    A preconditioned pass cannot override a failed raw residual, and a raw pass
+    stands although the preconditioned solve missed its own (different) norm.
+    """
+    raw_ok = jnp.logical_and(jnp.isfinite(raw_norm), raw_norm <= raw_tolerance)
+    return report._replace(converged=raw_ok, raw_residual_norm=raw_norm, raw_tolerance=raw_tolerance,
+                           preconditioned_converged=report.converged)
 
 
 def _linear_response_report(sol, rhs, cfg: ImplicitConfig, rtol=None):
@@ -2849,7 +2938,7 @@ def _raw_block_system(
             trial = jax.tree.map(jnp.add, base, tangent)
             force = _raw_residual_segment(
                 trial, rt, start, axis_closure=axis_closure,
-                include_edge=include_edge,
+                include_edge=include_edge, keep_m1=_m1_solved(cfg),
             )
             # Inactive columns receive an identity equation so every radial
             # block remains nonsingular; projected callers never excite them.
@@ -3043,11 +3132,15 @@ def _implicit_evolved_tangent_multi_rhs(
     response_chunk_size: int,
     certify_rtol: float | None = None,
     certify_maxiter: int | None = None,
+    system: _RawBlockSystem | None = None,
 ) -> tuple[SpectralState, LinearResponseReport]:
+    # ``system``: this linearization's :func:`_raw_block_system` (same
+    # arguments), when the caller already holds it; otherwise built here.
     frozen = jax.lax.stop_gradient(x_star)
-    system = _raw_block_system(
-        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
-    )
+    if system is None:
+        system = _raw_block_system(
+            params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
+        )
     z_star = system.project(x_star)
     raw_residual = residual_fn(
         cfg, frozen, dof_mask, formulation="raw"
@@ -3091,11 +3184,9 @@ def _implicit_evolved_tangent_multi_rhs(
         # response or accept an inaccurate one.
         raw_defect = jax.tree.map(
             jnp.subtract, raw_rhs(tangent), system.operator(solution))
-        raw_norm = _tree_norm(raw_rhs(tangent))
-        raw_ok = _tree_norm(raw_defect) <= _adjoint_acceptance(
-            cfg, raw_norm, certify_rtol)
+        raw_tolerance = _adjoint_acceptance(cfg, _tree_norm(raw_rhs(tangent)), certify_rtol)
         return solution, _raw_certified_report(_linear_response_report(
-            krylov, rhs, cfg, rtol=certify_rtol), raw_ok)
+            krylov, rhs, cfg, rtol=certify_rtol), _tree_norm(raw_defect), raw_tolerance)
 
     solution, report = chunk_map(
         correct, (tangent_batch, initial),
@@ -3110,12 +3201,13 @@ def _implicit_evolved_tangent_multi_rhs(
         for _ in range(_BLOCK_REFINEMENT_PASSES):
             defect = jax.tree.map(jnp.subtract, b, system.operator(x))
             x = jax.tree.map(jnp.add, x, _raw_block_apply(system, defect))
-        ok = _tree_norm(jax.tree.map(jnp.subtract, b, system.operator(x))) <= \
-            _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol)
-        return x, jnp.logical_and(ok, jnp.logical_not(converged))
+        norm = _tree_norm(jax.tree.map(jnp.subtract, b, system.operator(x)))
+        ok = jnp.logical_and(jnp.isfinite(norm),
+                             norm <= _adjoint_acceptance(cfg, _tree_norm(b), certify_rtol))
+        return x, jnp.logical_and(ok, jnp.logical_not(converged)), norm
 
     def refine_uncertified(_):
-        refined, gained = chunk_map(
+        refined, gained, norms = chunk_map(
             refine, (tangent_batch, solution, report.converged),
             chunk_size=max(1, int(response_chunk_size)),
         )
@@ -3123,8 +3215,10 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda new, old: jnp.where(
                 gained.reshape((-1,) + (1,) * (new.ndim - 1)), new, old),
             refined, solution)
+        # The certificate describes the response actually returned: the refined column's raw residual where kept.
         return kept, report._replace(
-            converged=jnp.logical_or(report.converged, gained))
+            converged=jnp.logical_or(report.converged, gained),
+            raw_residual_norm=jnp.where(gained, norms, report.raw_residual_norm))
 
     # Paid only when a column misses: a fixed number of passes, so a hard
     # point costs a few block solves instead of the reverse lane's row map.

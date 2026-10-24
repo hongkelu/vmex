@@ -1,0 +1,8 @@
+{
+ "run_id": "20261022T151036-18645453",
+ "status": "rejected",
+ "reason": "the seed design has no three-term free boundary: start 0: boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 9.12e-02 of the cost and moves the boundary normally by 3.17e-04 of the minor radius",
+ "records": 7,
+ "certified_records": [],
+ "finished": "2026-10-22T15:29:08.519491"
+}

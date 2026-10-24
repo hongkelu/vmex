@@ -59,6 +59,7 @@ reduced ``[0, pi]`` grid.
 from __future__ import annotations
 
 import collections
+import contextlib
 import dataclasses
 import inspect
 import warnings
@@ -149,6 +150,8 @@ __all__ = [
     "make_problem",
     "Equilibrium",
     "solve_equilibrium",
+    "refine_equilibrium",
+    "refine_state",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
     "major_radius",
@@ -450,6 +453,50 @@ def _select_jax_jacobian(
         lambda _: reverse_candidate(),
         operand=None,
     )
+
+
+def refine_equilibrium(eq: "Equilibrium", *, m1_complement: str = "solved") -> "Equilibrium":
+    """``eq`` refined onto the root of the selected interior equations, certified.
+
+    The host solver (:func:`solve_equilibrium`) releases the constrained m=1
+    Z force near convergence (VMEC2000's ``constrain_m1``), so its state is a
+    root of the ``"frozen"`` equations with a path-dependent complement.  With
+    ``m1_complement="solved"`` this Newton-refines the state (the implicit
+    layer's :func:`~vmex.core.implicit._refined_state`) onto the root where
+    the complement's force vanishes too -- the state every implicit
+    derivative, the three-term model and its bootstrap closure use -- and
+    certifies it: the refined residual in those equations must be within the
+    config's ``refine_tol`` or this raises
+    :class:`~vmex.core.errors.VmecConvergenceError`.  ``"frozen"``, or a
+    configuration without the m=1 pair (2D, ``lasym``), returns ``eq``
+    unchanged.
+    """
+    refined = refine_state(eq.inp, eq.state, m1_complement=m1_complement)
+    return eq if refined is eq.state else dataclasses.replace(eq, state=refined)
+
+
+def refine_state(inp: VmecInput, state: SpectralState, *, m1_complement: str = "solved") -> SpectralState:
+    """A host-solved ``state`` of ``inp`` refined onto the selected interior root and certified
+    (:func:`refine_equilibrium`); ``state`` itself when the policy needs no refinement."""
+    from . import implicit as im
+
+    cfg = im.make_config(inp, m1_complement=m1_complement)
+    if not im._m1_solved(cfg):
+        return state
+    # Prime the config's template runtime and boundary tables concretely (as the host solve callback does): the
+    # traced residual reads them, and their host-side setup cannot run under a trace.
+    im._template_runtime(cfg)
+    im._boundary_pack_tables(cfg)
+    params = im.params_from_input(inp)
+    mask = im._fixed_boundary_dof_mask(cfg)
+    refined = im._refined_state(cfg, params, state, mask)
+    residual = im._refined_residual(cfg, params, refined, mask)
+    if not residual <= cfg.refine_tol:
+        raise VmecConvergenceError(
+            f"the equilibrium does not refine onto the {m1_complement!r} root "
+            f"(|F| = {residual:.3e} > refine_tol {cfg.refine_tol:.1e})",
+            hint="tighten the forward solve (ftol) or raise the iteration cap")
+    return jax.tree.map(jnp.asarray, refined)
 
 
 def solve_equilibrium(
@@ -2405,6 +2452,70 @@ def least_squares(
 _REJECTED_CONSTRAINT_OFFSET = 1e6
 
 
+_SLSQP_ARRAYS = ("buffer", "indices", "mult", "u", "origin", "scales", "accepted")
+
+
+def save_slsqp_state(path, state):
+    """Write an SLSQP snapshot (``options["state_callback"]`` of :func:`minimize`) to ``path`` (``.npz``)."""
+    np.savez(path, **{name: np.asarray(state[name]) for name in _SLSQP_ARRAYS},
+             **{f"state.{key}": np.asarray(value) for key, value in state["state"].items()})
+
+
+def load_slsqp_state(path):
+    """An SLSQP snapshot written by :func:`save_slsqp_state`, for ``options["resume"]`` of :func:`minimize`."""
+    with np.load(path) as data:
+        state = {name: np.array(data[name]) for name in _SLSQP_ARRAYS}
+        state["state"] = {key.split(".", 1)[1]: data[key].item() for key in data.files if key.startswith("state.")}
+    return state
+
+
+class _SlsqpHook:
+    """Snapshot and restore SciPy SLSQP's whole state around its reverse-communication routine.
+
+    SciPy's loop calls ``slsqp(state, fx, g, C, d, x, mult, xl, xu, buffer, indices)``, and everything the method
+    carries between calls (the quasi-Newton factor of the Lagrangian Hessian, the line search, the multipliers) is
+    in ``state``, ``buffer``, ``indices`` and ``mult``.  A call that returns asking for a gradient (``mode == -1``)
+    has accepted a major iterate: its arrays are a snapshot from which the method continues exactly.  The first call of
+    a resumed run loads one instead of starting from an identity Hessian; the objective, constraints and gradients
+    at the point are the ones SciPy evaluated there.
+    """
+
+    def __init__(self, resume, state_callback, origin, scales, accepted_of):
+        self.resume, self.state_callback = resume, state_callback
+        self.origin, self.scales, self.accepted_of = origin, scales, accepted_of
+
+    def __enter__(self):
+        from scipy.optimize import _slsqp_py
+
+        self.module, self.real = _slsqp_py, _slsqp_py.slsqp
+        _slsqp_py.slsqp = self
+        return self
+
+    def __exit__(self, *exc):
+        self.module.slsqp = self.real
+        return False
+
+    def __call__(self, state, fx, g, C, d, x, mult, xl, xu, buffer, indices):
+        if self.resume is not None:
+            saved, self.resume = self.resume, None
+            for name, array in (("buffer", buffer), ("indices", indices), ("mult", mult)):
+                if saved[name].shape != array.shape:
+                    raise ValueError(f"the SLSQP state is of another problem: {name} {saved[name].shape} "
+                                     f"vs {array.shape}")
+                array[...] = saved[name]
+            budget = state["itermax"] - state["iter"]
+            state.update({key: type(state[key])(value) for key, value in saved["state"].items()})
+            state["itermax"] = state["iter"] + budget
+        out = self.real(state, fx, g, C, d, x, mult, xl, xu, buffer, indices)
+        if state["mode"] == -1 and self.state_callback is not None:
+            # a gradient request: x is the accepted iterate (its Jacobian request promotes it), and the next call
+            # continues from these arrays with the gradient there
+            self.state_callback(dict(state=dict(state), buffer=buffer.copy(), indices=indices.copy(),
+                                     mult=mult.copy(), u=np.array(x), origin=self.origin.copy(),
+                                     scales=self.scales.copy(), accepted=self.accepted_of(x)))
+        return out
+
+
 def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                       constraints=(), callback=None, options=None, tol=None):
     """Run SciPy SLSQP on a :class:`FunctionProblem` in scaled coordinates.
@@ -2436,7 +2547,15 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         named ``intermediate_result``; ``StopIteration`` stops the run.
     options:
         SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
-        accepted steps for a stateful problem.
+        accepted steps for a stateful problem.  Also ``state_callback``
+        (called after each accepted major iterate with a snapshot of the
+        method's whole state: :func:`save_slsqp_state`) and ``resume`` (such
+        a snapshot of the start point: the run continues with its
+        quasi-Newton Hessian, multipliers, coordinates and iteration count
+        instead of an identity Hessian; :func:`load_slsqp_state`).  SciPy
+        re-evaluates the objective, constraints and gradients at the start
+        point, so a resumed run uses the problem's current values there.  A
+        snapshot of another point or problem size raises ``ValueError``.
 
     Returns
     -------
@@ -2463,6 +2582,28 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     if promote is not None and not np.array_equal(start, problem.accepted.parameters):
         raise ValueError("stateful minimization must start at the accepted equilibrium")
     options = dict(options or {})
+    resume = options.pop("resume", None)
+    state_callback = options.pop("state_callback", None)
+    x_start = start
+    if resume is not None:
+        # SciPy's coordinates are the snapshot's (its origin and scales: the quasi-Newton factor is in them), and
+        # the snapshot must be of this point, to the mapping's round-off
+        origin, saved_scales = np.asarray(resume["origin"], dtype=float), np.asarray(resume["scales"], dtype=float)
+        if origin.shape != start.shape or saved_scales.shape != start.shape:
+            raise ValueError("the SLSQP state is of another problem size")
+        u_mapped = (start - origin) / saved_scales
+        roundoff = 4 * np.finfo(float).eps * np.maximum(np.abs(start), np.abs(origin)) / saved_scales
+        if not np.all(np.abs(u_mapped - np.asarray(resume["u"])) <= roundoff):
+            raise ValueError("the SLSQP state is of another point than x0")
+        start, scales = origin, saved_scales
+    u_start = np.zeros_like(start) if resume is None else np.asarray(resume["u"], dtype=float).copy()
+
+    def x_of(u):
+        """The problem's coordinates of SciPy's ``u``: the start point itself at the start's ``u`` (its round-off
+        image would be another point, solved again)."""
+        u = np.asarray(u)
+        return x_start.copy() if np.array_equal(u, u_start) else start + scales * u
+
     budget = int(options.get("maxiter", 100))
     if budget < 0:
         raise ValueError("maxiter must be nonnegative")
@@ -2497,7 +2638,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                 raise ValueError("constraints require an analytic Jacobian")
             def values(u, c=constraint):
                 try:
-                    return c.fun(start+scales*u)
+                    return c.fun(x_of(u))
                 except TrialRejected:
                     # Values can reject a line-search probe; never fabricate its Jacobian.
                     lo, hi = np.broadcast_arrays(c.lb, c.ub)
@@ -2505,17 +2646,17 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                     return np.where(np.isfinite(lo), lo-offset, np.where(np.isfinite(hi), hi+offset, 0.))
             scaled_constraints.append(NonlinearConstraint(
                 values, constraint.lb, constraint.ub,
-                jac=lambda u, c=constraint: np.asarray(c.jac(start+scales*u))*scales))
+                jac=lambda u, c=constraint: np.asarray(c.jac(x_of(u)))*scales))
         else:
             raise TypeError("use scipy LinearConstraint or NonlinearConstraint")
 
-    accepted = start.copy()
+    accepted = x_start.copy()
     value, gradient = problem.value_and_grad(accepted)
     accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
     accepted_steps = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
-        return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
+        return OptimizeResult(x=x_start, fun=value, jac=gradient, success=False,
             status=99, message="accepted_step_budget_reached", stop_reason="accepted_step_budget_reached",
             accepted_steps=0, nit=0, nfev=1, njev=1)
 
@@ -2524,7 +2665,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
 
     def accept(u):
         nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
-        x = start + np.asarray(u)*scales
+        x = x_of(u)
         if np.array_equal(x, accepted):
             return
         current_value, current_gradient = problem.value_and_grad(x)
@@ -2549,7 +2690,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev
         nfev += 1
         try:
-            return problem.fun(start+scales*u)
+            return problem.fun(x_of(u))
         except TrialRejected:
             return np.inf
 
@@ -2557,7 +2698,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev, njev
         nfev += 1
         njev += 1
-        _, gradient = problem.value_and_grad(start+scales*u)
+        _, gradient = problem.value_and_grad(x_of(u))
         gradient = np.asarray(gradient)*scales
         # SLSQP's major-iteration callback can precede backtracking. The next
         # Jacobian request identifies its accepted line-search point instead.
@@ -2565,11 +2706,13 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         return gradient
 
     try:
-        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP",
-            bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
+        hook = _SlsqpHook(resume, state_callback, start, scales, x_of)
+        with hook if (resume is not None or state_callback is not None) else contextlib.nullcontext():
+            result = scipy_minimize(fun, u_start, jac=jac, method="SLSQP",
+                bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
         if result.success:
             accept(result.x)
-        result.x = start + np.asarray(result.x)*scales
+        result.x = x_of(result.x)
         if getattr(result, "jac", None) is not None:
             result.jac = np.asarray(result.jac)/scales
         result.stop_reason = None
@@ -3894,7 +4037,8 @@ def _least_squares_implicit(
         if refined is None or refined[0] != hit[0]:
             imp._host_solve_and_mask_status(cfg, params_np)
             refined = imp._LAST_REFINED.get(cfg)
-        if refined is None or refined[0] != hit[0] or refined[2]:
+        if (refined is None or refined[0] != hit[0] or refined[2]
+                or (np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol)):
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )

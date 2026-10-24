@@ -1,0 +1,43 @@
+POLISH_ROUNDS 12
+MAX_MODE 6
+[lm] reason stalled nfev 34 accepted 4 cost 2.264989e-06 project True misses 0
+[lm] reason stalled nfev 25 accepted 7 cost 1.128655e-06 project True misses 0
+[trajectory] cost 5.003288e-05 B.n 9.53859e-04 K 9.57927e-04 loss 6.56860659e-01
+[cert 1] cost 5.003288e-05 stationarity 9.841e-01 step 3.150e-01 condition 9.205e+06 normal_step 0.0020103042386835613
+[lm] reason stalled nfev 16 accepted 4 cost 9.080117e-07 project True misses 0
+[trajectory] cost 9.080117e-07 B.n 7.96896e-04 K 8.55075e-04 loss 6.63260664e-01; values rel change 1.624e-02 (loss 9.743e-03)
+[cert 2] cost 9.080117e-07 stationarity 2.328e-01 step 2.160e-01 condition 7.481e+06 normal_step 0.0015449542227896165
+[lm] reason stalled nfev 13 accepted 3 cost 7.558749e-07 project True misses 0
+[trajectory] cost 7.558749e-07 B.n 7.14937e-04 K 7.68943e-04 loss 6.63489568e-01; values rel change 1.818e-02 (loss 3.451e-04)
+[cert 3] cost 7.558749e-07 stationarity 1.430e-01 step 1.757e-01 condition 7.584e+06 normal_step 0.0006796854701432946
+[lm] reason stalled nfev 12 accepted 3 cost 6.650426e-07 project True misses 0
+[trajectory] cost 6.650426e-07 B.n 6.46863e-04 K 7.17485e-04 loss 6.66940255e-01; values rel change 5.201e-03 (loss 5.201e-03)
+[cert 4] cost 6.650426e-07 stationarity 7.033e-02 step 1.487e-01 condition 7.605e+06 normal_step 0.0004047796888142531
+[lm] reason stalled nfev 10 accepted 2 cost 6.299214e-07 project True misses 0
+[trajectory] cost 6.299214e-07 B.n 6.24874e-04 K 6.97005e-04 loss 6.67364623e-01; values rel change 6.870e-04 (loss 6.363e-04)
+[cert 5] cost 6.299214e-07 stationarity 3.935e-02 step 1.105e-01 condition 7.947e+06 normal_step 0.00018855879701952803
+[lm] reason stalled nfev 10 accepted 2 cost 6.122381e-07 project True misses 0
+[trajectory] cost 6.122381e-07 B.n 6.20025e-04 K 6.87347e-04 loss 6.67998094e-01; values rel change 2.861e-03 (loss 9.492e-04)
+[cert 6] cost 6.122381e-07 stationarity 2.331e-02 step 9.200e-02 condition 8.146e+06 normal_step 0.00017361795184956817
+[lm] reason stalled nfev 10 accepted 2 cost 6.037797e-07 project True misses 0
+[trajectory] cost 6.037797e-07 B.n 6.16191e-04 K 6.82388e-04 loss 6.68571711e-01; values rel change 8.587e-04 (loss 8.587e-04)
+[cert 7] cost 6.037797e-07 stationarity 1.448e-02 step 5.447e-02 condition 8.035e+06 normal_step 0.00016810703922049894
+[lm] reason stalled nfev 9 accepted 3 cost 5.977979e-07 project True misses 0
+[trajectory] cost 5.977979e-07 B.n 6.12336e-04 K 6.78904e-04 loss 6.69938712e-01; values rel change 2.045e-03 (loss 2.045e-03)
+[cert 8] cost 5.977979e-07 stationarity 1.387e-02 step 2.665e-02 condition 8.015e+06 normal_step 0.0001933018855065176
+[lm] reason stalled nfev 8 accepted 3 cost 5.881823e-07 project True misses 0
+[trajectory] cost 5.881823e-07 B.n 6.13001e-04 K 6.73835e-04 loss 6.71110295e-01; values rel change 1.749e-03 (loss 1.749e-03)
+[cert 9] cost 5.881823e-07 stationarity 4.814e-03 step 3.118e-02 condition 8.192e+06 normal_step 0.00012849472187966338
+[lm] reason stalled nfev 7 accepted 3 cost 5.840933e-07 project True misses 0
+[trajectory] cost 5.840933e-07 B.n 6.14376e-04 K 6.72181e-04 loss 6.72751096e-01; values rel change 4.925e-03 (loss 2.445e-03)
+[cert 10] cost 5.840933e-07 stationarity 3.360e-03 step 2.988e-02 condition 8.402e+06 normal_step 0.00012803199450327863
+[lm] reason ftol nfev 6 accepted 2 cost 5.814487e-07 project True misses 0
+[trajectory] cost 5.814487e-07 B.n 6.15190e-04 K 6.70028e-04 loss 6.73858115e-01; values rel change 1.646e-03 (loss 1.646e-03)
+[cert 11] cost 5.814487e-07 stationarity 4.099e-03 step 4.625e-02 condition 8.532e+06 normal_step 0.00011239915256862396
+[lm] reason ftol nfev 6 accepted 2 cost 5.792507e-07 project True misses 0
+[trajectory] cost 5.792507e-07 B.n 6.16588e-04 K 6.69425e-04 loss 6.75783009e-01; values rel change 7.656e-03 (loss 2.857e-03)
+[cert 12] cost 5.792507e-07 stationarity 5.737e-03 step 5.188e-02 condition 8.732e+06 normal_step 9.636061603926309e-05
+[lm] reason ftol nfev 6 accepted 2 cost 5.772672e-07 project True misses 0
+[trajectory] cost 5.772672e-07 B.n 6.16723e-04 K 6.67012e-04 loss 6.76437402e-01; values rel change 1.443e-03 (loss 9.683e-04)
+[cert 13] cost 5.772672e-07 stationarity 8.307e-03 step 7.600e-02 condition 8.782e+06 normal_step 0.00010609950941985737
+[trajectory] ended: the seed design has no three-term free boundary: start 0: boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 8.31e-03 of the cost and moves the boundary normally by 1.06e-04 of the minor radius

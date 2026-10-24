@@ -1,0 +1,229 @@
+{
+ "meta": {
+  "resolution": {
+   "mpol": 8,
+   "ntor": 8,
+   "nfp": 2,
+   "ns": [
+    51
+   ],
+   "ftol": [
+    1e-15
+   ],
+   "max_mode": 8,
+   "nphi": 48,
+   "ntheta": 48,
+   "quadrature": [
+    384,
+    96
+   ],
+   "digits": 4,
+   "trial_ftol": 1e-11,
+   "n_boundary": 255,
+   "n_coordinates": 308
+  },
+  "record": null,
+  "options": {
+   "max_mode": null,
+   "nphi": 48,
+   "ntheta": 48,
+   "digits": 4,
+   "weights": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "net_current_weight": 1.0,
+   "label_weight": 0.001,
+   "trial_ftol": 1e-11,
+   "quadrature": [
+    384,
+    96
+   ],
+   "bootstrap": {
+    "model": "redl_half_mesh",
+    "helicity_n": 0,
+    "weight": 14.14213562373095,
+    "g_convention": "simsopt",
+    "sub_axis": [
+     0.015625,
+     0.0625,
+     0.25
+    ],
+    "near_axis": "redl_s1_continuation/direct",
+    "edge": "linear_half_step",
+    "ne": [
+     2.994263565880293e+19,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     -2.994263565880293e+19
+    ],
+    "Te": [
+     2369.439635446649,
+     -2369.439635446649
+    ],
+    "Ti": [
+     2369.439635446649,
+     -2369.439635446649
+    ],
+    "Zeff": [
+     1.0
+    ]
+   },
+   "bootstrap_helicity": 0,
+   "bootstrap_weight": 100.0,
+   "fixed_boundary": false,
+   "labelling": "equal_arc",
+   "m1_complement": "solved"
+  },
+  "base_closure_converged": true
+ },
+ "checks": [
+  {
+   "direction": 0,
+   "kind": "random",
+   "h": 0.01,
+   "following": 0.0014575345902768306,
+   "following_B.n": 0.004771663427003061,
+   "following_pressure": 0.00025936777631063555,
+   "following_K_x": 0.002979830828552712,
+   "following_K_y": 0.0025991240748768994,
+   "following_K_z": 0.0003199865565056759,
+   "following_label": 2.0213322527508584e-05,
+   "following_phase": 1.8544566611706018e-07,
+   "following_net_current": 0.00010117586839001404,
+   "following_bootstrap": 0.002105264527275391,
+   "fixed_current": 0.30076735792513304
+  },
+  {
+   "direction": 0,
+   "kind": "random",
+   "h": 0.001,
+   "following": 7.149790391180809e-06,
+   "following_B.n": 2.282057114557195e-05,
+   "following_pressure": 2.0317568108499137e-06,
+   "following_K_x": 1.4029192130279667e-05,
+   "following_K_y": 1.3779817779338822e-05,
+   "following_K_z": 2.0666546976271863e-06,
+   "following_label": 2.021357190496074e-07,
+   "following_phase": 1.8541737091137186e-09,
+   "following_net_current": 1.7806528515224676e-07,
+   "following_bootstrap": 0.0004643652848989235,
+   "fixed_current": 0.00204246798460095
+  },
+  {
+   "direction": 0,
+   "kind": "random",
+   "h": 0.0001,
+   "following": 3.3406088276542823e-06,
+   "following_B.n": 1.003227937827344e-05,
+   "following_pressure": 1.7161677541294894e-06,
+   "following_K_x": 5.646585871138839e-06,
+   "following_K_y": 6.949159792202776e-06,
+   "following_K_z": 1.4264260343712925e-06,
+   "following_label": 2.026784369855667e-09,
+   "following_phase": 2.034417239559988e-11,
+   "following_net_current": 6.663744763055552e-07,
+   "following_bootstrap": 0.0012672374996198286,
+   "fixed_current": 0.0001044707080496442
+  },
+  {
+   "direction": 1,
+   "kind": "random",
+   "h": 0.01,
+   "following": 0.00015462536857081564,
+   "following_B.n": 0.0006996706943160191,
+   "following_pressure": 5.9759892772782895e-05,
+   "following_K_x": 0.00024679609772992655,
+   "following_K_y": 0.00023924231405617183,
+   "following_K_z": 6.0566783133105574e-05,
+   "following_label": 5.5305268749323075e-05,
+   "following_phase": 4.082486345942866e-06,
+   "following_net_current": 0.0001056561172133846,
+   "following_bootstrap": 0.0006628375083755466,
+   "fixed_current": 0.06101895813382988
+  },
+  {
+   "direction": 1,
+   "kind": "random",
+   "h": 0.001,
+   "following": 0.00010486033328098241,
+   "following_B.n": 0.0005345286297292728,
+   "following_pressure": 1.976666158106309e-05,
+   "following_K_x": 0.00019638926290530624,
+   "following_K_y": 0.0001609781604529786,
+   "following_K_z": 2.661588916635286e-05,
+   "following_label": 5.530562011143254e-07,
+   "following_phase": 4.082520720446929e-08,
+   "following_net_current": 1.2130942983390379e-05,
+   "following_bootstrap": 0.00039913537210180803,
+   "fixed_current": 0.018946753806053197
+  },
+  {
+   "direction": 1,
+   "kind": "random",
+   "h": 0.0001,
+   "following": 2.1753624195555724e-06,
+   "following_B.n": 1.0571748223599319e-05,
+   "following_pressure": 1.1648858457691782e-06,
+   "following_K_x": 3.3046495123368478e-06,
+   "following_K_y": 3.4061112580280163e-06,
+   "following_K_z": 1.0172468695779518e-06,
+   "following_label": 5.530756640064541e-09,
+   "following_phase": 4.085497978632899e-10,
+   "following_net_current": 5.290324324901003e-07,
+   "following_bootstrap": 0.0015446062059022183,
+   "fixed_current": 7.444988171145746e-05
+  },
+  {
+   "direction": 2,
+   "kind": "weakest",
+   "h": 0.01,
+   "following": 0.0017832003606275708,
+   "following_B.n": 0.0019115103212136852,
+   "following_pressure": 0.002128908426461962,
+   "following_K_x": 0.002274760202400243,
+   "following_K_y": 0.00223390135916904,
+   "following_K_z": 0.002089802242834981,
+   "following_label": 8.677481733367383e-08,
+   "following_phase": 2.712345460201138e-08,
+   "following_net_current": 0.0016327525440592635,
+   "following_bootstrap": 33.02222625553773,
+   "fixed_current": 0.0004061560628618613
+  },
+  {
+   "direction": 2,
+   "kind": "weakest",
+   "h": 0.001,
+   "following": 0.0018049378750193109,
+   "following_B.n": 0.001931133395218868,
+   "following_pressure": 0.0021416395651912457,
+   "following_K_x": 0.0022903416861067617,
+   "following_K_y": 0.002265357773578002,
+   "following_K_z": 0.0021008299824959438,
+   "following_label": 8.874042327644869e-10,
+   "following_phase": 2.7016028284750296e-10,
+   "following_net_current": 0.0021071244031267565,
+   "following_bootstrap": 203.42256872347238,
+   "fixed_current": 0.00043507813345642764
+  },
+  {
+   "direction": 2,
+   "kind": "weakest",
+   "h": 0.0001,
+   "following": 0.004487066615849342,
+   "following_B.n": 0.0019322929973540235,
+   "following_pressure": 0.002142021343537928,
+   "following_K_x": 0.002291036846484221,
+   "following_K_y": 0.002265598528569511,
+   "following_K_z": 0.0021009498409445093,
+   "following_label": 1.818139797402207e-09,
+   "following_phase": 4.2836389519067267e-11,
+   "following_net_current": 0.005362781185501106,
+   "following_bootstrap": 5579.710335167512,
+   "fixed_current": 0.0004360994395049875
+  }
+ ]
+}

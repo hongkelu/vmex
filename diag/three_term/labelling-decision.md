@@ -1,5 +1,14 @@
 # Boundary labelling: evidence for the decision (2026-10-22)
 
+> **Status 2026-10-23: superseded in part.** Read with [perlmutter/RESULTS.md](perlmutter/RESULTS.md).
+> - The recommendation below (C at about 1e-2) is **withdrawn**: on QH 2.5% C 1e-2 shifts the seed objective by +5%
+>   against C 1e-3/no labelling (RESULTS section 2), and the earlier QI tables already showed B.n 2-6x. C 1e-3 and no
+>   labelling agree to 0.07% at interface grid 64 on QH; the labelling choice is open (work package 3).
+> - Item 10 below is wrong: the interior start-dependence test fails on the small deck (also on CPU, both solvax
+>   versions); see RESULTS section 6.
+> - Item 3 (stuck QH fits) is explained in part: the bootstrap current solved on trial-tolerance states (fixed in #122);
+>   the rest is slow convergence along weak boundary directions (open).
+
 The three-term fit leaves the boundary's poloidal labelling free: relabelling θ changes neither the surface nor B·n, pressure balance or K. Something must fix it, and how it is fixed decides start-independence, derivative quality, conditioning and accuracy.
 
 ## Candidates
@@ -73,7 +82,7 @@ A design gradient is only well defined when the labelling is pinned.
 
 The fit is stuck far from stationary: the Gauss-Newton step is long, yet Levenberg-Marquardt cannot reduce the cost. That points at the fit itself (ill-conditioning, condition number about 5e5 at QH 2.5%, and a nonconvex cost), not only at the labelling.
 
-## Recommendation (pending the running items)
+## Recommendation (pending the running items) [withdrawn 2026-10-23, see the status note at the top]
 
 1. Choose equal arc (C) at about 1e-2:
    - the smallest tested weight that pins the labelling at the QI design;
@@ -101,5 +110,5 @@ The fit is stuck far from stationary: the Gauss-Newton step is long, yet Levenbe
 7. **Restart fidelity in the campaign driver.** The API restores exactly (P7), but the driver's `--restart` still re-anchors A and takes PHIEDGE from the WOUT.
 8. **Reproducibility of starts.** The GPU coil fit is not deterministic; every comparison needs one saved seed.
 9. **References (P9).** NESTOR at this design gives B.n 1.7e-3 and an edge iota 1% off. Field-line tracing (vacuum) is running on the converged C QI-vacuum design; finite-beta references (coil + plasma field) are still to do.
-10. **Interior m=1 gauge.** Start-independent at the small test deck (test passes). Not yet checked at production resolution.
+10. **Interior m=1 gauge.** ~~Start-independent at the small test deck (test passes).~~ [superseded 2026-10-23: the test fails; converged interior states from different starts differ by an m = 0 relabelling, RESULTS section 6] Not yet checked at production resolution.
 11. **QI 2.5% slow region (P4).** A plateau, not a labelling defect; the KKT check at C's step-150 design is running.

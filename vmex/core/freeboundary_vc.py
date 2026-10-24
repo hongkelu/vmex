@@ -1510,41 +1510,92 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return out
 
     def _newton_refine_exact(self, x, params, field, sol, extra, b, g, opt, t0):
-        """:meth:`_newton_refine` with the dense exact Hessian (:meth:`dense_hessian`) at the certified fit: each step
-        is ``d = -H^-1 g`` (H kept: a chord Newton method, its rate set by how much ``H`` changes over the polish)
-        and costs one tight solve and one reverse pass for ``g`` at the trial point.  Accepts the largest of ``1,
-        1/2, 1/4, 1/8`` of the step that lowers ``(g^T H^-1 g)^(1/2)``, until the scaled step is at most
-        ``step_tol``; then certified as every other record."""
+        """:meth:`_newton_refine` by full Newton steps on the fit's cost with the exact Hessian, in a trust region.
+
+        At each iterate ``b``: the tight interior solve, ``g`` (:meth:`_cost_gradients`) and the dense exact Hessian
+        ``H`` (:meth:`dense_hessian`, refreshed every step: along the fit's flat, curved directions it changes over
+        one step).  The step solves ``(H + lam D^2) d = -g`` (``D = diag(1/scale)``; ``lam = 0`` when the Newton step
+        fits the radius and ``H`` is positive definite) and is accepted by the ratio of the actual to the predicted
+        decrease of the cost ``|r|^2 / 2`` (not a stationarity norm, which can fall while the cost rises).  Stops
+        when the accepted Newton step is at most ``step_tol`` (scaled).  The last Hessian is kept for the record's
+        exact gradient (:meth:`_exact_dense_gradients`).  Then certified as every other record.
+        """
         import scipy.linalg
 
         model, nb = self.model, self.model.x0.size
         scale = np.asarray(model.x_scale, dtype=float)
-        H, asymmetry = self.dense_hessian(x, sol)
-        seconds_hessian = time.perf_counter() - t0
-        factor = scipy.linalg.lu_factor(H)
 
-        def stationarity(bb):
-            return self._cost_gradients(bb, params, field, x)[0]
+        def point(bb):  # (cost, g, sol-like record) at bb, or None
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
+            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
+            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
+                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
 
-        merit = float(np.sqrt(abs(g @ scipy.linalg.lu_solve(factor, g))))
-        history, evaluations, converged = [], 1, False
+        here = point(b)
+        if here is None:
+            raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
+        cost, g, rec = here
+        radius = float(opt.get("radius", 1e-1))
+        history, evaluations, converged, seconds_hessian, H = [], 1, False, 0.0, None
         for _ in range(int(opt["max_steps"])):
-            d = -scipy.linalg.lu_solve(factor, g)
-            step = float(np.linalg.norm(d / scale))
-            history.append(dict(step=step, merit=merit, evaluations=evaluations))
-            if step <= opt["step_tol"]:
+            th = time.perf_counter()
+            H, asymmetry = self.dense_hessian(x, rec)
+            seconds_hessian += time.perf_counter() - th
+            Hs = H * (scale[:, None] * scale[None, :])  # scaled coordinates
+            gs = g * scale
+            try:
+                newton = -scipy.linalg.solve(Hs, gs, assume_a="sym")
+                definite = bool(np.all(np.linalg.eigvalsh(Hs) > 0))
+            except np.linalg.LinAlgError:
+                newton, definite = None, False
+            step_newton = float(np.linalg.norm(newton)) if newton is not None else np.inf
+            history.append(dict(cost=cost, step=step_newton, radius=radius, definite=definite,
+                                stationarity=float(abs(gs @ newton)) if newton is not None else np.inf,
+                                evaluations=evaluations, asymmetry=asymmetry))
+            if opt.get("track"):  # the exact gradient at every iterate: does it settle as the point converges?
+                history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=H)["gradients"].tolist()
+            if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break
-            for t in (1.0, 0.5, 0.25, 0.125):
-                g_try = stationarity(b + t * d)
+            accepted = False
+            for _ in range(8):
+                if definite and step_newton <= radius:
+                    ds = newton
+                else:  # the trust-region step: raise lam until the step fits
+                    lam_lo, lam_hi = 0.0, max(1.0, float(np.abs(np.diag(Hs)).max()))
+                    while np.linalg.norm(scipy.linalg.solve(Hs + lam_hi * np.eye(nb), -gs, assume_a="sym")) > radius:
+                        lam_hi *= 10
+                    for _ in range(40):
+                        lam = 0.5 * (lam_lo + lam_hi)
+                        ds = scipy.linalg.solve(Hs + lam * np.eye(nb), -gs, assume_a="sym")
+                        if np.linalg.norm(ds) > radius or not np.all(np.isfinite(ds)):
+                            lam_lo = lam
+                        else:
+                            lam_hi = lam
+                    ds = scipy.linalg.solve(Hs + lam_hi * np.eye(nb), -gs, assume_a="sym")
+                predicted = -(gs @ ds + 0.5 * ds @ Hs @ ds)
+                trial = point(b + ds * scale)
                 evaluations += 1
-                merit_try = float(np.sqrt(abs(g_try @ scipy.linalg.lu_solve(factor, g_try))))
-                if merit_try < merit:
-                    b, g, merit = b + t * d, g_try, merit_try
+                rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
+                if rho > 0.1:
+                    b, (cost, g, rec) = b + ds * scale, trial
+                    if rho > 0.75 and np.linalg.norm(ds) > 0.9 * radius:
+                        radius *= 2
+                    accepted = True
+                    history[-1].update(taken=float(np.linalg.norm(ds)), rho=float(rho))
                     break
-            else:
+                radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
+            if not accepted:
                 history[-1]["stalled"] = True
                 break
+        self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=H) \
+            if converged else None
         got = model.evaluate(b, params, field, tight=True)
         if got is None:
             raise TrialRejected("the Newton-refined boundary has no certified interior root")
@@ -1555,8 +1606,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
-        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit,
-                             subspace=nb, products="exact", asymmetry=asymmetry, seconds_hessian=seconds_hessian,
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
+                             subspace=nb, products="exact", seconds_hessian=seconds_hessian,
                              seconds=time.perf_counter() - t0)
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
@@ -1690,7 +1741,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
         return 0.5 * (H + H.T), asymmetry
 
-    def _exact_dense_gradients(self, x, sol, rows=None):
+    def _exact_dense_gradients(self, x, sol, rows=None, H=None):
         """Every row's exact design gradient with the dense exact Hessian: ``mu = H^-1 Q_b^T`` (one factorization for
         every row), then ``Q_d - F_d^T mu`` and each row's true residual ``|Q_b - H mu| / |Q_b|`` from one more exact
         call on the multipliers.  No difference step, no iteration; the Hessian is kept (``self._hessian``)."""
@@ -1707,7 +1758,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         direct = np.asarray(self._direct(state, params_b, xj))
         rows = list(range(G_b.shape[0]) if rows is None else rows)
         t0 = time.perf_counter()
-        H, asymmetry = self.dense_hessian(x, sol)
+        kept = getattr(self, "_hessian", None)
+        scale = np.asarray(self.model.x_scale, dtype=float)
+        if H is not None:
+            asymmetry = 0.0
+        elif (kept is not None and np.array_equal(kept["x"], np.asarray(x, dtype=float))
+                and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
+            H, asymmetry = kept["H"], 0.0  # the converged Newton polish's Hessian at this record
+        else:
+            H, asymmetry = self.dense_hessian(x, sol)
         seconds_hessian = time.perf_counter() - t0
         factor = scipy.linalg.lu_factor(H)
         mu = scipy.linalg.lu_solve(factor, G_b[rows].T)  # a column per row
@@ -2319,6 +2378,75 @@ def _residual_multipliers(J_b, G_b):
     gradient, ``G_b`` times :func:`_least_squares_sensitivity` without curvature terms.  By a QR of ``J_b``."""
     Q, R = np.linalg.qr(J_b)
     return Q @ np.linalg.solve(R.T, np.asarray(G_b).T)
+
+
+def _trust_region_newton(evaluate, H, b, g, f, scale, *, step_tol, max_steps, radius=1e-2):
+    """Minimize ``f`` from ``b`` (gradient ``g``, Hessian ``H``) by trust-region Newton steps with BFGS updates.
+
+    ``evaluate(b) -> (g, f)``.  Each step solves ``(H + lam D^2) d = -g`` with ``|D d| <= radius`` (``D = diag(1 /
+    scale)``; the scaled ``H`` eigendecomposed per step, ``lam`` by bisection), accepted when the actual decrease of
+    ``f`` is a positive fraction of the predicted one; the radius follows that ratio.  Stops when the scaled Newton
+    step is at most ``step_tol`` (``converged``), after ``max_steps`` steps, or when eight radius reductions find no
+    acceptable step (``stalled``).  Returns ``(b, g, f, history, converged, evaluations)``.
+    """
+    scale = np.asarray(scale, dtype=float)
+    b, g, H = np.asarray(b, dtype=float).copy(), np.asarray(g, dtype=float), np.asarray(H, dtype=float)
+    history, evaluations, converged, current = [], 0, False, None
+    for _ in range(int(max_steps)):
+        Hs = scale[:, None] * H * scale[None, :]
+        w, Q = np.linalg.eigh(0.5 * (Hs + Hs.T))
+        gs = Q.T @ (scale * g)
+
+        def step_for(lam):
+            return -scale * (Q @ (gs / (w + lam)))
+
+        newton = step_for(0.0) if w.min() > 0 else None
+        newton_norm = np.inf if newton is None else float(np.linalg.norm(newton / scale))
+        history.append(dict(step=newton_norm, cost=f, radius=current, evaluations=evaluations,
+                            min_eigenvalue=float(w.min())))
+        if newton_norm <= step_tol:
+            converged = True
+            break
+        if current is None:
+            current = min(newton_norm, radius)
+        accepted = False
+        for _ in range(8):
+            if newton_norm <= current:
+                d = newton
+            else:  # |D d(lam)| = current, monotone in lam above the lowest eigenvalue
+                lo = max(0.0, -float(w.min())) + 1e-300
+                hi = lo + max(1.0, float(np.linalg.norm(gs)) / current)
+                while float(np.linalg.norm(step_for(hi) / scale)) > current:
+                    hi *= 4
+                for _ in range(60):
+                    mid = 0.5 * (lo + hi)
+                    if float(np.linalg.norm(step_for(mid) / scale)) > current:
+                        lo = mid
+                    else:
+                        hi = mid
+                d = step_for(hi)
+            predicted = -(g @ d + 0.5 * d @ H @ d)
+            g_try, f_try = evaluate(b + d)
+            evaluations += 1
+            rho = (f - f_try) / predicted if predicted > 0 else -1.0
+            length = float(np.linalg.norm(d / scale))
+            if rho < 0.25:
+                current = 0.25 * length
+            elif rho > 0.75 and length >= 0.99 * current:
+                current = 2.0 * current
+            if rho > 1e-4:
+                y = g_try - g
+                Hd = H @ d
+                if d @ y > 1e-12 * float(np.linalg.norm(d) * np.linalg.norm(y)):  # BFGS
+                    H = H - np.outer(Hd, Hd) / (d @ Hd) + np.outer(y, y) / (d @ y)
+                b, g, f = b + d, g_try, f_try
+                history[-1].update(taken=length, rho=float(rho))
+                accepted = True
+                break
+        if not accepted:
+            history[-1]["stalled"] = True
+            break
+    return b, g, f, history, converged, evaluations
 
 
 def _preconditioned_cg(hv, precondition, q, rtol, maxiter, mu=None):

@@ -1199,6 +1199,9 @@ def parse_args(argv=None):
                         "direction, with timings (exact_products_check.json), then stop")
     parser.add_argument("--exact-products-timing", type=int, nargs="*", default=[], metavar="M",
                         help="with --check-exact-products: also time compiled calls of M random columns")
+    parser.add_argument("--newton-track", action="store_true",
+                        help="with --newton-polish --exact-products: record the exact gradient at every Newton iterate")
+    parser.add_argument("--newton-max-steps", type=int, default=10, help="Newton polish steps at most")
     parser.add_argument("--check-products", action="store_true",
                         help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
                         "with those from full linearizations, along the weakest, strongest and a random direction")
@@ -1711,7 +1714,8 @@ def main(argv=None):
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, h=args.exact_gradient_h,
-                          products="exact" if args.exact_products else "difference"),
+                          products="exact" if args.exact_products else "difference", track=args.newton_track,
+                          max_steps=args.newton_max_steps),
                       exact_gradient=None if args.exact_gradient is None else dict(
                           subspace=args.exact_gradient, h=args.exact_gradient_h,
                           rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
@@ -1741,7 +1745,17 @@ def main(argv=None):
         print(f"[newton polish] restored accepted point refined: values change {change:.2e}; "
               f"{len(nw.get('steps', []))} steps, converged {nw.get('converged')}, {nw.get('evaluations')} "
               f"evaluations, Hessian {nw.get('seconds_hessian', 0):.0f} s, {time.monotonic() - t_refine:.0f} s; "
-              "scaled steps " + " ".join(f"{st['step']:.1e}" for st in nw.get("steps", [])), flush=True)
+              "scaled steps " + " ".join(f"{st['step']:.1e}" for st in nw.get("steps", []))
+              + "; costs " + " ".join(f"{st.get('cost', np.nan):.6e}" for st in nw.get("steps", [])), flush=True)
+        steps = nw.get("steps", [])
+        if steps and "gradients" in steps[-1]:
+            last = np.array(steps[-1]["gradients"])
+            for k, st in enumerate(steps):
+                G = np.array(st["gradients"])
+                drift = np.linalg.norm(G - last, axis=1) / np.maximum(np.linalg.norm(last, axis=1), 1e-300)
+                print(f"[newton polish] iterate {k}: step {st['step']:.1e}, cost {st['cost']:.9e}, exact gradient vs "
+                      f"last iterate max {drift.max():.1e} (rows " + " ".join(f"{e:.0e}" for e in drift) + ")",
+                      flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN

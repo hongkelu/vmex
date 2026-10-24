@@ -204,3 +204,27 @@ def test_preconditioned_cg_reports_an_indefinite_system(point):
     q = np.ones(5)
     mu, _, res, reason = fvc._preconditioned_cg(lambda v: H @ v, lambda v: v, q, 1e-12, 50)
     assert reason in ("curvature", "preconditioner") or np.linalg.norm(q - H @ mu) <= 1e-10
+
+
+def test_trust_region_newton_follows_a_curved_valley():
+    """``_trust_region_newton`` (exact Hessian at the start, BFGS after) minimizes scaled Rosenbrock least squares
+    -- a curved valley like the fit's relabelling directions -- monotonically, to its minimum."""
+    scale = np.array([1.0, 3.0])
+
+    def residual(b):
+        return jnp.stack([10.0 * (b[1] / 3.0 - b[0] ** 2), 1.0 - b[0]])
+
+    def evaluate(b):
+        r = residual(jnp.asarray(b))
+        g = jax.jacfwd(residual)(jnp.asarray(b)).T @ r
+        return np.asarray(g), 0.5 * float(r @ r)
+
+    b0 = np.array([-1.2, 3.0])
+    g0, f0 = evaluate(b0)
+    H0 = np.asarray(jax.hessian(lambda b: 0.5 * jnp.sum(residual(b) ** 2))(jnp.asarray(b0)))
+    b, g, f, history, converged, evaluations = fvc._trust_region_newton(
+        evaluate, H0, b0, g0, f0, scale, step_tol=1e-10, max_steps=200, radius=0.5)
+    assert converged and evaluations < 200
+    np.testing.assert_allclose(b, [1.0, 3.0], atol=1e-8)
+    costs = [h["cost"] for h in history]
+    assert all(c2 <= c1 for c1, c2 in zip(costs, costs[1:]))

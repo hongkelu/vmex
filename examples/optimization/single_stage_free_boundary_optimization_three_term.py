@@ -1214,6 +1214,10 @@ def parse_args(argv=None):
                         "between steps (ThreeTermFreeBoundaryProblem._stationarity_gradients); default: Gauss-Newton. "
                         "Its step, Richardson, tolerance and iterations: --exact-gradient-h, --stationarity-richardson, "
                         "--stationarity-rtol, --exact-gradient-maxiter")
+    parser.add_argument("--exact-products", action="store_true",
+                        help="the stationarity derivative (--exact-gradient, --check-stationarity-gradient) from the dense "
+                        "exact Hessian of second-order adjoint products (ThreeTermFreeBoundaryProblem.exact_products): "
+                        "no difference step, no conjugate gradients")
     parser.add_argument("--stationarity-subspace", type=int, default=0, metavar="K",
                         help="precondition --check-stationarity-gradient's conjugate gradients with the curvature on the "
                         "fit's K weakest directions (0: Gauss-Newton preconditioner)")
@@ -1710,7 +1714,8 @@ def main(argv=None):
                       exact_gradient=None if args.exact_gradient is None else dict(
                           subspace=args.exact_gradient, h=args.exact_gradient_h,
                           rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
-                          richardson=args.stationarity_richardson, maxiter=args.exact_gradient_maxiter),
+                          richardson=args.stationarity_richardson, maxiter=args.exact_gradient_maxiter,
+                          products="exact" if args.exact_products else "difference"),
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,
@@ -1966,11 +1971,14 @@ def main(argv=None):
                                                    maxiter=args.exact_gradient_maxiter,
                                                    richardson=args.stationarity_richardson,
                                                    subspace=args.stationarity_subspace,
+                                                   products="exact" if args.exact_products else "difference",
                                                    rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol)
         record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
                       subspace=got["subspace"], subspace_evaluations=got["subspace_evaluations"],
                       rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol,
-                      true_residual=got["true_residual"],
+                      true_residual=got["true_residual"], products="exact" if args.exact_products else "difference",
+                      asymmetry=got.get("asymmetry"), hessian_condition=got.get("condition"),
+                      seconds_hessian=got.get("seconds_hessian"),
                       gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
                       rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,

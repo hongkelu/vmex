@@ -1585,7 +1585,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return g, c, np.asarray(rows)
 
     def stationarity_design_gradient(self, x, rows=None, *, h=1e-3, rtol=1e-10, maxiter=200, richardson=False,
-                                     subspace=0):
+                                     subspace=0, products="difference"):
         """Every requested row's exact design gradient: the derivative of the converged stationarity ``J_b^T r = 0``.
 
         For each value row ``Q``: ``H mu = Q_b^T`` with ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` (conjugate gradients
@@ -1614,19 +1614,74 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         x = np.asarray(x, dtype=float)
         sol = self._record(x)
         got = self._stationarity_gradients(x, sol, rows, h=h, rtol=rtol, maxiter=maxiter, richardson=richardson,
-                                           subspace=subspace, reuse=False)
+                                           subspace=subspace, reuse=False, products=products)
         got["gauss_newton"] = np.asarray(self._gauss_newton_gradients(x, sol))[got["rows"]]
         return got
 
+    def dense_hessian(self, x, sol, chunk=64):
+        """The fit's exact Hessian ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` at the record ``sol``, column by column
+        from :meth:`exact_products` (unit columns in the model coordinates, ``chunk`` per call, the last padded so
+        one compilation serves every call).  Returns ``(H, asymmetry)``: ``H`` symmetrized and the relative norm of
+        its antisymmetric part (zero up to round-off for exact products)."""
+        nb = self.model.x0.size
+        columns = []
+        for start in range(0, nb, chunk):
+            E = np.zeros((nb, chunk))
+            width = min(chunk, nb - start)
+            E[start:start + width, :width] = np.eye(width)
+            columns.append(self.exact_products(x, sol, E)[0][:, :width])
+        H = np.concatenate(columns, axis=1)
+        asymmetry = float(np.linalg.norm(H - H.T) / max(np.linalg.norm(H), 1e-300))
+        return 0.5 * (H + H.T), asymmetry
+
+    def _exact_dense_gradients(self, x, sol, rows=None):
+        """Every row's exact design gradient with the dense exact Hessian: ``mu = H^-1 Q_b^T`` (one factorization for
+        every row), then ``Q_d - F_d^T mu`` and each row's true residual ``|Q_b - H mu| / |Q_b|`` from one more exact
+        call on the multipliers.  No difference step, no iteration; the Hessian is kept (``self._hessian``)."""
+        import scipy.linalg
+
+        xj, nb = jnp.asarray(x), self.model.x0.size
+        state, params_b = sol["state"], sol["params"]
+        b0 = np.asarray(sol["x"], dtype=float)
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        direct = np.asarray(self._direct(state, params_b, xj))
+        rows = list(range(G_b.shape[0]) if rows is None else rows)
+        t0 = time.perf_counter()
+        H, asymmetry = self.dense_hessian(x, sol)
+        seconds_hessian = time.perf_counter() - t0
+        factor = scipy.linalg.lu_factor(H)
+        mu = scipy.linalg.lu_solve(factor, G_b[rows].T)  # a column per row
+        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu)
+        gradients = direct[rows] + G_x[rows] - Fd_mu.T
+        norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
+        true = (np.linalg.norm(G_b[rows].T - H_mu, axis=0) / norms).tolist()
+        self._hessian = dict(b=b0, x=np.asarray(x, dtype=float).copy(), H=H)
+        return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry,
+                    condition=float(np.linalg.cond(H)), seconds_hessian=seconds_hessian,
+                    cg_iterations=[0] * len(rows), cg_converged=[True] * len(rows), cg_residual=true,
+                    cg_reasons=["dense"] * len(rows), evaluations=0, subspace=nb, subspace_evaluations=0,
+                    rebuilt=True)
+
     def _stationarity_gradients(self, x, sol, rows=None, *, h=1e-3, rtol=1e-6, maxiter=200, richardson=False,
-                                subspace=20, reuse=True, refresh_iterations=8):
+                                subspace=20, reuse=True, refresh_iterations=8, products="difference"):
         """The exact design gradients of :meth:`stationarity_design_gradient` at the record ``sol``.
 
         With ``reuse`` the weak-subspace curvature ``S W`` (``W`` and ``S W``, not their factorization) is kept
         between calls: the next record's preconditioner is ``J_b^T J_b`` of that record plus the kept curvature,
         rebuilt only when the previous call needed more than ``refresh_iterations`` conjugate-gradient iterations on
         average.  A stale preconditioner costs iterations, never accuracy (the residual is still solved to ``rtol``).
+        ``products="exact"``: the dense exact Hessian instead (:meth:`_exact_dense_gradients`; the other options
+        are then unused).
         """
+        if products == "exact":
+            got = self._exact_dense_gradients(x, sol, rows)
+            if max(got["true_residual"]) > 1e-6:
+                raise RuntimeError(f"dense exact multipliers missed: true residuals {got['true_residual']}")
+            return got
         import scipy.linalg
 
         model, nb = self.model, self.model.x0.size

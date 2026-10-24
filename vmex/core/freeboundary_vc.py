@@ -1379,6 +1379,33 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if error:
                 return self._reject(key, error)
         anchor, J = self._anchor, None
+        if starts is None and anchor and anchor.get("hessian") is not None and self.newton_polish is not None:
+            # From the accepted point's converged boundary, its Hessian's Newton step is the exact first-order
+            # prediction of this trial's boundary; Newton (fresh Hessians) converges it, no fit needed.
+            if self._continuation is not None:
+                self._restore(self._continuation)
+            t0 = time.perf_counter()
+            try:
+                opt = dict(step_tol=1e-8, max_steps=10, h=1e-3, cg_rtol=1e-6, cg_maxiter=80, subspace=0)
+                opt.update(self.newton_polish or {})
+                opt["H0"] = anchor["hessian"]
+                extra = self._plasma_directions(params, jnp.asarray(x)) if self._plasma.size else None
+                sol = self._newton_refine_exact(x, params, field, None, extra, np.asarray(anchor["b"], dtype=float),
+                                                None, opt, t0)
+                if sol["newton"]["converged"]:
+                    nb = self.model.x0.size
+                    sol.update(continuation=self._checkpoint(), anchor=dict(
+                        x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=sol["J"][:, :nb], J_p=sol["J"][:, nb:],
+                        state=sol["state"], params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"],
+                        hessian=sol.get("hessian")))
+                    self.stats["warm_newton_trials"] = self.stats.get("warm_newton_trials", 0) + 1
+                    self._cache[key] = sol
+                    return sol
+                self.stats["warm_newton_unconverged"] = self.stats.get("warm_newton_unconverged", 0) + 1
+            except (TrialRejected, VmecError, RuntimeError):  # fall back to the fit from the anchor's prediction
+                self.stats["warm_newton_failed"] = self.stats.get("warm_newton_failed", 0) + 1
+            finally:
+                self.stats["seconds_certify"] += time.perf_counter() - t0
         if starts is not None:  # given starts (a restore: the saved boundary)
             anchor = {}
         elif anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
@@ -1454,7 +1481,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
         sol.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=sol["state"],
-            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"]))
+            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"], hessian=sol.get("hessian")))
         return sol
 
     def _newton_refine(self, x, params, field, sol, extra):
@@ -1608,7 +1635,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         partial = int(opt.get("partial", 0))
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
-            if H is None or not partial:
+            if H is None and opt.get("H0") is not None:  # the accepted point's Hessian: the predicted first step
+                H, asymmetry = np.asarray(opt["H0"]), 0.0
+            elif H is None or not partial or (len(history) == 1 and opt.get("H0") is not None):
                 H, asymmetry = self.dense_hessian(x, rec)
             else:  # refresh only the weakest directions: exact columns there, symmetric low-rank correction
                 Hs_old = H * np.outer(scale, scale)
@@ -1709,7 +1738,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
                              subspace=nb, products="exact", seconds_hessian=seconds_hessian,
-                             seconds=time.perf_counter() - t0)
+                             seconds=time.perf_counter() - t0, warm=opt.get("H0") is not None)
+        if converged and H is not None:  # carried by the anchor: the next trials' first Newton step
+            out["hessian"] = np.asarray(H)
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
@@ -2571,7 +2602,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         nb = self.model.x0.size
         new.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=new["x"], J_b=new["J"][:, :nb], J_p=new["J"][:, nb:],
-            state=new["state"], params=new["params"], cost=0.5 * new["rows"] @ new["rows"]))
+            state=new["state"], params=new["params"], cost=0.5 * new["rows"] @ new["rows"], hessian=new.get("hessian")))
         change = float(np.max(np.abs(new["values"] - sol["values"]) / np.maximum(np.abs(sol["values"]), 1e-300)))
         self._promote(new)
         self._cache[key] = new

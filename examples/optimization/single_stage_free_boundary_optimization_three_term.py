@@ -1882,6 +1882,9 @@ def main(argv=None):
                  f"{row['exact_gradient_cg_iterations'] - last.get('eg_cg', 0)}, rebuilds "
                  f"{row['exact_gradient_rebuilds']}, residual {row['exact_gradient_true_residual']:.1e}; "
                  if "exact_gradient_evaluations" in row else "")
+              + (f"warm Newton trials {row.get('warm_newton_trials', 0)} (unconverged "
+                 f"{row.get('warm_newton_unconverged', 0)}, failed {row.get('warm_newton_failed', 0)}), "
+                 if "warm_newton_trials" in row or "warm_newton_failed" in row else "")
               + f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
         if "exact_gradient_evaluations" in row:

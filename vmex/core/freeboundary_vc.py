@@ -1441,8 +1441,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         The flat directions are the accepted point's exact Hessian's eigenvectors (scaled coordinates) with
         eigenvalue below ``PIN_FLAT_RTOL`` of the largest; each gets a pin row ``w v^T (b - b_a) / scale`` with
         ``w^2 = weight`` times the largest eigenvalue.  Levenberg-Marquardt with the accepted point's Jacobian
-        (augmented by the pin rows) at the trial tolerance.  Returns the fitted boundary, or the accepted one when
-        the fit fails."""
+        (augmented by the pin rows), every point solved tight (a trial-tolerance end point of QA 2.5% had no tight
+        interior root for the polish).  Returns the fitted boundary, or the accepted one when the fit fails."""
         b_a = np.asarray(anchor["b"], dtype=float)
         scale = np.asarray(self.model.x_scale, dtype=float)
         H = np.asarray(anchor["hessian"]) * np.outer(scale, scale)
@@ -1452,8 +1452,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         pin = w * flat.T / scale[None, :]
         model, t0 = self.model, time.perf_counter()
 
-        def evaluate(z):
-            got = model.evaluate(z, params, field)
+        def evaluate(z):  # tight, as the polish that starts from its result: a trial-tolerance state need not be one
+            got = model.evaluate(z, params, field, tight=True)
             if got is None:
                 return None
             return np.r_[np.asarray(got[0]), pin @ (z - b_a)], got[1]

@@ -1531,7 +1531,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         else:
             got = self._stationarity_gradients(x, sol, **self.exact_gradient)
             sol["exact_gradient"] = {k: got[k] for k in ("cg_iterations", "true_residual", "evaluations",
-                                                         "subspace_evaluations", "rebuilt")}
+                                                         "subspace_evaluations", "rebuilt", "cg_reasons")}
+            retried = [r for r in got["cg_reasons"] if isinstance(r, list)]
+            if retried:
+                self.stats["exact_gradient_retries"] = self.stats.get("exact_gradient_retries", 0) + len(retried)
+                self.stats["exact_gradient_last_retry"] = json.dumps(retried)
             for key, value in (("exact_gradient_evaluations", got["evaluations"]),
                                ("exact_gradient_rebuilds", int(got["rebuilt"])),
                                ("exact_gradient_cg_iterations", int(np.sum(got["cg_iterations"])))):
@@ -1674,23 +1678,52 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             def precondition(v):  # (J_b^T J_b)^-1 v
                 return np.linalg.solve(R, np.linalg.solve(R.T, v))
 
-        out, iterations, converged, residuals, true_residuals = [], [], [], [], []
+        def gauss_newton_preconditioner():
+            _, R = np.linalg.qr(J_b0)
+            return lambda v: np.linalg.solve(R, np.linalg.solve(R.T, v))
+
+        def fresh_preconditioner():  # the weak-subspace model measured at this record
+            _, _, Vt = np.linalg.svd(J_b0 * scale, full_matrices=False)
+            W = Vt[Vt.shape[0] - k:].T * scale[:, None]
+            DW = np.stack([products(W[:, j])[0] for j in range(k)], axis=1) - J_b0.T @ (J_b0 @ W)
+            fresh = dict(W=W, DW=DW, mean_iterations=0.0)
+            factor_ = scipy.linalg.lu_factor(_low_rank_model(J_b0, W, DW, scale))
+            return fresh, lambda v: scipy.linalg.lu_solve(factor_, v)
+
+        accept = max(100 * rtol, 1e-2)  # a true residual above this is an unconverged solve, never a gradient
+        out, iterations, converged, residuals, true_residuals, reasons = [], [], [], [], [], []
         for row in rows:
             Q_b = G_b[row]
             norm0 = max(float(np.linalg.norm(Q_b)), 1e-300)
-            mu, it, res = _preconditioned_cg(lambda v: products(v)[0], precondition, Q_b, rtol, maxiter)
+            attempts = []
+            mu = None
+            while True:
+                mu, it, res, reason = _preconditioned_cg(lambda v: products(v)[0], precondition, Q_b, rtol, maxiter, mu)
+                H_mu, Fd_mu = products(mu)
+                true = float(np.linalg.norm(Q_b - H_mu)) / norm0
+                attempts.append(dict(iterations=it, reason=reason, true_residual=true))
+                if true <= accept:
+                    break
+                if k and not rebuilt:  # a kept (stale) subspace model: measure it here, then retry this row
+                    kept, precondition = fresh_preconditioner()
+                    rebuilt = True
+                elif len(attempts) < 4:  # the plain Gauss-Newton preconditioner from the current multiplier
+                    precondition = gauss_newton_preconditioner()
+                    k = 0
+                else:
+                    raise RuntimeError(f"stationarity multiplier of row {row} did not converge: {attempts}")
             residual = float(np.linalg.norm(res)) / norm0
-            H_mu, Fd_mu = products(mu)
             out.append(direct[row] + G_x[row] - Fd_mu)  # Q_d - F_d^T mu
-            iterations.append(it)
-            converged.append(residual <= rtol)
+            iterations.append(sum(a["iterations"] for a in attempts))
+            converged.append(reason == "converged")
             residuals.append(residual)
-            true_residuals.append(float(np.linalg.norm(Q_b - H_mu)) / norm0)
+            true_residuals.append(true)
+            reasons.append(attempts if len(attempts) > 1 else reason)
         if k and reuse:
             kept["mean_iterations"] = float(np.mean(iterations))
             self._curvature = kept
         return dict(gradients=np.array(out), rows=list(rows), cg_iterations=iterations,
-                    cg_converged=converged, cg_residual=residuals, true_residual=true_residuals,
+                    cg_converged=converged, cg_residual=residuals, true_residual=true_residuals, cg_reasons=reasons,
                     evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations, rebuilt=rebuilt)
 
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
@@ -2069,25 +2102,32 @@ def _residual_multipliers(J_b, G_b):
     return Q @ np.linalg.solve(R.T, np.asarray(G_b).T)
 
 
-def _preconditioned_cg(hv, precondition, q, rtol, maxiter):
-    """``H mu = q`` by conjugate gradients from ``mu = precondition(q)``; ``hv(v) = H v``.
+def _preconditioned_cg(hv, precondition, q, rtol, maxiter, mu=None):
+    """``H mu = q`` by conjugate gradients from ``mu`` (default ``precondition(q)``); ``hv(v) = H v``.
 
-    Stops when the recurrence residual is at most ``rtol |q|``, after ``maxiter`` products, or at non-positive
-    curvature (``H`` need not be definite away from a minimum).  Returns ``(mu, iterations, residual)``.
+    Stops when the recurrence residual is at most ``rtol |q|`` (``"converged"``), after ``maxiter`` products
+    (``"maxiter"``), at non-positive curvature (``"curvature"``: ``H`` need not be definite away from a minimum) or
+    at a non-positive preconditioned residual (``"preconditioner"``: an indefinite preconditioner).  Returns
+    ``(mu, iterations, residual, reason)``; callers check the true residual, not only the reason.
     """
-    mu = precondition(q)
+    mu = precondition(q) if mu is None else np.asarray(mu, dtype=float).copy()
     res = q - hv(mu)
     z = precondition(res)
     d = z.copy()
     rz = res @ z
     norm0 = max(float(np.linalg.norm(q)), 1e-300)
-    it = 0
+    it, reason = 0, "maxiter"
     for it in range(1, maxiter + 1):
         if float(np.linalg.norm(res)) <= rtol * norm0:
+            reason = "converged"
+            break
+        if not rz > 0:
+            reason = "preconditioner"
             break
         Hd = hv(d)
         curvature = d @ Hd
         if not curvature > 0:
+            reason = "curvature"
             break
         alpha = rz / curvature
         mu = mu + alpha * d
@@ -2095,7 +2135,10 @@ def _preconditioned_cg(hv, precondition, q, rtol, maxiter):
         z = precondition(res)
         rz, rz_old = res @ z, rz
         d = z + (rz / rz_old) * d
-    return mu, it, res
+    else:
+        if float(np.linalg.norm(res)) <= rtol * norm0:
+            reason = "converged"
+    return mu, it, res, reason
 
 
 def _low_rank_model(J_b, W, DW, scale):

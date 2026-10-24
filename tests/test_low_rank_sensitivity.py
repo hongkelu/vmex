@@ -175,9 +175,9 @@ def test_low_rank_is_gauss_newton_with_no_directions_and_exact_with_all(point):
 def test_preconditioned_cg_solves_the_exact_multiplier(point):
     """The production solver (``_preconditioned_cg``) reaches ``H^-1 Q_y`` with the Gauss-Newton preconditioner."""
     H, A = point["H"], point["J_y"].T @ point["J_y"]
-    mu, it, res = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(A, v), point["Q_y"], 1e-12, 50)
+    mu, it, res, reason = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(A, v), point["Q_y"], 1e-12, 50)
     np.testing.assert_allclose(mu, np.linalg.solve(H, point["Q_y"]), rtol=1e-9, atol=1e-12)
-    assert it <= 5 and np.linalg.norm(res) <= 1e-12 * np.linalg.norm(point["Q_y"])
+    assert it <= 5 and reason == "converged" and np.linalg.norm(res) <= 1e-12 * np.linalg.norm(point["Q_y"])
 
 
 def test_subspace_preconditioner_is_exact_with_every_direction_and_cuts_iterations(point):
@@ -191,8 +191,16 @@ def test_subspace_preconditioner_is_exact_with_every_direction_and_cuts_iteratio
     for k in (0, 1):
         Wk = weak_directions(point, k)
         M = fvc._low_rank_model(point["J_y"], Wk, curvature_columns(point, Wk)[0], SCALE) if k else A
-        mu, counts[k], _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(M, v), q, 1e-10, 50)
+        mu, counts[k], _, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(M, v), q, 1e-10, 50)
         np.testing.assert_allclose(mu, np.linalg.solve(H, q), rtol=1e-8, atol=1e-11)
-    mu5, it5, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(H, v), q, 1e-10, 50)
+    mu5, it5, _, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(H, v), q, 1e-10, 50)
     assert it5 == 1  # the first guess is already the answer: the loop only checks the residual
     assert counts[1] <= counts[0]
+
+
+def test_preconditioned_cg_reports_an_indefinite_system(point):
+    """An indefinite ``H`` stops conjugate gradients with a reason and an unconverged residual (never silently)."""
+    H = np.diag([1.0, 2.0, -0.5, 3.0, 1.5])
+    q = np.ones(5)
+    mu, _, res, reason = fvc._preconditioned_cg(lambda v: H @ v, lambda v: v, q, 1e-12, 50)
+    assert reason in ("curvature", "preconditioner") or np.linalg.norm(q - H @ mu) <= 1e-10

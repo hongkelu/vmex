@@ -1534,7 +1534,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         c = np.asarray(x_bar)[0] + np.asarray(self._field_vjp(state, params_b, jnp.asarray(x), r))
         return g, c, np.asarray(rows)
 
-    def stationarity_design_gradient(self, x, rows=None, *, h=1e-3, rtol=1e-10, maxiter=200, richardson=False):
+    def stationarity_design_gradient(self, x, rows=None, *, h=1e-3, rtol=1e-10, maxiter=200, richardson=False,
+                                     subspace=0):
         """Every requested row's exact design gradient: the derivative of the converged stationarity ``J_b^T r = 0``.
 
         For each value row ``Q``: ``H mu = Q_b^T`` with ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` (conjugate gradients
@@ -1550,8 +1551,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         (2e-2 spurious curvature along the strongest direction); at ``h = 1e-3`` the two implementations agree to
         2.3e-4 and 2.1e-3 there and to 1e-10 elsewhere (driver ``--check-products``).
         It is the same mathematics as :meth:`exact_design_gradient`, whose products come from full linearizations
-        instead: an independent implementation for qualification.  Returns ``dict(gradients, gauss_newton,
-        cg_iterations, cg_converged, cg_residual, evaluations)`` (rows of ``gradients`` as :meth:`_linearize`).
+        instead: an independent implementation for qualification.
+        ``subspace = k > 0`` preconditions (and starts) the conjugate gradients with ``M = J_b^T J_b + S_k``, where
+        ``S_k`` is the curvature measured exactly on the fit's ``k`` weakest directions (``2 k`` products for every row
+        together, the rank-``2k`` model of :func:`_low_rank_multipliers`).  The multiplier's departure from
+        Gauss-Newton lies mostly there, so the iterations needed per row drop; the answer is the same (conjugate
+        gradients still solve ``H mu = Q_b^T`` to ``rtol``).  Every row's final ``F_d^T mu`` product returns ``H mu``
+        as well: ``true_residual`` is ``|Q_b - H mu| / |Q_b|`` from it, not the recurrence.
+        Returns ``dict(gradients, gauss_newton, cg_iterations, cg_converged, cg_residual, true_residual,
+        evaluations, subspace_evaluations)`` (rows of ``gradients`` as :meth:`_linearize`).
         """
         model, nb = self.model, self.model.x0.size
         x = np.asarray(x, dtype=float)
@@ -1584,41 +1592,39 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             (h1, f1), (h2, f2) = central(v, h), central(v, h / 2)
             return (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
 
-        _, R = np.linalg.qr(J_b0)
+        k = int(min(max(subspace, 0), nb))
+        if k:  # M = J^T J + S on the k weakest scaled directions; factored once for every row
+            import scipy.linalg
 
-        def precondition(v):  # (J_b^T J_b)^-1 v
-            return np.linalg.solve(R, np.linalg.solve(R.T, v))
+            _, _, Vt = np.linalg.svd(J_b0 * scale, full_matrices=False)
+            W = Vt[Vt.shape[0] - k:].T * scale[:, None]
+            DW = np.stack([products(W[:, j])[0] for j in range(k)], axis=1) - J_b0.T @ (J_b0 @ W)
+            factor = scipy.linalg.lu_factor(_low_rank_model(J_b0, W, DW, scale))
 
-        out, iterations, converged, residuals = [], [], [], []
+            def precondition(v):
+                return scipy.linalg.lu_solve(factor, v)
+        else:
+            _, R = np.linalg.qr(J_b0)
+
+            def precondition(v):  # (J_b^T J_b)^-1 v
+                return np.linalg.solve(R, np.linalg.solve(R.T, v))
+        subspace_evaluations = count[0]
+
+        out, iterations, converged, residuals, true_residuals = [], [], [], [], []
         for row in rows:
             Q_b = G_b[row]
-            mu = precondition(Q_b)  # the Gauss-Newton multiplier
-            res = Q_b - products(mu)[0]
-            z = precondition(res)
-            d = z.copy()
-            rz = res @ z
             norm0 = max(float(np.linalg.norm(Q_b)), 1e-300)
-            it = 0
-            for it in range(1, maxiter + 1):
-                if float(np.linalg.norm(res)) <= rtol * norm0:
-                    break
-                Hd = products(d)[0]
-                curvature = d @ Hd
-                if not curvature > 0:  # H need not be definite: stop rather than step along negative curvature
-                    break
-                alpha = rz / curvature
-                mu = mu + alpha * d
-                res = res - alpha * Hd
-                z = precondition(res)
-                rz, rz_old = res @ z, rz
-                d = z + (rz / rz_old) * d
+            mu, it, res = _preconditioned_cg(lambda v: products(v)[0], precondition, Q_b, rtol, maxiter)
             residual = float(np.linalg.norm(res)) / norm0
-            out.append(direct[row] + G_x[row] - products(mu)[1])  # Q_d - F_d^T mu
+            H_mu, Fd_mu = products(mu)
+            out.append(direct[row] + G_x[row] - Fd_mu)  # Q_d - F_d^T mu
             iterations.append(it)
             converged.append(residual <= rtol)
             residuals.append(residual)
+            true_residuals.append(float(np.linalg.norm(Q_b - H_mu)) / norm0)
         return dict(gradients=np.array(out), gauss_newton=gn[list(rows)], rows=list(rows), cg_iterations=iterations,
-                    cg_converged=converged, cg_residual=residuals, evaluations=count[0])
+                    cg_converged=converged, cg_residual=residuals, true_residual=true_residuals,
+                    evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations)
 
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
         """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).
@@ -1996,6 +2002,46 @@ def _residual_multipliers(J_b, G_b):
     return Q @ np.linalg.solve(R.T, np.asarray(G_b).T)
 
 
+def _preconditioned_cg(hv, precondition, q, rtol, maxiter):
+    """``H mu = q`` by conjugate gradients from ``mu = precondition(q)``; ``hv(v) = H v``.
+
+    Stops when the recurrence residual is at most ``rtol |q|``, after ``maxiter`` products, or at non-positive
+    curvature (``H`` need not be definite away from a minimum).  Returns ``(mu, iterations, residual)``.
+    """
+    mu = precondition(q)
+    res = q - hv(mu)
+    z = precondition(res)
+    d = z.copy()
+    rz = res @ z
+    norm0 = max(float(np.linalg.norm(q)), 1e-300)
+    it = 0
+    for it in range(1, maxiter + 1):
+        if float(np.linalg.norm(res)) <= rtol * norm0:
+            break
+        Hd = hv(d)
+        curvature = d @ Hd
+        if not curvature > 0:
+            break
+        alpha = rz / curvature
+        mu = mu + alpha * d
+        res = res - alpha * Hd
+        z = precondition(res)
+        rz, rz_old = res @ z, rz
+        d = z + (rz / rz_old) * d
+    return mu, it, res
+
+
+def _low_rank_model(J_b, W, DW, scale):
+    """``J_b^T J_b + S P + P^T S - P^T S P`` (symmetrized), ``P = W W^T diag(1 / scale^2)``: the fit's Hessian with
+    its curvature ``S`` known only through ``DW = S W`` on the columns of ``W`` (orthonormal in the scaled metric)."""
+    J_b, W, DW = map(np.asarray, (J_b, W, DW))
+    MW = W / np.asarray(scale, dtype=float)[:, None] ** 2
+    K = W.T @ DW
+    K = 0.5 * (K + K.T)
+    D = DW @ MW.T + MW @ DW.T - MW @ K @ MW.T
+    return J_b.T @ J_b + 0.5 * (D + D.T)
+
+
 def _low_rank_multipliers(J_b, G_b, W, DW, scale):
     """Multipliers ``mu = H^-1 G_b^T`` (a column per row) with the fit's curvature on the directions ``W``.
 
@@ -2006,13 +2052,8 @@ def _low_rank_multipliers(J_b, G_b, W, DW, scale):
     this is the Gauss-Newton multiplier ``(J_b^T J_b)^-1 G_b^T``.  Returns ``(mu, MW)``, ``MW = diag(1/scale^2) W``
     (``MW.T @ mu`` are ``mu``'s coordinates along ``W``).
     """
-    J_b, G_b, W, DW = map(np.asarray, (J_b, G_b, W, DW))
-    MW = W / np.asarray(scale, dtype=float)[:, None] ** 2
-    K = W.T @ DW
-    K = 0.5 * (K + K.T)
-    D = DW @ MW.T + MW @ DW.T - MW @ K @ MW.T
-    H = J_b.T @ J_b + 0.5 * (D + D.T)
-    return np.linalg.solve(H, G_b.T), MW
+    MW = np.asarray(W) / np.asarray(scale, dtype=float)[:, None] ** 2
+    return np.linalg.solve(_low_rank_model(J_b, W, DW, scale), np.asarray(G_b).T), MW
 
 
 def _least_squares_sensitivity(J_b, J_d, S_bb=None, S_bd=None):

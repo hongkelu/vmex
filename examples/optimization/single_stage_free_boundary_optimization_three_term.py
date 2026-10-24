@@ -1202,6 +1202,11 @@ def parse_args(argv=None):
                         "linearization consistency check), then stop")
     parser.add_argument("--stationarity-richardson", action="store_true",
                         help="Richardson-extrapolate the stationarity products over steps h and h/2")
+    parser.add_argument("--stationarity-subspace", type=int, default=0, metavar="K",
+                        help="precondition --check-stationarity-gradient's conjugate gradients with the curvature on the "
+                        "fit's K weakest directions (0: Gauss-Newton preconditioner)")
+    parser.add_argument("--stationarity-rtol", type=float, default=1e-10,
+                        help="relative residual of --check-stationarity-gradient's conjugate gradients")
     parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
                         help="every row's design gradient with the fit's curvature on its K weakest directions "
                         "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
@@ -1887,15 +1892,19 @@ def main(argv=None):
         t0 = time.monotonic()
         got = problem.stationarity_design_gradient(x_seed, h=args.exact_gradient_h,
                                                    maxiter=args.exact_gradient_maxiter,
-                                                   richardson=args.stationarity_richardson)
+                                                   richardson=args.stationarity_richardson,
+                                                   subspace=args.stationarity_subspace, rtol=args.stationarity_rtol)
         record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
+                      subspace=got["subspace"], subspace_evaluations=got["subspace_evaluations"],
+                      rtol=args.stationarity_rtol, true_residual=got["true_residual"],
                       gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
                       rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,
                       certificate=sol.get("certificate"))
         (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
         print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "
-              f"{got['cg_converged']}, {got['evaluations']} evaluations, {record['seconds']:.0f} s", flush=True)
+              f"{got['cg_converged']}, true residual max {max(got['true_residual']):.1e}, {got['evaluations']} evaluations "
+              f"({got['subspace_evaluations']} for the subspace), {record['seconds']:.0f} s", flush=True)
         return
     if args.check_subspace_gradient:  # the low-rank curvature gradient (every row) for each requested k
         record = dict(h=args.exact_gradient_h, runs=[])

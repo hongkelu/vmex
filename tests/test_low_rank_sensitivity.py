@@ -170,3 +170,29 @@ def test_low_rank_is_gauss_newton_with_no_directions_and_exact_with_all(point):
     DW, SbdW = curvature_columns(point, W)
     np.testing.assert_allclose(low_rank_gradient(point, W, DW, SbdW), exact_gradient(point), rtol=1e-9,
                                atol=1e-12)
+
+
+def test_preconditioned_cg_solves_the_exact_multiplier(point):
+    """The production solver (``_preconditioned_cg``) reaches ``H^-1 Q_y`` with the Gauss-Newton preconditioner."""
+    H, A = point["H"], point["J_y"].T @ point["J_y"]
+    mu, it, res = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(A, v), point["Q_y"], 1e-12, 50)
+    np.testing.assert_allclose(mu, np.linalg.solve(H, point["Q_y"]), rtol=1e-9, atol=1e-12)
+    assert it <= 5 and np.linalg.norm(res) <= 1e-12 * np.linalg.norm(point["Q_y"])
+
+
+def test_subspace_preconditioner_is_exact_with_every_direction_and_cuts_iterations(point):
+    """``_low_rank_model``: H itself when W spans everything (CG then needs no iteration), and fewer iterations than
+    Gauss-Newton with the weak direction alone; the multiplier is the exact one either way."""
+    H, A, q = point["H"], point["J_y"].T @ point["J_y"], point["Q_y"]
+    W = weak_directions(point, 5)
+    DW, _ = curvature_columns(point, W)
+    np.testing.assert_allclose(fvc._low_rank_model(point["J_y"], W, DW, SCALE), H, rtol=1e-10, atol=1e-12)
+    counts = {}
+    for k in (0, 1):
+        Wk = weak_directions(point, k)
+        M = fvc._low_rank_model(point["J_y"], Wk, curvature_columns(point, Wk)[0], SCALE) if k else A
+        mu, counts[k], _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(M, v), q, 1e-10, 50)
+        np.testing.assert_allclose(mu, np.linalg.solve(H, q), rtol=1e-8, atol=1e-11)
+    mu5, it5, _ = fvc._preconditioned_cg(lambda v: H @ v, lambda v: np.linalg.solve(H, v), q, 1e-10, 50)
+    assert it5 == 1  # the first guess is already the answer: the loop only checks the residual
+    assert counts[1] <= counts[0]

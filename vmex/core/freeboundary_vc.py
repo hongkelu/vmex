@@ -1742,7 +1742,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def steihaug(rec, gs, radius):
             """``(ds, Hs ds, products, interior)``: truncated preconditioned CG on ``Hs ds = -gs`` within ``radius``."""
             def hs(v):
-                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False)[0])[:, 0]
+                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False, chunk=1)[0])[:, 0]
 
             z, Hz = np.zeros(nb), np.zeros(nb)
             r = gs.copy()
@@ -2208,7 +2208,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         Q = G_b[rows].T * scale[:, None]  # scaled right-hand sides, a column per row
 
         def products(D):
-            return scale[:, None] * np.asarray(self.exact_products(x, sol, D * scale[:, None], check=False)[0])
+            return scale[:, None] * np.asarray(self.exact_products(x, sol, D * scale[:, None], check=False,
+                                                                 chunk=min(D.shape[1], EXACT_PRODUCTS_CHUNK))[0])
 
         def precondition(R):
             return V @ ((V.T @ R) / lam[:, None])

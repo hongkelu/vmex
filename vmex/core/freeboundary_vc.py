@@ -1380,7 +1380,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._cache[key], self._rejections[key] = None, reason
         return None
 
-    def _finalize(self, x, params, field, fit, polish=True):
+    def _finalize(self, x, params, field, fit, polish=True, newton=True):
         """A trial's one record: its fit certified by :meth:`ThreeTermFreeBoundaryModel.certify` (re-solved to the
         deck's tolerance, polished with its own Jacobian when ``polish``, certified, and only then valued).  Every
         value, gradient, acceptance and checkpoint of ``x`` uses this record; differentiating it adds gradients and
@@ -1390,7 +1390,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
                             polish=polish, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
-        if self.newton_polish is not None:  # converge the stationarity in every direction, then certify there
+        if newton and self.newton_polish is not None:  # converge the stationarity in every direction, certify there
             sol = self._newton_refine(x, params, field, sol, extra)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
@@ -1673,9 +1673,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         got["gauss_newton"] = np.asarray(self._gauss_newton_gradients(x, sol))[got["rows"]]
         return got
 
-    def dense_hessian(self, x, sol, chunk=64):
+    def dense_hessian(self, x, sol, chunk=16):
         """The fit's exact Hessian ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` at the record ``sol``, column by column
-        from :meth:`exact_products` (unit columns in the model coordinates, ``chunk`` per call, the last padded so
+        from :meth:`exact_products` (unit columns in the model coordinates, ``chunk`` per call -- 64 exceeds an 80 GB GPU
+        at 8 x 8 -- the last padded so
         one compilation serves every call).  Returns ``(H, asymmetry)``: ``H`` symmetrized and the relative norm of
         its antisymmetric part (zero up to round-off for exact products)."""
         nb = self.model.x0.size
@@ -2245,7 +2246,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             fit = dict(x=b, rows=rows, aux=aux, nfev=1, njev=0, accepted=0, converged=True, radius=None,
                        reason="restored")
             try:
-                sol = self._finalize(x, params, field, fit, polish=False)
+                # exactly the saved point (no Newton refinement: refine_accepted() is the explicit step)
+                sol = self._finalize(x, params, field, fit, polish=False, newton=False)
             except TrialRejected as error:
                 raise VmecError(f"the checkpoint's boundary is not certified: {error}") from error
             saved = np.asarray(data["values"])
@@ -2259,6 +2261,27 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), int(meta["accepted_step"])
         self._promote(sol)
         self._cache = {x.tobytes(): sol}
+        return change
+
+    def refine_accepted(self):
+        """Newton-refine the accepted record (:meth:`_newton_refine`; ``newton_polish`` must be set), e.g. a restored
+        checkpoint certified by its gain only.  Returns the largest relative change of its values."""
+        if self.newton_polish is None:
+            raise ValueError("refine_accepted needs newton_polish")
+        x = self.accepted.parameters
+        key = x.tobytes()
+        sol = self._cache[key]
+        xj = jnp.asarray(x)
+        params, field = self._params_at(xj), self.field(xj)
+        extra = self._plasma_directions(params, xj) if self._plasma.size else None
+        new = self._newton_refine(x, params, field, sol, extra)
+        nb = self.model.x0.size
+        new.update(continuation=self._checkpoint(), anchor=dict(
+            x=np.asarray(x, dtype=float).copy(), b=new["x"], J_b=new["J"][:, :nb], J_p=new["J"][:, nb:],
+            state=new["state"], params=new["params"], cost=0.5 * new["rows"] @ new["rows"]))
+        change = float(np.max(np.abs(new["values"] - sol["values"]) / np.maximum(np.abs(sol["values"]), 1e-300)))
+        self._promote(new)
+        self._cache[key] = new
         return change
 
     def close(self):

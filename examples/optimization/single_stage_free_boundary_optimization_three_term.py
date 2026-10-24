@@ -1734,6 +1734,14 @@ def main(argv=None):
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
+    if args.resume and args.newton_polish is not None:  # the restored record is exactly the saved one: refine it
+        t_refine = time.monotonic()
+        change = problem.refine_accepted()
+        nw = problem._record(problem.accepted.parameters).get("newton", {})
+        print(f"[newton polish] restored accepted point refined: values change {change:.2e}; "
+              f"{len(nw.get('steps', []))} steps, converged {nw.get('converged')}, {nw.get('evaluations')} "
+              f"evaluations, Hessian {nw.get('seconds_hessian', 0):.0f} s, {time.monotonic() - t_refine:.0f} s; "
+              "scaled steps " + " ".join(f"{st['step']:.1e}" for st in nw.get("steps", [])), flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN

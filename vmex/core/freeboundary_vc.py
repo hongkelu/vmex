@@ -1644,10 +1644,24 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         radius = float(opt.get("radius", 1e-1))
         history, evaluations, converged, seconds_hessian, H = [], 1, False, 0.0, None
         partial = int(opt.get("partial", 0))
+        quasi, secant = bool(opt.get("quasi")), None
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
             if H is None and opt.get("H0") is not None:  # the accepted point's Hessian: the predicted first step
                 H, asymmetry = np.asarray(opt["H0"]), 0.0
+            elif quasi and H is not None:  # damped BFGS (Powell) from the exact start, on the exact g's secant
+                Hs_old = H * np.outer(scale, scale)
+                if secant is not None:
+                    s_, y_ = secant
+                    Bs = Hs_old @ s_
+                    sBs, sy = float(s_ @ Bs), float(s_ @ y_)
+                    if sBs > 0:
+                        if sy < 0.2 * sBs:
+                            theta = 0.8 * sBs / (sBs - sy)
+                            y_ = theta * y_ + (1 - theta) * Bs
+                            sy = float(s_ @ y_)
+                        Hs_old = Hs_old + np.outer(y_, y_) / sy - np.outer(Bs, Bs) / sBs
+                H, asymmetry = 0.5 * (Hs_old + Hs_old.T) / np.outer(scale, scale), 0.0
             elif H is None or not partial or (len(history) == 1 and opt.get("H0") is not None):
                 H, asymmetry = self.dense_hessian(x, rec)
             else:  # refresh only the weakest directions: exact columns there, symmetric low-rank correction
@@ -1729,6 +1743,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 evaluations += 1
                 rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
                 if rho > 0.1:
+                    secant = (np.asarray(ds, dtype=float).copy(), (trial[1] - g) * scale)  # scaled s and y
                     b, (cost, g, rec) = b + ds * scale, trial
                     if rho > 0.75 and np.linalg.norm(ds) > 0.9 * radius:
                         radius *= 2
@@ -1754,8 +1769,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
                              subspace=nb, products="exact", seconds_hessian=seconds_hessian,
                              seconds=time.perf_counter() - t0, warm=opt.get("H0") is not None)
-        if converged and H is not None:  # carried by the anchor: the next trials' first Newton step
+        if converged and H is not None and not quasi:  # carried by the anchor: the next trials' first Newton step
             out["hessian"] = np.asarray(H)
+        if quasi:  # a quasi-Newton matrix is not the exact Hessian: the record's gradient builds that afresh
+            self._hessian = None
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
@@ -2046,6 +2063,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
         true = (np.linalg.norm(Q - H_mu - curvature_mu, axis=0) / norms).tolist()
         self._hessian = dict(b=b0, x=np.asarray(x, dtype=float).copy(), H=H)
+        if gauge is None:  # the exact Hessian of this record: the anchor's first Newton step for later trials
+            sol["hessian"] = H
+            if isinstance(sol.get("anchor"), dict):
+                sol["anchor"]["hessian"] = H
         return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry,
                     condition=float(np.linalg.cond(H)), seconds_hessian=seconds_hessian,
                     cg_iterations=[0] * len(rows), cg_converged=[True] * len(rows), cg_residual=true,

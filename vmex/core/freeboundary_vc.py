@@ -1372,7 +1372,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     sol = self._finalize(x, params, field, fit, polish)
                     self.stats["direct_newton_trials"] = self.stats.get("direct_newton_trials", 0) + 1
                     break
-                except TrialRejected as error:
+                except (TrialRejected, VmecError, RuntimeError) as error:  # the fitted starts follow
                     why.append(f"start {i} (direct Newton): {error}")
                     self.stats["direct_newton_failed"] = self.stats.get("direct_newton_failed", 0) + 1
                     continue

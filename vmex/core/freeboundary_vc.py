@@ -1644,11 +1644,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         radius = float(opt.get("radius", 1e-1))
         history, evaluations, converged, seconds_hessian, H = [], 1, False, 0.0, None
         partial = int(opt.get("partial", 0))
-        quasi, secant = bool(opt.get("quasi")), None
+        quasi, secant, refresh, since_exact = bool(opt.get("quasi")), None, False, 0
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
+            since_exact += 1
             if H is None and opt.get("H0") is not None:  # the accepted point's Hessian: the predicted first step
                 H, asymmetry = np.asarray(opt["H0"]), 0.0
+            elif quasi and H is not None and (refresh or since_exact > int(opt.get("refresh_every", 10))):
+                H, asymmetry = self.dense_hessian(x, rec)  # BFGS stalled, or due: the exact Hessian again
+                since_exact, secant = 0, None
             elif quasi and H is not None:  # damped BFGS (Powell) from the exact start, on the exact g's secant
                 Hs_old = H * np.outer(scale, scale)
                 if secant is not None:
@@ -1754,7 +1758,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
             if not accepted:
                 history[-1]["stalled"] = True
+                if quasi and since_exact > 1:  # a stale quasi-Newton model: refresh it exactly before giving up
+                    refresh = True
+                    radius = max(radius, float(opt.get("radius", 1e-1)) * 1e-2)
+                    continue
                 break
+            refresh = False
         self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=H) \
             if converged else None
         got = model.evaluate(b, params, field, tight=True)

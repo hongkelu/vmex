@@ -236,6 +236,26 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
         accurate, and its converged gradient is stable.
     - Decision: production = NL + full Newton (exact Hessian); speed by partial Hessian refresh
       (`--newton-partial K`) and reuse.
+  - **10-24 morning: production, speed, SLSQP**:
+    - Production (NL, full Newton, exact gradient, prescribed current): QA 0.116450 -> 0.116427 (3 steps), QH 1.3685
+      -> 1.3580 (2), QI 0.93485 -> 0.93430 (3); 45-70 min per step, about 50% certification (about 10 exact Hessians
+      per trial), 25-35% fit.
+    - Small progress per step is mostly SLSQP restarting from an identity Hessian every 2 h segment (1-3 steps per
+      segment). Ported the exact SLSQP state resume (#86, 4c327131) to this lineage: b48728c3 / 5c9a60b9; 41/41
+      `test_problem.py` on GPU. The driver writes `slsqp_state.npz` with each checkpoint and resumes it.
+    - Warm-Newton trials (--newton-warm, opt-in): only for predicted steps under 0.05. SLSQP's early trial steps
+      predict 0.4-170, and even small ones crawl the soft valley (about 10 steps).
+    - BFGS polish (--newton-quasi, exact first Hessian, damped BFGS on the exact g; an exact refresh on stall or every
+      10 steps): QA reaches the same point as full Newton (boundary 7.7e-7, values 1e-6, gradients <= 2e-3) in 598 s
+      vs 1698 s. BFGS alone stagnated on QH, so the refresh was added. No second minimum.
+    - Redl bootstrap: exact second-order products were wrong (vs Richardson: random 1.6e-2, strongest 5e-2, weakest
+      28%; first-order 3e-6). The stopped |B| extremum location (exact to first order only) is fixed by a
+      differentiable Newton step (8127adee): weakest improved to 19%, the rest unchanged. A second defect remains;
+      `--check-rows-c2` probes whether the Redl rows are twice differentiable. **Redl production is held** until it
+      is fixed.
+    - Hessian batching (subagent, be072650/e013349e): one block system and multiplier per Hessian, 9-12% faster
+      (QA 132 -> 116 s, QH 224 -> 203 s), agreement 1e-12. vmap is out of memory: the virtual-casing jvp-of-grad
+      holds about 25 GB per column.
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

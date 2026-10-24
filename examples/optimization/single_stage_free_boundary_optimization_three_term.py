@@ -1207,6 +1207,11 @@ def parse_args(argv=None):
                         help="Newton polish: the first step with the exact Hessian, then damped BFGS updates from the "
                         "exact gradient (one tight solve per step), refreshed exactly when stalled or every 10 steps; "
                         "the record's design gradient still uses the exact Hessian (--no-newton-quasi: exact every step)")
+    parser.add_argument("--trial-pin", type=float, metavar="W",
+                        help="two-stage trials: a fit with the boundary's flat (relabelling) directions pinned at the "
+                        "accepted point's (pin curvature W times the Hessian's largest eigenvalue), then the exact "
+                        "Newton polish of the unpinned cost, which alone defines the trial (default: polish from the "
+                        "accepted boundary)")
     parser.add_argument("--newton-warm", action="store_true",
                         help="trials start Newton from the accepted point's converged boundary with its kept Hessian "
                         "(no fit; falls back to the fit when Newton does not converge)")
@@ -1703,7 +1708,8 @@ def main(argv=None):
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, track=args.newton_track, verbose=args.newton_track,
-                          warm=args.newton_warm, quasi=args.newton_quasi, max_steps=args.newton_max_steps),
+                          warm=args.newton_warm, quasi=args.newton_quasi, max_steps=args.newton_max_steps,
+                          pin=args.trial_pin),
                       exact_gradient=args.newton_polish is not None,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:

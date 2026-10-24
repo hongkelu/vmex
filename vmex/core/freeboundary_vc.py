@@ -235,6 +235,10 @@ KRYLOV_HESSIAN_AGE = 5
 #: Most block conjugate-gradient iterations of ``_krylov_gradients`` before the dense Hessian is built instead.
 KRYLOV_GRADIENT_MAXITER = 30
 
+#: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
+#: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
+PIN_FLAT_RTOL = 1e-6
+
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
@@ -1352,8 +1356,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 # First: the accepted boundary straight into the Newton polish, preconditioned by the accepted point's
                 # exact Hessian. Its first step is the exact first-order prediction -H^-1 g, held to the trust region:
                 # along the flat (relabelling) directions the unrestricted prediction (and the Gauss-Newton one, which
-                # drops the curvature there) leaves the boundaries that have an equilibrium.
-                starts.insert(0, np.asarray(anchor["b"], dtype=float))
+                # drops the curvature there) leaves the boundaries that have an equilibrium.  With ``pin``, the
+                # polish starts instead from a fit with the flat directions pinned (:meth:`_pinned_fit`).
+                start = np.asarray(anchor["b"], dtype=float)
+                if self.newton_polish.get("pin"):
+                    start = self._pinned_fit(x, params, field, anchor, float(self.newton_polish["pin"]))
+                starts.insert(0, start)
                 direct = 0
         else:
             starts = [None]
@@ -1414,6 +1422,51 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return self._reject(key, "; ".join(why) or "no three-term free boundary at this design point")
         self._cache[key] = sol
         return sol
+
+    def _pinned_fit(self, x, params, field, anchor, weight):
+        """Stage one of a two-stage trial: the fit with the boundary's position along the flat directions held at the
+        accepted point's, so its rows are a well-conditioned problem (the role of the earlier labelling rows), then
+        handed to the exact Newton polish of the unpinned (NL) cost, which alone defines the trial's record.
+
+        The flat directions are the accepted point's exact Hessian's eigenvectors (scaled coordinates) with
+        eigenvalue below ``PIN_FLAT_RTOL`` of the largest; each gets a pin row ``w v^T (b - b_a) / scale`` with
+        ``w^2 = weight`` times the largest eigenvalue.  Levenberg-Marquardt with the accepted point's Jacobian
+        (augmented by the pin rows) at the trial tolerance.  Returns the fitted boundary, or the accepted one when
+        the fit fails."""
+        b_a = np.asarray(anchor["b"], dtype=float)
+        scale = np.asarray(self.model.x_scale, dtype=float)
+        H = np.asarray(anchor["hessian"]) * np.outer(scale, scale)
+        lam, V = np.linalg.eigh(0.5 * (H + H.T))
+        flat = V[:, lam < PIN_FLAT_RTOL * lam[-1]]
+        w = float(np.sqrt(weight * lam[-1]))
+        pin = w * flat.T / scale[None, :]
+        model, t0 = self.model, time.perf_counter()
+
+        def evaluate(z):
+            got = model.evaluate(z, params, field)
+            if got is None:
+                return None
+            return np.r_[np.asarray(got[0]), pin @ (z - b_a)], got[1]
+
+        try:
+            first = evaluate(b_a)
+            if first is None:
+                return b_a
+            J = np.r_[np.asarray(anchor["J_b"]), pin]
+            out = _levenberg_marquardt(evaluate, b_a, *first, J, ftol=self.boundary_ftol,
+                                       max_nfev=self.boundary_max_nfev, verbose=0)
+        except (VmecError, RuntimeError, TrialRejected):
+            return b_a
+        finally:
+            self.stats["seconds_fit"] += time.perf_counter() - t0
+        self.stats["pinned_fits"] = self.stats.get("pinned_fits", 0) + 1
+        self.stats["boundary_evaluations"] += int(out["nfev"])
+        if (self.newton_polish or {}).get("verbose"):
+            print(f"[pinned fit] {flat.shape[1]} flat directions pinned, {out['nfev']} evaluations, cost "
+                  f"{0.5 * float(first[0][:-flat.shape[1]] @ first[0][:-flat.shape[1]]):.3e} -> "
+                  f"{0.5 * float(out['rows'][:-flat.shape[1]] @ out['rows'][:-flat.shape[1]]):.3e}, "
+                  f"{time.perf_counter() - t0:.0f} s", flush=True)
+        return np.asarray(out["x"], dtype=float)
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1

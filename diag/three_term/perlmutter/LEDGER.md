@@ -186,6 +186,22 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     depends on the boundary's poloidal labelling. Each labelling is its own discrete map; the maps differ by
     0.1-0.3% in value but their slopes by up to 140%, so the difference varies quickly with the design. Pending:
     C 1e-4 (does the label weight cause it?), QH, and which map is smoother along a design line.
+  - **The labelling dependence is the label term's bias** (cold solves of the fixture designs, 8 x 8, prescribed;
+    NL reference; `scripts/labelling_invariance.py`):
+
+    | case | C 1e-4 values / gradients | C 1e-3 values / gradients | GN error |
+    |---|---|---|---|
+    | QA 2.5% | <= 1.4e-4 (vacuum iota 3.6e-3) / 0.05-3.4% | <= 2.8e-3 (vacuum iota 9.2%) / 0.2-26% | 0.3-16% |
+    | QH 2.5% | <= 2.7e-4 / <= 0.9% | <= 3.5% / 4-60% | 9-34% |
+    | QI 2.5% | <= 5e-5 / 0.02-0.8%, row 4 12% | <= 2.6e-3 / 0.5-140% | 0.7-24% |
+
+    Equal arc converges onto NL as its weight goes to zero (about linearly), so the formulation is sound and the
+    weight 1e-3 biases the physical answer. Smaller weight = flatter fit (QH CG 45-54 at 1e-4 vs about 30 at 1e-3).
+    Pending: do the vacuum seeds (the reason for the term: NL QA/QI vacuum never certify) certify at 1e-4 / 1e-5?
+  - **CG robustness** (289972f2): a reused subspace returned a residual of 0.31 at QA vacuum step 19 (5-step
+    `--exact-gradient 20` run: steps 659 / 153 / 304 s, certify 20-42 s, the gradient dominates). The CG now
+    reports why it stopped; each row's true residual is checked and retried (fresh subspace, then Gauss-Newton
+    preconditioner); an unconverged multiplier raises.
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

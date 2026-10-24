@@ -1189,6 +1189,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         #: truthy for the exact derivative of the converged stationarity (:meth:`_exact_gradients`; needs
         #: ``newton_polish``, which converges the point it differentiates).
         self.exact_gradient = bool(exact_gradient)
+        #: Largest design step (Euclidean, in the problem's parameters) from the accepted point a trial may take; a
+        #: trial outside it is rejected before any solve, so the optimizer's line search shortens the step (None: no
+        #: limit).  A quasi-Newton optimizer resumed from a few noisy steps can propose a step 1e3 times its last.
+        self.design_trust = None
         if self.exact_gradient and self.newton_polish is None:
             raise ValueError("the exact gradient differentiates a converged stationary point: pass newton_polish")
         self.semantic_identity = json.loads(json.dumps(semantic_identity))
@@ -1321,6 +1325,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return self._cache[key]
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
+        radius, accepted = self.design_trust, getattr(self, "accepted", None)
+        if radius and accepted is not None:  # outside the design trust region: rejected before any solve
+            step = float(np.linalg.norm(x - accepted.parameters))
+            if step > radius:
+                self.stats["design_trust_rejections"] = self.stats.get("design_trust_rejections", 0) + 1
+                return self._reject(key, f"design step {step:.2e} outside the design trust radius {radius:.1e}")
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
         if self._plasma.size:  # the plasma map may move the pressure: the problem needs it zero at the edge
             error = _edge_pressure_error(self.model._im.input_with_params(self.model.fixed, params))

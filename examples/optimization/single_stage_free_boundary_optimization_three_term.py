@@ -1207,6 +1207,9 @@ def parse_args(argv=None):
                         help="Newton polish: the first step with the exact Hessian, then damped BFGS updates from the "
                         "exact gradient (one tight solve per step), refreshed exactly when stalled or every 10 steps; "
                         "the record's design gradient still uses the exact Hessian (--no-newton-quasi: exact every step)")
+    parser.add_argument("--design-trust", type=float, metavar="R",
+                        help="reject (before solving) any trial design farther than R (Euclidean, design parameters) "
+                        "from the accepted one, so the optimizer's line search shortens the step (default: no limit)")
     parser.add_argument("--trial-pin", type=float, metavar="W",
                         help="two-stage trials: a fit with the boundary's flat (relabelling) directions pinned at the "
                         "accepted point's (pin curvature W times the Hessian's largest eigenvalue), then the exact "
@@ -1725,6 +1728,7 @@ def main(argv=None):
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(clearance, aspect), boundary_condition="three_term",
         three_term_options=tt_options)
+    problem.design_trust = args.design_trust
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

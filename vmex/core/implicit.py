@@ -3132,11 +3132,15 @@ def _implicit_evolved_tangent_multi_rhs(
     response_chunk_size: int,
     certify_rtol: float | None = None,
     certify_maxiter: int | None = None,
+    system: _RawBlockSystem | None = None,
 ) -> tuple[SpectralState, LinearResponseReport]:
+    # ``system``: this linearization's :func:`_raw_block_system` (same
+    # arguments), when the caller already holds it; otherwise built here.
     frozen = jax.lax.stop_gradient(x_star)
-    system = _raw_block_system(
-        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
-    )
+    if system is None:
+        system = _raw_block_system(
+            params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
+        )
     z_star = system.project(x_star)
     raw_residual = residual_fn(
         cfg, frozen, dof_mask, formulation="raw"

@@ -717,13 +717,15 @@ class ThreeTermFreeBoundaryModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch):
+        def tangents(params, state, mask, batch, system=None):
             """Projected state responses to the stacked parameter tangents (one block factorization, chunked), and
-            whether each column's linear solve is certified."""
+            whether each column's linear solve is certified.  ``system``: the factorization of this linearization
+            (``im._raw_block_system`` with ``probe_chunk_size = self.chunk``) when the caller holds it."""
             solution, report = im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
+                system=system)
             return solution, report.converged
 
         def push(fun, state, mask, params, dz_batch, params_batch):
@@ -748,6 +750,7 @@ class ThreeTermFreeBoundaryModel:
             z = jax.tree.map(lambda a, d: a + jnp.tensordot(dx, d, axes=1), P(frozen), dz_batch)
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
+        self._tangent_solve = tangents  # traceable, for callers inside a jit holding the factorization
         self._tangents = jax.jit(tangents)
         self.push = push
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
@@ -1972,8 +1975,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def dense_hessian(self, x, sol, chunk=None):
         """The fit's exact Hessian ``H = J_b^T J_b + sum_i r_i d2r_i/db2`` at the record ``sol``: every unit column (in
-        the model coordinates) from one call of :meth:`exact_products`, so its block factorization and multiplier are
-        paid once per Hessian, with the state tangents solved ``chunk`` columns at a time (default
+        the model coordinates) from one call of :meth:`exact_products`, so its block factorization (shared with the
+        state tangents) and multiplier are paid once per Hessian, with the state tangents solved ``chunk`` columns at a time (default
         :data:`EXACT_PRODUCTS_CHUNK`).  Returns ``(H, asymmetry)``: ``H`` symmetrized and the relative norm of its
         antisymmetric part (zero up to round-off for exact products)."""
         chunk = EXACT_PRODUCTS_CHUNK if chunk is None else chunk
@@ -2245,9 +2248,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             back_b, back_x = vjp_bx(dmu)
             return u_b - back_b, u_x - back_x, ok
 
-        def columns(W):  # the columns' state tangents (one solve for all of W), then column by column
+        def columns(W):  # the columns' state tangents (on this factorization), then column by column
             dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(W)
-            dz_batch, tangent_ok = model._tangents(params0, state, mask, dprm)
+            dz_batch, tangent_ok = model._tangent_solve(params0, state, mask, dprm, system=system)
             HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, W))
             return HV, FdV, tangent_ok, adjoint_ok
 

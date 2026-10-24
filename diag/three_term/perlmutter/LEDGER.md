@@ -346,6 +346,23 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   block); design gradient by block solve (`_projected_solve`). Same 308 products per Hessian. Unit test passes;
   cold Redl solves dxp-qa25/dxp-qh25 running.
 
+### 10-24 Production: why steps are slow and trials fail (f4d97244)
+
+- **Rejection reason** (s02, logged by 918d9902), QI step 5: 3 trials, 8526 s (certify 7084 s). Each rejected start:
+  "boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains 1-5% of the cost and moves the
+  boundary normally by 1e-4..6e-4 of the minor radius", after the Newton polish.
+- **Cause**: trials started from the Gauss-Newton prediction of the accepted point, which drops the curvature that
+  dominates along the flat (relabelling) directions. The LM fit stops far along them, and the Newton polish (BFGS
+  between exact refreshes) crawls (QA step 5 trial: 76 evaluations, cost 1.6e-7 against the converged 2.7e-8) until
+  its 60-step budget, then the final certificate rejects.
+- **Fix** (f4d97244): the first start is the exact-sensitivity prediction `b - H^-1 g` (accepted point's exact
+  Hessian, `g` at the accepted boundary under the trial design: one tight solve). Under test: QA resumed from s01's
+  step-4 checkpoint (dev2/clean/resume-qa25) against s02's old-code step 5.
+- **Redl, projected Newton** (5b3d9fe2, dev2 dxp-*): QA reaches a positive-definite reduced Hessian at iterate 10
+  (the joint version never did in 48) and keeps descending (5.00e-8 -> 3.88e-8 by iterate 20); QH descends with one
+  negative eigenvalue left. The current block's product asymmetry ("leak", 3-10e-4 relative to H_cc) limits the
+  trust radius; open.
+
 ## Package D: boundary coordinates and steps
 
 | id | issue | status | evidence | next action |

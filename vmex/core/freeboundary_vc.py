@@ -1348,10 +1348,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
-            exact = self._exact_prediction(x, params, field, anchor)
-            if exact is not None:  # first: along the flat directions the Gauss-Newton prediction is the wrong one
-                starts.insert(0, exact)
-                direct = 0 if self.newton_polish is not None else None
+            if self.newton_polish is not None and isinstance(anchor.get("hessian"), np.ndarray):
+                # First: the accepted boundary straight into the Newton polish, preconditioned by the accepted point's
+                # exact Hessian. Its first step is the exact first-order prediction -H^-1 g, held to the trust region:
+                # along the flat (relabelling) directions the unrestricted prediction (and the Gauss-Newton one, which
+                # drops the curvature there) leaves the boundaries that have an equilibrium.
+                starts.insert(0, np.asarray(anchor["b"], dtype=float))
+                direct = 0
         else:
             starts = [None]
         sol, why = None, []
@@ -1363,7 +1366,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 got = self.model.evaluate(np.asarray(start, dtype=float), params, field, tight=True)
                 self.stats["seconds_fit"] += time.perf_counter() - t0
                 if got is None:
-                    why.append(f"start {i}: the predicted boundary has no certified interior root")
+                    why.append(f"start {i}: the accepted boundary has no certified interior root at this design")
                     continue
                 fit = dict(x=np.asarray(start, dtype=float), rows=np.asarray(got[0]), aux=got[1], nfev=1, njev=0,
                            accepted=0, converged=True, reason="prediction", jacobian=J)
@@ -1411,30 +1414,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return self._reject(key, "; ".join(why) or "no three-term free boundary at this design point")
         self._cache[key] = sol
         return sol
-
-    def _exact_prediction(self, x, params, field, anchor):
-        """The trial's boundary to first order by the exact sensitivity at the accepted point: ``b - H^-1 g``, ``g`` the
-        fit's cost gradient at the accepted boundary under the trial's design (one tight solve and one reverse pass)
-        and ``H`` the accepted point's exact Hessian (kept when its exact gradient was taken).  The Gauss-Newton
-        prediction drops the curvature, which dominates along the fit's flat (relabelling) directions, so its start
-        leaves the polish a long crawl there.  None without a kept Hessian or when the solve fails."""
-        H = anchor.get("hessian")
-        if H is None:
-            return None
-        if self._continuation is not None:
-            self._restore(self._continuation)
-        t0 = time.perf_counter()
-        try:
-            g, _, _ = self._cost_gradients(np.asarray(anchor["b"], dtype=float), params, field, np.asarray(x, dtype=float))
-        except (TrialRejected, VmecError, RuntimeError):
-            return None
-        finally:
-            self.stats["seconds_fit"] += time.perf_counter() - t0
-        step = _projected_solve(H, g) if isinstance(H, dict) else np.linalg.solve(H, g)
-        if not np.all(np.isfinite(step)):
-            return None
-        self.stats["exact_prediction_starts"] = self.stats.get("exact_prediction_starts", 0) + 1
-        return np.asarray(anchor["b"], dtype=float) - step
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1

@@ -1666,6 +1666,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             refresh = False
         self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=H) \
             if converged else None
+        if not converged:
+            raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
         got = model.evaluate(b, params, field, tight=True)
         if got is None:
             raise TrialRejected("the Newton-refined boundary has no certified interior root")
@@ -1673,7 +1675,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
                    accepted=len(history))
         xj = jnp.asarray(x)
-        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+        # Newton's own convergence is the stationarity test (exact Hessian: a scaled step <= step_tol, or a predicted
+        # decrease below the cost's floor). The certificate's Gauss-Newton gain divides by J^T J, ~1e9 weaker than
+        # the Hessian along the flat directions, and turns a converged point's residual gradient into a false
+        # "not stationary"; its other checks (re-solve, finiteness, rank, interface residuals) still apply.
+        out = model.certify(params, field, fit, gate=np.inf, xtol=None,
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
@@ -1794,6 +1800,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     history[-1]["stalled"] = True
                     break
         self._hessian = None
+        if not converged:
+            raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
         got = model.evaluate(b, params, field, tight=True)
         if got is None:
             raise TrialRejected("the Newton-refined boundary has no certified interior root")
@@ -1801,7 +1809,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
                    accepted=len(history))
         xj = jnp.asarray(x)
-        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+        # Newton's own convergence is the stationarity test (exact Hessian: a scaled step <= step_tol, or a predicted
+        # decrease below the cost's floor). The certificate's Gauss-Newton gain divides by J^T J, ~1e9 weaker than
+        # the Hessian along the flat directions, and turns a converged point's residual gradient into a false
+        # "not stationary"; its other checks (re-solve, finiteness, rank, interface residuals) still apply.
+        out = model.certify(params, field, fit, gate=np.inf, xtol=None,
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
@@ -1945,6 +1957,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 break
         self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=P) \
             if converged else None
+        if not converged:
+            raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
         got = model.evaluate(b, params, field, tight=True)
         if got is None:
             raise TrialRejected("the Newton-refined boundary has no certified interior root")
@@ -1952,7 +1966,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
                    accepted=len(history))
         xj = jnp.asarray(x)
-        out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+        # Newton's own convergence is the stationarity test (exact Hessian: a scaled step <= step_tol, or a predicted
+        # decrease below the cost's floor). The certificate's Gauss-Newton gain divides by J^T J, ~1e9 weaker than
+        # the Hessian along the flat directions, and turns a converged point's residual gradient into a false
+        # "not stationary"; its other checks (re-solve, finiteness, rank, interface residuals) still apply.
+        out = model.certify(params, field, fit, gate=np.inf, xtol=None,
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,

@@ -202,6 +202,23 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     `--exact-gradient 20` run: steps 659 / 153 / 304 s, certify 20-42 s, the gradient dominates). The CG now
     reports why it stopped; each row's true residual is checked and retried (fresh subspace, then Gauss-Newton
     preconditioner); an unconverged multiplier raises.
+  - **Exact second-order derivatives and the primal point** (10-23 night; commits d60f4226..c3dfed32):
+    - `exact_products` (second-order adjoint, jitted): H v and F_d^T v exact, about 0.46 s per column plus 1.9 s per
+      call. Against Richardson differences: 2e-10 (random) .. 3e-7 (strongest), weakest 4-5e-5 (the differences'
+      noise). The dense Hessian is symmetric to 1e-12. QA 2.5% dense exact gradient vs the h^2 extrapolation of
+      difference gradients: 2e-7 .. 2.3e-5.
+    - The exact gradient depends on the primal point: gain-certified vs Newton-refined points differ by 3-9%.
+    - The Newton displacement is 99.5-99.9% relabelling (`scripts/displacement_split.py`). g is not noisy: from three
+      equilibrium starts it agrees to 1e-5 (implied step 3e-9, `--check-g-noise`).
+    - **Full Newton converges NL** (QA 2.5%, exact Hessian per step, trust region on the cost): 11 steps
+      (step 1.6e-2 .. 2.9e-9), the last few quadratic. The gradient change between the last iterates is **1.2e-6**.
+      The soft modes are 3e-9 (scaled), the actual/predicted decrease ratio is about 1, and about 29 min of Hessians.
+      Gain-certified NL vs converged NL: values <= 1.4e-3, gradients up to 9%.
+    - **Condensation penalty** vs converged NL (QA 2.5%): cond(H) 5e4 (NL 1e8). Weights 1e-2 and 1e-1 plateau, but
+      differ from NL by 0.2-0.4% (loss) and **17-20% (vacuum-iota row)**, gradients up to 68%. At 8 x 8 the vacuum
+      iota is strongly labelling-sensitive. Which labelling is more accurate needs a 12 x 12 / 16 x 16 re-solve.
+    - The exact condensation gauge (KKT Newton + KKT gradient, `gauge="condensation"`) is under test; its
+      Jacobian has rank 110 / 110 with relabelling singular values 0.8 .. 4e-4 (`scripts/gauge_check.py`).
   - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
     states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
     the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3

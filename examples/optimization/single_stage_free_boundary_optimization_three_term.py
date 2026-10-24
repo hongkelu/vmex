@@ -1864,12 +1864,13 @@ def main(argv=None):
         names = ("weakest", "strongest", "random")
         V = np.stack([Vt[-1] * scale, Vt[0] * scale, rng.standard_normal(nb) * scale], axis=1)
         t0 = time.monotonic()
-        problem.exact_products(x_seed, sol, V[:, :1])  # compile
+        problem.exact_products(x_seed, sol, V)  # compile and run
         t1 = time.monotonic()
         HV, FdV, consistency = problem.exact_products(x_seed, sol, V)
         t2 = time.monotonic()
         print(f"[exact products] first-order consistency: g {consistency['g']:.2e}, c {consistency['c']:.2e}; "
-              f"compile+1 column {t1 - t0:.0f} s, 3 columns {t2 - t1:.1f} s", flush=True)
+              f"compile+3 columns {t1 - t0:.0f} s, 3 columns (compiled, incl. the consistency evaluation) "
+              f"{t2 - t1:.1f} s", flush=True)
         record = dict(consistency=consistency, seconds_first=t1 - t0, seconds_three=t2 - t1, h=args.exact_gradient_h,
                       directions={})
         for j, name in enumerate(names):

@@ -1735,14 +1735,31 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         ``L = f - mu^T F``, ``g = L_b`` and ``c = L_x``.  Along a column ``v``: the state tangent ``F_z dz =
         -F_b v``; ``u = d/dt grad L (z + t dz, b + t v, x)`` (one forward-over-reverse pass); ``F_z^T dmu = u_z``;
         then ``H v = u_b - F_b^T dmu`` and ``F_d^T v = u_x - F_x^T dmu``.  Two linear solves on one block
-        factorization per column, no re-solved equilibria and no difference step.  Returns ``(HV, FdV,
-        consistency)``: ``consistency`` compares ``L_b``, ``L_x`` with :meth:`_cost_gradients` (same point).
+        factorization per column, no re-solved equilibria and no difference step.  One jitted function (compiled
+        per column count) does the whole point.  Returns ``(HV, FdV, consistency)``: ``consistency`` compares
+        ``L_b``, ``L_x`` with :meth:`_cost_gradients` at the same point; every linear solve is certified (raises).
         """
+        if getattr(self, "_exact_products_core", None) is None:
+            self._exact_products_core = jax.jit(self._exact_products_traced)
+        V = np.asarray(V, dtype=float).reshape(self.model.x0.size, -1)
+        got = self._exact_products_core(sol["state"], sol["mask"], jnp.asarray(x, dtype=float),
+                                        jnp.asarray(sol["x"], dtype=float), jnp.asarray(V))
+        HV, FdV, L_b, L_x, mu_ok, tangent_ok, adjoint_ok = got
+        if not (bool(mu_ok) and np.asarray(tangent_ok).all() and np.asarray(adjoint_ok).all()):
+            raise RuntimeError(f"an exact-product linear solve missed: multiplier {bool(mu_ok)}, tangents "
+                               f"{np.asarray(tangent_ok).tolist()}, adjoints {np.asarray(adjoint_ok).tolist()}")
+        xj = jnp.asarray(x, dtype=float)
+        params0 = self.model.with_boundary(self._params_at(xj), jnp.asarray(sol["x"], dtype=float))
+        g_ref, c_ref, _ = self._cost_gradients(np.asarray(sol["x"], dtype=float), params0, self.field(xj),
+                                               np.asarray(x, dtype=float))
+        consistency = dict(g=float(np.linalg.norm(np.asarray(L_b) - g_ref) / max(np.linalg.norm(g_ref), 1e-300)),
+                           c=float(np.linalg.norm(np.asarray(L_x) - c_ref) / max(np.linalg.norm(c_ref), 1e-300)))
+        return np.asarray(HV), np.asarray(FdV), consistency
+
+    def _exact_products_traced(self, state, mask, xj, b0, V):
+        """The traced body of :meth:`exact_products` (the block system holds callables, so it is built here)."""
         model = self.model
         im, cfg = model._im, model.cfg
-        xj = jnp.asarray(x, dtype=float)
-        b0 = jnp.asarray(sol["x"], dtype=float)
-        state, mask = sol["state"], sol["mask"]
         frozen = jax.lax.stop_gradient(state)
         P = im._dof_projector(cfg, mask)
         edge = im._edge_mask(cfg)
@@ -1764,41 +1781,34 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def tree_dot(a, c):
             return sum(jnp.vdot(u, w) for u, w in zip(jax.tree.leaves(a), jax.tree.leaves(c)))
 
-        system = im._raw_block_system(prm(b0, xj), cfg, frozen, mask, im._active_state_fields(cfg), model.chunk)
+        params0 = prm(b0, xj)
+        system = im._raw_block_system(params0, cfg, frozen, mask, im._active_state_fields(cfg), model.chunk)
         _, vjp_z = jax.vjp(lambda z: force(z, b0, xj), z0)
 
         def adjoint(rhs):
             mu, residual, tolerance = im._block_adjoint(system, lambda w: vjp_z(w)[0], system.project(rhs), cfg)
-            if not float(residual) <= float(tolerance):
-                raise RuntimeError(f"second-order adjoint solve missed: {float(residual):.2e} > {float(tolerance):.2e}")
-            return mu
+            return mu, residual <= tolerance
 
-        mu = adjoint(jax.grad(cost, 0)(z0, b0, xj))
+        mu, mu_ok = adjoint(jax.grad(cost, 0)(z0, b0, xj))
 
         def lagrangian(z, b, xx):
             return cost(z, b, xx) - tree_dot(mu, force(z, b, xx))
 
         grad_L = jax.grad(lagrangian, argnums=(0, 1, 2))
         _, L_b, L_x = grad_L(z0, b0, xj)
-        params0 = prm(b0, xj)
-        g_ref, c_ref, _ = self._cost_gradients(np.asarray(b0), params0, field_at(xj), np.asarray(xj))
-        consistency = dict(
-            g=float(np.linalg.norm(np.asarray(L_b) - g_ref) / max(np.linalg.norm(g_ref), 1e-300)),
-            c=float(np.linalg.norm(np.asarray(L_x) - c_ref) / max(np.linalg.norm(c_ref), 1e-300)))
         _, vjp_bx = jax.vjp(lambda b, xx: force(z0, b, xx), b0, xj)
-        HV, FdV = [], []
-        for v in np.asarray(V, dtype=float).T:
-            vj = jnp.asarray(v)
-            dprm = jax.jvp(lambda b: prm(b, xj), (b0,), (vj,))[1]
-            dz, certified = model._tangents(params0, state, mask, jax.tree.map(lambda a: a[None], dprm))
-            if not np.asarray(certified).all():
-                raise RuntimeError("the state tangent of an exact product is not certified")
-            dz = P(jax.tree.map(lambda a: a[0], dz))
-            _, (u_z, u_b, u_x) = jax.jvp(grad_L, (z0, b0, xj), (dz, vj, jnp.zeros_like(xj)))
-            back_b, back_x = vjp_bx(adjoint(u_z))
-            HV.append(np.asarray(u_b - back_b))
-            FdV.append(np.asarray(u_x - back_x))
-        return np.array(HV).T, np.array(FdV).T, consistency
+        dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(V.T)
+        dz_batch, tangent_ok = model._tangents(params0, state, mask, dprm)
+
+        def column(args):
+            dz, v = args
+            _, (u_z, u_b, u_x) = jax.jvp(grad_L, (z0, b0, xj), (P(dz), v, jnp.zeros_like(xj)))
+            dmu, ok = adjoint(u_z)
+            back_b, back_x = vjp_bx(dmu)
+            return u_b - back_b, u_x - back_x, ok
+
+        HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, V.T))
+        return HV.T, FdV.T, L_b, L_x, mu_ok, tangent_ok, adjoint_ok
 
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
         """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).

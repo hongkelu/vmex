@@ -1202,11 +1202,18 @@ def parse_args(argv=None):
                         "linearization consistency check), then stop")
     parser.add_argument("--stationarity-richardson", action="store_true",
                         help="Richardson-extrapolate the stationarity products over steps h and h/2")
+    parser.add_argument("--exact-gradient", type=int, metavar="K",
+                        help="optimize with the exact derivative of the converged stationarity (both curvature blocks), "
+                        "conjugate gradients preconditioned with the curvature on the fit's K weakest directions, kept "
+                        "between steps (ThreeTermFreeBoundaryProblem._stationarity_gradients); default: Gauss-Newton. "
+                        "Its step, Richardson, tolerance and iterations: --exact-gradient-h, --stationarity-richardson, "
+                        "--stationarity-rtol, --exact-gradient-maxiter")
     parser.add_argument("--stationarity-subspace", type=int, default=0, metavar="K",
                         help="precondition --check-stationarity-gradient's conjugate gradients with the curvature on the "
                         "fit's K weakest directions (0: Gauss-Newton preconditioner)")
-    parser.add_argument("--stationarity-rtol", type=float, default=1e-10,
-                        help="relative residual of --check-stationarity-gradient's conjugate gradients")
+    parser.add_argument("--stationarity-rtol", type=float,
+                        help="relative residual of the stationarity conjugate gradients (default 1e-10 for "
+                        "--check-stationarity-gradient, 1e-6 for --exact-gradient)")
     parser.add_argument("--check-subspace-gradient", type=int, nargs="+", metavar="K",
                         help="every row's design gradient with the fit's curvature on its K weakest directions "
                         "(ThreeTermFreeBoundaryProblem.subspace_design_gradient; subspace_gradient_check.json), then stop")
@@ -1694,6 +1701,10 @@ def main(argv=None):
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(step_tol=args.newton_polish,
                                                                                  h=args.exact_gradient_h),
+                      exact_gradient=None if args.exact_gradient is None else dict(
+                          subspace=args.exact_gradient, h=args.exact_gradient_h,
+                          rtol=1e-6 if args.stationarity_rtol is None else args.stationarity_rtol,
+                          richardson=args.stationarity_richardson, maxiter=args.exact_gradient_maxiter),
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:
         check_jacobian(inp, tt_options, chart, args.check_jacobian, out, args.jacobian_at, dump=args.jacobian_dump,
@@ -1821,8 +1832,14 @@ def main(argv=None):
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
               + f"{row['step_seconds']:.1f}s (fit {row['step_seconds_fit']:.1f}s, "
               f"certify {row['step_seconds_certify']:.1f}s, gradient {row['step_seconds_gradient']:.1f}s; "
-              f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
+              + (f"exact gradient: {row['exact_gradient_evaluations'] - last.get('eg_ev', 0)} evaluations, CG "
+                 f"{row['exact_gradient_cg_iterations'] - last.get('eg_cg', 0)}, rebuilds "
+                 f"{row['exact_gradient_rebuilds']}, residual {row['exact_gradient_true_residual']:.1e}; "
+                 if "exact_gradient_evaluations" in row else "")
+              + f"trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
+        if "exact_gradient_evaluations" in row:
+            last.update(eg_ev=row["exact_gradient_evaluations"], eg_cg=row["exact_gradient_cg_iterations"])
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
         if args.checkpoint_every and row["step"] % args.checkpoint_every == 0:
@@ -1893,10 +1910,12 @@ def main(argv=None):
         got = problem.stationarity_design_gradient(x_seed, h=args.exact_gradient_h,
                                                    maxiter=args.exact_gradient_maxiter,
                                                    richardson=args.stationarity_richardson,
-                                                   subspace=args.stationarity_subspace, rtol=args.stationarity_rtol)
+                                                   subspace=args.stationarity_subspace,
+                                                   rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol)
         record = dict(consistency=consistency, h=args.exact_gradient_h, richardson=args.stationarity_richardson,
                       subspace=got["subspace"], subspace_evaluations=got["subspace_evaluations"],
-                      rtol=args.stationarity_rtol, true_residual=got["true_residual"],
+                      rtol=1e-10 if args.stationarity_rtol is None else args.stationarity_rtol,
+                      true_residual=got["true_residual"],
                       gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
                       rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,

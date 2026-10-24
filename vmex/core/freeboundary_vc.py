@@ -1140,7 +1140,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
                   boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
-                  seed_start=None, newton_polish=None, **model_options):
+                  seed_start=None, newton_polish=None, exact_gradient=None, **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
         :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
@@ -1172,11 +1172,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint,
-                   semantic_identity=semantic_identity, seed_start=seed_start, newton_polish=newton_polish)
+                   semantic_identity=semantic_identity, seed_start=seed_start, newton_polish=newton_polish,
+                   exact_gradient=exact_gradient)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None, newton_polish=None):
+                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None, newton_polish=None,
+                 exact_gradient=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -1185,6 +1187,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         #: Newton refinement of every certified fit on its stationarity (:meth:`_newton_refine`): None, or a dict of
         #: its options (step_tol, max_steps, h, cg_rtol, cg_maxiter).  Opt-in; it changes no accepted point's rule.
         self.newton_polish = None if newton_polish is None else dict(newton_polish)
+        #: The optimizer's design gradient: None for Gauss-Newton (no curvature terms), or a dict of
+        #: :meth:`_stationarity_gradients` options for the exact derivative of the converged stationarity.
+        self.exact_gradient = None if exact_gradient is None else dict(exact_gradient)
+        self._curvature = None  # the kept weak-subspace curvature (_stationarity_gradients, reuse)
         self.semantic_identity = json.loads(json.dumps(semantic_identity))
         self._n_rows = 1 + len(quantities) + len(parameter_quantities)
         x0 = np.asarray(x0, dtype=float)
@@ -1496,6 +1502,25 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             self.stats["seconds_gradient"] += time.perf_counter() - t0
 
     def _linearize_uncached(self, x, sol):
+        if self.exact_gradient is None:
+            gradients = self._gauss_newton_gradients(x, sol)
+        else:
+            got = self._stationarity_gradients(x, sol, **self.exact_gradient)
+            sol["exact_gradient"] = {k: got[k] for k in ("cg_iterations", "true_residual", "evaluations",
+                                                         "subspace_evaluations", "rebuilt")}
+            for key, value in (("exact_gradient_evaluations", got["evaluations"]),
+                               ("exact_gradient_rebuilds", int(got["rebuilt"])),
+                               ("exact_gradient_cg_iterations", int(np.sum(got["cg_iterations"])))):
+                self.stats[key] = self.stats.get(key, 0) + value
+            self.stats["exact_gradient_true_residual"] = float(max(got["true_residual"]))
+            gradients = got["gradients"]
+        if not np.all(np.isfinite(gradients)):
+            raise TrialRejected("nonfinite design gradient")
+        sol["gradients"] = gradients
+        return gradients
+
+    def _gauss_newton_gradients(self, x, sol):
+        """Every row's design gradient with the Gauss-Newton sensitivity of the fit (no curvature terms)."""
         xj, nb = jnp.asarray(x), self.model.x0.size
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         state, params = sol["state"], sol["params"]
@@ -1508,9 +1533,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
-        if not np.all(np.isfinite(gradients)):
-            raise TrialRejected("nonfinite design gradient")
-        sol["gradients"] = gradients
         return gradients
 
     def _cost_gradients(self, b, params, field, x):
@@ -1561,11 +1583,27 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         Returns ``dict(gradients, gauss_newton, cg_iterations, cg_converged, cg_residual, true_residual,
         evaluations, subspace_evaluations)`` (rows of ``gradients`` as :meth:`_linearize`).
         """
+        x = np.asarray(x, dtype=float)
+        sol = self._record(x)
+        got = self._stationarity_gradients(x, sol, rows, h=h, rtol=rtol, maxiter=maxiter, richardson=richardson,
+                                           subspace=subspace, reuse=False)
+        got["gauss_newton"] = np.asarray(self._gauss_newton_gradients(x, sol))[got["rows"]]
+        return got
+
+    def _stationarity_gradients(self, x, sol, rows=None, *, h=1e-3, rtol=1e-6, maxiter=200, richardson=False,
+                                subspace=20, reuse=True, refresh_iterations=8):
+        """The exact design gradients of :meth:`stationarity_design_gradient` at the record ``sol``.
+
+        With ``reuse`` the weak-subspace curvature ``S W`` (``W`` and ``S W``, not their factorization) is kept
+        between calls: the next record's preconditioner is ``J_b^T J_b`` of that record plus the kept curvature,
+        rebuilt only when the previous call needed more than ``refresh_iterations`` conjugate-gradient iterations on
+        average.  A stale preconditioner costs iterations, never accuracy (the residual is still solved to ``rtol``).
+        """
+        import scipy.linalg
+
         model, nb = self.model, self.model.x0.size
         x = np.asarray(x, dtype=float)
         xj = jnp.asarray(x)
-        sol = self._record(x)
-        gn = np.asarray(self._linearize(x, sol))
         params, field = self._params_at(xj), self.field(xj)
         b0, J_b0 = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])[:, :nb]
         scale = np.asarray(model.x_scale, dtype=float)
@@ -1593,13 +1631,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return (4 * h2 - h1) / 3, (4 * f2 - f1) / 3
 
         k = int(min(max(subspace, 0), nb))
-        if k:  # M = J^T J + S on the k weakest scaled directions; factored once for every row
-            import scipy.linalg
-
+        kept = self._curvature if reuse else None
+        rebuilt = False
+        if k and (kept is None or kept["W"].shape[1] != k or kept["mean_iterations"] > refresh_iterations):
             _, _, Vt = np.linalg.svd(J_b0 * scale, full_matrices=False)
             W = Vt[Vt.shape[0] - k:].T * scale[:, None]
             DW = np.stack([products(W[:, j])[0] for j in range(k)], axis=1) - J_b0.T @ (J_b0 @ W)
-            factor = scipy.linalg.lu_factor(_low_rank_model(J_b0, W, DW, scale))
+            kept, rebuilt = dict(W=W, DW=DW, mean_iterations=0.0), True
+        subspace_evaluations = count[0]
+        if k:  # M = J^T J (this record) + S on the weak directions; factored once for every row
+            factor = scipy.linalg.lu_factor(_low_rank_model(J_b0, kept["W"], kept["DW"], scale))
 
             def precondition(v):
                 return scipy.linalg.lu_solve(factor, v)
@@ -1608,7 +1649,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
             def precondition(v):  # (J_b^T J_b)^-1 v
                 return np.linalg.solve(R, np.linalg.solve(R.T, v))
-        subspace_evaluations = count[0]
 
         out, iterations, converged, residuals, true_residuals = [], [], [], [], []
         for row in rows:
@@ -1622,9 +1662,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             converged.append(residual <= rtol)
             residuals.append(residual)
             true_residuals.append(float(np.linalg.norm(Q_b - H_mu)) / norm0)
-        return dict(gradients=np.array(out), gauss_newton=gn[list(rows)], rows=list(rows), cg_iterations=iterations,
+        if k and reuse:
+            kept["mean_iterations"] = float(np.mean(iterations))
+            self._curvature = kept
+        return dict(gradients=np.array(out), rows=list(rows), cg_iterations=iterations,
                     cg_converged=converged, cg_residual=residuals, true_residual=true_residuals,
-                    evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations)
+                    evaluations=count[0], subspace=k, subspace_evaluations=subspace_evaluations, rebuilt=rebuilt)
 
     def subspace_design_gradient(self, x, k=20, *, h=1e-4):
         """Every row's design gradient with the fit's curvature on its ``k`` weakest directions (low-rank exact).
@@ -1645,7 +1688,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         x = np.asarray(x, dtype=float)
         xj = jnp.asarray(x)
         sol = self._record(x)
-        gn = np.asarray(self._linearize(x, sol))
+        gn = np.asarray(self._gauss_newton_gradients(x, sol))
         params, field = self._params_at(xj), self.field(xj)
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         b0, J_full = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])
@@ -1726,7 +1769,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         x = np.asarray(x, dtype=float)
         xj = jnp.asarray(x)
         sol = self._record(x)
-        gradients = self._linearize(x, sol)  # the Gauss-Newton gradients (and G_b, direct terms below)
+        gradients = self._gauss_newton_gradients(x, sol)  # (and G_b, direct terms below)
         params, field = self._params_at(xj), self.field(xj)
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         b0, J_b0 = np.asarray(sol["x"], dtype=float), np.asarray(sol["J"])[:, :nb]

@@ -1340,6 +1340,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 self.stats["warm_newton_failed"] = self.stats.get("warm_newton_failed", 0) + 1
             finally:
                 self.stats["seconds_certify"] += time.perf_counter() - t0
+        direct = None  # the index of a start that goes straight to the Newton polish
         if starts is not None:  # given starts (a restore: the saved boundary)
             anchor = {}
         elif anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
@@ -1350,6 +1351,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             exact = self._exact_prediction(x, params, field, anchor)
             if exact is not None:  # first: along the flat directions the Gauss-Newton prediction is the wrong one
                 starts.insert(0, exact)
+                direct = 0 if self.newton_polish is not None else None
         else:
             starts = [None]
         sol, why = None, []
@@ -1357,6 +1359,25 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if self._continuation is not None:  # every start from the accepted point's continuation
                 self._restore(self._continuation)
             t0 = time.perf_counter()
+            if i == direct:  # the exact prediction goes straight to the Newton polish (no fit; the gate decides after)
+                got = self.model.evaluate(np.asarray(start, dtype=float), params, field, tight=True)
+                self.stats["seconds_fit"] += time.perf_counter() - t0
+                if got is None:
+                    why.append(f"start {i}: the predicted boundary has no certified interior root")
+                    continue
+                fit = dict(x=np.asarray(start, dtype=float), rows=np.asarray(got[0]), aux=got[1], nfev=1, njev=0,
+                           accepted=0, converged=True, reason="prediction", jacobian=J)
+                t0 = time.perf_counter()
+                try:
+                    sol = self._finalize(x, params, field, fit, polish)
+                    self.stats["direct_newton_trials"] = self.stats.get("direct_newton_trials", 0) + 1
+                    break
+                except TrialRejected as error:
+                    why.append(f"start {i} (direct Newton): {error}")
+                    self.stats["direct_newton_failed"] = self.stats.get("direct_newton_failed", 0) + 1
+                    continue
+                finally:
+                    self.stats["seconds_certify"] += time.perf_counter() - t0
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev, refresh_on_stall=True,
@@ -1429,14 +1450,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         # With the Newton polish, the fit's own certificate does not decide: Newton converges the point and the gate
-        # applies to that (the final certify of the polish); a Levenberg-Marquardt stall is only where Newton starts.
-        newton_decides = newton and self.newton_polish is not None
-        sol = model.certify(params, field, fit, gate=np.inf if newton_decides else max(self.boundary_ftol, POLISH_FTOL),
-                            xtol=None if newton_decides else self.boundary_xtol, polish=polish,
-                            max_residual=self.boundary_max_residual, extra=extra,
-                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        # applies to that (the final certify of the polish); a Levenberg-Marquardt stall is only where Newton starts
+        # (its own linearization would be discarded: the polish ends in the certificate that counts).
         if newton and self.newton_polish is not None:  # converge the stationarity in every direction, certify there
-            sol = self._newton_refine(x, params, field, sol, extra)
+            sol = self._newton_refine(x, params, field, dict(x=np.asarray(fit["x"], dtype=float)), extra)
+        else:
+            sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
+                                polish=polish, max_residual=self.boundary_max_residual, extra=extra,
+                                values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
         sol.update(continuation=self._checkpoint(), anchor=dict(

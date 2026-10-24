@@ -1605,9 +1605,20 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         cost, g, rec = here
         radius = float(opt.get("radius", 1e-1))
         history, evaluations, converged, seconds_hessian, H = [], 1, False, 0.0, None
+        partial = int(opt.get("partial", 0))
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
-            H, asymmetry = self.dense_hessian(x, rec)
+            if H is None or not partial:
+                H, asymmetry = self.dense_hessian(x, rec)
+            else:  # refresh only the weakest directions: exact columns there, symmetric low-rank correction
+                Hs_old = H * np.outer(scale, scale)
+                _, vectors = np.linalg.eigh(Hs_old)
+                V = vectors[:, :partial]
+                HV = np.asarray(self.exact_products(x, rec, V * scale[:, None], check=False)[0]) * scale[:, None]
+                D = HV - Hs_old @ V
+                Hs_new = Hs_old + D @ V.T + V @ D.T - V @ (V.T @ D) @ V.T
+                H = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
+                asymmetry = float(np.linalg.norm(V.T @ D - D.T @ V) / max(np.linalg.norm(V.T @ HV), 1e-300))
             seconds_hessian += time.perf_counter() - th
             Hs = H * (scale[:, None] * scale[None, :])  # scaled coordinates
             gs = g * scale
@@ -2004,6 +2015,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         """
         if products == "exact":
             got = self._exact_dense_gradients(x, sol, rows)
+            if max(got["true_residual"]) > 1e-6 and getattr(self, "_hessian", None) is not None:
+                self._hessian = None  # a kept (partially refreshed) Hessian that misses: rebuild it here
+                got = self._exact_dense_gradients(x, sol, rows)
             if max(got["true_residual"]) > 1e-6:
                 raise RuntimeError(f"dense exact multipliers missed: true residuals {got['true_residual']}")
             return got

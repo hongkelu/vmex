@@ -1153,6 +1153,50 @@ def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
         opt.minimize([(lambda *a: 0., 0., 1.)])
 
 
+
+def test_slsqp_resumes_exactly_from_a_saved_state(tmp_path):
+    """A run stopped after some accepted steps and resumed from its saved SLSQP state (quasi-Newton Hessian,
+    multipliers, coordinates) takes the uninterrupted run's steps, even under other problem scales; a state of
+    another point is refused."""
+    from scipy.optimize import NonlinearConstraint
+    from vmex import optimize as opt
+
+    def rosenbrock(x):
+        return (float((1-x[0])**2 + 100*(x[1]-x[0]**2)**2),
+                np.array([-2*(1-x[0]) - 400*x[0]*(x[1]-x[0]**2), 200*(x[1]-x[0]**2)]))
+
+    disk = NonlinearConstraint(lambda x: np.array([x@x]), -np.inf, 1.5, jac=lambda x: 2*x[None])
+
+    def stateful(x0, scales):
+        p = opt.FunctionProblem.from_functions(np.asarray(x0, dtype=float), scales=np.asarray(scales),
+                                               value_and_grad=rosenbrock)
+        p.accepted = SimpleNamespace(parameters=np.asarray(x0, dtype=float).copy())
+        p.accept_x = lambda x: setattr(p.accepted, "parameters", np.asarray(x).copy())
+        return p
+
+    def run(p, steps, **options):
+        points = []
+        result = opt.minimize(p, x0=p.accepted.parameters, method="SLSQP", constraints=disk,
+                              callback=lambda x: points.append(x.copy()),
+                              options=dict(maxiter=steps, ftol=1e-14, **options))
+        return result, points
+
+    _, straight = run(stateful([-1.2, 1.], [.5, 2.]), 20)
+    path = tmp_path / "slsqp_state.npz"
+    _, first = run(stateful([-1.2, 1.], [.5, 2.]), 7, state_callback=lambda state: opt.save_slsqp_state(path, state))
+    state = opt.load_slsqp_state(path)
+    np.testing.assert_array_equal(state["accepted"], first[-1])
+    # the restart's problem has other scales (a chart about the new nominal point): the state's coordinates rule
+    _, second = run(stateful(first[-1], [.3, 5.]), 13, resume=state)
+    np.testing.assert_allclose(np.array(first + second), np.array(straight[:len(first + second)]), rtol=1e-12)
+    _, fresh = run(stateful(first[-1], [.5, 2.]), 13)
+    assert np.max(np.abs(np.array(fresh[:3]) - np.array(straight[7:10]))) > 1e-6  # an identity Hessian differs
+    with pytest.raises(ValueError, match="another point"):
+        run(stateful(first[-2], [.5, 2.]), 3, resume=state)
+    state["buffer"] = state["buffer"][:-1]
+    with pytest.raises(ValueError, match="another problem"):
+        run(stateful(first[-1], [.5, 2.]), 3, resume=state)
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

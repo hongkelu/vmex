@@ -631,6 +631,14 @@ def _nestor_boundary(inp: VmecInput, **kwargs) -> VmecInput:
                    zaxis_s=np.asarray(wout.zaxis_cs)[:inp.ntor + 1])
 
 
+def _best_three_term_fit(fits):
+    """The fit to return: a successful fit before any failed one, then the lowest cost.  A lower-cost fit that
+    failed (stopped short, or above its residual guard) never displaces a successful one."""
+    if not fits:
+        raise ValueError("no three-term fit to choose from")
+    return min(fits, key=lambda f: (not bool(f.success), float(f.cost)))
+
+
 def solve_free_boundary_multigrid(
     inp: VmecInput,
     ns_array=None,
@@ -764,22 +772,46 @@ def solve_free_boundary_multigrid(
         start = options.pop("start", "best")
         if start not in ("best", "deck", "nestor"):
             raise ValueError(f"three_term_options['start'] must be 'best', 'deck' or 'nestor', got {start!r}")
-        fits = []
+        fits, failures = [], []
         if start in ("best", "deck"):
             fits.append(solve_free_boundary_three_term(
                 ladder, external_field=external_field, mgrid_path=mgrid_path, **options))
         if start in ("best", "nestor"):  # the interface least squares has several minima: NESTOR's basin too
-            nestor_start = dict(options, initial_boundary=_nestor_boundary(
-                ladder, mgrid_path=mgrid_path, external_field=external_field, verbose=verbose, emit=emit,
-                device=device))
-            fits.append(solve_free_boundary_three_term(
-                ladder, external_field=external_field, mgrid_path=mgrid_path, **nestor_start))
-        fit = min(fits, key=lambda f: float(f.cost))
+            try:
+                nestor_start = dict(options, initial_boundary=_nestor_boundary(
+                    ladder, mgrid_path=mgrid_path, external_field=external_field, verbose=verbose, emit=emit,
+                    device=device))
+                fits.append(solve_free_boundary_three_term(
+                    ladder, external_field=external_field, mgrid_path=mgrid_path, **nestor_start))
+            except Exception as error:  # an optional seed: its failure must not erase the deck start's fit
+                if start == "nestor":
+                    raise
+                failures.append(error)
+        fit = _best_three_term_fit(fits)
         ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
         result = solve_multigrid(
             fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
             niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
             initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
+        # The returned state solves the fit's interior equations (its m=1 complement policy), as the fit did: refine
+        # the host state onto that root, then let the host solve report it (every derived array of the result is
+        # then of the refined state) and check it did not move it.
+        from .errors import VmecConvergenceError
+        from .optimize import refine_state
+
+        refined = refine_state(fit.input, result.state, m1_complement=options.get("m1_complement", "solved"))
+        if refined is not result.state:
+            result = solve_multigrid(
+                fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
+                niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
+                initial_state=refined, verbose=verbose, emit=emit, device=device)
+            moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(float(np.max(np.abs(np.asarray(b)))),
+                                                                                    1e-300))
+                        for a, b in zip(jax.tree.leaves(result.state), jax.tree.leaves(refined)) if np.size(b))
+            if not moved <= 1e-9:
+                raise VmecConvergenceError(
+                    f"the reported equilibrium moved off the refined interior root by {moved:.2e}",
+                    hint="tighten ftol so the refined root passes the host solver's convergence test at once")
         # Converged only if the interface conditions hold too: the polish converges on any boundary.
         return replace(result, converged=bool(result.converged) and bool(fit.success),
                        boundary_residual=fit.boundary_residual)

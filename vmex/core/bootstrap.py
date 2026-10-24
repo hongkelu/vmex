@@ -197,6 +197,19 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) ->
         return t, z
 
     t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB.reshape(nsurf, -1)))
+
+    def implicit(Fs, a, b):
+        """The located extremum as a differentiable function of the field: one Newton step from the (stopped)
+        converged location with the live field. Its value moves by O(|grad|^2), zero at the converged point, and
+        its derivative is the implicit one, ``-h^-1 d(grad)/dF``. So the extremum's value has exact first *and*
+        second derivatives (the stopped location alone is exact only to first order, by the envelope theorem)."""
+        _, g, h = value_grad_hess(Fs, a, b)
+        step = -jnp.linalg.solve(h, g)
+        ok = jnp.all(jnp.isfinite(step)) & (jnp.linalg.det(h) > 0) & (sign * h[0, 0] < 0)
+        step = jnp.where(ok, step, 0.0)
+        return a + step[0], b + step[1]
+
+    t, z = jax.vmap(implicit)(F, t, z)
     value = jax.vmap(lambda Fs, a, b: value_grad_hess(Fs, a, b)[0])(F, t, z)
     grid = sign * jnp.max(sign * modB.reshape(nsurf, -1), axis=1)
     return sign * jnp.maximum(sign * value, sign * grid)  # never inside the grid extremum

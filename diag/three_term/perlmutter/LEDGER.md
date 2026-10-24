@@ -141,7 +141,28 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
     - At finite beta the two agree to 1e-5..3e-3 while GN is 4-37% off.
     - In vacuum the curvature correction is small (GN 0.2-3% off), and the exact reference at h 1e-4 itself moves
       by 1e-2 against h 1e-5: noise in the weak-direction products. Richardson does not change it (QI vac 1.6e-2).
-    - Rerunning both at h 1e-3 (pin d729887e, `-h3` lanes), then against Newton-converged differences.
+  - **Same pairs at h 1e-3** (pin d729887e, `g3e|g3f/*-h3`):
+
+    | seed | stationarity vs exact, h 1e-3 | (h 1e-4) | GN vs exact | stationarity h 1e-3 vs h 1e-4 |
+    |---|---|---|---|---|
+    | QA vacuum C3 | 6.5e-7 | 2.1e-3 | 1.1e-3 | |
+    | QI vacuum C3 | 5.7e-6 | 1.6e-2 | 2.3e-2 | |
+    | QA 2.5% NL, loss | 1.8e-4 | 7.9e-4 | 4.1e-2 | 3.9e-4 |
+    | QA 2.5% NL, vacuum-iota row | 1.0e-3 | 3.2e-3 | 8.4e-2 | 3.4e-3 |
+    | QH 2.5% C3 | 2.4e-4 | 2.6e-3 | 3.7e-1 | |
+    | QH 2.5% NL | 1.8e-4 | 1.5e-5 | 3.5e-1 | **6.7e-3** |
+    | QI 2.5% C3 | 6.3e-6 | 1.3e-5 | 9.2e-2 | |
+
+    - At each step the two implementations agree well inside the GN error, and in vacuum h 1e-3 removes the noise.
+    - **That agreement does not qualify the derivative**: both difference the same ``g``, so they share its
+      truncation error. QH 2.5% NL moves by 6.7e-3 between h 1e-4 and 1e-3 while each pair agrees to 1e-5..2e-4.
+      Next: a step sequence and Richardson on QH NL and QA 2.5% (3e-4, 1e-3, 3e-3), and the independent
+      Newton-converged differences (`newton-*-fd2`, cold, steps 1e-3..1e-4).
+  - **Coordinate invariance, first look** (QH 2.5% prescribed, same design x, h 1e-4): NL and C3 certified
+    states differ in their *values* by 1.4% (loss) and 3.5% (row 4), and their derivatives by 4-61% per row (GN
+    the same). So the labelling changes the discrete equilibrium itself, not only its derivative. Running: NL / C 1e-3
+    / C 1e-4 at 8 x 8, 10 x 10 (QA, QH, QI 2.5%) and 12 x 12 (QH): does the gap close with resolution or with label
+    weight?
   - A trustworthy difference check needs trials converged in **step**, not just gain (a boundary step gate). That
     is slow without option 5, which removes the undetermined directions.
 - **QA 2.5% prescribed, cold check** (NL, target 1e-5; the trials moved, one step each; differences identical at h 3e-5

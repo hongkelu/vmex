@@ -1197,6 +1197,8 @@ def parse_args(argv=None):
                         help="compare the second-order adjoint products H v, F_d^T v (ThreeTermFreeBoundaryProblem."
                         "exact_products) with Richardson difference products along the weakest, strongest and a random "
                         "direction, with timings (exact_products_check.json), then stop")
+    parser.add_argument("--exact-products-timing", type=int, nargs="*", default=[], metavar="M",
+                        help="with --check-exact-products: also time compiled calls of M random columns")
     parser.add_argument("--check-products", action="store_true",
                         help="compare the stationarity products H v and F_d^T v from reverse passes (_cost_gradients) "
                         "with those from full linearizations, along the weakest, strongest and a random direction")
@@ -1891,6 +1893,14 @@ def main(argv=None):
             record["directions"][name] = rec
             print(f"[exact products] {name}: exact vs Richardson H {rec['H']:.2e}, F_d^T {rec['F']:.2e} "
                   f"(vs plain h: H {rec['H_plain']:.2e}); Richardson pair {t4 - t3:.1f} s", flush=True)
+        record["timing"] = {}
+        for m in args.exact_products_timing:  # the fixed per-call cost and the per-column cost
+            W = rng.standard_normal((nb, m)) * scale[:, None]
+            problem.exact_products(x_seed, sol, W)  # compile for m columns
+            t5 = time.monotonic()
+            problem.exact_products(x_seed, sol, W)
+            record["timing"][m] = time.monotonic() - t5
+            print(f"[exact products] {m} columns: {record['timing'][m]:.1f} s (compiled)", flush=True)
         (out / "exact_products_check.json").write_text(json.dumps(record, indent=1) + "\n")
         return
     if args.check_products:  # H v and F_d^T v from reverse passes vs from full linearizations, same v

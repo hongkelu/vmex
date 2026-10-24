@@ -1479,8 +1479,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise ValueError("a gauge is held by the Newton polish: pass newton_polish (with exact products)")
         # Under a gauge the fit's own polish (Levenberg-Marquardt, unconstrained) would only crawl along the
         # relabellings the gauge removes: the tight state is linearized and the gauge's Newton polish certifies it.
-        sol = model.certify(params, field, fit, gate=np.inf if gauged else max(self.boundary_ftol, POLISH_FTOL),
-                            xtol=None if gauged else self.boundary_xtol, polish=polish and not gauged,
+        # With the Newton polish, the fit's own certificate does not decide: Newton converges the point and the gate
+        # applies to that (the final certify of the polish); a Levenberg-Marquardt stall is only where Newton starts.
+        newton_decides = newton and self.newton_polish is not None
+        sol = model.certify(params, field, fit, gate=np.inf if newton_decides else max(self.boundary_ftol, POLISH_FTOL),
+                            xtol=None if newton_decides else self.boundary_xtol, polish=polish and not gauged,
                             max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         if newton and self.newton_polish is not None:  # converge the stationarity in every direction, certify there

@@ -241,6 +241,10 @@ KRYLOV_GRADIENT_MAXITER = 30
 #: gradient changes by ~1e-5.
 NEWTON_FLOOR = 1e-9
 
+#: Most Newton steps re-converging a restored accepted record (:meth:`ThreeTermFreeBoundaryProblem.refine_accepted`);
+#: the saved record is kept when they do not converge.
+REFINE_MAX_STEPS = 15
+
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
 PIN_FLAT_RTOL = 1e-6
@@ -2534,7 +2538,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
     def refine_accepted(self):
         """Newton-refine the accepted record (:meth:`_newton_refine`; ``newton_polish`` must be set), e.g. a restored
-        checkpoint certified by its gain only.  Returns the largest relative change of its values."""
+        checkpoint certified by its gain only.  Returns the largest relative change of its values, or NaN when the
+        polish does not converge: the restored record (the saved one exactly) is then kept, and the next trials are
+        polished as always."""
         if self.newton_polish is None:
             raise ValueError("refine_accepted needs newton_polish")
         x = self.accepted.parameters
@@ -2543,7 +2549,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         xj = jnp.asarray(x)
         params, field = self._params_at(xj), self.field(xj)
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
-        new = self._newton_refine(x, params, field, sol, extra)
+        polish = self.newton_polish
+        self.newton_polish = dict(polish, max_steps=min(int(polish.get("max_steps", 10)), REFINE_MAX_STEPS))
+        try:
+            new = self._newton_refine(x, params, field, sol, extra)
+        except TrialRejected as error:
+            self.stats["refine_unconverged"] = str(error)[:200]
+            if self._continuation is not None:
+                self._restore(self._continuation)
+            return float("nan")
+        finally:
+            self.newton_polish = polish
         nb = self.model.x0.size
         new.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=new["x"], J_b=new["J"][:, :nb], J_p=new["J"][:, nb:],

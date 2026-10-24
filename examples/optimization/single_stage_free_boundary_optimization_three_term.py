@@ -1731,6 +1731,9 @@ def main(argv=None):
     if args.resume and args.newton_polish is not None:  # the restored record is exactly the saved one: refine it
         t_refine = time.monotonic()
         change = problem.refine_accepted()
+        if change != change:  # NaN: not converged, the restored record kept
+            print(f"[newton polish] restored accepted point kept as saved: {problem.stats.get('refine_unconverged')}",
+                  flush=True)
         nw = problem._record(problem.accepted.parameters).get("newton", {})
         print(f"[newton polish] restored accepted point refined: values change {change:.2e}; "
               f"{len(nw.get('steps', []))} steps, converged {nw.get('converged')}, {nw.get('evaluations')} "

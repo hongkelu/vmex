@@ -1919,7 +1919,12 @@ def main(argv=None):
                       gradients=np.asarray(got["gradients"]).tolist(), gauss_newton=np.asarray(got["gauss_newton"]).tolist(),
                       rows=got["rows"], cg_iterations=got["cg_iterations"], cg_converged=got["cg_converged"],
                       cg_residual=got["cg_residual"], evaluations=got["evaluations"], seconds=time.monotonic() - t0,
-                      certificate=sol.get("certificate"))
+                      certificate=sol.get("certificate"), newton=sol.get("newton"))
+        if sol.get("newton"):
+            nw = sol["newton"]
+            print(f"[newton polish] {len(nw['steps'])} steps, converged {nw['converged']}, {nw['evaluations']} "
+                  f"evaluations (subspace {nw['subspace']}), {nw['seconds']:.0f} s; scaled steps "
+                  + " ".join(f"{st['step']:.1e}" for st in nw["steps"]), flush=True)
         (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
         print(f"[stationarity gradient] {len(got['rows'])} rows, CG {got['cg_iterations']}, converged "
               f"{got['cg_converged']}, true residual max {max(got['true_residual']):.1e}, {got['evaluations']} evaluations "

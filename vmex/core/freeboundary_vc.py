@@ -1413,22 +1413,44 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         record, its Jacobian and its values come from the same code as every other trial.  ``sol["newton"]``
         records the steps.
         """
-        opt = dict(step_tol=1e-8, max_steps=10, h=1e-3, cg_rtol=1e-6, cg_maxiter=80)
+        opt = dict(step_tol=1e-8, max_steps=10, h=1e-3, cg_rtol=1e-6, cg_maxiter=80,
+                   subspace=(self.exact_gradient or {}).get("subspace", 0))
         opt.update(self.newton_polish or {})
         model, nb = self.model, self.model.x0.size
         scale = np.asarray(model.x_scale, dtype=float)
-        _, R = np.linalg.qr(np.asarray(sol["J"])[:, :nb])
-
-        def precondition(v):
-            return np.linalg.solve(R, np.linalg.solve(R.T, v))
+        J_b = np.asarray(sol["J"])[:, :nb]
 
         def stationarity(bb):
             return self._cost_gradients(bb, params, field, x)[0]
 
+        t0 = time.perf_counter()
         b = np.asarray(sol["x"], dtype=float).copy()
         g = stationarity(b)
-        merit = float(np.sqrt(max(g @ precondition(g), 0.0)))
         history, evaluations, converged = [], 1, False
+        k = int(min(max(opt["subspace"], 0), nb))
+        if k:  # the curvature on the k weakest directions, measured here; kept for this point's exact gradient
+            import scipy.linalg
+
+            _, _, Vt = np.linalg.svd(J_b * scale, full_matrices=False)
+            W = Vt[Vt.shape[0] - k:].T * scale[:, None]
+            DW = np.empty((nb, k))
+            for j in range(k):
+                eps = opt["h"] / max(float(np.linalg.norm(W[:, j] / scale)), 1e-300)
+                DW[:, j] = (stationarity(b + eps * W[:, j]) - stationarity(b - eps * W[:, j])) / (2 * eps)
+            evaluations += 2 * k
+            DW -= J_b.T @ (J_b @ W)
+            self._curvature = dict(W=W, DW=DW, mean_iterations=0.0)
+            factor = scipy.linalg.lu_factor(_low_rank_model(J_b, W, DW, scale))
+
+            def precondition(v):
+                return scipy.linalg.lu_solve(factor, v)
+        else:
+            _, R = np.linalg.qr(J_b)
+
+            def precondition(v):
+                return np.linalg.solve(R, np.linalg.solve(R.T, v))
+
+        merit = float(np.sqrt(max(g @ precondition(g), 0.0)))
         for _ in range(int(opt["max_steps"])):
             def hv(v, b=b):
                 eps = opt["h"] / max(float(np.linalg.norm(v / scale)), 1e-300)
@@ -1455,7 +1477,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 rz, rz_old = res @ z, rz
                 direction = z + (rz / rz_old) * direction
             step = float(np.linalg.norm(d / scale))
-            history.append(dict(step=step, merit=merit))
+            history.append(dict(step=step, merit=merit, evaluations=evaluations))
             if step <= opt["step_tol"]:
                 converged = True
                 break
@@ -1479,8 +1501,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         out = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
                             polish=False, max_residual=self.boundary_max_residual, extra=extra,
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
-        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=merit, subspace=k,
+                             seconds=time.perf_counter() - t0)
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
 
     def _record(self, x):

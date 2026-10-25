@@ -363,6 +363,21 @@ were trials that moved. Fix: `--check-gradient-cold` (4e4c8eb1), and per-trial s
   negative eigenvalue left. The current block's product asymmetry ("leak", 3-10e-4 relative to H_cc) limits the
   trust radius; open.
 
+### 10-24 evening: NL is determined in its outputs; the cost, not the physics, is flat (31b60f16)
+
+- **Labelling sensitivity** (`--check-labelling-sensitivity 8`, accepted QA/QH/QI 2.5% points, s04 ls-*): moving the
+  boundary along the exact Hessian's 8 softest directions (eigenvalues 1.5e-9..1.2e-7, scaled), the cost rises like
+  delta^4 (or with its small delta^2 coefficient) while every value moves linearly: at delta 0.03 the cost changes
+  4e-5..1.8e-2 (relative) and the values 4e-7..1.1e-3 (QA's row 6 the most sensitive). Extrapolated to the cost
+  floor (1e-9), every value is determined to ~1e-5 or better in all 24 directions; the earlier labelling rows biased
+  them 1-3.5%. The NL formulation stays.
+- **Consequence**: Newton crawls because it converges a quartic-flat cost long after the outputs have settled. The
+  response rule (`--newton-response`) at the measured value tolerance (1e-5; 1e-6 never fired) ends the polish there.
+- **Same day**: the Gauss-Newton certificate rejected converged NL points (4551017a); the cost floor sat below the
+  cost's resolution (edcaa802); a collapsed trust radius was taken for convergence 2x above the minimum's cost
+  (efa0bcc1); exact Newton cannot take large moves at large residuals: Gauss-Newton rescue (cb939ad0, a stalled QA
+  point had a GN step worth 96.5% of its cost). TT1 baseline: 74-140 s per step (median), 500-1000 steps in 20-27 h.
+
 ## Package D: boundary coordinates and steps
 
 | id | issue | status | evidence | next action |

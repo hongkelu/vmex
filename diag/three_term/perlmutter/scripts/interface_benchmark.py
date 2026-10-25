@@ -76,14 +76,14 @@ def main():
     spec.loader.exec_module(tdriver)
     run = Path(args.run)
     inp0 = vj.VmecInput.from_file(run / "input.run")
-    w_step = vj.read_wout(str(run / f"wout.step{args.step}.nc"))
+    w_step = vj.read_wout(str(run / f"wout.step{args.step}.nc")) if not args.own_deck else None
     coils = Coils.from_json(str(run / f"coils.step{args.step}.json"))
     field = DirectCoilField(np.asarray(coils.gamma), np.asarray(coils.gamma_dash), np.asarray(coils.currents))
     for path in args.wouts:
         # the step's deck (PHIEDGE, current), the candidate's boundary, the evaluator's interior
-        deck = tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w_step), phiedge=float(w_step.phi[-1]),
+        deck = None if args.own_deck else tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w_step), phiedge=float(w_step.phi[-1]),
                                                  lfreeb=True, mgrid_file="field(direct)"), w_step)
-        deck = deck.change_resolution(mpol=args.interior, ntor=args.interior)
+        deck = None if deck is None else deck.change_resolution(mpol=args.interior, ntor=args.interior)
         if path.endswith(".npz") and args.own_deck:  # the checkpoint's own deck (e.g. another current profile)
             import tempfile
             definition = json.loads(str(np.load(path, allow_pickle=False)["meta"]))["definition"]

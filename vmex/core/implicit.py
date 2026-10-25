@@ -919,8 +919,12 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
 #: starts).  ``"solved"``: its force is kept and the Newton refinement solves
 #: for it with the evolved dofs -- every force equation holds and the refined
 #: state is a function of the parameters alone (rows to 1e-11 from any start).
+#: ``"gauged"``: the complement is an angle gauge in the continuum (its force vanishes for any value as the
+#: resolution grows, so ``"solved"`` turns near-singular: at 12 x 12 the refinement stalls at |F| ~ 1e-7), so it is
+#: fixed instead -- set to ``sqrt(s)`` times its edge value (the boundary's) before the refinement, its force
+#: released as in ``"frozen"``.  The refined state is a function of the parameters alone, at any resolution.
 #: 3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
-M1_COMPLEMENTS = ("solved", "frozen")
+M1_COMPLEMENTS = ("solved", "frozen", "gauged")
 
 #: ``evaluate_forces``' ``iteration`` at which the m=1 Z force is not released
 #: (``residuals.m1_zero_condition``: released while ``iter2 < 2``).
@@ -932,6 +936,25 @@ def _m1_solved(cfg: ImplicitConfig) -> bool:
     res = cfg.resolution
     return bool(cfg.m1_complement == "solved" and bool(cfg.lconm1) and int(res.ntor) > 0
                 and not bool(res.lasym))
+
+
+def _m1_gauged(cfg: ImplicitConfig) -> bool:
+    """Whether the refinement fixes the m=1 complement to its gauge profile (``cfg.m1_complement``)."""
+    res = cfg.resolution
+    return bool(cfg.m1_complement == "gauged" and bool(cfg.lconm1) and int(res.ntor) > 0
+                and not bool(res.lasym))
+
+
+def _m1_gauge_state(cfg: ImplicitConfig, state: SpectralState) -> SpectralState:
+    """``state`` with the m=1 complement (the antisymmetric ``Z_sin`` pair combination) set to ``sqrt(s)`` times its
+    edge value; the symmetric combination and every other coefficient unchanged."""
+    if not _m1_gauged(cfg):
+        return state
+    pos, neg = _m1_pair_columns(cfg)
+    v = jnp.asarray(state.Z_sin)
+    sym = 0.5 * (v[:, pos] + v[:, neg])
+    anti = jnp.sqrt(jnp.linspace(0.0, 1.0, v.shape[0]))[:, None] * (0.5 * (v[-1, pos] - v[-1, neg]))[None, :]
+    return dataclasses.replace(state, Z_sin=v.at[:, pos].set(sym + anti).at[:, neg].set(sym - anti))
 
 
 def _m1_pair_columns(cfg: ImplicitConfig) -> tuple[np.ndarray, np.ndarray]:
@@ -1832,6 +1855,7 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
     tol = float(cfg.refine_tol)
     if not np.isfinite(tol) or tol <= 0.0:
         return state
+    state = _m1_gauge_state(cfg, state)  # a fixed gauge of the m=1 complement (``"gauged"`` only)
     # A first trial passes eager arrays and a later one the previous refined,
     # committed state; one commitment keeps one residual executable.
     state, params, dof_mask = commit_to_single_device((state, params, dof_mask))

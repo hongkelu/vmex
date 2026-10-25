@@ -1361,6 +1361,10 @@ def main(argv=None):
     if args.restart is not None:
         inp = restart_input(args.restart)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
+        if DKX_CORRECTION is not None and args.bootstrap and BOOTSTRAP_MODEL == "dkx":
+            # the restart's current matches the uncorrected DKX: make it the corrected one's before the first step
+            inp = dkx_current(inp, opt.solve_equilibrium(inp, device="gpu", raise_on_max_iterations=True,
+                                                         polish_force_balance=False), "gpu")
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
         redl = redl_profiles(inp)[1] if args.bootstrap else None

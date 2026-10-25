@@ -2522,7 +2522,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         except (VmecError, RuntimeError) as error:  # an adjoint solve that does not certify
             raise TrialRejected(str(error)) from error
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
-        lam = _residual_multipliers(J_b, G_b)  # a column per row
+        if self.model.gauge is not None:  # on the gauge: the multipliers of the fit restricted to its null space
+            import scipy.linalg
+
+            scale = np.asarray(self.model.x_scale, dtype=float)
+            C = np.asarray(self.model.gauge_jacobian(jnp.asarray(sol["x"])))
+            SZ = scale[:, None] * scipy.linalg.null_space(C * scale)
+            lam = _residual_multipliers(np.asarray(J_b) @ SZ, G_b @ SZ)
+        else:
+            lam = _residual_multipliers(J_b, G_b)  # a column per row
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p

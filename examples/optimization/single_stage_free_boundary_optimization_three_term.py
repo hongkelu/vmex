@@ -2187,6 +2187,9 @@ def main(argv=None):
                   f"evaluations (Hessian {nw.get('seconds_hessian', 0):.0f} s), {nw['seconds']:.0f} s; scaled steps "
                   + " ".join(f"{st['step']:.1e}" for st in nw["steps"]), flush=True)
         (out / "stationarity_gradient_check.json").write_text(json.dumps(record, default=float) + "\n")
+        G, Ggn = np.asarray(got["gradients"]), np.asarray(got["gauss_newton"])
+        diff = np.linalg.norm(Ggn - G, axis=1) / np.maximum(np.linalg.norm(G, axis=1), 1e-300)
+        print("[stationarity gradient] Gauss-Newton vs exact, per row: " + " ".join(f"{d:.1e}" for d in diff), flush=True)
         print(f"[stationarity gradient] {len(got['rows'])} rows, true residual max {max(got['true_residual']):.1e}, "
               f"Hessian condition {got['condition']:.1e}, {record['seconds']:.0f} s", flush=True)
         return

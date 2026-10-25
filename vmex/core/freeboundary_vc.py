@@ -300,6 +300,10 @@ REFINE_MAX_STEPS = 15
 GAUGE_TOL = 1e-12
 GAUGE_PROJECT_STEPS = 20
 
+#: The gauge gradient's block CG is preconditioned by the last exact Hessian while it is at most this many accepted
+#: steps old (then a dense exact Hessian again, which becomes the next one).
+GAUGE_HESSIAN_AGE = 5
+
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
 PIN_FLAT_RTOL = 1e-6
@@ -2643,14 +2647,23 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         kept = getattr(self, "_hessian", None)
         matches = (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
                    and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6)
-        if matches and not kept.get("exact", True):  # a quasi-Newton reduced Hessian: block CG on exact products
-            got = self._gauge_block_cg(x, sol, rows, kept["gauge"], G_b, G_x, direct, scale, t0)
+        anchor = self._anchor or {}
+        H_exact, age = anchor.get("gauge_H"), int(anchor.get("gauge_H_age", 0))
+        if (matches and not kept.get("exact", True) and isinstance(H_exact, np.ndarray)
+                and age < GAUGE_HESSIAN_AGE):
+            # block CG on exact products, preconditioned by the last exact Hessian on this point's gauge
+            red = dict(kept["gauge"])
+            Kc = np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"])))
+            Hs = 0.5 * (H_exact + Kc + (H_exact + Kc).T) * np.outer(scale, scale)
+            red["Hr"] = red["Z"].T @ Hs @ red["Z"]
+            got = self._gauge_block_cg(x, sol, rows, red, G_b, G_x, direct, scale, t0)
             if got is not None:
-                if isinstance(sol.get("anchor"), dict):
-                    sol["anchor"]["gauge_H"] = kept["H_cost"]
+                self.stats["gauge_block_cg"] = self.stats.get("gauge_block_cg", 0) + 1
+                if isinstance(sol.get("anchor"), dict):  # the exact Hessian carries over, one step older
+                    sol["anchor"].update(gauge_H=H_exact, gauge_H_age=age + 1)
                 return got
             matches = False
-        if matches:
+        if matches and kept.get("exact", True):
             red = kept["gauge"]
         else:
             H, _ = self.dense_hessian(x, sol)
@@ -2667,9 +2680,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if max(true) > 1e-6:
             raise RuntimeError(f"gauge multipliers missed: true residuals {true}")
         eig = np.linalg.eigvalsh(Hr)
-        if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start
-            sol["anchor"]["gauge_H"] = np.asarray(red["H_L"]) - np.asarray(
-                self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"])))
+        if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start and preconditioner (exact)
+            sol["anchor"].update(gauge_H=np.asarray(red["H_L"]) - np.asarray(
+                self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))), gauge_H_age=0)
         return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                     asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
                     seconds_hessian=time.perf_counter() - t0)

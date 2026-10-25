@@ -2603,7 +2603,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         evals, evecs = np.linalg.eigh(0.5 * (red["Hr"] + red["Hr"].T))
         evals = np.maximum(np.abs(evals), 1e-14 * float(np.abs(evals).max()))
 
-        count = dict(calls=0, columns=0, seconds=0.0)
+        count = dict(calls=0, columns=0, seconds=0.0, per_call=[])
 
         def products(Y):  # Hr Y with the exact Hessian
             tp = time.perf_counter()
@@ -2612,6 +2612,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             U = scale[:, None] * (Z @ Y)
             HU = np.asarray(self.exact_products(x, sol, U, check=False, chunk=min(U.shape[1], EXACT_PRODUCTS_CHUNK))[0])
             count["seconds"] += time.perf_counter() - tp
+            count["per_call"].append([int(Y.shape[1]), round(time.perf_counter() - tp, 2)])
             return Z.T @ (scale[:, None] * (HU + Kc @ U))
 
         def precondition(R):

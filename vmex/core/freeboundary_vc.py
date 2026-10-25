@@ -234,6 +234,12 @@ EXACT_PRODUCTS_CHUNK = 16
 #: (~1e-9) change by their own size between nearby points, and CG then runs to its limit (QA 2.5%: 40 per step).
 KRYLOV_REFRESH_PRODUCTS = 20
 
+#: After each accepted Krylov Newton step, its component in the flat subspace (the preconditioner's eigenvectors below
+#: PIN_FLAT_RTOL of its largest eigenvalue) is extended by these multiples in turn while the cost falls: the cost is
+#: quartic there (labelling sensitivity, QA/QH/QI 2.5%) and Newton converges only linearly (a third of the distance
+#: per step). Empty: no extension.
+FLAT_EXTEND = (1.0, 2.0, 4.0)
+
 #: The Krylov polish's Gauss-Newton rescue: when its trust radius has shrunk below GN_RESCUE_RADIUS of where it
 #: started, at most GN_RESCUE_MAX times per polish, Levenberg-Marquardt steps (at most GN_RESCUE_NFEV evaluations) from
 #: a fresh Jacobian; kept if they lower the cost, after which Newton resumes with a fresh radius.
@@ -1749,8 +1755,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         def set_preconditioner(H):  # its |eigenvalues| (scaled): the CG preconditioner and the trust region's metric
             Hs = np.asarray(H) * np.outer(scale, scale)
             lam, Q = np.linalg.eigh(0.5 * (Hs + Hs.T))
+            flat = Q[:, np.abs(lam) < PIN_FLAT_RTOL * float(np.abs(lam).max())]  # the flat (relabelling) subspace
             lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
-            pre.update(lam=lam, Q=Q, Ms=Q @ (lam[:, None] * Q.T), H=np.asarray(H))
+            pre.update(lam=lam, Q=Q, Ms=Q @ (lam[:, None] * Q.T), H=np.asarray(H), flat=flat)
 
         set_preconditioner(M)
 
@@ -1808,7 +1815,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # The trust radius (M-norm) starts at the preconditioned Newton step's own length: a good model takes the
         # whole step at once, and the actual/predicted test shrinks the radius where it is not.
         radius = radius0 = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
-        rescues, seconds_rescue = 0, 0.0
+        rescues, seconds_rescue, extensions = 0, 0.0, 0
         history, evaluations, converged, products, seconds_products, refreshes = [], 1, False, 0, 0.0, 0
         response = dict(values=None, gradient=None, stable=0)
         for _ in range(int(opt["max_steps"])):
@@ -1832,7 +1839,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if opt.get("verbose"):
                 print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
                       f"({'interior' if interior else 'boundary'}), radius (M) {radius:.1e}, {used} products, "
-                      f"{seconds_products:.0f} s in products, {refreshes} preconditioner refreshes", flush=True)
+                      f"{seconds_products:.0f} s in products, {refreshes} preconditioner refreshes, {extensions} flat extensions",
+                      flush=True)
             if opt.get("response"):  # converged once the values and the exact design gradient have settled
                 vtol, gtol = map(float, opt["response"])
                 values = np.asarray(self._rows(rec["state"], rec["params"], jnp.asarray(x)), dtype=float)
@@ -1874,6 +1882,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 b, (cost, g, rec) = b + ds * scale, trial
                 if rho > 0.75 and not interior:
                     radius *= 2
+                # Along the flat directions the cost is quartic: there the Hessian vanishes at the minimum and a Newton
+                # step covers a third of the remaining distance. Extend the step's flat component while the cost falls
+                # (cost evaluations only; the iterate only moves to a lower cost).
+                flat = pre["flat"]
+                d_flat = flat @ (flat.T @ ds) if flat.size else np.zeros(0)
+                if FLAT_EXTEND and d_flat.size and float(np.linalg.norm(d_flat)) > 0:
+                    for a in FLAT_EXTEND:
+                        extended = point(b + a * d_flat * scale)
+                        evaluations += 1
+                        if extended is None or extended[0] >= cost:
+                            break
+                        b, (cost, g, rec) = b + a * d_flat * scale, extended
+                        extensions += 1
             else:
                 radius = 0.25 * min(radius, step_m)
                 if radius < GN_RESCUE_RADIUS * radius0 and rescues < GN_RESCUE_MAX:
@@ -1920,6 +1941,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
                              products="krylov", product_calls=products, seconds_hessian=seconds_products,
                              seconds=time.perf_counter() - t0, warm=False, refreshes=refreshes, rescues=rescues,
+                             extensions=extensions,
                              seconds_rescue=seconds_rescue)
         if refreshes:  # the last refreshed exact Hessian, near this record: the next trials' preconditioner
             out["hessian"] = pre["H"]

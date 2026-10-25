@@ -7,7 +7,8 @@ with the deck's own mpol = ntor raised to each requested M (the boundary keeps i
 zero), at the deck's ns. Reported per M:
 - ``vacuum_iota_min``: min over the half mesh of the vacuum |iota| (no pressure or current), the optimizer's
   vacuum-iota row;
-- ``iota_min``: min |iota| of the deck's finite-beta equilibrium (prescribed pressure and current).
+- ``iota_min``: min |iota| of the deck's finite-beta equilibrium (prescribed pressure and current);
+- ``dmerc_min``: min of Mercier's D_Merc on s in [0.2, 1) (the optimizer's range).
 
 The same physical surface carried in two labellings should give the same values as M grows. Their 8 x 8 values
 differ by each labelling's discretization error.
@@ -54,6 +55,11 @@ def main():
                     iota = np.abs(np.asarray(eq.wout.iotas)[1:])
                     row[name] = dict(iota_min=float(iota.min()), iota_edge=float(np.abs(np.asarray(eq.wout.iotaf)[-1])),
                                      iota_axis=float(np.abs(np.asarray(eq.wout.iotaf)[0])))
+                    dmerc = np.asarray(getattr(eq.wout, "DMerc", np.zeros(0)), dtype=float)
+                    if dmerc.size:  # Mercier on s in [0.2, 1) (the optimizer's range), the full-mesh interior
+                        s_full = np.linspace(0.0, 1.0, dmerc.size)
+                        keep = (s_full >= 0.2) & (s_full < 1.0)
+                        row[name]["dmerc_min"] = float(dmerc[keep].min())
                 except Exception as error:  # a resolution that does not converge is reported, not fatal
                     row[name] = dict(error=f"{type(error).__name__}: {str(error)[:160]}")
             out["modes"][M] = row

@@ -1210,6 +1210,9 @@ def parse_args(argv=None):
     parser.add_argument("--design-trust", type=float, metavar="R",
                         help="reject (before solving) any trial design farther than R (Euclidean, design parameters) "
                         "from the accepted one, so the optimizer's line search shortens the step (default: no limit)")
+    parser.add_argument("--newton-response", type=float, nargs=2, metavar=("VTOL", "GTOL"),
+                        help="the Krylov Newton polish also converges once the values change by at most VTOL on two "
+                        "iterates and two exact design gradients agree to GTOL (relative)")
     parser.add_argument("--trial-pin", type=float, metavar="W",
                         help="two-stage trials: a fit with the boundary's flat (relabelling) directions pinned at the "
                         "accepted point's (pin curvature W times the Hessian's largest eigenvalue), then the exact "
@@ -1712,7 +1715,7 @@ def main(argv=None):
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, track=args.newton_track, verbose=args.newton_track,
                           warm=args.newton_warm, quasi=args.newton_quasi, max_steps=args.newton_max_steps,
-                          pin=args.trial_pin),
+                          pin=args.trial_pin, response=args.newton_response),
                       exact_gradient=args.newton_polish is not None,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:

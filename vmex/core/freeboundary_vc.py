@@ -1728,7 +1728,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         The step is the exact Newton step to ``cg_rtol`` (or the trust-region boundary, or a direction of negative
         curvature) and the trust region judges it on the actual cost, as the dense polish; it converges on the same
         tests (scaled step at most ``step_tol``, or the cost's floor).  No Hessian is kept: the record's exact
-        gradient builds the dense one only for a point the optimizer differentiates."""
+        gradient builds the dense one only for a point the optimizer differentiates.
+
+        With ``response = (vtol, gtol)`` it also converges once what the optimizer uses has settled: the values change
+        by at most ``vtol`` (relative) on two consecutive iterates, and then two exact design gradients (block CG,
+        :meth:`_krylov_gradients`), two settled iterates apart, agree to ``gtol`` (relative Frobenius norm).  Along
+        the flat valley the cost keeps falling by a tiny fraction per iterate long after those have settled."""
         model, nb = self.model, self.model.x0.size
         scale = np.asarray(model.x_scale, dtype=float)
         rtol, maxiter = float(opt.get("cg_rtol", 1e-3)), int(opt.get("cg_maxiter", 40))
@@ -1797,6 +1802,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # whole step at once, and the actual/predicted test shrinks the radius where it is not.
         radius = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
         history, evaluations, converged, products, seconds_products, refreshes = [], 1, False, 0, 0.0, 0
+        response = dict(values=None, gradient=None, stable=0)
         for _ in range(int(opt["max_steps"])):
             gs = g * scale
             th = time.perf_counter()
@@ -1819,6 +1825,32 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
                       f"({'interior' if interior else 'boundary'}), radius (M) {radius:.1e}, {used} products, "
                       f"{seconds_products:.0f} s in products, {refreshes} preconditioner refreshes", flush=True)
+            if opt.get("response"):  # converged once the values and the exact design gradient have settled
+                vtol, gtol = map(float, opt["response"])
+                values = np.asarray(self._rows(rec["state"], rec["params"], jnp.asarray(x)), dtype=float)
+                if response["values"] is not None:
+                    dv = float(np.max(np.abs(values - response["values"]) / np.maximum(np.abs(values), 1e-300)))
+                    response["stable"] = response["stable"] + 1 if dv <= vtol else 0
+                    history[-1]["value_change"] = dv
+                response["values"] = values
+                if response["stable"] >= 2:
+                    th = time.perf_counter()
+                    got = self._krylov_gradients(x, rec, None, pre["H"])
+                    seconds_products += time.perf_counter() - th
+                    response["stable"] = 0  # the next check after two more settled iterates
+                    if got is not None:
+                        G = np.asarray(got["gradients"])
+                        if response["gradient"] is not None:
+                            dg = float(np.linalg.norm(G - response["gradient"]) / max(np.linalg.norm(G), 1e-300))
+                            history[-1]["gradient_change"] = dg
+                            if opt.get("verbose"):
+                                print(f"[newton krylov] response check: values {history[-1]['value_change']:.1e}, "
+                                      f"gradient {dg:.1e} (tolerances {vtol:.0e}, {gtol:.0e})", flush=True)
+                            if dg <= gtol:
+                                converged = True
+                                history[-1]["response"] = True
+                                break
+                        response["gradient"] = G
             if interior and step <= opt["step_tol"]:
                 converged = True
                 break

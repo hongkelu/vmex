@@ -11,6 +11,10 @@ zero), at the deck's ns. Reported per M:
 - ``dmerc_min``: min of Mercier's D_Merc on s in [0.2, 1) (the optimizer's range);
 - ``qs_total`` (with ``--helicity M N``): the quasisymmetry ratio residual's sum of squares on s = 0.1..1 (the
   optimizer's QA/QH target, unscaled), of the finite-beta equilibrium;
+- ``tails`` (finite beta): the solution's spectral tail at that resolution, a candidate 8 x 8 accuracy indicator: for
+  R, Z (``rz``) and lambda (``lam``), the amplitude in the top two poloidal modes (m >= M - 2) and in the top two
+  toroidal modes (|n| >= N - 2) relative to all m >= 1 modes, on the full-mesh surfaces s >= 0.2 (max over them) and at
+  the edge;
 - ``qi_total`` (with ``--qi``): the constructed-QI residual's total on s = 0.2..1 with the driver's QI options.
 
 The same physical surface carried in two labellings should give the same values as M grows. Their 8 x 8 values
@@ -22,6 +26,22 @@ import tempfile
 from dataclasses import replace
 
 import numpy as np
+
+
+def spectral_tails(wout, M, N):
+    """Top-mode content of R, Z and lambda (see the module docstring)."""
+    xm = np.asarray(wout.xm, dtype=int)
+    xn = np.abs(np.asarray(wout.xn, dtype=int)) // int(wout.nfp)
+    ns = np.asarray(wout.rmnc).shape[0]
+    keep = np.linspace(0.0, 1.0, ns) >= 0.2
+    out = {}
+    for name, arrays in (("rz", ("rmnc", "zmns")), ("lam", ("lmns",))):
+        power = sum(np.asarray(getattr(wout, a), dtype=float) ** 2 for a in arrays)[keep]
+        total = power[:, xm >= 1].sum(axis=1)
+        for tag, sel in (("m", xm >= M - 2), ("n", xn >= N - 2)):
+            ratio = np.sqrt(power[:, sel & (xm >= 1)].sum(axis=1) / np.maximum(total, 1e-300))
+            out[f"{name}_{tag}_max"], out[f"{name}_{tag}_edge"] = float(ratio.max()), float(ratio[-1])
+    return out
 
 
 def main():
@@ -71,6 +91,8 @@ def main():
                         s_full = np.linspace(0.0, 1.0, dmerc.size)
                         keep = (s_full >= 0.2) & (s_full < 1.0)
                         row[name]["dmerc_min"] = float(dmerc[keep].min())
+                    if name == "finite_beta":
+                        row[name]["tails"] = spectral_tails(eq.wout, M, M)
                     if qs is not None and name == "finite_beta":
                         row[name]["qs_total"] = float(qs.compute(eq.wout)["total"])
                     if args.qi and name == "finite_beta":

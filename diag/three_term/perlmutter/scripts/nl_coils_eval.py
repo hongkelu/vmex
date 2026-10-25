@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--boundary-modes", type=int, help="boundary modes of the NL solve (default: all of the interior's)")
     ap.add_argument("--m1-complement", default="solved", choices=("solved", "frozen", "gauged"))
     ap.add_argument("--tag", default="", help="suffix of the output files")
+    ap.add_argument("--solve-only", action="store_true", help="no resolution checks: time the NL solve alone")
     args = ap.parse_args()
     run, out = Path(args.run), Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -111,10 +112,12 @@ def main():
         row = dict(step=n, seen=float(qs.total(w)), interior=args.interior, boundary_modes=args.boundary_modes,
                    m1=args.m1_complement)
         t0 = time.time()
-        try:
-            row["seen_m12"] = at_resolution(inp, w, args.resolution)
-        except Exception as e:
-            row["seen_m12_error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        if not args.solve_only:
+            try:
+                row["seen_m12"] = at_resolution(inp, w, args.resolution)
+            except Exception as e:
+                row["seen_m12_error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        t0 = time.time()
         try:
             fit = solve_free_boundary_three_term(inp, external_field=field, nphi=VC_GRID, ntheta=VC_GRID,
                                                  label_weight=0.0, ftol=args.ftol, max_nfev=args.max_nfev,
@@ -124,9 +127,14 @@ def main():
             res, res0 = fit.boundary_residual, fit.initial_boundary_residual
             row.update(nl=float(qs.total(wa)), bn0=float(res0.normal), bn=float(res.normal), pb=float(res.pressure),
                        K=float(res.sheet_current), lcfs_mm=lcfs_mm(w, wa, nfp), nfev=int(fit.nfev))
+            row["solve_seconds"] = time.time() - t0
             vj.write_wout(str(out / f"wout_nl{args.tag}.step{n}.nc"), wa)
             try:
+                if args.solve_only:
+                    raise StopIteration
                 row["nl_m12"] = at_resolution(inp, wa, args.resolution)
+            except StopIteration:
+                pass
             except Exception as e:
                 row["nl_m12_error"] = f"{type(e).__name__}: {str(e)[:160]}"
         except Exception as e:  # coils that support no equilibrium are a result too

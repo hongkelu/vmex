@@ -1305,9 +1305,10 @@ def parse_args(argv=None):
     parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
                         "equal arc length of the current surface (equal_arc); see ThreeTermFreeBoundaryModel")
-    parser.add_argument("--m1-complement", choices=("solved", "frozen"), default="solved",
+    parser.add_argument("--m1-complement", choices=("solved", "frozen", "gauged"), default="solved",
                         help="the interior's m = 1 complement: solved with the evolved dofs (unique root, default) "
-                        "or VMEC2000's released (frozen) complement")
+                        "or VMEC2000's released (frozen) complement, or a fixed gauge (gauged: sqrt(s) times its edge value; "
+                        "certifies at any resolution)")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
     args = parser.parse_args(argv)

@@ -740,6 +740,55 @@ def plasma_field_on_boundary(
     return field._vc.compute_internal_B(field.B_total, **kwargs)
 
 
+def _remat_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` with each (target block, source chunk) term rematerialized.
+
+    The package's chunked far-field sum saves every chunk's pair intermediates for reverse mode, i.e. the whole
+    one-period-target x full-torus-source kernel: on W7-X (nfp 5, 2304 targets x 92160 sources, 4 densities) four
+    f64[9, 90, 4, 256, 1024, 3] buffers, 79 GB in the exact Hessian products.  Here each term is recomputed in the
+    backward pass, so memory is one block's pairs, independent of nfp; the values are the same sum."""
+    from virtual_casing_jax import integrals
+    from virtual_casing_jax.kernels import laplace_fxd_u
+
+    Xs = integrals._flatten_soa(X_src, "X_src").T
+    Xt = integrals._flatten_soa(X_trg, "X_trg").T
+    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
+    ntrg = Xt.shape[0]
+    chunk = int(chunk_size) if chunk_size and int(chunk_size) > 0 else Xs.shape[0]
+    target_chunk = int(target_chunk_size) if target_chunk_size and int(target_chunk_size) > 0 else ntrg
+    Xs, pad = integrals._pad_to_multiple(Xs, 0, chunk)
+    weights = jnp.pad(weights, (0, pad))  # zero weights: padded sources add nothing
+    Xt, _ = integrals._pad_to_multiple(Xt, 0, target_chunk)
+    sources = (Xs.reshape(-1, chunk, 3), weights.reshape(-1, chunk))
+
+    @jax.checkpoint
+    def term(block, Xc, wc):
+        return jnp.sum(laplace_fxd_u(block[:, None, :] - Xc[None, :, :], wc), axis=1)
+
+    def target_block(block):
+        return jax.lax.scan(lambda acc, s: (acc + term(block, *s), None), jnp.zeros_like(block), sources)[0]
+
+    out = jax.lax.map(target_block, Xt.reshape(-1, target_chunk, 3)).reshape(-1, 3)[:ntrg]
+    return out.T
+
+
+class _RematFarField:
+    """Context: the package's singular evaluators use :func:`_remat_fxd_u_eval` for their far-field sum (they call
+    ``integrals.laplace_fxd_u_eval`` by its module name at trace time)."""
+
+    def __enter__(self):
+        from virtual_casing_jax import integrals
+
+        self._saved = integrals.laplace_fxd_u_eval
+        integrals.laplace_fxd_u_eval = _remat_fxd_u_eval
+
+    def __exit__(self, *exc):
+        from virtual_casing_jax import integrals
+
+        integrals.laplace_fxd_u_eval = self._saved
+        return False
+
+
 def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
     """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
 
@@ -766,11 +815,12 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
                             vcj.src_nt, vcj.src_np, dtheta)
     B_quad = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, setup.quad_nt, setup.quad_np)
     density = jnp.concatenate([cross_prod(B_quad, setup.normal), dot_prod(B_quad, setup.normal)[None]], axis=0)
-    grad = laplace_fxd_u_eval_vec_singular(
-        setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
-        patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
-        orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
+    with _RematFarField():
+        grad = laplace_fxd_u_eval_vec_singular(
+            setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
+            patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
+            orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
+            patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
     grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
     B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
     return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on

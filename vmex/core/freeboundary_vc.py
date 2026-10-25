@@ -312,6 +312,9 @@ QUASI_MIN_RADIUS = 1e-4
 #: step and largest relabelling (rad) of the angle; a larger one is not the identity's continuous neighbour.
 RELABEL_MAX_STEP = 0.5
 RELABEL_MAX_SIZE = 1.5
+#: Flat directions of the multiplicity-corrected Newton step (``newton_polish["multiplicity"]``): scaled-Hessian
+#: eigenvalues below this fraction of the largest.
+MULTIPLICITY_FLAT_RTOL = 1e-6
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
@@ -1780,7 +1783,30 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 history[-1]["floor"] = True
                 break
             accepted = False
-            for _ in range(8):
+            multiplicity = float(opt.get("multiplicity") or 0.0)
+            if multiplicity > 1 and definite and eigenvalues is not None:
+                # A degenerate (quartic) minimum: along its flat directions the gradient has a root of multiplicity
+                # 3, where Newton only takes 1/3 of the way (error x 2/3 per iterate).  Schroeder's correction scales
+                # the step's flat component by the multiplicity; the quadratic model cannot judge that step, so it
+                # is kept when its actual cost beats the plain Newton step's.
+                flat = eigenvectors[:, eigenvalues < MULTIPLICITY_FLAT_RTOL * float(eigenvalues[-1])]
+                if flat.shape[1]:
+                    ds_m = newton + (multiplicity - 1.0) * (flat @ (flat.T @ newton))
+                    trial_m = point(b + ds_m * scale)
+                    trial_n = point(b + newton * scale) if step_newton <= radius else None
+                    evaluations += 1 + (step_newton <= radius)
+                    best = min((t for t in ((trial_m, ds_m, "multiplicity"), (trial_n, newton, "newton"))
+                                if t[0] is not None), key=lambda t: t[0][0], default=None)
+                    if best is not None and best[0][0] < cost:
+                        (trial, ds, kind) = best
+                        secant = (np.asarray(ds, dtype=float).copy(), (trial[1] - g) * scale)
+                        b, (cost, g, rec) = b + ds * scale, trial
+                        accepted = True
+                        history[-1].update(taken=float(np.linalg.norm(ds)), kind=kind, flat=int(flat.shape[1]))
+                        if opt.get("verbose"):
+                            print(f"[newton] {kind} step taken ({flat.shape[1]} flat directions), cost {cost:.12e}",
+                                  flush=True)
+            for _ in range(0 if accepted else 8):
                 if definite and step_newton <= radius:
                     ds = newton
                 else:  # the trust-region step: raise lam until the step fits

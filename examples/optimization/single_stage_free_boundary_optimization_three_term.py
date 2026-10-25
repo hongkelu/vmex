@@ -1207,6 +1207,9 @@ def parse_args(argv=None):
                         help="Newton polish: the first step with the exact Hessian, then damped BFGS updates from the "
                         "exact gradient (one tight solve per step), refreshed exactly when stalled or every 10 steps; "
                         "the record's design gradient still uses the exact Hessian (--no-newton-quasi: exact every step)")
+    parser.add_argument("--newton-multiplicity", type=float, default=0.0, metavar="M",
+                        help="Schroeder-corrected Newton polish: the step's component along the cost's flat directions "
+                        "times M (3 for the quartic labelling valley); 0 off")
     parser.add_argument("--design-trust", type=float, metavar="R",
                         help="reject (before solving) any trial design farther than R (Euclidean, design parameters) "
                         "from the accepted one, so the optimizer's line search shortens the step (default: no limit)")
@@ -1736,7 +1739,8 @@ def main(argv=None):
                       newton_polish=None if args.newton_polish is None else dict(
                           step_tol=args.newton_polish, track=args.newton_track, verbose=args.newton_track,
                           warm=args.newton_warm, quasi=args.newton_quasi, max_steps=args.newton_max_steps,
-                          pin=args.trial_pin, response=args.newton_response),
+                          pin=args.trial_pin, response=args.newton_response,
+                          multiplicity=args.newton_multiplicity),
                       exact_gradient=args.newton_polish is not None,
                       **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     if args.check_jacobian:

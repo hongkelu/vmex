@@ -2154,10 +2154,30 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         radius = float(opt.get("radius", 1e-1))
         floor = opt.get("floor", NEWTON_FLOOR)
         history, evaluations, converged, seconds_hessian, red = [], 1, False, 0.0, None
+        # Quasi-Newton from the accepted point's exact Hessian (the gauge's minimum is not degenerate): damped BFGS on
+        # the exact gradients' secants, a dense exact Hessian only at the start of a run or when a step stalls.
+        H_prev = (self._anchor or {}).get("gauge_H")
+        quasi = bool(opt.get("quasi", True)) and isinstance(H_prev, np.ndarray) and H_prev.shape == (b.size, b.size)
+        H_cost, exact, secant, refresh = (np.array(H_prev) if quasi else None), not quasi, None, False
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
-            H, _ = self.dense_hessian(x, rec)
-            red = self._gauge_reduced(b, g, H)
+            if H_cost is None or refresh:
+                H_cost, _ = self.dense_hessian(x, rec)
+                exact, secant, refresh = True, None, False
+            elif secant is not None:  # damped BFGS (Powell) in the scaled coordinates
+                s_, y_ = secant
+                Hs_old = H_cost * np.outer(scale, scale)
+                Bs = Hs_old @ s_
+                sBs, sy = float(s_ @ Bs), float(s_ @ y_)
+                if sBs > 0:
+                    if sy < 0.2 * sBs:
+                        theta = 0.8 * sBs / (sBs - sy)
+                        y_ = theta * y_ + (1 - theta) * Bs
+                        sy = float(s_ @ y_)
+                    Hs_new = Hs_old + np.outer(y_, y_) / sy - np.outer(Bs, Bs) / sBs
+                    H_cost = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
+                exact, secant = False, None
+            red = self._gauge_reduced(b, g, H_cost)
             seconds_hessian += time.perf_counter() - th
             Hr, gr = red["Hr"], red["gr"]
             eig = np.linalg.eigvalsh(Hr)
@@ -2171,7 +2191,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if opt.get("verbose"):
                 print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
                       f"{radius:.1e}, reduced smallest {eig[0]:.2e} condition {history[-1]['reduced_condition']:.1e}, "
-                      f"Hessian {seconds_hessian:.0f} s", flush=True)
+                      f"{'exact' if exact else 'BFGS'} Hessian, {seconds_hessian:.0f} s", flush=True)
             if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
                              or (radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
                 converged = True
@@ -2196,6 +2216,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 evaluations += 1
                 rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
                 if rho > 0.1:
+                    secant = ((target - b) / scale, (trial[1] - g) * scale)
                     b, (cost, g, rec) = target, trial
                     if rho > 0.75 and np.linalg.norm(dz) > 0.9 * radius:
                         radius *= 2
@@ -2205,11 +2226,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 radius = 0.25 * min(radius, float(np.linalg.norm(dz)))
             if not accepted:
                 history[-1]["stalled"] = True
+                if not exact:  # a stale quasi-Newton model: the exact Hessian here before giving up
+                    refresh, radius = True, max(radius, 1e-3)
+                    continue
                 break
         if not converged:
             raise TrialRejected(f"the gauge Newton polish did not converge ({len(history)} steps)")
+        # The record's gradient reuses an exact reduced Hessian; a quasi-Newton one only preconditions its block CG.
         self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=red["H_L"],
-                             gauge=red)
+                             gauge=red, exact=exact, H_cost=H_cost)
         got = model.evaluate(b, params, field, tight=True)
         if got is None:
             raise TrialRejected("the gauge-polished boundary has no certified interior root")
@@ -2545,6 +2570,57 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry, condition=condition,
                     seconds_hessian=seconds_hessian)
 
+    def _gauge_block_cg(self, x, sol, rows, red, G_b, G_x, direct, scale, t0, rtol=1e-8, maxiter=40):
+        """The gauge gradient's multipliers by block conjugate gradients on the reduced system ``Z^T S H_L S Z y = Z^T S
+        Q``, its products exact (:meth:`exact_products` plus the gauge's curvature), preconditioned by ``red``'s reduced
+        Hessian (a quasi-Newton one); None when a column does not converge or the true residual exceeds 1e-6."""
+        Z, lam = red["Z"], red["lam"]
+        b0 = np.asarray(sol["x"], dtype=float)
+        Kc = np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
+        evals, evecs = np.linalg.eigh(0.5 * (red["Hr"] + red["Hr"].T))
+        evals = np.maximum(np.abs(evals), 1e-14 * float(np.abs(evals).max()))
+
+        def products(Y):  # Hr Y with the exact Hessian
+            U = scale[:, None] * (Z @ Y)
+            HU = np.asarray(self.exact_products(x, sol, U, check=False, chunk=min(U.shape[1], EXACT_PRODUCTS_CHUNK))[0])
+            return Z.T @ (scale[:, None] * (HU + Kc @ U))
+
+        def precondition(R):
+            return evecs @ ((evecs.T @ R) / evals[:, None])
+
+        Q = G_b[rows].T
+        B = Z.T @ (scale[:, None] * Q)
+        Y, R = np.zeros_like(B), B.copy()
+        P = precondition(R)
+        D, rz = P.copy(), np.sum(R * P, axis=0)
+        norms = np.maximum(np.linalg.norm(B, axis=0), 1e-300)
+        active = np.linalg.norm(R, axis=0) > rtol * norms
+        for _ in range(maxiter):
+            if not active.any():
+                break
+            HD = np.zeros_like(D)
+            HD[:, active] = products(D[:, active])
+            curvature = np.sum(D * HD, axis=0)
+            if np.any(curvature[active] <= 0):
+                return None
+            alpha = np.where(active, rz / np.where(active, curvature, 1.0), 0.0)
+            Y, R = Y + alpha * D, R - alpha * HD
+            P = precondition(R)
+            rz_new = np.sum(R * P, axis=0)
+            D = np.where(active, P + (rz_new / np.where(active, rz, 1.0)) * D, D)
+            rz = np.where(active, rz_new, rz)
+            active &= np.linalg.norm(R, axis=0) > rtol * norms
+        if active.any():
+            return None
+        mu = scale[:, None] * (Z @ Y)
+        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
+        residual = Z.T @ (scale[:, None] * (Q - np.asarray(H_mu) - Kc @ mu))
+        true = (np.linalg.norm(residual, axis=0) / norms).tolist()
+        if max(true) > 1e-6:
+            return None
+        return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
+                    asymmetry=0.0, condition=float(evals[-1] / evals[0]), seconds_hessian=time.perf_counter() - t0)
+
     def _gauge_gradients(self, x, sol, rows=None):
         """The exact design gradient on the exact gauge: ``dQ/dd = Q_d - F_d^T mu`` with ``mu = S Z (Z^T S H_L S Z)^-1
         Z^T S Q_b^T`` (``S`` the coordinate scale, ``Z`` the gauge's null space, ``H_L`` the Lagrangian Hessian; the
@@ -2565,8 +2641,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         scale = np.asarray(self.model.x_scale, dtype=float)
         t0 = time.perf_counter()
         kept = getattr(self, "_hessian", None)
-        if (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
-                and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
+        matches = (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
+                   and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6)
+        if matches and not kept.get("exact", True):  # a quasi-Newton reduced Hessian: block CG on exact products
+            got = self._gauge_block_cg(x, sol, rows, kept["gauge"], G_b, G_x, direct, scale, t0)
+            if got is not None:
+                if isinstance(sol.get("anchor"), dict):
+                    sol["anchor"]["gauge_H"] = kept["H_cost"]
+                return got
+            matches = False
+        if matches:
             red = kept["gauge"]
         else:
             H, _ = self.dense_hessian(x, sol)
@@ -2583,6 +2667,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if max(true) > 1e-6:
             raise RuntimeError(f"gauge multipliers missed: true residuals {true}")
         eig = np.linalg.eigvalsh(Hr)
+        if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start
+            sol["anchor"]["gauge_H"] = np.asarray(red["H_L"]) - np.asarray(
+                self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"])))
         return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                     asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
                     seconds_hessian=time.perf_counter() - t0)

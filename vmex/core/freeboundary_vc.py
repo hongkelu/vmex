@@ -237,6 +237,12 @@ STALL_RULE = "gain"
 #: Jacobian of the Levenberg-Marquardt steps between fresh ones: ``"none"`` (fixed, the default) or ``"broyden"``
 #: (a rank-one secant update after every accepted step; every certificate still uses a fresh Jacobian).
 JACOBIAN_UPDATE = "none"
+#: The cold boundary fit (no Jacobian to start from): ``"trf"`` (scipy's trust region, a fresh Jacobian after every
+#: accepted step) or ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh Jacobian, Broyden-updated after
+#: each accepted step, a fresh one when a round stalls; at most FIT_ROUNDS fresh Jacobians).  The fit's end point is
+#: then certified as before; only the path there differs.
+FIT_STRATEGY = os.environ.get("VMEX_FIT_STRATEGY", "trf")
+FIT_ROUNDS = 12
 
 #: Extrapolate an accepted Gauss-Newton step: after an undamped step that gained over three quarters of its
 #: prediction, try 2, 4, 8, ... times it (one evaluation each, current coordinates re-solved), keeping each that
@@ -1073,6 +1079,26 @@ class ThreeTermFreeBoundaryModel:
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
                 return dict(again, jacobian=J1, njev=1)
             x, nfev = again["x"], again["nfev"]
+        if FIT_STRATEGY == "secant":  # cold, or the warm reuse fell short: secant-updated rounds instead of trf
+            got = self.evaluate(x, params, field, tight=tight)
+            if got is None:
+                raise RuntimeError("the start boundary has no certified equilibrium")
+            r, aux = got
+            nfev += 1
+            out = None
+            for _ in range(FIT_ROUNDS):
+                J, _, _, aux = self.linearize(x, aux, field)
+                njev += 1
+                out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, r, aux, J,
+                                           ftol=ftol, max_nfev=max(max_nfev - nfev, 2), verbose=verbose,
+                                           radius=self._radius, project=self._projected, current_columns=columns,
+                                           update="broyden")
+                self._radius = out["radius"]
+                nfev += out["nfev"]
+                x, r, aux = out["x"], out["rows"], out["aux"]
+                if out["converged"] or nfev >= max_nfev:
+                    break
+            return dict(out, jacobian=J, nfev=nfev, njev=njev)
         memo = {}
 
         def fun(z):
@@ -3357,7 +3383,7 @@ CURRENT_BLOCK_RCOND = 1e-12
 
 
 def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, project=None,
-                         current_columns=None):
+                         current_columns=None, update=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -3487,7 +3513,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         else:
             slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
         if cost_new < cost:
-            if JACOBIAN_UPDATE == "broyden":  # rank-one secant update along the accepted step (Broyden's good)
+            if (update or JACOBIAN_UPDATE) == "broyden":  # rank-one secant update along the accepted step
                 dx, dr = x_new - x, got[0] - r
                 if dx @ dx > 0:
                     J = J + np.outer(dr - J @ dx, dx) / (dx @ dx)

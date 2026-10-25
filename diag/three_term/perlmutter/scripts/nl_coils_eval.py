@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--max-nfev", type=int, default=200)
     ap.add_argument("--interior", type=int, help="interior mpol = ntor of the NL solve (default: the run's)")
     ap.add_argument("--boundary-modes", type=int, help="boundary modes of the NL solve (default: all of the interior's)")
-    ap.add_argument("--m1-complement", default="solved", choices=("solved", "frozen"))
+    ap.add_argument("--m1-complement", default="solved", choices=("solved", "frozen", "gauged"))
     ap.add_argument("--tag", default="", help="suffix of the output files")
     args = ap.parse_args()
     run, out = Path(args.run), Path(args.outdir)

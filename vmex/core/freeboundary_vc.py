@@ -258,6 +258,7 @@ GEODESIC_ALPHA = 0.75
 #: Columns per state-tangent solve of :meth:`ThreeTermFreeBoundaryProblem.dense_hessian`: every column's tangent at
 #: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
 EXACT_PRODUCTS_CHUNK = int(os.environ.get("VMEX_EXACT_PRODUCTS_CHUNK", "16"))  # smaller: less memory (nfp 5)
+TANGENT_WIDTH = 16  # tangent batches are padded to a multiple of this: one compiled program for nearby column counts
 
 #: A Krylov Newton step that needs this many exact products refreshes its preconditioner with the iterate's own dense
 #: exact Hessian (255 columns cost ~50 single products): along the flat directions the accepted point's eigenvalues
@@ -825,7 +826,20 @@ class ThreeTermFreeBoundaryModel:
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
         self._tangent_solve = tangents  # traceable, for callers inside a jit holding the factorization
-        self._tangents = jax.jit(tangents)
+        jit_tangents = jax.jit(tangents)
+
+        def padded_tangents(params, state, mask, batch, system=None):
+            """``tangents`` on a batch padded to a multiple of TANGENT_WIDTH columns (copies of the last; their
+            results dropped): the boundary block and the boundary block plus a plasma column share one program
+            (255 and 256 columns each compiled ``tangents``, ~100 s of a solve)."""
+            n = int(jax.tree.leaves(batch)[0].shape[0])
+            width = -(-n // TANGENT_WIDTH) * TANGENT_WIDTH
+            if width != n:
+                batch = jax.tree.map(lambda a: jnp.concatenate([a, jnp.repeat(a[-1:], width - n, axis=0)]), batch)
+            solution, certified = jit_tangents(params, state, mask, batch, system)
+            return jax.tree.map(lambda a: a[:n], solution), certified[:n]
+
+        self._tangents = padded_tangents
         self.push = push
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))

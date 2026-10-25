@@ -27,8 +27,16 @@ from vmex import _compat
 _CACHE_VARS = (
     "JAX_COMPILATION_CACHE_DIR", "VMEX_COMPILATION_CACHE_DIR",
     "VMEX_COMPILATION_CACHE", "JAX_PLATFORM_NAME", "JAX_PLATFORMS",
-    "XLA_FLAGS", "VMEX_FAST_COMPILE", "CUDA_VISIBLE_DEVICES",
+    "XLA_FLAGS", "VMEX_FAST_COMPILE", "CUDA_VISIBLE_DEVICES", "VMEX_COMPILATION_CACHE_SCOPE",
+    "VMEX_COMPILATION_CACHE_MAX_SIZE",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_cache_scope(monkeypatch):
+    """The user's cache scope and size (e.g. a cluster profile) do not leak into these tests."""
+    monkeypatch.delenv("VMEX_COMPILATION_CACHE_SCOPE", raising=False)
+    monkeypatch.delenv("VMEX_COMPILATION_CACHE_MAX_SIZE", raising=False)
 
 
 @pytest.fixture
@@ -126,6 +134,7 @@ def test_fingerprint_separates_hosts(monkeypatch):
     monkeypatch.setattr(_compat.platform, "system", lambda: "Darwin")
     assert _compat._host_identity()        # hardware UUID, or the hostname
     monkeypatch.undo()
+    monkeypatch.delenv("VMEX_COMPILATION_CACHE_SCOPE", raising=False)
     monkeypatch.setattr(_compat, "_host_identity", lambda: "node001")
     first = _compat._cache_machine_fingerprint()
     monkeypatch.setattr(_compat, "_host_identity", lambda: "node002")
@@ -141,6 +150,25 @@ def test_cpu_scope_shares_hosts_with_one_cpu(monkeypatch):
     assert _compat._cache_machine_fingerprint() == first
     monkeypatch.delenv("VMEX_COMPILATION_CACHE_SCOPE")
     assert _compat._cache_machine_fingerprint() != first
+
+
+def test_cpu_scope_disables_eviction(clean_cache_env, tmp_path):
+    """A shared cache keeps no eviction (no cross-process lock, no per-write directory scan)."""
+    mp = clean_cache_env
+    mp.setattr(_compat, "_cache_deserialize_unsafe", lambda: False)
+    mp.setenv("VMEX_COMPILATION_CACHE", "1")
+    mp.setenv("VMEX_COMPILATION_CACHE_DIR", str(tmp_path))
+    mp.delenv("VMEX_COMPILATION_CACHE_MAX_SIZE", raising=False)
+    sizes = {}
+    for scope in ("cpu", None):
+        if scope:
+            mp.setenv("VMEX_COMPILATION_CACHE_SCOPE", scope)
+        else:
+            mp.delenv("VMEX_COMPILATION_CACHE_SCOPE")
+        cfg = _PolicyConfig()
+        _compat._apply_compilation_cache_policy(type("J", (), {"config": cfg})())
+        sizes[scope] = getattr(cfg, "jax_compilation_cache_max_size", None)
+    assert sizes["cpu"] == -1 and sizes[None] > 0
 
 
 class _PolicyConfig:

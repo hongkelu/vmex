@@ -497,8 +497,13 @@ def _configure_compilation_cache(jax_module: Any, cache_dir: str | None) -> None
         # JAX's file cache takes its cross-process lock only when eviction is
         # enabled.  A finite default therefore prevents concurrent VMEX runs
         # from writing the same executable at once, as well as bounding disk.
+        # A shared (cpu-scoped) cache defaults to no eviction: JAX's eviction scans every entry (a stat and an
+        # atime read each) under one cross-process lock on every write, and every read takes that lock; on a
+        # parallel filesystem shared by a few runs, 10^4 entries stalled a solve 20 min in one write.  Without
+        # eviction there is no lock: a reader meeting a partly written entry warns and recompiles.
+        shared = _env("COMPILATION_CACHE_SCOPE").strip().lower() == "cpu"
         max_size = _env("COMPILATION_CACHE_MAX_SIZE",
-                        str(_default_cache_max_size(cache_dir)))
+                        "-1" if shared else str(_default_cache_max_size(cache_dir)))
         if max_size:
             jax_module.config.update("jax_compilation_cache_max_size", int(max_size))
     except Exception:

@@ -1537,10 +1537,13 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     attempts = [s for s in (perturb, hot) if s is not None] + [None]
     result = reference = None
     limited = 0
+    from .setup import M1_HOLD
+
     with _timed(cfg, "solve"):
         for k, init in enumerate(attempts):
             token = STOP_HOOK.set(
                 None if reference is None else _rung_probe(reference))
+            hold = M1_HOLD.set(_m1_gauged(cfg))  # "gauged": the solver never evolves the m=1 complement
             try:
                 trial = run(init)
             except VmecError:
@@ -1550,6 +1553,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 continue
             finally:
                 STOP_HOOK.reset(token)
+                M1_HOLD.reset(hold)
             if result is None or _fsq(trial) < _fsq(result):
                 result = trial
             if bool(result.converged):

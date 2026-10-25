@@ -1069,6 +1069,8 @@ def _force_pipeline(
     # -- residue.f90 chain ---------------------------------------------------
     rotated = m1_residue_rotation(spectral, lconm1=setup.lconm1)
     zero_gate = m1_zero_condition(fsqz_previous=fsqz_previous, iterations_since_restart=iteration)
+    if setup.m1_hold:  # the m=1 complement is a fixed gauge (ImplicitConfig.m1_complement="gauged"): never evolved
+        zero_gate = jnp.ones_like(zero_gate, dtype=bool)
     released = zero_m1_z_force(rotated, zero_gate)
     spectral_finite = (
         _all_finite((spectral, rotated, released)) if collect_health else passing

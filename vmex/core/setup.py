@@ -47,6 +47,8 @@ Ported from the parity-proven legacy implementation
 
 from __future__ import annotations
 
+import contextvars
+import dataclasses
 import functools
 import types
 from dataclasses import dataclass
@@ -225,11 +227,18 @@ class RunSetup:
     lthreed: bool
     lconm1: bool
     ncurr: int
+    #: The constrained m=1 complement's force is released at every iteration (it stays at its initial
+    #: ``sqrt(s)`` profile): ``ImplicitConfig.m1_complement = "gauged"`` (:data:`M1_HOLD`).
+    m1_hold: bool = False
+
+
+#: Context for :func:`run_setup`: setups built while it is True hold the m=1 complement (``RunSetup.m1_hold``).
+M1_HOLD = contextvars.ContextVar("vmex_m1_hold", default=False)
 
 
 _register(RadialGrids)
 _register(ProcessedBoundary, meta=("signgs", "lflip"))
-_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr"))
+_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr", "m1_hold"))
 
 
 def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:
@@ -1314,4 +1323,6 @@ def run_setup(
         )
         setup = lane(_setup_lane_inputs(inp, scaled, r00, axis, dtype=dtype))
 
+    if M1_HOLD.get() and bool(lconm1):
+        setup = dataclasses.replace(setup, m1_hold=True)
     return setup

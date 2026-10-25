@@ -1481,7 +1481,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
-            if self.newton_polish is not None and isinstance(anchor.get("hessian"), np.ndarray):
+            if self.newton_polish is not None and (isinstance(anchor.get("hessian"), np.ndarray)
+                                                   or self.model.gauge is not None):  # the gauge Newton needs no fit
                 # First: the accepted boundary straight into the Newton polish, preconditioned by the accepted point's
                 # exact Hessian. Its first step is the exact first-order prediction -H^-1 g, held to the trust region:
                 # along the flat (relabelling) directions the unrestricted prediction (and the Gauss-Newton one, which
@@ -1616,8 +1617,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if newton and self.newton_polish is not None:  # converge the stationarity in every direction, certify there
             sol = self._newton_refine(x, params, field, dict(x=np.asarray(fit["x"], dtype=float)), extra)
         else:
-            sol = model.certify(params, field, fit, gate=max(self.boundary_ftol, POLISH_FTOL), xtol=self.boundary_xtol,
-                                polish=polish, max_residual=self.boundary_max_residual, extra=extra,
+            # On the gauge the cost is stationary only within it: the Gauss-Newton gain of the full space does not
+            # apply (a restored gauge point is then converged by refine_accepted's gauge Newton).
+            gauged = model.gauge is not None
+            sol = model.certify(params, field, fit, gate=np.inf if gauged else max(self.boundary_ftol, POLISH_FTOL),
+                                xtol=None if gauged else self.boundary_xtol, polish=polish and not gauged,
+                                max_residual=self.boundary_max_residual, extra=extra,
                                 values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.

@@ -315,6 +315,9 @@ RELABEL_MAX_SIZE = 1.5
 #: Flat directions of the multiplicity-corrected Newton step (``newton_polish["multiplicity"]``): scaled-Hessian
 #: eigenvalues below this fraction of the largest.
 MULTIPLICITY_FLAT_RTOL = 1e-6
+#: The gauge Newton escalates a stale quasi-Newton model to the Gauss-Newton ``J^T J`` at the iterate (one
+#: linearization) before the exact dense Hessian (``newton_polish["gauss_newton_model"]``).
+GAUGE_GN_MODEL = True
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
@@ -2107,6 +2110,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         new = 0.5 * float(np.asarray(out["rows"]) @ np.asarray(out["rows"]))
         return np.asarray(out["x"], dtype=float) if new < cost else None
 
+    def _gn_hessian(self, rec, field):
+        """The Gauss-Newton Hessian ``J^T J`` of the fit's cost at the record ``rec`` (one linearization: the rows'
+        Jacobian along the model coordinates), in the model coordinates."""
+        J = np.asarray(self.model.linearize(np.asarray(rec["x"], dtype=float),
+                                            (rec["state"], rec["mask"], rec["params"], True), field)[0])
+        J = J[:, :self.model.x0.size]
+        return J.T @ J
+
     def _gauge_relabel(self, b):
         """``b`` relabelled onto the exact gauge: the same surface with the angle ``theta + f`` that satisfies the gauge
         (:attr:`ThreeTermFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
@@ -2222,11 +2233,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         quasi = bool(opt.get("quasi", True)) and isinstance(H_prev, np.ndarray) and H_prev.shape == (b.size, b.size)
         H_cost, exact, secant, refresh = (np.array(H_prev) if quasi else None), not quasi, None, False
         H_before, definite = None, False
+        # model level: 0 quasi-Newton (SR1), 1 Gauss-Newton J^T J at the iterate (one linearization), 2 the exact
+        # dense Hessian; a stale or indefinite model escalates one level (the converged point does not depend on it:
+        # stationarity is the exact gradient's)
+        level = 2 if exact else 0
+        gn = bool(opt.get("gauss_newton_model", GAUGE_GN_MODEL))
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
             if H_cost is None or refresh:
-                H_cost, _ = self.dense_hessian(x, rec)
-                exact, secant, refresh = True, None, False
+                if gn and level < 1:
+                    H_cost, level = self._gn_hessian(rec, field), 1
+                else:
+                    (H_cost, _), level = self.dense_hessian(x, rec), 2
+                exact, secant, refresh = level == 2, None, False
             elif secant is not None:  # SR1 in the scaled coordinates (keeps indefinite curvature, unlike BFGS)
                 s_, y_ = secant
                 Hs_old = H_cost * np.outer(scale, scale)
@@ -2236,7 +2255,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     H_before = H_cost if definite else None
                     Hs_new = Hs_old + np.outer(v, v) / denominator
                     H_cost = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
-                exact, secant = False, None
+                exact, secant, level = False, None, 0
             red = self._gauge_reduced(b, g, H_cost)
             Hr, gr = red["Hr"], red["gr"]
             eig = np.linalg.eigvalsh(Hr)
@@ -2258,13 +2277,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if opt.get("verbose"):
                 print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
                       f"{radius:.1e}, reduced smallest {eig[0]:.2e} condition {history[-1]['reduced_condition']:.1e}, "
-                      f"{'exact' if exact else 'SR1'} Hessian, {seconds_hessian:.0f} s", flush=True)
+                      f"{('SR1', 'Gauss-Newton', 'exact')[level]} Hessian, {seconds_hessian:.0f} s", flush=True)
             if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
                              or (exact and radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
                 converged = True
                 break
-            if not exact and (radius < QUASI_MIN_RADIUS or not definite):  # stale, or far from the (non-degenerate)
-                # minimum: the exact Hessian here
+            if level < 2 and (radius < QUASI_MIN_RADIUS or not definite):  # stale, or far from the (non-degenerate)
+                # minimum: a fresher model here (Gauss-Newton, then exact)
                 refresh, radius = True, max(radius, 1e-3)
                 history[-1]["refreshed"] = True
                 continue
@@ -2298,7 +2317,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 radius = 0.25 * min(radius, float(np.linalg.norm(dz)))
             if not accepted:
                 history[-1]["stalled"] = True
-                if not exact:  # a stale quasi-Newton model: the exact Hessian here before giving up
+                if level < 2:  # a stale model: a fresher one here (Gauss-Newton, then exact) before giving up
                     refresh, radius = True, max(radius, 1e-3)
                     continue
                 break
@@ -2732,20 +2751,19 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         kept = getattr(self, "_hessian", None)
         matches = (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
                    and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6)
-        anchor = self._anchor or {}
-        H_exact, age = anchor.get("gauge_H"), int(anchor.get("gauge_H_age", 0))
-        if (matches and not kept.get("exact", True) and isinstance(H_exact, np.ndarray)
-                and age < GAUGE_HESSIAN_AGE):
-            # block CG on exact products, preconditioned by the last exact Hessian on this point's gauge
+        if matches and not kept.get("exact", True) and sol.get("J") is not None:
+            # block CG on exact products, preconditioned by this point's Gauss-Newton Hessian (its certified J) on
+            # its gauge: within a few % of the exact one, so a few iterations; the gradient stays exact
             red = dict(kept["gauge"])
             Kc = np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"])))
-            Hs = 0.5 * (H_exact + Kc + (H_exact + Kc).T) * np.outer(scale, scale)
-            red["Hr"] = red["Z"].T @ Hs @ red["Z"]
+            J = np.asarray(sol["J"])[:, :b0.size]
+            H_gn = J.T @ J + Kc
+            red["Hr"] = red["Z"].T @ (0.5 * (H_gn + H_gn.T) * np.outer(scale, scale)) @ red["Z"]
             got = self._gauge_block_cg(x, sol, rows, red, G_b, G_x, direct, scale, t0)
             if got is not None:
                 self.stats["gauge_block_cg"] = self.stats.get("gauge_block_cg", 0) + 1
-                if isinstance(sol.get("anchor"), dict):  # the exact Hessian carries over, one step older
-                    sol["anchor"].update(gauge_H=H_exact, gauge_H_age=age + 1)
+                if isinstance(sol.get("anchor"), dict):  # the next trials start from this point's last model
+                    sol["anchor"].update(gauge_H=np.asarray(kept["H_cost"]), gauge_H_age=0)
                 return got
             matches = False
         if matches and kept.get("exact", True):

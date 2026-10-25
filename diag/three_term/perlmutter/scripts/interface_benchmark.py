@@ -21,6 +21,31 @@ import numpy as np
 from nl_coils_eval import DRIVER, DirectCoilField
 
 
+def checkpoint_boundary(path, deck):
+    """``rbc``, ``zbs`` of ``deck``'s shape holding a checkpoint's boundary (its coordinates on its own deck)."""
+    import tempfile
+    import vmex as vj
+    from vmex.core.optimize import boundary_arrays_from_x
+
+    data = np.load(path, allow_pickle=False)
+    definition = json.loads(str(data["meta"]))["definition"]
+    with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as f:
+        f.write(definition["deck"])
+    own = vj.VmecInput.from_file(f.name)
+    K = int(definition.get("max_mode") or max(own.mpol - 1, own.ntor))
+    nm = len([1 for m in range(min(K, own.mpol - 1) + 1) for n in range(-min(K, own.ntor), min(K, own.ntor) + 1)
+              if not (m == 0 and n <= 0)])
+    rbc, zbs = map(np.asarray, boundary_arrays_from_x(own, np.asarray(data["b"], float)[:2 * nm + 1], K,
+                                                     vary_major_radius=True))
+    out = {k: np.zeros_like(np.asarray(getattr(deck, k), dtype=float)) for k in ("rbc", "zbs")}
+    for k, a in (("rbc", rbc), ("zbs", zbs)):
+        for i in range(a.shape[0]):
+            n = i - int(own.ntor)
+            if abs(n) <= int(deck.ntor):
+                out[k][n + int(deck.ntor), :min(a.shape[1], out[k].shape[1])] = a[i, :out[k].shape[1]]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
@@ -48,12 +73,14 @@ def main():
     coils = Coils.from_json(str(run / f"coils.step{args.step}.json"))
     field = DirectCoilField(np.asarray(coils.gamma), np.asarray(coils.gamma_dash), np.asarray(coils.currents))
     for path in args.wouts:
-        w = vj.read_wout(path)
         # the step's deck (PHIEDGE, current), the candidate's boundary, the evaluator's interior
         deck = tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w_step), phiedge=float(w_step.phi[-1]),
                                                  lfreeb=True, mgrid_file="field(direct)"), w_step)
         deck = deck.change_resolution(mpol=args.interior, ntor=args.interior)
-        deck = tdriver.boundary_from_wout(deck, w)
+        if path.endswith(".npz"):  # a checkpoint: its boundary coordinates on its own deck
+            deck = replace(deck, **checkpoint_boundary(path, deck))
+        else:
+            deck = tdriver.boundary_from_wout(deck, vj.read_wout(path))
         nfp = int(deck.nfp)
         for grid in args.vc_grid:
             t0 = time.time()

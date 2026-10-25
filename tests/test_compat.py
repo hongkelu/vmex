@@ -132,6 +132,17 @@ def test_fingerprint_separates_hosts(monkeypatch):
     assert _compat._cache_machine_fingerprint() != first
 
 
+def test_cpu_scope_shares_hosts_with_one_cpu(monkeypatch):
+    """VMEX_COMPILATION_CACHE_SCOPE=cpu: nodes with the same CPU model and flags share one directory."""
+    monkeypatch.setenv("VMEX_COMPILATION_CACHE_SCOPE", "cpu")
+    monkeypatch.setattr(_compat, "_host_identity", lambda: "node001")
+    first = _compat._cache_machine_fingerprint()
+    monkeypatch.setattr(_compat, "_host_identity", lambda: "node002")
+    assert _compat._cache_machine_fingerprint() == first
+    monkeypatch.delenv("VMEX_COMPILATION_CACHE_SCOPE")
+    assert _compat._cache_machine_fingerprint() != first
+
+
 class _PolicyConfig:
     """jax.config stand-in holding the two cache fields JAX reads."""
 

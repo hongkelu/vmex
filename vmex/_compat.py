@@ -288,14 +288,21 @@ def _cache_machine_fingerprint() -> str:
     or the compiler under it changes.  The price is one cold compile per
     cluster node (and per container, whose hostname is new each run); a
     workstation or laptop keeps one warm cache.
+
+    ``VMEX_COMPILATION_CACHE_SCOPE=cpu`` drops the host identity: every node
+    with the same CPU model and flags, Python and jaxlib build shares one
+    directory.  For a homogeneous cluster partition (Perlmutter's GPU nodes),
+    where a job lands on new nodes every allocation and the per-node cache is
+    always cold (a gauge solve spent ~30% of its time recompiling).
     """
 
+    shared = _env("COMPILATION_CACHE_SCOPE").strip().lower() == "cpu"
     parts = [
         f"vmex-cache={_CACHE_FORMAT_VERSION}",
         platform.system(),
         platform.machine(),
         platform.processor(),
-        f"host={_host_identity()}",
+        "host=*" if shared else f"host={_host_identity()}",
         f"python={sys.version_info.major}.{sys.version_info.minor}",
     ]
     for package in ("jax", "jaxlib"):

@@ -32,10 +32,15 @@ def checkpoint_boundary(path, deck):
     with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as f:
         f.write(definition["deck"])
     own = vj.VmecInput.from_file(f.name)
-    K = int(definition.get("max_mode") or max(own.mpol - 1, own.ntor))
-    nm = len([1 for m in range(min(K, own.mpol - 1) + 1) for n in range(-min(K, own.ntor), min(K, own.ntor) + 1)
-              if not (m == 0 and n <= 0)])
-    rbc, zbs = map(np.asarray, boundary_arrays_from_x(own, np.asarray(data["b"], float)[:2 * nm + 1], K,
+    b = np.asarray(data["b"], float)
+
+    def count(K):
+        return len([1 for m in range(min(K, own.mpol - 1) + 1) for n in range(-min(K, own.ntor), min(K, own.ntor) + 1)
+                    if not (m == 0 and n <= 0)])
+
+    K = next(K for K in range(1, max(own.mpol, own.ntor) + 1) if 2 * count(K) + 1 == b.size)  # the boundary modes
+    nm = count(K)
+    rbc, zbs = map(np.asarray, boundary_arrays_from_x(own, b[:2 * nm + 1], K,
                                                      vary_major_radius=True))
     out = {k: np.zeros_like(np.asarray(getattr(deck, k), dtype=float)) for k in ("rbc", "zbs")}
     for k, a in (("rbc", rbc), ("zbs", zbs)):

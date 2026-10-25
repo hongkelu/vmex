@@ -257,7 +257,7 @@ GEODESIC_ALPHA = 0.75
 
 #: Columns per state-tangent solve of :meth:`ThreeTermFreeBoundaryProblem.dense_hessian`: every column's tangent at
 #: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
-EXACT_PRODUCTS_CHUNK = int(__import__("os").environ.get("VMEX_EXACT_PRODUCTS_CHUNK", "16"))  # smaller: less memory (nfp 5)
+EXACT_PRODUCTS_CHUNK = int(os.environ.get("VMEX_EXACT_PRODUCTS_CHUNK", "16"))  # smaller: less memory (nfp 5)
 
 #: A Krylov Newton step that needs this many exact products refreshes its preconditioner with the iterate's own dense
 #: exact Hessian (255 columns cost ~50 single products): along the flat directions the accepted point's eigenvalues

@@ -305,7 +305,8 @@ GAUGE_PROJECT_STEPS = 20
 GAUGE_HESSIAN_AGE = 5
 #: The gauge Newton's SR1 update is skipped when ``|s^T (y - B s)| <= SR1_SKIP |s| |y - B s|`` (Nocedal & Wright 6.26).
 SR1_SKIP = 1e-8
-#: A quasi-Newton gauge iterate whose trust radius fell below this refreshes the exact Hessian instead of crawling.
+#: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the exact
+#: Hessian instead of crawling.
 QUASI_MIN_RADIUS = 1e-4
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
@@ -2201,7 +2202,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                              or (exact and radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
                 converged = True
                 break
-            if not exact and radius < QUASI_MIN_RADIUS:  # the quasi-Newton model has gone stale: exact here
+            if not exact and (radius < QUASI_MIN_RADIUS or not definite):  # stale, or far from the (non-degenerate)
+                # minimum: the exact Hessian here
                 refresh, radius = True, max(radius, 1e-3)
                 history[-1]["refreshed"] = True
                 continue
@@ -3098,7 +3100,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         params, field = self._params_at(xj), self.field(xj)
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
         polish = self.newton_polish
-        self.newton_polish = dict(polish, max_steps=min(int(polish.get("max_steps", 10)), REFINE_MAX_STEPS))
+        if self.model.gauge is None:  # the gauge Newton converges (quadratically) from far: its full budget
+            self.newton_polish = dict(polish, max_steps=min(int(polish.get("max_steps", 10)), REFINE_MAX_STEPS))
         try:
             new = self._newton_refine(x, params, field, sol, extra)
         except TrialRejected as error:

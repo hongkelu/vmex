@@ -101,6 +101,9 @@ QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
+# Set (--dkx-correction): (s, delta) added to DKX's <j.B> [A T/m^2] on every row, delta = a converged DKX (finer grid,
+# ambipolar E_r) minus this resolution's at a recent design; an offset, so the in-loop gradient is DKX's own.
+DKX_CORRECTION = None
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -573,7 +576,10 @@ def dkx_kinetic(inp):
                 return moments["FSABjHat"].reshape(()) * PARALLEL_CURRENT
 
             stacked = jax.tree.map(lambda *a: jnp.stack([jnp.asarray(x) for x in a]), *templates)
-            return s_rows, jax.lax.map(surface, (jnp.asarray(rows), stacked))
+            values = jax.lax.map(surface, (jnp.asarray(rows), stacked))
+            if DKX_CORRECTION is not None:
+                values = values + jnp.asarray(np.interp(np.asarray(s_rows), *DKX_CORRECTION))
+            return s_rows, values
 
     surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
     return Mapped(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
@@ -1089,6 +1095,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-floor", type=float, help="floor on min |iota| (default: IOTA_FLOOR)")
+    parser.add_argument("--dkx-correction", type=Path, help="JSON {s: [...], delta: [...]} added to DKX's <j.B> "
+                        "(A T/m^2) on every row: a converged DKX minus the in-loop one (DKX_CORRECTION)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
@@ -1300,6 +1308,7 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
+    global DKX_CORRECTION
     global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT, LENGTH_WEIGHT
     args = parse_args(argv)
     LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
@@ -1315,6 +1324,9 @@ def main(argv=None):
         VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
     if args.iota_floor is not None:
         IOTA_FLOOR = args.iota_floor
+    if args.dkx_correction is not None:
+        correction = json.loads(args.dkx_correction.read_text())
+        DKX_CORRECTION = (np.asarray(correction["s"], float), np.asarray(correction["delta"], float))
     if args.iota_ceiling is not None:
         IOTA_CEILING = args.iota_ceiling
     if args.aspect_range is not None:

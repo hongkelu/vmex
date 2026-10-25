@@ -303,6 +303,10 @@ GAUGE_PROJECT_STEPS = 20
 #: The gauge gradient's block CG is preconditioned by the last exact Hessian while it is at most this many accepted
 #: steps old (then a dense exact Hessian again, which becomes the next one).
 GAUGE_HESSIAN_AGE = 5
+#: The gauge Newton's SR1 update is skipped when ``|s^T (y - B s)| <= SR1_SKIP |s| |y - B s|`` (Nocedal & Wright 6.26).
+SR1_SKIP = 1e-8
+#: A quasi-Newton gauge iterate whose trust radius fell below this refreshes the exact Hessian instead of crawling.
+QUASI_MIN_RADIUS = 1e-4
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
@@ -2158,8 +2162,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         radius = float(opt.get("radius", 1e-1))
         floor = opt.get("floor", NEWTON_FLOOR)
         history, evaluations, converged, seconds_hessian, red = [], 1, False, 0.0, None
-        # Quasi-Newton from the accepted point's exact Hessian (the gauge's minimum is not degenerate): damped BFGS on
-        # the exact gradients' secants, a dense exact Hessian only at the start of a run or when a step stalls.
+        # Quasi-Newton from the accepted point's exact Hessian (the gauge's minimum is not degenerate): SR1 on
+        # the exact gradients' secants, a dense exact Hessian at the start of a run and when a step stalls or the trust
+        # radius collapses (QUASI_MIN_RADIUS).
         H_prev = (self._anchor or {}).get("gauge_H")
         quasi = bool(opt.get("quasi", True)) and isinstance(H_prev, np.ndarray) and H_prev.shape == (b.size, b.size)
         H_cost, exact, secant, refresh = (np.array(H_prev) if quasi else None), not quasi, None, False
@@ -2168,17 +2173,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if H_cost is None or refresh:
                 H_cost, _ = self.dense_hessian(x, rec)
                 exact, secant, refresh = True, None, False
-            elif secant is not None:  # damped BFGS (Powell) in the scaled coordinates
+            elif secant is not None:  # SR1 in the scaled coordinates (keeps indefinite curvature, unlike BFGS)
                 s_, y_ = secant
                 Hs_old = H_cost * np.outer(scale, scale)
-                Bs = Hs_old @ s_
-                sBs, sy = float(s_ @ Bs), float(s_ @ y_)
-                if sBs > 0:
-                    if sy < 0.2 * sBs:
-                        theta = 0.8 * sBs / (sBs - sy)
-                        y_ = theta * y_ + (1 - theta) * Bs
-                        sy = float(s_ @ y_)
-                    Hs_new = Hs_old + np.outer(y_, y_) / sy - np.outer(Bs, Bs) / sBs
+                v = y_ - Hs_old @ s_
+                denominator = float(s_ @ v)
+                if abs(denominator) > SR1_SKIP * float(np.linalg.norm(s_) * np.linalg.norm(v)):
+                    Hs_new = Hs_old + np.outer(v, v) / denominator
                     H_cost = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
                 exact, secant = False, None
             red = self._gauge_reduced(b, g, H_cost)
@@ -2195,11 +2196,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if opt.get("verbose"):
                 print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
                       f"{radius:.1e}, reduced smallest {eig[0]:.2e} condition {history[-1]['reduced_condition']:.1e}, "
-                      f"{'exact' if exact else 'BFGS'} Hessian, {seconds_hessian:.0f} s", flush=True)
+                      f"{'exact' if exact else 'SR1'} Hessian, {seconds_hessian:.0f} s", flush=True)
             if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
-                             or (radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
+                             or (exact and radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
                 converged = True
                 break
+            if not exact and radius < QUASI_MIN_RADIUS:  # the quasi-Newton model has gone stale: exact here
+                refresh, radius = True, max(radius, 1e-3)
+                history[-1]["refreshed"] = True
+                continue
             accepted = False
             for _ in range(8):
                 if definite and step <= radius:

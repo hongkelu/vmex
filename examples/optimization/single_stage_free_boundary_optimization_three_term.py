@@ -1238,6 +1238,9 @@ def parse_args(argv=None):
     parser.add_argument("--check-labelling-sensitivity", type=int, default=0, metavar="K",
                         help="at the accepted point, move the boundary along the exact Hessian's K softest directions "
                         "(scaled steps 0.03..3) and record the cost and every value (labelling_sensitivity.json), then stop")
+    parser.add_argument("--solve-only", action="store_true",
+                        help="solve the seed design's free boundary, report its time breakdown and interface residuals, "
+                        "save the checkpoint, wout and coils, and stop (method benchmarks: same start, timed alike)")
     parser.add_argument("--check-cost-gradient", action="store_true",
                         help="at the accepted boundary, central differences of the fit's cost along the descent and a "
                         "random direction (steps 1e-2..1e-8, scaled) against g.d (cost_gradient_check.json), then stop")
@@ -1917,6 +1920,22 @@ def main(argv=None):
             elif (out / "slsqp_state.npz").exists():
                 os.remove(out / "slsqp_state.npz")
 
+    if args.solve_only:
+        x_seed = problem.accepted.parameters
+        res = problem.boundary_residual(x_seed)
+        st = problem.stats
+        timing = dict(total_seconds=time.monotonic() - started,
+                      **{k: float(st.get(k, 0.0)) for k in ("seconds_fit", "seconds_certify", "seconds_newton",
+                                                             "seconds_gradient")},
+                      boundary_evaluations=int(st.get("boundary_evaluations", 0)),
+                      newton_evaluations=int(st.get("newton_evaluations", 0)))
+        record = dict(timing=timing, bn=float(res.normal), pb=float(res.pressure), K=float(res.sheet_current),
+                      gauge=args.gauge, modes=list(RESOLUTION), m1=args.m1_complement)
+        problem.save_checkpoint(out / "checkpoint.npz")
+        save("")
+        (out / "solve_only.json").write_text(json.dumps(record, indent=1) + "\n")
+        print("[solve only] " + json.dumps(record), flush=True)
+        return
     if args.checkpoint_every and (args.check_gradient or args.check_stationarity_gradient or args.check_exact_products
                                   or args.check_cost_gradient or args.check_labelling_sensitivity
                                   or args.check_soft_modes

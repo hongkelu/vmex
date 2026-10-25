@@ -2705,7 +2705,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if not active.any():
                 break
             HD = np.zeros_like(D)
-            HD[:, active] = products(D[:, active])
+            HD = products(D)  # every column: one shape, one compilation (each active-column count recompiled, ~145 s)
             curvature = np.sum(D * HD, axis=0)
             if np.any(curvature[active] <= 0):
                 return None
@@ -2862,7 +2862,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if not active.any():
                 break
             HD = np.zeros_like(D)
-            HD[:, active] = products(D[:, active])
+            HD = products(D)  # every column: one shape, one compilation (each active-column count recompiled, ~145 s)
             calls += 1
             curvature = np.sum(D * HD, axis=0)
             if np.any(curvature[active] <= 0):

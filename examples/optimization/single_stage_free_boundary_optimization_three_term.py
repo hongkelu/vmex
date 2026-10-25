@@ -1225,6 +1225,9 @@ def parse_args(argv=None):
                         help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
                         "separately) along a random state direction: autodiff vs central differences of its exact "
                         "gradient (rows_c2_check.json), then stop")
+    parser.add_argument("--check-labelling-sensitivity", type=int, default=0, metavar="K",
+                        help="at the accepted point, move the boundary along the exact Hessian's K softest directions "
+                        "(scaled steps 0.03..3) and record the cost and every value (labelling_sensitivity.json), then stop")
     parser.add_argument("--check-cost-gradient", action="store_true",
                         help="at the accepted boundary, central differences of the fit's cost along the descent and a "
                         "random direction (steps 1e-2..1e-8, scaled) against g.d (cost_gradient_check.json), then stop")
@@ -1894,7 +1897,7 @@ def main(argv=None):
                 os.remove(out / "slsqp_state.npz")
 
     if args.checkpoint_every and (args.check_gradient or args.check_stationarity_gradient or args.check_exact_products
-                                  or args.check_cost_gradient
+                                  or args.check_cost_gradient or args.check_labelling_sensitivity
                                   or args.check_g_noise or args.check_rows_c2):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
@@ -1936,6 +1939,37 @@ def main(argv=None):
             print(f"[rows C2] {name}: |d2 f v| {np.linalg.norm(e):.3e}; exact vs differences of the exact gradient: "
                   + " ".join(f"h={r['h']:.0e} {r['relative']:.1e}" for r in rows), flush=True)
         (out / "rows_c2_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_labelling_sensitivity:  # how much do the values move along the cost's flat directions?
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        scale = np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        H, _ = problem.dense_hessian(x_seed, sol)
+        lam, V = np.linalg.eigh(0.5 * (H + H.T) * np.outer(scale, scale))
+        got0 = problem.model.evaluate(b0, params_s, field_s, tight=True)
+        cost0 = 0.5 * float(got0[0] @ got0[0])
+        values0 = np.asarray(problem._rows(got0[1][0], got0[1][2], xj), dtype=float)
+        record = dict(cost=cost0, values=values0.tolist(), eigenvalues=lam[:12].tolist(), largest=float(lam[-1]),
+                      directions=[])
+        for k in range(args.check_labelling_sensitivity):
+            rows = []
+            for delta in (0.03, 0.1, 0.3, 1.0, 3.0):
+                got = problem.model.evaluate(b0 + delta * V[:, k] * scale, params_s, field_s, tight=True)
+                if got is None:
+                    rows.append(dict(delta=delta, failed=True))
+                    continue
+                cost = 0.5 * float(got[0] @ got[0])
+                values = np.asarray(problem._rows(got[1][0], got[1][2], xj), dtype=float)
+                rel = np.abs(values - values0) / np.maximum(np.abs(values0), 1e-300)
+                rows.append(dict(delta=delta, cost_change=(cost - cost0) / cost0, value_change=rel.tolist()))
+                print(f"[labelling sensitivity] direction {k} (eigenvalue {lam[k]:.2e}) delta {delta:g}: cost "
+                      f"{(cost - cost0) / cost0:+.2e}, objective {rel[0]:.2e}, values max {rel.max():.2e} "
+                      f"(row {int(rel.argmax())})", flush=True)
+            record["directions"].append(dict(eigenvalue=float(lam[k]), steps=rows))
+            (out / "labelling_sensitivity.json").write_text(json.dumps(record, indent=1) + "\n")
         return
     if args.check_cost_gradient:  # is g = d(cost)/db consistent with the cost the Newton polish measures?
         x_seed = problem.accepted.parameters

@@ -2603,9 +2603,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         evals, evecs = np.linalg.eigh(0.5 * (red["Hr"] + red["Hr"].T))
         evals = np.maximum(np.abs(evals), 1e-14 * float(np.abs(evals).max()))
 
+        count = dict(calls=0, columns=0, seconds=0.0)
+
         def products(Y):  # Hr Y with the exact Hessian
+            tp = time.perf_counter()
+            count["calls"] += 1
+            count["columns"] += int(Y.shape[1])
             U = scale[:, None] * (Z @ Y)
             HU = np.asarray(self.exact_products(x, sol, U, check=False, chunk=min(U.shape[1], EXACT_PRODUCTS_CHUNK))[0])
+            count["seconds"] += time.perf_counter() - tp
             return Z.T @ (scale[:, None] * (HU + Kc @ U))
 
         def precondition(R):
@@ -2633,6 +2639,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             D = np.where(active, P + (rz_new / np.where(active, rz, 1.0)) * D, D)
             rz = np.where(active, rz_new, rz)
             active &= np.linalg.norm(R, axis=0) > rtol * norms
+        self.stats["gauge_cg_last"] = dict(count, rows=int(B.shape[1]), converged=not bool(active.any()),
+                                           seconds_total=time.perf_counter() - t0)
         if active.any():
             return None
         mu = scale[:, None] * (Z @ Y)

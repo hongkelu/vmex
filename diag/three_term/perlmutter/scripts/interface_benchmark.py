@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from nl_coils_eval import DRIVER, DirectCoilField
+from nl_coils_eval import DRIVER, GRID, DirectCoilField
 
 
 def checkpoint_boundary(path, deck):
@@ -83,14 +83,14 @@ def main():
         # the step's deck (PHIEDGE, current), the candidate's boundary, the evaluator's interior
         deck = None if args.own_deck else tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w_step), phiedge=float(w_step.phi[-1]),
                                                  lfreeb=True, mgrid_file="field(direct)"), w_step)
-        deck = None if deck is None else deck.change_resolution(mpol=args.interior, ntor=args.interior)
+        deck = None if deck is None else deck.change_resolution(mpol=args.interior, ntor=args.interior, ntheta=GRID, nzeta=GRID)
         if path.endswith(".npz") and args.own_deck:  # the checkpoint's own deck (e.g. another current profile)
             import tempfile
             definition = json.loads(str(np.load(path, allow_pickle=False)["meta"]))["definition"]
             with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as f:
                 f.write(definition["deck"])
             deck = replace(vj.VmecInput.from_file(f.name), lfreeb=True, mgrid_file="field(direct)")
-            deck = deck.change_resolution(mpol=args.interior, ntor=args.interior)
+            deck = deck.change_resolution(mpol=args.interior, ntor=args.interior, ntheta=GRID, nzeta=GRID)
         if path.endswith(".npz"):  # a checkpoint: its boundary coordinates on its own deck
             deck = replace(deck, **checkpoint_boundary(path, deck))
         else:

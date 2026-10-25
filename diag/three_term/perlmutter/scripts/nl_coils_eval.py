@@ -94,7 +94,7 @@ def main():
     inp0 = vj.VmecInput.from_file(run / "input.run")
 
     def at_resolution(inp, w, M):  # the wout's boundary, fixed-boundary, interior at M
-        fixed = replace(tdriver.boundary_from_wout(inp, w), lfreeb=False).change_resolution(mpol=M, ntor=M)
+        fixed = replace(tdriver.boundary_from_wout(inp, w), lfreeb=False).change_resolution(mpol=M, ntor=M, ntheta=GRID, nzeta=GRID)
         eq = opt.solve_equilibrium(fixed, raise_on_max_iterations=True)
         return float(qs.total(eq.wout))
 
@@ -103,7 +103,7 @@ def main():
         inp = tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w), phiedge=float(w.phi[-1]),
                                                 lfreeb=True, mgrid_file="field(direct)"), w)
         if args.interior:
-            inp = inp.change_resolution(mpol=args.interior, ntor=args.interior)
+            inp = inp.change_resolution(mpol=args.interior, ntor=args.interior, ntheta=GRID, nzeta=GRID)
         coils = Coils.from_json(str(run / f"coils.step{n}.json"))
         field = DirectCoilField(np.asarray(coils.gamma), np.asarray(coils.gamma_dash), np.asarray(coils.currents))
         nfp = int(inp.nfp)

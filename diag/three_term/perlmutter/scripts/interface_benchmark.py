@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--boundary-modes", type=int, default=12)
     ap.add_argument("--vc-grid", type=int, nargs="+", default=[48])
     ap.add_argument("--m1-complement", default="gauged", choices=("solved", "frozen", "gauged"))
+    ap.add_argument("--own-deck", action="store_true",
+                    help="checkpoint candidates: their own deck's profiles and flux (not the run's step)")
     args = ap.parse_args()
 
     import jax
@@ -82,6 +84,13 @@ def main():
         deck = tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w_step), phiedge=float(w_step.phi[-1]),
                                                  lfreeb=True, mgrid_file="field(direct)"), w_step)
         deck = deck.change_resolution(mpol=args.interior, ntor=args.interior)
+        if path.endswith(".npz") and args.own_deck:  # the checkpoint's own deck (e.g. another current profile)
+            import tempfile
+            definition = json.loads(str(np.load(path, allow_pickle=False)["meta"]))["definition"]
+            with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as f:
+                f.write(definition["deck"])
+            deck = replace(vj.VmecInput.from_file(f.name), lfreeb=True, mgrid_file="field(direct)")
+            deck = deck.change_resolution(mpol=args.interior, ntor=args.interior)
         if path.endswith(".npz"):  # a checkpoint: its boundary coordinates on its own deck
             deck = replace(deck, **checkpoint_boundary(path, deck))
         else:

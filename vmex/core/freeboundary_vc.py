@@ -190,6 +190,32 @@ def _equal_arc_rows(gamma):
     return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
 
 
+def _gauge_rows(R, Z, mpol, ntor):
+    """The exact gauge of the boundary's poloidal angle: VMEC's spectral condensation (Hirshman & Meier 1985,
+    Hirshman & Breslau 1998) as equations, not penalty rows.
+
+    ``R``, ``Z`` are ``(ntheta, nphi)`` on a uniform grid over one field period.  ``G = R_theta sum m (m - 1) R_mn
+    cos(m theta - n N phi) + Z_theta sum m (m - 1) Z_mn sin(...)``, relative to the mean ``R_theta^2 + Z_theta^2``, is
+    odd for a stellarator-symmetric surface, so its sine components carry every condition: those with
+    ``m = 1 .. mpol - 2`` and ``|n| <= ntor`` fix the ``m >= 1`` relabellings.  The ``m = 0`` relabellings (a
+    shift of theta on each toroidal cut) leave ``G`` unchanged; the phase of the ``m = 1`` part of ``R + i Z`` per cut
+    (odd in phi) fixes them, by its sine components ``n = 1 .. ntor``.  Returns the conditions, flattened.
+    """
+    ntheta, nphi = R.shape
+    k = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[:, None]
+    FR, FZ = jnp.fft.fft(R, axis=0), jnp.fft.fft(Z, axis=0)
+    R_theta, Z_theta = (jnp.real(jnp.fft.ifft(1j * k * F, axis=0)) for F in (FR, FZ))
+    R_c, Z_c = (jnp.real(jnp.fft.ifft(jnp.abs(k) * (jnp.abs(k) - 1) * F, axis=0)) for F in (FR, FZ))
+    G = (R_c * R_theta + Z_c * Z_theta) / jnp.mean(R_theta**2 + Z_theta**2)
+    spectrum = jnp.fft.fft2(G) / G.size
+    toroidal = np.r_[0:ntor + 1, nphi - ntor:nphi]
+    condensation = jnp.imag(spectrum[1:mpol - 1][:, toroidal]).ravel()
+    c1 = jnp.fft.fft(R + 1j * Z, axis=0)[1]
+    phase = jnp.arctan2(jnp.imag(c1), jnp.real(c1))
+    phase_sine = -jnp.imag(jnp.fft.fft(phase))[1:ntor + 1] / nphi
+    return jnp.concatenate([condensation, phase_sine])
+
+
 #: Stationarity (the gain a Gauss-Newton step predicts) a trial's polish rounds aim at.
 POLISH_FTOL = 1e-4
 #: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
@@ -264,6 +290,11 @@ NEWTON_FLOOR = 1e-9
 #: Most Newton steps re-converging a restored accepted record (:meth:`ThreeTermFreeBoundaryProblem.refine_accepted`);
 #: the saved record is kept when they do not converge.
 REFINE_MAX_STEPS = 15
+
+#: The exact gauge (``gauge="condensation"``): the largest |c| a projected boundary may keep, and the most
+#: Gauss-Newton steps of the projection.
+GAUGE_TOL = 1e-12
+GAUGE_PROJECT_STEPS = 20
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
@@ -482,7 +513,8 @@ class ThreeTermFreeBoundaryModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt", m1_complement="solved"):
+                 fixed_boundary=False, labelling="start", bootstrap_g_convention="simsopt", m1_complement="solved",
+                 gauge=None):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -502,6 +534,12 @@ class ThreeTermFreeBoundaryModel:
                             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
                             fixed_boundary=bool(fixed_boundary), labelling=labelling, m1_complement=m1_complement)
         self.fixed_boundary = bool(fixed_boundary)
+        #: The exact gauge of the boundary's poloidal angle (:func:`_gauge_rows`): None (NL: the labelling is whatever
+        #: minimizes the interface residual) or "condensation" (VMEC's spectral condensation held exactly: every iterate
+        #: of the Newton polish is projected onto it, which needs geometry only). Not part of ``options``.
+        if gauge not in (None, "condensation"):
+            raise ValueError(f"gauge must be None or 'condensation', got {gauge!r}")
+        self.gauge = gauge
         if labelling not in ("start", "equal_arc"):
             raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
@@ -577,6 +615,16 @@ class ThreeTermFreeBoundaryModel:
             return N, a
 
         self._normal_operator = jax.jit(normal_operator) if nb else None
+        if self.gauge is not None and nb:
+            mpol_g, ntor_g = int(fixed.mpol), int(fixed.ntor)
+
+            def gauge_rows(x):
+                R, Z = surface(x[:nb])
+                return _gauge_rows(R, Z, mpol_g, ntor_g)
+
+            self.gauge_rows = jax.jit(gauge_rows)
+            self.gauge_jacobian = jax.jit(jax.jacfwd(gauge_rows))
+            self.gauge_curvature = jax.jit(lambda x, lam: jax.hessian(lambda y: jnp.vdot(lam, gauge_rows(y)))(x))
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -1554,6 +1602,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         b = np.asarray(sol["x"], dtype=float).copy()
         if self.model._projected is not None:
             return self._newton_refine_projected(x, params, field, extra, b, opt, t0)
+        if self.model.gauge is not None:
+            return self._newton_refine_gauged(x, params, field, extra, b, opt, t0)
         M = (self._anchor or {}).get("hessian")
         if opt.get("krylov", True) and isinstance(M, np.ndarray) and M.shape == (b.size, b.size):
             return self._newton_refine_krylov(x, params, field, extra, b, opt, t0, M)
@@ -1969,6 +2019,147 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         new = 0.5 * float(np.asarray(out["rows"]) @ np.asarray(out["rows"]))
         return np.asarray(out["x"], dtype=float) if new < cost else None
 
+    def _gauge_project(self, b):
+        """``b`` moved onto the exact gauge ``c(b) = 0`` by the smallest scaled move: Gauss-Newton steps on ``c``
+        alone (minimum norm, geometry only: no equilibrium solve).  Returns the projected ``b``, or None if the gauge
+        is not reached to GAUGE_TOL in GAUGE_PROJECT_STEPS."""
+        model, scale = self.model, np.asarray(self.model.x_scale, dtype=float)
+        b = np.asarray(b, dtype=float).copy()
+        for _ in range(GAUGE_PROJECT_STEPS):
+            c = np.asarray(model.gauge_rows(jnp.asarray(b)))
+            if float(np.abs(c).max()) <= GAUGE_TOL:
+                return b
+            C = np.asarray(model.gauge_jacobian(jnp.asarray(b))) * scale
+            b = b - np.linalg.lstsq(C, c, rcond=None)[0] * scale
+        c = np.asarray(model.gauge_rows(jnp.asarray(b)))
+        return b if float(np.abs(c).max()) <= GAUGE_TOL else None
+
+    def _gauge_reduced(self, b, g, H):
+        """At a gauge-feasible ``b``: the null-space basis ``Z`` of the scaled gauge Jacobian, the multipliers ``lam``
+        (``g = -C^T lam`` in the least-squares sense), the Lagrangian Hessian ``H_L = H + d2(lam . c)`` (model
+        coordinates) and the reduced Hessian and gradient (scaled)."""
+        import scipy.linalg
+
+        model, scale = self.model, np.asarray(self.model.x_scale, dtype=float)
+        C = np.asarray(model.gauge_jacobian(jnp.asarray(b)))
+        lam = -np.linalg.lstsq(C.T, g, rcond=None)[0]
+        H_L = np.asarray(H) + np.asarray(model.gauge_curvature(jnp.asarray(b), jnp.asarray(lam)))
+        Z = scipy.linalg.null_space(C * scale)
+        Hs = 0.5 * (H_L + H_L.T) * np.outer(scale, scale)
+        return dict(Z=Z, lam=lam, H_L=H_L, Hr=Z.T @ Hs @ Z, gr=Z.T @ (g * scale))
+
+    def _newton_refine_gauged(self, x, params, field, extra, b, opt, t0):
+        """Newton on the fit's cost on the exact gauge manifold ``c(b) = 0`` (:attr:`ThreeTermFreeBoundaryModel.gauge`).
+
+        Every point it evaluates is feasible: ``b`` is projected onto the gauge first (:meth:`_gauge_project`) and
+        after every step.  Each step is the trust-region Newton step of the reduced problem: ``Z^T H_L Z dz = -Z^T g``
+        (``Z`` the gauge's null space, scaled; ``H_L`` the dense exact Hessian plus the gauge's curvature times its
+        multipliers), judged by the actual decrease of the cost at the projected point.  The labelling is fixed by
+        the gauge, so the cost has no flat (relabelling) directions left and Newton converges quadratically.
+        Converged when the reduced step is at most ``step_tol`` or its predicted decrease at most NEWTON_FLOOR of the
+        cost (or ten times that with a collapsed radius); then certified as every other record, and the reduced
+        Hessian is kept for the record's exact gradient."""
+        import scipy.linalg
+
+        model = self.model
+        scale = np.asarray(model.x_scale, dtype=float)
+
+        def point(bb):
+            got = model.evaluate(bb, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            state, mask, params_b, _ = aux
+            r = jnp.asarray(rows)
+            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
+            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
+            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
+                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
+
+        projected = self._gauge_project(b)
+        if projected is None:
+            raise TrialRejected("the boundary does not reach the gauge")
+        b = projected
+        here = point(b)
+        if here is None:
+            raise TrialRejected("the gauge-projected boundary has no tight interior root")
+        cost, g, rec = here
+        radius = float(opt.get("radius", 1e-1))
+        floor = opt.get("floor", NEWTON_FLOOR)
+        history, evaluations, converged, seconds_hessian, red = [], 1, False, 0.0, None
+        for _ in range(int(opt["max_steps"])):
+            th = time.perf_counter()
+            H, _ = self.dense_hessian(x, rec)
+            red = self._gauge_reduced(b, g, H)
+            seconds_hessian += time.perf_counter() - th
+            Hr, gr = red["Hr"], red["gr"]
+            eig = np.linalg.eigvalsh(Hr)
+            definite = bool(eig[0] > 0)
+            newton = -scipy.linalg.solve(Hr, gr, assume_a="sym") if definite else None
+            step = float(np.linalg.norm(newton)) if newton is not None else np.inf
+            decrease = 0.5 * float(gr @ -newton) if newton is not None else np.inf
+            history.append(dict(cost=cost, step=step, radius=radius, definite=definite, reduced_smallest=float(eig[0]),
+                                reduced_condition=float(eig[-1] / eig[0]) if definite else float("inf"),
+                                evaluations=evaluations))
+            if opt.get("verbose"):
+                print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
+                      f"{radius:.1e}, reduced smallest {eig[0]:.2e} condition {history[-1]['reduced_condition']:.1e}, "
+                      f"Hessian {seconds_hessian:.0f} s", flush=True)
+            if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
+                             or (radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
+                converged = True
+                break
+            accepted = False
+            for _ in range(8):
+                if definite and step <= radius:
+                    dz = newton
+                else:  # the trust-region step: raise the shift until the step fits
+                    eye = np.eye(Hr.shape[0])
+                    lo, hi = max(0.0, -float(eig[0])), max(1.0, float(np.abs(eig).max()))
+                    while np.linalg.norm(scipy.linalg.solve(Hr + hi * eye, -gr, assume_a="sym")) > radius:
+                        hi *= 10
+                    for _ in range(40):
+                        mid = 0.5 * (lo + hi)
+                        dz = scipy.linalg.solve(Hr + mid * eye, -gr, assume_a="sym")
+                        lo, hi = (mid, hi) if np.linalg.norm(dz) > radius or not np.all(np.isfinite(dz)) else (lo, mid)
+                    dz = scipy.linalg.solve(Hr + hi * eye, -gr, assume_a="sym")
+                predicted = -(gr @ dz + 0.5 * dz @ Hr @ dz)
+                target = self._gauge_project(b + (red["Z"] @ dz) * scale)
+                trial = point(target) if target is not None else None
+                evaluations += 1
+                rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
+                if rho > 0.1:
+                    b, (cost, g, rec) = target, trial
+                    if rho > 0.75 and np.linalg.norm(dz) > 0.9 * radius:
+                        radius *= 2
+                    accepted = True
+                    history[-1].update(taken=float(np.linalg.norm(dz)), rho=float(rho))
+                    break
+                radius = 0.25 * min(radius, float(np.linalg.norm(dz)))
+            if not accepted:
+                history[-1]["stalled"] = True
+                break
+        if not converged:
+            raise TrialRejected(f"the gauge Newton polish did not converge ({len(history)} steps)")
+        self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=red["H_L"],
+                             gauge=red)
+        got = model.evaluate(b, params, field, tight=True)
+        if got is None:
+            raise TrialRejected("the gauge-polished boundary has no certified interior root")
+        rows, aux = got
+        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton-gauge",
+                   accepted=len(history))
+        xj = jnp.asarray(x)
+        out = model.certify(params, field, fit, gate=np.inf, xtol=None, polish=False,
+                            max_residual=self.boundary_max_residual, extra=extra,
+                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
+        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
+                             subspace=int(red["Z"].shape[1]), products="exact", gauge=model.gauge,
+                             seconds_hessian=seconds_hessian, seconds=time.perf_counter() - t0)
+        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
+        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
+        return out
+
     def _newton_refine_projected(self, x, params, field, extra, b, opt, t0):
         """:meth:`_newton_refine_exact` with a bootstrap current: Newton on the boundary with the current projected.
 
@@ -2287,6 +2478,48 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry, condition=condition,
                     seconds_hessian=seconds_hessian)
 
+    def _gauge_gradients(self, x, sol, rows=None):
+        """The exact design gradient on the exact gauge: ``dQ/dd = Q_d - F_d^T mu`` with ``mu = S Z (Z^T S H_L S Z)^-1
+        Z^T S Q_b^T`` (``S`` the coordinate scale, ``Z`` the gauge's null space, ``H_L`` the Lagrangian Hessian; the
+        gauge does not depend on the design).  The reduced Hessian is the converged polish's when kept; the true
+        residual of the reduced equations from one exact product call on ``mu`` must be at most 1e-6."""
+        import scipy.linalg
+
+        xj = jnp.asarray(x)
+        state, params_b = sol["state"], sol["params"]
+        b0 = np.asarray(sol["x"], dtype=float)
+        try:
+            params_bar = self._pullback(state, sol["mask"], params_b, xj)
+        except (VmecError, RuntimeError) as error:
+            raise TrialRejected(str(error)) from error
+        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
+        direct = np.asarray(self._direct(state, params_b, xj))
+        rows = list(range(G_b.shape[0]) if rows is None else rows)
+        scale = np.asarray(self.model.x_scale, dtype=float)
+        t0 = time.perf_counter()
+        kept = getattr(self, "_hessian", None)
+        if (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
+                and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
+            red = kept["gauge"]
+        else:
+            H, _ = self.dense_hessian(x, sol)
+            g, _, _ = self._cost_gradients(b0, self._params_at(xj), self.field(xj), np.asarray(x, dtype=float))
+            red = self._gauge_reduced(b0, g, H)
+        Z, Hr = red["Z"], red["Hr"]
+        Q = G_b[rows].T
+        mu = scale[:, None] * (Z @ scipy.linalg.solve(Hr, Z.T @ (scale[:, None] * Q), assume_a="sym"))
+        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
+        curvature = np.asarray(self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))) @ mu
+        residual = Z.T @ (scale[:, None] * (Q - np.asarray(H_mu) - curvature))
+        true = (np.linalg.norm(residual, axis=0) / np.maximum(np.linalg.norm(Z.T @ (scale[:, None] * Q), axis=0),
+                                                              1e-300)).tolist()
+        if max(true) > 1e-6:
+            raise RuntimeError(f"gauge multipliers missed: true residuals {true}")
+        eig = np.linalg.eigvalsh(Hr)
+        return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
+                    asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
+                    seconds_hessian=time.perf_counter() - t0)
+
     def _exact_gradients(self, x, sol, rows=None):
         """The exact derivative of the converged stationarity ``J_b^T r = 0`` for every requested row: ``dQ/dd = Q_d -
         F_d^T mu``, ``H mu = Q_b^T``, with both curvature blocks, the interior equilibrium's response and the coupled
@@ -2297,6 +2530,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         (:meth:`_krylov_gradients`, every row's column in one product call per iteration); otherwise, or when those
         miss, from the dense exact Hessian (:meth:`_exact_dense_gradients`), which then becomes the anchor's.  Either
         way the true residual ``|Q_b - H mu| / |Q_b|`` is at most 1e-6, or this raises."""
+        if self.model.gauge is not None:
+            return self._gauge_gradients(x, sol, rows)
         own = sol.get("anchor") if isinstance(sol.get("anchor"), dict) else {}
         anchor = own if isinstance(own.get("hessian"), np.ndarray) else (self._anchor or {})  # the freshest Hessian
         M = anchor.get("hessian")

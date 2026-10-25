@@ -1289,6 +1289,9 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
+    parser.add_argument("--gauge", choices=("condensation",), default=None,
+                        help="hold the boundary's poloidal angle exactly by VMEC's spectral condensation (a gauge, not "
+                        "penalty rows: every Newton iterate is projected onto it); use with --label-weight 0")
     parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (start) or "
                         "equal arc length of the current surface (equal_arc); see ThreeTermFreeBoundaryModel")
@@ -1715,7 +1718,7 @@ def main(argv=None):
                       quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                       trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                       bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
+                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling, gauge=args.gauge,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(

@@ -678,7 +678,8 @@ class ThreeTermFreeBoundaryModel:
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
-            raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
+            raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium: "
+                                       f"{getattr(self, '_last_failure', None)}")
         state, mask = seed[:2]
         self.seed = (state, mask)
         if not self.fixed_boundary:
@@ -875,8 +876,10 @@ class ThreeTermFreeBoundaryModel:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
         if tight:
-            state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
+            state, mask, status, fsq, ratio = im._host_solve_and_mask_status(cfg, params_np)
             if int(status) != 0:
+                self._last_failure = dict(status=int(status), fsq=float(fsq), ratio=float(ratio),
+                                          error=repr(im._LAST_STATUS_ERROR.get(cfg))[:300])
                 return None
         else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
             from .errors import VmecError

@@ -1051,12 +1051,15 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
                 out["Z_cos"] = v.at[:, pos].set(anti).at[:, neg].set(-anti)
         return SpectralState(**out)
 
+    if _m1_gauged(cfg):  # the complement is a function of the boundary: _assemble applies it (differentiably)
+        P.m1_gauge = functools.partial(_m1_gauge_state, cfg)
     return P
 
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
               P: Callable, edge_mask: SpectralState) -> SpectralState:
-    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``.
+    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``, then (``m1_complement="gauged"``) the m=1
+    complement set from the boundary row (:func:`_m1_gauge_state`), so it moves with the parameters.
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
@@ -1073,7 +1076,8 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
-    return SpectralState(**out)
+    gauge = getattr(P, "m1_gauge", None)  # "gauged": the m=1 complement from the edge (boundary) row
+    return SpectralState(**out) if gauge is None else gauge(SpectralState(**out))
 
 
 def _raw_force_state(

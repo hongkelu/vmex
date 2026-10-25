@@ -2169,6 +2169,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         H_prev = (self._anchor or {}).get("gauge_H")
         quasi = bool(opt.get("quasi", True)) and isinstance(H_prev, np.ndarray) and H_prev.shape == (b.size, b.size)
         H_cost, exact, secant, refresh = (np.array(H_prev) if quasi else None), not quasi, None, False
+        H_before, definite = None, False
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
             if H_cost is None or refresh:
@@ -2180,13 +2181,21 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 v = y_ - Hs_old @ s_
                 denominator = float(s_ @ v)
                 if abs(denominator) > SR1_SKIP * float(np.linalg.norm(s_) * np.linalg.norm(v)):
+                    H_before = H_cost if definite else None
                     Hs_new = Hs_old + np.outer(v, v) / denominator
                     H_cost = 0.5 * (Hs_new + Hs_new.T) / np.outer(scale, scale)
                 exact, secant = False, None
             red = self._gauge_reduced(b, g, H_cost)
-            seconds_hessian += time.perf_counter() - th
             Hr, gr = red["Hr"], red["gr"]
             eig = np.linalg.eigvalsh(Hr)
+            if eig[0] <= 0 and not exact and H_before is not None:  # an update that broke a definite model near the
+                # (non-degenerate) minimum is secant noise: the model before it
+                H_cost, H_before = H_before, None
+                red = self._gauge_reduced(b, g, H_cost)
+                Hr, gr = red["Hr"], red["gr"]
+                eig = np.linalg.eigvalsh(Hr)
+            H_before = None
+            seconds_hessian += time.perf_counter() - th
             definite = bool(eig[0] > 0)
             newton = -scipy.linalg.solve(Hr, gr, assume_a="sym") if definite else None
             step = float(np.linalg.norm(newton)) if newton is not None else np.inf

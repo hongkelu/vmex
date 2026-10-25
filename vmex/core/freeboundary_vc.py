@@ -308,6 +308,10 @@ SR1_SKIP = 1e-8
 #: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the exact
 #: Hessian instead of crawling.
 QUASI_MIN_RADIUS = 1e-4
+#: The relabelling onto the gauge (:meth:`ThreeTermFreeBoundaryProblem._gauge_relabel`): largest Levenberg-Marquardt
+#: step and largest relabelling (rad) of the angle; a larger one is not the identity's continuous neighbour.
+RELABEL_MAX_STEP = 0.5
+RELABEL_MAX_SIZE = 1.5
 
 #: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
 #: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
@@ -2085,14 +2089,33 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model = self.model
         b = np.asarray(b, dtype=float)
         fc = np.zeros(model.relabel_modes)
-        for _ in range(GAUGE_PROJECT_STEPS):
-            c = np.asarray(model.relabel_gauge(jnp.asarray(b), jnp.asarray(fc)))
+        # Levenberg-Marquardt from f = 0, every step lowering |c| and at most RELABEL_MAX_STEP: the small relabelling
+        # continuously connected to the identity (undamped Gauss-Newton jumped to |f| ~ 200 rad from a rough start)
+        c = np.asarray(model.relabel_gauge(jnp.asarray(b), jnp.asarray(fc)))
+        mu = None
+        for _ in range(4 * GAUGE_PROJECT_STEPS):
             if float(np.abs(c).max()) <= GAUGE_TOL:
                 break
             Jf = np.asarray(model.relabel_gauge_jacobian(jnp.asarray(b), jnp.asarray(fc)))
-            fc = fc - np.linalg.lstsq(Jf, c, rcond=None)[0]
-        relabelled = np.asarray(model.relabel(jnp.asarray(b), jnp.asarray(fc)))
+            JTJ, JTc = Jf.T @ Jf, Jf.T @ c
+            mu = 1e-8 * float(np.max(np.diag(JTJ))) if mu is None else mu
+            for _ in range(30):
+                step = -np.linalg.solve(JTJ + mu * np.eye(fc.size), JTc)
+                if np.abs(step).max() > RELABEL_MAX_STEP:
+                    mu *= 10.0
+                    continue
+                trial = np.asarray(model.relabel_gauge(jnp.asarray(b), jnp.asarray(fc + step)))
+                if np.linalg.norm(trial) < np.linalg.norm(c):
+                    fc, c, mu = fc + step, trial, mu / 3.0
+                    break
+                mu *= 10.0
+            else:
+                break
         self.stats["gauge_relabel_size"] = float(np.abs(fc).max())
+        if float(np.abs(c).max()) > GAUGE_TOL or float(np.abs(fc).max()) > RELABEL_MAX_SIZE:
+            raise TrialRejected(f"no small relabelling onto the gauge (|f| {np.abs(fc).max():.2e} rad, "
+                                f"gauge residual {np.abs(c).max():.1e})")
+        relabelled = np.asarray(model.relabel(jnp.asarray(b), jnp.asarray(fc)))
         return self._gauge_project(relabelled)
 
     def _gauge_project(self, b):

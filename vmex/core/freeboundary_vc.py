@@ -2276,8 +2276,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # model level: 0 quasi-Newton (SR1), 1 Gauss-Newton J^T J at the iterate (one linearization), 2 the exact
         # dense Hessian; a stale or indefinite model escalates one level (the converged point does not depend on it:
         # stationarity is the exact gradient's)
-        level = 2 if exact else 0
         gn = bool(opt.get("gauss_newton_model", GAUGE_GN_MODEL))
+        # A cold start (no accepted Hessian) begins at the Gauss-Newton model too: one dense exact Hessian is 255
+        # exact products (~140-280 s at 8 x 8), and the escalation below reaches it only where Gauss-Newton stalls.
+        level = 2 if exact and not gn else 0
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
             if H_cost is None or refresh:

@@ -234,6 +234,13 @@ EXACT_PRODUCTS_CHUNK = 16
 #: (~1e-9) change by their own size between nearby points, and CG then runs to its limit (QA 2.5%: 40 per step).
 KRYLOV_REFRESH_PRODUCTS = 20
 
+#: The Krylov polish's Gauss-Newton rescue: when its trust radius has shrunk below GN_RESCUE_RADIUS of where it
+#: started, at most GN_RESCUE_MAX times per polish, Levenberg-Marquardt steps (at most GN_RESCUE_NFEV evaluations) from
+#: a fresh Jacobian; kept if they lower the cost, after which Newton resumes with a fresh radius.
+GN_RESCUE_RADIUS = 1e-2
+GN_RESCUE_MAX = 5
+GN_RESCUE_NFEV = 12
+
 #: The design gradient by block conjugate gradients on exact products (``_krylov_gradients``) uses the accepted
 #: point's exact Hessian as preconditioner while it is at most this many accepted steps old; then a dense one.
 KRYLOV_HESSIAN_AGE = 5
@@ -1800,7 +1807,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         cost, g, rec = here
         # The trust radius (M-norm) starts at the preconditioned Newton step's own length: a good model takes the
         # whole step at once, and the actual/predicted test shrinks the radius where it is not.
-        radius = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
+        radius = radius0 = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
+        rescues, seconds_rescue = 0, 0.0
         history, evaluations, converged, products, seconds_products, refreshes = [], 1, False, 0, 0.0, 0
         response = dict(values=None, gradient=None, stable=0)
         for _ in range(int(opt["max_steps"])):
@@ -1868,6 +1876,23 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                     radius *= 2
             else:
                 radius = 0.25 * min(radius, step_m)
+                if radius < GN_RESCUE_RADIUS * radius0 and rescues < GN_RESCUE_MAX:
+                    # Far from the minimum the exact quadratic model of the cost fails over the distances that matter
+                    # (large residuals: their curvature term dominates), while a Gauss-Newton step on the linearized
+                    # rows still holds (QA 2.5%: one predicted 96% of the cost where Newton's radius had collapsed).
+                    th, rescues = time.perf_counter(), rescues + 1
+                    rescued = self._gauss_newton_rescue(b, params, field, cost)
+                    seconds_rescue += time.perf_counter() - th
+                    if rescued is not None:
+                        here = point(rescued)
+                        if here is not None and here[0] < cost:
+                            b, (cost, g, rec) = rescued, here
+                            radius = radius0 = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
+                            history[-1]["rescued"] = float(cost)
+                            if opt.get("verbose"):
+                                print(f"[newton krylov] Gauss-Newton rescue {rescues}: cost {cost:.6e}, "
+                                      f"{seconds_rescue:.0f} s in rescues", flush=True)
+                            continue
                 # Stationary to the cost's resolution only if the rejected step's own predicted decrease is below the
                 # floor: a radius collapsed with a larger prediction is a curved valley the model cannot follow at this
                 # scale (QA 2.5%: collapsed at a cost twice the minimum), not a converged point.
@@ -1894,13 +1919,33 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                             values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
         out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
                              products="krylov", product_calls=products, seconds_hessian=seconds_products,
-                             seconds=time.perf_counter() - t0, warm=False, refreshes=refreshes)
+                             seconds=time.perf_counter() - t0, warm=False, refreshes=refreshes, rescues=rescues,
+                             seconds_rescue=seconds_rescue)
         if refreshes:  # the last refreshed exact Hessian, near this record: the next trials' preconditioner
             out["hessian"] = pre["H"]
         self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
         self.stats["newton_products"] = self.stats.get("newton_products", 0) + products
         self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
         return out
+
+    def _gauss_newton_rescue(self, b, params, field, cost):
+        """Levenberg-Marquardt steps on the rows from a fresh Jacobian at ``b`` (the Krylov polish's rescue when its
+        trust region collapses far from the minimum).  Returns the new boundary if it lowers ``cost``, else None."""
+        model = self.model
+        try:
+            got = model.evaluate(b, params, field, tight=True)
+            if got is None:
+                return None
+            rows, aux = got
+            J, _, _, aux = model.linearize(b, aux, field)
+            out = _levenberg_marquardt(lambda z: model.evaluate(z, params, field, tight=True), b, rows, aux,
+                                       np.asarray(J), ftol=self.boundary_ftol, max_nfev=GN_RESCUE_NFEV, verbose=0,
+                                       project=model._projected)
+        except (VmecError, RuntimeError, TrialRejected):
+            return None
+        self.stats["gauss_newton_rescues"] = self.stats.get("gauss_newton_rescues", 0) + 1
+        new = 0.5 * float(np.asarray(out["rows"]) @ np.asarray(out["rows"]))
+        return np.asarray(out["x"], dtype=float) if new < cost else None
 
     def _newton_refine_projected(self, x, params, field, extra, b, opt, t0):
         """:meth:`_newton_refine_exact` with a bootstrap current: Newton on the boundary with the current projected.

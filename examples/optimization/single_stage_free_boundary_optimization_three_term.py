@@ -1670,7 +1670,9 @@ def main(argv=None):
     if args.bootstrap:
         save_profiles(redl_profiles(inp)[0], out / "profiles.json")
 
-    coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
+    coils = Coils.from_json(str(args.coils))
+    coils = resize_coils(coils, max(COIL_ORDER, int(coils.order)), max(N_SEGMENTS, int(coils.n_segments)))  # a seed's
+    # higher order (e.g. W7-X's order-48 coils) is kept, never truncated
     if args.restart is None and args.seed_run is None:
         coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
         if args.beta > 0 and not args.no_coil_fit:

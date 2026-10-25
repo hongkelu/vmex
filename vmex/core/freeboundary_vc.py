@@ -625,6 +625,42 @@ class ThreeTermFreeBoundaryModel:
             self.gauge_rows = jax.jit(gauge_rows)
             self.gauge_jacobian = jax.jit(jax.jacfwd(gauge_rows))
             self.gauge_curvature = jax.jit(lambda x, lam: jax.hessian(lambda y: jnp.vdot(lam, gauge_rows(y)))(x))
+
+            # A relabelling theta -> theta + f of the same surface, f = sum f_k sin(m_k theta - n_k N phi), with as many
+            # modes as gauge conditions (m = 1 .. mpol - 2, |n| <= ntor; and m = 0, n = 1 .. ntor). The surface is
+            # resampled at the new angle and refitted to the coordinates (the coordinates-to-samples map is affine),
+            # so the shape changes only at the truncation level.
+            nfp_g = int(fixed.nfp)
+            modes = [(m, n) for m in range(1, mpol_g - 1) for n in range(-ntor_g, ntor_g + 1)]
+            modes += [(0, n) for n in range(1, ntor_g + 1)]
+            m_f = jnp.asarray([m for m, _ in modes], dtype=float)
+            n_f = jnp.asarray([n for _, n in modes], dtype=float)
+
+            def samples(x):
+                R, Z = surface(x[:nb])
+                return jnp.concatenate([R.ravel(), Z.ravel()])
+
+            A = np.asarray(jax.jacfwd(samples)(jnp.asarray(self.x0)))[:, :nb]
+            A_pinv = jnp.asarray(np.linalg.pinv(A))
+
+            def relabel(x, fc):
+                rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
+                th = jnp.linspace(0.0, 2 * jnp.pi, 48, endpoint=False)[:, None]
+                ph = jnp.linspace(0.0, 2 * jnp.pi / nfp_g, 48, endpoint=False)[None, :]
+                f = jnp.einsum("k,ktp->tp", fc, jnp.sin(m_f[:, None, None] * th[None] - n_f[:, None, None] * nfp_g
+                                                        * ph[None]))
+                n = (jnp.arange(rbc.shape[0]) - (rbc.shape[0] - 1) // 2) * nfp_g
+                m = jnp.arange(rbc.shape[1])
+                angle = m[None, None, None, :] * (th + f)[:, :, None, None] - n[None, None, :, None] * ph[:, :, None, None]
+                R = jnp.einsum("tpnm,nm->tp", jnp.cos(angle), rbc)
+                Z = jnp.einsum("tpnm,nm->tp", jnp.sin(angle), zbs)
+                target = jnp.concatenate([R.ravel(), Z.ravel()])
+                return x.at[:nb].add(A_pinv @ (target - samples(x)))
+
+            self.relabel_modes = len(modes)
+            self.relabel = jax.jit(relabel)
+            self.relabel_gauge = jax.jit(lambda x, fc: gauge_rows(relabel(x, fc)))
+            self.relabel_gauge_jacobian = jax.jit(jax.jacfwd(lambda x, fc: gauge_rows(relabel(x, fc)), argnums=1))
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -2019,6 +2055,24 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         new = 0.5 * float(np.asarray(out["rows"]) @ np.asarray(out["rows"]))
         return np.asarray(out["x"], dtype=float) if new < cost else None
 
+    def _gauge_relabel(self, b):
+        """``b`` relabelled onto the exact gauge: the same surface with the angle ``theta + f`` that satisfies the gauge
+        (:attr:`ThreeTermFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
+        :meth:`_gauge_project`.  The shape changes only by the refit's truncation (a minimum-norm move in the
+        coordinates instead changes it: QA 2.5%, the NL point so projected had no equilibrium)."""
+        model = self.model
+        b = np.asarray(b, dtype=float)
+        fc = np.zeros(model.relabel_modes)
+        for _ in range(GAUGE_PROJECT_STEPS):
+            c = np.asarray(model.relabel_gauge(jnp.asarray(b), jnp.asarray(fc)))
+            if float(np.abs(c).max()) <= GAUGE_TOL:
+                break
+            Jf = np.asarray(model.relabel_gauge_jacobian(jnp.asarray(b), jnp.asarray(fc)))
+            fc = fc - np.linalg.lstsq(Jf, c, rcond=None)[0]
+        relabelled = np.asarray(model.relabel(jnp.asarray(b), jnp.asarray(fc)))
+        self.stats["gauge_relabel_size"] = float(np.abs(fc).max())
+        return self._gauge_project(relabelled)
+
     def _gauge_project(self, b):
         """``b`` moved onto the exact gauge ``c(b) = 0`` by the smallest scaled move: Gauss-Newton steps on ``c``
         alone (minimum norm, geometry only: no equilibrium solve).  Returns the projected ``b``, or None if the gauge
@@ -2076,9 +2130,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
                     dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
 
-        projected = self._gauge_project(b)
+        projected = self._gauge_relabel(b)
         if projected is None:
             raise TrialRejected("the boundary does not reach the gauge")
+        if opt.get("verbose"):
+            print(f"[newton gauge] relabelled onto the gauge: |f| max {self.stats['gauge_relabel_size']:.2e} rad, scaled "
+                  f"move {float(np.linalg.norm((projected - b) / scale)):.2e}", flush=True)
         b = projected
         here = point(b)
         if here is None:

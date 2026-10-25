@@ -72,6 +72,10 @@ def main():
     ap.add_argument("--resolution", type=int, default=12, help="interior M of the resolution checks")
     ap.add_argument("--ftol", type=float, default=1e-7, help="the NL fit's relative cost-change tolerance")
     ap.add_argument("--max-nfev", type=int, default=200)
+    ap.add_argument("--interior", type=int, help="interior mpol = ntor of the NL solve (default: the run's)")
+    ap.add_argument("--boundary-modes", type=int, help="boundary modes of the NL solve (default: all of the interior's)")
+    ap.add_argument("--m1-complement", default="solved", choices=("solved", "frozen"))
+    ap.add_argument("--tag", default="", help="suffix of the output files")
     args = ap.parse_args()
     run, out = Path(args.run), Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
@@ -98,10 +102,13 @@ def main():
         w = vj.read_wout(str(run / f"wout.step{n}.nc"))
         inp = tdriver.current_from_wout(replace(tdriver.boundary_from_wout(inp0, w), phiedge=float(w.phi[-1]),
                                                 lfreeb=True, mgrid_file="field(direct)"), w)
+        if args.interior:
+            inp = inp.change_resolution(mpol=args.interior, ntor=args.interior)
         coils = Coils.from_json(str(run / f"coils.step{n}.json"))
         field = DirectCoilField(np.asarray(coils.gamma), np.asarray(coils.gamma_dash), np.asarray(coils.currents))
         nfp = int(inp.nfp)
-        row = dict(step=n, seen=float(qs.total(w)))
+        row = dict(step=n, seen=float(qs.total(w)), interior=args.interior, boundary_modes=args.boundary_modes,
+                   m1=args.m1_complement)
         t0 = time.time()
         try:
             row["seen_m12"] = at_resolution(inp, w, args.resolution)
@@ -110,12 +117,13 @@ def main():
         try:
             fit = solve_free_boundary_three_term(inp, external_field=field, nphi=VC_GRID, ntheta=VC_GRID,
                                                  label_weight=0.0, ftol=args.ftol, max_nfev=args.max_nfev,
+                                                 max_mode=args.boundary_modes, m1_complement=args.m1_complement,
                                                  trial_ftol=1e-11, chunk=8, quadrature=(4 * nfp * VC_GRID, 2 * VC_GRID))
             wa = fit.equilibrium.wout
             res, res0 = fit.boundary_residual, fit.initial_boundary_residual
             row.update(nl=float(qs.total(wa)), bn0=float(res0.normal), bn=float(res.normal), pb=float(res.pressure),
                        K=float(res.sheet_current), lcfs_mm=lcfs_mm(w, wa, nfp), nfev=int(fit.nfev))
-            vj.write_wout(str(out / f"wout_nl.step{n}.nc"), wa)
+            vj.write_wout(str(out / f"wout_nl{args.tag}.step{n}.nc"), wa)
             try:
                 row["nl_m12"] = at_resolution(inp, wa, args.resolution)
             except Exception as e:
@@ -123,7 +131,7 @@ def main():
         except Exception as e:  # coils that support no equilibrium are a result too
             row["nl_error"] = f"{type(e).__name__}: {str(e)[:200]}"
         row["seconds"] = time.time() - t0
-        with open(out / "nl_coils.jsonl", "a") as f:
+        with open(out / f"nl_coils{args.tag}.jsonl", "a") as f:
             f.write(json.dumps(row) + "\n")
         print("ROW " + json.dumps(row), flush=True)
 

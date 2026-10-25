@@ -1276,6 +1276,9 @@ def parse_args(argv=None):
                         "slsqp_state.npz beside the checkpoint is of that point, else it starts afresh from it")
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
+    parser.add_argument("--boundary-modes", type=int, metavar="K",
+                        help="boundary coefficients up to m, |n| <= K (default: the interior's --modes); an interior "
+                        "above the boundary's resolution keeps its truncation out of the optimized boundary")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
@@ -1726,6 +1729,7 @@ def main(argv=None):
                       trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                       bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
                       boundary_max_residual=args.max_boundary_residual, labelling=args.labelling, gauge=args.gauge,
+                      max_mode=args.boundary_modes,
                       checkpoint=args.resume, m1_complement=args.m1_complement,
                       seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
                       newton_polish=None if args.newton_polish is None else dict(

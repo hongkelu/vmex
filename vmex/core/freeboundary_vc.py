@@ -630,7 +630,7 @@ class ThreeTermFreeBoundaryModel:
         self._normal_operator = jax.jit(normal_operator) if nb else None
         self.surface = jax.jit(surface) if nb else None
         if self.gauge is not None and nb:
-            mpol_g, ntor_g = int(fixed.mpol), int(fixed.ntor)
+            mpol_g, ntor_g = min(int(fixed.mpol), self.max_mode + 1), min(int(fixed.ntor), self.max_mode)  # the boundary's
 
             def gauge_rows(x):
                 R, Z = surface(x[:nb])

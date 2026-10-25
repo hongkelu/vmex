@@ -23,6 +23,7 @@ import numpy as np
 
 DRIVER = Path(__file__).resolve().parents[4] / "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
 VC_GRID = 48
+GRID = 64  # the driver's NTHETA = NZETA (a deck's own grid can be too coarse for its new modes)
 
 
 @dataclass(frozen=True, eq=False)

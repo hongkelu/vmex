@@ -1225,6 +1225,9 @@ def parse_args(argv=None):
                         help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
                         "separately) along a random state direction: autodiff vs central differences of its exact "
                         "gradient (rows_c2_check.json), then stop")
+    parser.add_argument("--check-cost-gradient", action="store_true",
+                        help="at the accepted boundary, central differences of the fit's cost along the descent and a "
+                        "random direction (steps 1e-2..1e-8, scaled) against g.d (cost_gradient_check.json), then stop")
     parser.add_argument("--check-g-noise", action="store_true",
                         help="the fit's stationarity g at the accepted boundary from three equilibrium starts (hot, "
                         "cold, the record's own state), and the scaled Newton step their differences imply "
@@ -1891,6 +1894,7 @@ def main(argv=None):
                 os.remove(out / "slsqp_state.npz")
 
     if args.checkpoint_every and (args.check_gradient or args.check_stationarity_gradient or args.check_exact_products
+                                  or args.check_cost_gradient
                                   or args.check_g_noise or args.check_rows_c2):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
@@ -1932,6 +1936,38 @@ def main(argv=None):
             print(f"[rows C2] {name}: |d2 f v| {np.linalg.norm(e):.3e}; exact vs differences of the exact gradient: "
                   + " ".join(f"h={r['h']:.0e} {r['relative']:.1e}" for r in rows), flush=True)
         (out / "rows_c2_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_cost_gradient:  # is g = d(cost)/db consistent with the cost the Newton polish measures?
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        scale = np.asarray(problem.model.x_scale, dtype=float)
+        xj = jnp.asarray(x_seed)
+        params_s, field_s = problem._params_at(xj), problem.field(xj)
+        b0 = np.asarray(sol["x"], dtype=float)
+        g0, _, r0 = problem._cost_gradients(b0, params_s, field_s, x_seed)
+        cost0 = 0.5 * float(r0 @ r0)
+        rng = np.random.default_rng(1)
+        gs = g0 * scale
+        directions = dict(descent=-gs / np.linalg.norm(gs), random=rng.standard_normal(scale.size))
+        directions["random"] /= np.linalg.norm(directions["random"])
+        record = dict(cost=cost0, g_norm_scaled=float(np.linalg.norm(gs)), directions={})
+        for name, d in directions.items():
+            rows = []
+            for h in (1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8):
+                cp = problem.model.evaluate(b0 + h * d * scale, params_s, field_s, tight=True)
+                cm = problem.model.evaluate(b0 - h * d * scale, params_s, field_s, tight=True)
+                if cp is None or cm is None:
+                    rows.append(dict(h=h, failed=True))
+                    continue
+                fp, fm = 0.5 * float(cp[0] @ cp[0]), 0.5 * float(cm[0] @ cm[0])
+                fd = (fp - fm) / (2 * h)
+                rows.append(dict(h=h, fd=fd, predicted=float(gs @ d), plus=fp - cost0, minus=fm - cost0,
+                                 relative_error=float(abs(fd - gs @ d) / max(abs(gs @ d), 1e-300))))
+                print(f"[cost gradient] {name} h={h:.0e}: FD {fd:.6e}, g.d {float(gs @ d):.6e}, rel err "
+                      f"{rows[-1]['relative_error']:.1e}, f+ - f0 {fp - cost0:.3e}, f- - f0 {fm - cost0:.3e}",
+                      flush=True)
+            record["directions"][name] = rows
+        (out / "cost_gradient_check.json").write_text(json.dumps(record, indent=1) + "\n")
         return
     if args.check_g_noise:  # the fit's stationarity g from two equilibrium starts at one boundary, and its Newton effect
         import scipy.linalg

@@ -190,7 +190,7 @@ def _equal_arc_rows(gamma):
     return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
 
 
-def _gauge_rows(R, Z, mpol, ntor):
+def _gauge_rows(R, Z, mpol, ntor, kind="condensation"):
     """The exact gauge of the boundary's poloidal angle: VMEC's spectral condensation (Hirshman & Meier 1985,
     Hirshman & Breslau 1998) as equations, not penalty rows.
 
@@ -200,12 +200,16 @@ def _gauge_rows(R, Z, mpol, ntor):
     ``m = 1 .. mpol - 2`` and ``|n| <= ntor`` fix the ``m >= 1`` relabellings.  The ``m = 0`` relabellings (a
     shift of theta on each toroidal cut) leave ``G`` unchanged; the phase of the ``m = 1`` part of ``R + i Z`` per cut
     (odd in phi) fixes them, by its sine components ``n = 1 .. ntor``.  Returns the conditions, flattened.
+    ``kind="equal_arc"`` weights by ``m^2`` (Hirshman's p = 2): ``G`` is then ``(R_theta R_thetatheta + Z_theta
+    Z_thetatheta)``, whose vanishing sine content is equal arc on every cut; its Jacobian along the relabellings is a
+    positive Laplacian for any shaping, while VMEC's ``m(m-1)`` adds a concave term that grows with the shaping.
     """
     ntheta, nphi = R.shape
     k = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[:, None]
     FR, FZ = jnp.fft.fft(R, axis=0), jnp.fft.fft(Z, axis=0)
     R_theta, Z_theta = (jnp.real(jnp.fft.ifft(1j * k * F, axis=0)) for F in (FR, FZ))
-    R_c, Z_c = (jnp.real(jnp.fft.ifft(jnp.abs(k) * (jnp.abs(k) - 1) * F, axis=0)) for F in (FR, FZ))
+    weight = jnp.abs(k) * (jnp.abs(k) - 1) if kind == "condensation" else k * k  # equal arc: m^2 (p = 2)
+    R_c, Z_c = (jnp.real(jnp.fft.ifft(weight * F, axis=0)) for F in (FR, FZ))
     G = (R_c * R_theta + Z_c * Z_theta) / jnp.mean(R_theta**2 + Z_theta**2)
     spectrum = jnp.fft.fft2(G) / G.size
     toroidal = np.r_[0:ntor + 1, nphi - ntor:nphi]
@@ -537,8 +541,8 @@ class ThreeTermFreeBoundaryModel:
         #: The exact gauge of the boundary's poloidal angle (:func:`_gauge_rows`): None (NL: the labelling is whatever
         #: minimizes the interface residual) or "condensation" (VMEC's spectral condensation held exactly: every iterate
         #: of the Newton polish is projected onto it, which needs geometry only). Not part of ``options``.
-        if gauge not in (None, "condensation"):
-            raise ValueError(f"gauge must be None or 'condensation', got {gauge!r}")
+        if gauge not in (None, "condensation", "equal_arc"):
+            raise ValueError(f"gauge must be None, 'condensation' or 'equal_arc', got {gauge!r}")
         self.gauge = gauge
         if labelling not in ("start", "equal_arc"):
             raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
@@ -615,12 +619,13 @@ class ThreeTermFreeBoundaryModel:
             return N, a
 
         self._normal_operator = jax.jit(normal_operator) if nb else None
+        self.surface = jax.jit(surface) if nb else None
         if self.gauge is not None and nb:
             mpol_g, ntor_g = int(fixed.mpol), int(fixed.ntor)
 
             def gauge_rows(x):
                 R, Z = surface(x[:nb])
-                return _gauge_rows(R, Z, mpol_g, ntor_g)
+                return _gauge_rows(R, Z, mpol_g, ntor_g, self.gauge)
 
             self.gauge_rows = jax.jit(gauge_rows)
             self.gauge_jacobian = jax.jit(jax.jacfwd(gauge_rows))

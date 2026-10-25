@@ -1225,6 +1225,9 @@ def parse_args(argv=None):
                         help="at the accepted state, the second derivative of |rows|^2/2 (interface and bootstrap rows "
                         "separately) along a random state direction: autodiff vs central differences of its exact "
                         "gradient (rows_c2_check.json), then stop")
+    parser.add_argument("--check-soft-modes", type=int, default=0, metavar="K",
+                        help="at the accepted point, the exact Hessian's K softest directions split into normal (shape) "
+                        "and tangential (relabelling) surface displacement (soft_modes.json), then stop")
     parser.add_argument("--check-labelling-sensitivity", type=int, default=0, metavar="K",
                         help="at the accepted point, move the boundary along the exact Hessian's K softest directions "
                         "(scaled steps 0.03..3) and record the cost and every value (labelling_sensitivity.json), then stop")
@@ -1289,7 +1292,7 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--gauge", choices=("condensation",), default=None,
+    parser.add_argument("--gauge", choices=("condensation", "equal_arc"), default=None,
                         help="hold the boundary's poloidal angle exactly by VMEC's spectral condensation (a gauge, not "
                         "penalty rows: every Newton iterate is projected onto it); use with --label-weight 0")
     parser.add_argument("--labelling", choices=("start", "equal_arc"), default="start",
@@ -1901,6 +1904,7 @@ def main(argv=None):
 
     if args.checkpoint_every and (args.check_gradient or args.check_stationarity_gradient or args.check_exact_products
                                   or args.check_cost_gradient or args.check_labelling_sensitivity
+                                  or args.check_soft_modes
                                   or args.check_g_noise or args.check_rows_c2):
         problem.save_checkpoint(out / "checkpoint.npz")  # the certified seed, reusable after a check (--resume)
     if args.check_rows_c2:  # are the rows twice differentiable? autodiff second derivative vs differences of the gradient
@@ -1942,6 +1946,32 @@ def main(argv=None):
             print(f"[rows C2] {name}: |d2 f v| {np.linalg.norm(e):.3e}; exact vs differences of the exact gradient: "
                   + " ".join(f"h={r['h']:.0e} {r['relative']:.1e}" for r in rows), flush=True)
         (out / "rows_c2_check.json").write_text(json.dumps(record, indent=1) + "\n")
+        return
+    if args.check_soft_modes:  # are the cost's soft directions relabellings (tangential) or shape (normal) modes?
+        x_seed = problem.accepted.parameters
+        sol = problem._record(x_seed)
+        scale = np.asarray(problem.model.x_scale, dtype=float)
+        b0 = np.asarray(sol["x"], dtype=float)
+        nb = problem.model.n_boundary
+        H, _ = problem.dense_hessian(x_seed, sol)
+        lam, V = np.linalg.eigh(0.5 * (H + H.T) * np.outer(scale, scale))
+        N, a = map(np.asarray, problem.model._normal_operator(jnp.asarray(b0)))
+        dR, dZ = (np.asarray(t).reshape(-1, b0.size) for t in jax.jacfwd(problem.model.surface)(jnp.asarray(b0)))
+        rows = []
+        for k in range(args.check_soft_modes):
+            v = V[:, k] * scale
+            normal = float(np.linalg.norm(N @ v[:N.shape[1]]))
+            total = float(np.sqrt(np.linalg.norm(dR[:, :nb] @ v[:nb]) ** 2 + np.linalg.norm(dZ[:, :nb] @ v[:nb]) ** 2))
+            rows.append(dict(eigenvalue=float(lam[k]), normal_fraction=normal / max(total, 1e-300)))
+        frac = np.array([r["normal_fraction"] for r in rows])
+        counts = {f"<{t:g}": int(np.sum(lam[:len(rows)] < t * lam[-1])) for t in (1e-8, 1e-7, 1e-6, 1e-5)}
+        print(f"[soft modes] largest eigenvalue {lam[-1]:.3e}; counts below fraction of it {counts}", flush=True)
+        for lo, hi in ((0, 0.05), (0.05, 0.2), (0.2, 0.5), (0.5, 1.01)):
+            sel = (frac >= lo) & (frac < hi)
+            print(f"[soft modes] normal fraction {lo:.2f}-{hi:.2f}: {int(sel.sum())} of the {len(rows)} softest "
+                  f"(eigenvalues {lam[:len(rows)][sel].min() if sel.any() else 0:.1e}.."
+                  f"{lam[:len(rows)][sel].max() if sel.any() else 0:.1e})", flush=True)
+        (out / "soft_modes.json").write_text(json.dumps(dict(largest=float(lam[-1]), modes=rows), indent=1) + "\n")
         return
     if args.check_labelling_sensitivity:  # how much do the values move along the cost's flat directions?
         x_seed = problem.accepted.parameters

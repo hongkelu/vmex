@@ -978,9 +978,7 @@ def _exact_products_traced(design, state, mask, xj, b0, V, chunk=None):
 
     def columns(W):  # the columns' state tangents (on this factorization), then column by column
         dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(W)
-        # certified to the adjoint's tolerance: at the Jacobian's (1e-4) the products' own error (~3e-6 of each)
-        # floored the multipliers' true residual above its 1e-6 gate
-        dz_batch, tangent_ok = model._tangent_solve(params0, state, mask, dprm, system=system, rtol=cfg.adjoint_tol)
+        dz_batch, tangent_ok = model._tangent_solve(params0, state, mask, dprm, system=system)
         HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, W))
         return HV, FdV, tangent_ok, adjoint_ok
 

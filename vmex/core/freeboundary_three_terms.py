@@ -855,17 +855,14 @@ class ThreeTermsFreeBoundaryModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch, system=None, rtol=None):
+        def tangents(params, state, mask, batch, system=None):
             """Projected state responses to the stacked parameter tangents (one block factorization, chunked), and
-            whether each column's linear solve is certified (to ``rtol``, default the Jacobian's
-            ``jacobian_adjoint_tol``; exact second-order products pass the adjoint's).  ``system``: the factorization
-            of this linearization (``im._raw_block_system`` with ``probe_chunk_size = self.chunk``) when the caller
-            holds it."""
+            whether each column's linear solve is certified.  ``system``: the factorization of this linearization
+            (``im._raw_block_system`` with ``probe_chunk_size = self.chunk``) when the caller holds it."""
             solution, report = im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol if rtol is None else rtol),
-                certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
                 system=system)
             return solution, report.converged
 

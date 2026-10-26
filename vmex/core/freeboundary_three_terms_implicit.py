@@ -436,11 +436,16 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     def point(bb):  # (cost, g, sol-like record) at bb, or None
         return _cost_point(design, x, params, field, bb)
 
-    def project(bb, here, Hcc):  # the current re-solved at this boundary: Newton on its block
+    def project(bb, here, Hcc, target=np.inf):  # the current re-solved at this boundary: Newton on its block
+        # A correction is skipped when its predicted gain is below the cost's resolution (NEWTON_FLOOR, the floor
+        # that also declares convergence, whose test includes the current's gain) or when even twice that gain
+        # leaves the trial above ``target``, the cost its acceptance needs (each correction is a tight solve;
+        # QA/QH 2.5 %: gains of 1e-9..1e-13 of the cost on trials rejected either way).
         used = 0
         for _ in range(PROJECTION_CORRECTIONS):
             dc = -np.linalg.solve(Hcc, here[1][c])
-            if -0.5 * float(here[1][c] @ dc) <= 1e-14 * max(here[0], 1e-300):
+            gain = -0.5 * float(here[1][c] @ dc)
+            if gain <= NEWTON_FLOOR * max(here[0], 1e-300) or here[0] - 2.0 * gain >= target:
                 break
             trial = bb.copy()
             trial[c] += dc
@@ -550,7 +555,7 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
             if b_try is None:
                 b_try = b + d
             if trial is not None:
-                b_try, trial, used = project(b_try, trial, P["Hcc"])
+                b_try, trial, used = project(b_try, trial, P["Hcc"], target=cost - 0.1 * predicted)
                 evaluations += used
             rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
             if trial is not None and np.isfinite(trial[0]):  # the trials' miss of their model: the cost's resolution

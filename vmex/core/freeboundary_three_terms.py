@@ -83,6 +83,7 @@ from .printing import emit_flushed
 __all__ = [
     "BoundaryResidual",
     "ThreeTermsConfig",
+    "ThreeTermsNewtonOptions",
     "ThreeTermsFreeBoundaryModel",
     "ThreeTermsResult",
     "boundary_residual",
@@ -250,8 +251,23 @@ LABELLINGS = THREE_TERMS_LABELLINGS
 FITS = ("secant", "trf")
 
 
-def _newton_defaults() -> dict:
-    return dict(step_tol=1e-8, max_steps=60, quasi=True)
+@dataclass(frozen=True)
+class ThreeTermsNewtonOptions:
+    """The gauge Newton that converges a fit's point on the gauge (:attr:`ThreeTermsConfig.newton`).
+
+    Converged when the reduced Newton step is at most ``step_tol`` (or its predicted decrease is at the cost's
+    floor), after at most ``max_steps`` iterates; ``quasi`` updates quasi-Newton models between exact Hessians;
+    ``verbose`` prints every iterate."""
+
+    step_tol: float = 1e-8
+    max_steps: int = 60
+    quasi: bool = True
+    verbose: bool = False
+
+    def as_dict(self) -> dict:
+        """The options as the polish's keywords."""
+        return dict(step_tol=float(self.step_tol), max_steps=int(self.max_steps), quasi=bool(self.quasi),
+                    verbose=bool(self.verbose))
 
 
 @dataclass(frozen=True)
@@ -299,7 +315,7 @@ class ThreeTermsConfig:
     net_current_weight: float = 1.0
     chunk: int = 8
     newton_seed: bool = True
-    newton: dict = field(default_factory=_newton_defaults)
+    newton: ThreeTermsNewtonOptions = field(default_factory=ThreeTermsNewtonOptions)
 
     def __post_init__(self) -> None:
         if self.labelling not in LABELLINGS:
@@ -310,7 +326,8 @@ class ThreeTermsConfig:
 
         if self.m1_complement not in M1_COMPLEMENTS:
             raise ValueError(f"m1_complement must be one of {M1_COMPLEMENTS}, got {self.m1_complement!r}")
-        object.__setattr__(self, "newton", {**_newton_defaults(), **dict(self.newton or {})})
+        if not isinstance(self.newton, ThreeTermsNewtonOptions):  # a mapping of its fields, for convenience
+            object.__setattr__(self, "newton", ThreeTermsNewtonOptions(**dict(self.newton or {})))
 
     @classmethod
     def from_input(cls, inp: Any) -> "ThreeTermsConfig | None":
@@ -493,7 +510,7 @@ def solve_free_boundary_three_terms(
 
     def accept(fit):  # the optimization's acceptance rule: one definition of a solved free boundary
         return _accept(design, np.zeros(0), model.params0, external_field, fit,
-                       gate=max(config.ftol, POLISH_FTOL), newton=dict(config.newton, emit=emit) if gauge else None, stats=stats,
+                       gate=max(config.ftol, POLISH_FTOL), newton=dict(config.newton.as_dict(), emit=emit) if gauge else None, stats=stats,
                        anchor_H=None if previous is None else previous.hessian, keep_hessian=lambda record: kept.update(record or {}))
 
     ftol = config.ftol

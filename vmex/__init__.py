@@ -245,6 +245,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "solve_phiedge": (".core.freeboundary", "solve_phiedge"),
     "solve_free_boundary_three_terms": (".core.freeboundary_three_terms", "solve_free_boundary_three_terms"),
     "ThreeTermsConfig": (".core.freeboundary_three_terms", "ThreeTermsConfig"),
+    "ThreeTermsNewtonOptions": (".core.freeboundary_three_terms", "ThreeTermsNewtonOptions"),
     "ThreeTermsResult": (".core.freeboundary_three_terms", "ThreeTermsResult"),
     "boundary_residual": (".core.freeboundary_three_terms", "boundary_residual"),
     "ThreeTermsFreeBoundaryModel": (".core.freeboundary_three_terms", "ThreeTermsFreeBoundaryModel"),

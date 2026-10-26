@@ -142,7 +142,9 @@ def test_config_validates_and_resolves_like_position_control(tmp_path):
     with pytest.raises(ValueError, match="m1_complement"):
         vj.ThreeTermsConfig(m1_complement="solved")
     config = vj.ThreeTermsConfig(newton=dict(verbose=True))
-    assert config.newton == dict(step_tol=1e-8, max_steps=60, quasi=True, verbose=True)
+    assert config.newton == vj.ThreeTermsNewtonOptions(verbose=True)
+    assert config.newton.as_dict() == dict(step_tol=1e-8, max_steps=60, quasi=True, verbose=True)
+    assert hash(config) == hash(vj.ThreeTermsConfig(newton=vj.ThreeTermsNewtonOptions(verbose=True)))
     assert config.model_options()["labelling"] == "gauge"
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     assert fbt.resolve_three_terms(None, inp) is None and fbt.resolve_three_terms(False, inp) is None

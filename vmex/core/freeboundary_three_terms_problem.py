@@ -175,7 +175,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if config.labelling != "gauge":  # before the model's seed solve
             raise ValueError("the single-stage problem needs labelling='gauge': its gradient differentiates the "
                              "converged point on the gauge")
-        newton = {**config.newton, **dict(newton or {})}
+        newton = {**config.newton.as_dict(), **dict(newton or {})}
         model = ThreeTermsFreeBoundaryModel(inp, **{**config.model_options(), **model_options})
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
@@ -195,7 +195,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         #: The gauge Newton of every trial (:func:`~vmex.core.freeboundary_three_terms_implicit._newton_refine`): its
         #: options (step_tol, max_steps, quasi, verbose).  It makes the fit's stationary point, and so its response
         #: and exact gradient, determined.
-        self.newton_polish = dict(ThreeTermsConfig().newton if newton is None else newton)
+        self.newton_polish = ThreeTermsConfig().newton.as_dict() if newton is None else dict(newton)
         if model.gauge is None:
             raise ValueError("the single-stage problem needs a model with labelling='gauge'")
         self.semantic_identity = json.loads(json.dumps(semantic_identity))

@@ -123,6 +123,21 @@ def _emit(opt):
     return opt.get("emit") or (lambda message: print(message, flush=True))
 
 
+def _trust_region_step(H, g, radius, lo, hi):
+    """The step of ``min g.d + d.H.d / 2`` with ``|d| <= radius``: ``(H + lam I) d = -g`` with the shift ``lam``
+    raised from ``hi`` until the step fits, then bisected on ``[lo, hi]`` (40 halvings) to the boundary."""
+    import scipy.linalg
+
+    eye = np.eye(g.size)
+    while np.linalg.norm(scipy.linalg.solve(H + hi * eye, -g, assume_a="sym")) > radius:
+        hi *= 10
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        d = scipy.linalg.solve(H + mid * eye, -g, assume_a="sym")
+        lo, hi = (mid, hi) if np.linalg.norm(d) > radius or not np.all(np.isfinite(d)) else (lo, mid)
+    return scipy.linalg.solve(H + hi * eye, -g, assume_a="sym")
+
+
 def _cost_point(design, x, params, field, b):
     """``(cost, g, record)`` at boundary coordinates ``b``: the cost ``|r|^2 / 2``, its gradient ``g = J_b^T r`` (one
     tight interior solve and one reverse pass) and the record ``(state, mask, x, params)``; ``None`` if ``b`` has no
@@ -359,16 +374,8 @@ def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats,
         for _ in range(8):
             if definite and step <= radius:
                 dz = newton
-            else:  # the trust-region step: raise the shift until the step fits
-                eye = np.eye(Hr.shape[0])
-                lo, hi = max(0.0, -float(eig[0])), max(1.0, float(np.abs(eig).max()))
-                while np.linalg.norm(scipy.linalg.solve(Hr + hi * eye, -gr, assume_a="sym")) > radius:
-                    hi *= 10
-                for _ in range(40):
-                    mid = 0.5 * (lo + hi)
-                    dz = scipy.linalg.solve(Hr + mid * eye, -gr, assume_a="sym")
-                    lo, hi = (mid, hi) if np.linalg.norm(dz) > radius or not np.all(np.isfinite(dz)) else (lo, mid)
-                dz = scipy.linalg.solve(Hr + hi * eye, -gr, assume_a="sym")
+            else:
+                dz = _trust_region_step(Hr, gr, radius, max(0.0, -float(eig[0])), max(1.0, float(np.abs(eig).max())))
             predicted = -(gr @ dz + 0.5 * dz @ Hr @ dz)
             target = _gauge_project(model, b + (red["Z"] @ dz) * scale)
             trial = point(target) if target is not None else None
@@ -556,19 +563,8 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
         for _ in range(8):
             if definite and step_newton <= radius:
                 ds = newton
-            else:  # the trust-region step: raise lam until the step fits
-                eye = np.eye(gs.size)
-                lam_lo, lam_hi = 0.0, max(1.0, float(np.abs(np.diag(Hs)).max()))
-                while np.linalg.norm(scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")) > radius:
-                    lam_hi *= 10
-                for _ in range(40):
-                    lam = 0.5 * (lam_lo + lam_hi)
-                    ds = scipy.linalg.solve(Hs + lam * eye, -gs, assume_a="sym")
-                    if np.linalg.norm(ds) > radius or not np.all(np.isfinite(ds)):
-                        lam_lo = lam
-                    else:
-                        lam_hi = lam
-                ds = scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")
+            else:
+                ds = _trust_region_step(Hs, gs, radius, 0.0, max(1.0, float(np.abs(np.diag(Hs)).max())))
             predicted = -(gs @ ds + 0.5 * ds @ Hs @ ds) + current_gain
             d = np.zeros_like(b)
             d[bi] = (Zb @ ds) * sb

@@ -160,13 +160,15 @@ jax.tree_util.register_dataclass(
 # ===========================================================================
 
 
-def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) -> Array:
+def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4, candidates: int = 8) -> Array:
     """``sign * max(sign * B)`` per surface, of the trigonometric interpolant of the grid values ``modB``.
 
     ``modB`` is ``(nsurf, ntheta, nzeta)`` on a uniform periodic grid.  Newton steps on the interpolant
-    from the grid extremum find the continuous one; its location is held fixed when differentiating, so
-    the derivative is that of the interpolant's extremum (envelope theorem) -- continuous where the
-    grid extremum jumps between points, unlike a hard grid ``max``.
+    from the ``candidates`` largest grid points locate the interpolant's local extrema near them, and the largest is
+    kept: a surface with two near-equal peaks (the grid's extremum switching between them) then gives the
+    interpolant's global extremum, continuous in the field, not the local one of whichever grid point led (a jump
+    of their difference: QA 2.5% bootstrap rows).  Its location is held fixed when differentiating, so the
+    derivative is that of the interpolant's extremum (envelope theorem).
     """
     nsurf, nt, nz = modB.shape
     F = jnp.fft.fft2(modB, axes=(1, 2)) / (nt * nz)
@@ -183,8 +185,7 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) ->
 
     cell = jnp.asarray([2 * np.pi / nt, 2 * np.pi / nz], dtype=modB.dtype)
 
-    def locate(Fs, Bs):
-        idx = jnp.argmax(sign * Bs)
+    def locate(Fs, idx):
         t = 2 * jnp.pi * (idx // nz) / nt
         z = 2 * jnp.pi * (idx % nz) / nz
         for _ in range(newton_steps):
@@ -195,7 +196,15 @@ def _interpolant_extremum(modB: Array, sign: float, *, newton_steps: int = 4) ->
             t, z = t + step[0], z + step[1]
         return t, z
 
-    t, z = jax.vmap(locate)(jax.lax.stop_gradient(F), jax.lax.stop_gradient(modB.reshape(nsurf, -1)))
+    k = min(int(candidates), nt * nz)
+    starts = jax.lax.top_k(jax.lax.stop_gradient(sign * modB.reshape(nsurf, -1)), k)[1]  # (nsurf, k)
+    Fstop = jax.lax.stop_gradient(F)
+    t, z = jax.vmap(lambda Fs, ids: jax.vmap(lambda i: locate(Fs, i))(ids))(Fstop, starts)
+    # the candidate whose refined interpolant value is largest (selected on stopped values: a location choice)
+    vals = jax.vmap(lambda Fs, ts, zs: jax.vmap(lambda a, b: value_grad_hess(Fs, a, b)[0])(ts, zs))(Fstop, t, z)
+    best = jnp.argmax(sign * vals, axis=1)
+    t = jnp.take_along_axis(t, best[:, None], axis=1)[:, 0]
+    z = jnp.take_along_axis(z, best[:, None], axis=1)[:, 0]
 
     def implicit(Fs, a, b):
         """The located extremum as a differentiable function of the field: one Newton step from the (stopped)

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from pathlib import Path
-from types import SimpleNamespace
 import warnings
 
 import numpy as np

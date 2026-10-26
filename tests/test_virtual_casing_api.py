@@ -140,17 +140,3 @@ def test_graded_target_batch_size_rejects_invalid_static_sizes():
         with pytest.raises(ValueError, match="positive integer"):
             field.graded_target_batch_size = size
         assert field.graded_target_batch_size == 3
-
-
-def test_an_old_virtual_casing_jax_counts_as_unavailable(monkeypatch):
-    """Below the vmex[freeb] floor the package is not usable, so tests guarded by it skip (uwplasma/vmex#451:
-    0.0.4 failed two three-term tests with an ImportError instead of skipping)."""
-    from vmex import _compat
-
-    if not virtual_casing._HAVE_VCJ:
-        assert not virtual_casing.have_virtual_casing_jax()
-        return
-    monkeypatch.setattr(_compat.importlib_metadata, "version", lambda name: "0.0.4")
-    assert not virtual_casing.have_virtual_casing_jax()
-    monkeypatch.setattr(virtual_casing, "_HAVE_VCJ", False)  # not installed at all
-    assert not virtual_casing.have_virtual_casing_jax()

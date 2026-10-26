@@ -456,8 +456,7 @@ def solve_free_boundary_three_terms(
     config = ThreeTermsConfig() if config is None else config
     if not jax.config.jax_enable_x64:
         raise ValueError("the three-term free boundary needs jax_enable_x64")
-    if not vc.have_virtual_casing_jax():
-        raise ImportError("the three-term free boundary needs virtual-casing-jax (pip install 'vmex[freeb]')")
+    vc._require_vcj()  # ImportError naming vmex[freeb] when virtual-casing-jax is missing or too old
     if bool(inp.lasym):
         raise NotImplementedError("the three-term free boundary supports lasym = False only")
     if _edge_pressure_error(inp):

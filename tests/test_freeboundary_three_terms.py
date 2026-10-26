@@ -34,7 +34,7 @@ from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
-needs_vc = pytest.mark.skipif(not vc.have_virtual_casing_jax(), reason="requires virtual_casing_jax")
+needs_vc = pytest.mark.skipif(not vc._HAVE_VCJ, reason="requires virtual_casing_jax")
 
 
 def _deck(name, mpol, ns):

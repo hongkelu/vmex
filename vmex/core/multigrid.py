@@ -644,6 +644,7 @@ def solve_free_boundary_multigrid(
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
     three_terms: Any = None,
+    position_control: Any = None,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
 
@@ -690,6 +691,11 @@ def solve_free_boundary_multigrid(
     The final stage's publishable potential and surface fields are retained in
     ``result.vacuum``; internal NESTOR matrix caches are not exposed.
 
+    ``position_control`` (a :class:`~vmex.core.position_control.PositionControl`;
+    ``None`` follows the deck's ``LPOSITION_CONTROL``, ``False`` forces it off) adds a feedback-controlled uniform vertical field
+    that holds the plasma at a target radius; the control state carries across
+    rungs and the final correction is ``result.position_control``.
+
     ``prefetch_compile=True`` (False by default, exactly like
     :func:`solve_multigrid`: a library call must not spawn background
     compile threads implicitly) overlaps compilation with iteration on cold
@@ -722,7 +728,8 @@ def solve_free_boundary_multigrid(
         three_terms = resolve_three_terms(three_terms, inp)
         if three_terms is not None:
             nestor = dict(time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep, precon_type=precon_type,
-                          prec2d_threshold=prec2d_threshold, prec2d=prec2d, lconm1=None if lconm1 else False)
+                          prec2d_threshold=prec2d_threshold, prec2d=prec2d, lconm1=None if lconm1 else False,
+                          position_control=position_control or None)
             if any(value is not None for value in nestor.values()):
                 raise ValueError("three_terms solves the boundary from its interface conditions: "
                                  + ", ".join(k for k, v in nestor.items() if v is not None)
@@ -737,6 +744,8 @@ def solve_free_boundary_multigrid(
                 from .errors import VmecConvergenceError
                 raise VmecConvergenceError(result.three_terms.message)
             return result
+    from .position_control import resolve_position_control
+    position_control = resolve_position_control(position_control, inp)
 
     ns_arr = _vmec_ns_prefix(inp.ns_array if ns_array is None else ns_array)
     if ns_arr.size == 0:
@@ -916,6 +925,10 @@ def solve_free_boundary_multigrid(
                     emit_legend=(igrid == 0),
                     prefetch_compile=prefetch_compile,
                     prefetch_device=stage_device,
+                    position_control=position_control,
+                    position_control_state=(
+                        None if stage_result is None or position_control is None
+                        else stage_result.result.position_control),
                 )
         except VmecJacobianError as exc:
             if prefetch_handle is not None:
@@ -967,6 +980,7 @@ def solve_free_boundary_multigrid(
                     use_fft=use_fft,
                     release_stage_cache=release_stage_cache,
                     prefetch_compile=prefetch_compile,
+                    position_control=position_control,
                 )
             raise
         except BaseException:

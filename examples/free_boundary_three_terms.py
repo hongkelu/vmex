@@ -17,8 +17,8 @@ the boundary and its derivatives are determined) and with ``labelling="none"``
 the floor of the resolution and land on nearly the same surface.  Then the
 coil currents change by 1% and ``previous=`` continues from the gauge result
 without compiling the model again.  The same solve runs from a deck with
-``LTHREE_TERM = T`` (``vmex input.case``) or through
-``vj.solve_free_boundary_multigrid(..., three_term=vj.ThreeTermConfig())``.
+``LTHREE_TERMS = T`` (``vmex input.case``) or through
+``vj.solve_free_boundary_multigrid(..., three_terms=vj.ThreeTermsConfig())``.
 
 Needs ``vmex[coils,freeb]`` (ESSOS and virtual-casing-jax) and a GPU: about
 5 minutes on one A100, most of it compilation.  ``VMEX_EXAMPLES_CI=1`` runs a
@@ -55,7 +55,7 @@ MAX_MODE = None
 # The coil-current change of the warm continuation:
 CURRENT_CHANGE = 0.01
 
-OUTPUT_DIR = Path("output_free_boundary_three_term")
+OUTPUT_DIR = Path("output_free_boundary_three_terms")
 
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 if ci_smoke:
@@ -83,7 +83,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def report(name, result, seconds):
-    tt = result.three_term
+    tt = result.three_terms
     print(f"{name:>14s}: {'converged' if result.converged else 'NOT converged'} in {seconds:.0f} s "
           f"({tt.nfev} boundary evaluations, {tt.njev} Jacobians); interface residuals B.n "
           f"{tt.boundary_residual.normal:.2e}, pressure {tt.boundary_residual.pressure:.2e}, "
@@ -107,17 +107,17 @@ def lcfs_distance(a, b, ntheta=361):
 results, wouts = {}, {}
 for labelling in ("gauge", "none"):
     started = time.perf_counter()
-    results[labelling] = vj.solve_free_boundary_three_term(
-        inp, external_field=field, config=vj.ThreeTermConfig(labelling=labelling, **settings))
+    results[labelling] = vj.solve_free_boundary_three_terms(
+        inp, external_field=field, config=vj.ThreeTermsConfig(labelling=labelling, **settings))
     report(labelling, results[labelling], time.perf_counter() - started)
-    wouts[labelling] = vj.wout_from_result(results[labelling].three_term.input, results[labelling])
-    print(f"Wrote {vj.write_wout(OUTPUT_DIR / f'wout_three_term_{labelling}.nc', wouts[labelling])}")
+    wouts[labelling] = vj.wout_from_result(results[labelling].three_terms.input, results[labelling])
+    print(f"Wrote {vj.write_wout(OUTPUT_DIR / f'wout_three_terms_{labelling}.nc', wouts[labelling])}")
 
-start = results["gauge"].three_term.initial_boundary_residual
+start = results["gauge"].three_terms.initial_boundary_residual
 print(f"{'design':>14s}: interface residuals B.n {start.normal:.2e}, pressure {start.pressure:.2e}, "
       f"sheet current {start.sheet_current:.2e} (the fixed-boundary start)")
 print(f"gauge and none: LCFS {1e3 * lcfs_distance(wouts['gauge'], wouts['none']):.2f} mm apart, "
-      f"gauge Newton {len(results['gauge'].three_term.newton['steps'])} steps")
+      f"gauge Newton {len(results['gauge'].three_terms.newton['steps'])} steps")
 
 ### Continue after a coil change ##############################################
 
@@ -125,11 +125,11 @@ n_curves = coils.dofs_curves.size
 moved = BiotSavart(coils.with_dofs(jnp.concatenate([coils.dofs[:n_curves],
                                                     coils.dofs_currents * (1.0 + CURRENT_CHANGE)])))
 started = time.perf_counter()
-warm = vj.solve_free_boundary_three_term(inp, external_field=moved, previous=results["gauge"],
-                                         config=vj.ThreeTermConfig(**settings))
+warm = vj.solve_free_boundary_three_terms(inp, external_field=moved, previous=results["gauge"],
+                                         config=vj.ThreeTermsConfig(**settings))
 report(f"currents +{100 * CURRENT_CHANGE:.0f}%", warm, time.perf_counter() - started)
 print(f"the coil change moves the LCFS by "
-      f"{1e3 * lcfs_distance(vj.wout_from_result(warm.three_term.input, warm), wouts['gauge']):.2f} mm")
+      f"{1e3 * lcfs_distance(vj.wout_from_result(warm.three_terms.input, warm), wouts['gauge']):.2f} mm")
 
 ok = all(result.converged for result in (*results.values(), warm))
 if not ok and not ci_smoke:

@@ -1,14 +1,14 @@
 """Free boundary from the three virtual-casing interface conditions.
 
-:mod:`vmex.core.freeboundary_three_term` solves for the boundary on which
+:mod:`vmex.core.freeboundary_three_terms` solves for the boundary on which
 ``B.n``, the pressure jump and the sheet current vanish. Lanes: input
 validation, the config and its INDATA keys; the residual rows' definitions on a
 converged finite-beta state; the boundary fit's Levenberg-Marquardt steps and
 certificate on analytic least squares; and (``full``) the vacuum and
 finite-beta Landreman--Paul QA cases with their bundled ESSOS coils, where the
 solve agrees with NESTOR and is independent of its start.  The gauge Newton and
-the exact derivatives are tests/test_freeboundary_three_term_implicit.py, the
-single-stage problem tests/test_freeboundary_three_term_problem.py.
+the exact derivatives are tests/test_freeboundary_three_terms_implicit.py, the
+single-stage problem tests/test_freeboundary_three_terms_problem.py.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import jax.numpy as jnp  # noqa: E402
 
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_three_term as fbt  # noqa: E402
+from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
@@ -107,12 +107,12 @@ def _wout(inp, result):
 
 def _equilibrium(result):
     """A three-term result's free boundary as an ``Equilibrium`` (the fixed-boundary deck and the returned state)."""
-    return opt.solve_equilibrium(result.three_term.input, initial_state=result.state)
+    return opt.solve_equilibrium(result.three_terms.input, initial_state=result.state)
 
 
 def _cost(result, field):
     """``|r|^2 / 2`` of the interface rows at a three-term result's boundary (a tight re-evaluation)."""
-    tt = result.three_term
+    tt = result.three_terms
     rows = np.asarray(tt.model.evaluate(tt.x, tt.model.params0, field, tight=True)[0])
     return 0.5 * float(rows @ rows)
 
@@ -121,68 +121,68 @@ def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
     with pytest.raises(ValueError, match="edge pressure"):
-        fbt.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
+        fbt.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
 
 
 def test_asymmetric_boundary_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), lasym=True)
     with pytest.raises(NotImplementedError, match="lasym"):
-        fbt.solve_free_boundary_three_term(inp, external_field=lambda xyz: xyz)
+        fbt.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
 
 
 def test_config_validates_and_resolves_like_position_control(tmp_path):
-    """ThreeTermConfig checks its choices and fills the Newton defaults; ``three_term=None`` follows the deck's
-    LTHREE_TERM / THREE_TERM_LABELLING (written and read back by the INDATA writer), ``False`` is off, ``True`` the
+    """ThreeTermsConfig checks its choices and fills the Newton defaults; ``three_terms=None`` follows the deck's
+    LTHREE_TERMS / THREE_TERMS_LABELLING (written and read back by the INDATA writer), ``False`` is off, ``True`` the
     deck's labelling; the NESTOR time-stepping controls are refused with it."""
     with pytest.raises(ValueError, match="labelling"):
-        vj.ThreeTermConfig(labelling="start")
+        vj.ThreeTermsConfig(labelling="start")
     with pytest.raises(ValueError, match="fit"):
-        vj.ThreeTermConfig(fit="lm")
+        vj.ThreeTermsConfig(fit="lm")
     with pytest.raises(ValueError, match="m1_complement"):
-        vj.ThreeTermConfig(m1_complement="solved")
-    config = vj.ThreeTermConfig(newton=dict(verbose=True))
+        vj.ThreeTermsConfig(m1_complement="solved")
+    config = vj.ThreeTermsConfig(newton=dict(verbose=True))
     assert config.newton == dict(step_tol=1e-8, max_steps=60, quasi=True, verbose=True)
     assert config.model_options()["labelling"] == "gauge"
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
-    assert fbt.resolve_three_term(None, inp) is None and fbt.resolve_three_term(False, inp) is None
-    assert fbt.resolve_three_term(True, inp) == vj.ThreeTermConfig()
-    assert fbt.resolve_three_term(config, inp) is config
-    with pytest.raises(TypeError, match="three_term"):
-        fbt.resolve_three_term("gauge", inp)
-    deck = replace(inp, lthree_term=True, three_term_labelling="none")
-    path = deck.to_indata(tmp_path / "input.three_term")
+    assert fbt.resolve_three_terms(None, inp) is None and fbt.resolve_three_terms(False, inp) is None
+    assert fbt.resolve_three_terms(True, inp) == vj.ThreeTermsConfig()
+    assert fbt.resolve_three_terms(config, inp) is config
+    with pytest.raises(TypeError, match="three_terms"):
+        fbt.resolve_three_terms("gauge", inp)
+    deck = replace(inp, lthree_terms=True, three_terms_labelling="none")
+    path = deck.to_indata(tmp_path / "input.three_terms")
     text = path.read_text()
-    assert "LTHREE_TERM" in text and "THREE_TERM_LABELLING" in text
+    assert "LTHREE_TERMS" in text and "THREE_TERMS_LABELLING" in text
     read = vj.VmecInput.from_file(path)
-    assert read.lthree_term and read.three_term_labelling == "none"
-    assert fbt.resolve_three_term(None, read) == vj.ThreeTermConfig(labelling="none")
-    with pytest.raises(ValueError, match="THREE_TERM_LABELLING"):
-        replace(inp, three_term_labelling="start")
+    assert read.lthree_terms and read.three_terms_labelling == "none"
+    assert fbt.resolve_three_terms(None, read) == vj.ThreeTermsConfig(labelling="none")
+    with pytest.raises(ValueError, match="THREE_TERMS_LABELLING"):
+        replace(inp, three_terms_labelling="start")
     with pytest.raises(ValueError, match="time_step"):
         vj.solve_free_boundary_multigrid(deck, external_field=lambda xyz: xyz, time_step=0.5)
 
 
-def test_multigrid_keyword_dispatches_to_the_three_term_solve(monkeypatch):
-    """``three_term=`` (or the deck) hands the ladder, the field, the start and the config to
-    solve_free_boundary_three_term; an unconverged result raises with raise_on_max_iterations."""
+def test_multigrid_keyword_dispatches_to_the_three_terms_solve(monkeypatch):
+    """``three_terms=`` (or the deck) hands the ladder, the field, the start and the config to
+    solve_free_boundary_three_terms; an unconverged result raises with raise_on_max_iterations."""
     calls = []
 
     def fake(inp, **kwargs):
         calls.append((inp, kwargs))
         return SimpleNamespace(converged=kwargs["config"].labelling == "none",
-                               three_term=SimpleNamespace(message="not certified"))
+                               three_terms=SimpleNamespace(message="not certified"))
 
-    monkeypatch.setattr(fbt, "solve_free_boundary_three_term", fake)
+    monkeypatch.setattr(fbt, "solve_free_boundary_three_terms", fake)
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     field = object()
     got = vj.solve_free_boundary_multigrid(inp, ns_array=[5, 9], external_field=field,
-                                           three_term=vj.ThreeTermConfig(labelling="none"))
+                                           three_terms=vj.ThreeTermsConfig(labelling="none"))
     (ladder, kwargs), = calls
     assert got.converged and kwargs["external_field"] is field and kwargs["config"].labelling == "none"
     np.testing.assert_array_equal(ladder.ns_array, [5, 9])
     with pytest.raises(vj.VmecConvergenceError, match="not certified"):
-        vj.solve_free_boundary_multigrid(replace(inp, lthree_term=True), external_field=field)
-    vj.solve_free_boundary_multigrid(replace(inp, lthree_term=True), external_field=field,
+        vj.solve_free_boundary_multigrid(replace(inp, lthree_terms=True), external_field=field)
+    vj.solve_free_boundary_multigrid(replace(inp, lthree_terms=True), external_field=field,
                                      raise_on_max_iterations=False)
     assert calls[-1][1]["config"].labelling == "gauge"
 
@@ -423,7 +423,7 @@ def test_uncertified_tangent_solve_is_no_jacobian(monkeypatch):
     from vmex.core import implicit as im
 
     inp, field = _small_vacuum()
-    model = fbt.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     rows, aux = model.evaluate(model.x0, model.params0, field)
     solve = im._implicit_evolved_tangent_multi_rhs
 
@@ -442,7 +442,7 @@ def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
     """A boundary fit whose Jacobian point has no certified equilibrium raises RuntimeError (a rejected trial),
     not KeyError (which ended a campaign run), and never linearizes another point's state."""
     inp, field = _small_vacuum()
-    model = fbt.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     monkeypatch.setattr(model, "evaluate", lambda *args, **kwargs: None)
     with pytest.raises(RuntimeError, match="no certified equilibrium"):
         model.solve_boundary(model.params0, field)
@@ -455,7 +455,7 @@ def test_interior_state_does_not_depend_on_its_start():
     perturbed seed gives the same interface rows and boundary Jacobian: no history dependence through the
     interior's m = 1 gauge or the hot restart."""
     inp, field = _small_vacuum()
-    model = fbt.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     x = np.asarray(model.x0)
     params = model.params0
     near = model.solve(model.with_boundary(params, jnp.asarray(x + 1e-3 * np.asarray(model.x_scale))))[0]
@@ -484,7 +484,7 @@ def test_normal_operator_is_the_surface_normal_displacement():
     """N @ dx is the normal displacement of the boundary surface for a coordinate change dx (finite differences of
     the surface against its numerical normal, periodic central differences), a the RMS minor radius."""
     inp, field = _small_vacuum()
-    model = fbt.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
+    model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     x = jnp.asarray(model.x0)
     N, a = map(np.asarray, model._normal_operator(x))
     assert 0.05 < a < 0.5 and N.shape == (48 * 48, x.size)
@@ -536,48 +536,48 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fbt._coil_net_current(field, nestor_wout)), abs(float(nestor_wout.rbtor)),
                                rtol=1e-3)
-    config = vj.ThreeTermConfig()
-    fits = [vj.solve_free_boundary_three_term(inp, external_field=field, restart_from=start, config=config)
+    config = vj.ThreeTermsConfig()
+    fits = [vj.solve_free_boundary_three_terms(inp, external_field=field, restart_from=start, config=config)
             for start in (None, free)]
     for fit in fits:
-        after = _residual(fit.three_term.input, _equilibrium(fit), field)
+        after = _residual(fit.three_terms.input, _equilibrium(fit), field)
         assert after.normal < before.normal and after.sheet_current < before.sheet_current
-        assert fit.converged and fit.three_term.certified and "interface residuals" in fit.three_term.message
+        assert fit.converged and fit.three_terms.certified and "interface residuals" in fit.three_terms.message
         assert fit.vacuum is None
-    strict = vj.solve_free_boundary_three_term(inp, external_field=field, previous=fits[0],
+    strict = vj.solve_free_boundary_three_terms(inp, external_field=field, previous=fits[0],
                                                config=replace(config, max_residual=1e-6))
-    assert strict.three_term.certified and not strict.converged and "above the accepted" in strict.three_term.message
-    walls = [_wout(fit.three_term.input, fit) for fit in fits]
+    assert strict.three_terms.certified and not strict.converged and "above the accepted" in strict.three_terms.message
+    walls = [_wout(fit.three_terms.input, fit) for fit in fits]
     for wall in walls:   # budget: NESTOR's own floor (~1.6 mm) plus the flat least-squares minimum (~3 mm)
         assert _lcfs_distance(wall, nestor_wout) < 5e-3
     np.testing.assert_allclose(np.asarray(walls[0].iotaf)[[0, -1]], np.asarray(nestor_wout.iotaf)[[0, -1]], atol=3e-3)
     # The model's Jacobian (implicit state tangents, field as an argument) is upstream's implicit Jacobian of
     # the same rows at the same state (the seed's: two independent re-solves of a boundary differ at the
     # floor); and a warm restart at an unchanged field stays where it is.
-    fit, model = fits[0], fits[0].three_term.model
+    fit, model = fits[0], fits[0].three_terms.model
     problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
         state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
         vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0])
     J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
-    again = vj.solve_free_boundary_three_term(inp, external_field=field, previous=fit, config=config)
+    again = vj.solve_free_boundary_three_terms(inp, external_field=field, previous=fit, config=config)
     # no new Jacobian: the warm start's own certification reuses the latest linearization (counted once)
-    assert again.three_term.njev <= 1 and again.converged and _cost(again, field) <= _cost(fit, field) * (1 + 1e-6)
-    assert _lcfs_distance(_wout(again.three_term.input, again), walls[0]) < 1e-4
+    assert again.three_terms.njev <= 1 and again.converged and _cost(again, field) <= _cost(fit, field) * (1 + 1e-6)
+    assert _lcfs_distance(_wout(again.three_terms.input, again), walls[0]) < 1e-4
 
 
 @needs_vc
 @pytest.mark.full
 def test_finite_beta_free_boundary_removes_the_sheet_current():
-    """LP QA at 0.5% beta with its fitted coils, through the free-boundary ladder's ``three_term`` keyword (the
+    """LP QA at 0.5% beta with its fitted coils, through the free-boundary ladder's ``three_terms`` keyword (the
     gauge labelling, the default)."""
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field)
-    result = vj.solve_free_boundary_multigrid(inp, external_field=field, three_term=vj.ThreeTermConfig())
-    assert result.converged and result.vacuum is None and result.three_term.labelling == "gauge"
-    res = result.three_term.boundary_residual
+    result = vj.solve_free_boundary_multigrid(inp, external_field=field, three_terms=vj.ThreeTermsConfig())
+    assert result.converged and result.vacuum is None and result.three_terms.labelling == "gauge"
+    res = result.three_terms.boundary_residual
     for name in ("normal", "pressure", "sheet_current"):
         assert getattr(res, name) < 0.25 * getattr(design, name), name
     assert res.sheet_current < 1.5e-3
@@ -636,7 +636,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     profiles = _lp_beta0p5_profiles(inp)
     # labelling "none" with the start-labelling rows (label_weight): its Gauss-Newton certificate needs the
     # relabelling valley closed
-    model = fbt.ThreeTermFreeBoundaryModel(inp, labelling="none", label_weight=1e-2, bootstrap=profiles)
+    model = fbt.ThreeTermsFreeBoundaryModel(inp, labelling="none", label_weight=1e-2, bootstrap=profiles)
     fit = model.solve_boundary(model.params0, field, ftol=1e-4, jacobian_ftol=1e-4, refresh_on_stall=True)
     fit = model.certify(model.params0, field, fit, gate=fbt.POLISH_FTOL)
     state, mask, params, _ = fit["aux"]
@@ -671,7 +671,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 25), lfreeb=False,
                   ftol_array=np.array([1e-13]), niter_array=np.array([20000]))
     profiles = _lp_beta0p5_profiles(inp)
-    model = fbt.ThreeTermFreeBoundaryModel(inp, labelling="none", bootstrap=profiles, fixed_boundary=True,
+    model = fbt.ThreeTermsFreeBoundaryModel(inp, labelling="none", bootstrap=profiles, fixed_boundary=True,
                                            m1_complement="frozen")
     assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
@@ -735,7 +735,7 @@ def _vacuum_flux_surface(w, field, *, lines=16, transits=20, steps=72):
 @pytest.mark.full
 @pytest.mark.skipif(not CTH_MGRID.exists(), reason="python tools/fetch_assets.py --bundle reference-nc")
 @pytest.mark.parametrize("case", ["vacuum", "beta"])
-def test_three_term_on_the_cth_like_deck(case):
+def test_three_terms_on_the_cth_like_deck(case):
     """uwplasma/vmex#451: the three-term free boundary of the CTH-like deck, judged by its own quality, with
     VMEC2000's (tests/data/cth_like_vmec2000.json: xvmec on the same deck and mgrid, vacuum with
     PRES_SCALE = CURTOR = 0) scored the same way.
@@ -756,10 +756,10 @@ def test_three_term_on_the_cth_like_deck(case):
         inp = replace(inp, pres_scale=0.0, curtor=0.0)
     nestor = vj.solve_free_boundary_multigrid(inp, raise_on_max_iterations=False)
     three = vj.solve_free_boundary_multigrid(inp, restart_from=nestor,
-                                             three_term=vj.ThreeTermConfig(labelling="none"))
+                                             three_terms=vj.ThreeTermsConfig(labelling="none"))
     assert three.converged
-    w = _wout(three.three_term.input, three)
-    residual = three.three_term.boundary_residual
+    w = _wout(three.three_terms.input, three)
+    residual = three.three_terms.boundary_residual
     vmec2000 = SimpleNamespace(nfp=int(w.nfp), xm=np.asarray(reference["xm"]), xn=np.asarray(reference["xn"]),
                                rmnc=np.asarray([reference["rmnc"]]), zmns=np.asarray([reference["zmns"]]))
     print(f"{case}: three-term LCFS {1e3 * _lcfs_distance(w, vmec2000):.2f} mm from VMEC2000's; residuals "
@@ -778,25 +778,25 @@ def test_three_term_on_the_cth_like_deck(case):
 @needs_vc
 @pytest.mark.full
 def test_secant_fit_reaches_the_trust_region_fit_with_fewer_jacobians(monkeypatch):
-    """The cold fit (``ThreeTermConfig.fit``) changes the path, not the certified free boundary: secant rounds
+    """The cold fit (``ThreeTermsConfig.fit``) changes the path, not the certified free boundary: secant rounds
     (Broyden-updated Jacobians) and scipy's trust region (a fresh Jacobian per step) certify the same root, the
     secant one with fewer Jacobians; and secant rounds that cannot converge hand over to the trust region instead
     of failing."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
                   am=np.zeros(21))
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    fits = {fit: vj.solve_free_boundary_three_term(inp, external_field=field, config=vj.ThreeTermConfig(fit=fit))
+    fits = {fit: vj.solve_free_boundary_three_terms(inp, external_field=field, config=vj.ThreeTermsConfig(fit=fit))
             for fit in ("trf", "secant")}
     for fit in fits.values():
         assert fit.converged
     trf, secant = fits["trf"], fits["secant"]
-    assert secant.three_term.njev < trf.three_term.njev
+    assert secant.three_terms.njev < trf.three_terms.njev
     np.testing.assert_allclose(_cost(secant, field), _cost(trf, field), rtol=1e-3)
     assert _lcfs_distance(_wout(inp, secant), _wout(inp, trf)) < 1e-4
     monkeypatch.setattr(fbt, "FIT_ROUNDS", 1)
     monkeypatch.setattr(fbt, "_levenberg_marquardt", _unconverged(fbt._levenberg_marquardt))
-    fallback = vj.solve_free_boundary_three_term(inp, external_field=field, config=vj.ThreeTermConfig())
-    assert fallback.converged and fallback.three_term.model.fit_fallbacks >= 1
+    fallback = vj.solve_free_boundary_three_terms(inp, external_field=field, config=vj.ThreeTermsConfig())
+    assert fallback.converged and fallback.three_terms.model.fit_fallbacks >= 1
     assert _lcfs_distance(_wout(inp, fallback), _wout(inp, trf)) < 1e-4
 
 
@@ -816,7 +816,7 @@ def test_certify_polishes_on_tight_states(monkeypatch):
     """The polish of a fit that failed its certificate evaluates tight states (the ones the certificate judges),
     while the fit itself stays on trial states (labelling "none")."""
     inp, field = _small_vacuum()
-    calls, original, real = [], fbt.ThreeTermFreeBoundaryModel.solve_boundary, fbt._fit_certificate
+    calls, original, real = [], fbt.ThreeTermsFreeBoundaryModel.solve_boundary, fbt._fit_certificate
     count = {"n": 0}
 
     def spy(self, *args, **kwargs):
@@ -828,11 +828,11 @@ def test_certify_polishes_on_tight_states(monkeypatch):
         certificate = real(J, r, *args)
         return dict(certificate, stationarity=1.0) if count["n"] == 1 else certificate
 
-    monkeypatch.setattr(fbt.ThreeTermFreeBoundaryModel, "solve_boundary", spy)
+    monkeypatch.setattr(fbt.ThreeTermsFreeBoundaryModel, "solve_boundary", spy)
     monkeypatch.setattr(fbt, "_fit_certificate", first_fails)
-    result = vj.solve_free_boundary_three_term(inp, external_field=field,
-                                               config=vj.ThreeTermConfig(labelling="none", **SMALL))
-    assert result.three_term.certified
+    result = vj.solve_free_boundary_three_terms(inp, external_field=field,
+                                               config=vj.ThreeTermsConfig(labelling="none", **SMALL))
+    assert result.three_terms.certified
     assert calls[0] is False and True in calls[1:]
 
 
@@ -846,10 +846,10 @@ def test_an_exhausted_polish_budget_is_named(monkeypatch):
     real = fbt._fit_certificate
     monkeypatch.setattr(fbt, "_fit_certificate", lambda J, r, *args: dict(real(J, r, *args), stationarity=1.0))
     monkeypatch.setattr(fbt, "POLISH_ROUNDS", 0)
-    config = vj.ThreeTermConfig(labelling="none", **SMALL)
-    result = vj.solve_free_boundary_three_term(inp, external_field=field, config=config)
-    assert not result.converged and not result.three_term.certified and result.three_term.certificate is None
-    assert "polish budget of 0 rounds ran out" in result.three_term.message
+    config = vj.ThreeTermsConfig(labelling="none", **SMALL)
+    result = vj.solve_free_boundary_three_terms(inp, external_field=field, config=config)
+    assert not result.converged and not result.three_terms.certified and result.three_terms.certificate is None
+    assert "polish budget of 0 rounds ran out" in result.three_terms.message
     monkeypatch.undo()
 
     def stall(evaluate, x, r, aux, J, **kwargs):
@@ -857,6 +857,6 @@ def test_an_exhausted_polish_budget_is_named(monkeypatch):
                     reason="stalled", projections=0)
 
     monkeypatch.setattr(fbt, "_levenberg_marquardt", stall)
-    stalled = vj.solve_free_boundary_three_term(inp, external_field=field, config=replace(config, max_nfev=2))
-    assert not stalled.converged and "not certified" in stalled.three_term.message
-    assert stalled.three_term.certificate is None
+    stalled = vj.solve_free_boundary_three_terms(inp, external_field=field, config=replace(config, max_nfev=2))
+    assert not stalled.converged and "not certified" in stalled.three_terms.message
+    assert stalled.three_terms.certificate is None

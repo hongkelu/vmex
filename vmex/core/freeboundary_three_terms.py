@@ -15,7 +15,7 @@ field jump: a VMEC/NESTOR equilibrium may carry an edge sheet current.  Here
 the boundary is the unknown instead.  Every trial boundary is a fixed-boundary
 equilibrium, and a Gauss-Newton least-squares solve minimizes the stacked
 residual of all three conditions with exact implicit derivatives
-(:class:`ThreeTermFreeBoundaryModel`).  At an exact
+(:class:`ThreeTermsFreeBoundaryModel`).  At an exact
 solution all three vanish together; at finite resolution they stop at a floor
 set mainly by ``mpol`` (about 1e-3 relative at ``mpol = 5``, 5e-4 at 7), where
 the relative ``weights`` decide the balance.
@@ -30,28 +30,28 @@ rejected.
 
 The interface conditions do not fix the boundary's poloidal angle (a
 relabelling ``theta -> theta + f`` moves no point of the surface), so the least
-squares is flat along the relabellings.  ``ThreeTermConfig.labelling`` chooses
+squares is flat along the relabellings.  ``ThreeTermsConfig.labelling`` chooses
 how that is handled:
 
 - ``"gauge"`` (default): VMEC's spectral condensation held exactly on the
   boundary (Hirshman & Meier 1985) and Newton on the fit's cost on that gauge
-  (:mod:`vmex.core.freeboundary_three_term_implicit`), so the stationary point
+  (:mod:`vmex.core.freeboundary_three_terms_implicit`), so the stationary point
   and its derivatives are determined;
 - ``"none"``: the plain Gauss-Newton least squares ("NL"), whose labelling is
   whatever the fit ends at.
 
 Entry points, from the most to the least packaged:
 
-- an ``LFREEB = T`` deck with ``LTHREE_TERM = T`` (and optionally
-  ``THREE_TERM_LABELLING = 'none'``) through ``vmex input.case`` or
+- an ``LFREEB = T`` deck with ``LTHREE_TERMS = T`` (and optionally
+  ``THREE_TERMS_LABELLING = 'none'``) through ``vmex input.case`` or
   :func:`~vmex.core.multigrid.solve_file`, or
-  ``solve_free_boundary_multigrid(..., three_term=ThreeTermConfig())``;
-- :func:`solve_free_boundary_three_term`: the same solve with every control,
+  ``solve_free_boundary_multigrid(..., three_terms=ThreeTermsConfig())``;
+- :func:`solve_free_boundary_three_terms`: the same solve with every control,
   and ``previous=`` to continue from an earlier result after the coils change;
-- :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`:
+- :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`:
   single-stage optimization, a loss and constraint rows of coils and plasma
   parameters at their free boundary, for :func:`vmex.core.optimize.minimize`;
-- :class:`ThreeTermFreeBoundaryModel`: the residual, its Jacobian, state
+- :class:`ThreeTermsFreeBoundaryModel`: the residual, its Jacobian, state
   tangents and pullbacks for one deck and any external field or plasma
   parameters, without recompiling -- the pieces an optimizer needs;
 - :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
@@ -82,12 +82,12 @@ from .printing import emit_flushed
 
 __all__ = [
     "BoundaryResidual",
-    "ThreeTermConfig",
-    "ThreeTermFreeBoundaryModel",
-    "ThreeTermResult",
+    "ThreeTermsConfig",
+    "ThreeTermsFreeBoundaryModel",
+    "ThreeTermsResult",
     "boundary_residual",
-    "resolve_three_term",
-    "solve_free_boundary_three_term",
+    "resolve_three_terms",
+    "solve_free_boundary_three_terms",
     "summarize_boundary_residual",
 ]
 
@@ -232,7 +232,7 @@ POLISH_MAX_NFEV = 20
 #: cost (the Jacobian no longer describes the rows there).
 STALL_STEPS = 3
 STALL_GAIN = 0.05
-#: Most fresh Jacobians of the cold ``fit="secant"`` boundary fit (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`)
+#: Most fresh Jacobians of the cold ``fit="secant"`` boundary fit (:meth:`ThreeTermsFreeBoundaryModel.solve_boundary`)
 #: before the trust region finishes from its end point.
 FIT_ROUNDS = 12
 TANGENT_WIDTH = 16  # tangent batches are padded to a multiple of this: one compiled program for nearby column counts
@@ -241,7 +241,7 @@ TANGENT_WIDTH = 16  # tangent batches are padded to a multiple of this: one comp
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
 
-#: The boundary labellings (:attr:`ThreeTermConfig.labelling`) and the cold fits (:attr:`ThreeTermConfig.fit`).
+#: The boundary labellings (:attr:`ThreeTermsConfig.labelling`) and the cold fits (:attr:`ThreeTermsConfig.fit`).
 LABELLINGS = ("gauge", "none")
 FITS = ("secant", "trf")
 
@@ -251,8 +251,8 @@ def _newton_defaults() -> dict:
 
 
 @dataclass(frozen=True)
-class ThreeTermConfig:
-    """Settings of the three-term free boundary (``three_term=`` of the free-boundary solvers).
+class ThreeTermsConfig:
+    """Settings of the three-term free boundary (``three_terms=`` of the free-boundary solvers).
 
     ``labelling`` is how the boundary's poloidal angle is fixed: ``"gauge"`` (VMEC's spectral condensation held
     exactly, Newton on the gauge: a determined stationary point; the default) or ``"none"`` (the plain least
@@ -264,7 +264,7 @@ class ThreeTermConfig:
     interface grid over one field period, the virtual-casing ``quadrature = (quad_nt, quad_np)`` (fixed; use
     ``(4 nfp nphi, 2 ntheta)``; ``None`` plans it to ``digits``), ``weights`` of the ``(normal, pressure, sheet
     current)`` rows and ``net_current_weight`` of the net poloidal current row (see
-    :class:`ThreeTermFreeBoundaryModel`).
+    :class:`ThreeTermsFreeBoundaryModel`).
 
     The solve: ``fit`` is the cold boundary fit, ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh,
     Broyden-updated Jacobian; LBD 8 x 8 cold gauge fit 899 s -> 299 s, 36 -> 6 Jacobians, the same certified
@@ -304,14 +304,14 @@ class ThreeTermConfig:
         object.__setattr__(self, "newton", {**_newton_defaults(), **dict(self.newton or {})})
 
     @classmethod
-    def from_input(cls, inp: Any) -> "ThreeTermConfig | None":
-        """The three-term solve a deck requests (``LTHREE_TERM``, ``THREE_TERM_LABELLING``), else ``None``."""
-        if not bool(getattr(inp, "lthree_term", False)):
+    def from_input(cls, inp: Any) -> "ThreeTermsConfig | None":
+        """The three-term solve a deck requests (``LTHREE_TERMS``, ``THREE_TERMS_LABELLING``), else ``None``."""
+        if not bool(getattr(inp, "lthree_terms", False)):
             return None
-        return cls(labelling=str(getattr(inp, "three_term_labelling", "gauge")))
+        return cls(labelling=str(getattr(inp, "three_terms_labelling", "gauge")))
 
     def model_options(self) -> dict:
-        """The :class:`ThreeTermFreeBoundaryModel` keywords of these settings."""
+        """The :class:`ThreeTermsFreeBoundaryModel` keywords of these settings."""
         return dict(labelling=self.labelling, m1_complement=self.m1_complement, max_mode=self.max_mode,
                     nphi=int(self.nphi), ntheta=int(self.ntheta), quadrature=self.quadrature, digits=self.digits,
                     trial_ftol=self.trial_ftol, fit=self.fit, weights=tuple(self.weights),
@@ -319,18 +319,18 @@ class ThreeTermConfig:
 
 
 @dataclass(frozen=True)
-class ThreeTermResult:
-    """Outcome of a three-term free-boundary solve, returned as ``result.three_term``.
+class ThreeTermsResult:
+    """Outcome of a three-term free-boundary solve, returned as ``result.three_terms``.
 
     ``certified`` means the fit's final point passed the acceptance rule (re-solved tight; with ``"none"``
     labelling polished until a Gauss-Newton step gains at most ``max(ftol, POLISH_FTOL)`` of the cost, with
     ``"gauge"`` Newton-converged on the gauge); ``certificate`` is that record's (``None`` when not certified) and
     ``message`` says how the solve ended.  ``boundary_residual`` and ``initial_boundary_residual`` are the
     :class:`BoundaryResidual` at the end and at the start; ``input`` is the free boundary as a fixed-boundary deck;
-    ``x`` its model coordinates (:meth:`ThreeTermFreeBoundaryModel.solve_boundary`), ``jacobian`` the interface
+    ``x`` its model coordinates (:meth:`ThreeTermsFreeBoundaryModel.solve_boundary`), ``jacobian`` the interface
     rows' last Jacobian along them, ``hessian`` the cost's Hessian of the gauge Newton (``None`` for ``"none"``),
     ``nfev``/``njev`` the boundary evaluations and Jacobians, ``newton`` the gauge Newton's record.  ``model`` (the
-    :class:`ThreeTermFreeBoundaryModel`) and ``aux`` (the final interior state) let ``previous=`` continue from
+    :class:`ThreeTermsFreeBoundaryModel`) and ``aux`` (the final interior state) let ``previous=`` continue from
     here without compiling anything.
     """
 
@@ -351,17 +351,17 @@ class ThreeTermResult:
     aux: Any = field(default=None, repr=False)
 
 
-def resolve_three_term(requested: Any, inp: Any) -> "ThreeTermConfig | None":
-    """An explicit config wins; ``None`` follows the deck (``LTHREE_TERM``); ``False`` disables it; ``True`` is the
+def resolve_three_terms(requested: Any, inp: Any) -> "ThreeTermsConfig | None":
+    """An explicit config wins; ``None`` follows the deck (``LTHREE_TERMS``); ``False`` disables it; ``True`` is the
     deck's labelling with the default settings."""
     if requested is None:
-        return ThreeTermConfig.from_input(inp)
+        return ThreeTermsConfig.from_input(inp)
     if requested is False:
         return None
     if requested is True:
-        return ThreeTermConfig(labelling=str(getattr(inp, "three_term_labelling", "gauge")))
-    if not isinstance(requested, ThreeTermConfig):
-        raise TypeError(f"three_term must be a ThreeTermConfig, a bool or None, got {type(requested).__name__}")
+        return ThreeTermsConfig(labelling=str(getattr(inp, "three_terms_labelling", "gauge")))
+    if not isinstance(requested, ThreeTermsConfig):
+        raise TypeError(f"three_terms must be a ThreeTermsConfig, a bool or None, got {type(requested).__name__}")
     return requested
 
 
@@ -392,7 +392,7 @@ def _start_boundary(inp: VmecInput, initial_state, restart_from) -> VmecInput:
                    zaxis_s=np.asarray(source.zaxis_cs)[:axis])
 
 
-def solve_free_boundary_three_term(
+def solve_free_boundary_three_terms(
     inp: VmecInput,
     *,
     external_field: Any = None,
@@ -400,7 +400,7 @@ def solve_free_boundary_three_term(
     initial_state: Any = None,
     restart_from: Any = None,
     previous: Any = None,
-    config: ThreeTermConfig | None = None,
+    config: ThreeTermsConfig | None = None,
     verbose: bool | int = False,
     emit=emit_flushed,
     device: Any = AUTO,
@@ -425,12 +425,12 @@ def solve_free_boundary_three_term(
 
     The residual is ``sqrt(area weight)`` times ``config.weights`` times the rows
     of :func:`boundary_residual` on the ``nphi x ntheta`` grid (see
-    :class:`ThreeTermConfig`).  The grid, not ``digits``, limits accuracy: for
+    :class:`ThreeTermsConfig`).  The grid, not ``digits``, limits accuracy: for
     a current-free state virtual casing returns ``|B_plasma| / |B|`` of about
     2e-4 at 48 x 48 and 5e-5 at 64 x 64.  A boundary fit with exact implicit
     Jacobians runs to ``jacobian_ftol`` and ``ftol``; its end point is then
     accepted by the same rule as every trial of the optimization
-    (:class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`):
+    (:class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`):
     with ``labelling="none"`` it is re-solved tight and polished until a
     Gauss-Newton step with its own Jacobian gains at most ``max(ftol,
     POLISH_FTOL)`` of the cost; with ``labelling="gauge"`` it is relabelled onto
@@ -445,15 +445,15 @@ def solve_free_boundary_three_term(
     its Hessian) and model: neither new coils nor a repeat solve compile the
     model again.  The returned state is the fixed-boundary solve of the final
     stage on the free boundary, started from the certified interior state;
-    ``result.three_term`` is the :class:`ThreeTermResult` and
+    ``result.three_terms`` is the :class:`ThreeTermsResult` and
     ``result.vacuum`` is ``None``.
     """
     from .freeboundary import _resolve_mgrid
-    from .freeboundary_three_term_implicit import _accept, _Design, _solve_point
+    from .freeboundary_three_terms_implicit import _accept, _Design, _solve_point
     from .mgrid import MgridField
     from .multigrid import solve_multigrid
 
-    config = ThreeTermConfig() if config is None else config
+    config = ThreeTermsConfig() if config is None else config
     if not jax.config.jax_enable_x64:
         raise ValueError("the three-term free boundary needs jax_enable_x64")
     if not vc.have_virtual_casing_jax():
@@ -465,14 +465,14 @@ def solve_free_boundary_three_term(
     if external_field is None:  # tricubic: virtual casing samples between the mgrid planes, where the trilinear
         # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
         external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
-    previous = getattr(previous, "three_term", previous)
+    previous = getattr(previous, "three_terms", previous)
     if previous is not None:
         if previous.labelling != config.labelling:
             raise ValueError(f"previous was solved with labelling {previous.labelling!r}, not {config.labelling!r}")
         model, x0, jacobian = previous.model, previous.x, previous.jacobian
         seed_state, seed_params = previous.aux[0], previous.aux[2]
     else:
-        model = ThreeTermFreeBoundaryModel(_start_boundary(inp, initial_state, restart_from),
+        model = ThreeTermsFreeBoundaryModel(_start_boundary(inp, initial_state, restart_from),
                                            **config.model_options())
         x0 = jacobian = None
         seed_state, seed_params = model.seed[0], model.params0
@@ -521,7 +521,7 @@ def solve_free_boundary_three_term(
     result = solve_multigrid(boundary, **stage, initial_state=state, verbose=bool(verbose), emit=emit, device=device)
     hessian = kept.get("H_cost") if certified and gauge else None
     return replace(result, converged=bool(result.converged) and certified and largest <= config.max_residual,
-                   three_term=ThreeTermResult(
+                   three_terms=ThreeTermsResult(
                        labelling=config.labelling, certified=certified,
                        certificate=out.get("certificate") if certified else None, message=message,
                        boundary_residual=residual, initial_boundary_residual=initial, input=boundary,
@@ -531,7 +531,7 @@ def solve_free_boundary_three_term(
                        newton=out.get("newton"), model=model, aux=out["aux"]))
 
 
-class ThreeTermFreeBoundaryModel:
+class ThreeTermsFreeBoundaryModel:
     """The free boundary of one deck for many external fields and plasma parameters.
 
     The fixed-boundary equilibria and their derivatives come from
@@ -545,7 +545,7 @@ class ThreeTermFreeBoundaryModel:
     ``RBC(0,0)`` (:func:`~vmex.core.optimize.pack_boundary`; ``x0`` the
     deck's, ``x_scale`` their ESS scales), ``params`` an ``ImplicitParams``
     (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
-    replaces.  The rows are those of :func:`solve_free_boundary_three_term`,
+    replaces.  The rows are those of :func:`solve_free_boundary_three_terms`,
     with the quadrature plan and the labelling reference fixed on the deck's
     boundary (``seed``: its ``(state, mask)``).
 
@@ -572,12 +572,12 @@ class ThreeTermFreeBoundaryModel:
     rows leave free: ``"gauge"`` (default) builds VMEC's spectral condensation
     as exact geometric conditions (``gauge_rows``, :func:`_gauge_rows`) and the
     relabelling onto them (``relabel``) for the gauge Newton of
-    :mod:`vmex.core.freeboundary_three_term_implicit`; ``"none"`` leaves the
+    :mod:`vmex.core.freeboundary_three_terms_implicit`; ``"none"`` leaves the
     labelling to the fit.  ``label_weight`` (default 0: off) adds rows of the
     boundary points' displacement along the surface in ``theta``, relative to
     the deck's boundary.  ``fit`` is the cold boundary fit of
-    :meth:`solve_boundary` (:attr:`ThreeTermConfig.fit`) and ``m1_complement``
-    the interior's m = 1 complement policy (:attr:`ThreeTermConfig.m1_complement`).
+    :meth:`solve_boundary` (:attr:`ThreeTermsConfig.fit`) and ``m1_complement``
+    the interior's m = 1 complement policy (:attr:`ThreeTermsConfig.m1_complement`).
 
     ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` the quasisymmetry ``N`` of the Redl model) makes the
@@ -1087,7 +1087,7 @@ class ThreeTermFreeBoundaryModel:
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
-        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_term`);
+        ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`);
         with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
         ``tight`` evaluates every point at the deck's tolerance instead of the trial one (:meth:`certify`'s polish:
         the stiff bootstrap rows amplify a trial state's error far above a certificate's gate).  ``fresh_current``
@@ -1214,8 +1214,8 @@ class ThreeTermFreeBoundaryModel:
         boundary (``normal_step``, a diagnostic only: a small normal step does not bound the outputs' error, which
         keep moving along weak directions while it is small).  Every finite rows/Jacobian check, the certificate and
         ``max_residual`` (each :class:`BoundaryResidual` term) apply to the final state, whose ``values(state,
-        params)`` are computed only then.  The standalone solve (:func:`solve_free_boundary_three_term`) and the
-        optimization (:class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`) accept a state
+        params)`` are computed only then.  The standalone solve (:func:`solve_free_boundary_three_terms`) and the
+        optimization (:class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`) accept a state
         through this one method.  ``stats``
         (a dict) gains ``linearizations``, ``max_condition``, ``max_step``, ``polish_rounds`` and
         ``failed_polishes``.

@@ -21,14 +21,14 @@ links to the module that documents it.
   (directives honored, ``wout_<case>.nc`` written)
 - :func:`~vmex.core.freeboundary.solve_free_boundary` — NESTOR free boundary
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
-- :func:`~vmex.core.freeboundary_three_term.solve_free_boundary_three_term` /
-  :class:`~vmex.core.freeboundary_three_term.ThreeTermConfig` /
-  :class:`~vmex.core.freeboundary_three_term.ThreeTermResult` — free boundary
+- :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms` /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` — free boundary
   from the three plasma-vacuum interface conditions (no sheet current; the
-  plasma field by virtual casing), also ``three_term=`` of the free-boundary
-  ladder; :func:`~vmex.core.freeboundary_three_term.boundary_residual` — the
+  plasma field by virtual casing), also ``three_terms=`` of the free-boundary
+  ladder; :func:`~vmex.core.freeboundary_three_terms.boundary_residual` — the
   three conditions on any equilibrium;
-  :class:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel` — its
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` — its
   residual, Jacobian and gradients for any coils without recompiling
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
@@ -90,7 +90,7 @@ links to the module that documents it.
   :class:`~vmex.core.problem.FunctionProblem` /
   :class:`~vmex.core.problem.Evaluation` — optimizer-neutral value,
   residual, and derivative callables
-- :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`
+- :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
   — single-stage optimization of coils (and plasma parameters) on the
   three-term free boundary, for :func:`~vmex.core.optimize.minimize`
 - :class:`~vmex.core.monitoring.OptimizationMonitor` /
@@ -234,11 +234,11 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
         ".core.multigrid", "solve_free_boundary_multigrid"),
     "solve_free_boundary": (".core.freeboundary", "solve_free_boundary"),
     "solve_phiedge": (".core.freeboundary", "solve_phiedge"),
-    "solve_free_boundary_three_term": (".core.freeboundary_three_term", "solve_free_boundary_three_term"),
-    "ThreeTermConfig": (".core.freeboundary_three_term", "ThreeTermConfig"),
-    "ThreeTermResult": (".core.freeboundary_three_term", "ThreeTermResult"),
-    "boundary_residual": (".core.freeboundary_three_term", "boundary_residual"),
-    "ThreeTermFreeBoundaryModel": (".core.freeboundary_three_term", "ThreeTermFreeBoundaryModel"),
+    "solve_free_boundary_three_terms": (".core.freeboundary_three_terms", "solve_free_boundary_three_terms"),
+    "ThreeTermsConfig": (".core.freeboundary_three_terms", "ThreeTermsConfig"),
+    "ThreeTermsResult": (".core.freeboundary_three_terms", "ThreeTermsResult"),
+    "boundary_residual": (".core.freeboundary_three_terms", "boundary_residual"),
+    "ThreeTermsFreeBoundaryModel": (".core.freeboundary_three_terms", "ThreeTermsFreeBoundaryModel"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "make_free_boundary_config": (
         ".core.freeboundary_implicit", "make_free_boundary_config"),
@@ -303,7 +303,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     # optimizer-neutral problem callables
     "Evaluation": (".core.problem", "Evaluation"),
     "FunctionProblem": (".core.problem", "FunctionProblem"),
-    "ThreeTermFreeBoundaryProblem": (".core.freeboundary_three_term_problem", "ThreeTermFreeBoundaryProblem"),
+    "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_three_terms_problem", "ThreeTermsFreeBoundaryProblem"),
     "VmecProblem": (".core.problem", "VmecProblem"),
     "EquilibriumReporter": (".core.monitoring", "EquilibriumReporter"),
     "OptimizationMonitor": (".core.monitoring", "OptimizationMonitor"),

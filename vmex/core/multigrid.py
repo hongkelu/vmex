@@ -643,7 +643,7 @@ def solve_free_boundary_multigrid(
     use_fft: bool | None = None,
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
-    three_term: Any = None,
+    three_terms: Any = None,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
 
@@ -706,36 +706,36 @@ def solve_free_boundary_multigrid(
     on-demand compilation, and background threads are joined before the
     ``release_stage_cache`` point exactly like the fixed-boundary ladder.
 
-    ``three_term`` (a :class:`~vmex.core.freeboundary_three_term.ThreeTermConfig`;
-    ``None`` follows the deck's ``LTHREE_TERM``, ``False`` forces it off)
+    ``three_terms`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`;
+    ``None`` follows the deck's ``LTHREE_TERMS``, ``False`` forces it off)
     replaces NESTOR by the three plasma-vacuum interface conditions (``B . n =
     0``, pressure balance, no sheet current; the plasma field from virtual
     casing): the boundary is solved for on this ladder by
-    :func:`~vmex.core.freeboundary_three_term.solve_free_boundary_three_term`,
-    ``result.three_term`` reports it and ``result.vacuum`` is ``None``.  The
+    :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms`,
+    ``result.three_terms`` reports it and ``result.vacuum`` is ``None``.  The
     NESTOR time-stepping controls do not apply to it.
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
-    if three_term is not None or bool(getattr(inp, "lthree_term", False)):
-        from .freeboundary_three_term import resolve_three_term, solve_free_boundary_three_term
-        three_term = resolve_three_term(three_term, inp)
-        if three_term is not None:
+    if three_terms is not None or bool(getattr(inp, "lthree_terms", False)):
+        from .freeboundary_three_terms import resolve_three_terms, solve_free_boundary_three_terms
+        three_terms = resolve_three_terms(three_terms, inp)
+        if three_terms is not None:
             nestor = dict(time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep, precon_type=precon_type,
                           prec2d_threshold=prec2d_threshold, prec2d=prec2d, lconm1=None if lconm1 else False)
             if any(value is not None for value in nestor.values()):
-                raise ValueError("three_term solves the boundary from its interface conditions: "
+                raise ValueError("three_terms solves the boundary from its interface conditions: "
                                  + ", ".join(k for k, v in nestor.items() if v is not None)
                                  + " apply to the NESTOR time stepping only")
             ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
                              ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
                              niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
-            result = solve_free_boundary_three_term(
+            result = solve_free_boundary_three_terms(
                 ladder, external_field=external_field, mgrid_path=mgrid_path, initial_state=initial_state,
-                restart_from=restart_from, config=three_term, verbose=verbose, emit=emit, device=device)
+                restart_from=restart_from, config=three_terms, verbose=verbose, emit=emit, device=device)
             if raise_on_max_iterations and not result.converged:
                 from .errors import VmecConvergenceError
-                raise VmecConvergenceError(result.three_term.message)
+                raise VmecConvergenceError(result.three_terms.message)
             return result
 
     ns_arr = _vmec_ns_prefix(inp.ns_array if ns_array is None else ns_array)

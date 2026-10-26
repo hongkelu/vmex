@@ -136,13 +136,13 @@ Free boundary
 .. automodule:: vmex.core.virtual_casing
    :members:
 
-.. automodule:: vmex.core.freeboundary_three_term
+.. automodule:: vmex.core.freeboundary_three_terms
    :members:
 
-.. automodule:: vmex.core.freeboundary_three_term_implicit
+.. automodule:: vmex.core.freeboundary_three_terms_implicit
    :members:
 
-.. automodule:: vmex.core.freeboundary_three_term_problem
+.. automodule:: vmex.core.freeboundary_three_terms_problem
    :members:
 
 .. automodule:: vmex.core.mgrid

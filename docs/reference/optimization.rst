@@ -438,13 +438,13 @@ instead, so call the objective eagerly to keep it. ``device="auto"`` uses the CP
 for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
-:class:`vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`
+:class:`vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
 packages a single-stage optimization on the three-term free boundary (``B.n``,
 pressure balance and no sheet current; see :doc:`/howto/free-boundary`) for
 host optimizers that step from an accepted equilibrium. It takes a
 differentiable ``field_from_parameters`` map: VMEX keeps no coil code, so the
 coils and their chart come from ESSOS, here as a Biot-Savart field of the coil
-currents (``examples/optimization/single_stage_free_boundary_optimization_three_term.py``
+currents (``examples/optimization/single_stage_free_boundary_optimization_three_terms.py``
 is the whole run)::
 
    from dataclasses import replace
@@ -466,10 +466,10 @@ is the whole run)::
        currents = coils.dofs_currents * (1 + 0.05 * x)
        return BiotSavart(coils.with_dofs(jnp.concatenate([coils.dofs[:n_curves], currents])))
 
-   problem = vj.ThreeTermFreeBoundaryProblem.from_loss(
+   problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
        inp, lambda state, rt, x: qs.total_state(state, rt), np.zeros(coils.dofs_currents.size),
        field_from_parameters=coils_from_x, quantities=(opt.mean_iota, opt.aspect_ratio),
-       config=vj.ThreeTermConfig(nphi=16, ntheta=16, max_mode=2, quadrature=(128, 32)))
+       config=vj.ThreeTermsConfig(nphi=16, ntheta=16, max_mode=2, quadrature=(128, 32)))
    result = opt.minimize(problem, method="SLSQP",
        constraints=problem.nonlinear_constraint([0.40, 5.5], [0.46, 6.5]))
 

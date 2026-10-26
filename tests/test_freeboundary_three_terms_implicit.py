@@ -1,6 +1,6 @@
 """The gauge Newton and the exact derivatives of the three-term free boundary.
 
-:mod:`vmex.core.freeboundary_three_term_implicit`: the implicit-function-theorem
+:mod:`vmex.core.freeboundary_three_terms_implicit`: the implicit-function-theorem
 sensitivities of a least-squares stationary point on analytic problems (exact
 against Gauss-Newton), and (``full``) the gauge Newton on the vacuum
 Landreman--Paul QA case: a cold standalone gauge solve and the single-stage
@@ -23,10 +23,10 @@ import jax.numpy as jnp  # noqa: E402
 
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_three_term as fbt  # noqa: E402
-from vmex.core import freeboundary_three_term_implicit as fbi  # noqa: E402
+from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
+from vmex.core import freeboundary_three_terms_implicit as fbi  # noqa: E402
 
-from tests.test_freeboundary_three_term import SMALL, _coil_field, _deck, _small_vacuum, needs_vc  # noqa: E402
+from tests.test_freeboundary_three_terms import SMALL, _coil_field, _deck, _small_vacuum, needs_vc  # noqa: E402
 
 
 def _exact_and_gauss_newton_sensitivity(residual, b, d):
@@ -117,10 +117,10 @@ def test_exact_gauge_cold_solve_certifies_on_the_gauge(monkeypatch):
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     base = field.currents
     nfp = int(inp.nfp)
-    config = vj.ThreeTermConfig(nphi=24, ntheta=24, quadrature=(4 * nfp * 24, 48), trial_ftol=1e-11)
+    config = vj.ThreeTermsConfig(nphi=24, ntheta=24, quadrature=(4 * nfp * 24, 48), trial_ftol=1e-11)
 
     def build(config):
-        return vj.ThreeTermFreeBoundaryProblem.from_loss(
+        return vj.ThreeTermsFreeBoundaryProblem.from_loss(
             inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
             field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
             quantities=(opt.mean_iota,), boundary_ftol=1e-5, config=config)
@@ -135,8 +135,8 @@ def test_exact_gauge_cold_solve_certifies_on_the_gauge(monkeypatch):
     value, grad = problem.value_and_grad(problem.x0)
     assert np.isfinite(value) and np.all(np.isfinite(grad))
     assert problem.stats["exact_gradient_true_residual"] <= 1e-6
-    standalone = vj.solve_free_boundary_three_term(inp, external_field=field, config=config)
-    tt = standalone.three_term
+    standalone = vj.solve_free_boundary_three_terms(inp, external_field=field, config=config)
+    tt = standalone.three_terms
     assert standalone.converged and tt.certified and tt.newton["converged"] and tt.hessian is not None
     scale = np.asarray(problem.model.x_scale)
     assert np.linalg.norm((tt.x - record["x"]) / scale) < 1e-6  # one stationary point on the gauge
@@ -155,12 +155,12 @@ def test_plasma_map_derivatives_at_nonzero_offsets(monkeypatch):
     monkeypatch.setattr(fbt, "POLISH_ROUNDS", 20)
     inp, field = _small_vacuum()
     base = field.currents
-    problem = vj.ThreeTermFreeBoundaryProblem.from_loss(
+    problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(3),
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        boundary_ftol=1e-9, boundary_max_nfev=400, config=vj.ThreeTermConfig(**SMALL))
+        boundary_ftol=1e-9, boundary_max_nfev=400, config=vj.ThreeTermsConfig(**SMALL))
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, exact = problem.value_and_grad(x)

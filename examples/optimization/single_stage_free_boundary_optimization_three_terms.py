@@ -9,7 +9,7 @@ field from virtual casing -- not a VMEC + NESTOR solve, which balances only
 ``|B|`` and leaves the tangential field jump free
 (``single_stage_free_boundary_optimization.py`` is the NESTOR version).
 
-The problem is ``vj.ThreeTermFreeBoundaryProblem``.  Each trial boundary is
+The problem is ``vj.ThreeTermsFreeBoundaryProblem``.  Each trial boundary is
 fitted from the accepted one and Newton-converged on the exact gauge of the
 boundary's poloidal angle (VMEC's spectral condensation), and the design
 gradients are the exact implicit derivatives of that converged point, through
@@ -94,7 +94,7 @@ SLSQP_FTOL = 1e-12
 
 # Output: the checkpoint and SLSQP state written after every accepted step,
 # and whether to continue from them:
-OUTPUT_DIR = Path("output_single_stage_three_term")
+OUTPUT_DIR = Path("output_single_stage_three_terms")
 RESUME = False
 
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
@@ -153,15 +153,15 @@ def loss(state, runtime, x):
     return 0.5 * jnp.vdot(residuals, residuals)
 
 
-config = vj.ThreeTermConfig(nphi=GRID, ntheta=GRID, quadrature=(4 * nfp * GRID, 2 * GRID), max_mode=MAX_MODE,
+config = vj.ThreeTermsConfig(nphi=GRID, ntheta=GRID, quadrature=(4 * nfp * GRID, 2 * GRID), max_mode=MAX_MODE,
                             trial_ftol=TRIAL_FTOL)
 resume = RESUME and checkpoint_file.exists()
-problem = vj.ThreeTermFreeBoundaryProblem.from_loss(
+problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
     inp, loss, np.asarray(X0, dtype=float), field_from_parameters=field_from_parameters,
     plasma_from_parameters=plasma_from_parameters, quantities=(opt.mean_iota, opt.aspect_ratio),
     boundary_max_residual=MAX_INTERFACE_RESIDUAL, config=config,
     checkpoint=checkpoint_file if resume else None,
-    semantic_identity=dict(example="single_stage_free_boundary_optimization_three_term", version=1))
+    semantic_identity=dict(example="single_stage_free_boundary_optimization_three_terms", version=1))
 x_start = problem.accepted.parameters
 loss_start = problem.fun(x_start)
 start = problem.boundary_residual(x_start)
@@ -209,7 +209,7 @@ print(f"final: iota {iota:.4f}, aspect {aspect:.3f}; interface residuals B.n {en
       f"pressure {end.pressure:.1e}, sheet current {end.sheet_current:.1e}")
 print(f"trials {problem.stats['trials']} ({problem.stats['failed']} rejected), boundary evaluations "
       f"{problem.stats['boundary_evaluations']}, Newton evaluations {problem.stats.get('newton_evaluations', 0)}")
-wout_file = vj.write_wout(OUTPUT_DIR / "wout_single_stage_three_term.nc", problem.equilibrium_from_x(x).wout)
+wout_file = vj.write_wout(OUTPUT_DIR / "wout_single_stage_three_terms.nc", problem.equilibrium_from_x(x).wout)
 print(f"Wrote {wout_file}")
 
 misses = []

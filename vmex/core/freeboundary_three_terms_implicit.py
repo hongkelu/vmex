@@ -1,12 +1,12 @@
 """The gauge Newton and the exact derivatives of the three-term free boundary.
 
-The interface least squares of :mod:`vmex.core.freeboundary_three_term` is
+The interface least squares of :mod:`vmex.core.freeboundary_three_terms` is
 flat along the boundary's relabellings ``theta -> theta + f``, so a
 Gauss-Newton fit converges only linearly there and its stationary point -- and
 the derivative of that point with respect to the coils -- is not determined by
 the fit.  With ``labelling="gauge"`` the angle is fixed by VMEC's spectral
 condensation held exactly on the boundary (the conditions ``c(b) = 0`` of
-:func:`~vmex.core.freeboundary_three_term._gauge_rows`; Hirshman & Meier 1985),
+:func:`~vmex.core.freeboundary_three_terms._gauge_rows`; Hirshman & Meier 1985),
 and the fit's cost ``f(b) = |r(b)|^2 / 2`` is minimized on that manifold by a
 trust-region Newton method (:func:`_newton_refine_gauged`): each step solves
 ``Z^T H_L Z dz = -Z^T g`` with ``Z`` the gauge's null space and ``H_L`` the
@@ -29,8 +29,8 @@ model, the design's plasma-parameter and field maps and their jitted pieces);
 a standalone solve is the design of no coordinates (:meth:`_Design.fixed`).
 :func:`_accept` is the acceptance rule of a boundary fit and
 :func:`_solve_point` the fit-then-accept loop over starts, shared by
-:func:`~vmex.core.freeboundary_three_term.solve_free_boundary_three_term` and
-:class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`.
+:func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms` and
+:class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`.
 With a bootstrap current the joint Hessian is round-off at the bootstrap
 weight, and :func:`_newton_refine_projected` takes the Newton steps on the
 boundary with the current eliminated (:func:`projected_hessian`).
@@ -47,7 +47,7 @@ import jax
 import jax.numpy as jnp
 
 from .errors import TrialRejected, VmecError
-from .freeboundary_three_term import PROJECTION_CORRECTIONS
+from .freeboundary_three_terms import PROJECTION_CORRECTIONS
 
 __all__ = ["dense_hessian", "exact_products", "least_squares_sensitivity", "projected_hessian"]
 
@@ -87,7 +87,7 @@ class _Design:
     ``|r|^2 / 2`` that the gauge Newton and the exact derivatives share.
 
     ``params_at(x)`` is ``plasma_map(model.params0, x)`` (jitted) and ``field_at(x)`` the external field.
-    :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem` builds one from its
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem` builds one from its
     ``plasma_from_parameters`` and ``field_from_parameters``; a standalone solve uses :meth:`fixed` (the deck's
     parameters and one field, ``x`` empty).  Nothing here recompiles when ``x`` changes.
     """
@@ -148,7 +148,7 @@ def _gn_hessian(model, rec, field):
 
 def _gauge_relabel(model, b, stats):
     """``b`` relabelled onto the exact gauge: the same surface with the angle ``theta + f`` that satisfies the gauge
-    (:attr:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
+    (:attr:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
     :func:`_gauge_project`.  The shape changes only by the refit's truncation (a minimum-norm move in the
     coordinates instead changes it: QA 2.5%, the NL point so projected had no equilibrium)."""
     b = np.asarray(b, dtype=float)
@@ -222,7 +222,7 @@ def _newton_refine(design, x, params, field, extra, b, opt, *, stats, max_residu
     fit certified by its gain can still be far, in the scaled step, from its stationary point there; the response
     of the stationary point is then not determined by the fit.  :func:`_newton_refine_gauged` (or, with a
     bootstrap current, :func:`_newton_refine_projected`) converges it; the final point is certified by
-    :meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.certify` (re-solved, linearized, no further polish), so the record, its
+    :meth:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.certify` (re-solved, linearized, no further polish), so the record, its
     Jacobian and its values come from the same code as every other trial.  ``sol["newton"]`` records the steps.
     ``opt``: ``step_tol``, ``max_steps``, ``quasi``, ``verbose``; ``anchor_H`` a previous point's cost Hessian (the
     quasi-Newton start); ``keep_hessian(record)`` receives the converged point's Hessian (the exact gradient's).
@@ -242,7 +242,7 @@ def _newton_refine(design, x, params, field, extra, b, opt, *, stats, max_residu
 
 def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats, max_residual=None, values=None,
                           anchor_H=None, keep_hessian=None):
-    """Newton on the fit's cost on the exact gauge manifold ``c(b) = 0`` (:attr:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.gauge`).
+    """Newton on the fit's cost on the exact gauge manifold ``c(b) = 0`` (:attr:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.gauge`).
 
     Every point it evaluates is feasible: ``b`` is projected onto the gauge first (:func:`_gauge_relabel`) and
     after every step.  Each step is the trust-region Newton step of the reduced problem: ``Z^T H_L Z dz = -Z^T g``
@@ -546,7 +546,7 @@ def _cost_gradients(design, b, params, field, x):
     """At boundary coordinates ``b`` (fixed design ``x``): ``g = J_b^T r`` (the fit's stationarity), ``c = J_d^T r``
     (the design gradient of ``|r|^2 / 2`` at that fixed boundary: coil field and plasma parameters) and ``r``.
 
-    One tight interior solve and one reverse pass through the equilibrium (:meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.pullback`
+    One tight interior solve and one reverse pass through the equilibrium (:meth:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.pullback`
     with the rows as cotangent), instead of the Jacobian's every column.
     """
     got = design.model.evaluate(np.asarray(b, dtype=float), params, field, tight=True)
@@ -866,7 +866,7 @@ def _accept(design, x, params, field, fit, *, gate, newton=None, xtol=None, poli
     that counts as solved, or :class:`~vmex.core.errors.TrialRejected`.
 
     With ``newton`` (its options: the gauge labelling) the fit's point is Newton-converged on the gauge and
-    certified there (:func:`_newton_refine`); otherwise :meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.certify` re-solves it
+    certified there (:func:`_newton_refine`); otherwise :meth:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.certify` re-solves it
     tight, polishes it with its own Jacobian and certifies its Gauss-Newton gain against ``gate``.  On the gauge
     without Newton (a restored point) the cost is stationary only within the gauge, so only the other checks apply.
     """
@@ -886,7 +886,7 @@ def _solve_point(model, params, field, starts, *, accept, fit_options, jacobian=
                  screen=None, stats):
     """The free boundary of ``params`` and ``field`` from each start in turn: ``(record, reasons, last fit)``.
 
-    Each start (boundary coordinates, ``None``: the model's own) is fitted (:meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.
+    Each start (boundary coordinates, ``None``: the model's own) is fitted (:meth:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.
     solve_boundary` with ``fit_options`` and ``jacobian``) and handed to ``accept`` (:func:`_accept`); the start
     with index ``direct`` skips the fit (its evaluation goes straight to ``accept``).  ``restore()`` runs before
     every start, ``screen(i, fit)`` may name a reason to skip a fit before its acceptance.  The record is that of

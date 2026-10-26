@@ -446,7 +446,7 @@ python examples/take_fixed_boundary_gradients.py
 | JAXopt and Optax drivers | `QI_optimization_jaxopt.py`, `QI_optimization_optax.py` | `vmex[optimizers]` |
 | Asymmetric boundary design | [stellarator_asymmetry](examples/optimization/stellarator_asymmetry/) vacuum and finite-beta scripts | core |
 | Single-stage plasma and coils | `single_stage_optimization.py`, `single_stage_free_boundary_optimization.py` | `vmex[coils]` |
-| Single-stage coils on the three-term (sheet-current-free) free boundary | `single_stage_free_boundary_three_term.py` | `vmex[coils,freeb]` |
+| Single-stage coils on the three-term (sheet-current-free) free boundary | `single_stage_free_boundary_three_terms.py` | `vmex[coils,freeb]` |
 | Fields and spatial derivatives | `python examples/vmex_get_B_gradB.py` | core |
 | Exterior field from coils and plasma | `python examples/vmex_get_B_outside_plasma.py` | `vmex[coils,freeb]` |
 | ESSOS coils and a free-boundary beta scan | `python examples/free_boundary_essos_coils.py` | `vmex[coils]` |

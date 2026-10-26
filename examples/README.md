@@ -41,7 +41,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   - `free_boundary_essos_coils.py` — free-boundary beta scan directly from
     ESSOS coils (tabulated to a temporary mgrid); `PRES_SCALE` is calibrated per point so the
     *actual* wout `betatotal` hits 0/1/2/3 %.
-  - `free_boundary_three_term.py` — the free boundary on which B.n, pressure
+  - `free_boundary_three_terms.py` — the free boundary on which B.n, pressure
     balance and the sheet current all vanish (plasma field by virtual casing),
     with the gauge and the "none" labelling, then a warm continuation after a
     coil change (`previous=`). Needs `vmex[coils,freeb]` and a GPU.
@@ -179,9 +179,9 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
-- `optimization/single_stage_free_boundary_optimization_three_term.py`:
+- `optimization/single_stage_free_boundary_optimization_three_terms.py`:
   single-stage optimization of the LP QA coil currents and PHIEDGE on the
-  three-term free boundary (`ThreeTermFreeBoundaryProblem`: B.n, pressure
+  three-term free boundary (`ThreeTermsFreeBoundaryProblem`: B.n, pressure
   balance and no sheet current, exact gradients on the gauge), SLSQP lowering
   quasisymmetry with the rotational transform and aspect ratio bounded, saving
   a checkpoint and SLSQP's state after every step. Needs `vmex[coils,freeb]`

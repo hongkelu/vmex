@@ -4,10 +4,10 @@ A design ``x`` sets the external field (``field_from_parameters(x)``: coils,
 currents, any differentiable field) and optionally plasma parameters
 (``plasma_from_parameters(params, x)``: PHIEDGE, the current profile).  Every
 design point is the three-term free boundary of
-:mod:`vmex.core.freeboundary_three_term` with the gauge labelling, accepted by
+:mod:`vmex.core.freeboundary_three_terms` with the gauge labelling, accepted by
 the same rule as the standalone solve and Newton-converged on the gauge, and
 its design gradients are the exact implicit derivatives of that converged point
-(:mod:`vmex.core.freeboundary_three_term_implicit`).  Pass the problem to
+(:mod:`vmex.core.freeboundary_three_terms_implicit`).  Pass the problem to
 :func:`vmex.core.optimize.minimize` (SLSQP).
 """
 
@@ -25,15 +25,15 @@ import jax
 import jax.numpy as jnp
 
 from .errors import TrialRejected, VmecConvergenceError, VmecError
-from .freeboundary_three_term import (
+from .freeboundary_three_terms import (
     POLISH_FTOL,
     BoundaryResidual,
-    ThreeTermConfig,
-    ThreeTermFreeBoundaryModel,
+    ThreeTermsConfig,
+    ThreeTermsFreeBoundaryModel,
     _edge_pressure_error,
     _fingerprint,
 )
-from .freeboundary_three_term_implicit import (
+from .freeboundary_three_terms_implicit import (
     _accept,
     _cost_gradients,
     _Design,
@@ -47,9 +47,9 @@ from .freeboundary_three_term_implicit import (
 )
 from .problem import FunctionProblem
 
-__all__ = ["ThreeTermFreeBoundaryProblem"]
+__all__ = ["ThreeTermsFreeBoundaryProblem"]
 
-#: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
+#: Version of :meth:`ThreeTermsFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
 
@@ -64,13 +64,13 @@ def _nonlinear_constraint(values, jacobian, lower, upper, scales):
                                jac=lambda x: np.asarray(jacobian(x)) / scale[..., None])
 
 
-class ThreeTermFreeBoundaryProblem(FunctionProblem):
+class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
 
     Build with :meth:`from_loss` and pass it to :func:`vmex.core.optimize.minimize`.  Row 0 is the loss
     ``loss(state, runtime, x)``, then the ``quantities`` (``f(state, runtime)``) and the
     ``parameter_quantities`` (``f(state, runtime, x)``).  Every trial is the K = 0 boundary of the field and
-    plasma parameters of ``x`` (:class:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel`) on the
+    plasma parameters of ``x`` (:class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel`) on the
     exact gauge, started from the accepted point (its boundary straight into the gauge Newton, then the
     first-order prediction of its linearization); a trial without a certified solution raises
     :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` has the exact design gradient of the converged point,
@@ -78,7 +78,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         dh/dx = dh/dx|_b - F_d^T mu,   mu = S Z (Z^T S H_L S Z)^-1 Z^T S dh/db,
 
-    (:func:`~vmex.core.freeboundary_three_term_implicit._gauge_gradients`): every row's ``dh/db`` and plasma term
+    (:func:`~vmex.core.freeboundary_three_terms_implicit._gauge_gradients`): every row's ``dh/db`` and plasma term
     from one reverse pass through the equilibrium, ``H_L`` and ``F_d`` from exact second-order products.  Nothing
     recompiles when ``x`` changes.  ``model`` is the model; :meth:`boundary_residual` and ``stats`` (counts of
     trials, failures, boundary evaluations and linearizations, seconds per phase) report progress;
@@ -99,15 +99,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         the reference: ``("random", eps, seed)`` adds ``eps`` times a standard normal vector in the scaled boundary
         coordinates; ``("scale", eps)`` scales every boundary coefficient but the major radius by ``1 + eps``.
 
-        ``config`` (a :class:`~vmex.core.freeboundary_three_term.ThreeTermConfig` with ``labelling="gauge"``, the
+        ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` with ``labelling="gauge"``, the
         default) sets the discrete problem (grid, quadrature, modes, ``m1_complement``, ``trial_ftol``, ``fit``) and
         the gauge Newton (``config.newton``; ``newton`` overrides it); ``model_options`` are further
-        :class:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel` keywords (``bootstrap``,
+        :class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` keywords (``bootstrap``,
         ``bootstrap_helicity``, ``device``, ...).  A trial's boundary fit stops at a relative cost change of
         ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; every trial is then Newton-converged on the
         gauge and certified before it has a value (one record per design: a gradient never moves it).  With
         ``boundary_max_residual`` a fit that ends with
-        any :class:`~vmex.core.freeboundary_three_term.BoundaryResidual` term above it is no solution: the trial tries its next start, or is
+        any :class:`~vmex.core.freeboundary_three_terms.BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  The
         certificate's normal displacement of that step is recorded too (``stats["max_normal_step"]``).
@@ -118,12 +118,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
-        config = ThreeTermConfig() if config is None else config
+        config = ThreeTermsConfig() if config is None else config
         if config.labelling != "gauge":  # before the model's seed solve
             raise ValueError("the single-stage problem needs labelling='gauge': its gradient differentiates the "
                              "converged point on the gauge")
         newton = {**config.newton, **dict(newton or {})}
-        model = ThreeTermFreeBoundaryModel(inp, **{**config.model_options(), **model_options})
+        model = ThreeTermsFreeBoundaryModel(inp, **{**config.model_options(), **model_options})
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
@@ -139,10 +139,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
-        #: The gauge Newton of every trial (:func:`~vmex.core.freeboundary_three_term_implicit._newton_refine`): its
+        #: The gauge Newton of every trial (:func:`~vmex.core.freeboundary_three_terms_implicit._newton_refine`): its
         #: options (step_tol, max_steps, quasi, verbose).  It makes the fit's stationary point, and so its response
         #: and exact gradient, determined.
-        self.newton_polish = dict(ThreeTermConfig().newton if newton is None else newton)
+        self.newton_polish = dict(ThreeTermsConfig().newton if newton is None else newton)
         if model.gauge is None:
             raise ValueError("the single-stage problem needs a model with labelling='gauge'")
         #: Largest design step (Euclidean, in the problem's parameters) from the accepted point a trial may take; a
@@ -323,7 +323,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return None
 
     def _finalize(self, x, params, field, fit, polish=True, newton=True):
-        """A trial's one record: its fit certified by :meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.certify` (re-solved to the
+        """A trial's one record: its fit certified by :meth:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.certify` (re-solved to the
         deck's tolerance, polished with its own Jacobian when ``polish``, certified, and only then valued).  Every
         value, gradient, acceptance and checkpoint of ``x`` uses this record; differentiating it adds gradients and
         never moves its boundary.  Raises :class:`~vmex.core.errors.TrialRejected`."""

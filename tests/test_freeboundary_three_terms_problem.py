@@ -1,6 +1,6 @@
 """Single-stage optimization on the three-term free boundary.
 
-:class:`vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`:
+:class:`vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`:
 the definitions it refuses, its seed perturbations, and (``full``) a
 coil-current design on the small vacuum Landreman--Paul QA free boundary:
 exact gradients against re-solved differences and one SLSQP step, one record
@@ -25,22 +25,22 @@ import jax.numpy as jnp  # noqa: E402
 
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_three_term as fbt  # noqa: E402
+from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
 from vmex.core.errors import TrialRejected  # noqa: E402
-from vmex.core.freeboundary_three_term_problem import ThreeTermFreeBoundaryProblem  # noqa: E402
+from vmex.core.freeboundary_three_terms_problem import ThreeTermsFreeBoundaryProblem  # noqa: E402
 
-from tests.test_freeboundary_three_term import SMALL, _coil_field, _deck, _small_vacuum, needs_vc  # noqa: E402
+from tests.test_freeboundary_three_terms import SMALL, _coil_field, _deck, _small_vacuum, needs_vc  # noqa: E402
 
-_CONFIG_FIELDS = {f.name for f in fields(vj.ThreeTermConfig)}
+_CONFIG_FIELDS = {f.name for f in fields(vj.ThreeTermsConfig)}
 
 
 def _small_problem(**options):
     """A one-coil-current design on the small vacuum free boundary: aspect ratio, with mean iota as a quantity.
-    ``options`` are ThreeTermConfig fields, from_loss keywords or model keywords."""
+    ``options`` are ThreeTermsConfig fields, from_loss keywords or model keywords."""
     inp, field = _small_vacuum()
     base = field.currents
-    config = vj.ThreeTermConfig(**{**SMALL, **{k: v for k, v in options.items() if k in _CONFIG_FIELDS}})
-    return ThreeTermFreeBoundaryProblem.from_loss(
+    config = vj.ThreeTermsConfig(**{**SMALL, **{k: v for k, v in options.items() if k in _CONFIG_FIELDS}})
+    return ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         quantities=(opt.mean_iota,), config=config,
@@ -52,12 +52,12 @@ def test_problem_needs_the_gauge_and_callables():
     maps and quantities are refused before any solve."""
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     with pytest.raises(ValueError, match="labelling='gauge'"):
-        ThreeTermFreeBoundaryProblem.from_loss(inp, lambda s, r, x: 0.0, np.zeros(1),
+        ThreeTermsFreeBoundaryProblem.from_loss(inp, lambda s, r, x: 0.0, np.zeros(1),
                                                field_from_parameters=lambda x: None,
-                                               config=vj.ThreeTermConfig(labelling="none"))
+                                               config=vj.ThreeTermsConfig(labelling="none"))
     with pytest.raises(TypeError, match="callable"):
-        ThreeTermFreeBoundaryProblem.from_loss(inp, lambda s, r, x: 0.0, np.zeros(1), field_from_parameters=None)
-    assert vj.ThreeTermFreeBoundaryProblem is ThreeTermFreeBoundaryProblem
+        ThreeTermsFreeBoundaryProblem.from_loss(inp, lambda s, r, x: 0.0, np.zeros(1), field_from_parameters=None)
+    assert vj.ThreeTermsFreeBoundaryProblem is ThreeTermsFreeBoundaryProblem
 
 
 def test_seed_start_perturbs_only_the_boundary():
@@ -65,19 +65,19 @@ def test_seed_start_perturbs_only_the_boundary():
     coefficient but the major radius), and an unknown kind is refused."""
     model = SimpleNamespace(x0=np.array([1.0, 0.2, -0.1, 0.05, 7.0]), x_scale=np.full(5, 0.5), n_boundary=4)
     owner = SimpleNamespace(model=model)
-    b = ThreeTermFreeBoundaryProblem._seed_start(owner, ("random", 1e-3, 3))
+    b = ThreeTermsFreeBoundaryProblem._seed_start(owner, ("random", 1e-3, 3))
     expected = model.x0.copy()
     expected[:4] += 1e-3 * 0.5 * np.random.default_rng(3).standard_normal(4)
     np.testing.assert_allclose(b, expected)
-    b = ThreeTermFreeBoundaryProblem._seed_start(owner, ("scale", 1e-3))
+    b = ThreeTermsFreeBoundaryProblem._seed_start(owner, ("scale", 1e-3))
     np.testing.assert_allclose(b, [1.0, 0.2 * 1.001, -0.1 * 1.001, 0.05 * 1.001, 7.0])
     with pytest.raises(ValueError, match="seed_start"):
-        ThreeTermFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))
+        ThreeTermsFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))
 
 
 @needs_vc
 @pytest.mark.full
-def test_three_term_problem_gradient_and_one_slsqp_step():
+def test_three_terms_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""
     problem = _small_problem()
@@ -183,12 +183,12 @@ def test_a_design_with_edge_pressure_is_rejected():
     whose plasma map gives the edge a pressure is a rejected trial, not a solve that ignores it."""
     inp, field = _small_vacuum()
     with pytest.raises(ValueError, match="edge pressure"):
-        fbt.ThreeTermFreeBoundaryModel(replace(inp, lfreeb=False, am=np.r_[1.0e3, np.zeros(20)]), **SMALL)
-    problem = ThreeTermFreeBoundaryProblem.from_loss(
+        fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False, am=np.r_[1.0e3, np.zeros(20)]), **SMALL)
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
         field_from_parameters=lambda x: field,
         plasma_from_parameters=lambda params, x: replace(params, am=params.am.at[0].add(1.0e3 * x[1])),
-        config=vj.ThreeTermConfig(**SMALL))
+        config=vj.ThreeTermsConfig(**SMALL))
     assert problem._solve(np.array([0.0, 0.01])) is None
     with pytest.raises(TrialRejected, match="edge pressure"):
         problem.fun(np.array([0.0, 0.01]))
@@ -329,7 +329,7 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     import subprocess
     import sys
 
-    script = ("import sys; sys.path.insert(0, '.'); from tests.test_freeboundary_three_term_problem import "
+    script = ("import sys; sys.path.insert(0, '.'); from tests.test_freeboundary_three_terms_problem import "
               f"_small_problem; print('change', _small_problem().restore_checkpoint({str(path)!r}))")
     done = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1], capture_output=True,
                           text=True, check=True)
@@ -338,20 +338,20 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
 
 @needs_vc
 @pytest.mark.full
-def test_three_term_problem_gradients_match_resolved_differences():
+def test_three_terms_problem_gradients_match_resolved_differences():
     """Exact design gradients against re-solved central differences, along a plasma coordinate (PHIEDGE) and a
     field coordinate (the coil currents); a trial whose certified residual is above boundary_max_residual is no
     solution."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    problem = ThreeTermFreeBoundaryProblem.from_loss(
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
         field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[1])),
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.major_radius,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
         boundary_ftol=1e-10, boundary_max_nfev=80,
-        config=vj.ThreeTermConfig(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)))
+        config=vj.ThreeTermsConfig(nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)))
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)

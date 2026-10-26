@@ -250,6 +250,62 @@ LABELLINGS = ("gauge", "none")
 FITS = ("secant", "trf")
 
 
+#: Newton steps (one block factorization each) of a seed's refinement (:func:`_newton_refined_seed`) at most.
+NEWTON_SEED_FACTORIZATIONS = 6
+
+
+def _newton_refined_seed(im, cfg, params_np, seed):
+    """A tight solve's perturbation seed Newton-refined onto the root of the frozen residual, or ``None``.
+
+    The seed (the first-order prediction of a nearby solved state) is usually inside Newton's basin: block
+    preconditioned Newton steps with fresh factors at every iterate (``implicit._refine_block_factors``,
+    ``_refine_block_step``) reach ``refine_tol`` in a few steps, and the host solver's descent then starts at the
+    root, where its ``ftol`` test holds within an iteration or so.  From the plain seed the descent took ~1290
+    iterations (5.6 s) per tight solve at gauge QA 2.5 % 8 x 8, half a trial's polish; seeded, a QA trial's interior
+    solves took 89 s instead of 332 s and reached the same root (design 4e-9, boundary 3e-7, values 9e-7 relative).
+    Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
+    before.  Returns ``None`` (the plain seed is used) when Newton does not lower the residual."""
+    with im._device_context(cfg):
+        im._template_runtime(cfg)
+        im._boundary_pack_tables(cfg)
+        key = im._mask_cache_key(cfg)
+        mask = im._MASK_CACHE.get(key)
+        if mask is None:
+            mask = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), im._fixed_boundary_dof_mask(cfg))
+            im._MASK_CACHE[key] = mask
+        params = im._device_pin(cfg, jax.tree.map(jnp.asarray, params_np))
+        home = cfg.device if cfg.device is not None else im._params_committed_device(params)
+        state = seed if home is None else jax.device_put(seed, home)
+        mask = im._device_pin(cfg, jax.tree.map(jnp.asarray, mask))
+        tol = float(cfg.refine_tol)
+        with im._timed(cfg, "newton_seed"):
+            im._count(cfg, newton_seeds=1)
+            try:
+                state = im._m1_gauge_state(cfg, state)
+                state, params, mask = im.commit_to_single_device((state, params, mask))
+                project = im._dof_projector(cfg, mask)
+                z0 = project(state)
+                base = float(im._tree_norm(im.residual_fn(cfg, state, mask)(z0, params)))
+                if not np.isfinite(base):
+                    return None
+                z, best = z0, base
+                for _ in range(NEWTON_SEED_FACTORIZATIONS):
+                    if best <= tol:
+                        break
+                    factors = im._refine_block_factors(cfg, params, state, mask, z)
+                    trial, _, norm, _ = im._refine_block_step(cfg, params, state, mask, z, factors)
+                    norm = float(norm)
+                    if not (np.isfinite(norm) and norm < best):
+                        break
+                    z, best = trial, norm
+            except (VmecError, RuntimeError, FloatingPointError):
+                return None
+        if not best < base:
+            im._count(cfg, newton_seeds_declined=1)
+            return None
+        return jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
+
+
 def _newton_defaults() -> dict:
     return dict(step_tol=1e-8, max_steps=60, quasi=True)
 
@@ -276,7 +332,9 @@ class ThreeTermsConfig:
     relative cost change of ``jacobian_ftol`` with fresh Jacobians and to ``ftol`` with its last one, at most
     ``max_nfev`` evaluations; ``trial_ftol`` solves its trial equilibria to a looser force residual.  With the
     gauge, ``newton`` (``step_tol``, ``max_steps``, ``quasi``, ``verbose``) then converges the fit's point on the
-    gauge.  ``max_residual`` is the largest RMS interface residual of a converged free boundary (a guard against
+    gauge.  ``newton_seed`` refines every tight solve's predicted interior seed by Newton before the host solver's
+    descent (:func:`_newton_refined_seed`; the same root, the descent's iterations saved).  ``max_residual`` is
+    the largest RMS interface residual of a converged free boundary (a guard against
     wrong stationary points).  ``chunk`` bounds the Jacobian columns per batch.
     """
 
@@ -296,6 +354,7 @@ class ThreeTermsConfig:
     weights: tuple[float, float, float] = (1.0, 1.0, 1.0)
     net_current_weight: float = 1.0
     chunk: int = 8
+    newton_seed: bool = True
     newton: dict = field(default_factory=_newton_defaults)
 
     def __post_init__(self) -> None:
@@ -319,7 +378,7 @@ class ThreeTermsConfig:
         return dict(labelling=self.labelling, m1_complement=self.m1_complement, max_mode=self.max_mode,
                     nphi=int(self.nphi), ntheta=int(self.ntheta), quadrature=self.quadrature, digits=self.digits,
                     trial_ftol=self.trial_ftol, fit=self.fit, weights=tuple(self.weights),
-                    net_current_weight=self.net_current_weight, chunk=self.chunk)
+                    net_current_weight=self.net_current_weight, chunk=self.chunk, newton_seed=self.newton_seed)
 
 
 @dataclass(frozen=True)
@@ -604,7 +663,7 @@ class ThreeTermsFreeBoundaryModel:
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=0.0, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, fit="secant", bootstrap=None, bootstrap_helicity=0,
                  bootstrap_weight=100.0, fixed_boundary=False, bootstrap_g_convention="simsopt",
-                 m1_complement="gauged"):
+                 m1_complement="gauged", newton_seed=True):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -628,6 +687,7 @@ class ThreeTermsFreeBoundaryModel:
                             bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
                             fixed_boundary=bool(fixed_boundary), labelling=labelling, m1_complement=m1_complement)
         self.fixed_boundary, self.labelling, self.fit = bool(fixed_boundary), labelling, fit
+        self.newton_seed = bool(newton_seed)  # a solver setting, not part of the discrete problem (options)
         #: The exact gauge of the boundary's poloidal angle (:func:`_gauge_rows`): None (``labelling="none"``: the
         #: labelling is whatever minimizes the interface residual) or "condensation" (VMEC's spectral condensation held
         #: exactly: every iterate of the gauge Newton is projected onto it, which needs geometry only).
@@ -959,9 +1019,12 @@ class ThreeTermsFreeBoundaryModel:
         """
         self._prime()
         im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
+        params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
+        if seed is not None and tight and self.newton_seed and cfg.hot_restart:
+            refined = _newton_refined_seed(im, cfg, params_np, seed)
+            seed = seed if refined is None else refined
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
-        params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
         if tight:
             state, mask, status, fsq, ratio = im._host_solve_and_mask_status(cfg, params_np)
             if int(status) != 0:

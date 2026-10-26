@@ -1017,7 +1017,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
 
-        def tight(b, aux):
+        def tight(b, aux, project=True):
             try:  # the trial's state may not tighten to the deck's tolerance, or a row's own solve may fail
                 J, _, _, aux = model.linearize(b, aux, field, extra=extra)
                 state, mask, params_b, _ = aux
@@ -1028,6 +1028,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if not (np.all(np.isfinite(J)) and np.all(np.isfinite(rows)) and np.all(np.isfinite(values))):
                 raise TrialRejected("nonfinite rows, values or boundary Jacobian at the tightened state")
             self.stats["linearizations"] += 1
+            index = model._projected
+            if project and index is not None:
+                # The fit closed the bootstrap rows on its trial-tolerance state; tightened, they reopen (QH 2.5%:
+                # 9e-11 -> 1.9e-4, 92% of the cost).  Re-solve the current knots on this state, then linearize there.
+                try:
+                    b_p, got, _ = _project(lambda z: model.evaluate(z, params, field, tight=True), np.asarray(b),
+                                           (rows, aux), J[:, index], index, 2)
+                except (VmecError, RuntimeError) as error:
+                    raise TrialRejected(str(error)) from error
+                if not np.array_equal(b_p, b):
+                    return tight(b_p, got[1], project=False)
             return dict(x=np.asarray(b), aux=aux, state=state, mask=mask, params=params_b, rows=rows, values=values,
                         J=J)
 

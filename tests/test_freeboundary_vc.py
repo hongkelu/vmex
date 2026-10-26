@@ -344,6 +344,44 @@ def test_levenberg_marquardt_projects_stiff_coordinates():
     assert not plain["converged"] and abs(plain["x"][0] - 1.0) > 1e-2
 
 
+def test_finalize_re_solves_the_current_on_the_tightened_state():
+    """A fit closes the stiff (bootstrap) row on its trial-tolerance state; tightened, that row reopens.  The trial's
+    record re-solves the current coordinate there, so the certificate sees the boundary's stationarity, not the
+    current's loose-state offset (QH 2.5%: 92% of the tightened cost)."""
+    class Model:
+        n_boundary, x0, x_scale, _projected = 1, np.zeros(2), np.ones(2), np.array([1])
+
+        @staticmethod
+        def rows(x, tight):  # interface, an irreducible row, the current's closure (offset at the trial tolerance)
+            return np.array([x[0] - 1.0, 1e-3, 100.0 * (x[1] - x[0] ** 2) + (0.0 if tight else 1e-3)])
+
+        def evaluate(self, x, params, field, seed=None, tight=False):
+            return self.rows(x, tight), (np.array(x, dtype=float), None, None, tight)
+
+        def linearize(self, x, aux, field, extra=None):
+            J = np.array([[1.0, 0.0], [0.0, 0.0], [-200.0 * x[0], 100.0]])
+            return J, None, None, (np.array(x, dtype=float), None, None, True)
+
+        def _rows(self, state, params, field):
+            return self.rows(state, True)
+
+        def solve_boundary(self, params, field, *, x0, **kwargs):  # a polish that gains nothing
+            return dict(x=x0, rows=self.rows(x0, True), aux=(np.array(x0), None, None, True), nfev=1)
+
+    problem = object.__new__(fvc.ThreeTermFreeBoundaryProblem)
+    problem.model, problem._plasma = Model(), np.zeros(0)
+    problem._rows = lambda state, params, x: np.zeros(1)
+    problem.stats = dict(linearizations=0, max_condition=0.0, boundary_evaluations=0)
+    problem.boundary_ftol, problem.boundary_xtol, problem.boundary_max_residual = 1e-4, None, None
+    problem._checkpoint = lambda: None
+    x = np.array([1.0, 1.0 - 1e-5])  # the fit's point: the closure row is zero on the trial state only
+    fit = dict(x=x, rows=Model.rows(x, False), aux=(x, None, None, False), nfev=1, reason="ftol", converged=True)
+    sol = problem._finalize(np.zeros(1), None, None, fit)
+    assert sol["certificate"]["stationarity"] < 1e-8
+    np.testing.assert_allclose(sol["x"], [1.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(sol["rows"], [0.0, 1e-3, 0.0], atol=1e-12)
+
+
 def test_fit_certificate_measures_stationarity_and_rank():
     """The certificate's stationarity is the Gauss-Newton step's predicted relative gain; a repeated column is a
     rank-deficient Jacobian."""

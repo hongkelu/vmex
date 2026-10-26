@@ -90,8 +90,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
         of what the callbacks compute: a checkpoint restores only into a problem with the same declaration, since
         callbacks that agree at one design can still differ in their derivatives.  ``seed_boundary`` (model
-        coordinates, e.g. a perturbed ``model.x0``) fits the seed design's boundary from that start instead of the
-        deck's boundary, the deck staying the labelling reference.
+        coordinates, or a callable of the model returning them, e.g. a perturbed ``model.x0``) fits the seed
+        design's boundary from that start instead of the deck's boundary, the deck staying the labelling reference.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` with ``labelling="gauge"``, the
         default) sets the discrete problem (grid, quadrature, modes, ``m1_complement``, ``trial_ftol``, ``fit``) and
@@ -201,6 +201,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0  # the layout restore_checkpoint checks
             self.restore_checkpoint(checkpoint)
         else:
+            if callable(seed_boundary):
+                seed_boundary = seed_boundary(model)
             starts = None if seed_boundary is None else [np.asarray(seed_boundary, dtype=float)]
             seed = self._solve(x0, starts=starts)
             if seed is None:

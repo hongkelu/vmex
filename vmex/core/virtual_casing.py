@@ -802,10 +802,16 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
     if orient is None:
         orient = float(I.surf_normal_area_elem(dX_src, X_src, return_orientation=True)[2])
     inv_nt, inv_np = 1.0 / nt, 1.0 / npol
-    block = I._resolve_interp_block_size(interp_block_size, precomp.npolar, "b")
+    # The grid-to-polar interpolation as one dense matrix S (npolar x ngrid, a few MB): its gathers, batched over
+    # targets and Jacobian columns, were memory bound (70% of a push); ``values @ S^T`` is a batched GEMM.
+    weights = np.asarray(precomp.M_G2P).reshape(precomp.npolar, -1)
+    columns = np.asarray(precomp.interp_idx).reshape(precomp.npolar, -1)
+    S = np.zeros((precomp.npolar, precomp.ngrid), dtype=weights.dtype)
+    np.add.at(S, (np.repeat(np.arange(precomp.npolar), columns.shape[1]), columns.ravel()), weights.ravel())
+    S_T = jnp.asarray(S.T)
 
     def interp(values):
-        return I._interp_patch(values, precomp) if block is None else I._interp_patch_blocked(values, precomp, block)
+        return values.astype(S_T.dtype) @ S_T
 
     def corr_one(Gi, Ggi, GiF, trg):
         n0 = Ggi[2] * Ggi[5] - Ggi[3] * Ggi[4]

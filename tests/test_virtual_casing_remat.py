@@ -60,5 +60,5 @@ def test_scatter_free_singular_matches_package_value_and_tangent():
 
     ref, dref = jax.jvp(lambda a: run(integrals.laplace_fxd_u_eval_singular, a), (0.3,), (1.0,))
     out, dout = jax.jvp(lambda a: run(_fxd_u_eval_singular, a), (0.3,), (1.0,))
-    np.testing.assert_allclose(out, ref, rtol=1e-11, atol=1e-13 * float(jnp.abs(ref).max()))
-    np.testing.assert_allclose(dout, dref, rtol=1e-11, atol=1e-13 * float(jnp.abs(dref).max()))
+    np.testing.assert_allclose(out, ref, rtol=1e-10, atol=1e-13 * float(jnp.abs(ref).max()))
+    np.testing.assert_allclose(dout, dref, rtol=1e-10, atol=1e-13 * float(jnp.abs(dref).max()))

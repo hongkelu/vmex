@@ -77,7 +77,7 @@ from . import virtual_casing as vc
 from .bootstrap import CLOSURE_ATOL, CLOSURE_RTOL
 from .device import AUTO
 from .errors import TrialRejected, VmecConvergenceError, VmecError
-from .input import VmecInput
+from .input import THREE_TERMS_LABELLINGS, VmecInput
 from .printing import emit_flushed
 
 __all__ = [
@@ -246,7 +246,7 @@ TANGENT_WIDTH = 16  # tangent batches are padded to a multiple of this: one comp
 ACCEPTED_RESIDUAL = 1e-2
 
 #: The boundary labellings (:attr:`ThreeTermsConfig.labelling`) and the cold fits (:attr:`ThreeTermsConfig.fit`).
-LABELLINGS = ("gauge", "none")
+LABELLINGS = THREE_TERMS_LABELLINGS
 FITS = ("secant", "trf")
 
 
@@ -306,8 +306,10 @@ class ThreeTermsConfig:
             raise ValueError(f"labelling must be one of {LABELLINGS}, got {self.labelling!r}")
         if self.fit not in FITS:
             raise ValueError(f"fit must be one of {FITS}, got {self.fit!r}")
-        if self.m1_complement not in ("gauged", "frozen"):
-            raise ValueError(f"m1_complement must be 'gauged' or 'frozen', got {self.m1_complement!r}")
+        from .implicit import M1_COMPLEMENTS
+
+        if self.m1_complement not in M1_COMPLEMENTS:
+            raise ValueError(f"m1_complement must be one of {M1_COMPLEMENTS}, got {self.m1_complement!r}")
         object.__setattr__(self, "newton", {**_newton_defaults(), **dict(self.newton or {})})
 
     @classmethod
@@ -466,8 +468,9 @@ def solve_free_boundary_three_terms(
     vc._require_vcj()  # ImportError naming vmex[freeb] when virtual-casing-jax is missing or too old
     if bool(inp.lasym):
         raise NotImplementedError("the three-term free boundary supports lasym = False only")
-    if _edge_pressure_error(inp):
-        raise ValueError(_edge_pressure_error(inp))
+    error = _edge_pressure_error(inp)
+    if error:
+        raise ValueError(error)
     if external_field is None:  # tricubic: virtual casing samples between the mgrid planes, where the trilinear
         # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
         external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
@@ -617,8 +620,9 @@ class ThreeTermsFreeBoundaryModel:
             raise ValueError(f"labelling must be one of {LABELLINGS}, got {labelling!r}")
         if fit not in FITS:
             raise ValueError(f"fit must be one of {FITS}, got {fit!r}")
-        if _edge_pressure_error(inp):
-            raise ValueError(_edge_pressure_error(inp))
+        error = _edge_pressure_error(inp)
+        if error:
+            raise ValueError(error)
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight, bootstrap_g_convention)

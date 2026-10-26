@@ -715,6 +715,11 @@ def _validate_json_modes(data: Dict[str, Any]) -> None:
         )
 
 
+#: The boundary labellings of the three-term free boundary (``THREE_TERMS_LABELLING``; see
+#: :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`).
+THREE_TERMS_LABELLINGS = ("gauge", "none")
+
+
 @dataclass(frozen=True, eq=False)
 class VmecInput:
     """Full ``&INDATA`` content with VMEC2000 semantics and defaults.
@@ -826,8 +831,8 @@ class VmecInput:
         set_(self, "restart_wout", str(self.restart_wout).strip())
         set_(self, "lthree_terms", bool(self.lthree_terms))
         set_(self, "three_terms_labelling", str(self.three_terms_labelling).strip().lower())
-        if self.three_terms_labelling not in ("gauge", "none"):
-            raise ValueError("THREE_TERMS_LABELLING must be 'gauge' or 'none'")
+        if self.three_terms_labelling not in THREE_TERMS_LABELLINGS:
+            raise ValueError(f"THREE_TERMS_LABELLING must be one of {THREE_TERMS_LABELLINGS}")
         set_(self, "lposition_control", bool(self.lposition_control))
         set_(self, "position_target", float(self.position_target))
         set_(self, "position_interval", int(self.position_interval))

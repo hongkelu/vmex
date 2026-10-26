@@ -1081,7 +1081,8 @@ class ThreeTermsFreeBoundaryModel:
         return columns, dz, batch, aux
 
     def solve_boundary(self, params, field, *, x0=None, jacobian=None, ftol=1e-4, jacobian_ftol=1e-2, max_nfev=60,
-                       target_cost=None, refresh_on_stall=False, tight=False, fresh_current=False, verbose=0):
+                       target_cost=None, refresh_on_stall=False, tight=False, fresh_current=False, verbose=0,
+                       fit=None):
         """K = 0 boundary for ``params`` and ``field``.
 
         With ``jacobian`` (from a nearby solve) Levenberg-Marquardt steps reuse it from ``x0``; otherwise, or if no
@@ -1122,7 +1123,7 @@ class ThreeTermsFreeBoundaryModel:
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
                 return dict(again, jacobian=J1, njev=1)
             x, nfev = again["x"], again["nfev"]
-        if self.fit == "secant":  # cold, or the warm reuse fell short: secant-updated rounds instead of trf
+        if (self.fit if fit is None else fit) == "secant":  # cold, or the warm reuse fell short: secant rounds
             got = self.evaluate(x, params, field, tight=tight)
             if got is None:
                 raise RuntimeError("the start boundary has no certified equilibrium")
@@ -1292,9 +1293,11 @@ class ThreeTermsFreeBoundaryModel:
                     # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones
                     # (QH 2.5%: trial FTOL 1e-11 against the deck's 1e-15) Redl's target differs enough that the
                     # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
+                    # fresh Jacobians (fit="trf"): the polish finishes along the weak relabelling directions,
+                    # where a secant-updated Jacobian stalls short of the gate (the cheap secant fit only gets close)
                     polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
                                                    ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
-                                                   tight=True, fresh_current=True)
+                                                   tight=True, fresh_current=True, fit="trf")
                 except (VmecError, RuntimeError):
                     stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
                     break

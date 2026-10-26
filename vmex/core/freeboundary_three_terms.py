@@ -271,7 +271,7 @@ class ThreeTermsConfig:
     :class:`ThreeTermsFreeBoundaryModel`).
 
     The solve: ``fit`` is the cold boundary fit, ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh,
-    Broyden-updated Jacobian; LBD 8 x 8 cold gauge fit 899 s -> 299 s, 36 -> 6 Jacobians, the same certified
+    Broyden-updated Jacobian: a few Jacobians per fit instead of one per accepted step, the same certified
     boundary) or ``"trf"`` (SciPy's trust region, a fresh Jacobian after every accepted step).  It runs to a
     relative cost change of ``jacobian_ftol`` with fresh Jacobians and to ``ftol`` with its last one, at most
     ``max_nfev`` evaluations; ``trial_ftol`` solves its trial equilibria to a looser force residual.  With the
@@ -669,8 +669,8 @@ class ThreeTermsFreeBoundaryModel:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
             self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
         # The current values are re-solved after every boundary step (variable projection): their rows, scaled by
-        # bootstrap_weight, leave their linear model long before the interface rows do (QH 2.5%: a step that halves
-        # the interface cost takes them from 1e-7 to order one, and the fit stalls).
+        # bootstrap_weight, leave their linear model long before the interface rows do: a boundary step that lowers
+        # the interface cost can raise them by orders of magnitude, and the fit stalls.
         self._projected = np.arange(nb, self.x0.size) if self.bootstrap is not None and nb else None
         self.chunk = int(chunk)
 
@@ -1307,8 +1307,8 @@ class ThreeTermsFreeBoundaryModel:
                 if certificate["rank_deficient"]:
                     raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
                 settled = certificate["stationarity"] <= gate
-                # The polish aims at POLISH_FTOL; the gate only decides rejection below (#121 7d73da7: stopping at
-                # the gate left most trials at 1e-3 and the plasma-map derivative test 1.8% off).
+                # The polish aims at POLISH_FTOL; the gate only decides rejection below (stopping at the gate leaves
+                # trials far less stationary than their derivatives need).
                 done = certificate["stationarity"] <= min(gate, POLISH_FTOL) and (
                     xtol is None or certificate["step"] <= xtol)
                 progressing = np.isfinite(previous) and certificate["stationarity"] <= POLISH_PROGRESS * previous
@@ -1319,9 +1319,9 @@ class ThreeTermsFreeBoundaryModel:
                     break
                 # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
                 try:
-                    # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones
-                    # (QH 2.5%: trial FTOL 1e-11 against the deck's 1e-15) Redl's target differs enough that the
-                    # current solved there leaves 98% of the tight cost in the bootstrap rows, and the polish cycles.
+                    # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones (a
+                    # looser force residual) Redl's target differs enough that a current solved there leaves most of
+                    # the tight cost in the bootstrap rows, and the polish cycles.
                     # fresh Jacobians (fit="trf"): the polish finishes along the weak relabelling directions,
                     # where a secant-updated Jacobian stalls short of the gate (the cheap secant fit only gets close)
                     polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],

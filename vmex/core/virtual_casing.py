@@ -716,8 +716,8 @@ def _remat_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, targ
     """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` with each (target block, source chunk) term rematerialized.
 
     The package's chunked far-field sum saves every chunk's pair intermediates for reverse mode, i.e. the whole
-    one-period-target x full-torus-source kernel: on W7-X (nfp 5, 2304 targets x 92160 sources, 4 densities) four
-    f64[9, 90, 4, 256, 1024, 3] buffers, 79 GB in the exact Hessian products.  Here each term is recomputed in the
+    one-period-target x full-torus-source kernel: at nfp 5 with a few thousand targets, ~1e5 sources and four
+    densities, tens of GB in the exact Hessian products.  Here each term is recomputed in the
     backward pass, so memory is one block's pairs, independent of nfp; the values are the same sum."""
     from virtual_casing_jax import integrals
     from virtual_casing_jax.kernels import laplace_fxd_u

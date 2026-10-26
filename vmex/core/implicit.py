@@ -1586,8 +1586,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
 #: Newton steps (one block factorization each) of a seed's refinement (:func:`_newton_refined_candidates`) at most.
 NEWTON_SEED_FACTORIZATIONS = 8
 #: Backtracking of a seed's Newton step that does not lower ``|F|``: each entry halves the remaining step (so the
-#: step is tried at 1/2, 1/4, 1/8 of its length; one residual evaluation each).  QH 2.5 %: trial seeds far along
-#: weak boundary directions (|F| ~ 1e-2) were declined by the full step and left ~4000 descent iterations each.
+#: step is tried at 1/2, 1/4, 1/8 of its length; one residual evaluation each) before the seed is given up.
 NEWTON_SEED_BACKTRACK = (0.5, 0.5, 0.5)
 
 
@@ -1598,16 +1597,14 @@ def _newton_refined_candidates(cfg, params_np, seeds):
     The candidates are the perturbation seed (the first-order prediction from the latest linearization) and the
     hot-restart state (the last converged solve, i.e. the previous trial point of a polish): along a polish's long
     steps in weak boundary directions the prediction from the accepted point can sit far outside Newton's basin
-    (QH 2.5 %: |F| ~ 2e-2, ~4000 descent iterations per solve) while the previous iterate's state is close.  Each
-    is refined as below, and the one with the lowest residual is returned.
+    while the previous iterate's state is close.  Each is refined as below, and the one with the lowest residual
+    is returned.
 
     The seed (the first-order prediction of a nearby solved state) is usually inside Newton's basin: block
     preconditioned Newton steps with fresh factors at every iterate (:func:`_refine_block_factors`,
     :func:`_refine_block_step`) reach ``refine_tol`` in a few steps, and the host solver's descent then starts at the
-    root, where its ``ftol`` test holds within an iteration or so.  From the plain seed the descent took ~1290
-    iterations (5.6 s) per tight solve at gauge QA 2.5 % 8 x 8, half a trial's polish; seeded, a QA trial's interior
-    solves took 89 s instead of 332 s and reached the same root (design 4e-9, boundary 3e-7, values 9e-7 relative).
-    Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
+    root, where its ``ftol`` test holds within an iteration or so, instead of the thousands of descent iterations
+    from the plain seed.  Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
     before.  Returns ``None`` (the plain seed is used) when Newton lowers no candidate's residual."""
     best = None
     for seed in seeds:
@@ -1665,9 +1662,8 @@ def _newton_refine_one(cfg, params_np, seed):
                         break
                     z, best = trial, norm
                 if best > tol and best < base:
-                    # the block Newton stopped short of the root: finish with the refinement's own Krylov
-                    # Newton (_refined_state, GCROT) from its best point, ~3 s, instead of the
-                    # descent's thousands of iterations from there (QH 2.5 %: |F| ~ 1e-4, ~4000 iterations, ~20 s)
+                    # the block Newton stopped short of the root: finish with the refinement's own Krylov Newton
+                    # (_refined_state, GCROT) from its best point, far cheaper than the descent from there
                     partial = jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
                     finished = _refined_state(cfg, params, partial, mask)
                     _ANCHOR_STALLED.pop(id(cfg), None)

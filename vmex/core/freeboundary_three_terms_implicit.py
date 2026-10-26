@@ -55,8 +55,7 @@ __all__ = ["dense_hessian", "exact_products", "least_squares_sensitivity", "proj
 EXACT_PRODUCTS_CHUNK = 16
 
 #: The Newton polishes' floor: a predicted decrease at most this fraction of the cost is stationarity to the cost's
-#: resolution (tight interior solves resolve it to ~1e-10, QI 2.5%: a restored point's last steps changed it by
-#: 1e-18..1e-17 of 6.6e-8).  Where the trust region has collapsed (steps rejected at every scale), ten times it:
+#: resolution (tight interior solves resolve it to ~1e-10).  Where the trust region has collapsed (steps rejected at every scale), ten times it:
 #: a collapse whose predicted decrease is larger is a curved valley the model does not follow there, not a
 #: stationary point.
 NEWTON_FLOOR = 1e-9
@@ -171,7 +170,7 @@ def _gauge_relabel(model, b, stats):
     """``b`` relabelled onto the exact gauge: the same surface with the angle ``theta + f`` that satisfies the gauge
     (:attr:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
     :func:`_gauge_project`.  The shape changes only by the refit's truncation (a minimum-norm move in the
-    coordinates instead changes it: QA 2.5%, the NL point so projected had no equilibrium)."""
+    coordinates instead changes the shape, and the projected point can have no equilibrium)."""
     b = np.asarray(b, dtype=float)
     fc = np.zeros(model.relabel_modes)
     # Levenberg-Marquardt from f = 0, every step lowering |c| and at most RELABEL_MAX_STEP: the small relabelling
@@ -386,8 +385,7 @@ def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats,
                 if (level == 0 and len(taken) == 4 and None not in taken
                         and all(t1 > SR1_LINEAR_RATIO * t0 for t0, t1 in zip(taken, taken[1:]))):
                     # three SR1 steps in a row shrank by less than 1/SR1_LINEAR_RATIO: the quasi-Newton
-                    # model converges linearly (QH 8 x 8: 12 steps of ~25 s for a 1e-10 relative gain);
-                    # the next iterate rebuilds the Gauss-Newton model (one linearization)
+                    # model converges linearly; the next iterate rebuilds the Gauss-Newton model (one linearization)
                     refresh = True
                     history[-1]["refreshed"] = True
                 break
@@ -460,8 +458,7 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     def project(bb, here, Hcc, target=np.inf):  # the current re-solved at this boundary: Newton on its block
         # A correction is skipped when its predicted gain is below the cost's resolution (NEWTON_FLOOR, the floor
         # that also declares convergence, whose test includes the current's gain) or when even twice that gain
-        # leaves the trial above ``target``, the cost its acceptance needs (each correction is a tight solve;
-        # QA/QH 2.5 %: gains of 1e-9..1e-13 of the cost on trials rejected either way).
+        # leaves the trial above ``target``, the cost its acceptance needs (each correction is a tight solve).
         used = 0
         for _ in range(PROJECTION_CORRECTIONS):
             dc = -np.linalg.solve(Hcc, here[1][c])
@@ -487,8 +484,8 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     # secants (K and H_cc kept), 1 the Gauss-Newton blocks (:func:`_projected_gn_hessian`, one linearization
     # ~11 s), 2 the exact projected Hessian (~60-110 s at 8 x 8).  A start, an indefinite model or a stalled step
     # escalates one level ("model"); convergence is declared only on the exact Hessian ("exact" refresh first).
-    # Every iterate rebuilding the exact one made one polish ~35 min (QH 2.5 %, 18 iterates); refreshing it at
-    # every indefinite SR1 model spent 3 of a QA 2.5 % trial's 5 exact Hessians (171 s) far from the minimum.
+    # The cheaper models carry the steps far from the minimum, where an exact Hessian is refreshed only to be
+    # replaced at the next indefinite or stalled model.
     exact, refresh, secant, asymmetry, level = False, "model", None, 0.0, 0
     for _ in range(int(opt["max_steps"])):
         th = time.perf_counter()
@@ -604,8 +601,8 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 refresh = "model"
                 continue
             if definite and decrease <= noise:  # the Newton gain is below what the cost resolves: stationary to the
-                # evaluations' precision (QH 2.5%: rows ~1e-3 known to ~1e-9 resolve the cost to ~1e-6 of itself,
-                # above NEWTON_FLOOR, and every trial within it was rejected)
+                # evaluations' precision (rows known to ~1e-9 can resolve the cost only to ~1e-6 of itself, above
+                # NEWTON_FLOOR, and every trial within it is then rejected)
                 converged = True
                 history[-1].update(floor="noise", noise=float(noise))
                 break
@@ -857,7 +854,7 @@ def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, sca
 
     # Block conjugate gradients on the gauge-reduced exact operator L^T (H + d2(lam . c)) L, L = blockdiag(S Z_b, S_c)
     # (symmetric positive definite at the minimum), preconditioned by the block solve: the reassembled H differs
-    # from the exact one by the current rows' leak, which stalled a stationary refinement at 1e-4 (QA 2.5%).
+    # from the exact one by the current rows' leak, which stalls a stationary refinement well above the gate.
     def lift(U):
         return np.r_[sb[:, None] * (Zb @ U[:Zb.shape[1]]), sc * U[Zb.shape[1]:]]
 
@@ -899,8 +896,8 @@ def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, sca
         return U
 
     # Restarted on the true defect until the residual is below 1e-6 of the right-hand side or a restart no longer moves
-    # the gradient (1e-6 of it): with the current block's weight the multipliers are large (|mu| ~ 1e7 against |Q| ~ 1
-    # at LP QA 0.5%) and the residual's round-off floor (~3e-6, the products repeat to 1e-13) is above that gate.
+    # the gradient (1e-6 of it): with the current block's weight the multipliers are large (|mu| ~ 1e7 against
+    # |Q| ~ 1) and the residual's round-off floor (the products repeat to ~1e-13) can sit above that gate.
     rhs = reduce(Q)
     norms = np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)
     U, defect, history, gradients = np.zeros_like(rhs), rhs, [], None
@@ -947,7 +944,7 @@ def exact_products(design, x, sol, V, check=True, chunk=None):
     model = design.model
     V = np.asarray(V, dtype=float).reshape(model.x0.size, -1)
     single = V.shape[1] == 1
-    if single:  # a one-column call compiles without the product loop (one trip): QI 2.5% asked for 119 GB
+    if single:  # a one-column call compiles without the product loop (one trip), with far more device memory
         V = np.repeat(V, 2, axis=1)
     chunk = None if chunk is None or int(chunk) >= V.shape[1] else max(int(chunk), 1)
     got = design._exact_products_core(sol["state"], sol["mask"], jnp.asarray(x, dtype=float),
@@ -1038,7 +1035,7 @@ def _exact_products_traced(design, state, mask, xj, b0, V, chunk=None):
     def column(args):
         dz, v = args
         # The design is not moved: its tangent is a symbolic zero, so nothing is pushed through the coil field
-        # (jax.linearize once for every column is slower and holds 2x the memory: 69 GB for 16 QA columns).
+        # (jax.linearize once for every column is slower and holds twice the memory).
         _, (u_z, u_b, u_x) = jax.jvp(lambda z, b: grad_second(z, b, xj), (z0, b0), (P(dz), v))
         if split:  # + J_B^T (J_B t): the bootstrap rows' Gauss-Newton curvature
             Jt = jax.jvp(lambda z, b: bootstrap_rows(z, b, xj), (z0, b0), (P(dz), v))[1]
@@ -1161,8 +1158,7 @@ def _least_squares_sensitivity(J_b, J_d, S_bb=None, S_bd=None):
     ``F_b = J_b^T J_b + S_bb`` and ``F_d = J_b^T J_d + S_bd`` with the curvature terms
     ``S_bb = sum_i r_i d^2 r_i / db^2`` and ``S_bd = sum_i r_i d^2 r_i / db dd``.  Without them it is the
     Gauss-Newton sensitivity of the optimization's gradient (:func:`_residual_multipliers`), exact only where the
-    residual vanishes or is affine; with them, the exact derivative of the re-solved point (the qualification
-    reference).  Linear solves, no inverse.
+    residual vanishes or is affine; with them, the exact derivative of the re-solved point.  Linear solves, no inverse.
     """
     J_b, J_d = np.asarray(J_b), np.asarray(J_d)
     F_b = J_b.T @ J_b + (0.0 if S_bb is None else np.asarray(S_bb))
@@ -1175,8 +1171,8 @@ def least_squares_sensitivity(J_y, J_d, S_yy=None, S_yd=None):
 
     ``F_y = J_y^T J_y + S_yy`` and ``F_d = J_y^T J_d + S_yd``, with the curvature terms ``S_yy = sum_i r_i
     d2r_i/dy2`` and the mixed ``S_yd = sum_i r_i d2r_i/dy dd``.  Without them it is the Gauss-Newton sensitivity
-    ``-J_y^+ J_d`` (the Gauss-Newton design gradient); with them, the exact one (the
-    qualification reference: both terms vanish only at a zero residual).
+    ``-J_y^+ J_d`` (the Gauss-Newton design gradient); with them, the exact one (both
+    terms vanish only at a zero residual).
     """
     J_y, J_d = np.atleast_2d(J_y), np.asarray(J_d, dtype=float).reshape(np.shape(J_y)[0], -1)
     if S_yy is None and S_yd is None:

@@ -254,8 +254,8 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 
 def test_levenberg_marquardt_rejects_a_bad_jacobian():
-    """A nonfinite boundary Jacobian, or one whose SVD fails, is a VmecNumericalError (a rejected trial): the
-    LinAlgError it used to raise ended a campaign run (QI 2.5%, A, step 240)."""
+    """A nonfinite boundary Jacobian, or one whose SVD fails, is a VmecNumericalError (a rejected trial),
+    not the LinAlgError that would end an optimization."""
     evaluate = lambda z: (np.zeros(2), None)  # noqa: E731
     with pytest.raises(VmecNumericalError, match="nonfinite"):
         fbt._levenberg_marquardt(evaluate, np.zeros(2), np.ones(2), None, np.array([[1.0, np.nan], [0.0, 1.0]]),
@@ -441,7 +441,7 @@ def test_uncertified_tangent_solve_is_no_jacobian(monkeypatch):
 @pytest.mark.full
 def test_boundary_fit_without_an_equilibrium_is_a_convergence_error(monkeypatch):
     """A boundary fit whose Jacobian point has no certified equilibrium raises VmecConvergenceError (a rejected trial),
-    not KeyError (which ended a campaign run), and never linearizes another point's state."""
+    not a KeyError that would end an optimization, and never linearizes another point's state."""
     inp, field = _small_vacuum()
     model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     monkeypatch.setattr(model, "evaluate", lambda *args, **kwargs: None)

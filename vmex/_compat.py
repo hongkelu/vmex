@@ -291,9 +291,9 @@ def _cache_machine_fingerprint() -> str:
 
     ``VMEX_COMPILATION_CACHE_SCOPE=cpu`` drops the host identity: every node
     with the same CPU model and flags, Python and jaxlib build shares one
-    directory.  For a homogeneous cluster partition (Perlmutter's GPU nodes),
+    directory.  For a homogeneous cluster partition (e.g. a GPU partition),
     where a job lands on new nodes every allocation and the per-node cache is
-    always cold (a gauge solve spent ~30% of its time recompiling).
+    always cold.
     """
 
     shared = _env("COMPILATION_CACHE_SCOPE").strip().lower() == "cpu"

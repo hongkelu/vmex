@@ -148,8 +148,8 @@ def test_unconverged_fits_and_rank_deficient_jacobians_reject_the_trial(monkeypa
 @needs_vc
 @pytest.mark.full
 def test_trial_values_come_from_the_tightly_solved_state():
-    """With looser trial equilibria (trial_ftol), a trial's value is that of the state its gradient uses: the
-    campaign's 1e-11 trials made the plasma-current derivative look 33% off against values from loose states."""
+    """With looser trial equilibria (trial_ftol), a trial's value is that of the state its gradient uses (values from loose
+    states would make derivatives look wrong against them)."""
     problem = _small_problem(trial_ftol=1e-6)
     x = problem.x0 + 0.01
     sol = problem._record(x)

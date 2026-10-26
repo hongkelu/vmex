@@ -1,4 +1,4 @@
-"""The fit-sensitivity algebra on a small analytic least-squares problem (CPU; Package C3 of the PR #121 brief).
+"""The fit-sensitivity algebra on a small analytic least-squares problem (CPU).
 
 The inner problem is ``y*(d) = argmin |r(y, d)|^2 / 2`` with more residuals than unknowns, a nonzero residual at the
 minimum, a nearly flat direction (``y3 - y4`` enters only through a small term, like a boundary relabelling), and a

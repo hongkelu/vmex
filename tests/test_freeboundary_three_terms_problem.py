@@ -62,23 +62,6 @@ def test_problem_needs_the_gauge_and_callables():
     assert vj.ThreeTermsFreeBoundaryProblem is ThreeTermsFreeBoundaryProblem
 
 
-def test_seed_start_perturbs_only_the_boundary():
-    """seed_start perturbs only the boundary coordinates ('random': eps x_scale N(0, 1); 'scale': 1 + eps on every
-    coefficient but the major radius), and an unknown kind is refused."""
-    model = SimpleNamespace(x0=np.array([1.0, 0.2, -0.1, 0.05, 7.0]), x_scale=np.full(5, 0.5), n_boundary=4)
-    owner = SimpleNamespace(model=model)
-    b = ThreeTermsFreeBoundaryProblem._seed_start(owner, ("random", 1e-3, 3))
-    expected = model.x0.copy()
-    expected[:4] += 1e-3 * 0.5 * np.random.default_rng(3).standard_normal(4)
-    np.testing.assert_allclose(b, expected)
-    b = ThreeTermsFreeBoundaryProblem._seed_start(owner, ("scale", 1e-3))
-    np.testing.assert_allclose(b, [1.0, 0.2 * 1.001, -0.1 * 1.001, 0.05 * 1.001, 7.0])
-    with pytest.raises(ValueError, match="seed_start"):
-        ThreeTermsFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))
-
-
-@needs_vc
-@pytest.mark.full
 def test_three_terms_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""

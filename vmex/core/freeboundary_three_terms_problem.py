@@ -35,15 +35,10 @@ from .freeboundary_three_terms import (
 )
 from .freeboundary_three_terms_implicit import (
     _accept,
-    _cost_gradients,
     _Design,
     _gauge_gradients,
     _newton_refine,
-    _residual_multipliers,
     _solve_point,
-    dense_hessian,
-    exact_products,
-    projected_hessian,
 )
 from .problem import FunctionProblem
 
@@ -89,15 +84,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
                   boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
-                  seed_start=None, newton=None, config=None, **model_options):
+                  seed_boundary=None, newton=None, config=None, **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
         :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
         of what the callbacks compute: a checkpoint restores only into a problem with the same declaration, since
-        callbacks that agree at one design can still differ in their derivatives.  ``seed_start`` (start-dependence
-        qualification) fits the seed design's boundary from another start than the deck's boundary, the deck staying
-        the reference: ``("random", eps, seed)`` adds ``eps`` times a standard normal vector in the scaled boundary
-        coordinates; ``("scale", eps)`` scales every boundary coefficient but the major radius by ``1 + eps``.
+        callbacks that agree at one design can still differ in their derivatives.  ``seed_boundary`` (model
+        coordinates, e.g. a perturbed ``model.x0``) fits the seed design's boundary from that start instead of the
+        deck's boundary, the deck staying the labelling reference.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` with ``labelling="gauge"``, the
         default) sets the discrete problem (grid, quadrature, modes, ``m1_complement``, ``trial_ftol``, ``fit``) and
@@ -129,11 +123,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, checkpoint=checkpoint,
-                   semantic_identity=semantic_identity, seed_start=seed_start, newton=newton)
+                   semantic_identity=semantic_identity, seed_boundary=seed_boundary, newton=newton)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_start=None, newton=None):
+                 boundary_xtol=None, checkpoint=None, semantic_identity=None, seed_boundary=None, newton=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -145,10 +139,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.newton_polish = dict(ThreeTermsConfig().newton if newton is None else newton)
         if model.gauge is None:
             raise ValueError("the single-stage problem needs a model with labelling='gauge'")
-        #: Largest design step (Euclidean, in the problem's parameters) from the accepted point a trial may take; a
-        #: trial outside it is rejected before any solve, so the optimizer's line search shortens the step (None: no
-        #: limit).  A quasi-Newton optimizer resumed from a few noisy steps can propose a step 1e3 times its last.
-        self.design_trust = None
         self.semantic_identity = json.loads(json.dumps(semantic_identity))
         self._n_rows = 1 + len(quantities) + len(parameter_quantities)
         x0 = np.asarray(x0, dtype=float)
@@ -211,29 +201,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0  # the layout restore_checkpoint checks
             self.restore_checkpoint(checkpoint)
         else:
-            seed = self._solve(x0, starts=None if seed_start is None else [self._seed_start(seed_start)])
+            starts = None if seed_boundary is None else [np.asarray(seed_boundary, dtype=float)]
+            seed = self._solve(x0, starts=starts)
             if seed is None:
                 raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
             self._promote(seed)
             self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
-
-    def _seed_start(self, spec):
-        """The model coordinates of a perturbed seed start (``from_loss(seed_start=...)``)."""
-        model = self.model
-        b = np.array(model.x0, dtype=float)
-        nb = int(model.n_boundary)
-        kind = spec[0]
-        if kind == "random":
-            eps, seed = float(spec[1]), int(spec[2])
-            b[:nb] += eps * np.asarray(model.x_scale, dtype=float)[:nb] * np.random.default_rng(seed).standard_normal(nb)
-        elif kind == "scale":
-            r00 = int(np.argmax(np.abs(b[:nb])))  # the major radius: the largest coordinate
-            keep = b[r00]
-            b[:nb] *= 1.0 + float(spec[1])
-            b[r00] = keep
-        else:
-            raise ValueError(f"seed_start kind must be 'random' or 'scale', got {kind!r}")
-        return b
 
     def _checkpoint(self):
         """The continuation a trial starts from: the boundary fit's latest linearization and trust radius, and the
@@ -264,12 +237,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._cache[key]
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
-        radius, accepted = self.design_trust, getattr(self, "accepted", None)
-        if radius and accepted is not None:  # outside the design trust region: rejected before any solve
-            step = float(np.linalg.norm(x - accepted.parameters))
-            if step > radius:
-                self.stats["design_trust_rejections"] = self.stats.get("design_trust_rejections", 0) + 1
-                return self._reject(key, f"design step {step:.2e} outside the design trust radius {radius:.1e}")
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
         if self._plasma.size:  # the plasma map may move the pressure: the problem needs it zero at the edge
             error = _edge_pressure_error(self.model._im.input_with_params(self.model.fixed, params))
@@ -374,7 +341,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self.stats["seconds_gradient"] += time.perf_counter() - t0
 
     def _linearize_uncached(self, x, sol):
-        got = self._exact_gradients(x, sol)
+        got = self._gauge_gradients(x, sol)
         sol["exact_gradient"] = {k: got[k] for k in ("true_residual", "condition", "seconds_hessian")}
         self.stats["exact_gradient_true_residual"] = float(max(got["true_residual"]))
         gradients = got["gradients"]
@@ -382,56 +349,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise TrialRejected("nonfinite design gradient")
         sol["gradients"] = gradients
         return gradients
-
-    def _gauss_newton_gradients(self, x, sol):
-        """Every row's design gradient with the Gauss-Newton sensitivity of the fit (no curvature terms)."""
-        xj, nb = jnp.asarray(x), self.model.x0.size
-        J_b, J_p = sol["J"][:, :nb], sol["J"][:, nb:]
-        state, params = sol["state"], sol["params"]
-        try:
-            params_bar = self._pullback(state, sol["mask"], params, xj)
-        except (VmecError, RuntimeError) as error:  # an adjoint solve that does not certify
-            raise TrialRejected(str(error)) from error
-        G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
-        if self.model.gauge is not None:  # on the gauge: the multipliers of the fit restricted to its null space
-            import scipy.linalg
-
-            scale = np.asarray(self.model.x_scale, dtype=float)
-            C = np.asarray(self.model.gauge_jacobian(jnp.asarray(sol["x"])))
-            SZ = scale[:, None] * scipy.linalg.null_space(C * scale)
-            lam = _residual_multipliers(np.asarray(J_b) @ SZ, G_b @ SZ)
-        else:
-            lam = _residual_multipliers(J_b, G_b)  # a column per row
-        gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
-        gradients[:, self._plasma] -= lam.T @ J_p
-        return gradients
-
-
-    def stationarity_design_gradient(self, x, rows=None):
-        """Every requested row's exact design gradient at ``x``'s record (:meth:`_exact_gradients`), with the
-        Gauss-Newton one (``gauss_newton``) for comparison."""
-        x = np.asarray(x, dtype=float)
-        sol = self._record(x)
-        got = self._exact_gradients(x, sol, rows)
-        got["gauss_newton"] = np.asarray(self._gauss_newton_gradients(x, sol))[got["rows"]]
-        return got
-
-    def _cost_gradients(self, b, params, field, x):
-        """:func:`_cost_gradients` at boundary ``b`` of design ``x``."""
-        return _cost_gradients(self._design, b, params, field, x)
-
-    def dense_hessian(self, x, sol, chunk=None):
-        """:func:`dense_hessian` at the record ``sol`` of design ``x``."""
-        return dense_hessian(self._design, x, sol, chunk)
-
-    def projected_hessian(self, x, sol, chunk=None):
-        """:func:`projected_hessian` at the record ``sol`` of design ``x``."""
-        return projected_hessian(self._design, x, sol, chunk)
-
-    def exact_products(self, x, sol, V, check=True, chunk=None):
-        """:func:`exact_products` at the record ``sol`` of design ``x``."""
-        return exact_products(self._design, x, sol, V, check=check, chunk=chunk)
 
     def _gauge_gradients(self, x, sol, rows=None):
         """:func:`_gauge_gradients` of every requested row at the record ``sol``: the rows' gradients from one
@@ -447,11 +364,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         direct = np.asarray(self._direct(state, params_b, xj))
         return _gauge_gradients(self._design, x, sol, G_b, G_x, direct, rows, getattr(self, "_hessian", None),
                                 self.stats)
-
-    def _exact_gradients(self, x, sol, rows=None):
-        """The exact derivative of the converged stationarity for every requested row, on the exact gauge
-        (:meth:`_gauge_gradients`: the only Newton polish, so the only point an exact gradient differentiates)."""
-        return self._gauge_gradients(x, sol, rows)
 
     def _promote(self, sol):
         if "anchor" in sol:

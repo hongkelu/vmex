@@ -493,7 +493,7 @@ def solve_free_boundary_three_terms(
 
     def accept(fit):  # the optimization's acceptance rule: one definition of a solved free boundary
         return _accept(design, np.zeros(0), model.params0, external_field, fit,
-                       gate=max(config.ftol, POLISH_FTOL), newton=config.newton if gauge else None, stats=stats,
+                       gate=max(config.ftol, POLISH_FTOL), newton=dict(config.newton, emit=emit) if gauge else None, stats=stats,
                        anchor_H=None if previous is None else previous.hessian, keep_hessian=lambda record: kept.update(record or {}))
 
     ftol = config.ftol

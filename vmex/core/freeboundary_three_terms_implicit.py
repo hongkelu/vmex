@@ -38,7 +38,6 @@ boundary with the current eliminated (:func:`projected_hessian`).
 
 from __future__ import annotations
 
-import os
 import time
 
 import numpy as np
@@ -51,9 +50,9 @@ from .freeboundary_three_terms import PROJECTION_CORRECTIONS
 
 __all__ = ["dense_hessian", "exact_products", "least_squares_sensitivity", "projected_hessian"]
 
-#: Columns per state-tangent solve of :func:`dense_hessian`: every column's tangent at once holds a raw-force
-#: linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
-EXACT_PRODUCTS_CHUNK = int(os.environ.get("VMEX_EXACT_PRODUCTS_CHUNK", "16"))  # smaller: less memory (nfp 5)
+#: Columns per state-tangent solve of :func:`dense_hessian` and :func:`projected_hessian` (their ``chunk``):
+#: each column in a batch holds a raw-force linearization, so a smaller batch needs less device memory.
+EXACT_PRODUCTS_CHUNK = 16
 
 #: The Newton polishes' floor: a predicted decrease at most this fraction of the cost is stationarity to the cost's
 #: resolution (tight interior solves resolve it to ~1e-10, QI 2.5%: a restored point's last steps changed it by
@@ -118,6 +117,11 @@ class _Design:
     def fixed(cls, model, field):
         """The design of a standalone solve: the model's own plasma parameters and ``field``; ``x`` is empty."""
         return cls(model, lambda params, x: params, lambda x: field)
+
+
+def _emit(opt):
+    """The Newton polishes' progress lines go to ``opt["emit"]`` (the solver's ``emit``), else are printed."""
+    return opt.get("emit") or (lambda message: print(message, flush=True))
 
 
 def _cost_point(design, x, params, field, b):
@@ -281,8 +285,8 @@ def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats,
     if projected is None:
         raise TrialRejected("the boundary does not reach the gauge")
     if opt.get("verbose"):
-        print(f"[newton gauge] relabelled onto the gauge: |f| max {stats['gauge_relabel_size']:.2e} rad, scaled "
-              f"move {float(np.linalg.norm((projected - b) / scale)):.2e}", flush=True)
+        _emit(opt)(f"[newton gauge] relabelled onto the gauge: |f| max {stats['gauge_relabel_size']:.2e} rad, scaled "
+              f"move {float(np.linalg.norm((projected - b) / scale)):.2e}")
     b = projected
     here = point(b)
     if here is None:
@@ -340,9 +344,9 @@ def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats,
                             reduced_condition=float(eig[-1] / eig[0]) if definite else float("inf"),
                             evaluations=evaluations))
         if opt.get("verbose"):
-            print(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
+            _emit(opt)(f"[newton gauge] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e}, radius "
                   f"{radius:.1e}, reduced smallest {eig[0]:.2e} condition {history[-1]['reduced_condition']:.1e}, "
-                  f"{('SR1', 'Gauss-Newton', 'exact')[level]} Hessian, {seconds_hessian:.0f} s", flush=True)
+                  f"{('SR1', 'Gauss-Newton', 'exact')[level]} Hessian, {seconds_hessian:.0f} s")
         if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
                          or (exact and radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
             converged = True
@@ -528,10 +532,10 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
         if opt.get("verbose"):
             eig = "" if eigenvalues is None else (" smallest eigenvalues " + " ".join(
                 f"{e:.2e}" for e in eigenvalues[:5]) + f" largest {eigenvalues[-1]:.2e}")
-            print(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
+            _emit(opt)(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
                   f"{step_newton:.2e}, definite {definite}, radius {radius:.1e}, current gain {current_gain:.1e}, "
                   f"leak {P['leak']:.1e}, {('SR1', 'Gauss-Newton', 'exact')[level]} model, Hessian {seconds_hessian:.0f} s "
-                  f"total{eig}", flush=True)
+                  f"total{eig}")
         history[-1].update(exact=exact, level=level)
         if not definite and not exact:
             refresh = "model"

@@ -251,7 +251,11 @@ FITS = ("secant", "trf")
 
 
 #: Newton steps (one block factorization each) of a seed's refinement (:func:`_newton_refined_seed`) at most.
-NEWTON_SEED_FACTORIZATIONS = 6
+NEWTON_SEED_FACTORIZATIONS = 8
+#: Backtracking of a seed's Newton step that does not lower ``|F|``: each entry halves the remaining step (so the
+#: step is tried at 1/2, 1/4, 1/8 of its length; one residual evaluation each).  QH 2.5 %: trial seeds far along
+#: weak boundary directions (|F| ~ 1e-2) were declined by the full step and left ~4000 descent iterations each.
+NEWTON_SEED_BACKTRACK = (0.5, 0.5, 0.5)
 
 
 def _newton_refined_seed(im, cfg, params_np, seeds):
@@ -305,10 +309,13 @@ def _newton_refine_one(im, cfg, params_np, seed):
                 state = im._m1_gauge_state(cfg, state)
                 state, params, mask = im.commit_to_single_device((state, params, mask))
                 project = im._dof_projector(cfg, mask)
+                F = im.residual_fn(cfg, state, mask)
                 z0 = project(state)
-                base = float(im._tree_norm(im.residual_fn(cfg, state, mask)(z0, params)))
+                base = float(im._tree_norm(F(z0, params)))
                 if not np.isfinite(base):
                     return None
+                if base <= tol:  # already at the root (a restored or repeated point)
+                    return state, base
                 z, best = z0, base
                 for _ in range(NEWTON_SEED_FACTORIZATIONS):
                     if best <= tol:
@@ -316,6 +323,11 @@ def _newton_refine_one(im, cfg, params_np, seed):
                     factors = im._refine_block_factors(cfg, params, state, mask, z)
                     trial, _, norm, _ = im._refine_block_step(cfg, params, state, mask, z, factors)
                     norm = float(norm)
+                    for fraction in NEWTON_SEED_BACKTRACK:  # a step that does not lower |F|: shortened
+                        if np.isfinite(norm) and norm < best:
+                            break
+                        trial = jax.tree.map(lambda a, b: a + fraction * (b - a), z, trial)
+                        norm = float(im._tree_norm(F(trial, params)))
                     if not (np.isfinite(norm) and norm < best):
                         break
                     z, best = trial, norm

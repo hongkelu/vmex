@@ -1377,6 +1377,10 @@ def _dof_mask(x_star: SpectralState, rt: SolverRuntime,
 _HOT_CACHE: weakref.WeakKeyDictionary[ImplicitConfig, SpectralState] = \
     weakref.WeakKeyDictionary()
 
+# cfg -> (state, params as NumPy): the hot-restart state of _HOT_CACHE with the parameters it solved, for the
+# Newton seed's continuation (:func:`_newton_continuation`); used only while that state is still the hot one.
+_HOT_PARAMS: weakref.WeakKeyDictionary[ImplicitConfig, tuple[SpectralState, Any]] = weakref.WeakKeyDictionary()
+
 # cfg -> (params-bytes key, SolveResult): one-entry memo of the LAST solve.
 # scipy trust-region drivers evaluate jac(x) at exactly the x that fun(x)
 # just converged (DESC's ``_update_equilibrium``/``f_where_x`` pattern), so
@@ -1578,6 +1582,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 break
         if cfg.hot_restart and bool(result.converged):
             _HOT_CACHE[cfg] = result.state
+            _HOT_PARAMS[cfg] = (result.state, jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params))
         _LAST_SOLVE[cfg] = (key, result)
         _count(cfg, solves=1, iterations=int(result.iterations))
     return result
@@ -1615,7 +1620,44 @@ def _newton_refined_candidates(cfg, params_np, seeds):
             best = got
         if best is not None and best[1] <= float(cfg.refine_tol):
             break
+    if best is None or best[1] > float(cfg.refine_tol):
+        continued = _newton_continuation(cfg, params_np)
+        if continued is not None and (best is None or continued[1] < best[1]):
+            best = continued
     return None if best is None else best[0]
+
+
+#: The continuation of a seed (:func:`_newton_continuation`): the fractions of the way from the hot state's
+#: parameters to the new ones at which Newton re-converges.
+NEWTON_SEED_CONTINUATION = (0.25, 0.5, 0.75, 1.0)
+
+
+def _newton_continuation(cfg, params_np):
+    """``(state, |F|)``: the hot state carried to ``params_np`` by Newton along the straight path of parameters
+    (:data:`NEWTON_SEED_CONTINUATION`), or ``None``.
+
+    A trial far from the last solved one (a long step along weak boundary directions) puts every candidate
+    seed outside Newton's basin; each stage of the path starts near its own root instead.  A stage that does
+    not converge ends the continuation with the best state so far."""
+    hot = _HOT_PARAMS.get(cfg)
+    if hot is None or hot[0] is not _HOT_CACHE.get(cfg):
+        return None
+    state, start = hot
+    best = None
+    for t in NEWTON_SEED_CONTINUATION:
+        stage = jax.tree.map(lambda a, b, t=t: a + t * (b - a) if np.issubdtype(np.asarray(b).dtype, np.inexact)
+                             else b, start, params_np)
+        got = _newton_refine_one(cfg, stage, state)
+        if got is None:
+            return best if t == 1.0 else None
+        state = got[0]
+        if t == 1.0:
+            best = got
+        elif got[1] > float(cfg.refine_tol) * 1e3:  # off the path's roots: stop
+            return None
+    if best is not None:
+        _count(cfg, newton_seed_continuations=1)
+    return best
 
 
 def _newton_refine_one(cfg, params_np, seed):

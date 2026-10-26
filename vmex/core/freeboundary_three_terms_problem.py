@@ -141,9 +141,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
+                  quantities=(), parameter_quantities=(), boundary_ftol=None, boundary_max_nfev=None,
                   boundary_max_residual=None, boundary_xtol=None, checkpoint=None, semantic_identity=None,
-                  seed_boundary=None, newton=None, config=None, **model_options):
+                  seed_boundary=None, config=None, **model_options):
         """Solve the seed design's free boundary (or, with ``checkpoint``, restore a saved accepted point instead:
         :meth:`restore_checkpoint`; ``x0`` then only fixes the design's layout).  ``semantic_identity`` (any
         JSON-serializable value, e.g. a version and the names of the maps and objectives) is the caller's declaration
@@ -154,14 +154,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` with ``labelling="gauge"``, the
         default) sets the discrete problem (grid, quadrature, modes, ``m1_complement``, ``trial_ftol``, ``fit``) and
-        the gauge Newton (``config.newton``; ``newton`` overrides it); ``model_options`` are further
+        the gauge Newton (``config.newton``); ``model_options`` are further
         :class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` keywords (``bootstrap``,
         ``bootstrap_helicity``, ``device``, ...).  A trial's boundary fit stops at a relative cost change of
-        ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; every trial is then Newton-converged on the
-        gauge and certified before it has a value (one record per design: a gradient never moves it).  With
-        ``boundary_max_residual`` a fit that ends with
-        any :class:`~vmex.core.freeboundary_three_terms.BoundaryResidual` term above it is no solution: the trial tries its next start, or is
-        rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
+        ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations (default: the config's ``ftol`` and
+        ``max_nfev``); every trial is then Newton-converged on the gauge and certified before it has a value (one
+        record per design: a gradient never moves it).  With ``boundary_max_residual`` (off by default; unlike the
+        config's ``max_residual``, the standalone solver's convergence bound, it rejects trials) a fit that ends
+        with any :class:`~vmex.core.freeboundary_three_terms.BoundaryResidual` term above it is no solution: the
+        trial tries its next start, or is rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  The
         certificate's normal displacement of that step is recorded too (``stats["max_normal_step"]``).
         """
@@ -175,7 +176,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if config.labelling != "gauge":  # before the model's seed solve
             raise ValueError("the single-stage problem needs labelling='gauge': its gradient differentiates the "
                              "converged point on the gauge")
-        newton = {**config.newton.as_dict(), **dict(newton or {})}
+        newton = config.newton.as_dict()
+        boundary_ftol = config.ftol if boundary_ftol is None else boundary_ftol
+        boundary_max_nfev = config.max_nfev if boundary_max_nfev is None else boundary_max_nfev
         model = ThreeTermsFreeBoundaryModel(inp, **{**config.model_options(), **model_options})
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,

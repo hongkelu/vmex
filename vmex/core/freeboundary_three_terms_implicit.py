@@ -146,6 +146,23 @@ def _gn_hessian(model, rec, field):
     return J.T @ J
 
 
+def _projected_gn_hessian(model, rec, field, bi, c):
+    """:func:`projected_hessian`'s blocks from the Gauss-Newton ``J^T J`` at ``rec`` (one linearization): ``H_red``
+    the boundary block with the current eliminated (``J_b`` projected off the current columns by a QR, so the
+    weighted current block's round-off does not enter), ``H_cc`` and ``K = H_cc^-1 H_cb``.  A model for steps
+    far from the minimum only: positive semidefinite, without the residual curvature."""
+    import scipy.linalg
+
+    J = np.asarray(model.linearize(np.asarray(rec["x"], dtype=float),
+                                   (rec["state"], rec["mask"], rec["params"], True), field)[0])[:, :model.x0.size]
+    Jb, Jc = J[:, bi], J[:, c]
+    Q, _ = scipy.linalg.qr(Jc, mode="economic")
+    Jp = Jb - Q @ (Q.T @ Jb)
+    Hcc = Jc.T @ Jc
+    return dict(Hred=0.5 * (Jp.T @ Jp + (Jp.T @ Jp).T), Hcc=0.5 * (Hcc + Hcc.T), K=np.linalg.solve(Hcc, Jc.T @ Jb),
+                b=bi, c=c, leak=0.0)
+
+
 def _gauge_relabel(model, b, stats):
     """``b`` relabelled onto the exact gauge: the same surface with the angle ``theta + f`` that satisfies the gauge
     (:attr:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel.relabel`; Gauss-Newton on ``f``, geometry only), then held to GAUGE_TOL by
@@ -462,15 +479,22 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     cost, g, rec = here
     radius = NEWTON_RADIUS
     history, evaluations, converged, seconds_hessian, P = [], 1, False, 0.0, None
-    # The exact projected Hessian (~100 s at QH 8 x 8) at the start, when the model is indefinite or a step stalls,
-    # and before convergence is declared; in between, SR1 on H_red from the exact reduced gradients' secants (K and
-    # H_cc kept): every iterate rebuilding it made one polish ~35 min (QH 2.5%, 18 iterates).
-    exact, refresh, secant, asymmetry = False, True, None, 0.0
+    # Models, as in the gauge Newton without a current: level 0 SR1 on H_red from the exact reduced gradients'
+    # secants (K and H_cc kept), 1 the Gauss-Newton blocks (:func:`_projected_gn_hessian`, one linearization
+    # ~11 s), 2 the exact projected Hessian (~60-110 s at 8 x 8).  A start, an indefinite model or a stalled step
+    # escalates one level ("model"); convergence is declared only on the exact Hessian ("exact" refresh first).
+    # Every iterate rebuilding the exact one made one polish ~35 min (QH 2.5 %, 18 iterates); refreshing it at
+    # every indefinite SR1 model spent 3 of a QA 2.5 % trial's 5 exact Hessians (171 s) far from the minimum.
+    exact, refresh, secant, asymmetry, level = False, "model", None, 0.0, 0
     for _ in range(int(opt["max_steps"])):
         th = time.perf_counter()
         if refresh:
-            P, asymmetry = projected_hessian(design, x, rec)
-            exact, refresh = True, False
+            if refresh == "exact" or level >= 1:
+                P, asymmetry = projected_hessian(design, x, rec)
+                level = 2
+            else:
+                P, asymmetry, level = _projected_gn_hessian(model, rec, field, bi, c), 0.0, 1
+            exact, refresh = level == 2, False
         elif secant is not None:
             s_, y_ = secant[0] / sb, secant[1] * sb
             Hsc = P["Hred"] * np.outer(sb, sb)
@@ -479,7 +503,7 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
             if abs(denominator) > SR1_SKIP * float(np.linalg.norm(s_) * np.linalg.norm(v)):
                 Hsc = Hsc + np.outer(v, v) / denominator
                 P = dict(P, Hred=0.5 * (Hsc + Hsc.T) / np.outer(sb, sb))
-            exact = False
+            exact, level = False, 0
         secant = None
         seconds_hessian += time.perf_counter() - th
         g_red = g[bi] - P["K"].T @ g[c]
@@ -506,14 +530,15 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 f"{e:.2e}" for e in eigenvalues[:5]) + f" largest {eigenvalues[-1]:.2e}")
             print(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
                   f"{step_newton:.2e}, definite {definite}, radius {radius:.1e}, current gain {current_gain:.1e}, "
-                  f"leak {P['leak']:.1e}, Hessian {seconds_hessian:.0f} s total{eig}", flush=True)
-        history[-1]["exact"] = exact
+                  f"leak {P['leak']:.1e}, {('SR1', 'Gauss-Newton', 'exact')[level]} model, Hessian {seconds_hessian:.0f} s "
+                  f"total{eig}", flush=True)
+        history[-1].update(exact=exact, level=level)
         if not definite and not exact:
-            refresh = True
+            refresh = "model"
             continue
         if definite and step_newton <= opt["step_tol"]:
             if not exact:
-                refresh = True
+                refresh = "exact"
                 continue
             converged = True
             break
@@ -521,7 +546,7 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
         floor = NEWTON_FLOOR * max(cost, 1e-300)
         if definite and (decrease <= floor or (radius < 1e-6 and decrease <= 10 * floor)):
             if not exact:
-                refresh = True
+                refresh = "exact"
                 continue
             converged = True
             history[-1]["floor"] = True
@@ -571,8 +596,8 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 break
             radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
         if not accepted:
-            if not exact:  # a quasi-Newton model that stalls is refreshed with the exact Hessian
-                refresh = True
+            if not exact:  # a model that stalls is refreshed one level up
+                refresh = "model"
                 continue
             if definite and decrease <= noise:  # the Newton gain is below what the cost resolves: stationary to the
                 # evaluations' precision (QH 2.5%: rows ~1e-3 known to ~1e-9 resolve the cost to ~1e-6 of itself,

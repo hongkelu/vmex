@@ -1476,12 +1476,13 @@ _HOST_ERROR: list[VmecError] = []
 _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
     weakref.WeakKeyDictionary()
 
-# cfg -> (params-bytes key, refined state, stalled): one-entry memo mirroring
+# cfg -> (params-bytes key, refined state, stalled, residual): one-entry memo mirroring
 # _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips the second
 # equilibrium solve also skips the second frozen-residual measurement.
-# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
+# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL); ``residual`` is the root
+# certificate of a ``"gauged"`` m=1 complement (:func:`_refined_residual`), ``None`` for the other policies.
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool, float]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float | None]] = weakref.WeakKeyDictionary()
 
 # cfg -> (params key, evolved iterate, bands) of the latest block factorization
 # (see _BANDS_REUSE_TOL).
@@ -1672,7 +1673,7 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
     key = _params_key(params)
     hit = _LAST_REFINED.get(cfg)
     # an uncertified record (non-finite residual) stays for the status lane but is never served again
-    if hit is None or hit[0] != key or not np.isfinite(hit[3]):
+    if hit is None or hit[0] != key or (hit[3] is not None and not np.isfinite(hit[3])):
         with _timed(cfg, "refinement"):
             _count(cfg, refinements=1)
             refined = _refined_state(
@@ -1680,9 +1681,9 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
                 initial_correction=_LAST_REFINEMENT_CORRECTION.get(cfg),
             )
             stalled = _ANCHOR_STALLED.pop(id(cfg), False)
-            # The root certificate: the returned state's own residual in the config's equations (its m=1
-            # complement policy), measured independently of the refinement's bookkeeping.
-            residual = _refined_residual(cfg, params, refined, dof_mask)
+            # The root certificate of a gauged m=1 complement: the returned state's own residual in the
+            # config's equations, measured independently of the refinement's bookkeeping.
+            residual = _refined_residual(cfg, params, refined, dof_mask) if _m1_gauged(cfg) else None
             correction = jax.tree.map(jnp.subtract, refined, state)
             correction_norm = float(_tree_norm(correction))
         if not stalled and np.isfinite(correction_norm) and correction_norm > 0.0:
@@ -2186,7 +2187,7 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
-        if (status == 0 and _m1_gauged(cfg) and refined is not None and refined[0] == hit[0]
+        if (status == 0 and refined is not None and refined[0] == hit[0] and refined[3] is not None
                 and np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol):
             status = 4  # the returned state is not a root of the selected equations to refine_tol
         if status != 0:

@@ -26,6 +26,7 @@ import jax.numpy as jnp  # noqa: E402
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
+from vmex.core import freeboundary_three_terms_implicit as fbti  # noqa: E402
 from vmex.core.errors import TrialRejected  # noqa: E402
 from vmex.core.freeboundary_three_terms_problem import ThreeTermsFreeBoundaryProblem  # noqa: E402
 
@@ -417,7 +418,7 @@ def test_bootstrap_current_on_the_gauge_has_the_exact_design_gradient():
     sol = problem._record(x0)
     assert sol["newton"]["projected"] and sol["newton"]["gauge"] == "condensation" and sol["newton"]["converged"]
     model = problem.model
-    assert float(np.abs(np.asarray(model.gauge_rows(np.asarray(sol["x"])))).max()) <= 10 * fbt.GAUGE_TOL
+    assert float(np.abs(np.asarray(model.gauge_rows(np.asarray(sol["x"])))).max()) <= 10 * fbti.GAUGE_TOL
     state, params = problem.state(x0)
     assert model.bootstrap_residual(state, params) < 1e-2
     h = 1e-3

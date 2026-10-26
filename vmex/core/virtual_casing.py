@@ -772,20 +772,95 @@ def _remat_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, targ
     return out.T
 
 
+def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None, digits=5, patch_dim0=None,
+                         rad_dim=None, chunk_size=1024, target_chunk_size=None, patch_idx=None, orient=None,
+                         pou_dtype=None, patch_dtype=None, interp_block_size="auto", remat=False):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval_singular`` without the polar-to-grid scatter.
+
+    The package adds each target's polar-patch kernel into its grid patch through the interpolation's transpose,
+    ``M_grid += S^T M_polar`` (a scatter-add per component), and then contracts with the grid density ``f``.
+    The same number is ``f . M_grid + (S f) . M_polar``: the density interpolated to the polar points by the
+    interpolation the patch geometry already uses.  No scatter (45% of a boundary Jacobian's GPU time at 8 x 8,
+    LBD), the same sum regrouped; the far field is :func:`_remat_fxd_u_eval`."""
+    from virtual_casing_jax import integrals as I
+
+    X_src, dX_src, density = jnp.asarray(X_src), jnp.asarray(dX_src), jnp.asarray(density)
+    nt, npol = X_src.shape[1], X_src.shape[2]
+    X_trg = I.field_period_target_coords(X_src, trg_nt, trg_np, nfp) if X_trg is None else jnp.asarray(X_trg)
+    base = _remat_fxd_u_eval(X_src, X_trg, density, I.surf_normal_area_elem(dX_src, X_src)[1],
+                             chunk_size=chunk_size, target_chunk_size=target_chunk_size)
+    if patch_dim0 is None:
+        patch_dim0 = I.select_patch_dim(digits, float(I._surface_cond(dX_src, nt, npol)))
+    if rad_dim is None:
+        rad_dim = int(patch_dim0 * 1.6)
+    precomp = I.precompute_singular(patch_dim0, rad_dim, pou_dtype=pou_dtype, patch_dtype=patch_dtype)
+    skip_nt, skip_np = nt // (nfp * trg_nt), npol // trg_np
+    tt, pp = jnp.meshgrid(jnp.arange(trg_nt) * skip_nt, jnp.arange(trg_np) * skip_np, indexing="ij")
+    if patch_idx is None:
+        patch_idx = I._build_patch_indices(tt.reshape(-1), pp.reshape(-1), nt, npol, patch_dim0)
+    X_flat, dX_flat, dens_flat = X_src.reshape((3, -1)), dX_src.reshape((6, -1)), density.reshape(-1)
+    if orient is None:
+        orient = float(I.surf_normal_area_elem(dX_src, X_src, return_orientation=True)[2])
+    inv_nt, inv_np = 1.0 / nt, 1.0 / npol
+    block = I._resolve_interp_block_size(interp_block_size, precomp.npolar, "b")
+
+    def interp(values):
+        return I._interp_patch(values, precomp) if block is None else I._interp_patch_blocked(values, precomp, block)
+
+    def corr_one(Gi, Ggi, GiF, trg):
+        n0 = Ggi[2] * Ggi[5] - Ggi[3] * Ggi[4]
+        n1 = Ggi[4] * Ggi[1] - Ggi[5] * Ggi[0]
+        n2 = Ggi[0] * Ggi[3] - Ggi[1] * Ggi[2]
+        Ga = jnp.sqrt(n0 * n0 + n1 * n1 + n2 * n2) * inv_nt * inv_np
+        Ggs = Ggi * jnp.asarray([inv_nt, inv_np, inv_nt, inv_np, inv_nt, inv_np], dtype=Ggi.dtype)[:, None]
+        M_grid = I.laplace_fxd_u(trg[None, :] - Gi.T, jnp.ones((precomp.ngrid,))) * (Ga * precomp.Gpou)[:, None]
+        P, Pg, FP = interp(Gi), interp(Ggs), interp(GiF[None])[0]
+        P, Pg, FP = P.astype(trg.dtype), Pg.astype(trg.dtype), FP.astype(trg.dtype)
+        n0p = Pg[2] * Pg[5] - Pg[3] * Pg[4]
+        n1p = Pg[4] * Pg[1] - Pg[5] * Pg[0]
+        n2p = Pg[0] * Pg[3] - Pg[1] * Pg[2]
+        rp = jnp.sqrt(n0p * n0p + n1p * n1p + n2p * n2p)
+        M_polar = I.laplace_fxd_u(trg[None, :] - P.T, jnp.ones((precomp.npolar,))) * (rp * precomp.Ppou)[:, None]
+        return GiF @ M_grid + FP @ M_polar
+
+    corr_fn = jax.checkpoint(corr_one) if remat else corr_one
+    trg_flat = X_trg.reshape((3, -1)).T
+
+    def chunk(pidx, trg):
+        G = jax.vmap(lambda ii: X_flat[:, ii])(pidx)
+        Gg = jax.vmap(lambda ii: dX_flat[:, ii])(pidx)
+        GF = jax.vmap(lambda ii: dens_flat[ii])(pidx)
+        return jax.vmap(corr_fn)(G, Gg, GF, trg)
+
+    if target_chunk_size is None or target_chunk_size <= 0:
+        corr = chunk(patch_idx, trg_flat)
+    else:
+        ntrg = trg_flat.shape[0]
+        pad = (-ntrg) % target_chunk_size
+        if pad:
+            patch_idx, trg_flat = jnp.pad(patch_idx, ((0, pad), (0, 0))), jnp.pad(trg_flat, ((0, pad), (0, 0)))
+        n_chunks = trg_flat.shape[0] // target_chunk_size
+        corr = jax.lax.map(lambda a: chunk(*a), (patch_idx.reshape((n_chunks, target_chunk_size, -1)),
+                                                 trg_flat.reshape((n_chunks, target_chunk_size, 3))))
+        corr = corr.reshape((-1, 3))[:ntrg]
+    return base.reshape((3, trg_nt, trg_np)) + corr.T.reshape((3, trg_nt, trg_np))
+
+
 class _RematFarField:
-    """Context: the package's singular evaluators use :func:`_remat_fxd_u_eval` for their far-field sum (they call
-    ``integrals.laplace_fxd_u_eval`` by its module name at trace time)."""
+    """Context: the package's vector singular evaluator uses :func:`_fxd_u_eval_singular` (rematerialized far field,
+    no polar scatter) for each density; it calls ``integrals.laplace_fxd_u_eval_singular`` by its module name at
+    trace time."""
 
     def __enter__(self):
         from virtual_casing_jax import integrals
 
-        self._saved = integrals.laplace_fxd_u_eval
-        integrals.laplace_fxd_u_eval = _remat_fxd_u_eval
+        self._saved = integrals.laplace_fxd_u_eval_singular
+        integrals.laplace_fxd_u_eval_singular = _fxd_u_eval_singular
 
     def __exit__(self, *exc):
         from virtual_casing_jax import integrals
 
-        integrals.laplace_fxd_u_eval = self._saved
+        integrals.laplace_fxd_u_eval_singular = self._saved
         return False
 
 

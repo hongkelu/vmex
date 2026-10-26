@@ -31,3 +31,34 @@ def test_remat_far_field_matches_package_value_and_gradient():
     g_out = jax.jit(jax.grad(loss(_remat_fxd_u_eval), argnums=(0, 1)))(X_src, density)
     for a, b in zip(g_out, g_ref):
         np.testing.assert_allclose(a, b, rtol=1e-11, atol=1e-13)
+
+
+def test_scatter_free_singular_matches_package_value_and_tangent():
+    """The singular evaluator without the polar scatter equals the package's: same value and JVP (a regrouped sum)."""
+    from virtual_casing_jax import integrals
+
+    nfp, nt, npol, trg_nt, trg_np = 2, 64, 32, 8, 16
+    t = jnp.arange(nt) * 2 * jnp.pi / nt
+    p = jnp.arange(npol) * 2 * jnp.pi / npol
+    T, P = jnp.meshgrid(t, p, indexing="ij")
+
+    def surface(a):
+        R = 1.0 + a * jnp.cos(P) + 0.05 * jnp.cos(P - nfp * T)
+        Z = a * jnp.sin(P) + 0.05 * jnp.sin(P - nfp * T)
+        X = jnp.stack([R * jnp.cos(T), R * jnp.sin(T), Z])
+        dX = jnp.concatenate([jnp.gradient(X, t, axis=1), jnp.gradient(X, p, axis=2)])
+        return X, dX
+
+    density = jnp.cos(P) + 0.3 * jnp.sin(2 * P - nfp * T)
+    kw = dict(digits=4, patch_dim0=8, chunk_size=256, target_chunk_size=16)
+
+    def run(f, a):
+        X, dX = surface(a)
+        return f(X, dX, density, trg_nt, trg_np, nfp, **kw)
+
+    from vmex.core.virtual_casing import _fxd_u_eval_singular
+
+    ref, dref = jax.jvp(lambda a: run(integrals.laplace_fxd_u_eval_singular, a), (0.3,), (1.0,))
+    out, dout = jax.jvp(lambda a: run(_fxd_u_eval_singular, a), (0.3,), (1.0,))
+    np.testing.assert_allclose(out, ref, rtol=1e-11, atol=1e-13 * float(jnp.abs(ref).max()))
+    np.testing.assert_allclose(dout, dref, rtol=1e-11, atol=1e-13 * float(jnp.abs(dref).max()))

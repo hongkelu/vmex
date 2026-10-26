@@ -107,7 +107,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; every trial is then Newton-converged on the
         gauge and certified before it has a value (one record per design: a gradient never moves it).  With
         ``boundary_max_residual`` a fit that ends with
-        any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
+        any :class:`~vmex.core.freeboundary_three_term.BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).  The
         certificate's normal displacement of that step is recorded too (``stats["max_normal_step"]``).
@@ -323,7 +323,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return None
 
     def _finalize(self, x, params, field, fit, polish=True, newton=True):
-        """A trial's one record: its fit certified by :meth:`ThreeTermFreeBoundaryModel.certify` (re-solved to the
+        """A trial's one record: its fit certified by :meth:`~vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel.certify` (re-solved to the
         deck's tolerance, polished with its own Jacobian when ``polish``, certified, and only then valued).  Every
         value, gradient, acceptance and checkpoint of ``x`` uses this record; differentiating it adds gradients and
         never moves its boundary.  Raises :class:`~vmex.core.errors.TrialRejected`."""

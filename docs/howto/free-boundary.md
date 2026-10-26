@@ -185,7 +185,7 @@ times the cost of a NESTOR solve. `ThreeTermConfig` holds the interface grid
 (`nphi`, `ntheta`; use the fixed singular quadrature
 `quadrature=(4 * nfp * nphi, 2 * ntheta)`), the boundary modes (`max_mode`),
 the fit's tolerances and the gauge Newton's options.
-{func}`vmex.solve_free_boundary_three_term` is the same solve, and its
+{func}`vmex.core.freeboundary_three_term.solve_free_boundary_three_term` is the same solve, and its
 `previous=` continues from an earlier result (after a coil change, say)
 without compiling the model again:
 
@@ -200,7 +200,7 @@ moved = vj.solve_free_boundary_three_term(inp, external_field=new_coil_field, co
 both labellings.
 
 For single-stage optimization,
-{class}`vmex.ThreeTermFreeBoundaryProblem` takes a loss, constraint rows and
+{class}`vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem` takes a loss, constraint rows and
 a differentiable `field_from_parameters(x)` (and optionally
 `plasma_from_parameters(params, x)`): every trial is a gauge free boundary,
 started from the accepted one, and the design gradients are the exact
@@ -215,12 +215,12 @@ result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_co
 
 `examples/optimization/single_stage_free_boundary_optimization_three_term.py`
 optimizes coil currents this way. For other uses of many fields and plasma
-parameters, {class}`vmex.ThreeTermFreeBoundaryModel` gives the pieces
+parameters, {class}`vmex.core.freeboundary_three_term.ThreeTermFreeBoundaryModel` gives the pieces
 directly: `solve_boundary` (cold or warm), `linearize` (the interface Jacobian
 and the state responses to the boundary and any plasma parameters), and
 `pullback` (reverse-mode gradients of other functions of the equilibrium),
 with the coils an argument of the compiled code. To check a NESTOR result,
-{func}`vmex.boundary_residual` evaluates the three conditions on any
+{func}`vmex.core.freeboundary_three_term.boundary_residual` evaluates the three conditions on any
 equilibrium: VMEC + NESTOR leaves a floor of a few 1e-4 even for an exact
 external field, and virtual casing itself is accurate to about 2e-4 on a
 48 x 48 grid, so a `sheet_current` well above 1e-3 marks a genuine edge sheet

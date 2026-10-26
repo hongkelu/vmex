@@ -521,8 +521,9 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
     essentially exact field (VMEC2000 1.3 mm), so the methods are compared at
     that level.  From either start (the deck, and NESTOR's result through
-    ``restart_from``) the gauge labelling (the default) certifies a boundary
-    with lower interface residuals than its start, within NESTOR's floor plus
+    ``restart_from``) the gauge labelling (the default) certifies the same
+    boundary (both starts are off the gauge, and at this resolution their
+    residuals may be below the gauge's), within NESTOR's floor plus
     the resolution's (~3 mm) of NESTOR's surface and with its rotational
     transform.  At this low resolution (mpol 4) a boundary held to the gauge
     pays a truncation cost (it closes as the modes grow: W7-X 8 -> 12 modes,
@@ -542,12 +543,13 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     config = vj.ThreeTermsConfig()
     fits = [vj.solve_free_boundary_three_terms(inp, external_field=field, restart_from=start, config=config)
             for start in (None, free)]
-    for fit in fits:
-        after = _residual(fit.three_terms.input, _equilibrium(fit), field)
-        start = fit.three_terms.initial_boundary_residual
-        assert after.normal < start.normal and after.sheet_current < start.sheet_current
+    afters = [_residual(fit.three_terms.input, _equilibrium(fit), field) for fit in fits]
+    for fit, after in zip(fits, afters):
         assert fit.converged and fit.three_terms.certified and "interface residuals" in fit.three_terms.message
         assert fit.vacuum is None
+        # one boundary from either start: the gauge fixes the labelling
+        np.testing.assert_allclose([after.normal, after.pressure, after.sheet_current],
+                                   [afters[0].normal, afters[0].pressure, afters[0].sheet_current], rtol=1e-3)
     unlabelled = vj.solve_free_boundary_three_terms(inp, external_field=field, restart_from=free,
                                                    config=replace(config, labelling="none"))
     after = _residual(unlabelled.three_terms.input, _equilibrium(unlabelled), field)
@@ -562,7 +564,10 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # The model's Jacobian (implicit state tangents, field as an argument) is upstream's implicit Jacobian of
     # the same rows at the same state (the seed's: two independent re-solves of a boundary differ at the
     # floor); and a warm restart at an unchanged field stays where it is.
-    fit, model = fits[0], fits[0].three_terms.model
+    # (upstream's implicit layer holds the m = 1 complement "frozen": the model is compared with that policy)
+    fit = fits[0]
+    model = fbt.ThreeTermsFreeBoundaryModel(inp, **dict(config.model_options(), m1_complement="frozen"))
+    model._prime()
     problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
         state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
         vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0])

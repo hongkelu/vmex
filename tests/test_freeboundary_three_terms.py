@@ -97,7 +97,7 @@ def _lcfs_distance(w, w0, nphi=5, ntheta=361):
 
 
 def _residual(inp, eq, field, n=48):
-    return fbt.summarize_boundary_residual(*fbt.boundary_residual(
+    return fbt.summarize_boundary_residual(*fbt.interface_rows(
         inp, eq.solution, field, runtime=eq.solver_context, nphi=n, ntheta=n))
 
 
@@ -196,7 +196,7 @@ def test_rows_are_the_three_interface_conditions():
     inp = replace(_deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 3, 11), lfreeb=False)
     eq = opt.solve_equilibrium(inp)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
-    rows, weights = fbt.boundary_residual(inp, eq.solution, field, runtime=eq.solver_context, nphi=16, ntheta=16)
+    rows, weights = fbt.interface_rows(inp, eq.solution, field, runtime=eq.solver_context, nphi=16, ntheta=16)
     data = vc.surface_field_data_from_state(inp, eq.solution, runtime=eq.solver_context, nphi=16, ntheta=16)
     iface = vc.PlasmaVacuumInterface.from_surface_data(data)
     B_in = np.asarray(data.B_total)
@@ -538,7 +538,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     free = vj.solve_free_boundary_multigrid(inp, external_field=field)
     nestor_wout = _wout(inp, free)
-    before = fbt.summarize_boundary_residual(*fbt.boundary_residual(inp, free.state, field, nphi=48, ntheta=48))
+    before = fbt.summarize_boundary_residual(*fbt.interface_rows(inp, free.state, field, nphi=48, ntheta=48))
     # The net-current row's reference: outside the plasma the toroidal circulation is the coils' alone, so a
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fbt._coil_net_current(field, nestor_wout)), abs(float(nestor_wout.rbtor)),

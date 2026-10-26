@@ -27,7 +27,7 @@ links to the module that documents it.
   :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` — free boundary
   from the three plasma-vacuum interface conditions (no sheet current; the
   plasma field by virtual casing), also ``three_terms=`` of the free-boundary
-  ladder; :func:`~vmex.core.freeboundary_three_terms.boundary_residual` — the
+  ladder; :func:`~vmex.core.freeboundary_three_terms.interface_rows` — the
   three conditions on any equilibrium;
   :class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` — its
   residual, Jacobian and gradients for any coils without recompiling
@@ -247,7 +247,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "ThreeTermsConfig": (".core.freeboundary_three_terms", "ThreeTermsConfig"),
     "ThreeTermsNewtonOptions": (".core.freeboundary_three_terms", "ThreeTermsNewtonOptions"),
     "ThreeTermsResult": (".core.freeboundary_three_terms", "ThreeTermsResult"),
-    "boundary_residual": (".core.freeboundary_three_terms", "boundary_residual"),
+    "interface_rows": (".core.freeboundary_three_terms", "interface_rows"),
     "ThreeTermsFreeBoundaryModel": (".core.freeboundary_three_terms", "ThreeTermsFreeBoundaryModel"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "solve_free_boundary_newton": (".core.newton", "solve_free_boundary_newton"),

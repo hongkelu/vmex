@@ -54,7 +54,7 @@ Entry points, from the most to the least packaged:
 - :class:`ThreeTermsFreeBoundaryModel`: the residual, its Jacobian, state
   tangents and pullbacks for one deck and any external field or plasma
   parameters, without recompiling -- the pieces an optimizer needs;
-- :func:`boundary_residual`: the three conditions on any equilibrium, e.g. to
+- :func:`interface_rows` (and :func:`summarize_boundary_residual`): the three conditions on any equilibrium, e.g. to
   check a NESTOR result.
 
 The solve needs ``jax_enable_x64`` and ``virtual-casing-jax``, a
@@ -86,7 +86,7 @@ __all__ = [
     "ThreeTermsNewtonOptions",
     "ThreeTermsFreeBoundaryModel",
     "ThreeTermsResult",
-    "boundary_residual",
+    "interface_rows",
     "resolve_three_terms",
     "solve_free_boundary_three_terms",
     "summarize_boundary_residual",
@@ -116,7 +116,7 @@ def _fingerprint(*trees) -> str:
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):
-    """Rows and weights of :func:`boundary_residual`, plus the boundary points ``(3, nphi, ntheta)``."""
+    """Rows and weights of :func:`interface_rows`, plus the boundary points ``(3, nphi, ntheta)``."""
     data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
     interface = vc.PlasmaVacuumInterface.from_surface_data(
         data, p_edge=p_edge, digits=digits, precision=precision)
@@ -130,9 +130,9 @@ def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digit
     return jnp.concatenate([normal[None], pressure[None], sheet]), interface.weights, interface.gamma
 
 
-def boundary_residual(inp: VmecInput, state, external_field: Any, *, runtime=None,
-                      nphi: int, ntheta: int, digits: int = 4, precision=None,
-                      p_edge: float = 0.0):
+def interface_rows(inp: VmecInput, state, external_field: Any, *, runtime=None,
+                   nphi: int, ntheta: int, digits: int = 4, precision=None,
+                   p_edge: float = 0.0):
     """Pointwise interface conditions on the boundary of a live ``state``.
 
     Returns ``(rows, weights)``: ``rows`` has shape ``(5, nphi, ntheta)`` with
@@ -148,7 +148,7 @@ def boundary_residual(inp: VmecInput, state, external_field: Any, *, runtime=Non
 
 
 def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
-    """RMS of each condition from :func:`boundary_residual`'s output."""
+    """The :class:`BoundaryResidual` (RMS of each condition) of :func:`interface_rows`' output."""
     rows, weights = np.asarray(rows), np.asarray(weights)
 
     def rms(value):
@@ -450,7 +450,7 @@ def solve_free_boundary_three_terms(
     ESSOS Biot-Savart field, or a coil field with ``b_cyl``).
 
     The residual is ``sqrt(area weight)`` times ``config.weights`` times the rows
-    of :func:`boundary_residual` on the ``nphi x ntheta`` grid (see
+    of :func:`interface_rows` on the ``nphi x ntheta`` grid (see
     :class:`ThreeTermsConfig`).  The grid, not ``digits``, limits accuracy: for
     a current-free state virtual casing returns ``|B_plasma| / |B|`` of about
     2e-4 at 48 x 48 and 5e-5 at 64 x 64.  A boundary fit with exact implicit

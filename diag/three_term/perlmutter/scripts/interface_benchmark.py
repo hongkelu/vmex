@@ -10,7 +10,6 @@ residuals against the step's coils are reported (the solver's ``initial_boundary
 the smallest residuals is the most accurate free boundary of those coils, whatever produced it.
 """
 import argparse
-import importlib.util
 import json
 import time
 from dataclasses import replace
@@ -18,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from nl_coils_eval import DRIVER, GRID, DirectCoilField
+from nl_coils_eval import GRID, TDRIVER, DirectCoilField, register_field
 
 
 def checkpoint_boundary(path, deck):
@@ -65,15 +64,12 @@ def main():
                     help="checkpoint candidates: their own deck's profiles and flux (not the run's step)")
     args = ap.parse_args()
 
-    import jax
     import vmex as vj
     from essos.coils import Coils
     from vmex.core.freeboundary_vc import solve_free_boundary_three_term
 
-    jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
-    spec = importlib.util.spec_from_file_location("tdriver", DRIVER)
-    tdriver = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tdriver)
+    register_field()
+    tdriver = TDRIVER
     run = Path(args.run)
     inp0 = vj.VmecInput.from_file(run / "input.run")
     w_step = vj.read_wout(str(run / f"wout.step{args.step}.nc")) if not args.own_deck else None

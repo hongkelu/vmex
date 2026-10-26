@@ -50,7 +50,7 @@ Everything this session measured, with the means to repeat it. The code changes 
 ```bash
 COIL_CASE=qh4-beta-A8-merc TRAJECTORY=1 POLISH_ROUNDS=12 PYTHONPATH=<tree> python -u scripts/qhprobe.py OUT \
   --modes 8 8 --ns 51 --coil-point-rows --beta 0.025 --bootstrap --design-step-scale 1.0 --max-iterations 20000 \
-  --seed-run fixtures/qh25 --steps 0 --labelling equal_arc --label-weight 1e-3 --output OUT-run
+  --seed-run fixtures/qh25 --steps 0 --labelling start --label-weight 0 --output OUT-run
 ```
 
 Run from a tree with the driver (`examples/optimization/single_stage_free_boundary_optimization_three_term.py`) and

@@ -4,12 +4,12 @@
 # usage: reproduce_fixture.sh CASE OUT [labelling arguments]
 #   CASE: qh25 | qa25 | qi25 | qavac | qhvac | qivac (diag/three_term/perlmutter/fixtures/CASE)
 #   OUT:  a new directory (fbrecord.py refuses an existing one)
-#   labelling arguments: default "--labelling equal_arc --label-weight 1e-3"
+#   labelling arguments: default "--label-weight 0" (the gauge; labelling="equal_arc" was removed)
 # Run from the root of a vmex tree on a GPU node, with the environment of paper/env.sh.  Extra environment
 # (POLISH_ROUNDS, POLISH_MAX_NFEV, STALL_STEPS, MAX_MODE) is passed through and recorded in OUT/manifest.json.
 set -euo pipefail
 CASE=$1; OUT=$2; shift 2
-LABEL=${*:-"--labelling equal_arc --label-weight 1e-3"}
+LABEL=${*:-"--label-weight 0"}
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$(cd "$HERE/../fixtures/$CASE" && pwd)
 (cd "$FIX" && sha256sum -c SHA256SUMS --quiet) || { echo "fixture $CASE fails its checksums"; exit 1; }

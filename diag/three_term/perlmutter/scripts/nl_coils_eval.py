@@ -15,9 +15,8 @@ import importlib.util
 import json
 import os
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -26,28 +25,28 @@ VC_GRID = 48
 GRID = 64  # the driver's NTHETA = NZETA (a deck's own grid can be too coarse for its new modes)
 
 
-@dataclass(frozen=True, eq=False)
-class DirectCoilField:
-    gamma: Any
-    gamma_dash: Any
-    currents: Any
+def _load_driver():
+    """The single-stage driver as a module (it imports JAX only inside its functions, so this is safe at import)."""
+    spec = importlib.util.spec_from_file_location("tdriver", DRIVER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    def b_cyl(self, r, phi, z):
-        import jax.numpy as jnp
 
-        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
-        cosine, sine = jnp.cos(pp), jnp.sin(pp)
-        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement) * inv_radius3[..., None]
-        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
-        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
-        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
-        return br, bphi, bxyz[..., 2]
+TDRIVER = _load_driver()
+#: The driver's chunked filament Biot-Savart pytree (one implementation; the driver registers it in CoilChart).
+DirectCoilField = TDRIVER.DirectCoilField
+
+
+def register_field():
+    """Register :data:`DirectCoilField` as a JAX pytree once (after JAX is configured; a repeat is a no-op)."""
+    import jax
+
+    try:
+        jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"],
+                                         meta_fields=[])
+    except ValueError:  # already registered
+        pass
 
 
 def lcfs_mm(w_a, w_b, nfp):
@@ -82,16 +81,13 @@ def main():
     run, out = Path(args.run), Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
 
-    import jax
     import vmex as vj
     from essos.coils import Coils
     from vmex import optimize as opt
     from vmex.core.freeboundary_vc import solve_free_boundary_three_term
 
-    jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
-    spec = importlib.util.spec_from_file_location("tdriver", DRIVER)
-    tdriver = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tdriver)
+    register_field()
+    tdriver = TDRIVER
     qs = opt.QuasisymmetryRatioResidual(np.array([i / 10 for i in range(1, 11)]), *args.helicity)
     inp0 = vj.VmecInput.from_file(run / "input.run")
 

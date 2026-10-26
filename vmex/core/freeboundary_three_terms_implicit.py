@@ -745,8 +745,10 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
                 seconds_hessian=time.perf_counter() - t0)
 
 
-#: Iterative-refinement passes of the projected gauge multipliers (each one exact-product call).
-PROJECTED_REFINEMENT_PASSES = 6
+#: Conjugate-gradient iterations of the projected gauge multipliers (each one exact-product call).
+PROJECTED_CG_MAXITER = 30
+#: Restarts of that CG on its true defect.
+PROJECTED_RESTARTS = 3
 
 
 def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, scale, t0):
@@ -780,22 +782,70 @@ def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, sca
     def reduce(R):
         return np.r_[Zb.T @ (sb[:, None] * R[bi]), sc * R[c]]
 
-    # Iterative refinement on the exact products: the block solve preconditions, the defect of the exact operator
-    # corrects (the reassembled H differs from the exact one by the current rows' leak)
-    mu = block_solve(Q)
+    # Block conjugate gradients on the gauge-reduced exact operator L^T (H + d2(lam . c)) L, L = blockdiag(S Z_b, S_c)
+    # (symmetric positive definite at the minimum), preconditioned by the block solve: the reassembled H differs
+    # from the exact one by the current rows' leak, which stalled a stationary refinement at 1e-4 (QA 2.5%).
+    def lift(U):
+        return np.r_[sb[:, None] * (Zb @ U[:Zb.shape[1]]), sc * U[Zb.shape[1]:]]
+
+    def precondition(Rr):
+        R = np.zeros_like(Q)
+        R[bi] = (Zb @ Rr[:Zb.shape[1]]) / sb[:, None]
+        R[c] = Rr[Zb.shape[1]:] / sc
+        mu = block_solve(R)
+        return np.r_[Zb.T @ (mu[bi] / sb[:, None]), mu[c] / sc]
+
+    def full(U):  # the multipliers in model order (lift stacks the boundary block first)
+        out = np.zeros_like(Q)
+        lifted = lift(U)
+        out[bi], out[c] = lifted[:bi.size], lifted[bi.size:]
+        return out
+
+    def cg(rhs, history):
+        norms = np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)
+        U, Rr = np.zeros_like(rhs), rhs.copy()
+        Pr = precondition(Rr)
+        D, rz = Pr.copy(), np.sum(Rr * Pr, axis=0)
+        active = np.ones(rhs.shape[1], dtype=bool)
+        for _ in range(PROJECTED_CG_MAXITER):
+            mu_d = full(D)
+            AD = reduce(np.asarray(exact_products(design, x, sol, mu_d, check=False)[0]) + curvature @ mu_d)
+            dAd = np.sum(D * AD, axis=0)
+            if np.any(dAd[active] <= 0):
+                raise RuntimeError(f"projected gauge multipliers: the reduced Hessian is not positive definite ({dAd})")
+            alpha = np.where(active, rz / np.where(active, dAd, 1.0), 0.0)
+            U, Rr = U + alpha * D, Rr - alpha * AD
+            history.append(float(np.max(np.linalg.norm(Rr, axis=0) / norms)))
+            active &= np.linalg.norm(Rr, axis=0) > 1e-8 * norms
+            if not active.any():
+                break
+            Pr = precondition(Rr)
+            rz_new = np.sum(Rr * Pr, axis=0)
+            D = np.where(active, Pr + (rz_new / np.where(active, rz, 1.0)) * D, D)
+            rz = np.where(active, rz_new, rz)
+        return U
+
+    # Restarted on the true defect until the residual is below 1e-6 of the right-hand side or a restart no longer moves
+    # the gradient (1e-6 of it): with the current block's weight the multipliers are large (|mu| ~ 1e7 against |Q| ~ 1
+    # at LP QA 0.5%) and the residual's round-off floor (~3e-6, the products repeat to 1e-13) is above that gate.
     rhs = reduce(Q)
-    history = []
-    for _ in range(PROJECTED_REFINEMENT_PASSES):
+    norms = np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)
+    U, defect, history, gradients = np.zeros_like(rhs), rhs, [], None
+    for _ in range(PROJECTED_RESTARTS):
+        U = U + cg(defect, history)
+        mu = full(U)
         H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
-        defect = Q - np.asarray(H_mu) - curvature @ mu
-        true = (np.linalg.norm(reduce(defect), axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)).tolist()
+        defect = reduce(Q - np.asarray(H_mu) - curvature @ mu)
+        true = (np.linalg.norm(defect, axis=0) / norms).tolist()
         history.append(max(true))
-        if max(true) <= 1e-6:
+        previous, gradients = gradients, direct[rows] + G_x[rows] - np.asarray(Fd_mu).T
+        moved = None if previous is None else float(np.max(
+            np.linalg.norm(gradients - previous, axis=1) / np.maximum(np.linalg.norm(gradients, axis=1), 1e-300)))
+        if max(true) <= 1e-6 or (moved is not None and moved <= 1e-6):
             break
-        mu = mu + block_solve(defect)
     else:
-        raise RuntimeError(f"projected gauge multipliers missed: true residuals {true} (passes: "
-                           + ", ".join(f"{h:.1e}" for h in history) + ")")
+        raise RuntimeError(f"projected gauge multipliers missed: true residuals {true}, last restart moved the "
+                           f"gradient by {moved} (iterations: " + ", ".join(f"{h:.1e}" for h in history) + ")")
     eig = np.linalg.eigvalsh(Hs)
     return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                 asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
@@ -928,7 +978,9 @@ def _exact_products_traced(design, state, mask, xj, b0, V, chunk=None):
 
     def columns(W):  # the columns' state tangents (on this factorization), then column by column
         dprm = jax.vmap(lambda v: jax.jvp(lambda b: prm(b, xj), (b0,), (v,))[1])(W)
-        dz_batch, tangent_ok = model._tangent_solve(params0, state, mask, dprm, system=system)
+        # certified to the adjoint's tolerance: at the Jacobian's (1e-4) the products' own error (~3e-6 of each)
+        # floored the multipliers' true residual above its 1e-6 gate
+        dz_batch, tangent_ok = model._tangent_solve(params0, state, mask, dprm, system=system, rtol=cfg.adjoint_tol)
         HV, FdV, adjoint_ok = jax.lax.map(column, (dz_batch, W))
         return HV, FdV, tangent_ok, adjoint_ok
 

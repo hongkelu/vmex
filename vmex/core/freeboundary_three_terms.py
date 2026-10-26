@@ -224,8 +224,12 @@ def _gauge_rows(R, Z, mpol, ntor):
 
 #: Stationarity (the gain a Gauss-Newton step predicts) a trial's polish rounds aim at.
 POLISH_FTOL = 1e-4
-#: Most polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate.
+#: Polish rounds (each with a fresh Jacobian) a trial gets to reach its certificate; past them it keeps polishing,
+#: up to POLISH_ROUNDS_MAX, while each round still cuts the stationarity by POLISH_PROGRESS (a converging polish that
+#: started far: the gauged m = 1 complement's bootstrap fit, 2.8e-2 -> 4.9e-4 in five rounds at ~0.4 per round).
 POLISH_ROUNDS = 5
+POLISH_ROUNDS_MAX = 12
+POLISH_PROGRESS = 0.5
 #: Most evaluations of one polish round (Levenberg-Marquardt steps with that round's Jacobian).
 POLISH_MAX_NFEV = 20
 #: Levenberg-Marquardt stops as stalled after this many steps in a row that each gained less than STALL_GAIN of the
@@ -851,14 +855,17 @@ class ThreeTermsFreeBoundaryModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch, system=None):
+        def tangents(params, state, mask, batch, system=None, rtol=None):
             """Projected state responses to the stacked parameter tangents (one block factorization, chunked), and
-            whether each column's linear solve is certified.  ``system``: the factorization of this linearization
-            (``im._raw_block_system`` with ``probe_chunk_size = self.chunk``) when the caller holds it."""
+            whether each column's linear solve is certified (to ``rtol``, default the Jacobian's
+            ``jacobian_adjoint_tol``; exact second-order products pass the adjoint's).  ``system``: the factorization
+            of this linearization (``im._raw_block_system`` with ``probe_chunk_size = self.chunk``) when the caller
+            holds it."""
             solution, report = im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
+                certify_rtol=float(cfg.jacobian_adjoint_tol if rtol is None else rtol),
+                certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
                 system=system)
             return solution, report.converged
 
@@ -1277,7 +1284,9 @@ class ThreeTermsFreeBoundaryModel:
             sol = dict(fit, **tight(fit["x"], fit["aux"]))
             out_of_rounds = False  # the loop ended on the polish budget, not on a stalled or failed polish
             polish_error = ""
-            for round_ in range(POLISH_ROUNDS + 1):
+            previous = np.inf
+            cap = max(POLISH_ROUNDS, POLISH_ROUNDS_MAX)
+            for round_ in range(cap + 1):
                 normal = None
                 if self._normal_operator is not None:  # the remaining step's motion of the surface itself
                     N, a = map(np.asarray, self._normal_operator(jnp.asarray(sol["x"])))
@@ -1294,8 +1303,11 @@ class ThreeTermsFreeBoundaryModel:
                 # the gate left most trials at 1e-3 and the plasma-map derivative test 1.8% off).
                 done = certificate["stationarity"] <= min(gate, POLISH_FTOL) and (
                     xtol is None or certificate["step"] <= xtol)
-                if done or not polish or round_ == POLISH_ROUNDS:
-                    out_of_rounds = polish and not done and round_ == POLISH_ROUNDS
+                progressing = np.isfinite(previous) and certificate["stationarity"] <= POLISH_PROGRESS * previous
+                previous = certificate["stationarity"]
+                budget = round_ >= POLISH_ROUNDS and not (progressing and round_ < cap)
+                if done or not polish or budget:
+                    out_of_rounds = polish and not done and budget
                     break
                 # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
                 try:
@@ -1321,7 +1333,7 @@ class ThreeTermsFreeBoundaryModel:
             if not settled:
                 normal_note = "" if certificate["normal_step"] is None else (
                     f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
-                budget_note = f" when the polish budget of {POLISH_ROUNDS} rounds ran out" if out_of_rounds else ""
+                budget_note = f" when the polish budget of {rounds[0] - 1} rounds ran out" if out_of_rounds else ""
                 raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
                                     f"{certificate['stationarity']:.2e} of the cost{normal_note}{budget_note}"
                                     f"{polish_error}")

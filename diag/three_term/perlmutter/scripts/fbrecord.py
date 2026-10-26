@@ -114,7 +114,7 @@ def main():
         gpu=gpu_identity(), overrides={k: os.environ[k] for k in OVERRIDES if k in os.environ},
         environment={k: v for k, v in os.environ.items() if k.startswith(("COIL_CASE", "XLA", "JAX", "CUDA"))}))
 
-    from vmex.core import freeboundary_vc as fv
+    from vmex.core import freeboundary_three_term as fv
 
     for name in ("POLISH_ROUNDS", "POLISH_MAX_NFEV", "STALL_STEPS", "PROJECTION_CORRECTIONS"):
         if name in os.environ:

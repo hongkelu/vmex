@@ -30,7 +30,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term as fvc  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 from vmex.core.multigrid import _nestor_boundary  # noqa: E402
 
@@ -173,7 +173,7 @@ def lcfs_mm(a, b, nphi=8, ntheta=361):
 
 def from_start(model, field, start):
     """The three-term fit of ``model`` (one problem definition) from the initial boundary of ``start``, as
-    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term` runs it."""
+    :func:`~vmex.core.freeboundary_three_term.solve_free_boundary_three_term` runs it."""
     from types import SimpleNamespace
 
     from vmex.core.optimize import pack_boundary

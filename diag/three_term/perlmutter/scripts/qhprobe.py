@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vmex.core import freeboundary_vc as fv
+from vmex.core import freeboundary_three_term as fv
 
 out = Path(sys.argv[1]); del sys.argv[1]
 out.mkdir(parents=True, exist_ok=True)

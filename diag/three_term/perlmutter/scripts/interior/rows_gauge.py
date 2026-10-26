@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_freeboundary_vc as t  # noqa: E402
 from canonical_gauge import canonical  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term as fvc  # noqa: E402
 from vmex.core import implicit as im  # noqa: E402
 from vmex.core.restart import state_from_wout  # noqa: E402
 

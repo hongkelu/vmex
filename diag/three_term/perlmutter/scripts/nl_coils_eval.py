@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-DRIVER = Path(__file__).resolve().parents[4] / "examples/optimization/single_stage_free_boundary_optimization_three_term.py"
+DRIVER = Path(__file__).resolve().parents[4] / "single_stage_free_boundary_optimization_three_term.py"
 VC_GRID = 48
 GRID = 64  # the driver's NTHETA = NZETA (a deck's own grid can be too coarse for its new modes)
 
@@ -84,7 +84,7 @@ def main():
     import vmex as vj
     from essos.coils import Coils
     from vmex import optimize as opt
-    from vmex.core.freeboundary_vc import solve_free_boundary_three_term
+    from vmex.core.freeboundary_three_term import solve_free_boundary_three_term
 
     register_field()
     tdriver = TDRIVER

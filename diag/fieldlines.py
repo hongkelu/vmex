@@ -25,7 +25,7 @@ from dataclasses import replace  # noqa: E402
 
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term as fvc  # noqa: E402
 from vmex.core.multigrid import _nestor_boundary  # noqa: E402
 
 S_DRIFT = (0.2, 0.4, 0.6, 0.8, 0.9, 1.0)

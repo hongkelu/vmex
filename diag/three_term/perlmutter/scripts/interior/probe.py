@@ -11,7 +11,7 @@ import jax.numpy as jnp
 
 sys.path.insert(0, "tests")
 import test_freeboundary_vc as t  # noqa: E402
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term as fvc  # noqa: E402
 from vmex.core import implicit as im  # noqa: E402
 import os as _os
 

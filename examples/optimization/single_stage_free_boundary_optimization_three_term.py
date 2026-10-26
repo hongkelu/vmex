@@ -16,14 +16,17 @@ variables too (``FREE_COIL_CURRENTS``, no bounds), with a row holding the axis
 |B| at ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the
 vacuum |iota| of the plasma boundary (``vacuum_iota``).
 
-The problem is ``FreeBoundaryProblem.from_loss(..., boundary_condition="three_term")``
-(:class:`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`): warm-started
-trial boundaries and design gradients by the implicit function theorem of the
-boundary fit, without recompiling when the coils or plasma parameters change.
-Every trial is Newton-polished on the exact gauge of the boundary's poloidal
-angle (``--gauge condensation``, the only single-stage mode; production also
-passes ``--label-weight 0 --m1-complement gauged``), and the design gradient is
-the exact derivative of that converged stationary point.
+The problem is ``vj.ThreeTermFreeBoundaryProblem.from_loss(..., config=vj.ThreeTermConfig(...))``
+(:mod:`vmex.core.freeboundary_three_term_problem`): warm-started trial
+boundaries, without recompiling when the coils or plasma parameters change.
+Every trial is Newton-converged on the exact gauge of the boundary's poloidal
+angle (VMEC's spectral condensation; ``--m1-complement gauged`` for the
+interior, the default), and the design gradient is the exact derivative of that
+converged stationary point.
+
+This is the paper's campaign driver (moved out of VMEX, which keeps the
+upstream-style example of the same name); it imports VMEX's public API from
+the tree on ``PYTHONPATH`` and reads its case data from ``data/`` beside it.
 
     COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_term.py --beta 0.025 --bootstrap \
         --modes 8 8 --ns 51 --output runs/three-term-qa4
@@ -61,7 +64,7 @@ import numpy as np
 
 # ---- cases -----------------------------------------------------------------------------------------------------------
 # COIL_CASE selects the case. The values are ellipse5's; the blocks after them override them per case.
-DATA = Path(__file__).resolve().parents[1] / "data"
+DATA = Path(__file__).resolve().parent / "data"
 CASE = os.environ.get("COIL_CASE", "ellipse5")
 # A "-merc" or "-jbs" suffix runs the case with a Mercier floor or a bootstrap-current term (MERCIER_FLOOR,
 # CURRENT_IOTA_WEIGHT below), e.g. qa4-beta-merc.
@@ -365,7 +368,7 @@ def bootstrap_input(inp, beta, device):
     """
     from vmex import optimize as opt
     from vmex.core.bootstrap import self_consistent_bootstrap
-    from vmex.core.freeboundary_vc import ThreeTermFreeBoundaryModel
+    from vmex.core.freeboundary_three_term import ThreeTermFreeBoundaryModel
 
     ac = np.zeros_like(np.asarray(inp.ac, dtype=float))
     ac[0] = 1.0
@@ -415,8 +418,8 @@ def bootstrap_input(inp, beta, device):
                   flush=True)
     n0, t0 = float(profiles.ne_coeffs[0]), float(profiles.Te_coeffs[0])
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
-        model = ThreeTermFreeBoundaryModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
-                                           fixed_boundary=True)
+        model = ThreeTermFreeBoundaryModel(inp, labelling="none", bootstrap=profiles,
+                                           bootstrap_helicity=REDL_HELICITY, fixed_boundary=True)
         current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
         state, _, params, _ = current["aux"]
         print(f"Redl current on its {current['x'].size} knots: max relative mismatch "
@@ -1176,13 +1179,13 @@ def parse_args(argv=None):
                         help="fit the seed's boundary from another start (start-dependence qualification): "
                         "'random EPS SEED' or 'scale EPS'; the deck stays the reference")
     parser.add_argument("--polish-rounds", type=int, help="certificate polish rounds per trial (default: the model's, "
-                        "freeboundary_vc.POLISH_ROUNDS); a finite-beta seed can need about 100")
-    parser.add_argument("--polish-ftol", type=float, help="the polish target (default freeboundary_vc.POLISH_FTOL); "
-                        "derivative qualification needs about 1e-5")
+                        "freeboundary_three_term.POLISH_ROUNDS); a finite-beta seed can need about 100")
+    parser.add_argument("--polish-ftol", type=float, help="the polish target (default "
+                        "freeboundary_three_term.POLISH_FTOL); derivative qualification needs about 1e-5")
     parser.add_argument("--newton-polish", type=float, default=1e-8, metavar="STEP_TOL",
                         help="refine every certified fit by Newton steps on its cost on the exact gauge until the "
                         "reduced scaled step is at most STEP_TOL (or the cost's floor), so the fit's stationary point and "
-                        "its exact design gradient are determined (ThreeTermFreeBoundaryProblem._newton_refine)")
+                        "its exact design gradient are determined (ThreeTermConfig.newton)")
     parser.add_argument("--newton-track", action="store_true",
                         help="log every Newton polish iterate (cost, step, trust radius, Hessian model)")
     parser.add_argument("--newton-max-steps", type=int, default=60, help="Newton polish steps at most")
@@ -1254,19 +1257,11 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--gauge", choices=("condensation",), default="condensation",
-                        help="hold the boundary's poloidal angle exactly by VMEC's spectral condensation (a gauge, not "
-                        "penalty rows: every Newton iterate is projected onto it; the only single-stage mode); use with "
-                        "--label-weight 0")
-    parser.add_argument("--labelling", choices=("start",), default="start",
-                        help="the boundary's poloidal labelling rows, anchored to the start boundary (scaled by "
-                        "--label-weight); see ThreeTermFreeBoundaryModel")
-    parser.add_argument("--m1-complement", choices=("solved", "frozen", "gauged"), default="solved",
-                        help="the interior's m = 1 complement: solved with the evolved dofs (unique root, default) "
-                        "or VMEC2000's released (frozen) complement, or a fixed gauge (gauged: sqrt(s) times its edge value; "
-                        "certifies at any resolution)")
+    parser.add_argument("--m1-complement", choices=("gauged", "frozen"), default="gauged",
+                        help="the interior's m = 1 complement: a fixed gauge (gauged: sqrt(s) times its edge value; "
+                        "certifies at any resolution; default) or VMEC2000's released (frozen) complement")
     parser.add_argument("--label-weight", type=float,
-                        help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
+                        help="weight of the start-labelling rows (default: the model's, 0: off)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1391,7 +1386,9 @@ def write_run_record(out, args):
     import subprocess
     import sys
 
-    root = Path(__file__).resolve().parents[2]
+    import importlib.util
+
+    root = Path(importlib.util.find_spec("vmex").origin).resolve().parents[1]  # the VMEX tree in use
 
     def digest(paths):
         h = hashlib.sha256()
@@ -1549,33 +1546,30 @@ def main(argv=None):
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
 
-    from vmex.core import freeboundary_vc as fvc
+    from vmex.core import freeboundary_three_term as fbt
 
     if args.polish_rounds is not None:
-        fvc.POLISH_ROUNDS = int(args.polish_rounds)
+        fbt.POLISH_ROUNDS = int(args.polish_rounds)
     if args.polish_ftol is not None:
-        fvc.POLISH_FTOL = float(args.polish_ftol)
-    tt_options = dict(nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
-                      quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
-                      trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                      bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
-                      boundary_max_residual=args.max_boundary_residual, labelling=args.labelling, gauge=args.gauge,
-                      max_mode=args.boundary_modes,
-                      checkpoint=args.resume, m1_complement=args.m1_complement,
-                      seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
-                      newton_polish=dict(step_tol=args.newton_polish, verbose=args.newton_track,
-                                         quasi=args.newton_quasi, max_steps=args.newton_max_steps),
-                      exact_gradient=True,
-                      **({} if args.label_weight is None else {"label_weight": args.label_weight}))
-    problem = opt.FreeBoundaryProblem.from_loss(
+        fbt.POLISH_FTOL = float(args.polish_ftol)
+    config = vj.ThreeTermConfig(
+        nphi=args.vc_grid, ntheta=args.vc_grid, chunk=args.chunk,
+        quadrature=tuple(args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid)),
+        trial_ftol=args.trial_forward_ftol, max_mode=args.boundary_modes, m1_complement=args.m1_complement,
+        newton=dict(step_tol=args.newton_polish, verbose=args.newton_track, quasi=args.newton_quasi,
+                    max_steps=args.newton_max_steps))
+    problem = vj.ThreeTermFreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
-        parameter_quantities=(clearance, aspect), boundary_condition="three_term",
-        three_term_options=tt_options)
+        parameter_quantities=(clearance, aspect), boundary_ftol=args.trial_ftol,
+        boundary_max_residual=args.max_boundary_residual, checkpoint=args.resume,
+        seed_start=None if args.seed_start is None else (args.seed_start[0], *map(float, args.seed_start[1:])),
+        config=config, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY,
+        **({} if args.label_weight is None else {"label_weight": args.label_weight}))
     problem.design_trust = args.design_trust
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
@@ -1733,7 +1727,7 @@ def main(argv=None):
                       boundary_evaluations=int(st.get("boundary_evaluations", 0)),
                       newton_evaluations=int(st.get("newton_evaluations", 0)))
         record = dict(timing=timing, bn=float(res.normal), pb=float(res.pressure), K=float(res.sheet_current),
-                      gauge=args.gauge, modes=list(RESOLUTION), m1=args.m1_complement)
+                      gauge="condensation", modes=list(RESOLUTION), m1=args.m1_complement)
         problem.save_checkpoint(out / "checkpoint.npz")
         save("")
         (out / "solve_only.json").write_text(json.dumps(record, indent=1) + "\n")

@@ -66,7 +66,7 @@ def main():
 
     import vmex as vj
     from essos.coils import Coils
-    from vmex.core.freeboundary_vc import solve_free_boundary_three_term
+    from vmex.core.freeboundary_three_term import solve_free_boundary_three_term
 
     register_field()
     tdriver = TDRIVER

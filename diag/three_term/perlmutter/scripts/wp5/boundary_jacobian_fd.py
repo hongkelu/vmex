@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, "tests")
 import test_freeboundary_vc as t  # noqa: E402
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term as fvc  # noqa: E402
 
 
 def main():

@@ -409,7 +409,9 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     re-solved at the trial boundary by Newton steps on its own block (``H_cc``, at most
     :data:`PROJECTION_CORRECTIONS`), so the trust region judges the reduced cost. Converged as the exact polish
     (Newton step or the cost's floor); the last projected Hessian is kept (``keep_hessian``) for the record's exact
-    gradient."""
+    gradient.  On the exact gauge (``model.gauge``) the boundary steps lie in the gauge's null space ``Z_b`` (the
+    gauge rows do not involve the current) with the gauge's curvature in the reduced Hessian, the start is
+    relabelled onto the gauge and every trial boundary is projected back onto it before the current is re-solved."""
     import scipy.linalg
 
     model = design.model
@@ -417,6 +419,19 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     c = np.asarray(model._projected)
     bi = np.setdiff1d(np.arange(model.x0.size), c)
     sb = scale[bi]
+    gauged = model.gauge is not None
+    if gauged:
+        b = _gauge_relabel(model, b, stats)
+
+    def gauge_basis(bb, g_red):
+        """``(Z_b, lam, curvature_bb)`` at a gauge-feasible ``bb`` for the reduced gradient ``g_red``; the
+        identity without a gauge."""
+        if not gauged:
+            return np.eye(bi.size), None, 0.0
+        C = np.asarray(model.gauge_jacobian(jnp.asarray(bb)))[:, bi]
+        lam_g = -np.linalg.lstsq(C.T, g_red, rcond=None)[0]
+        curv = np.asarray(model.gauge_curvature(jnp.asarray(bb), jnp.asarray(lam_g)))[np.ix_(bi, bi)]
+        return scipy.linalg.null_space(C * sb), lam_g, curv
 
     def point(bb):  # (cost, g, sol-like record) at bb, or None
         return _cost_point(design, x, params, field, bb)
@@ -446,8 +461,10 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
         th = time.perf_counter()
         P, asymmetry = projected_hessian(design, x, rec)
         seconds_hessian += time.perf_counter() - th
-        Hs = P["Hred"] * np.outer(sb, sb)
-        gs = (g[bi] - P["K"].T @ g[c]) * sb
+        g_red = g[bi] - P["K"].T @ g[c]
+        Zb, lam_g, curv = gauge_basis(b, g_red)
+        Hs = Zb.T @ (0.5 * ((P["Hred"] + curv) + (P["Hred"] + curv).T) * np.outer(sb, sb)) @ Zb
+        gs = Zb.T @ (g_red * sb)
         current_gain = 0.5 * float(g[c] @ np.linalg.solve(P["Hcc"], g[c]))
         try:
             newton = -scipy.linalg.solve(Hs, gs, assume_a="sym")
@@ -483,7 +500,7 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
             if definite and step_newton <= radius:
                 ds = newton
             else:  # the trust-region step: raise lam until the step fits
-                eye = np.eye(bi.size)
+                eye = np.eye(gs.size)
                 lam_lo, lam_hi = 0.0, max(1.0, float(np.abs(np.diag(Hs)).max()))
                 while np.linalg.norm(scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")) > radius:
                     lam_hi *= 10
@@ -497,11 +514,15 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 ds = scipy.linalg.solve(Hs + lam_hi * eye, -gs, assume_a="sym")
             predicted = -(gs @ ds + 0.5 * ds @ Hs @ ds) + current_gain
             d = np.zeros_like(b)
-            d[bi] = ds * sb
+            d[bi] = (Zb @ ds) * sb
             d[c] = -P["K"] @ d[bi] - np.linalg.solve(P["Hcc"], g[c])
-            trial = point(b + d)
-            evaluations += 1
             b_try = b + d
+            if gauged:  # back onto the gauge (a geometry-only move of the boundary; the current re-solves below)
+                b_try = _gauge_project(model, b_try)
+            trial = point(b_try) if b_try is not None else None
+            evaluations += 1
+            if b_try is None:
+                b_try = b + d
             if trial is not None:
                 b_try, trial, used = project(b_try, trial, P["Hcc"])
                 evaluations += used
@@ -518,8 +539,8 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
             history[-1]["stalled"] = True
             break
     if keep_hessian is not None:
-        keep_hessian(dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=P)
-                     if converged else None)
+        keep_hessian(dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=P, projected=True,
+                          gauge_lam=lam_g, gauge_Z=Zb if gauged else None) if converged else None)
     if not converged:
         raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
     got = model.evaluate(b, params, field, tight=True)
@@ -535,8 +556,9 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     out = model.certify(params, field, fit, gate=np.inf, xtol=None, polish=False, max_residual=max_residual,
                         extra=extra, values=values, stats=stats)
     out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
-                         subspace=bi.size, products="exact", seconds_hessian=seconds_hessian,
-                         seconds=time.perf_counter() - t0, warm=False, projected=True)
+                         subspace=int(Zb.shape[1]) if P is not None else bi.size, products="exact",
+                         seconds_hessian=seconds_hessian, seconds=time.perf_counter() - t0, warm=False, projected=True,
+                         gauge=model.gauge)
     stats["newton_evaluations"] = stats.get("newton_evaluations", 0) + evaluations
     stats["seconds_newton"] = stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
     return out
@@ -677,6 +699,10 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
     rows = list(range(G_b.shape[0]) if rows is None else rows)
     scale = np.asarray(model.x_scale, dtype=float)
     t0 = time.perf_counter()
+    if (kept is not None and kept.get("projected") and kept.get("gauge_Z") is not None
+            and np.array_equal(kept["x"], np.asarray(x, dtype=float))
+            and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
+        return _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, scale, t0)
     matches = (kept is not None and "gauge" in kept and np.array_equal(kept["x"], np.asarray(x, dtype=float))
                and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6)
     if matches and not kept.get("exact", True) and sol.get("J") is not None:
@@ -714,6 +740,43 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
     if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start and preconditioner (exact)
         sol["anchor"].update(gauge_H=np.asarray(red["H_L"]) - np.asarray(
             model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))))
+    return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
+                asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
+                seconds_hessian=time.perf_counter() - t0)
+
+
+def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, scale, t0):
+    """:func:`_gauge_gradients` with a bootstrap current: the multipliers ``mu`` of ``H_L mu = Q`` on the gauge, from
+    the converged polish's projected Hessian (``H = T^T diag(H_red, H_cc) T``, ``T = [[I, 0], [K, I]]``,
+    :func:`projected_hessian`) without forming the joint matrix (round-off at the bootstrap weight): the current
+    block ``w_c = H_cc^-1 Q_c``, the boundary block on the gauge's null space ``Z_b`` (the gauge rows do not involve
+    the current) ``Z_b^T S (H_red + d2(lam . c)) S Z_b y = Z_b^T S (Q_b - K^T Q_c)``, ``mu_b = S Z_b y``, then
+    ``mu_c = w_c - K mu_b``.  Checked as the dense path: one exact product call on ``mu``, true residual <= 1e-6."""
+    import scipy.linalg
+
+    model = design.model
+    P, Zb, lam = kept["H"], kept["gauge_Z"], kept["gauge_lam"]
+    bi, c = np.asarray(P["b"]), np.asarray(P["c"])
+    sb = scale[bi]
+    b0 = np.asarray(sol["x"], dtype=float)
+    curvature = np.asarray(model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
+    Q = G_b[rows].T
+    w_c = np.linalg.solve(P["Hcc"], Q[c])
+    Hs = Zb.T @ (0.5 * ((P["Hred"] + curvature[np.ix_(bi, bi)]) + (P["Hred"] + curvature[np.ix_(bi, bi)]).T)
+                 * np.outer(sb, sb)) @ Zb
+    y = scipy.linalg.solve(Hs, Zb.T @ (sb[:, None] * (Q[bi] - P["K"].T @ Q[c])), assume_a="sym")
+    mu = np.zeros_like(Q)
+    mu[bi] = sb[:, None] * (Zb @ y)
+    mu[c] = w_c - P["K"] @ mu[bi]
+    H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
+    defect = Q - np.asarray(H_mu) - curvature @ mu
+    sc = scale[c][:, None]  # the null space of the gauge in all coordinates: blockdiag(Z_b, I) (scaled)
+    reduced = np.r_[Zb.T @ (sb[:, None] * defect[bi]), sc * defect[c]]
+    rhs = np.r_[Zb.T @ (sb[:, None] * Q[bi]), sc * Q[c]]
+    true = (np.linalg.norm(reduced, axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)).tolist()
+    if max(true) > 1e-6:
+        raise RuntimeError(f"projected gauge multipliers missed: true residuals {true}")
+    eig = np.linalg.eigvalsh(Hs)
     return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                 asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
                 seconds_hessian=time.perf_counter() - t0)

@@ -29,7 +29,8 @@ from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
 from vmex.core.errors import TrialRejected  # noqa: E402
 from vmex.core.freeboundary_three_terms_problem import ThreeTermsFreeBoundaryProblem  # noqa: E402
 
-from tests.test_freeboundary_three_terms import SMALL, _coil_field, _deck, _small_vacuum, needs_vc  # noqa: E402
+from tests.test_freeboundary_three_terms import (  # noqa: E402
+    SMALL, _coil_field, _deck, _lp_beta0p5_profiles, _small_vacuum, needs_vc)
 
 _CONFIG_FIELDS = {f.name for f in fields(vj.ThreeTermsConfig)}
 
@@ -393,4 +394,33 @@ def test_certificate_records_are_complete_and_match_the_row_layout():
     assert "values" in records[0] and records[0]["values"] is not None
     np.testing.assert_array_equal(records[-1]["rows"], sol["rows"])
     model.recorder = None
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
+def test_bootstrap_current_on_the_gauge_has_the_exact_design_gradient():
+    """LP QA at 0.5% beta with the Redl current solved in the equilibrium, on the exact gauge: the Newton polish
+    runs on the gauge with the current projected (the boundary on the gauge to GAUGE_TOL, the current
+    self-consistent), and the exact design gradient (its multipliers from the projected Hessian, never the joint
+    one) equals central differences of re-solved designs."""
+    inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
+    profiles = _lp_beta0p5_profiles(inp)
+    base = field.currents
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.02 * x[0])),
+        config=vj.ThreeTermsConfig(labelling="gauge"), bootstrap=profiles)
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    sol = problem._record(x0)
+    assert sol["newton"]["projected"] and sol["newton"]["gauge"] == "condensation" and sol["newton"]["converged"]
+    model = problem.model
+    assert float(np.abs(np.asarray(model.gauge_rows(np.asarray(sol["x"])))).max()) <= 10 * fbt.GAUGE_TOL
+    state, params = problem.state(x0)
+    assert model.bootstrap_residual(state, params) < 1e-2
+    h = 1e-3
+    fd = (problem.fun(x0 + h) - problem.fun(x0 - h)) / (2 * h)
+    np.testing.assert_allclose(grad, fd, rtol=2e-3)
     problem.close()

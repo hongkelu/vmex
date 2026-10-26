@@ -149,9 +149,6 @@ def make_free_boundary_config(
         adjoint_gcrot_m=adjoint_gcrot_m, adjoint_gcrot_k=adjoint_gcrot_k,
         device=solve_device, max_fsq_ratio=max_fsq_ratio,
         refine_tol=refine_tol,
-        # The NESTOR path keeps VMEC2000's released complement until its edge basis, residuals and adjoint are
-        # upgraded together (its raw force releases it; the projector must match).
-        m1_complement="frozen",
     )
     if cfg.resolution != resolution:
         cfg = dataclasses.replace(cfg, resolution=resolution)

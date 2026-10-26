@@ -500,19 +500,16 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     def equilibrium_from_x(self, x, *, rtol=1e-6):
         """The free-boundary equilibrium of ``x`` as an ``Equilibrium``: the certified state the optimizer used.
 
-        A fixed-boundary re-solve on its boundary, started from that state, refined onto the root of the model's
-        own interior equations (its ``m1_complement``: :func:`~vmex.core.optimize.refine_equilibrium`) and
-        recertified there.  The interior root is unique, so this reproduces the optimizer's state; if it moves any
-        field by more than ``rtol`` (largest change relative to the field's size) this raises
+        A fixed-boundary re-solve on its boundary, started from that state.  The interior root of the model's
+        equations (its ``m1_complement``) is unique, so this reproduces the optimizer's state; if it moves any field
+        by more than ``rtol`` (largest change relative to the field's size) this raises
         :class:`~vmex.core.errors.VmecConvergenceError` instead of returning a different equilibrium.
         """
-        from .optimize import refine_equilibrium, solve_equilibrium
+        from .optimize import solve_equilibrium
 
         sol = self._record(x)
-        eq = refine_equilibrium(
-            solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
-                              initial_state=sol["state"]),
-            m1_complement=self.model.cfg.m1_complement)
+        eq = solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
+                               initial_state=sol["state"])
         moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(float(np.max(np.abs(np.asarray(b)))), 1e-300))
                     for a, b in zip(jax.tree.leaves(eq.state), jax.tree.leaves(sol["state"])) if np.size(b))
         if not moved <= rtol:

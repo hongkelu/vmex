@@ -98,10 +98,6 @@ iota depends on it only through discretization error.  On
 and -2.5261 from the re-solves (1.0%).  Adding the iota response to that
 drift alone closes the gap to 2e-6
 (``test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family``).
-With ``ImplicitConfig.m1_complement = "solved"`` (the default for 3D
-stellarator-symmetric runs) that combination is no longer released at the root: its force is kept
-and the refinement solves for it, so the refined state -- and the re-solve FD
--- no longer depend on any solve's path.
 The gap does not fall monotonically as ``mpol``/``ntor``/``ns`` are refined.
 Over ``mpol`` 4-8 and ``ns`` 16-64 it spans 0.06-1.0% on ``RBC(1,1)`` and
 0.1-2.8% on ``ZBS(-1,1)``.  The finest case tested, ``mpol = 8`` and
@@ -389,7 +385,7 @@ class ImplicitConfig:
     #: The m=1 complement policy (:data:`M1_COMPLEMENTS`): part of the
     #: config's identity, so every compiled residual, projector and memoized
     #: solve belongs to one equation set.
-    m1_complement: str = "solved"
+    m1_complement: str = "frozen"
 
     def __post_init__(self):
         if self.m1_complement not in M1_COMPLEMENTS:
@@ -416,7 +412,7 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
-    m1_complement: str = "solved",
+    m1_complement: str = "frozen",
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
 
@@ -444,10 +440,6 @@ def make_config(
     refine_tol = float(refine_tol)
     if not refine_tol > 0.0:
         raise ValueError("refine_tol must be positive or numpy.inf")
-    if m1_complement == "solved" and not np.isfinite(refine_tol) and int(resolution.ntor) > 0 \
-            and not bool(resolution.lasym) and bool(lconm1):
-        raise ValueError("m1_complement='solved' is a root of the refined equations: it needs a finite refine_tol "
-                         "(use m1_complement='frozen' to skip the refinement)")
     return _canonical_config(ImplicitConfig(
         inp=inp, resolution=resolution, ftol=float(ftol),
         max_iterations=int(max_iterations), mode=str(mode),
@@ -912,30 +904,17 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
 
 #: The m=1 complement policies (``ImplicitConfig.m1_complement``): how
 #: ``zcs_int = (rss - zcs)/2`` of ``residue.f90``'s ``lconm1`` basis is treated
-#: at the root the implicit layer refines to.  ``"frozen"``
-#: (VMEC2000): its force is released once ``fsqz < 1e-6`` and the complement
-#: stays wherever the iteration had it then, so the root depends on the
-#: solve's start (interface rows 1e-3 to 2e-2 apart between warm and cold
-#: starts).  ``"solved"``: its force is kept and the Newton refinement solves
-#: for it with the evolved dofs -- every force equation holds and the refined
-#: state is a function of the parameters alone (rows to 1e-11 from any start).
-#: ``"gauged"``: the complement is an angle gauge in the continuum (its force vanishes for any value as the
-#: resolution grows, so ``"solved"`` turns near-singular: at 12 x 12 the refinement stalls at |F| ~ 1e-7), so it is
-#: fixed instead -- set to ``sqrt(s)`` times its edge value (the boundary's) before the refinement, its force
-#: released as in ``"frozen"``.  The refined state is a function of the parameters alone, at any resolution.
-#: 3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
-M1_COMPLEMENTS = ("solved", "frozen", "gauged")
-
-#: ``evaluate_forces``' ``iteration`` at which the m=1 Z force is not released
-#: (``residuals.m1_zero_condition``: released while ``iter2 < 2``).
-_M1_KEEP_ITERATION = 2
-
-
-def _m1_solved(cfg: ImplicitConfig) -> bool:
-    """Whether the refinement solves for the m=1 complement (``cfg.m1_complement``)."""
-    res = cfg.resolution
-    return bool(cfg.m1_complement == "solved" and bool(cfg.lconm1) and int(res.ntor) > 0
-                and not bool(res.lasym))
+#: at the root the implicit layer refines to.  ``"frozen"`` (VMEC2000, the
+#: default): its force is released once ``fsqz < 1e-6`` and the complement
+#: stays wherever the iteration had it then, so the root depends on the solve's
+#: start.  ``"gauged"``: the complement is an angle gauge in the continuum (its
+#: force vanishes for any value as the resolution grows), so it is fixed --
+#: set to ``sqrt(s)`` times its edge value (the boundary's) before the
+#: refinement, held there by the host solve (:data:`~vmex.core.setup.M1_HOLD`),
+#: its force released as in ``"frozen"``.  The refined state is then a function
+#: of the parameters alone, at any resolution (the three-term free boundary's
+#: interior).  3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
+M1_COMPLEMENTS = ("frozen", "gauged")
 
 
 def _m1_gauged(cfg: ImplicitConfig) -> bool:
@@ -1028,14 +1007,11 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
     antisymmetrizes ``Z_cos`` (``lasym``, where ``force_Z_cc`` is zeroed and
     the gather is ``(cc +/- ss)/2``).  The mask is pre-equalized on the pair
     columns (see :func:`_dof_mask`), so ``P`` is symmetric and idempotent.
-    With the complement solved (``cfg.m1_complement``) the pair entries are
-    ordinary dofs and ``P`` is the elementwise mask.
     """
     lconm1 = bool(cfg.lconm1)
     lthreed = int(cfg.resolution.ntor) > 0
     lasym = bool(cfg.resolution.lasym)
-    # With the complement solved (cfg.m1_complement) the pair is two ordinary dofs.
-    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed and not _m1_solved(cfg))
+    pos, neg = (_m1_pair_columns(cfg) if (lconm1 and lthreed)
                 else (np.zeros(0, int), np.zeros(0, int)))
 
     def P(t: SpectralState) -> SpectralState:
@@ -1097,14 +1073,8 @@ def _raw_force_state(
     ns_total: int | None = None,
     axis_closure: bool = True,
     include_edge: bool = False,
-    keep_m1: bool = False,
 ) -> SpectralState:
-    """Raw force for a full grid or radial segment, optionally keeping the edge.
-
-    ``keep_m1`` keeps the constrained m=1 Z force (the solved complement,
-    ``ImplicitConfig.m1_complement``); otherwise it is released as in
-    VMEC2000's converged branch.
-    """
+    """Raw force for a full grid or radial segment, optionally keeping the edge."""
     setup = rt.setup
     s = setup.s_full if s is None else s
     phips = setup.phips if phips is None else phips
@@ -1175,7 +1145,7 @@ def _raw_force_state(
     )
     released = zero_m1_z_force(
         m1_residue_rotation(spectral, lconm1=setup.lconm1),
-        jnp.asarray(not keep_m1),
+        jnp.asarray(True),
     )
     return _force_to_state(
         scalxc_scale_force(released, s=s, scaling=scalxc), rt
@@ -1189,7 +1159,6 @@ def _raw_residual_segment(
     *,
     axis_closure: bool = False,
     include_edge: bool = False,
-    keep_m1: bool = False,
 ) -> SpectralState:
     """Evaluate the nonlinear raw-force chain on exactly three surfaces.
 
@@ -1207,7 +1176,7 @@ def _raw_residual_segment(
         rcon0=take(rt.rcon0), zcon0=take(rt.zcon0),
         lamscale=setup.lamscale, scalxc=take(setup.scalxc),
         ns_total=rt.resolution.ns, axis_closure=axis_closure,
-        include_edge=include_edge, keep_m1=keep_m1,
+        include_edge=include_edge,
     )
 
 
@@ -1241,7 +1210,7 @@ def residual_fn(cfg: ImplicitConfig, frozen: SpectralState,
     def F_raw(z: SpectralState, params: ImplicitParams) -> SpectralState:
         rt_p = runtime_from_params(params, cfg)
         x = _assemble(z, rt_p, frozen, P, edge_mask)
-        return P(_raw_force_state(x, rt_p, keep_m1=_m1_solved(cfg)))
+        return P(_raw_force_state(x, rt_p))
 
     return F_raw
 
@@ -1264,7 +1233,7 @@ def _preconditioned_residual_lane(z: SpectralState, params: ImplicitParams,
     P = _dof_projector(cfg, dof_mask)
     rt_p = runtime_from_params(params, cfg)
     x = _assemble(z, rt_p, frozen, P, edge_mask)
-    gc, _, _ = evaluate_forces(x, rt_p, iteration=_M1_KEEP_ITERATION if _m1_solved(cfg) else 1)
+    gc, _, _ = evaluate_forces(x, rt_p)
     return P(gc)
 
 
@@ -1670,8 +1639,8 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
                 initial_correction=_LAST_REFINEMENT_CORRECTION.get(cfg),
             )
             stalled = _ANCHOR_STALLED.pop(id(cfg), False)
-            # The root certificate: the returned state's own residual in the selected equations (the solved m=1
-            # complement included), measured independently of the refinement's bookkeeping.
+            # The root certificate: the returned state's own residual in the config's equations (its m=1
+            # complement policy), measured independently of the refinement's bookkeeping.
             residual = _refined_residual(cfg, params, refined, dof_mask)
             correction = jax.tree.map(jnp.subtract, refined, state)
             correction_norm = float(_tree_norm(correction))
@@ -2086,8 +2055,8 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
     when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
     3 when the fixed-point anchor stalled far from the root, and 4 when the
-    returned (refined) state's residual in the config's equations -- the
-    solved m=1 complement included -- is above ``refine_tol`` or not finite:
+    returned (refined) state's residual in the config's equations (its
+    m=1 complement policy) is above ``refine_tol`` or not finite:
     a best-effort state, not a certified derivative point.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
@@ -2970,7 +2939,7 @@ def _raw_block_system(
             trial = jax.tree.map(jnp.add, base, tangent)
             force = _raw_residual_segment(
                 trial, rt, start, axis_closure=axis_closure,
-                include_edge=include_edge, keep_m1=_m1_solved(cfg),
+                include_edge=include_edge,
             )
             # Inactive columns receive an identity equation so every radial
             # block remains nonsingular; projected callers never excite them.

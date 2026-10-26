@@ -719,7 +719,9 @@ def solve_free_boundary_multigrid(
     casing): the boundary is solved for on this ladder by
     :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms`,
     ``result.three_terms`` reports it and ``result.vacuum`` is ``None``.  The
-    NESTOR time-stepping controls do not apply to it.
+    NESTOR ladder's controls (time stepping, preconditioner, retries, FFT,
+    stage caching, position control) do not apply to it: setting any of them
+    raises :class:`ValueError`.
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
@@ -727,13 +729,18 @@ def solve_free_boundary_multigrid(
         from .freeboundary_three_terms import resolve_three_terms, solve_free_boundary_three_terms
         three_terms = resolve_three_terms(three_terms, inp)
         if three_terms is not None:
-            nestor = dict(time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep, precon_type=precon_type,
-                          prec2d_threshold=prec2d_threshold, prec2d=prec2d, lconm1=None if lconm1 else False,
-                          position_control=position_control or None)
-            if any(value is not None for value in nestor.values()):
+            # (keyword, value, default) of the NESTOR ladder's controls, which the three-terms solve does not use
+            unused = [name for name, value, default in (
+                ("time_step", time_step, None), ("tcon0", tcon0, None), ("gamma", gamma, None),
+                ("nstep", nstep, None), ("lconm1", lconm1, True), ("precon_type", precon_type, None),
+                ("prec2d_threshold", prec2d_threshold, None), ("prec2d", prec2d, None),
+                ("jacobian_retries", jacobian_retries, 2), ("coarse_grid_retry", coarse_grid_retry, True),
+                ("use_fft", use_fft, None), ("release_stage_cache", release_stage_cache, False),
+                ("prefetch_compile", prefetch_compile, False), ("position_control", position_control or None, None))
+                if value is not default and value != default]
+            if unused:
                 raise ValueError("three_terms solves the boundary from its interface conditions: "
-                                 + ", ".join(k for k, v in nestor.items() if v is not None)
-                                 + " apply to the NESTOR time stepping only")
+                                 + ", ".join(unused) + " apply to the NESTOR ladder only")
             ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
                              ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
                              niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))

@@ -131,6 +131,16 @@ def test_asymmetric_boundary_is_rejected():
         fbt.solve_free_boundary_three_terms(inp, external_field=lambda xyz: xyz)
 
 
+def test_three_terms_rejects_the_nestor_ladder_controls():
+    """The NESTOR ladder's controls do not apply to the three-terms solve: setting one raises before any solve
+    instead of being ignored."""
+    inp, field = _small_vacuum()
+    for keywords in (dict(use_fft=True), dict(jacobian_retries=3), dict(time_step=0.5), dict(lconm1=False)):
+        with pytest.raises(ValueError, match=next(iter(keywords))):
+            vj.solve_free_boundary_multigrid(inp, external_field=field, three_terms=vj.ThreeTermsConfig(**SMALL),
+                                             **keywords)
+
+
 def test_config_validates_and_resolves_like_position_control(tmp_path):
     """ThreeTermsConfig checks its choices and fills the Newton defaults; ``three_terms=None`` follows the deck's
     LTHREE_TERMS / THREE_TERMS_LABELLING (written and read back by the INDATA writer), ``False`` is off, ``True`` the

@@ -44,6 +44,10 @@ from .problem import FunctionProblem
 
 __all__ = ["ThreeTermsFreeBoundaryProblem"]
 
+#: The boundary a trial's gauge Newton starts from: ``"accepted"`` (the accepted design's) or ``"predicted"`` (its
+#: first-order response to the design step, through the accepted point's Jacobian).
+DIRECT_START = "accepted"
+
 #: Version of :meth:`ThreeTermsFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
 
@@ -316,9 +320,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
             if self.newton_polish is not None:  # the gauge Newton needs no fit
-                # First: the accepted boundary straight into the gauge Newton polish (quasi-Newton from the accepted
-                # point's model, in a trust region on the gauge).
-                starts.insert(0, np.asarray(anchor["b"], dtype=float))
+                # First: a boundary straight into the gauge Newton polish (quasi-Newton from the accepted point's
+                # model, in a trust region on the gauge): the accepted one, or its first-order prediction
+                # (DIRECT_START).
+                first = starts[0] if DIRECT_START == "predicted" else anchor["b"]
+                starts.insert(0, np.asarray(first, dtype=float))
                 direct = 0
         else:
             starts = [None]

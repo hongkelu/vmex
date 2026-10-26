@@ -254,8 +254,15 @@ FITS = ("secant", "trf")
 NEWTON_SEED_FACTORIZATIONS = 6
 
 
-def _newton_refined_seed(im, cfg, params_np, seed):
-    """A tight solve's perturbation seed Newton-refined onto the root of the frozen residual, or ``None``.
+def _newton_refined_seed(im, cfg, params_np, seeds):
+    """The best of a tight solve's candidate ``seeds`` Newton-refined onto the root of the frozen residual, or
+    ``None``.
+
+    The candidates are the perturbation seed (the first-order prediction from the latest linearization) and the
+    hot-restart state (the last converged solve, i.e. the previous trial point of a polish): along a polish's long
+    steps in weak boundary directions the prediction from the accepted point can sit far outside Newton's basin
+    (QH 2.5 %: |F| ~ 2e-2, ~4000 descent iterations per solve) while the previous iterate's state is close.  Each
+    is refined as below, and the one with the lowest residual is returned.
 
     The seed (the first-order prediction of a nearby solved state) is usually inside Newton's basin: block
     preconditioned Newton steps with fresh factors at every iterate (``implicit._refine_block_factors``,
@@ -264,7 +271,21 @@ def _newton_refined_seed(im, cfg, params_np, seed):
     iterations (5.6 s) per tight solve at gauge QA 2.5 % 8 x 8, half a trial's polish; seeded, a QA trial's interior
     solves took 89 s instead of 332 s and reached the same root (design 4e-9, boundary 3e-7, values 9e-7 relative).
     Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
-    before.  Returns ``None`` (the plain seed is used) when Newton does not lower the residual."""
+    before.  Returns ``None`` (the plain seed is used) when Newton lowers no candidate's residual."""
+    best = None
+    for seed in seeds:
+        if seed is None:
+            continue
+        got = _newton_refine_one(im, cfg, params_np, seed)
+        if got is not None and (best is None or got[1] < best[1]):
+            best = got
+        if best is not None and best[1] <= float(cfg.refine_tol):
+            break
+    return None if best is None else best[0]
+
+
+def _newton_refine_one(im, cfg, params_np, seed):
+    """``(state, |F|)``: one candidate seed Newton-refined (:func:`_newton_refined_seed`), or ``None``."""
     with im._device_context(cfg):
         im._template_runtime(cfg)
         im._boundary_pack_tables(cfg)
@@ -303,7 +324,7 @@ def _newton_refined_seed(im, cfg, params_np, seed):
         if not best < base:
             im._count(cfg, newton_seeds_declined=1)
             return None
-        return jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
+        return jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0))), best
 
 
 def _newton_defaults() -> dict:
@@ -1020,8 +1041,8 @@ class ThreeTermsFreeBoundaryModel:
         self._prime()
         im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
-        if seed is not None and tight and self.newton_seed and cfg.hot_restart:
-            refined = _newton_refined_seed(im, cfg, params_np, seed)
+        if tight and self.newton_seed and cfg.hot_restart and (seed is not None or cfg in im._HOT_CACHE):
+            refined = _newton_refined_seed(im, cfg, params_np, (seed, im._HOT_CACHE.get(cfg)))
             seed = seed if refined is None else refined
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed

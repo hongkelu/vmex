@@ -32,6 +32,7 @@ import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_three_terms as fbt  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
+from vmex.core.errors import AdjointSolveError, VmecConvergenceError, VmecNumericalError  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "examples" / "data"
 needs_vc = pytest.mark.skipif(not vc._HAVE_VCJ, reason="requires virtual_casing_jax")
@@ -253,10 +254,10 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 
 
 def test_levenberg_marquardt_rejects_a_bad_jacobian():
-    """A nonfinite boundary Jacobian, or one whose SVD fails, is a RuntimeError (a rejected trial): the
+    """A nonfinite boundary Jacobian, or one whose SVD fails, is a VmecNumericalError (a rejected trial): the
     LinAlgError it used to raise ended a campaign run (QI 2.5%, A, step 240)."""
     evaluate = lambda z: (np.zeros(2), None)  # noqa: E731
-    with pytest.raises(RuntimeError, match="nonfinite"):
+    with pytest.raises(VmecNumericalError, match="nonfinite"):
         fbt._levenberg_marquardt(evaluate, np.zeros(2), np.ones(2), None, np.array([[1.0, np.nan], [0.0, 1.0]]),
                                  ftol=1e-4, max_nfev=5, verbose=0)
 
@@ -381,7 +382,7 @@ def test_rank_deficient_current_block_rejects():
     x0 = np.array([2.0, 4.0])
     J = jacobian(x0)
     J[:, 1] = 0.0
-    with pytest.raises(RuntimeError, match="rank-deficient current block"):
+    with pytest.raises(VmecNumericalError, match="rank-deficient current block"):
         fbt._levenberg_marquardt(evaluate, x0, evaluate(x0)[0], None, J, ftol=1e-10, max_nfev=10, verbose=0,
                                  project=np.array([1]))
 
@@ -432,19 +433,19 @@ def test_uncertified_tangent_solve_is_no_jacobian(monkeypatch):
         return solution, report._replace(converged=report.converged.at[0].set(False))
 
     monkeypatch.setattr(im, "_implicit_evolved_tangent_multi_rhs", one_uncertified)
-    with pytest.raises(RuntimeError, match="not certified"):
+    with pytest.raises(AdjointSolveError, match="not certified"):
         model.linearize(model.x0, aux, field)
 
 
 @needs_vc
 @pytest.mark.full
-def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
-    """A boundary fit whose Jacobian point has no certified equilibrium raises RuntimeError (a rejected trial),
+def test_boundary_fit_without_an_equilibrium_is_a_convergence_error(monkeypatch):
+    """A boundary fit whose Jacobian point has no certified equilibrium raises VmecConvergenceError (a rejected trial),
     not KeyError (which ended a campaign run), and never linearizes another point's state."""
     inp, field = _small_vacuum()
     model = fbt.ThreeTermsFreeBoundaryModel(replace(inp, lfreeb=False), **SMALL)
     monkeypatch.setattr(model, "evaluate", lambda *args, **kwargs: None)
-    with pytest.raises(RuntimeError, match="no certified equilibrium"):
+    with pytest.raises(VmecConvergenceError, match="no certified equilibrium"):
         model.solve_boundary(model.params0, field)
 
 

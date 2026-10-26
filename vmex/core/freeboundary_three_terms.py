@@ -76,7 +76,7 @@ import jax.numpy as jnp
 from . import virtual_casing as vc
 from .bootstrap import CLOSURE_ATOL, CLOSURE_RTOL
 from .device import AUTO
-from .errors import TrialRejected, VmecConvergenceError, VmecError
+from .errors import AdjointSolveError, TrialRejected, VmecConvergenceError, VmecError, VmecNumericalError
 from .input import THREE_TERMS_LABELLINGS, VmecInput
 from .printing import emit_flushed
 
@@ -1037,14 +1037,14 @@ class ThreeTermsFreeBoundaryModel:
         if not tight:
             solved = self.solve(params_x, seed=state)
             if solved is None:
-                raise RuntimeError("the state does not converge to the deck's tolerance")
+                raise VmecConvergenceError("the state does not converge to the deck's tolerance")
             state, mask = solved
             aux = (state, mask, params_x, True)
         nb = self.n_boundary
         directions = jax.tree.map(lambda a: a[nb:], self.boundary_directions(params_x, x))
         dz, certified = self._tangents(params_x, state, mask, directions)
         if not np.asarray(certified).all():
-            raise RuntimeError("the current block's tangent solves are not certified")
+            raise AdjointSolveError("the current block's tangent solves are not certified")
         return np.asarray(self._push_rows(state, mask, params_x, dz, directions, field)).T, aux
 
     def linearize(self, x, aux, field, extra=None):
@@ -1071,7 +1071,7 @@ class ThreeTermsFreeBoundaryModel:
         if not tight:
             solved = self.solve(params_x, seed=state)
             if solved is None:
-                raise RuntimeError("the trial state does not converge to the deck's tolerance")
+                raise VmecConvergenceError("the trial state does not converge to the deck's tolerance")
             state, mask = solved
             aux = (state, mask, params_x, True)
         directions = self.boundary_directions(params_x, x)
@@ -1089,7 +1089,7 @@ class ThreeTermsFreeBoundaryModel:
         dz_all, certified = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
         certified = np.asarray(certified)
         if not certified.all():  # an uncertified response is no Jacobian column: reject rather than use it
-            raise RuntimeError(f"{int((~certified).sum())} of {certified.size} tangent solves are not certified")
+            raise AdjointSolveError(f"{int((~certified).sum())} of {certified.size} tangent solves are not certified")
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
@@ -1128,7 +1128,7 @@ class ThreeTermsFreeBoundaryModel:
         if jacobian is not None:
             first = self.evaluate(x, params, field, tight=tight)
             if first is None:
-                raise RuntimeError("the warm-start boundary has no certified equilibrium")
+                raise VmecConvergenceError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, *first, jacobian,
                                        ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
                                    current_columns=columns)
@@ -1149,7 +1149,7 @@ class ThreeTermsFreeBoundaryModel:
         if (self.fit if fit is None else fit) == "secant":  # cold, or the warm reuse fell short: secant rounds
             got = self.evaluate(x, params, field, tight=tight)
             if got is None:
-                raise RuntimeError("the start boundary has no certified equilibrium")
+                raise VmecConvergenceError("the start boundary has no certified equilibrium")
             r, aux = got
             nfev += 1
 
@@ -1198,7 +1198,7 @@ class ThreeTermsFreeBoundaryModel:
             if memo.get("key") != z.tobytes():
                 fun(z)
             if memo["aux"] is None:
-                raise RuntimeError("the boundary where the fit needs a Jacobian has no certified equilibrium")
+                raise VmecConvergenceError("the boundary where the fit needs a Jacobian has no certified equilibrium")
             njev += 1
             J, _, _, memo["aux"] = self.linearize(z, memo["aux"], field)
             memo.update(jacobian=J, jkey=z.tobytes())
@@ -1471,7 +1471,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
-        raise RuntimeError("nonfinite boundary Jacobian")
+        raise VmecNumericalError("nonfinite boundary Jacobian")
     n = x.size
     if project is not None:
         project = np.asarray(project)
@@ -1486,7 +1486,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             Q_c, R_c = np.linalg.qr(J[:, project])
             block_sv = np.linalg.svd(R_c, compute_uv=False)
             if not (np.all(np.isfinite(block_sv)) and block_sv[-1] > CURRENT_BLOCK_RCOND * block_sv[0]):
-                raise RuntimeError(f"rank-deficient current block (singular values {block_sv[0]:.2e} .. "
+                raise VmecNumericalError(f"rank-deficient current block (singular values {block_sv[0]:.2e} .. "
                                    f"{block_sv[-1]:.2e})")
             J_free = J[:, free] - Q_c @ (Q_c.T @ J[:, free])  # the reduced Jacobian of the boundary coordinates
         norms = np.linalg.norm(J_free, axis=0)
@@ -1494,7 +1494,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         try:
             U, sv, Vt = np.linalg.svd(J_free / norms, full_matrices=False)
         except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
-            raise RuntimeError(f"boundary Jacobian: {error}") from error
+            raise VmecNumericalError(f"boundary Jacobian: {error}") from error
         return Q_c, R_c, norms, U, sv, Vt
 
     Q_c, R_c, norms, U, sv, Vt = decompose(J)

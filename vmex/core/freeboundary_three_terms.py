@@ -670,11 +670,19 @@ class ThreeTermsFreeBoundaryModel:
 
         self.with_boundary = with_boundary
 
+        # The boundary's sample grid (gauge conditions, relabelling, normal operator): the gauge conditions are
+        # products of two series of the boundary's modes (up to K = its highest m or n), so their coefficients up to
+        # K are alias-free only on more than 3 K points; 48 up to 12 boundary modes, more above (at 16 the 48 grid
+        # aliased the toroidal conditions and left a null direction on the gauge: Newton condition 5e14)
+        mmax, nmax = int(fixed.mpol) - 1, min(int(fixed.ntor), self.max_mode)
+        ng = max(48, -(-(3 * max(mmax, nmax) + 2) // 16) * 16)
+        self.surface_grid = ng
+
         def surface(x):
-            """``(R, Z)`` of the boundary of coordinates ``x`` on a 48 x 48 grid over one field period."""
+            """``(R, Z)`` of the boundary of coordinates ``x`` on the ``surface_grid`` grid over one field period."""
             rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
-            th = jnp.linspace(0.0, 2 * jnp.pi, 48, endpoint=False)
-            ph = jnp.linspace(0.0, 2 * jnp.pi / int(fixed.nfp), 48, endpoint=False)
+            th = jnp.linspace(0.0, 2 * jnp.pi, ng, endpoint=False)
+            ph = jnp.linspace(0.0, 2 * jnp.pi / int(fixed.nfp), ng, endpoint=False)
             n = (jnp.arange(rbc.shape[0]) - (rbc.shape[0] - 1) // 2) * int(fixed.nfp)
             m = jnp.arange(rbc.shape[1])
             angle = m[None, None, None, :] * th[:, None, None, None] - n[None, None, :, None] * ph[None, :, None, None]
@@ -686,7 +694,7 @@ class ThreeTermsFreeBoundaryModel:
             R, Z = surface(x)
             dR, dZ = jax.jacfwd(surface)(x)
             th_axis, ph_axis = 0, 1
-            k = jnp.fft.fftfreq(48, 1.0 / 48)
+            k = jnp.fft.fftfreq(ng, 1.0 / ng)
             def d(f, ax):  # spectral derivative along axis ax (the wavenumbers broadcast along that axis)
                 kk = k[:, None] if ax == 0 else k[None, :]
                 return jnp.real(jnp.fft.ifft(1j * kk * jnp.fft.fft(f, axis=ax), axis=ax))
@@ -732,8 +740,8 @@ class ThreeTermsFreeBoundaryModel:
 
             def relabel(x, fc):
                 rbc, zbs = boundary_arrays_from_x(fixed, x[:nb], self.max_mode, vary_major_radius=True)
-                th = jnp.linspace(0.0, 2 * jnp.pi, 48, endpoint=False)[:, None]
-                ph = jnp.linspace(0.0, 2 * jnp.pi / nfp_g, 48, endpoint=False)[None, :]
+                th = jnp.linspace(0.0, 2 * jnp.pi, ng, endpoint=False)[:, None]
+                ph = jnp.linspace(0.0, 2 * jnp.pi / nfp_g, ng, endpoint=False)[None, :]
                 f = jnp.einsum("k,ktp->tp", fc, jnp.sin(m_f[:, None, None] * th[None] - n_f[:, None, None] * nfp_g
                                                         * ph[None]))
                 n = (jnp.arange(rbc.shape[0]) - (rbc.shape[0] - 1) // 2) * nfp_g

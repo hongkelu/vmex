@@ -745,6 +745,10 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
                 seconds_hessian=time.perf_counter() - t0)
 
 
+#: Iterative-refinement passes of the projected gauge multipliers (each one exact-product call).
+PROJECTED_REFINEMENT_PASSES = 6
+
+
 def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, scale, t0):
     """:func:`_gauge_gradients` with a bootstrap current: the multipliers ``mu`` of ``H_L mu = Q`` on the gauge, from
     the converged polish's projected Hessian (``H = T^T diag(H_red, H_cc) T``, ``T = [[I, 0], [K, I]]``,
@@ -761,20 +765,33 @@ def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, sca
     b0 = np.asarray(sol["x"], dtype=float)
     curvature = np.asarray(model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
     Q = G_b[rows].T
-    w_c = np.linalg.solve(P["Hcc"], Q[c])
     Hs = Zb.T @ (0.5 * ((P["Hred"] + curvature[np.ix_(bi, bi)]) + (P["Hred"] + curvature[np.ix_(bi, bi)]).T)
                  * np.outer(sb, sb)) @ Zb
-    y = scipy.linalg.solve(Hs, Zb.T @ (sb[:, None] * (Q[bi] - P["K"].T @ Q[c])), assume_a="sym")
-    mu = np.zeros_like(Q)
-    mu[bi] = sb[:, None] * (Zb @ y)
-    mu[c] = w_c - P["K"] @ mu[bi]
-    H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
-    defect = Q - np.asarray(H_mu) - curvature @ mu
     sc = scale[c][:, None]  # the null space of the gauge in all coordinates: blockdiag(Z_b, I) (scaled)
-    reduced = np.r_[Zb.T @ (sb[:, None] * defect[bi]), sc * defect[c]]
-    rhs = np.r_[Zb.T @ (sb[:, None] * Q[bi]), sc * Q[c]]
-    true = (np.linalg.norm(reduced, axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)).tolist()
-    if max(true) > 1e-6:
+
+    def block_solve(R):  # the projected factorization's solve on the gauge (exact up to its round-off "leak")
+        w_c = np.linalg.solve(P["Hcc"], R[c])
+        y = scipy.linalg.solve(Hs, Zb.T @ (sb[:, None] * (R[bi] - P["K"].T @ R[c])), assume_a="sym")
+        out = np.zeros_like(R)
+        out[bi] = sb[:, None] * (Zb @ y)
+        out[c] = w_c - P["K"] @ out[bi]
+        return out
+
+    def reduce(R):
+        return np.r_[Zb.T @ (sb[:, None] * R[bi]), sc * R[c]]
+
+    # Iterative refinement on the exact products: the block solve preconditions, the defect of the exact operator
+    # corrects (the reassembled H differs from the exact one by the current rows' leak)
+    mu = block_solve(Q)
+    rhs = reduce(Q)
+    for _ in range(PROJECTED_REFINEMENT_PASSES):
+        H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
+        defect = Q - np.asarray(H_mu) - curvature @ mu
+        true = (np.linalg.norm(reduce(defect), axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)).tolist()
+        if max(true) <= 1e-6:
+            break
+        mu = mu + block_solve(defect)
+    else:
         raise RuntimeError(f"projected gauge multipliers missed: true residuals {true}")
     eig = np.linalg.eigvalsh(Hs)
     return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,

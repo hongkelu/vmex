@@ -699,6 +699,26 @@ class ThreeTermsFreeBoundaryModel:
 
         self.with_boundary = with_boundary
 
+        self._geometry_setup(fixed, nb)
+        seed = self.solve(self.params0)
+        if seed is None:
+            raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium: "
+                                       f"{getattr(self, '_last_failure', None)}")
+        state, mask = seed[:2]
+        self.seed = (state, mask)
+        if not self.fixed_boundary:
+            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
+        self._implicit_setup()
+        self.row_blocks, self.column_blocks = self._layout(nphi, ntheta, net_current_weight)
+        #: Called with a complete record at every certificate round and at the outcome of :meth:`certify` (``None``:
+        #: nothing recorded).  See :meth:`certify`.
+        self.recorder = None
+
+    def _geometry_setup(self, fixed, nb):
+        """The boundary's geometry on its sample grid: ``surface``, the normal operator and, on the gauge, the gauge
+        rows with their derivatives and the relabelling onto them."""
+        from .optimize import boundary_arrays_from_x
+
         # The boundary's sample grid (gauge conditions, relabelling, normal operator): the gauge conditions are
         # products of two series of the boundary's modes (up to K = its highest m or n), so their coefficients up to
         # K are alias-free only on more than 3 K points; 48 up to 12 boundary modes, more above (at 16 the 48 grid
@@ -785,19 +805,6 @@ class ThreeTermsFreeBoundaryModel:
             self.relabel = jax.jit(relabel)
             self.relabel_gauge = jax.jit(lambda x, fc: gauge_rows(relabel(x, fc)))
             self.relabel_gauge_jacobian = jax.jit(jax.jacfwd(lambda x, fc: gauge_rows(relabel(x, fc)), argnums=1))
-        seed = self.solve(self.params0)
-        if seed is None:
-            raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium: "
-                                       f"{getattr(self, '_last_failure', None)}")
-        state, mask = seed[:2]
-        self.seed = (state, mask)
-        if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
-        self._implicit_setup()
-        self.row_blocks, self.column_blocks = self._layout(nphi, ntheta, net_current_weight)
-        #: Called with a complete record at every certificate round and at the outcome of :meth:`certify` (``None``:
-        #: nothing recorded).  See :meth:`certify`.
-        self.recorder = None
 
     def _layout(self, nphi, ntheta, net_current_weight):
         """``(row_blocks, column_blocks)``: ``(name, start, stop)`` of each block of the rows and of the model

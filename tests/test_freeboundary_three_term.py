@@ -521,9 +521,9 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     VMEC + NESTOR itself lands ~1.6 mm from the exact free boundary of an
     essentially exact field (VMEC2000 1.3 mm), so the methods are compared at
     that level; from either start (the deck, and NESTOR's result through
-    ``restart_from``) the interface conditions end below NESTOR's.  At mpol = 4
-    the least-squares minimum (labelling "none") is also flat to ~3 mm, so the
-    surfaces are compared within the sum of the two floors, and more sharply
+    ``restart_from``) the interface conditions end below NESTOR's.  The gauge
+    labelling (the default) makes the stationary point determined; the surfaces
+    are compared within NESTOR's floor plus the resolution's (~3 mm), and more sharply
     through the residuals and the rotational transform.
     """
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
@@ -536,7 +536,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fbt._coil_net_current(field, nestor_wout)), abs(float(nestor_wout.rbtor)),
                                rtol=1e-3)
-    config = vj.ThreeTermConfig(labelling="none")
+    config = vj.ThreeTermConfig()
     fits = [vj.solve_free_boundary_three_term(inp, external_field=field, restart_from=start, config=config)
             for start in (None, free)]
     for fit in fits:
@@ -634,7 +634,9 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     inp = _deck("input.LandremanPaul2021_QA_beta0p5_bootstrap", 4, 25)
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
-    model = fbt.ThreeTermFreeBoundaryModel(inp, labelling="none", bootstrap=profiles)
+    # labelling "none" with the start-labelling rows (label_weight): its Gauss-Newton certificate needs the
+    # relabelling valley closed
+    model = fbt.ThreeTermFreeBoundaryModel(inp, labelling="none", label_weight=1e-2, bootstrap=profiles)
     fit = model.solve_boundary(model.params0, field, ftol=1e-4, jacobian_ftol=1e-4, refresh_on_stall=True)
     fit = model.certify(model.params0, field, fit, gate=fbt.POLISH_FTOL)
     state, mask, params, _ = fit["aux"]
@@ -783,8 +785,7 @@ def test_secant_fit_reaches_the_trust_region_fit_with_fewer_jacobians(monkeypatc
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
                   am=np.zeros(21))
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    fits = {fit: vj.solve_free_boundary_three_term(inp, external_field=field,
-                                                   config=vj.ThreeTermConfig(labelling="none", fit=fit))
+    fits = {fit: vj.solve_free_boundary_three_term(inp, external_field=field, config=vj.ThreeTermConfig(fit=fit))
             for fit in ("trf", "secant")}
     for fit in fits.values():
         assert fit.converged
@@ -794,8 +795,7 @@ def test_secant_fit_reaches_the_trust_region_fit_with_fewer_jacobians(monkeypatc
     assert _lcfs_distance(_wout(inp, secant), _wout(inp, trf)) < 1e-4
     monkeypatch.setattr(fbt, "FIT_ROUNDS", 1)
     monkeypatch.setattr(fbt, "_levenberg_marquardt", _unconverged(fbt._levenberg_marquardt))
-    fallback = vj.solve_free_boundary_three_term(inp, external_field=field,
-                                                 config=vj.ThreeTermConfig(labelling="none"))
+    fallback = vj.solve_free_boundary_three_term(inp, external_field=field, config=vj.ThreeTermConfig())
     assert fallback.converged and fallback.three_term.model.fit_fallbacks >= 1
     assert _lcfs_distance(_wout(inp, fallback), _wout(inp, trf)) < 1e-4
 

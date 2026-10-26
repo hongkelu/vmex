@@ -317,6 +317,9 @@ SR1_SKIP = 1e-8
 #: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the exact
 #: Hessian instead of crawling.
 QUASI_MIN_RADIUS = 1e-4
+#: Three accepted SR1 steps in a row, each longer than this fraction of the one before: linear convergence, so the
+#: gauge Newton rebuilds its Gauss-Newton model (the converged point is the exact gradient's either way).
+SR1_LINEAR_RATIO = 0.2
 #: The relabelling onto the gauge (:meth:`ThreeTermFreeBoundaryProblem._gauge_relabel`): largest Levenberg-Marquardt
 #: step and largest relabelling (rad) of the angle; a larger one is not the identity's continuous neighbour.
 RELABEL_MAX_STEP = 0.5
@@ -2374,6 +2377,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                         radius *= 2
                     accepted = True
                     history[-1].update(taken=float(np.linalg.norm(dz)), rho=float(rho))
+                    taken = [h.get("taken") for h in history[-4:]]
+                    if (level == 0 and len(taken) == 4 and None not in taken
+                            and all(t1 > SR1_LINEAR_RATIO * t0 for t0, t1 in zip(taken, taken[1:]))):
+                        # three SR1 steps in a row shrank by less than 1/SR1_LINEAR_RATIO: the quasi-Newton
+                        # model converges linearly (QH 8 x 8: 12 steps of ~25 s for a 1e-10 relative gain);
+                        # the next iterate rebuilds the Gauss-Newton model (one linearization)
+                        refresh = True
+                        history[-1]["refreshed"] = True
                     break
                 radius = 0.25 * min(radius, float(np.linalg.norm(dz)))
             if not accepted:

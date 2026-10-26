@@ -2,8 +2,8 @@
 
     python fbbench.py OUT CONFIG [CONFIG ...]
 
-Methods: NESTOR + VMEX (from the deck), and the three-term solve with equal-arc labelling at weight 1e-3 ("C"),
-with no labelling rows ("NL": start labelling at weight 0), and with VMEC's condensation rows ("D" at 1e-3, "DautoR"
+Methods: NESTOR + VMEX (from the deck), and the three-term solve (the equal-arc "C" labelling was removed with
+labelling="equal_arc") with no labelling rows ("NL": start labelling at weight 0), and with VMEC's condensation rows ("D" at 1e-3, "DautoR"
 at the automatic weight of ratio R), each from several starting boundaries; FBB_METHODS=C,NL,... picks a subset.  Every result is
 scored the same way: a fixed-boundary equilibrium on its boundary; the three interface conditions on an N x N grid
 with one fixed singular quadrature per configuration (planned on the deck's equilibrium); field lines in vacuum;
@@ -39,12 +39,12 @@ from test_freeboundary_vc import _vacuum_flux_surface  # noqa: E402
 
 DATA = Path("examples/data")
 N = 64
-METHODS = {"C": dict(labelling="equal_arc", label_weight=1e-3), "NL": dict(labelling="start", label_weight=0.0)}
+METHODS = {"NL": dict(labelling="start", label_weight=0.0)}
 # The fits' tolerances (solve_free_boundary_three_term's defaults; FBB_FTOL=1e-10 FBB_MAX_NFEV=300 for tight fits)
 FIT = dict(ftol=float(os.environ.get("FBB_FTOL", "1e-4")), jacobian_ftol=float(os.environ.get("FBB_JACOBIAN_FTOL", "1e-2")),
            max_nfev=int(os.environ.get("FBB_MAX_NFEV", "60")))
-LABELLINGS = {"A": "start", "C": "equal_arc"}
-if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,C:1e-1,A:1e-2 (label:weight for A or C)
+LABELLINGS = {"A": "start"}
+if os.environ.get("FBB_METHODS"):  # a subset, e.g. FBB_METHODS=NL,A:1e-2 (label:weight for A)
     METHODS = {k: METHODS[k] if k in METHODS else dict(labelling=LABELLINGS[k.split(":")[0]],
                                                        label_weight=float(k.split(":")[1]))
                for k in os.environ["FBB_METHODS"].split(",")}

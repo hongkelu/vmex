@@ -30,7 +30,7 @@ from vmex.core.multigrid import _nestor_boundary  # noqa: E402
 
 S_DRIFT = (0.2, 0.4, 0.6, 0.8, 0.9, 1.0)
 S_OVERLAY = (0.25, 0.5, 0.75, 1.0)
-COLORS = {"NESTOR": "tab:blue", "C 1e-3": "tab:red", "no label": "tab:green"}
+COLORS = {"NESTOR": "tab:blue", "no label": "tab:green"}
 
 
 def surface(w, s, theta, phi=0.0):
@@ -80,8 +80,7 @@ def main():
         walls["NESTOR"] = opt.solve_equilibrium(replace(_nestor_boundary(inp, external_field=field), lfreeb=False,
                                                         mgrid_file="NONE")).wout
         seconds["NESTOR"] = time.perf_counter() - t0
-        for name, kw in (("C 1e-3", dict(labelling="equal_arc", label_weight=1e-3)),
-                         ("no label", dict(labelling="start", label_weight=0.0))):
+        for name, kw in (("no label", dict(labelling="start", label_weight=0.0)),):
             t0 = time.perf_counter()
             walls[name] = fvc.solve_free_boundary_three_term(inp, external_field=field, **kw, **options).equilibrium.wout
             seconds[name] = time.perf_counter() - t0

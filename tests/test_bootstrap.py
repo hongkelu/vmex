@@ -726,11 +726,8 @@ def test_current_dof_packing_and_validation():
         opt._current_dof_setup(dataclasses.replace(inp, ncurr=0), 2)
     with pytest.raises(ValueError, match="positive int"):
         opt._current_dof_setup(inp, -1)
-    # knot values of a line-segment profile, as of a spline (a value on every half-mesh surface)
-    segments = dataclasses.replace(inp, pcurr_type="line_segment_ip", ac_aux_s=np.linspace(0.0, 1.0, 5),
-                                   ac_aux_f=np.array([1.0, 2.0, 3.0, 2.0, 0.5]))
-    assert opt._current_dof_setup(segments, 4) == (4, 3.0)
-    np.testing.assert_allclose(opt._pack_current(segments, 4, 3.0)[:4], [1 / 3, 2 / 3, 1.0, 2 / 3])
+    with pytest.raises(ValueError, match="line_segment"):
+        opt._current_dof_setup(dataclasses.replace(inp, pcurr_type="line_segment"), 2)
     with pytest.raises(ValueError, match="current-spline knot"):
         opt._current_dof_setup(
             dataclasses.replace(inp, pcurr_type="cubic_spline_ip"), 2)

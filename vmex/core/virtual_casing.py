@@ -804,11 +804,11 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
     inv_nt, inv_np = 1.0 / nt, 1.0 / npol
     # The grid-to-polar interpolation as one dense matrix S (npolar x ngrid, a few MB): its gathers, batched over
     # targets and Jacobian columns, were memory bound (70% of a push); ``values @ S^T`` is a batched GEMM.
-    weights = np.asarray(precomp.M_G2P).reshape(precomp.npolar, -1)
-    columns = np.asarray(precomp.interp_idx).reshape(precomp.npolar, -1)
-    S = np.zeros((precomp.npolar, precomp.ngrid), dtype=weights.dtype)
-    np.add.at(S, (np.repeat(np.arange(precomp.npolar), columns.shape[1]), columns.ravel()), weights.ravel())
-    S_T = jnp.asarray(S.T)
+    # built with JAX ops (the patch tables may be traced): one small scatter per call, not per target or column
+    weights = jnp.asarray(precomp.M_G2P).reshape(precomp.npolar, -1)
+    columns = jnp.asarray(precomp.interp_idx).reshape(precomp.npolar, -1)
+    rows = jnp.repeat(jnp.arange(precomp.npolar), columns.shape[1])
+    S_T = jnp.zeros((precomp.ngrid, precomp.npolar), dtype=weights.dtype).at[columns.ravel(), rows].add(weights.ravel())
 
     def interp(values):
         return values.astype(S_T.dtype) @ S_T

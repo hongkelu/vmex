@@ -62,3 +62,23 @@ def test_scatter_free_singular_matches_package_value_and_tangent():
     out, dout = jax.jvp(lambda a: run(_fxd_u_eval_singular, a), (0.3,), (1.0,))
     np.testing.assert_allclose(out, ref, rtol=1e-10, atol=1e-13 * float(jnp.abs(ref).max()))
     np.testing.assert_allclose(dout, dref, rtol=1e-10, atol=1e-13 * float(jnp.abs(dref).max()))
+
+
+def test_scatter_free_singular_traces_under_jit():
+    """The dense interpolation is built inside a jitted call (the patch tables can be tracers there)."""
+    from vmex.core.virtual_casing import _fxd_u_eval_singular
+
+    nfp, nt, npol = 2, 32, 16
+    t = jnp.arange(nt) * 2 * jnp.pi / nt
+    p = jnp.arange(npol) * 2 * jnp.pi / npol
+    T, P = jnp.meshgrid(t, p, indexing="ij")
+
+    @jax.jit
+    def run(a):
+        R = 1.0 + a * jnp.cos(P)
+        X = jnp.stack([R * jnp.cos(T), R * jnp.sin(T), a * jnp.sin(P)])
+        dX = jnp.concatenate([jnp.gradient(X, t, axis=1), jnp.gradient(X, p, axis=2)])
+        return _fxd_u_eval_singular(X, dX, jnp.cos(P), 4, 8, nfp, digits=4, patch_dim0=8, chunk_size=128,
+                                    target_chunk_size=8, orient=1.0)
+
+    assert np.all(np.isfinite(np.asarray(run(0.3))))

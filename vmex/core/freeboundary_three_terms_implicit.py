@@ -457,9 +457,25 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
     cost, g, rec = here
     radius = NEWTON_RADIUS
     history, evaluations, converged, seconds_hessian, P = [], 1, False, 0.0, None
+    # The exact projected Hessian (~100 s at QH 8 x 8) at the start, when the model is indefinite or a step stalls,
+    # and before convergence is declared; in between, SR1 on H_red from the exact reduced gradients' secants (K and
+    # H_cc kept): every iterate rebuilding it made one polish ~35 min (QH 2.5%, 18 iterates).
+    exact, refresh, secant, asymmetry = False, True, None, 0.0
     for _ in range(int(opt["max_steps"])):
         th = time.perf_counter()
-        P, asymmetry = projected_hessian(design, x, rec)
+        if refresh:
+            P, asymmetry = projected_hessian(design, x, rec)
+            exact, refresh = True, False
+        elif secant is not None:
+            s_, y_ = secant[0] / sb, secant[1] * sb
+            Hsc = P["Hred"] * np.outer(sb, sb)
+            v = y_ - Hsc @ s_
+            denominator = float(s_ @ v)
+            if abs(denominator) > SR1_SKIP * float(np.linalg.norm(s_) * np.linalg.norm(v)):
+                Hsc = Hsc + np.outer(v, v) / denominator
+                P = dict(P, Hred=0.5 * (Hsc + Hsc.T) / np.outer(sb, sb))
+            exact = False
+        secant = None
         seconds_hessian += time.perf_counter() - th
         g_red = g[bi] - P["K"].T @ g[c]
         Zb, lam_g, curv = gauge_basis(b, g_red)
@@ -486,16 +502,26 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
             print(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
                   f"{step_newton:.2e}, definite {definite}, radius {radius:.1e}, current gain {current_gain:.1e}, "
                   f"leak {P['leak']:.1e}, Hessian {seconds_hessian:.0f} s total{eig}", flush=True)
+        history[-1]["exact"] = exact
+        if not definite and not exact:
+            refresh = True
+            continue
         if definite and step_newton <= opt["step_tol"]:
+            if not exact:
+                refresh = True
+                continue
             converged = True
             break
         decrease = 0.5 * float(gs @ -newton) + current_gain
         floor = NEWTON_FLOOR * max(cost, 1e-300)
         if definite and (decrease <= floor or (radius < 1e-6 and decrease <= 10 * floor)):
+            if not exact:
+                refresh = True
+                continue
             converged = True
             history[-1]["floor"] = True
             break
-        accepted = False
+        accepted, noise = False, 0.0
         for _ in range(8):
             if definite and step_newton <= radius:
                 ds = newton
@@ -527,7 +553,11 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 b_try, trial, used = project(b_try, trial, P["Hcc"])
                 evaluations += used
             rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
+            if trial is not None and np.isfinite(trial[0]):  # the trials' miss of their model: the cost's resolution
+                noise = max(noise, abs((cost - trial[0]) - predicted))
             if rho > 0.1:
+                g_new = trial[1]
+                secant = ((b_try - b)[bi], (g_new[bi] - P["K"].T @ g_new[c]) - g_red)
                 b, (cost, g, rec) = b_try, trial
                 if rho > 0.75 and np.linalg.norm(ds) > 0.9 * radius:
                     radius *= 2
@@ -536,6 +566,15 @@ def _newton_refine_projected(design, x, params, field, extra, b, opt, t0, *, sta
                 break
             radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
         if not accepted:
+            if not exact:  # a quasi-Newton model that stalls is refreshed with the exact Hessian
+                refresh = True
+                continue
+            if definite and decrease <= noise:  # the Newton gain is below what the cost resolves: stationary to the
+                # evaluations' precision (QH 2.5%: rows ~1e-3 known to ~1e-9 resolve the cost to ~1e-6 of itself,
+                # above NEWTON_FLOOR, and every trial within it was rejected)
+                converged = True
+                history[-1].update(floor="noise", noise=float(noise))
+                break
             history[-1]["stalled"] = True
             break
     if keep_hessian is not None:

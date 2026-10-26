@@ -1087,22 +1087,37 @@ class ThreeTermFreeBoundaryModel:
                 raise RuntimeError("the start boundary has no certified equilibrium")
             r, aux = got
             nfev += 1
-            out = None
+
+            def lm(x, r, aux, J, tol):
+                return _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, r, aux, J,
+                                            ftol=tol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                            project=self._projected, current_columns=columns, update="broyden")
+
+            # As the trust region's two stages: rounds on fresh Jacobians to ``jacobian_ftol`` (each round its own
+            # evaluation budget, the rounds bounded by their Jacobians), then the finish to ``ftol`` on the last one
+            # (updated), with one fresh Jacobian if it stalls.  The certificate's polish takes it from there.
             for _ in range(FIT_ROUNDS):
                 J, _, _, aux = self.linearize(x, aux, field)
                 njev += 1
-                # each round its own evaluation budget, as the trust region and each finish had before: the
-                # rounds are bounded by their fresh Jacobians (the expensive part), not by one shared count
-                out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, r, aux, J,
-                                           ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                           project=self._projected, current_columns=columns, update="broyden")
+                out = lm(x, r, aux, J, max(ftol, jacobian_ftol))
                 self._radius = out["radius"]
                 nfev += out["nfev"]
                 x, r, aux = out["x"], out["rows"], out["aux"]
                 if out["converged"]:
-                    return dict(out, jacobian=J, nfev=nfev, njev=njev)
-            # FIT_ROUNDS fresh Jacobians and still not converged: the trust region below finishes from here
-            self.fit_fallbacks = getattr(self, "fit_fallbacks", 0) + 1
+                    break
+            else:  # FIT_ROUNDS fresh Jacobians and still not converged: the trust region below finishes from here
+                self.fit_fallbacks = getattr(self, "fit_fallbacks", 0) + 1
+                out = None
+            if out is not None:
+                out = lm(x, r, aux, J, ftol)
+                nfev += out["nfev"]
+                if refresh_on_stall and not out["converged"]:
+                    J, _, _, aux = self.linearize(out["x"], out["aux"], field)
+                    njev += 1
+                    out = lm(out["x"], out["rows"], aux, J, ftol)
+                    nfev += out["nfev"]
+                self._radius = out["radius"]
+                return dict(out, jacobian=J, nfev=nfev, njev=njev)
         memo = {}
 
         def fun(z):

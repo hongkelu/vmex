@@ -302,8 +302,8 @@ class MgridNotFoundError(VmecError):
 class TrialRejected(VmecError):
     """An optimizer trial point could not be solved or certified.
 
-    Raised by :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`
-    (and :class:`~vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`)
+    Raised by
+    :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`
     for an expected numerical rejection of a trial: a free boundary that does
     not solve, or no adjoint at it (the wrapped :class:`VmecError` is the
     ``__cause__``).  The accepted equilibrium is unchanged, so a backtracking

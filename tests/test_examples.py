@@ -130,9 +130,9 @@ UNTESTED_EXAMPLES = {
     "examples/optimization/stellarator_asymmetry/QP_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
     "examples/optimization/single_stage_free_boundary_three_term.py": "about 13 minutes of CPU compilation; its problem "
-    "is tests/test_freeboundary_vc.py::test_three_term_problem_gradient_and_one_slsqp_step",
+    "is tests/test_freeboundary_three_term_problem.py::test_three_term_problem_gradient_and_one_slsqp_step",
     "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "the GPU campaign driver (seed "
-    "build, coil fit, single-stage SLSQP): no test runs it; its library path is tests/test_freeboundary_vc.py",
+    "build, coil fit, single-stage SLSQP): no test runs it; its library path is tests/test_freeboundary_three_term_problem.py",
 }
 
 

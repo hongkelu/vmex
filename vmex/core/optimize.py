@@ -139,7 +139,6 @@ from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRe
 
 __all__ = [
     "report_targets",
-    "FreeBoundaryProblem",  # noqa: F822
     "TrialRejected",
     "VmecProblem",
     "FunctionProblem",
@@ -205,9 +204,6 @@ Array = Any
 
 
 def __getattr__(name: str):  # PEP 562 lazy re-export
-    if name == "FreeBoundaryProblem":
-        from .freeboundary_problem import FreeBoundaryProblem
-        return FreeBoundaryProblem
     # bootstrap.py lazily imports this module inside self_consistent_bootstrap,
     # so the f_boot objective is re-exported lazily to keep the two decoupled.
     if name == "RedlBootstrapMismatch":
@@ -2523,7 +2519,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     SciPy iterates on ``u = (x - x0) / problem.scales``; bounds, constraints,
     callbacks and the returned ``x``/``jac`` stay in the problem's units. A
     problem exposing ``accept_x`` (a
-    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`) must start
+    :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`) must start
     at its accepted point, and each SLSQP major iterate is promoted with
     ``accept_x`` when its Jacobian is requested.
 
@@ -2756,7 +2752,7 @@ def minimize(
     bounds, constraints, callbacks and returned derivatives use the problem's
     units; ``problem.scales`` conditions SciPy internally. A problem exposing
     ``accept_x``, such as
-    :class:`~vmex.core.freeboundary_problem.FreeBoundaryProblem`, promotes
+    :class:`~vmex.core.freeboundary_three_term_problem.ThreeTermFreeBoundaryProblem`, promotes
     only accepted iterates and ``options["maxiter"]`` counts accepted steps.
     Besides SciPy's fields the result carries ``accepted_steps`` and
     ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,

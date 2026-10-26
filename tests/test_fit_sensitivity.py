@@ -5,7 +5,7 @@ minimum, a nearly flat direction (``y3 - y4`` enters only through a small term, 
 non-unit coordinate scale.  Exact derivatives come from JAX; the reference is a central difference of the tightly
 re-solved minimizer.  Checked: the exact stationarity derivative (with the mixed design curvature) matches the
 reference and Gauss-Newton does not; Hessian-vector products, mixed partials and the symmetry of ``H``; central
-differences of ``g = J^T r`` against the exact ones; and ``freeboundary_vc._projected_solve`` (the block solve of
+differences of ``g = J^T r`` against the exact ones; and ``freeboundary_three_term_implicit._projected_solve`` (the block solve of
 the Hessian with a stiff current block eliminated).
 """
 import numpy as np
@@ -17,7 +17,7 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from vmex.core import freeboundary_vc as fvc  # noqa: E402
+from vmex.core import freeboundary_three_term_implicit as fbi  # noqa: E402
 
 SCALE = np.array([1.0, 2.0, 0.5, 3.0, 1.0])  # the model coordinates' scale (W orthonormal in 1/scale^2)
 
@@ -173,7 +173,7 @@ def test_projected_solve_matches_the_joint_solve_and_survives_a_stiff_block():
         JP = J[:, b] - J[:, c] @ K
         P = dict(Hred=JP.T @ JP, Hcc=Hcc, K=K, b=b, c=c)
         rhs = rng.standard_normal(nb + nc)
-        x = fvc._projected_solve(P, rhs)
+        x = fbi._projected_solve(P, rhs)
         exact = np.linalg.solve(H, rhs) if joint_ok else None
         if joint_ok:
             np.testing.assert_allclose(x, exact, rtol=1e-8, atol=1e-10 * np.abs(exact).max())

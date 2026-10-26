@@ -15,7 +15,6 @@ import io
 import re
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -280,19 +279,3 @@ def test_coils_flag_rejected_on_fixed_boundary_deck(tmp_path):
     ])
     assert rc == INPUT_ERROR_FLAG
     assert "LFREEB" in stdout
-
-
-def test_interface_failure_names_the_three_term_residuals() -> None:
-    """A three-term result above its interface tolerance says so; NESTOR and fixed-boundary results do not."""
-    residual = SimpleNamespace(normal=2.7e-2, pressure=1.7e-2, sheet_current=4.2e-2)
-    three_term = SimpleNamespace(boundary_residual=residual, vacuum=None)
-    message = cli._interface_failure(three_term)
-    assert "THREE-TERM FREE BOUNDARY NOT CONVERGED" in message and "2.70e-02" in message and "4.20e-02" in message
-    assert "above the accepted 1e-02" in message
-    stalled = SimpleNamespace(boundary_residual=SimpleNamespace(normal=1e-3, pressure=1e-3, sheet_current=1e-3),
-                              vacuum=None)
-    assert "stopped before its cost stopped improving" in cli._interface_failure(stalled)
-    assert "B.n 1.00e-03" in cli._interface_report(stalled)  # reported on a converged solve too
-    assert cli._interface_report(SimpleNamespace(boundary_residual=residual, vacuum=object())) == ""
-    assert cli._interface_failure(SimpleNamespace(boundary_residual=residual, vacuum=object())) == ""
-    assert cli._interface_failure(SimpleNamespace(boundary_residual=None, vacuum=None)) == ""

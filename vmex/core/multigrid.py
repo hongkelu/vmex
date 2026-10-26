@@ -616,29 +616,6 @@ def solve_multigrid(
     )
 
 
-def _nestor_boundary(inp: VmecInput, **kwargs) -> VmecInput:
-    """``inp``'s NESTOR free boundary (and axis) as a fixed-boundary deck: a three-term fit's start."""
-    from .wout import wout_from_state
-
-    free = solve_free_boundary_multigrid(inp, raise_on_max_iterations=False, **kwargs)
-    wout = wout_from_state(inp=inp, state=free.state, fsqr=float(free.fsqr), fsqz=float(free.fsqz),
-                           fsql=float(free.fsql), converged=bool(free.converged), vacuum_output=free.vacuum)
-    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
-    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
-                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
-        rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
-    return replace(inp, rbc=rbc, zbs=zbs, raxis_c=np.asarray(wout.raxis_cc)[:inp.ntor + 1],
-                   zaxis_s=np.asarray(wout.zaxis_cs)[:inp.ntor + 1])
-
-
-def _best_three_term_fit(fits):
-    """The fit to return: a successful fit before any failed one, then the lowest cost.  A lower-cost fit that
-    failed (stopped short, or above its residual guard) never displaces a successful one."""
-    if not fits:
-        raise ValueError("no three-term fit to choose from")
-    return min(fits, key=lambda f: (not bool(f.success), float(f.cost)))
-
-
 def solve_free_boundary_multigrid(
     inp: VmecInput,
     ns_array=None,
@@ -666,9 +643,7 @@ def solve_free_boundary_multigrid(
     use_fft: bool | None = None,
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
-    boundary_condition: str = "nestor",
-    three_term_options: dict | None = None,
-    report_boundary_residual: bool = False,
+    three_term: Any = None,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
 
@@ -731,92 +706,37 @@ def solve_free_boundary_multigrid(
     on-demand compilation, and background threads are joined before the
     ``release_stage_cache`` point exactly like the fixed-boundary ladder.
 
-    ``boundary_condition="three_term"`` replaces NESTOR's vacuum pressure
-    by all three plasma-vacuum interface conditions (``B . n = 0``, pressure
-    balance and no sheet current) with the plasma field from virtual casing:
-    the boundary is solved for by
-    :func:`~vmex.core.freeboundary_vc.solve_free_boundary_three_term`
-    (keywords in ``three_term_options``).  The interface least squares has
-    several minima, so by default (``three_term_options["start"] = "best"``)
-    it is fitted from the deck boundary and from this ladder's NESTOR free
-    boundary, keeping the lower cost: on the CTH-like vacuum deck the deck
-    start ends ~4 cm from NESTOR/VMEC2000, while at finite beta NESTOR's
-    boundary carries an edge sheet current and the deck (the design) is the
-    better start.  ``"deck"`` or ``"nestor"`` fits from one start only,
-    and the result is the fixed-boundary ladder's final stage on that boundary,
-    with ``result.boundary_residual`` set, ``result.vacuum = None`` and
-    ``result.converged`` False when the boundary fit stopped before its cost
-    stopped improving.  Only
-    the ladder, external-field, ``verbose``/``emit`` and ``device`` arguments
-    apply to it.
-
-    ``report_boundary_residual=True`` also evaluates the three interface
-    conditions on a NESTOR solution (virtual casing on a 48 x 48 boundary grid)
-    and sets ``result.boundary_residual``.  NESTOR enforces ``B . n = 0`` and
-    pressure balance but not the field direction, so a large ``sheet_current``
-    there flags a free boundary that carries an edge sheet current.
+    ``three_term`` (a :class:`~vmex.core.freeboundary_three_term.ThreeTermConfig`;
+    ``None`` follows the deck's ``LTHREE_TERM``, ``False`` forces it off)
+    replaces NESTOR by the three plasma-vacuum interface conditions (``B . n =
+    0``, pressure balance, no sheet current; the plasma field from virtual
+    casing): the boundary is solved for on this ladder by
+    :func:`~vmex.core.freeboundary_three_term.solve_free_boundary_three_term`,
+    ``result.three_term`` reports it and ``result.vacuum`` is ``None``.  The
+    NESTOR time-stepping controls do not apply to it.
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
-    if boundary_condition == "three_term":
-        if initial_state is not None or restart_from is not None:
-            raise NotImplementedError(
-                "boundary_condition='three_term' starts from the deck boundary; "
-                "set it on inp instead of passing initial_state/restart_from")
-        from .freeboundary_vc import solve_free_boundary_three_term
-
-        ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
-                         ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
-                         niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
-        options = dict(three_term_options or {})
-        start = options.pop("start", "best")
-        if start not in ("best", "deck", "nestor"):
-            raise ValueError(f"three_term_options['start'] must be 'best', 'deck' or 'nestor', got {start!r}")
-        fits, failures = [], []
-        if start in ("best", "deck"):
-            fits.append(solve_free_boundary_three_term(
-                ladder, external_field=external_field, mgrid_path=mgrid_path, **options))
-        if start in ("best", "nestor"):  # the interface least squares has several minima: NESTOR's basin too
-            try:
-                nestor_start = dict(options, initial_boundary=_nestor_boundary(
-                    ladder, mgrid_path=mgrid_path, external_field=external_field, verbose=verbose, emit=emit,
-                    device=device))
-                fits.append(solve_free_boundary_three_term(
-                    ladder, external_field=external_field, mgrid_path=mgrid_path, **nestor_start))
-            except Exception as error:  # an optional seed: its failure must not erase the deck start's fit
-                if start == "nestor":
-                    raise
-                failures.append(error)
-        fit = _best_three_term_fit(fits)
-        ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
-        result = solve_multigrid(
-            fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
-            niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
-            initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
-        # The returned state solves the fit's interior equations (its m=1 complement policy), as the fit did: refine
-        # the host state onto that root, then let the host solve report it (every derived array of the result is
-        # then of the refined state) and check it did not move it.
-        from .errors import VmecConvergenceError
-        from .optimize import refine_state
-
-        refined = refine_state(fit.input, result.state, m1_complement=options.get("m1_complement", "solved"))
-        if refined is not result.state:
-            result = solve_multigrid(
-                fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
-                niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
-                initial_state=refined, verbose=verbose, emit=emit, device=device)
-            moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(float(np.max(np.abs(np.asarray(b)))),
-                                                                                    1e-300))
-                        for a, b in zip(jax.tree.leaves(result.state), jax.tree.leaves(refined)) if np.size(b))
-            if not moved <= 1e-9:
-                raise VmecConvergenceError(
-                    f"the reported equilibrium moved off the refined interior root by {moved:.2e}",
-                    hint="tighten ftol so the refined root passes the host solver's convergence test at once")
-        # Converged only if the interface conditions hold too: the polish converges on any boundary.
-        return replace(result, converged=bool(result.converged) and bool(fit.success),
-                       boundary_residual=fit.boundary_residual)
-    if boundary_condition != "nestor":
-        raise ValueError(f"boundary_condition must be 'nestor' or 'three_term', got {boundary_condition!r}")
+    if three_term is not None or bool(getattr(inp, "lthree_term", False)):
+        from .freeboundary_three_term import resolve_three_term, solve_free_boundary_three_term
+        three_term = resolve_three_term(three_term, inp)
+        if three_term is not None:
+            nestor = dict(time_step=time_step, tcon0=tcon0, gamma=gamma, nstep=nstep, precon_type=precon_type,
+                          prec2d_threshold=prec2d_threshold, prec2d=prec2d, lconm1=None if lconm1 else False)
+            if any(value is not None for value in nestor.values()):
+                raise ValueError("three_term solves the boundary from its interface conditions: "
+                                 + ", ".join(k for k, v in nestor.items() if v is not None)
+                                 + " apply to the NESTOR time stepping only")
+            ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
+                             ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
+                             niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
+            result = solve_free_boundary_three_term(
+                ladder, external_field=external_field, mgrid_path=mgrid_path, initial_state=initial_state,
+                restart_from=restart_from, config=three_term, verbose=verbose, emit=emit, device=device)
+            if raise_on_max_iterations and not result.converged:
+                from .errors import VmecConvergenceError
+                raise VmecConvergenceError(result.three_term.message)
+            return result
 
     ns_arr = _vmec_ns_prefix(inp.ns_array if ns_array is None else ns_array)
     if ns_arr.size == 0:
@@ -1047,7 +967,6 @@ def solve_free_boundary_multigrid(
                     use_fft=use_fft,
                     release_stage_cache=release_stage_cache,
                     prefetch_compile=prefetch_compile,
-                    report_boundary_residual=report_boundary_residual,
                 )
             raise
         except BaseException:
@@ -1102,13 +1021,7 @@ def solve_free_boundary_multigrid(
 
     if stage_result is None:  # defensive; positive ns_arr guarantees a stage
         raise ValueError("ns_array has no executable stages")
-    result = stage_result.result
-    if report_boundary_residual:
-        from .freeboundary_vc import boundary_residual, summarize_boundary_residual
-
-        result = replace(result, boundary_residual=summarize_boundary_residual(*boundary_residual(
-            inp, result.state, external_field, nphi=48, ntheta=48)))
-    return result
+    return stage_result.result
 
 
 def solve_file(
@@ -1117,7 +1030,6 @@ def solve_file(
     polish: bool | str | None = None,
     polish_config: Any = None,
     polish_fail: str | None = None,
-    boundary_condition: str | None = None,
     write_wout: bool = True,
     outdir=None,
     **solve_kwargs,
@@ -1134,9 +1046,6 @@ def solve_file(
     does the same and emits a :class:`RuntimeWarning`, with the documented
     precedence ``CLI flag > Python keyword > file directive > package
     default``; an explicit ``polish_config`` wins over ``polish_fail``.
-    ``boundary_condition`` (``"nestor"`` or ``"three_term"``) overrides the
-    deck's ``!@VMEX BOUNDARY_CONDITION`` for an ``LFREEB = T`` deck (see
-    :func:`solve_free_boundary_multigrid`).
 
     ``write_wout=True`` writes ``wout_<case>.nc`` beside the input (or into
     ``outdir``) — the same output contract as ``vmex <input>``.  When
@@ -1162,7 +1071,7 @@ def solve_file(
         return solve_mirror_file(path, write_mout=write_wout, outdir=outdir, **solve_kwargs)
     request = read_input_request(path)
     options, sources = resolve_run_options(
-        request.options, polish=polish, polish_fail=polish_fail, boundary_condition=boundary_condition,
+        request.options, polish=polish, polish_fail=polish_fail,
     )
     config = polish_config_from_options(options, polish_config)
     inp = request.input
@@ -1195,8 +1104,7 @@ def solve_file(
                 f"the polish request came from the {sources['polish']}"
             )
         plan_kwargs = {} if freeb_plan is None else freeb_plan.solver_kwargs
-        result = solve_free_boundary_multigrid(
-            inp, **{**plan_kwargs, "boundary_condition": options.boundary_condition, **solve_kwargs})
+        result = solve_free_boundary_multigrid(inp, **{**plan_kwargs, **solve_kwargs})
     else:
         if bool(solve_kwargs.get("verbose")) and options.polish is not False:
             print(f"polish = {options.polish!r} (from {sources['polish']})")

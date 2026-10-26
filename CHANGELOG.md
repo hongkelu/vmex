@@ -6,8 +6,17 @@ record under `benchmarks/` names the revision it was measured at.
 
 ## Unreleased
 
-- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION`) solves the free boundary where B.n, pressure
-  balance and the sheet current vanish; `FreeBoundaryProblem` optimizes coils on it, or on NESTOR's, via `opt.minimize`.
+- **Three-term free boundary:** `three_term=ThreeTermConfig()` on
+  `solve_free_boundary_multigrid` (or the deck keys `LTHREE_TERM` and
+  `THREE_TERM_LABELLING`, so `vmex input.case` runs it) solves for the
+  boundary on which B.n, pressure balance and the sheet current all vanish,
+  with the plasma field from virtual casing; `result.three_term` reports it.
+  `labelling="gauge"` (default) holds VMEC's spectral condensation exactly and
+  Newton-converges the fit on it; `"none"` is the plain least squares.
+  `solve_free_boundary_three_term` continues from a previous result
+  (`previous=`), `ThreeTermFreeBoundaryProblem` optimizes coils and plasma
+  parameters on the gauge with exact design gradients through `opt.minimize`
+  (SLSQP, resumable), and `boundary_residual` scores any equilibrium.
 
 ## 0.11.11 - 2026-10-18
 

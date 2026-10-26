@@ -2005,10 +2005,9 @@ class SolveResult:
     ``(fsqr, fsqz, fsql, fsqr1, fsqz1, fsql1)``.  ``wmhd`` is the printed
     ``WMHD = (wb + wp/(gamma-1)) * (2 pi)^2``.  ``vacuum`` is ``None`` for
     fixed-boundary solves.  The five polish fields are ``None`` on the
-    unchanged default path.  ``boundary_residual`` is the
-    :class:`~vmex.core.freeboundary_vc.BoundaryResidual` of a free boundary
-    solved with ``boundary_condition="three_term"`` or reported with
-    ``report_boundary_residual=True``, else ``None``.
+    unchanged default path.  ``three_term`` is the
+    :class:`~vmex.core.freeboundary_three_term.ThreeTermResult` of a
+    three-term free boundary (``three_term=`` of the free-boundary solvers).
     """
 
     converged: bool; iterations: int; ier_flag: int
@@ -2025,7 +2024,7 @@ class SolveResult:
     native_equilibrium: Any = None
     strong_force: Any = None
     polish_report: Any = None
-    boundary_residual: Any = None
+    three_term: Any = None
 
 
 def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:

@@ -445,18 +445,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--boundary-condition",
-        choices=("nestor", "three-term"),
-        default=None,
-        help=(
-            "Plasma-vacuum interface condition of an LFREEB = T deck: NESTOR's "
-            "vacuum pressure (default) or the three-term free boundary: B.n = 0, "
-            "pressure balance and no sheet current (plasma field by virtual casing), solved for the "
-            "boundary from the deck's (requires virtual-casing-jax). Overrides "
-            "the deck's !@VMEX BOUNDARY_CONDITION directive."
-        ),
-    )
-    p.add_argument(
         "--coils",
         metavar="PATH",
         type=str,
@@ -626,21 +614,18 @@ def _read_request(input_path: Path):
 
 
 def _resolve_polish_cli(args, file_options):
-    """Run options (polish, boundary condition): CLI flags > file directive > default, with the source recorded."""
+    """CLI flags > file directive > default, with the source recorded."""
     from .run_options import resolve_run_options
 
     polish = None
     if args.polish is not None:
         polish = {"auto": "auto", "true": True, "false": False}[args.polish]
-    boundary_condition = getattr(args, "boundary_condition", None)
     options, sources = resolve_run_options(
         file_options,
         polish=polish,
         polish_fail=args.polish_fail,
-        boundary_condition=boundary_condition,
     )
-    cli_supplied = {"polish": args.polish, "polish_fail": args.polish_fail,
-                    "boundary_condition": boundary_condition}
+    cli_supplied = {"polish": args.polish, "polish_fail": args.polish_fail}
     sources = {name: ("cli" if cli_supplied[name] is not None else origin)
                for name, origin in sources.items()}
     return options, sources
@@ -948,7 +933,6 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
             # Opt-in cold-run overlap; the library default is also False.
             prefetch_compile=bool(args.prefetch_compile),
             jacobian_retries=int(args.jacobian_retries),
-            boundary_condition=polish_options.boundary_condition,
             **freeb_plan.solver_kwargs,
         )
     else:
@@ -1004,13 +988,8 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
         )
         emit(_timing_block(read_s, solve_s, wout_s), end="")
         emit(f"\n Wrote WOUT file: {wout_path}")
-        if bool(result.converged) and _interface_report(result):
-            emit(_interface_report(result))
         if not bool(result.converged):
-            emit(_interface_failure(result) or "\n HINT : increase NITER or loosen FTOL")
-    elif not bool(result.converged) and _interface_failure(result):
-        emit(_interface_failure(result))
-        emit(f" Wrote WOUT file: {wout_path}")
+            emit("\n HINT : increase NITER or loosen FTOL")
     elif not bool(result.converged):
         # The typed termination message used to reach --quiet runs through
         # the raised convergence error.  The CLI keeps the state instead, so
@@ -1037,30 +1016,6 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
     if not bool(result.converged):  # NITER exhaustion: wout kept, distinct code
         return int(result.ier_flag) or 1
     return 0
-
-
-def _interface_report(result) -> str:
-    """The interface residuals of a converged three-term free boundary, or ``""`` for any other result."""
-    residual = getattr(result, "boundary_residual", None)
-    if residual is None or result.vacuum is not None:
-        return ""
-    return (f"\n THREE-TERM INTERFACE RESIDUALS (RMS, relative to |B|): B.n {residual.normal:.2e}, "
-            f"pressure balance {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e}")
-
-
-def _interface_failure(result) -> str:
-    """Why a three-term free boundary is not converged (its interface rows), or ``""`` for any other result."""
-    residual = getattr(result, "boundary_residual", None)
-    if residual is None or result.vacuum is not None:  # NESTOR, or a residual only reported
-        return ""
-    from .freeboundary_vc import ACCEPTED_RESIDUAL
-
-    why = (f"a residual is above the accepted {ACCEPTED_RESIDUAL:.0e}"
-           if max(residual.normal, residual.pressure, residual.sheet_current) > ACCEPTED_RESIDUAL
-           else "the boundary fit stopped before its cost stopped improving")
-    return (f"\n THREE-TERM FREE BOUNDARY NOT CONVERGED: interface residuals B.n {residual.normal:.2e}, "
-            f"pressure balance {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e} "
-            f"(relative to |B|); {why}")
 
 
 # ---------------------------------------------------------------------------

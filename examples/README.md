@@ -177,7 +177,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   `epsilon_eff^(3/2)` before and after.
 - `optimization/single_stage_free_boundary_three_term.py`: single-stage
   optimization of the LP QA coil currents on the three-term free boundary
-  (`FreeBoundaryProblem` with `boundary_condition="three_term"`: B.n, pressure
+  (`ThreeTermFreeBoundaryProblem`: B.n, pressure
   balance and no sheet current), SLSQP lowering quasisymmetry with the
   rotational transform and aspect ratio bounded. About 13 minutes on 8 CPU
   cores, most of it the first point's compilation. Needs `vmex[coils,freeb]`.

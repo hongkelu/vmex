@@ -4,7 +4,7 @@
 Every design point is the free boundary on which the three plasma-vacuum
 interface conditions hold -- ``B . n = 0``, pressure balance and no sheet
 current -- with the plasma field from virtual casing
-(:mod:`vmex.core.freeboundary_vc`).  The design is the currents of the
+(:mod:`vmex.core.freeboundary_three_term`).  The design is the currents of the
 Landreman & Paul (2021) precise-QA coils, held in ESSOS; SLSQP lowers the
 quasisymmetry residual of the free boundary while keeping its rotational
 transform and aspect ratio in range.  The gradients are those of the free
@@ -96,9 +96,9 @@ def loss(state, runtime, x):
     return 0.5 * jnp.vdot(residuals, residuals)
 
 
-problem = opt.FreeBoundaryProblem.from_loss(
+problem = vj.ThreeTermFreeBoundaryProblem.from_loss(
     inp, loss, np.asarray(X0), field_from_parameters=field_from_parameters,
-    quantities=(opt.mean_iota, opt.aspect_ratio), boundary_condition="three_term", three_term_options=THREE_TERM)
+    quantities=(opt.mean_iota, opt.aspect_ratio), config=vj.ThreeTermConfig(**THREE_TERM))
 x0 = problem.x0
 start, loss0 = problem.boundary_residual(x0), problem.fun(x0)
 print(f"start: loss {loss0:.4e}, iota {problem.constraint_values(x0)[0]:.4f}, "

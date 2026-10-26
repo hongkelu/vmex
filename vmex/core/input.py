@@ -138,6 +138,8 @@ _KNOWN_INDATA_NAMES = {
     "LBOOZ", "MBOOZ", "NBOOZ", "BOOZ_SURFACES",
     # VMEX extension: hot restart from a wout file (no VMEC2000 equivalent).
     "RESTART_WOUT",
+    # VMEX extension: the three-term free boundary (no VMEC2000 equivalent).
+    "LTHREE_TERM", "THREE_TERM_LABELLING",
 }
 
 def _strip_fortran_comments(line: str) -> str:
@@ -791,6 +793,10 @@ class VmecInput:
     # -- VMEX extension: hot restart (no VMEC2000 equivalent) --
     restart_wout: str = ""       #: wout path to seed the solve from ('' = cold)
 
+    # -- VMEX extension: the three-term free boundary (no VMEC2000 equivalent) --
+    lthree_term: bool = False             #: solve the free boundary from the three interface conditions
+    three_term_labelling: str = "gauge"   #: its boundary labelling: 'gauge' or 'none'
+
     def __post_init__(self) -> None:
         set_ = object.__setattr__
         set_(self, "lasym", bool(self.lasym))
@@ -809,6 +815,10 @@ class VmecInput:
         set_(self, "precon_type", str(self.precon_type).strip())
         set_(self, "mgrid_file", str(self.mgrid_file).strip())
         set_(self, "restart_wout", str(self.restart_wout).strip())
+        set_(self, "lthree_term", bool(self.lthree_term))
+        set_(self, "three_term_labelling", str(self.three_term_labelling).strip().lower())
+        if self.three_term_labelling not in ("gauge", "none"):
+            raise ValueError("THREE_TERM_LABELLING must be 'gauge' or 'none'")
 
         # readin.f stops at the first nonpositive or decreasing entry; later
         # values are outside multi_ns_grid and never reach runvmec.f.
@@ -1268,6 +1278,8 @@ class VmecInput:
             precon_type=str(get("PRECON_TYPE", "NONE")),
             prec2d_threshold=float(get("PREC2D_THRESHOLD", 1e-30)),
             restart_wout=str(get("RESTART_WOUT", "")),
+            lthree_term=bool(get("LTHREE_TERM", False)),
+            three_term_labelling=str(get("THREE_TERM_LABELLING", "gauge")),
         )
 
     @classmethod
@@ -1419,6 +1431,9 @@ class VmecInput:
         put("PREC2D_THRESHOLD", self.prec2d_threshold)
         if self.restart_wout:
             put("RESTART_WOUT", self.restart_wout)
+        if self.lthree_term:
+            put("LTHREE_TERM", True)
+            put("THREE_TERM_LABELLING", self.three_term_labelling)
         put("RAXIS_CC", self.raxis_c)
         put("ZAXIS_CS", self.zaxis_s)
         if self.lasym or np.any(self.raxis_s) or np.any(self.zaxis_c):

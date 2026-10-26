@@ -239,9 +239,10 @@ STALL_RULE = "gain"
 JACOBIAN_UPDATE = "none"
 #: The cold boundary fit (no Jacobian to start from): ``"trf"`` (scipy's trust region, a fresh Jacobian after every
 #: accepted step) or ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh Jacobian, Broyden-updated after
-#: each accepted step, a fresh one when a round stalls; at most FIT_ROUNDS fresh Jacobians).  The fit's end point is
-#: then certified as before; only the path there differs.
-FIT_STRATEGY = os.environ.get("VMEX_FIT_STRATEGY", "trf")
+#: each accepted step, a fresh one when a round stalls; at most FIT_ROUNDS fresh Jacobians; the default: LBD 8 x 8
+#: cold gauge fit 899 s -> 299 s, 36 -> 6 Jacobians, the same certified boundary).  The fit's end point is then
+#: certified as before; only the path there differs.
+FIT_STRATEGY = os.environ.get("VMEX_FIT_STRATEGY", "secant")
 FIT_ROUNDS = 12
 
 #: Extrapolate an accepted Gauss-Newton step: after an undamped step that gained over three quarters of its

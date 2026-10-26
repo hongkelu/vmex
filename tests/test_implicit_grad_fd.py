@@ -312,11 +312,11 @@ def test_multigrid_gradient_vs_frozen_path_fd():
 
 
 def test_status_certifies_the_refined_root_not_the_host_solve(monkeypatch):
-    """The status lane certifies the returned state in the config's equations: a successful refinement is status 0
-    with its residual recorded under refine_tol; a non-finite refined state is status 4, not a certified derivative
-    point."""
+    """With the m=1 complement gauged, the status lane certifies the returned state in the config's equations: a
+    successful refinement is status 0 with its residual recorded under refine_tol; a non-finite refined state is
+    status 4, not a certified derivative point (the default "frozen" keeps upstream's status lane)."""
     inp = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
-    cfg = im.make_config(inp, **CASES["li383_low_res"])
+    cfg = im.make_config(inp, **CASES["li383_low_res"], m1_complement="gauged")
     params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), im.params_from_input(inp))
 
     def status():

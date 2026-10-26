@@ -148,6 +148,9 @@ Free boundary
 .. automodule:: vmex.core.freeboundary_three_terms_problem
    :members:
 
+.. automodule:: vmex.core.single_stage_targets
+   :members:
+
 .. automodule:: vmex.core.mgrid
    :members:
 

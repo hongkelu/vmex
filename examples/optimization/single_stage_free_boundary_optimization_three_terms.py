@@ -191,7 +191,7 @@ options = dict(maxiter=MAX_STEPS, ftol=SLSQP_FTOL,
                state_callback=lambda state: opt.save_slsqp_state(slsqp_file, state))
 if resume and slsqp_file.exists():
     options["resume"] = opt.load_slsqp_state(slsqp_file)  # SLSQP continues with its Hessian
-result = opt.minimize(problem, x0=x_start, method="SLSQP", constraints=[problem.constraints()], callback=report, options=options)
+result = opt.minimize(problem, x0=x_start, method="SLSQP", constraints=problem.constraints(), callback=report, options=options)
 
 ###############################################################################
 ### Check, print and save #####################################################

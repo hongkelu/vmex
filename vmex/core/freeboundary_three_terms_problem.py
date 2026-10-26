@@ -92,7 +92,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """
 
     @classmethod
-    def from_tuples(cls, inp, terms, x0, *, constraints=(), parameter_constraints=(), **kwargs):
+    def from_tuples(cls, inp, terms, x0, *, constraints=(), parameter_constraints=(), design_constraints=(),
+                    **kwargs):
         """:meth:`from_loss` with upstream's objective tuples and the constraints beside their bounds.
 
         ``terms`` are ``(function, target, weight)`` as :meth:`~vmex.core.problem.VmecProblem.from_tuples`:
@@ -101,8 +102,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         ``sum weight * (function - target)**2 / 2`` over the terms and their entries.  ``constraints`` are
         ``(function, lower, upper)`` or ``(function, lower, upper, scale)`` with a scalar ``function(state,
         runtime)``; ``parameter_constraints`` the same with ``function(state, runtime, x)`` (e.g. a coil-plasma
-        distance).  :meth:`constraints` then gives SLSQP's constraint, so adding a target or a bound is one entry
-        here.  The other keywords are :meth:`from_loss`'s."""
+        distance); ``design_constraints`` are constraints on ``x`` alone, needing no equilibrium (a
+        ``scipy.optimize.NonlinearConstraint`` such as :func:`~vmex.core.single_stage_targets.coil_constraint`).
+        :meth:`constraints` then gives all of them for SLSQP, so adding a target or a bound is one entry here
+        (:mod:`vmex.core.single_stage_targets` has coil, coil-plasma distance and vacuum-transform functions).
+        The other keywords are :meth:`from_loss`'s."""
         terms = tuple(terms)
         if not terms:
             raise ValueError("at least one objective term is required")
@@ -122,16 +126,18 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         problem = cls.from_loss(inp, loss, x0, quantities=tuple(f for f, *_ in rows),
                                 parameter_quantities=tuple(f for f, *_ in parameter_rows), **kwargs)
         problem._bounds = tuple(zip(*[bound for _, *bound in rows + parameter_rows])) if rows + parameter_rows else None
+        problem._design_constraints = list(design_constraints)
         return problem
 
     def constraints(self):
-        """SLSQP's constraint (``scipy.optimize.NonlinearConstraint``) of the bounds given to :meth:`from_tuples`,
-        each row divided by its scale; ``[]`` without bounds."""
+        """SLSQP's constraints of :meth:`from_tuples`: one ``scipy.optimize.NonlinearConstraint`` of the equilibrium
+        rows' bounds (each row divided by its scale), then the design constraints; a list, possibly empty."""
         bounds = getattr(self, "_bounds", None)
-        if bounds is None:
-            return []
-        lower, upper, scales = bounds
-        return self.nonlinear_constraint(np.asarray(lower), np.asarray(upper), scales=np.asarray(scales))
+        rows = []
+        if bounds is not None:
+            lower, upper, scales = bounds
+            rows.append(self.nonlinear_constraint(np.asarray(lower), np.asarray(upper), scales=np.asarray(scales)))
+        return rows + list(getattr(self, "_design_constraints", []))
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,

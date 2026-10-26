@@ -83,12 +83,26 @@ problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
     constraints=[(opt.mean_iota, 0.40, 0.46), (opt.aspect_ratio, 5.5, 6.5)],
     field_from_parameters=coils_from_x,
     config=vj.ThreeTermsConfig(nphi=32, ntheta=32, quadrature=(4 * inp.nfp * 32, 64)))
-result = opt.minimize(problem, method="SLSQP", constraints=[problem.constraints()])
+result = opt.minimize(problem, method="SLSQP", constraints=problem.constraints())
 ```
 
 Adding a target or a bound is one more tuple. `parameter_constraints` take
-`function(state, runtime, x)` (a coil-plasma distance, say); `from_loss` takes a
-general scalar loss and the constraint rows without their bounds.
+`function(state, runtime, x)`, and `design_constraints` constraints on `x`
+alone; {mod}`vmex.core.single_stage_targets` has ready ones:
+
+```python
+from vmex.core import single_stage_targets as targets
+
+limits = targets.CoilLimits(length=5.0, curvature=5.0, msc=5.0, coil_distance=0.15)
+problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
+    inp, terms, x0, field_from_parameters=coils_from_x,
+    constraints=[(targets.min_vacuum_iota(inp), 0.31, np.inf)],
+    parameter_constraints=[(targets.coil_plasma_distance(chart.coils_from_x, inp.nfp), 0.2, np.inf)],
+    design_constraints=[targets.coil_constraint(chart.coils_from_x, limits)])
+```
+
+`from_loss` takes a general scalar loss and the constraint rows without their
+bounds.
 
 `examples/optimization/single_stage_free_boundary_optimization_three_terms.py`
 optimizes coil currents this way. For other uses of many fields and plasma

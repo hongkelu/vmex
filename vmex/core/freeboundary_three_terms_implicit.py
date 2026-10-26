@@ -874,7 +874,7 @@ def _exact_products_traced(design, state, mask, xj, b0, V, chunk=None):
     _, vjp_z = jax.vjp(lambda z: force(z, b0, xj), z0)
 
     def adjoint(rhs):
-        mu, residual, tolerance = im._block_adjoint(system, lambda w: vjp_z(w)[0], system.project(rhs), cfg)
+        mu, residual, tolerance = im._block_adjoint(system, lambda w: vjp_z(w)[0], system.project(rhs), cfg, cfg.adjoint_tol)
         return mu, residual <= tolerance
 
     mu, mu_ok = adjoint(jax.grad(cost, 0)(z0, b0, xj))

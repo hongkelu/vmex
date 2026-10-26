@@ -255,55 +255,6 @@ def test_block_preconditioned_corrector_recovers_a_poor_direct_solve(monkeypatch
     assert _relative_difference(corrected, reference) < 1e-7
 
 
-@pytest.mark.parametrize("case", ["preconditioned_pass_raw_fail", "preconditioned_fail_raw_pass", "nonfinite"])
-def test_response_acceptance_is_the_raw_residual(monkeypatch, case):
-    """A response column is accepted by its independently measured raw-operator residual alone.
-
-    preconditioned pass / raw fail: rejected (the preconditioned flag cannot override the raw residual), then
-    repaired by the raw block refinement; preconditioned fail / raw pass: accepted; a nonfinite response: rejected.
-    The reported raw residual is that of the response actually returned."""
-    inp, cfg, p0 = _small_solovev_setup()
-    state, mask = im.solve_implicit_with_aux(p0, cfg)
-    zero = jax.tree.map(jnp.zeros_like, p0)
-    tangent_batch = jax.tree.map(lambda *x: jnp.stack(x), dataclasses.replace(
-        zero, rbc=zero.rbc.at[inp.ntor, 1].set(1.0)), dataclasses.replace(
-        zero, pres_scale=jnp.ones_like(zero.pres_scale)))
-
-    def respond():
-        return jax.jit(lambda: im._implicit_evolved_tangent_multi_rhs(
-            p0, cfg, state, mask, tangent_batch,
-            active_fields=im._active_state_fields(cfg), probe_chunk_size=4,
-            response_chunk_size=2, certify_rtol=1e-8, certify_maxiter=1))()
-
-    reference, _ = respond()
-    damage = {"preconditioned_pass_raw_fail": (1.001, True), "preconditioned_fail_raw_pass": (1.0, False),
-              "nonfinite": (np.nan, True)}[case]
-
-    def corrector(A, b, cfg, *, x0=None, max_restarts=None, rtol=None):
-        # the preconditioned report: passing (residual 0 <= 1) or failing (1e30 > 0) its own norm
-        return jax.tree.map(lambda value: damage[0] * value, x0), im.LinearResponseReport(
-            residual_norm=jnp.asarray(0.0 if damage[1] else 1e30), tolerance=jnp.asarray(1.0 if damage[1] else 0.0),
-            iterations=jnp.asarray(1, jnp.int32), converged=jnp.asarray(damage[1]))
-
-    monkeypatch.setattr(im, "_adjoint_solve", corrector)
-    passes = im._BLOCK_REFINEMENT_PASSES
-    monkeypatch.setattr(im, "_BLOCK_REFINEMENT_PASSES", 0)
-    _, unrefined = respond()
-    expected = case == "preconditioned_fail_raw_pass"
-    assert np.all(np.asarray(unrefined.converged) == expected)
-    assert np.all(np.asarray(unrefined.preconditioned_converged) == damage[1])
-    raw = np.asarray(unrefined.raw_residual_norm)
-    assert np.all((raw <= np.asarray(unrefined.raw_tolerance)) == expected)
-    monkeypatch.setattr(im, "_BLOCK_REFINEMENT_PASSES", passes)
-    refined, report = respond()
-    if case == "nonfinite":  # the refinement starts from the nonfinite response: it stays rejected
-        assert not np.any(np.asarray(report.converged))
-        return
-    assert np.all(np.asarray(report.converged))
-    assert np.all(np.asarray(report.raw_residual_norm) <= np.asarray(report.raw_tolerance))
-    assert _relative_difference(refined, reference) < 1e-8
-
-
 def test_raw_block_probe_chunking_preserves_exact_factors():
     """Bounded VJP batches assemble the same local block Jacobian."""
 

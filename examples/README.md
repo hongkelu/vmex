@@ -41,6 +41,10 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   - `free_boundary_essos_coils.py` — free-boundary beta scan directly from
     ESSOS coils (tabulated to a temporary mgrid); `PRES_SCALE` is calibrated per point so the
     *actual* wout `betatotal` hits 0/1/2/3 %.
+  - `free_boundary_three_term.py` — the free boundary on which B.n, pressure
+    balance and the sheet current all vanish (plasma field by virtual casing),
+    with the gauge and the "none" labelling, then a warm continuation after a
+    coil change (`previous=`). Needs `vmex[coils,freeb]` and a GPU.
   - `free_boundary_phiedge.py` — find the PHIEDGE whose free-boundary LCFS
     passes through a target outboard-midplane radius (`vj.solve_phiedge`), for
     comparing with codes pinned by an edge point instead of a flux.
@@ -175,12 +179,13 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
-- `optimization/single_stage_free_boundary_three_term.py`: single-stage
-  optimization of the LP QA coil currents on the three-term free boundary
-  (`ThreeTermFreeBoundaryProblem`: B.n, pressure
-  balance and no sheet current), SLSQP lowering quasisymmetry with the
-  rotational transform and aspect ratio bounded. About 13 minutes on 8 CPU
-  cores, most of it the first point's compilation. Needs `vmex[coils,freeb]`.
+- `optimization/single_stage_free_boundary_optimization_three_term.py`:
+  single-stage optimization of the LP QA coil currents and PHIEDGE on the
+  three-term free boundary (`ThreeTermFreeBoundaryProblem`: B.n, pressure
+  balance and no sheet current, exact gradients on the gauge), SLSQP lowering
+  quasisymmetry with the rotational transform and aspect ratio bounded, saving
+  a checkpoint and SLSQP's state after every step. Needs `vmex[coils,freeb]`
+  and a GPU.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

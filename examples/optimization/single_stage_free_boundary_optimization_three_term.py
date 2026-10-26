@@ -645,7 +645,9 @@ def dkx_current(inp, fixed, device):
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
     knots = np.r_[0.0, s, 1.0]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
-    v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
+    total = float(enclosed(1.0))  # zero for a --zero-current design: start the iteration from I' = 0
+    v = (float(inp.curtor) / total * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))) if total
+         else np.zeros_like(s))
     if BOOTSTRAP_MODEL == "target":
         rows, jdotb = CURRENT_TARGET
         kinetic_j = lambda state, runtime: jdotb  # noqa: E731

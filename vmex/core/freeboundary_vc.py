@@ -1090,14 +1090,15 @@ class ThreeTermFreeBoundaryModel:
             for _ in range(FIT_ROUNDS):
                 J, _, _, aux = self.linearize(x, aux, field)
                 njev += 1
+                # each round its own evaluation budget, as the trust region and each finish had before: the
+                # rounds are bounded by their fresh Jacobians (the expensive part), not by one shared count
                 out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, r, aux, J,
-                                           ftol=ftol, max_nfev=max(max_nfev - nfev, 2), verbose=verbose,
-                                           radius=self._radius, project=self._projected, current_columns=columns,
-                                           update="broyden")
+                                           ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                           project=self._projected, current_columns=columns, update="broyden")
                 self._radius = out["radius"]
                 nfev += out["nfev"]
                 x, r, aux = out["x"], out["rows"], out["aux"]
-                if out["converged"] or nfev >= max_nfev:
+                if out["converged"]:
                     break
             return dict(out, jacobian=J, nfev=nfev, njev=njev)
         memo = {}

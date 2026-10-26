@@ -1268,6 +1268,7 @@ class ThreeTermsFreeBoundaryModel:
         try:
             sol = dict(fit, **tight(fit["x"], fit["aux"]))
             out_of_rounds = False  # the loop ended on the polish budget, not on a stalled or failed polish
+            polish_error = ""
             for round_ in range(POLISH_ROUNDS + 1):
                 normal = None
                 if self._normal_operator is not None:  # the remaining step's motion of the surface itself
@@ -1298,8 +1299,9 @@ class ThreeTermsFreeBoundaryModel:
                     polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
                                                    ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
                                                    tight=True, fresh_current=True, fit="trf")
-                except (VmecError, RuntimeError):
+                except (VmecError, RuntimeError) as error:
                     stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
+                    polish_error = f"; its polish failed: {error}"
                     break
                 stats["boundary_evaluations"] = stats.get("boundary_evaluations", 0) + polished["nfev"]
                 if not polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
@@ -1313,7 +1315,8 @@ class ThreeTermsFreeBoundaryModel:
                     f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
                 budget_note = f" when the polish budget of {POLISH_ROUNDS} rounds ran out" if out_of_rounds else ""
                 raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
-                                    f"{certificate['stationarity']:.2e} of the cost{normal_note}{budget_note}")
+                                    f"{certificate['stationarity']:.2e} of the cost{normal_note}{budget_note}"
+                                    f"{polish_error}")
             if certificate["normal_step"] is not None:
                 stats["max_normal_step"] = max(stats.get("max_normal_step", 0.0), certificate["normal_step"])
             stats["max_step"] = max(stats.get("max_step", 0.0), certificate["step"])

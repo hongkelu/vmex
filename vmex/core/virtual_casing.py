@@ -814,8 +814,10 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
         Ga = jnp.sqrt(n0 * n0 + n1 * n1 + n2 * n2) * inv_nt * inv_np
         Ggs = Ggi * jnp.asarray([inv_nt, inv_np, inv_nt, inv_np, inv_nt, inv_np], dtype=Ggi.dtype)[:, None]
         M_grid = I.laplace_fxd_u(trg[None, :] - Gi.T, jnp.ones((precomp.ngrid,))) * (Ga * precomp.Gpou)[:, None]
-        P, Pg, FP = interp(Gi), interp(Ggs), interp(GiF[None])[0]
-        P, Pg, FP = P.astype(trg.dtype), Pg.astype(trg.dtype), FP.astype(trg.dtype)
+        # one interpolation of the position, its scaled derivatives and the density (separate calls lay out the
+        # one-row density badly: a transpose was 54% of the push)
+        Q = interp(jnp.concatenate([Gi, Ggs, GiF[None].astype(Gi.dtype)])).astype(trg.dtype)
+        P, Pg, FP = Q[:3], Q[3:9], Q[9]
         n0p = Pg[2] * Pg[5] - Pg[3] * Pg[4]
         n1p = Pg[4] * Pg[1] - Pg[5] * Pg[0]
         n2p = Pg[0] * Pg[3] - Pg[1] * Pg[2]

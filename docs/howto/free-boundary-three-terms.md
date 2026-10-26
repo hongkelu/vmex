@@ -70,18 +70,25 @@ moved = vj.solve_free_boundary_three_terms(inp, external_field=new_coil_field, c
 both labellings.
 
 For single-stage optimization,
-{class}`vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem` takes a loss, constraint rows and
+{class}`vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem` takes objective terms, constraints and
 a differentiable `field_from_parameters(x)` (and optionally
 `plasma_from_parameters(params, x)`): every trial is a gauge free boundary,
 started from the accepted one, and the design gradients are the exact
-implicit derivatives of that converged point:
+implicit derivatives of that converged point. Objective terms are upstream's
+`(function, target, weight)` tuples; each constraint keeps its bounds beside it:
 
 ```python
-problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
-    inp, loss, x0, field_from_parameters=coils_from_x, quantities=(opt.mean_iota,),
+problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
+    inp, [(qs.residuals_state, 0.0, 1.0)], x0,
+    constraints=[(opt.mean_iota, 0.40, 0.46), (opt.aspect_ratio, 5.5, 6.5)],
+    field_from_parameters=coils_from_x,
     config=vj.ThreeTermsConfig(nphi=32, ntheta=32, quadrature=(4 * inp.nfp * 32, 64)))
-result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_constraint(lower, upper)])
+result = opt.minimize(problem, method="SLSQP", constraints=[problem.constraints()])
 ```
+
+Adding a target or a bound is one more tuple. `parameter_constraints` take
+`function(state, runtime, x)` (a coil-plasma distance, say); `from_loss` takes a
+general scalar loss and the constraint rows without their bounds.
 
 `examples/optimization/single_stage_free_boundary_optimization_three_terms.py`
 optimizes coil currents this way. For other uses of many fields and plasma

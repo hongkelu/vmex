@@ -407,3 +407,35 @@ def test_bootstrap_current_on_the_gauge_has_the_exact_design_gradient():
     fd = (problem.fun(x0 + h) - problem.fun(x0 - h)) / (2 * h)
     np.testing.assert_allclose(grad, fd, rtol=2e-3)
     problem.close()
+
+
+def test_from_tuples_assembles_the_loss_rows_and_bounds(monkeypatch):
+    """``from_tuples``: upstream's (function, target, weight) terms make the loss, and each constraint's bounds and
+    scale stay with its row (checked without a free-boundary solve: ``from_loss`` is replaced)."""
+    captured = {}
+
+    class Built:
+        nonlinear_constraint = staticmethod(lambda lower, upper, scales: (list(lower), list(upper), list(scales)))
+
+    def fake_from_loss(cls, inp, loss, x0, *, quantities, parameter_quantities, **kwargs):
+        captured.update(loss=loss, quantities=quantities, parameter_quantities=parameter_quantities, kwargs=kwargs)
+        return Built()
+
+    monkeypatch.setattr(ThreeTermsFreeBoundaryProblem, "from_loss", classmethod(fake_from_loss))
+    aspect = lambda state, runtime: jnp.asarray(state) * 2.0  # noqa: E731
+    vector = lambda state, runtime: jnp.asarray([1.0, 3.0])  # noqa: E731
+    iota = lambda state, runtime: jnp.asarray(0.4)  # noqa: E731
+    distance = lambda state, runtime, x: jnp.asarray(0.3)  # noqa: E731
+    problem = ThreeTermsFreeBoundaryProblem.from_tuples(
+        None, [(aspect, 6.0, 0.5), (vector, 1.0, 2.0)], np.zeros(2), constraints=[(iota, 0.42, np.inf)],
+        parameter_constraints=[(distance, 0.2, np.inf, 0.1)], field_from_parameters=lambda x: None)
+    # 0.5 * 0.5 * (2 * 4 - 6)^2 + 0.5 * 2 * ((1 - 1)^2 + (3 - 1)^2) = 1 + 4
+    assert float(captured["loss"](4.0, None, None)) == pytest.approx(5.0)
+    assert captured["quantities"] == (iota,) and captured["parameter_quantities"] == (distance,)
+    assert ThreeTermsFreeBoundaryProblem.constraints(problem) == ([0.42, 0.2], [np.inf, np.inf], [1.0, 0.1])
+    with pytest.raises(TypeError, match="constraints"):
+        ThreeTermsFreeBoundaryProblem.from_tuples(None, [(aspect, 6.0, 0.5)], np.zeros(2), constraints=[(iota, 0.4)],
+                                                  field_from_parameters=lambda x: None)
+    with pytest.raises(ValueError, match="lower <= upper"):
+        ThreeTermsFreeBoundaryProblem.from_tuples(None, [(aspect, 6.0, 0.5)], np.zeros(2),
+                                                  constraints=[(iota, 0.5, 0.4)], field_from_parameters=lambda x: None)

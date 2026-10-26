@@ -146,19 +146,17 @@ nfp = int(inp.nfp)
 ###############################################################################
 
 qs = opt.QuasisymmetryRatioResidual(np.asarray(SURFACES), *HELICITY)
-
-
-def loss(state, runtime, x):
-    residuals = qs.residuals_state(state, runtime)
-    return 0.5 * jnp.vdot(residuals, residuals)
+# Objective terms as upstream's (function, target, weight); each constraint keeps its bounds beside it.
+terms = [(qs.residuals_state, 0.0, 1.0)]
+constraints = [(opt.mean_iota, *IOTA_RANGE), (opt.aspect_ratio, *ASPECT_RANGE)]
 
 
 config = vj.ThreeTermsConfig(nphi=GRID, ntheta=GRID, quadrature=(4 * nfp * GRID, 2 * GRID), max_mode=MAX_MODE,
                             trial_ftol=TRIAL_FTOL)
 resume = RESUME and checkpoint_file.exists()
-problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
-    inp, loss, np.asarray(X0, dtype=float), field_from_parameters=field_from_parameters,
-    plasma_from_parameters=plasma_from_parameters, quantities=(opt.mean_iota, opt.aspect_ratio),
+problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
+    inp, terms, np.asarray(X0, dtype=float), constraints=constraints, field_from_parameters=field_from_parameters,
+    plasma_from_parameters=plasma_from_parameters,
     boundary_max_residual=MAX_INTERFACE_RESIDUAL, config=config,
     checkpoint=checkpoint_file if resume else None,
     semantic_identity=dict(example="single_stage_free_boundary_optimization_three_terms", version=1))
@@ -174,7 +172,6 @@ print(f"{'resumed' if resume else 'start'} ({time.perf_counter() - started:.0f} 
 ### Optimize ##################################################################
 ###############################################################################
 
-bounds = problem.nonlinear_constraint([IOTA_RANGE[0], ASPECT_RANGE[0]], [IOTA_RANGE[1], ASPECT_RANGE[1]])
 history = []
 
 
@@ -194,7 +191,7 @@ options = dict(maxiter=MAX_STEPS, ftol=SLSQP_FTOL,
                state_callback=lambda state: opt.save_slsqp_state(slsqp_file, state))
 if resume and slsqp_file.exists():
     options["resume"] = opt.load_slsqp_state(slsqp_file)  # SLSQP continues with its Hessian
-result = opt.minimize(problem, x0=x_start, method="SLSQP", constraints=[bounds], callback=report, options=options)
+result = opt.minimize(problem, x0=x_start, method="SLSQP", constraints=[problem.constraints()], callback=report, options=options)
 
 ###############################################################################
 ### Check, print and save #####################################################

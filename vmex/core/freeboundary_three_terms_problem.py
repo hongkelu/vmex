@@ -59,6 +59,17 @@ def _nonlinear_constraint(values, jacobian, lower, upper, scales):
                                jac=lambda x: np.asarray(jacobian(x)) / scale[..., None])
 
 
+def _constraint_row(spec):
+    """``(function, lower, upper, scale)`` of a constraint entry ``(function, lower, upper[, scale])``."""
+    if len(spec) not in (3, 4) or not callable(spec[0]):
+        raise TypeError("constraints are (function, lower, upper) or (function, lower, upper, scale)")
+    function, lower, upper = spec[:3]
+    scale = float(spec[3]) if len(spec) == 4 else 1.0
+    if not float(lower) <= float(upper) or not scale > 0:
+        raise ValueError(f"a constraint needs lower <= upper and a positive scale, got {spec[1:]}")
+    return function, float(lower), float(upper), scale
+
+
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
 
@@ -79,6 +90,48 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     trials, failures, boundary evaluations and linearizations, seconds per phase) report progress;
     :meth:`save_checkpoint` / ``from_loss(checkpoint=...)`` restart a run from its accepted point.
     """
+
+    @classmethod
+    def from_tuples(cls, inp, terms, x0, *, constraints=(), parameter_constraints=(), **kwargs):
+        """:meth:`from_loss` with upstream's objective tuples and the constraints beside their bounds.
+
+        ``terms`` are ``(function, target, weight)`` as :meth:`~vmex.core.problem.VmecProblem.from_tuples`:
+        ``function(state, runtime)`` (a scalar or a vector; e.g. :func:`~vmex.core.optimize.aspect_ratio`,
+        :class:`~vmex.core.optimize.QuasisymmetryRatioResidual`), and the loss is
+        ``sum weight * (function - target)**2 / 2`` over the terms and their entries.  ``constraints`` are
+        ``(function, lower, upper)`` or ``(function, lower, upper, scale)`` with a scalar ``function(state,
+        runtime)``; ``parameter_constraints`` the same with ``function(state, runtime, x)`` (e.g. a coil-plasma
+        distance).  :meth:`constraints` then gives SLSQP's constraint, so adding a target or a bound is one entry
+        here.  The other keywords are :meth:`from_loss`'s."""
+        terms = tuple(terms)
+        if not terms:
+            raise ValueError("at least one objective term is required")
+        for term in terms:
+            if len(term) != 3 or not callable(term[0]):
+                raise TypeError("objective terms are (function, target, weight) with a callable function")
+        rows = [_constraint_row(c) for c in constraints]
+        parameter_rows = [_constraint_row(c) for c in parameter_constraints]
+
+        def loss(state, runtime, x):
+            total = 0.0
+            for function, target, weight in terms:
+                residual = jnp.ravel(jnp.asarray(function(state, runtime))) - jnp.asarray(target)
+                total = total + 0.5 * jnp.sum(jnp.asarray(weight) * residual * residual)
+            return total
+
+        problem = cls.from_loss(inp, loss, x0, quantities=tuple(f for f, *_ in rows),
+                                parameter_quantities=tuple(f for f, *_ in parameter_rows), **kwargs)
+        problem._bounds = tuple(zip(*[bound for _, *bound in rows + parameter_rows])) if rows + parameter_rows else None
+        return problem
+
+    def constraints(self):
+        """SLSQP's constraint (``scipy.optimize.NonlinearConstraint``) of the bounds given to :meth:`from_tuples`,
+        each row divided by its scale; ``[]`` without bounds."""
+        bounds = getattr(self, "_bounds", None)
+        if bounds is None:
+            return []
+        lower, upper, scales = bounds
+        return self.nonlinear_constraint(np.asarray(lower), np.asarray(upper), scales=np.asarray(scales))
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,

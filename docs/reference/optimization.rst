@@ -466,12 +466,12 @@ is the whole run)::
        currents = coils.dofs_currents * (1 + 0.05 * x)
        return BiotSavart(coils.with_dofs(jnp.concatenate([coils.dofs[:n_curves], currents])))
 
-   problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
-       inp, lambda state, rt, x: qs.total_state(state, rt), np.zeros(coils.dofs_currents.size),
-       field_from_parameters=coils_from_x, quantities=(opt.mean_iota, opt.aspect_ratio),
+   problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
+       inp, [(qs.residuals_state, 0.0, 1.0)], np.zeros(coils.dofs_currents.size),
+       constraints=[(opt.mean_iota, 0.40, 0.46), (opt.aspect_ratio, 5.5, 6.5)],
+       field_from_parameters=coils_from_x,
        config=vj.ThreeTermsConfig(nphi=16, ntheta=16, max_mode=2, quadrature=(128, 32)))
-   result = opt.minimize(problem, method="SLSQP",
-       constraints=problem.nonlinear_constraint([0.40, 5.5], [0.46, 6.5]))
+   result = opt.minimize(problem, method="SLSQP", constraints=problem.constraints())
 
 Every design point is the free boundary on VMEC's exact spectral-condensation
 gauge, Newton-converged and certified, solved once and cached; its gradient
@@ -479,11 +479,14 @@ and constraint Jacobian are the exact implicit derivatives of that converged
 point. ``opt.minimize`` supports SLSQP for problems and promotes only the
 iterates SciPy accepts (``accept_x``); a point whose free boundary does not
 solve raises :class:`~vmex.core.errors.TrialRejected`, and the result's
-``stop_reason`` says why a run stopped. The loss is ``loss(state, rt, x)``;
-``quantities`` are ``function(state, rt)`` constraint rows and
-``parameter_quantities`` are ``function(state, rt, x)`` rows (a coil-plasma
-clearance, say), whose derivatives include both the explicit term and the
-equilibrium response. Constraints on ``x`` alone, such as coil length or
+``stop_reason`` says why a run stopped. ``from_tuples`` takes upstream's
+``(function, target, weight)`` objective terms and ``(function, lower, upper[,
+scale])`` constraints (``function(state, rt)``; ``parameter_constraints``
+take ``function(state, rt, x)``, a coil-plasma clearance, say), whose
+derivatives include both the explicit term and the equilibrium response;
+``problem.constraints()`` is SLSQP's constraint. ``from_loss`` is the general
+form: a scalar ``loss(state, rt, x)`` with ``quantities`` and
+``parameter_quantities`` rows bounded by ``problem.nonlinear_constraint``. Constraints on ``x`` alone, such as coil length or
 curvature from ESSOS, are ordinary optimizer constraints. An optional
 ``plasma_from_parameters(params, x)`` makes the design vector also set plasma
 parameters, for example PHIEDGE. ``options["state_callback"]`` and

@@ -784,15 +784,18 @@ def _projected_gauge_gradients(design, x, sol, rows, kept, G_b, G_x, direct, sca
     # corrects (the reassembled H differs from the exact one by the current rows' leak)
     mu = block_solve(Q)
     rhs = reduce(Q)
+    history = []
     for _ in range(PROJECTED_REFINEMENT_PASSES):
         H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
         defect = Q - np.asarray(H_mu) - curvature @ mu
         true = (np.linalg.norm(reduce(defect), axis=0) / np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)).tolist()
+        history.append(max(true))
         if max(true) <= 1e-6:
             break
         mu = mu + block_solve(defect)
     else:
-        raise RuntimeError(f"projected gauge multipliers missed: true residuals {true}")
+        raise RuntimeError(f"projected gauge multipliers missed: true residuals {true} (passes: "
+                           + ", ".join(f"{h:.1e}" for h in history) + ")")
     eig = np.linalg.eigvalsh(Hs)
     return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                 asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),

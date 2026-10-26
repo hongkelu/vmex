@@ -104,6 +104,9 @@ DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface;
 # Set (--dkx-correction): (s, delta) added to DKX's <j.B> [A T/m^2] on every row, delta = a converged DKX (finer grid,
 # ambipolar E_r) minus this resolution's at a recent design; an offset, so the in-loop gradient is DKX's own.
 DKX_CORRECTION = None
+# Set (--current-target): (s, <j.B> [A T/m^2]) the equilibrium's <j.B> is held to instead of a model's, frozen for the
+# run (BOOTSTRAP_MODEL "target"): e.g. DKX at the ambipolar ion root of the latest design, refreshed between runs.
+CURRENT_TARGET = None
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -317,6 +320,16 @@ def redl_profiles(inp):
     return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
+# p ~ (1 - s)(1 - s^5) = 2 e ne Te of bootstrap_input's profiles; also --zero-current's pressure
+BOOTSTRAP_PRESSURE = (1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0)
+
+
+def without_current(inp):
+    """``inp`` with no plasma current (``--zero-current``)."""
+    return replace(inp, ncurr=1, pcurr_type="power_series", ac=np.zeros_like(np.asarray(inp.ac, dtype=float)),
+                   curtor=0.0)
+
+
 def bootstrap_input(inp, beta, device):
     """``finite_beta_input`` with reactor-like kinetic profiles and their self-consistent Redl current.
 
@@ -365,7 +378,7 @@ def bootstrap_input(inp, beta, device):
         ohmic[:2] = 2.0 * OHMIC_CURRENT * np.array([1.0, -1.0])
         inp = replace(inp, ac=ohmic, curtor=OHMIC_CURRENT)
         for stage_beta in betas:
-            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=BOOTSTRAP_PRESSURE)
         for weight in (0.25, 0.5, 0.75):
             boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
             ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
@@ -378,7 +391,7 @@ def bootstrap_input(inp, beta, device):
         profiles, redl = redl_profiles(inp)
         inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
-        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=BOOTSTRAP_PRESSURE)
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
         inp = picard.input
@@ -514,6 +527,8 @@ def bootstrap_mismatch(inp, redl, device):
     """
     if BOOTSTRAP_MODEL == "redl":
         return redl.total_state
+    if BOOTSTRAP_MODEL == "target":
+        return target_mismatch
     mismatch = dkx_mismatch(inp)
     # DKX builds its per-surface operators and Boozer plan on the host at the first
     # call and caches them; make that call on a concrete equilibrium, so the
@@ -525,6 +540,17 @@ def bootstrap_mismatch(inp, redl, device):
     print(f"DKX bootstrap mismatch of the fixed-boundary seed: {float(mismatch(seed.state, seed.solver_context)):.3e}",
           flush=True)
     return mismatch
+
+
+def target_mismatch(state, runtime):
+    """The equilibrium's <j.B> against ``CURRENT_TARGET``, in DKX's normalized form (``KineticBootstrapMismatch``)."""
+    import jax.numpy as jnp
+    from vmex.core.bootstrap import vmec_j_dot_B
+
+    s, target = CURRENT_TARGET
+    inside = s < 1.0  # an edge point s = 1 only shapes the current's interpolation (dkx_current)
+    jv = vmec_j_dot_B(state, runtime, surfaces=s[inside])
+    return jnp.sum((jv - target[inside]) ** 2) / jnp.sum((jv + target[inside]) ** 2)
 
 
 def dkx_kinetic(inp):
@@ -600,7 +626,8 @@ def dkx_mismatch(inp):
 
 
 def dkx_current(inp, fixed, device):
-    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface.
+    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface
+    (``CURRENT_TARGET``'s with BOOTSTRAP_MODEL "target").
 
     Picard steps I' <- I'_DKX from the equilibrium ``fixed``: DKX's ``<j.B>`` on its rows,
     interpolated onto every half-mesh surface and inverted for dI/ds there
@@ -614,14 +641,19 @@ def dkx_current(inp, fixed, device):
     from vmex.core.bootstrap import current_derivative
     from vmex.core.profiles import current
 
-    kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
+    ns = int(np.asarray(inp.ns_array)[-1])
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
-    rows = kinetic.rows(ns)[1]
     knots = np.r_[0.0, s, 1.0]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
     v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
-    kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
-    kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+    if BOOTSTRAP_MODEL == "target":
+        rows, jdotb = CURRENT_TARGET
+        kinetic_j = lambda state, runtime: jdotb  # noqa: E731
+    else:
+        kinetic = dkx_kinetic(inp)
+        rows = kinetic.rows(ns)[1]
+        kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
+        kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
     derivative = jax.jit(current_derivative)
     for iteration in range(PICARD_ITERATIONS):
         values = np.r_[1.5 * v[0] - 0.5 * v[1], v, 1.5 * v[-1] - 0.5 * v[-2]]
@@ -1097,6 +1129,8 @@ def parse_args(argv=None):
     parser.add_argument("--iota-floor", type=float, help="floor on min |iota| (default: IOTA_FLOOR)")
     parser.add_argument("--dkx-correction", type=Path, help="JSON {s: [...], delta: [...]} added to DKX's <j.B> "
                         "(A T/m^2) on every row: a converged DKX minus the in-loop one (DKX_CORRECTION)")
+    parser.add_argument("--current-target", type=Path, help="JSON {s: [...], jdotb: [...]} (A T/m^2): with "
+                        "--bootstrap, the <j.B> the current is held to (CURRENT_TARGET), e.g. DKX's at the ion root")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
@@ -1126,6 +1160,8 @@ def parse_args(argv=None):
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--zero-current", action="store_true", help="finite beta without plasma current, with "
+                        "--bootstrap's pressure (1 - s)(1 - s^5); a --restart's current is removed")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
     parser.add_argument("--refit-coils", type=Path, help="with --restart: start from these coils instead (e.g. another "
                         "coil count), their currents scaled and the coils fitted to the restart's equilibrium")
@@ -1163,6 +1199,10 @@ def parse_args(argv=None):
         args.coils = args.refit_coils or args.restart / "coils.json"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
+    if args.current_target is not None and not args.bootstrap:
+        parser.error("--current-target needs --bootstrap")
+    if args.zero_current and args.bootstrap:
+        parser.error("--zero-current and --bootstrap exclude each other")
     return args
 
 
@@ -1308,7 +1348,7 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global DKX_CORRECTION
+    global DKX_CORRECTION, CURRENT_TARGET, BOOTSTRAP_MODEL
     global LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, FORCE_LIMIT, CONDUCTOR_RADIUS, TOTAL_LENGTH_LIMIT, LENGTH_WEIGHT
     args = parse_args(argv)
     LENGTH_LIMIT = args.length_limit or LENGTH_LIMIT
@@ -1327,6 +1367,9 @@ def main(argv=None):
     if args.dkx_correction is not None:
         correction = json.loads(args.dkx_correction.read_text())
         DKX_CORRECTION = (np.asarray(correction["s"], float), np.asarray(correction["delta"], float))
+    if args.current_target is not None:
+        target = json.loads(args.current_target.read_text())
+        CURRENT_TARGET, BOOTSTRAP_MODEL = (np.asarray(target["s"], float), np.asarray(target["jdotb"], float)), "target"
     if args.iota_ceiling is not None:
         IOTA_CEILING = args.iota_ceiling
     if args.aspect_range is not None:
@@ -1360,9 +1403,11 @@ def main(argv=None):
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
         inp = restart_input(args.restart)
+        if args.zero_current:
+            inp = without_current(inp)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
-        if DKX_CORRECTION is not None and args.bootstrap and BOOTSTRAP_MODEL == "dkx":
-            # the restart's current matches the uncorrected DKX: make it the corrected one's before the first step
+        if args.bootstrap and (BOOTSTRAP_MODEL == "target" or DKX_CORRECTION is not None and BOOTSTRAP_MODEL == "dkx"):
+            # the restart's current matches another <j.B> (uncorrected DKX, an older target): make it this one's first
             inp = dkx_current(inp, opt.solve_equilibrium(inp, device="gpu", raise_on_max_iterations=True,
                                                          polish_force_balance=False), "gpu")
     elif args.seed_run is not None:
@@ -1372,7 +1417,8 @@ def main(argv=None):
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
-        inp, fixed = finite_beta_input(inp, args.beta, "gpu")
+        inp, fixed = (finite_beta_input(without_current(inp), args.beta, "gpu", am=BOOTSTRAP_PRESSURE)
+                      if args.zero_current else finite_beta_input(inp, args.beta, "gpu"))
     fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if fold else None
     redl = None if fold else redl

@@ -509,9 +509,9 @@ def solve_free_boundary_three_term(
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
     largest = max(residual.normal, residual.pressure, residual.sheet_current)
-    message = (f"three-term free boundary ({config.labelling} labelling): {fit['accepted']} boundary steps "
-               f"(finish: {fit['reason']}); {how}; interface residuals B.n {residual.normal:.2e}, pressure "
-               f"{residual.pressure:.2e}, sheet current {residual.sheet_current:.2e}"
+    message = (f"three-term free boundary ({config.labelling} labelling): boundary fit {fit['reason']}, "
+               f"{int(stats.get('boundary_evaluations', 0))} evaluations; {how}; interface residuals B.n "
+               f"{residual.normal:.2e}, pressure {residual.pressure:.2e}, sheet current {residual.sheet_current:.2e}"
                + ("" if largest <= config.max_residual else f" (above the accepted {config.max_residual:.0e})"))
     if verbose:
         print(message, flush=True)

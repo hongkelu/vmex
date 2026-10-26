@@ -1624,9 +1624,15 @@ def _newton_refined_candidates(cfg, params_np, seeds):
         continued = _newton_continuation(cfg, params_np)
         if continued is not None and (best is None or continued[1] < best[1]):
             best = continued
-    return None if best is None else best[0]
+    if best is None or not best[1] <= NEWTON_SEED_NEAR * float(cfg.refine_tol):
+        # a state Newton only partly improved is no better a start for the descent than the plain seed
+        _count(cfg, newton_seeds_far=1)
+        return None
+    return best[0]
 
 
+#: A refined seed is used only within this multiple of ``refine_tol`` of the root (:func:`_newton_refined_candidates`).
+NEWTON_SEED_NEAR = 1e3
 #: The continuation of a seed (:func:`_newton_continuation`): the fractions of the way from the hot state's
 #: parameters to the new ones at which Newton re-converges.
 NEWTON_SEED_CONTINUATION = (0.25, 0.5, 0.75, 1.0)

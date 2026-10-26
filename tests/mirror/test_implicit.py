@@ -37,14 +37,6 @@ from vmex.mirror.splines import (  # noqa: E402
 from vmex.mirror.geometry import evaluate_closed_spline_axis  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def _enable_solver_jit():
-    previous = bool(jax.config.jax_disable_jit)
-    jax.config.update("jax_disable_jit", False)
-    yield
-    jax.config.update("jax_disable_jit", previous)
-
-
 def test_spline_adjoint_matches_reconverged_central_difference() -> None:
     config = MirrorConfig(
         resolution=MirrorResolution(ns=5, nxi=9),
@@ -401,7 +393,7 @@ def test_free_boundary_adjoint_rejects_unconverged_and_3d_results() -> None:
 
 
 @pytest.mark.full
-def test_free_boundary_field_adjoint_matches_central_difference(_module_jit_enabled) -> None:
+def test_free_boundary_field_adjoint_matches_central_difference() -> None:
     config = MirrorConfig(
         resolution=MirrorResolution(ns=5, nxi=7),
         z_min=-0.8,

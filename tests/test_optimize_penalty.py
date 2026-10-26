@@ -24,8 +24,6 @@ from vmex.core import optimize as opt  # noqa: E402
 from vmex.core.errors import VmecJacobianError  # noqa: E402
 from vmex.core.input import VmecInput  # noqa: E402
 
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")  # full solves: jitted
-
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 OBJECTIVE = [(opt.aspect_ratio, 4.0, 1.0)]
 
@@ -34,7 +32,7 @@ OBJECTIVE = [(opt.aspect_ratio, 4.0, 1.0)]
 # module's first host solves into memo hits and shift the call counts the
 # failure injection keys on. Each test starts from empty memos.
 _PER_CONFIG_MEMOS = ("_HOT_CACHE", "_LAST_SOLVE", "_PERTURB_SEED", "_LAST_STATUS_ERROR",
-                     "_LAST_REFINED", "_LAST_ANCHOR_FACTORS", "_LAST_REFINEMENT_CORRECTION")
+                     "_LAST_REFINED", "_LAST_REFINEMENT_CORRECTION")
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +89,7 @@ def test_status_callback_exposes_under_converged_fsq(monkeypatch):
     mask = jax.tree.map(jax.numpy.zeros_like, state)
     result = SimpleNamespace(converged=False, fsqr=2.0e-10, fsqz=3.0e-10, fsql=0.0)
 
-    def under_converged(config, params_np):
+    def under_converged(config, params_np, **_):
         im._LAST_SOLVE[config] = (im._params_key(params_np), result)
         return jax.tree.map(np.asarray, state), jax.tree.map(np.asarray, mask)
 

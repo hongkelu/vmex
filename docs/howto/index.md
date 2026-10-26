@@ -13,9 +13,12 @@ run-an-input-file
 restart-from-previous-run
 run-on-gpu
 free-boundary
+free-boundary-newton
 match-phiedge
 use-essos-fields-and-coils
 trace-alpha-particles
+trace-resolution
+trace-to-the-wall
 turbulence
 neoclassical-transport
 profiles

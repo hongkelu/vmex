@@ -41,7 +41,6 @@ pytestmark_golden = pytest.mark.skipif(
 )
 pytestmark = [
     pytestmark_golden,
-    pytest.mark.usefixtures("_module_jit_enabled"),  # full solves: run jitted
 ]
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 
@@ -184,7 +183,7 @@ _LASYM_DIAG_DRIFT = {
 }
 # The legacy VMEC2000/LIBSTELL Compute_Currents branch used shalf(js+1)
 # for both neighboring bsubumns coefficients.  VMEX follows the corrected
-# PARVMEC-calibrated VMEC++ 0.7.1 formula, so the old golden's currvmns is
+# PARVMEC-calibrated C++ VMEC 0.7.1 formula, so the old golden's currvmns is
 # useful only as a finite/shape check.  tests/test_postprocess_currents.py
 # pins the corrected formula directly.
 _LASYM_CORRECTED_LEGACY_OUTPUT = {"currvmns"}
@@ -223,8 +222,6 @@ def case(request, tmp_path_factory):
     if not deck.exists():
         pytest.skip(f"missing input deck {deck}")
     if name not in _RUN_CACHE:
-        # conftest disables JIT for unit tests; full solves need it.
-        jax.config.update("jax_disable_jit", False)
         os.environ.setdefault("VMEX_TOMNSPS_FFT", "0")
         from vmex.core.input import VmecInput
         from vmex.core.multigrid import solve_multigrid

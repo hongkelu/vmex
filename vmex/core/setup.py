@@ -32,7 +32,7 @@ All spectral outputs are in the signed-(m, n) helical packing of
 state — in the m = 1 *constrained* basis evolved by the solver
 (``residue.f90`` / ``readin.f`` ``lconm1``).  Geometry synthesis
 (:func:`vmex.core.geometry.real_space_geometry`) consumes the *physical*
-basis; :func:`geometry_state` performs the conversion
+basis; ``_geometry_state_arrays`` performs the conversion
 (:func:`vmex.core.residuals.m1_constrained_to_physical` + the 3D lambda
 axis closure).
 
@@ -78,7 +78,6 @@ __all__ = [
     "validate_torflux_monotone",
     "interior_guess",
     "guess_axis",
-    "geometry_state",
     "run_setup",
 ]
 
@@ -170,7 +169,7 @@ class RunSetup:
     ``(ns, mnmax)`` — internal-normalized, m = 1-*constrained* spectral
     coefficients (the solver's evolution basis) — and ``lambda_cos/
     lambda_sin`` (zero; ``profil1d.f`` zeroes the lambda block of ``xc``).
-    Use :func:`geometry_state` to obtain the physical-basis inputs of
+    ``_geometry_state_arrays`` gives the physical-basis inputs of
     :func:`vmex.core.geometry.real_space_geometry`.
 
     Static metadata: ``signgs`` (always -1), ``lflip``, ``lasym``, ``lthreed``,
@@ -268,16 +267,14 @@ def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:
 def _lasym_delta_rotation(rbc, rbs, zbc, zbs, *, mpol: int, ntor: int):
     """``readin.f`` lasym normalization: rotate theta so ``RBS(0,1) = ZBC(0,1)``.
 
-    ``delta = atan((rbs(0,1) - zbc(0,1)) / (|rbc(0,1)| + |zbs(0,1)|))``; every
-    (n, m) pair is rotated by ``m*delta`` (cos/sin mixing).  A denominator of
-    zero (degenerate m=1 content) keeps the input unrotated.
+    ``delta = atan2(rbs(0,1) - zbc(0,1), rbc(0,1) + zbs(0,1))`` (VMEC2000
+    readin.f since 2021; the earlier ``atan`` over ``|rbc| + |zbs|`` misses
+    the alignment when ``rbc(0,1)`` and ``zbs(0,1)`` differ in sign); every
+    (n, m) pair is rotated by ``m*delta`` (cos/sin mixing).
     """
     if mpol < 2:
         return rbc, rbs, zbc, zbs
-    denom = abs(rbc[ntor, 1]) + abs(zbs[ntor, 1])
-    if denom == 0.0:
-        return rbc, rbs, zbc, zbs
-    delta = float(np.arctan((rbs[ntor, 1] - zbc[ntor, 1]) / denom))
+    delta = float(np.arctan2(rbs[ntor, 1] - zbc[ntor, 1], rbc[ntor, 1] + zbs[ntor, 1]))
     if delta == 0.0:
         return rbc, rbs, zbc, zbs
     m = np.arange(mpol, dtype=float)[None, :]
@@ -1020,21 +1017,6 @@ def _geometry_state_arrays(
     )
 
 
-def geometry_state(setup: RunSetup, *, modes: ModeTable) -> dict[str, Array]:
-    """Convert the evolution-basis state into geometry-synthesis inputs.
-
-    Applies :func:`vmex.core.residuals.m1_constrained_to_physical`
-    (``residue.f90`` — undo the internal m = 1 constraint) and the 3D lambda
-    axis closure (``totzsp_mod.f``); the result is the keyword dict expected
-    by :func:`vmex.core.geometry.real_space_geometry`.
-    """
-    return _geometry_state_arrays(
-        (setup.R_cos, setup.R_sin, setup.Z_cos, setup.Z_sin,
-         setup.lambda_cos, setup.lambda_sin),
-        modes=modes, lthreed=setup.lthreed, lasym=setup.lasym, lconm1=setup.lconm1,
-    )
-
-
 def _axis_arrays(inp: VmecInput, dtype) -> tuple[Array, Array, Array, Array]:
     """Dense physical axis arrays from the input (``read_indata_namelist``)."""
     return tuple(jnp.asarray(np.asarray(a, dtype=float), dtype=dtype) for a in
@@ -1267,6 +1249,11 @@ def run_setup(
         inp, modes=mode_table(resolution.mpol, resolution.ntor),
         trig=trig_tables(resolution),
     )
+    if float(inp.bloat) not in (0.0, 1.0) and int(inp.ncurr) != 1:
+        raise VmecInputError(
+            f"BLOAT = {float(inp.bloat):g} needs NCURR = 1 (found NCURR = {int(inp.ncurr)}); "
+            "VMEC2000 stops on this deck (initialize_vmec_arrays.f, ier_flag 3)",
+            hint="set BLOAT = 1, or prescribe the current profile (NCURR = 1)")
     key = _SetupLaneKey(
         resolution=resolution, lconm1=bool(lconm1), lflip=lflip, signgs=-1,
         piota_type=str(inp.piota_type), pcurr_type=str(inp.pcurr_type),

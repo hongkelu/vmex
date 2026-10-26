@@ -10,9 +10,8 @@ One home for the small private helpers that :mod:`~vmex.core.optimize`,
 - :func:`_iotas_half` / :func:`_iotas_half_from_fields` — the ``ncurr``-aware
   half-mesh rotational transform (``add_fluxes.f90`` conventions);
 - the **canonical wout-parity scalar targets**:
-  :func:`aspect_ratio` / :func:`major_radius` / :func:`volume`
-  (``aspectratio.f`` boundary quadrature, equal to the wout
-  ``aspect``/``Rmajor_p``/``volume_p`` scalars) and
+  :func:`aspect_ratio` / :func:`volume` (``aspectratio.f`` boundary
+  quadrature, equal to the wout ``aspect``/``volume_p`` scalars) and
   :func:`mean_iota` / :func:`edge_iota` (wout ``iotas``/``iotaf[-1]``
   conventions), re-exported unchanged by :mod:`~vmex.core.optimize`.
   :func:`elongation_profile` / :func:`max_elongation` evaluate the boundary
@@ -23,10 +22,6 @@ One home for the small private helpers that :mod:`~vmex.core.optimize`,
   fields and the FD-cached gradient tables of ``tests/test_implicit_grad.py``
   pin those exact quadratures — the two families agree to quadrature
   resolution;
-- the axis values free of the enclosed current: :func:`geometric_iota` (the
-  half-mesh iota without its enclosed-current part), :func:`axis_iota` (its
-  axis value) and :func:`axis_field_strength` (the averaged ``|B|`` on the
-  axis), each axis value extrapolated to ``s = 0`` with :data:`_AXIS_WEIGHTS`;
 - the half-mesh radial sampling primitives :func:`_half_grid` /
   :func:`_interp_half_grid` and the wout-table utilities :func:`_as_1d` /
   :func:`_mode_matrix`;
@@ -54,7 +49,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .fields import magnetic_fields
 from .fourier import Resolution, mode_table, trig_tables
 from .residuals import m1_constrained_to_physical
 from .solver import SolverRuntime, SpectralState, _field_chain_lane
@@ -115,6 +109,35 @@ def _mode_matrix(wout, name: str, *, ns: int, mn: int, optional: bool = False) -
 # ---------------------------------------------------------------------------
 
 
+def _field_line_frame(pos_fn, lam_fn, modb_fn, q, *, iota, diota, phipf_j, phi_rel=0.0) -> dict:
+    """Covariant frame and field at ``q = (t, theta, phi)`` on one flux surface.
+
+    ``pos_fn``/``lam_fn``/``modb_fn`` are the per-surface closures of
+    :func:`vmex.core.stability._surface_closures`.  Returns ``J`` (columns
+    ``e_s, e_theta, e_phi``), its inverse ``dual`` (rows ``grad s, grad theta,
+    grad phi``), ``sqrt_g``, ``lam_g = grad lambda``,
+    ``B = phi'[(iota - lambda_phi) e_theta + (1 + lambda_theta) e_phi]/sqrt_g``,
+    ``modB``, ``dB = grad_(s,theta,phi)|B|``, ``grad_modB``, ``b_sup_phi`` and
+    ``grad_alpha`` for ``alpha = theta* - iota (phi - zeta0)`` with
+    ``phi_rel = phi - zeta0`` carrying the secular shear term.  The
+    ballooning, gyrokinetic and Gamma_c point tuples are built from it.
+    """
+    J = jax.jacfwd(pos_fn)(q)
+    sqrt_g = jnp.linalg.det(J)
+    dual = jnp.linalg.inv(J)
+    lam_g = jax.grad(lam_fn)(q)
+    iota_t = iota + diota * q[0]
+    B = phipf_j * ((iota_t - lam_g[2]) * J[:, 1] + (1.0 + lam_g[1]) * J[:, 2]) / sqrt_g
+    dB = jax.grad(modb_fn)(q)
+    alpha_cov = (lam_g[0] - phi_rel * diota, 1.0 + lam_g[1], lam_g[2] - iota_t)
+    return dict(
+        J=J, dual=dual, sqrt_g=sqrt_g, lam_g=lam_g, B=B, modB=jnp.linalg.norm(B), dB=dB,
+        grad_modB=dB[0] * dual[0] + dB[1] * dual[1] + dB[2] * dual[2],
+        grad_alpha=alpha_cov[0] * dual[0] + alpha_cov[1] * dual[1] + alpha_cov[2] * dual[2],
+        b_sup_phi=phipf_j * (1.0 + lam_g[1]) / sqrt_g,
+    )
+
+
 def _field_chain(state: SpectralState, rt: SolverRuntime):
     """Geometry -> Jacobian -> metric -> fields -> energies of a core state.
 
@@ -147,41 +170,6 @@ def _iotas_half(state: SpectralState, rt: SolverRuntime) -> jnp.ndarray:
         return jnp.asarray(setup.iotas)
     _, _, _, fields, _ = _field_chain(state, rt)
     return _iotas_half_from_fields(setup, fields)
-
-
-#: Lagrange weights at ``s = 0`` of the quadratic through the first three
-#: half-mesh surfaces ``s = h/2, 3h/2, 5h/2`` (independent of ``h``).
-_AXIS_WEIGHTS = (15 / 8, -5 / 4, 3 / 8)
-
-
-@jax.jit  # eager calls (diagnostics, reports) would otherwise run the field chain op by op
-def geometric_iota(state: SpectralState, rt: SolverRuntime) -> Array:
-    """Half-mesh iota without its enclosed-current part, and its axis value.
-
-    With a prescribed current (``ncurr = 1``) ``add_fluxes.f`` gives
-    ``iota = icurv / (phips <guu/sqrt(g)>) + iota_geo`` with
-    ``iota_geo = -<guu B^u_lambda + guv B^v> / (phips <guu/sqrt(g)>)``, here
-    the same field chain solved with ``icurv = 0``.  The enclosed current
-    vanishes on the axis, so the axis iota is ``iota_geo(0)``: a bootstrap
-    current (``I' ~ s^(1/4)``) makes iota itself steep off the axis, and
-    VMEC's ``iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2]`` mostly extrapolates
-    that current part, while ``iota_geo`` is smooth there.  Index 0 is its
-    quadratic extrapolation in ``s`` through the first three half-mesh
-    surfaces (:data:`_AXIS_WEIGHTS`), indices ``1..`` the half-mesh values.
-    ``ncurr = 0``: the prescribed profile, with its axis value ``iotaf[0]``.
-    """
-    setup = rt.setup
-    if int(setup.ncurr) != 1:
-        iotas = jnp.asarray(setup.iotas)
-        axis = jnp.asarray(setup.iotaf)[0] * (-1.0 if setup.lflip else 1.0)
-        return iotas.at[0].set(axis)
-    geometry, jacobian, metrics, fields, _ = _field_chain(state, rt)
-    currentless = magnetic_fields(
-        geometry=geometry, jacobian=jacobian, metrics=metrics, trig=rt.trig, s=setup.s_full,
-        phips=setup.phips, phipf=setup.phipf, chips=setup.chips, signgs=setup.signgs,
-        lamscale=fields.lamscale, ncurr=1)
-    iotas = _iotas_half_from_fields(setup, currentless)
-    return iotas.at[0].set(jnp.asarray(_AXIS_WEIGHTS) @ iotas[1:4])
 
 
 # ---------------------------------------------------------------------------
@@ -222,16 +210,6 @@ def aspect_ratio(state: SpectralState, rt: SolverRuntime) -> Array:
     historical shoelace-quadrature variant of the same scalar (see there).
     """
     return _aspect_scalars(state, rt)[2]
-
-
-def major_radius(state: SpectralState, rt: SolverRuntime) -> Array:
-    """Major radius ``Rmajor_p`` [m] (wout convention, boundary quadrature).
-
-    ``volume_p / (2 pi <cross-section area>)``, equal to the wout
-    ``Rmajor_p`` scalar of the same state; re-exported as
-    ``vmex.core.optimize.major_radius``.
-    """
-    return _aspect_scalars(state, rt)[1]
 
 
 def volume(state: SpectralState, rt: SolverRuntime) -> Array:
@@ -446,32 +424,6 @@ def edge_iota(state: SpectralState, rt: SolverRuntime) -> Array:
 
 
 iota_edge = edge_iota   # naming-flip alias (see the edge_iota docstring)
-
-
-def axis_iota(state: SpectralState, rt: SolverRuntime) -> Array:
-    """Rotational transform on the magnetic axis, free of the enclosed current.
-
-    The extrapolated geometric iota of :func:`geometric_iota` (``ncurr = 1``;
-    the prescribed ``iotaf[0]`` at ``ncurr = 0``), which converges in ``ns``
-    where the wout ``iotaf[0]`` of a bootstrap current does not.
-    """
-    return geometric_iota(state, rt)[0]
-
-
-def axis_field_strength(state: SpectralState, rt: SolverRuntime) -> Array:
-    """Toroidally averaged ``|B|`` on the magnetic axis [T].
-
-    The angle-averaged half-mesh ``|B| = sqrt(2 (bsq - p))`` (``wint``
-    weights) on the first three surfaces, extrapolated to ``s = 0`` with
-    :data:`_AXIS_WEIGHTS` (as :func:`geometric_iota`).  The wout ``b0`` is
-    instead ``R B_phi`` over the axis radius at one toroidal angle
-    (``eqfor.f``).
-    """
-    _, _, _, fields, _ = _field_chain(state, rt)
-    b_squared = 2.0 * (jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None])
-    wint = jnp.asarray(rt.trig.wint)
-    mean = jnp.sum(jnp.sqrt(jnp.maximum(b_squared[1:4], 0.0)) * wint, axis=(1, 2)) / jnp.sum(wint)
-    return jnp.asarray(_AXIS_WEIGHTS) @ mean
 
 
 # ---------------------------------------------------------------------------

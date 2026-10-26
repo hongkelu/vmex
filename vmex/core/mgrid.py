@@ -56,7 +56,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .errors import MgridNotFoundError
+from .errors import INPUT_ERROR_FLAG, WERROR_MESSAGES, MgridNotFoundError, VmecInputError
 from ._netcdf import assign_array
 
 _FIELD_RE = re.compile(r"^(br|bp|bz)_(\d{3})$")
@@ -71,9 +71,11 @@ class MgridData:
     Field arrays are stored per coil group with shape ``(nextcur, kp, jz,
     ir)`` — the netCDF per-group ``(phi, zee, rad)`` layout stacked along a
     leading coil-group axis.  Fields are *unscaled* coil-group responses; the
-    physical field is ``sum_g extcur[g] * B_g`` (``mgrid_mode="S"``, scaled
-    per unit current) or the raw per-group field (``mgrid_mode="R"``/"N",
-    raw currents baked in — VMEC then divides extcur by ``raw_coil_cur``).
+    physical field is ``sum_g extcur[g] * B_g`` in every mode, as in
+    VMEC2000.  A mode-``S`` table is per unit current (``EXTCUR`` in A); a
+    mode-``R``/``N`` table carries the coil currents ``raw_coil_cur`` (MAKEGRID
+    raw mode, ``EXTCUR`` near one).  VMEC2000 never reads ``raw_coil_cur``
+    beyond storing it.
 
     VMEC2000 counterpart: the module variables filled by ``read_mgrid`` in
     ``Sources/NESTOR_vacuum/mgrid_mod.f``.
@@ -135,13 +137,44 @@ def _file_currents(mgrid_mode: str, raw_coil_cur: Any) -> np.ndarray:
     """Per-group table multipliers that give the file's own field.
 
     A per-ampere (mode ``S``) table is multiplied by ``raw_coil_cur``; a mode
-    ``R``/``N`` table already carries its currents (VMEC2000 divides ``EXTCUR``
-    by ``raw_coil_cur`` for those files), so it is multiplied by one.
+    ``R``/``N`` table already carries its currents, so it is multiplied by one.
     """
     raw = np.asarray(raw_coil_cur, dtype=np.float64).reshape(-1)
     if str(mgrid_mode).upper().startswith(("R", "N")):
         return np.where(raw != 0.0, 1.0, 0.0)
     return raw
+
+
+def deck_extcur(extcur: Any, data: MgridData) -> np.ndarray:
+    """A deck's ``EXTCUR`` laid out on the mgrid's ``nextcur`` coil groups.
+
+    Missing trailing entries are zero (groups left off), as in VMEC2000, whose
+    ``read_mgrid`` loops over the file's groups and reads ``extcur(ig)`` from a
+    300-entry, zero-filled array.  Entries *beyond* ``nextcur`` are the one
+    case VMEC2000 drops silently: a nonzero one means the deck was written for
+    a different mgrid (VMEC++ rejects any length mismatch), and the run would
+    use none of that current.  Trailing zeros are harmless padding and pass.
+
+    Raises
+    ------
+    VmecInputError
+        If a nonzero ``EXTCUR`` entry has no coil group in the mgrid.
+    """
+
+    deck = np.atleast_1d(np.asarray([] if extcur is None else extcur, dtype=float)).ravel()
+    n = int(data.nextcur)
+    dropped = np.flatnonzero(deck[n:] != 0.0) + n
+    if dropped.size:
+        listed = ", ".join(f"EXTCUR({i + 1}) = {deck[i]:g}" for i in dropped)
+        raise VmecInputError(
+            WERROR_MESSAGES[INPUT_ERROR_FLAG],
+            hint=(f"the mgrid has {n} coil group{'s' if n != 1 else ''} but the deck sets {listed}; "
+                  "VMEC2000 would silently ignore these currents and VMEC++ rejects the deck. "
+                  "Use the mgrid the deck was written for, or remove the extra EXTCUR entries"),
+        )
+    out = np.zeros((n,), dtype=float)
+    out[:min(deck.size, n)] = deck[:n]
+    return out
 
 
 def read_mgrid(path: str | Path, *, sum_groups: bool = False,
@@ -664,11 +697,10 @@ class MgridField:
         ``extcur`` multiplies each group's table.  The default reproduces the
         currents the file was computed with: ``raw_coil_cur`` for a
         per-ampere (mode ``S``) table, and one for a mode ``R``/``N`` table,
-        which already carries its currents (VMEC2000 divides ``EXTCUR`` by
-        ``raw_coil_cur`` for those files).  To solve a *deck*, pass the deck's
-        ``EXTCUR`` (divided by ``raw_coil_cur`` for mode-``R``/``N`` files) or
-        use the solver's ``mgrid_path`` argument, which applies that scaling
-        automatically — otherwise the input's ``EXTCUR`` is silently ignored.
+        which already carries its currents.  To solve a *deck*, pass the
+        deck's ``EXTCUR`` (VMEC2000 multiplies every table by it, in every
+        mode) or use :meth:`from_input` / the solver's ``mgrid_path`` argument;
+        otherwise the input's ``EXTCUR`` is silently ignored.
         """
 
         cur = _file_currents(data.mgrid_mode, data.raw_coil_cur) if extcur is None else extcur
@@ -709,20 +741,16 @@ class MgridField:
         """The field a deck solves with: ``inp.mgrid_file`` (or ``mgrid_path``) at ``EXTCUR``.
 
         Applies the deck scaling of the solver's ``mgrid_path`` argument
-        (``EXTCUR`` divided by ``raw_coil_cur`` for mode-``R``/``N`` files,
-        missing entries zero), so ``solve_free_boundary(inp,
+        (``EXTCUR`` multiplies each group's table as in VMEC2000's
+        ``read_mgrid``, missing entries zero; a nonzero entry beyond the mgrid's
+        coil groups raises :class:`~vmex.core.errors.VmecInputError`, see
+        :func:`deck_extcur`), so ``solve_free_boundary(inp,
         external_field=MgridField.from_input(inp, order=3))`` solves the deck
         with the tricubic interpolant.
         """
 
         data = read_mgrid(Path(str(mgrid_path or inp.mgrid_file)).expanduser())
-        deck = np.atleast_1d(np.asarray(inp.extcur if inp.extcur is not None else [], dtype=float))
-        extcur = np.zeros((data.nextcur,), dtype=float)
-        extcur[:min(deck.size, data.nextcur)] = deck[:data.nextcur]
-        if str(data.mgrid_mode).upper().startswith(("R", "N")):
-            raw = np.asarray(data.raw_coil_cur, dtype=float)
-            extcur = np.divide(extcur, raw, out=extcur, where=raw != 0.0)
-        return cls.from_mgrid_data(data, extcur=extcur, order=order)
+        return cls.from_mgrid_data(data, extcur=deck_extcur(inp.extcur, data), order=order)
 
     @classmethod
     def from_cartesian_field(

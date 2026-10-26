@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,12 +25,19 @@ from vmex.core.multigrid import (  # noqa: E402
 )
 from vmex.core.preconditioner_2d import Prec2DConfig  # noqa: E402
 from vmex.core.solver import SpectralState, resolution_from_input  # noqa: E402
-
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
-
 REPO = Path(__file__).resolve().parents[1]
 DECK = REPO / "examples" / "data" / "input.cth_like_free_bdy_lasym_small"
 MGRID = REPO / "examples" / "data" / "mgrid_cth_like_lasym_small.nc"
+
+
+def _driver():
+    """The benchmark driver ``tools/run_freeboundary_multigrid.py``."""
+    import sys
+
+    sys.path.insert(0, str(REPO / "tools"))
+    import run_freeboundary_multigrid
+
+    return run_freeboundary_multigrid
 CONV_DECK = REPO / "examples" / "data" / "input.cth_like_free_bdy"
 CONV_MGRID = REPO / "examples" / "data" / "mgrid_cth_like.nc"
 CONV_WOUT = REPO / "examples" / "data" / "single_grid" / "wout_cth_like_free_bdy.nc"
@@ -196,7 +202,7 @@ def test_initial_bad_jacobian_restarts_free_ladder_through_ns3(
 
 
 def test_vmec2000_niter_exhaustion_is_not_converged() -> None:
-    from benchmarks.run_freeboundary_multigrid import _vmec_converged
+    _vmec_converged = _driver()._vmec_converged
 
     stdout = """\
  Try increasing NITER or PRE_NITER if the preconditioner is on.
@@ -376,7 +382,7 @@ def test_converged_multigrid_final_state_matches_vmec2000_wout() -> None:
     if not CONV_MGRID.exists() or not CONV_WOUT.exists():
         pytest.skip("converged CTH mgrid/wout assets unavailable")
     from vmex.core.wout import read_wout
-    from benchmarks.run_freeboundary_multigrid import _stage_iterations
+    _stage_iterations = _driver()._stage_iterations
 
     inp = VmecInput.from_file(CONV_DECK)
     lines: list[str] = []
@@ -416,7 +422,7 @@ def test_converged_multigrid_final_state_matches_vmec2000_wout() -> None:
     # This packaged reference is ns=151, while the fast CI ladder ends at
     # ns=15; compare the common boundary and interpolated iota at the expected
     # radial-discretization scale.  The exact ns=15 VMEC2000 comparison is
-    # recorded by benchmarks/run_freeboundary_multigrid.py (<1e-3 here).
+    # recorded by tools/run_freeboundary_multigrid.py (<1e-3 here).
     assert rerr < 1e-2
     assert zerr < 1e-2
     assert ierr < 1.5e-2
@@ -514,78 +520,3 @@ def test_prefetch_compile_parity_and_bookkeeping() -> None:
     assert float(result.wb) == float(baseline.wb)
     assert float(result.r00) == float(baseline.r00)
     assert int(result.iterations) == int(baseline.iterations)
-
-
-@dataclass(frozen=True)
-class _Result:
-    state: object
-    boundary_residual: object = None
-    fsqr: float = 0.0
-    fsqz: float = 0.0
-    fsql: float = 0.0
-
-
-def _fake_freeboundary_vc(monkeypatch, **functions):
-    """Stand-in for the optional virtual-casing module (dispatch only)."""
-    monkeypatch.setitem(sys.modules, "vmex.core.freeboundary_vc", SimpleNamespace(**functions))
-
-
-def test_report_boundary_residual_evaluates_the_final_nestor_state(monkeypatch) -> None:
-    inp = VmecInput.from_file(DECK)
-    seen = []
-
-    def fake_stage(_inp, **kwargs):
-        state = _state(kwargs["resolution"].ns, kwargs["resolution"].mnmax, 1.0)
-        return SimpleNamespace(result=_Result(state), continuation_state=state, vacuum=None,
-                               rcon0=jnp.zeros(1), zcon0=jnp.zeros(1))
-
-    def boundary_residual(inp_, state, field, *, nphi, ntheta):
-        seen.append((state, field, nphi, ntheta))
-        return "rows", "weights"
-
-    monkeypatch.setattr(FB, "_solve_free_boundary_stage", fake_stage)
-    _fake_freeboundary_vc(monkeypatch, boundary_residual=boundary_residual,
-                          summarize_boundary_residual=lambda rows, weights: (rows, weights))
-    field = object()
-    result = solve_free_boundary_multigrid(
-        inp, ns_array=[7], ftol_array=[1e-4], niter_array=[2], external_field=field,
-        raise_on_max_iterations=False, report_boundary_residual=True)
-    assert result.boundary_residual == ("rows", "weights")
-    assert seen == [(result.state, field, 48, 48)]
-
-
-def test_virtual_casing_boundary_condition_dispatches_and_polishes(monkeypatch) -> None:
-    inp = VmecInput.from_file(DECK)
-    with pytest.raises(NotImplementedError, match="deck boundary"):
-        solve_free_boundary_multigrid(inp, external_field=object(), boundary_condition="three_term",
-                                      initial_state=_state(3, 1, 0.0))
-    with pytest.raises(ValueError, match="boundary_condition"):
-        solve_free_boundary_multigrid(inp, external_field=object(), boundary_condition="unknown")
-
-    calls = {}
-    solution = _state(9, 1, 2.0)
-    fit_input = replace(inp, ftol_array=np.asarray([1e-11]), niter_array=np.asarray([50]))
-
-    def fake_fit(ladder, **kwargs):
-        calls["fit"] = (ladder, kwargs)
-        return SimpleNamespace(input=fit_input, equilibrium=SimpleNamespace(solution=solution),
-                               boundary_residual="no sheet current")
-
-    def fake_solve_multigrid(inp_, **kwargs):
-        calls["polish"] = (inp_, kwargs)
-        return _Result(kwargs["initial_state"])
-
-    _fake_freeboundary_vc(monkeypatch, solve_free_boundary_three_term=fake_fit)
-    monkeypatch.setattr(MG, "solve_multigrid", fake_solve_multigrid)
-    field = object()
-    result = solve_free_boundary_multigrid(
-        inp, ns_array=[5, 9], external_field=field, boundary_condition="three_term",
-        three_term_options={"max_nfev": 3})
-
-    ladder, kwargs = calls["fit"]
-    np.testing.assert_array_equal(ladder.ns_array, [5, 9])
-    assert kwargs == {"external_field": field, "mgrid_path": None, "max_nfev": 3}
-    polish_input, polish = calls["polish"]
-    assert polish_input is fit_input
-    assert polish["ns_array"] == [9] and polish["ftol_array"] == [1e-11] and polish["niter_array"] == [50]
-    assert result == _Result(solution, "no sheet current")

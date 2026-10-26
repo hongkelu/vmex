@@ -95,7 +95,7 @@ then a verified download. Tests that do need a live binary are marked
 Parity along the whole trajectory, not only at the endpoint: total force
 residual per iteration for the bundled NFP=4 QH case at `ns=51` through all
 three codes. Regenerate with
-`python benchmarks/make_readme_figures.py --only convergence`.
+`python docs/_static/figures/sources/make_readme_figures.py --only convergence`.
 ```
 
 ### Scalars: a cheap gate that needs no golden bundle
@@ -133,7 +133,7 @@ coefficient by coefficient.
 
 ### Fresh decks, never benchmarked before
 
-`benchmarks/fresh_decks_vs_vmec2000_2026-09-02.json` records six decks that
+A 2026-09-02 run (VMEX commit `8ef81c44`) recorded six decks that
 had never been run on VMEX, solved against a locally built `xvmec2000`
 (sha256 prefix `f7e9034f7d9d7ae5`): `ITERModel`, `estell_24_scaled`,
 `n3are_R7.75B5.7`, `HSX_QHS_vacuum_ns201`, `W7-X_standard_configuration`
@@ -151,9 +151,8 @@ Quote it by its measured maxima, never as "machine precision":
   one on `ITERModel` (1469 against 1470); Jacobian resets identical wherever
   recorded.
 
-`tests/test_performance_docs.py::test_fresh_deck_parity_artifact_is_provenanced_and_cited`
-guards the record's provenance and requires {doc}`/reference/performance`
-to cite it by path.
+The record, with deck and reference-binary hashes, is in git history at that
+commit; {doc}`/reference/performance` quotes its table.
 
 ## Continuous force, native states and WOUT reconstruction
 
@@ -185,7 +184,7 @@ it helps on other configurations.
 
 ![Historical WOUT reconstruction measurements](../_static/figures/readme_strong_force_comparison.webp)
 
-The separate [native DESC record](../../benchmarks/desc_native_vs_lifted_2026-09-03.json)
+A separate native DESC measurement (2026-09-03)
 reports `<|F|>/<|grad p|> = 4.01e-6` on DESC's own shaped-tokamak equilibrium.
 Exporting that state to 129 surfaces and fitting VMEX splines gives pointwise
 normalized L2 `7.13e-2`. Those two norms are different; their quotient is not
@@ -195,7 +194,7 @@ independently refine each native representation and use the same physical
 norm, region, boundary, profiles and flux conventions.
 
 Figure/source hashes remain checked in
-`tests/test_performance_docs.py::test_validation_strong_force_figure_matches_committed_sources`.
+`tests/test_repo_consistency.py::test_strong_force_figure_matches_its_sources`.
 The checks preserve this historical record; they do not rerun the solvers or
 certify a native accuracy ordering.
 
@@ -234,6 +233,39 @@ surfaces, and its iota, enclosed current and pressure match the VMEX profiles; `
 convergence: on this deck VMEX iota at ρ = 0.1 is 0.188, 0.176 and 0.166 for ns = 65, 129 and 257.
 
 ![VMEX and MRX on the 2.5% beta QA deck](../_static/figures/readme_vmex_mrx_comparison.webp)
+
+## Exact equilibria
+
+[vmex-benchmark-analytical](https://github.com/rogeriojorge/vmex-benchmark-analytical) compares VMEX, VMEC2000 and DESC with closed-form
+equilibria: Landreman's integer-transform and sheared families (arXiv:2609.26742), two Solov'ev
+tokamaks, and the non-stellarator-symmetric extensions of Issan et al. (arXiv:2610.07304). Every
+exact case passes force balance and divergence to round-off; the Issan closed forms reproduce the
+paper's volume, beta and transform. Each WOUT is scored by one script for every producer.
+
+| Family A (`iota = 2`), VMEX from the exact geometry | ns 65 | ns 129 |
+|---|---|---|
+| flux-label error, `tau0 = 0` | 2.8e-5 | 5.5e-6 |
+| flux-label error, `tau0 = 0.5` | 8.4e-4 | 8.3e-4 |
+| J error at `s = 0.5`, native field / WOUT, `tau0 = 0` | 3.2e-5 / 6.8e-3 | 7.8e-6 / 3.5e-3 |
+| J error at `s = 0.5`, native field / WOUT, `tau0 = 0.5` | 1.9e-4 / 5.9e-3 | 1.3e-4 / 3.0e-3 |
+
+At mid-radius the native field gives J 23-450 times more accurately than the WOUT file. The record
+behind these numbers and the README figure is `benchmarks/exact_equilibria.json`.
+
+- **Full basis.** The `tau0 = 0` deck solved with `LASYM = T` reproduces the symmetric solve to every
+  printed digit; `tau0 = 0.5` and `-0.5` agree to 1e-9.
+- **Resonant offset.** At `tau0 != 0` the miss is independent of ns and of the poloidal resolution,
+  has zero mean, and lives in the `(m, n) = (1, 1), (2, 2), (3, 3)` harmonics: resonant with
+  `iota = 2` at two field periods, where a deformation costs no force. Stellarator symmetry forbids
+  it at `tau0 = 0`. Both states are converged equilibria with the prescribed boundary, pressure and
+  transform.
+- **Downstream tools.** On the asymmetric Solov'ev equilibrium, points mapped through
+  booz_xform_jax land on the exact surfaces and reproduce |B| to 1e-7. The effective ripple of the
+  exact sheared family is the same for `tau1 = +-0.4` to 1e-4 (real-space reference); NEO_JAX
+  reproduces the mirror identity to its line-length error (3e-3). virtual_casing_jax converges to the
+  Biot-Savart field of the exact current at the symmetric rate.
+- **Not validated.** The sheared families (symmetric or not) do not converge in VMEX or VMEC2000,
+  from a cold start or from the exact geometry (VMEX stalls at 1e-7); DESC solves them.
 
 ## Derivative certificates
 
@@ -304,89 +336,6 @@ Rung 5 is tier 5 evidence: those CSVs, and
 that **no test asserts on**. They are provenance for a campaign that was
 run, not gates that would fail if the physics regressed. Read them as such.
 
-### Three-term free boundary against VMEC + NESTOR and DESC
-
-`benchmarks/run_three_term_resolution.py` builds a free boundary whose answer is
-known. A coil field (a winding-surface current at 1.2 minor radii) is fitted to
-cancel the plasma's normal field on the 12 x 12 fixed-boundary QA equilibrium
-of `input.LandremanPaul2021_QA_beta2p5_bootstrap` (beta 2.5%, ns 51), so that
-equilibrium is the free boundary without a sheet current. `--case vacuum` does
-the same for the vacuum `input.LandremanPaul2021_QA_lowres`. Every method starts
-from the same boundary, the target's with its minor radius scaled by 0.97
-(11 mm away), and every result is scored the same way: the boundary is
-re-solved as a fixed-boundary equilibrium, and the three conditions are
-evaluated on a 48 x 48 virtual-casing grid with the singular quadrature
-(4 nfp 48, 96). The records are `benchmarks/three_term_resolution.json` (beta)
-and `benchmarks/three_term_resolution_vacuum.json`;
-`benchmarks/plot_three_term_resolution.py` draws them (boundary, interior
-surfaces and iota), and `benchmarks/three_term_resolution_poincare.py` traces
-the vacuum field lines. DESC (`FixSheetCurrent`, not a VMEX dependency) was run
-outside VMEX and its wouts scored the same way, re-solved with all of their
-modes (DESC's M includes m = M).
-Columns are the largest LCFS distance to the target, the sheet current
-`mu0 |K| / |B|`, wall time with compilation, and peak GPU memory (one RTX 5090).
-NESTOR runs on the exact field and on the same field tabulated as an mgrid
-(301 x 301 x 48):
-
-| M = N | three-term: mm / K / s / GiB | DESC (L = 2M): mm / K / s / GiB | DESC (L = M): mm / K | VMEX + NESTOR: mm / K / converged | NESTOR on the mgrid: mm |
-| --- | --- | --- | --- | --- | --- |
-| 4 | 5.8 / 1.2e-03 / 429 / 1.9 | 16.1 / 3.8e-03 / 700 / 1.0 | 7.9 / 3.4e-03 | 24.0 / 7.5e-03 / yes | 22.9 |
-| 5 | 5.4 / 6.1e-04 / 523 / 1.9 | 10.1 / 2.1e-03 / 771 / 1.1 | 8.5 / 2.7e-03 | 12.4 / 3.0e-03 / yes | 8.1 |
-| 6 | 3.9 / 3.7e-04 / 482 / 2.0 | 5.4 / 1.0e-03 / 1002 / 1.6 | 14.5 / 3.0e-03 | 6.9 / 2.6e-03 / yes | 21.3 |
-| 7 | 3.0 / 2.2e-04 / 543 / 2.1 | 4.0 / 7.6e-04 / 1421 / 3.7 | 7.5 / 1.6e-03 | 13.6 / 1.7e-03 / no | 10.6 |
-| 8 | 2.6 / 1.5e-04 / 689 / 2.3 | 4.0 / 1.0e-03 / 2874 / 9.0 | 4.6 / 9.3e-04 | 35.6 / 8.2e-03 / no | 31.2 |
-| 9 | 2.1 / 1.2e-04 / 803 / 2.0 | 4.3 / 7.4e-04 / 5673 / 17.4 | 5.5 / 1.2e-03 | 20.9 / 3.5e-03 / no | 28.9 |
-| 10 | 2.0 / 8.9e-05 / 1046 / 2.3 | | 5.8 / 7.8e-04 | 17.3 / 2.5e-03 / yes | 19.6 |
-| 11 | 2.1 / 5.2e-05 / 1538 / 3.0 | | 4.9 / 7.9e-04 | 34.8 / 5.9e-03 / no | 53.0 |
-| 12 | 2.0 / 3.7e-05 / 2279 / 4.1 | | 4.1 / 6.0e-04 | 22.6 / 3.4e-03 / no | 38.7 |
-| 13 | 2.0 / 3.7e-05 / 2544 / 5.6 | | | 33.1 / 5.4e-03 / no | 30.1 |
-
-NESTOR stops 7 to 53 mm away with a sheet current of 2e-3 to 1e-2, whether it
-converges or reaches its 40,000 iterations, on the exact field or the mgrid.
-VMEC2000 + NESTOR on the same mgrid agrees with VMEX + NESTOR (24.1, 20.9 and
-19.4 mm at 4, 6 and 10). DESC stops 4.0 to 16 mm away with a sheet current of
-6e-4 to 4e-3; its dense force Jacobian exceeds a 32 GB GPU from M = 10 at
-L = 2M and at M = 13 at L = M. The three-term boundary settles 2 mm
-from the target with all three conditions at 2e-5 to 4e-5, below the target's
-own 4e-5, 1.3e-4 and 1.4e-4 (the field cancels `B.n` on the target only), so
-the last 2 mm is at least partly the target's error.
-
-In vacuum the coils make the whole field, so field lines are the ground truth.
-From 32 points on each of a method's surfaces s = 0.1, 0.3, ..., 0.9, 1 the
-lines are traced 30 transits (RK4, 128 steps per field period; halving the step
-or tracing 100 transits changes nothing). The second number below is the RMS
-distance of their crossings from the surface they started on, averaged over
-the six surfaces, in mm; the first is the LCFS distance to the target; the
-third is the largest distance over a field period of the run's magnetic axis
-from the field's closed field line (Newton on the field-period map), in mm.
-The target itself scores 0.24 (its field cancels `B.n` to 1.2e-5) and 0.42:
-VMEC's axis error at ns 51, which halves with each doubling of ns, while
-DESC's polynomial basis reaches 0.02 to 0.05 mm:
-
-| M = N | three-term: mm / field lines / axis / K | DESC (L = 2M) | DESC (L = M) | VMEX + NESTOR |
-| --- | --- | --- | --- | --- |
-| 4 | 1.7 / 0.23 / 0.35 / 2.4e-04 | 1.6 / 1.02 / 2.67 | 12.3 / 7.54 / 11.66 | 1.6 / 0.59 / 0.37 |
-| 5 | 1.6 / 0.09 / 0.39 / 4.7e-05 | 1.6 / 0.24 / 0.03 | 1.9 / 0.88 / 0.69 | 5.7 / 1.58 / 0.89 |
-| 6 | 1.6 / 0.16 / 0.38 / 2.8e-05 | 1.5 / 0.20 / 0.26 | 1.7 / 0.48 / 0.10 | 1.7 / 0.21 / 0.32 |
-| 7 | 1.6 / 0.18 / 0.38 / 3.5e-05 | 1.6 / 0.39 / 0.05 | 1.6 / 0.19 / 0.14 | 4.0 / 1.44 / 0.42 |
-| 8 | 1.6 / 0.20 / 0.41 / 2.2e-05 | 1.5 / 0.26 / 0.03 | 1.6 / 0.34 / 0.26 | 1.7 / 0.37 / 0.35 |
-| 9 | 1.6 / 0.16 / 0.40 / 2.3e-05 | 1.6 / 0.17 / 0.02 | 1.6 / 0.28 / 0.10 | 3.6 / 1.08 / 0.45 |
-| 10 | 1.6 / 0.21 / 0.41 / 2.0e-05 | | 1.6 / 0.14 / 0.29 | 2.0 / 0.64 / 0.43 |
-| 11 | 1.7 / 0.14 / 0.40 / 2.0e-05 | | 1.6 / 0.12 / 0.17 | 2.2 / 0.76 / 0.43 |
-| 12 | 1.6 / 0.20 / 0.41 / 1.9e-05 | | 1.5 / 0.12 / 0.05 | 2.5 / 0.88 / 0.46 |
-| 13 | 1.6 / 0.10 / 0.40 / 1.8e-05 | | | 1.6 / 0.54 / 0.43 |
-
-Every three-term solution holds its field lines at least as well as the target,
-so its LCFS 1.6 mm away is the field's flux surface more closely than the
-target is. DESC does as well from 9 modes (0.12 to 0.17). Field-line quality
-follows the near-resonant `B.n` harmonic (m, n) = (5, 2) (5 iota - 2 = 0.08),
-recorded as `resonant_bn`, not the RMS of `B.n` (`coil_bn_rms`): NESTOR's swings
-between resolutions are swings of that harmonic. With the singular quadrature
-(4 nfp 48, 48) the tangential plasma field carried a 3e-4 error, the pressure
-jump and sheet current read 2.4e-4 on the exact vacuum target, and the fit
-absorbed it: (5, 2) grew to 5e-5 to 9e-5 and field lines left the LCFS by
-4 to 7 mm. Doubling `quad_np` removes it at the same memory.
-
 ## Mirror geometry: analytic limits
 
 The mirror module is the one place where the answer is known in closed form,
@@ -435,15 +384,14 @@ boundary, and `2e-7` for implicit gradients, which are the loosest because a
 reverse pass accumulates over the whole trajectory. A separate test asserts
 that no `JAX_PLATFORMS` pin is in the environment and that the default
 backend really is the GPU, so a silently-CPU run cannot pass as a GPU lane.
-`benchmarks/device_parity.py` is the standalone audit; its default tolerance
+`tools/device_parity.py` is the standalone audit; its default tolerance
 is `rtol=1e-7`, recorded in every output JSON it writes.
 
 Lane consistency — jit against eager, and the traced against the stepped
 lane — is checked where it matters rather than in one suite: the Boozer
 tables, the setup and geometry chains, the mgrid path and the bootstrap
-state-versus-wout lanes each carry their own comparison. Note that the test
-session disables JIT globally and solver-heavy modules opt back in, so a
-module without that fixture is exercising the interpreted path.
+state-versus-wout lanes each carry their own comparison. The test session runs
+jitted, as users do; those comparisons turn jit off locally for the eager side.
 
 ## What is NOT validated
 
@@ -453,7 +401,7 @@ a claim exists elsewhere.
 - **Free-boundary forward derivatives.** JVPs are `not-available`. The
   reverse derivative of the reconverged free-boundary root is `limited` and
   explicitly experimental, CPU only. Low-memory GPU compilation and failed-trial
-  handling are open promotion gates. `tests/test_capability_docs.py`
+  handling are open promotion gates. `tests/test_repo_consistency.py`
   asserts these statuses, so the claim cannot quietly widen.
 - **Free-boundary roots are anchored, not free.** A converged free-boundary
   solve at `ftol = 1e-12` sat about 1.2e-2 from the root of its projected
@@ -525,12 +473,12 @@ Regenerating the artifacts this page cites:
 ```bash
 python tools/fetch_assets.py --bundle golden-v1     # the VMEC2000 goldens
 python tools/make_golden_digests.py                 # tests/golden_digests.json
-python benchmarks/run_baseline.py                   # benchmarks/baseline.json
-python benchmarks/run_freeboundary_multigrid.py     # the free-boundary ladder
-python benchmarks/run_gpu_matrix.py                 # benchmarks/gpu_baseline.json
-python benchmarks/preconditioner_2d_stiff.py        # the 2D preconditioner run
-python benchmarks/make_strong_force_comparison.py   # the cross-code table
-python benchmarks/device_parity.py --devices cpu,gpu --output parity.json
+python tools/run_baseline.py                        # benchmarks/baseline.json
+python tools/run_freeboundary_multigrid.py          # the free-boundary ladder
+python tools/run_gpu_matrix.py                      # benchmarks/gpu_baseline.json
+python tools/preconditioner_2d_stiff.py             # the 2D preconditioner run
+python docs/_static/figures/sources/make_strong_force_comparison.py  # the cross-code table
+python tools/device_parity.py --devices cpu,gpu --output parity.json
 ```
 
 Figures carry their own provenance in
@@ -540,4 +488,4 @@ figure, and `bytes_verified` says whether the committed pixels were actually
 re-derived and compared. A `command` figure with `bytes_verified` false can
 be rebuilt but its committed bytes predate the current renderer. `python
 tools/update_figure_manifest.py` refreshes the derived fields, and
-`tests/test_figure_provenance.py` fails when a figure and its row disagree.
+`tests/test_repo_consistency.py` fails when a figure and its row disagree.

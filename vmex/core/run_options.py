@@ -12,7 +12,6 @@ Two directive spellings are accepted, both VMEC-safe comments::
 
     !@VMEX POLISH = AUTO
     !@VMEX POLISH_FAIL = ERROR
-    !@VMEX BOUNDARY_CONDITION = THREE_TERM
 
 and the original single-flag form from the polishing integration::
 
@@ -38,7 +37,6 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typing only
 __all__ = [
     "InputRequest",
     "RunOptions",
-    "format_indata_directives",
     "parse_indata_run_options",
     "read_input_request",
     "resolve_run_options",
@@ -47,7 +45,6 @@ __all__ = [
 
 _POLISH_MODES = (False, True, "auto")
 _FAIL_MODES = ("error", "fallback", "warn")
-_BOUNDARY_CONDITIONS = ("nestor", "three_term")
 
 #: ``!@VMEX KEY = VALUE`` — the canonical directive family.
 # [ \t] rather than \s throughout: a greedy \s* would consume the newline
@@ -73,15 +70,11 @@ class RunOptions:
     in the supported set, otherwise leave the solve unpolished).
     ``polish_fail`` maps onto the driver's fail policy: ``"error"`` raises,
     ``"fallback"`` returns the unpolished state silently, ``"warn"`` returns
-    it with a :class:`RuntimeWarning`.  ``boundary_condition`` is the
-    plasma-vacuum interface of an ``LFREEB = T`` deck: ``"nestor"`` (NESTOR's
-    vacuum pressure) or ``"three_term"`` (the three interface conditions,
-    no sheet current; :mod:`vmex.core.freeboundary_vc`).
+    it with a :class:`RuntimeWarning`.
     """
 
     polish: bool | str = False
     polish_fail: str = "error"
-    boundary_condition: str = "nestor"
 
     def __post_init__(self) -> None:
         if self.polish not in _POLISH_MODES:
@@ -91,10 +84,6 @@ class RunOptions:
             raise VmecInputError(
                 f"POLISH_FAIL must be one of {_FAIL_MODES}, "
                 f"got {self.polish_fail!r}")
-        if self.boundary_condition not in _BOUNDARY_CONDITIONS:
-            raise VmecInputError(
-                f"BOUNDARY_CONDITION must be one of {_BOUNDARY_CONDITIONS}, "
-                f"got {self.boundary_condition!r}")
 
 
 @dataclass(frozen=True)
@@ -147,14 +136,7 @@ def _parse_directive_value(key: str, token: str) -> tuple[str, Any]:
         return "polish", _parse_polish(token, key=key)
     if key == "POLISH_FAIL":
         return "polish_fail", token.strip().lower()
-    if key == "BOUNDARY_CONDITION":
-        return "boundary_condition", _boundary_condition(token)
-    raise VmecInputError(f"unknown VMEX directive {key!r} (known: POLISH, POLISH_FAIL, BOUNDARY_CONDITION)")
-
-
-def _boundary_condition(token: str) -> str:
-    """``THREE_TERM``, ``virtual-casing``, ``'nestor'``, ... -> the canonical lower-case name."""
-    return token.strip().strip("'\"").lower().replace("-", "_")
+    raise VmecInputError(f"unknown VMEX directive {key!r} (known: POLISH, POLISH_FAIL)")
 
 
 def parse_indata_run_options(text: str) -> RunOptions:
@@ -205,42 +187,7 @@ def strip_vmex_json(data: Mapping[str, Any]) -> tuple[dict[str, Any], RunOptions
     options = dict(section)
     if isinstance(options.get("polish"), str):
         options["polish"] = _parse_polish(options["polish"], key="polish")
-    if isinstance(options.get("boundary_condition"), str):
-        options["boundary_condition"] = _boundary_condition(options["boundary_condition"])
     return physics, RunOptions(**options)
-
-
-def format_indata_directives(options: RunOptions) -> str:
-    """Serialize non-default options as canonical directive lines.
-
-    Only the ``!@VMEX KEY = VALUE`` spelling is written; the legacy
-    ``! VMEX: POLISH_FORCE_BALANCE`` form is read but never emitted.  Round
-    trips through :func:`parse_indata_run_options`.
-
-    Parameters
-    ----------
-    options:
-        The options to serialize.  A field equal to its :class:`RunOptions`
-        default is omitted, so an unmodified ``RunOptions()`` produces
-        nothing.
-
-    Returns
-    -------
-    The directive lines as one string terminated by a newline, or the empty
-    string when every option is at its default.  Prepend it to ``&INDATA``
-    text: VMEC2000 reads the lines as comments.
-    """
-    lines = []
-    defaults = RunOptions()
-    if options.polish != defaults.polish:
-        token = "AUTO" if options.polish == "auto" else (
-            ".TRUE." if options.polish else ".FALSE.")
-        lines.append(f"!@VMEX POLISH = {token}")
-    if options.polish_fail != defaults.polish_fail:
-        lines.append(f"!@VMEX POLISH_FAIL = {options.polish_fail.upper()}")
-    if options.boundary_condition != defaults.boundary_condition:
-        lines.append(f"!@VMEX BOUNDARY_CONDITION = {options.boundary_condition.upper()}")
-    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def read_input_request(path: str | Path) -> InputRequest:
@@ -294,7 +241,6 @@ def resolve_run_options(
     *,
     polish: bool | str | None = None,
     polish_fail: str | None = None,
-    boundary_condition: str | None = None,
 ) -> tuple[RunOptions, dict[str, str]]:
     """Apply the documented precedence and record where each value came from.
 
@@ -309,7 +255,7 @@ def resolve_run_options(
         Options parsed from the deck, normally
         :attr:`InputRequest.options`.  ``None`` is treated as
         ``RunOptions()``.
-    polish, polish_fail, boundary_condition:
+    polish, polish_fail:
         Explicit overrides, each with the meaning of the matching
         :class:`RunOptions` field.  ``None`` means "not specified" and
         leaves the file or default value in place, so an override cannot be
@@ -330,9 +276,7 @@ def resolve_run_options(
                      != getattr(RunOptions(), field.name) else "default")
         for field in fields(RunOptions)
     }
-    overrides = {"polish": polish, "polish_fail": polish_fail,
-                 "boundary_condition": None if boundary_condition is None
-                 else _boundary_condition(boundary_condition)}
+    overrides = {"polish": polish, "polish_fail": polish_fail}
     updates = {name: value for name, value in overrides.items()
                if value is not None}
     if updates:

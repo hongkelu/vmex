@@ -8,6 +8,12 @@ or `pip install "vmex[all]"` for everything the examples use.
 `data/mgrid_cth_like.nc`, a release asset rather than a tracked file; install it
 once from the repository root with `python tools/fetch_assets.py --bundle reference-nc`.
 
+With its default settings every script finishes in under five minutes on a
+14-core laptop with a cold JAX cache, and prints progress the whole time
+(optimizer monitors, solver iterations, and `progress=True` elapsed-time lines
+around long compilations and solves). Where a longer run gives a better answer, the script keeps
+that research budget as one commented set of constants next to the default.
+
 - Top-level scripts demonstrate common workflows (start with
   `fixed_boundary_run.py`):
   - `fixed_boundary_run.py` — read `&INDATA`, converge, write/plot the wout.
@@ -41,6 +47,14 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   - `free_boundary_essos_coils.py` — free-boundary beta scan directly from
     ESSOS coils (tabulated to a temporary mgrid); `PRES_SCALE` is calibrated per point so the
     *actual* wout `betatotal` hits 0/1/2/3 %.
+  - `free_boundary_relax_constraint.py` — relax a free-boundary equilibrium in
+    the ESSOS coils with the spectral constraint off; prints `|B|` against
+    Biot-Savart before and after.
+  - `free_boundary_position_control.py` — a DIII-D-like free-boundary tokamak
+    with a mis-set vertical field, solved with and without
+    `vj.PositionControl`: the uncontrolled axis drifts (and fails to converge
+    for a field deficit) while the controlled one is held and reports the
+    missing `B_Z`.
   - `free_boundary_phiedge.py` — find the PHIEDGE whose free-boundary LCFS
     passes through a target outboard-midplane radius (`vj.solve_phiedge`), for
     comparing with codes pinned by an edge point instead of a flux.
@@ -65,6 +79,10 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
     stop after leaving the LCFS neighborhood.
     The finite-beta coil fixture is reproduced by ESSOS
     `examples/coil_optimization/optimize_coils_finite_beta_vmex.py`.
+  - `vmex_essos_tracing_to_wall.py` — guiding centres from a VMEX
+    equilibrium through the LCFS to a wall 3 cm outside it, with
+    `vj.essos_tracing_fields` (ESSOS coils, tabulated exterior field); the
+    direct exterior field checks the table.
   - `vmex_mrx_comparison.py` — relax the 2.5 % beta QA equilibrium with
     [MRX](https://github.com/ToBlick/mrx) (`pip install mrx`), which does not
     assume nested surfaces, and compare Poincare sections, iota, the toroidal
@@ -100,7 +118,7 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   are in the file beside its physical targets, resolution and save names, so a
   reader never has to open a second file to follow one run.
   The scalar lane trades objective progress per evaluation (measured: QA
-  final QS 2.7x above least squares with 40 mode-2 iterations, QI 17x) for a cheaper cold start and
+  final QS 2.7x above least squares with 40 mode-2 iterations; QI on an equal seed, weights and solve count ends 0.7x the least-squares value) for a cheaper cold start and
   lower peak memory; `QA_optimization.py` remains the default.
   `single_stage_optimization.py` *(preview)* is the simplest joint
   plasma-and-coil script and the one to copy for a new problem: every
@@ -160,7 +178,9 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   stellarator-symmetric stationary subspace. Each has a finite-beta companion
   that adds Mercier and resistive-interchange rows on a radially graded weight.
   The asymmetric boundary doubles the decision variables, so a stage costs
-  roughly twice its symmetric equivalent.
+  roughly twice its symmetric equivalent. The vacuum QI script closes with the
+  NEO_JAX effective ripple of the seed and the optimized boundary, computed on
+  the asymmetric Boozer spectrum.
 - `optimization/QA_maxJ_continuation.py` and `QI_maxJ_continuation.py` walk the
   constructed maximum-J target into the resolved certificate; the QA script
   states where maximum-J and quasisymmetry conflict near the axis.
@@ -169,27 +189,6 @@ once from the repository root with `python tools/fetch_assets.py --bundle refere
   ripple proxy), the derivative-safe `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
-- `optimization/single_stage_free_boundary_optimization_coil_constraints.py`,
-  `single_stage_optimization_coil_constraints.py` and
-  `single_stage_free_boundary_optimization_three_term.py`: GPU benchmarks of
-  one single-stage QA/QH/QI coil design solved free-boundary
-  (`FreeBoundaryProblem`), fixed-boundary, and on sheet-current-free free
-  boundaries (`FreeBoundaryProblem` with `boundary_condition="three_term"`), with every physics and
-  coil-engineering limit a hard SLSQP inequality, from vacuum to finite beta
-  with a self-consistent Redl or DKX bootstrap current. Each script is
-  self-contained. `COIL_CASE` selects the case (`ellipse5`, `ellipse5-beta7`,
-  `qa3`, `qh`, `qi`, `qa4-beta[-tok]`, `qi6-beta[-tok]`, `qh4-beta`; the table
-  is in the free-boundary script's docstring), seeded from
-  `data/input.rotating_ellipse_nfp2` and `data/ESSOS_coils_<case>.json`
-  (`qh4-beta`: the `qh` coils). They
-  need `vmex[coils]` and a GPU, `vmex[freeb]` for `--beta` and `vmex[kinetic]`
-  for the DKX cases, e.g.
-  `COIL_CASE=qi python single_stage_free_boundary_optimization_coil_constraints.py --steps 5 --output runs/free-qi`.
-  In `../benchmarks/`, `coil_constraints_postprocess.py` compares the arms on
-  one dense free-boundary solve, `coil_constraints_fit_coils.py` regenerates
-  the stage-two coils, `coil_constraints_evolution_gifs.py` draws a run's
-  coils and LCFS, and `three_term_highres.py` and `three_term_postprocess.py`
-  re-solve and post-process three-term runs.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

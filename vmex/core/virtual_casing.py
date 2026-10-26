@@ -59,6 +59,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .mgrid import MgridField
+
 try:  # optional dependency (uwplasma/virtual_casing_jax)
     from virtual_casing_jax import (
         ExteriorFieldConfig,
@@ -112,14 +114,7 @@ __all__ = [
     "offsurface_error_estimate",
     "graded_plasma_field",
     "GRADED_NODES",
-    "have_virtual_casing_jax",
 ]
-
-
-def have_virtual_casing_jax() -> bool:
-    """Return ``True`` iff ``virtual_casing_jax`` is importable."""
-
-    return _HAVE_VCJ
 
 
 def _require_vcj() -> None:
@@ -395,11 +390,11 @@ def _assemble_surface_field_data(
     )
 
 
-def _wrout_cos_coeffs_jax(f, modes, trig):
-    """Traceable clone of :func:`nyquist.wrout_cos_coeffs`.
+def _wrout_cos_coeffs_jax(f, modes, trig, sine=False):
+    """Traceable clone of :func:`nyquist.wrout_cos_coeffs` (``sine``: ``wrout_sin_coeffs``).
 
-    Identical wrout.f Nyquist cosine analysis (``(ns, mnmax)`` coefficients),
-    but with ``jnp`` einsums so the field ``f`` may be a jax tracer; the trig
+    Identical wrout.f Nyquist analysis (``(ns, mnmax)`` coefficients), but
+    with ``jnp`` einsums so the field ``f`` may be a jax tracer; the trig
     weight tables depend only on ``trig``/``modes`` and stay static numpy.
     """
     from .nyquist import _wrout_dmult, _wrout_theta_tables, _wrout_zeta_tables
@@ -409,21 +404,19 @@ def _wrout_cos_coeffs_jax(f, modes, trig):
     cosmui, sinmui = _wrout_theta_tables(trig)
     cosnv, sinnv = _wrout_zeta_tables(trig)
     fj = jnp.asarray(f)[:, : int(trig.ntheta2), :]
+    if sine:
+        cosmui, sinmui = sinmui, cosmui
     f_theta_cos = jnp.einsum("sik,im->smk", fj, jnp.asarray(cosmui))
     f_theta_sin = jnp.einsum("sik,im->smk", fj, jnp.asarray(sinmui))
     cos_zeta = jnp.einsum("smk,kn->smn", f_theta_cos, jnp.asarray(cosnv))
     sin_zeta = jnp.einsum("smk,kn->smn", f_theta_sin, jnp.asarray(sinnv))
-    sgn = np.where(n < 0, -1.0, 1.0)
+    sgn = np.where(n < 0, -1.0, 1.0) * (-1.0 if sine else 1.0)
     coeff = cos_zeta[:, m, np.abs(n)] + sgn[None, :] * sin_zeta[:, m, np.abs(n)]
     return coeff * jnp.asarray(_wrout_dmult(modes, trig))[None, :]
 
 
 def _state_field_spectra(inp, state, runtime=None):
     """Traceable geometry and contravariant-field spectra for a live state."""
-    if bool(inp.lasym):
-        raise NotImplementedError(
-            "live-state field evaluation supports lasym = False only"
-        )
     from .fields import magnetic_fields, metric_elements
     from .fourier import Resolution, mode_table, trig_tables
     from .geometry import (
@@ -431,7 +424,7 @@ def _state_field_spectra(inp, state, runtime=None):
         half_mesh_jacobian,
         real_space_geometry,
     )
-    from .nyquist import nyquist_limits
+    from .nyquist import nyquist_limits, symoutput_split
     from .residuals import m1_constrained_to_physical
     from .setup import boundary_from_input, flux_profiles, radial_grids
     from .solver import resolution_from_input
@@ -453,12 +446,12 @@ def _state_field_spectra(inp, state, runtime=None):
         signgs = int(boundary.signgs)
         prof = flux_profiles(
             inp, grids, r00=boundary.r00, signgs=signgs, lflip=boundary.lflip)
-        gamma, ncurr = float(inp.gamma), int(inp.ncurr)
+        gamma, ncurr, lflip = float(inp.gamma), int(inp.ncurr), bool(boundary.lflip)
     else:
         grids, signgs = runtime.setup, int(runtime.setup.signgs)
         prof = {name: getattr(runtime.setup, name) for name in
-                ("phips", "phipf", "chips", "mass", "icurv")}
-        gamma, ncurr = float(runtime.gamma), int(runtime.setup.ncurr)
+                ("phips", "phipf", "chips", "chipf", "mass", "icurv")}
+        gamma, ncurr, lflip = float(runtime.gamma), int(runtime.setup.ncurr), bool(runtime.setup.lflip)
 
     R_cos_p, Z_sin_p, R_sin_p, Z_cos_p = m1_constrained_to_physical(
         state.R_cos, state.Z_sin, state.R_sin, state.Z_cos,
@@ -483,8 +476,16 @@ def _state_field_spectra(inp, state, runtime=None):
     nyq_modes = mode_table(max(mnyq, max(mpol - 1, 0)) + 1, max(nnyq, ntor))
     xm_nyq = jnp.asarray(nyq_modes.m, dtype=float)
     xn_nyq = jnp.asarray(nyq_modes.n, dtype=float) * float(nfp)
-    bsupumnc = _wrout_cos_coeffs_jax(fields.bsupu, nyq_modes, trig)
-    bsupvmnc = _wrout_cos_coeffs_jax(fields.bsupv, nyq_modes, trig)
+    def analysed(f):
+        """Cosine table and, without stellarator symmetry, the sine table (wrout.f symoutput)."""
+        if not lasym:
+            return _wrout_cos_coeffs_jax(f, nyq_modes, trig), None
+        even, odd = symoutput_split(f=jnp.asarray(f), trig=trig)
+        return (_wrout_cos_coeffs_jax(even, nyq_modes, trig),
+                _wrout_cos_coeffs_jax(odd, nyq_modes, trig, sine=True))
+
+    bsupumnc, bsupumns = analysed(fields.bsupu)
+    bsupvmnc, bsupvmns = analysed(fields.bsupv)
 
     # These are the wout geometry coefficients and must be built exactly as
     # wout_from_state builds them: m1_constrained_to_physical has already
@@ -503,18 +504,22 @@ def _state_field_spectra(inp, state, runtime=None):
     # The native field form (extender._contravariant_native) builds B from
     # these rather than from the fitted B^u/B^v tables: ``lmns`` carries VMEC's
     # internal ``lamscale`` factor and the same mode scaling as ``rmnc``, and
-    # ``phipf``/``chipf`` are the internal flux derivatives.  ``chips`` lives on
-    # the half mesh, while the extender evaluates the Jacobian continuously in
-    # ``s``, so it is moved to the full mesh here.
+    # ``phipf``/``chipf`` are the internal flux derivatives. Preserve prescribed
+    # iota on the full mesh; remapping its half-mesh samples shifts rational
+    # surfaces. profil1d flips only half-mesh chips, so match that sign here.
+    # In current mode, iota is determined by the effective half-mesh chips.
     from .extender import _half_to_full_profile
 
     lmns = lambda_sin * jnp.asarray(fields.lamscale) * mode_scale[None, :]
     return dict(
         nfp=nfp, ns=ns, xm=xm, xn=xn, xmn=xm_nyq, xnn=xn_nyq,
         rmnc=rmnc, zmns=zmns, rmns=rmns, zmnc=zmnc,
-        bsupu=bsupumnc, bsupv=bsupvmnc, bsupu_s=None, bsupv_s=None,
-        lmns=lmns, phipf=jnp.asarray(prof["phipf"]),
-        chipf=_half_to_full_profile(fields.chips),
+        bsupu=bsupumnc, bsupv=bsupvmnc, bsupu_s=bsupumns, bsupv_s=bsupvmns,
+        lmns=lmns, lmnc=(apply_lambda_axis_closure(state.L_cos, modes=modes, ntor=ntor)
+                         * jnp.asarray(fields.lamscale) * mode_scale[None, :] if lasym else None),
+        phipf=jnp.asarray(prof["phipf"]),
+        chipf=(((-1.0 if lflip else 1.0) * jnp.asarray(prof["chipf"]))
+               if ncurr == 0 else _half_to_full_profile(fields.chips)),
         lasym=lasym, signgs=signgs)
 
 
@@ -534,32 +539,17 @@ def surface_field_data_from_state(
     Unlike :func:`surface_field_data_from_wout`, this rebuilds boundary
     geometry and contravariant-``B`` spectra without leaving the device.  Pass
     the matching ``runtime`` when profiles are differentiated so current and
-    pressure parameters remain in the graph.  Stellarator symmetry is the
-    currently validated live-state path.
+    pressure parameters remain in the graph; ``LASYM`` states carry their sine
+    partners.
     """
     # The live-state spectra also carry lambda and the flux derivatives, which
     # the interior field's native form needs and the surface assembly does not.
     spectra = {key: value for key, value in _state_field_spectra(inp, state, runtime).items()
-               if key not in ("lmns", "phipf", "chipf")}
+               if key not in ("lmns", "lmnc", "phipf", "chipf")}
     return _assemble_surface_field_data(
         **spectra, j=int(s_index % spectra["ns"]), use_stellsym=use_stellsym,
         nphi=nphi, ntheta=ntheta, source_convention="vmex_state",
         project_current=bool(project_current))
-
-
-def _carries_asymmetric_harmonics(state) -> bool:
-    """True when a high-order state has non-zero stellarator-asymmetric families.
-
-    Returns ``False`` for traced arrays: the values are unavailable, so the
-    caller's declaration stands.
-    """
-    for family in (state.R_sin, state.Z_cos):
-        array = jnp.asarray(family)
-        if isinstance(array, jax.core.Tracer):
-            continue
-        if bool(np.any(np.asarray(array) != 0.0)):
-            return True
-    return False
 
 
 def surface_field_data_from_high_order(
@@ -624,7 +614,7 @@ def surface_field_data_from_high_order(
     two one-dimensional angle grids.
     """
 
-    from .strong_force import evaluate_high_order_surface
+    from .strong_force import _carries_asymmetric_harmonics, evaluate_high_order_surface
 
     surface = evaluate_high_order_surface(state, nphi=nphi, ntheta=ntheta)
     stellsym = bool(use_stellsym) and not _carries_asymmetric_harmonics(state)
@@ -696,9 +686,6 @@ def plasma_field_on_boundary(
     This is the ``internal`` virtual-casing branch (currents inside the LCFS =
     the plasma current), i.e. the SIMSOPT ``VirtualCasing.B_external_normal``
     convention: the coils must supply ``-B_plasma . n`` for ``B_out . n = 0``.
-
-    A package field with a prepared singular setup takes the single-pass
-    :func:`_internal_B_one_pass` instead (the same values to round-off).
     """
 
     _require_vcj()
@@ -720,45 +707,9 @@ def plasma_field_on_boundary(
         kwargs["quad_np"] = int(quad_np)
     if precision is not None:
         kwargs["precision"] = precision
-    if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
-        return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
     if hasattr(field, "B_plasma_on_surface"):
         return field.B_plasma_on_surface(**kwargs)
     return field._vc.compute_internal_B(field.B_total, **kwargs)
-
-
-def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
-    """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
-
-    The package evaluates the two single-layer gradients in two passes over the same source-target
-    kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
-    its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
-    round-off).  The rest is the package's on-surface assembly, with its internal-branch sign.
-    """
-    from virtual_casing_jax.integrals import curl_single_layer_gradient, laplace_fxd_u_eval_vec_singular
-    from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
-
-    quad_nt, quad_np, patch_dim0, patch_idx = vcj._apply_precision(precision, quad_nt, quad_np, None, None)
-    vcj._ensure_b_setup(quad_nt, quad_np, digits)
-    setup = vcj._b_setup
-    if patch_dim0 is None or patch_idx is None:
-        patch_dim0, patch_idx = vcj._get_patch_idx(setup, digits)
-    nsrc, ntrg = setup.quad_nt * setup.quad_np, vcj.trg_nt * vcj.trg_np
-    chunk_size, target_chunk_size = vcj._resolve_chunk_sizes("b", chunk_size, "auto", nsrc=nsrc, ntrg=ntrg)
-    dtheta = (np.pi * (1.0 / (vcj.nfp * vcj.trg_nt * 2) - 1.0 / (vcj.nfp * vcj.src_nt * 2))
-              if vcj.half_period else 0.0)
-    B0 = complete_vec_field(jnp.asarray(B0).reshape((3, vcj.src_nt, vcj.src_np)), False, vcj.half_period, vcj.nfp,
-                            vcj.src_nt, vcj.src_np, dtheta)
-    B_quad = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, setup.quad_nt, setup.quad_np)
-    density = jnp.concatenate([cross_prod(B_quad, setup.normal), dot_prod(B_quad, setup.normal)[None]], axis=0)
-    grad = laplace_fxd_u_eval_vec_singular(
-        setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
-        patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
-        orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
-    grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
-    B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
-    return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on
 
 
 # ---------------------------------------------------------------------------
@@ -1087,8 +1038,7 @@ def external_B_cartesian(
     Dispatches on the external-field type, staying differentiable in its dofs:
 
     - :class:`~vmex.core.mgrid.MgridField` -> trilinear mgrid (diff. in
-      ``extcur``), or any field with the same ``b_cyl(r, phi, z)`` method
-      (a pytree whose arrays are leaves stays differentiable and compiles once),
+      ``extcur``),
     - a plain callable ``xyz(..., 3) -> B(..., 3)`` (e.g. an ESSOS ``Coils``
       Biot-Savart field, ``lambda pts: coils.B(pts)``; diff. in its own dofs).
 
@@ -1097,7 +1047,7 @@ def external_B_cartesian(
 
     x, y, z = gamma[0], gamma[1], gamma[2]
 
-    if hasattr(external_field, "b_cyl"):
+    if isinstance(external_field, MgridField):
         r = jnp.sqrt(x * x + y * y)
         phi = jnp.arctan2(y, x) if phi_grid is None else phi_grid[:, None]
         Br, Bphi, Bz = external_field.b_cyl(r, phi, z)
@@ -1112,7 +1062,7 @@ def external_B_cartesian(
         return jnp.moveaxis(B, -1, 0) if B.shape[-1] == 3 else B
 
     raise TypeError(
-        f"external_field must have b_cyl (e.g. an MgridField) or be callable, got {type(external_field).__name__}"
+        f"external_field must be an MgridField or callable, got {type(external_field).__name__}"
     )
 
 

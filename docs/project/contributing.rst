@@ -42,7 +42,7 @@ The workflows obtain their selectors from the manifest:
   requests; ``Publish to PyPI`` runs on ``v*`` release tags only.
 - Every lane a manifest record names must be selected by one of these
   workflows or declared under ``local_only`` in ``tests/manifest.json`` with
-  the reason and the command (``tests/test_test_manifest.py`` enforces it).
+  the reason and the command (``tests/test_repo_consistency.py`` enforces it).
   ``gpu-smoke`` is the one local-only lane; see `GPU checks`_.
 - ``CI`` installs with ``uv`` and carries each test lane's XLA compilations
   from run to run (``tools/ci_compile_cache.py``). The cache is keyed on the
@@ -73,8 +73,8 @@ scheduled runs; they do not weaken assertions. Run either tier locally::
   VMEX_COMPILATION_CACHE=disabled pytest -q -m "not full and not weekly" tests/test_polish.py
   RUN_FULL=1 VMEX_COMPILATION_CACHE=disabled pytest -q tests/test_polish.py
 
-Use the restoring ``_module_jit_enabled`` fixture when a module needs compiled
-solves; an unscoped ``jax.config.update`` can change later tests. Directive
+Tests run jitted. A test that needs the eager lane sets ``jax_disable_jit`` and
+restores the previous value; an unscoped ``jax.config.update`` changes later tests. Directive
 parsing and precedence use a mocked driver; one real unpolished solve/export
 check remains in PR CI and the polished file workflow runs in Nightly.
 
@@ -139,7 +139,7 @@ NVIDIA driver 580 or newer, without ``JAX_PLATFORMS`` or
   pip install -U "jax[cuda13]"
   pip install -e ".[coils,turbulence,freeb]" pytest
   pytest -q $(python tools/test_manifest.py select gpu-smoke)
-  python benchmarks/device_parity.py --quick --devices cpu,gpu --metrics quasisymmetry
+  python tools/device_parity.py --quick --devices cpu,gpu --metrics quasisymmetry
 
 With a GPU present, ``tests/test_gpu_ci.py`` fails if JAX does not select it
 by ordinary discovery or a platform pin is set; without one its GPU tests

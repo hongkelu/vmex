@@ -200,7 +200,10 @@ Multigrid ladder and stepping
      - 1e-10
      - implemented
      - Single-grid tolerance when ``FTOL_ARRAY(1)=0`` and the final target
-       of the generated ladder.
+       of the generated ladder.  Deliberate difference: a deck that sets
+       ``FTOL`` and no ``FTOL_ARRAY`` runs at ``FTOL`` in VMEX.  VMEC2000
+       copies ``FTOL`` into ``FTOL_ARRAY(1)`` before reading the namelist
+       (``vmec_input.f``), so it runs that deck at ``1e-10``.
    * - ``NITER_ARRAY`` / ``NITER``
      - ``[100]``
      - implemented
@@ -269,6 +272,33 @@ Multigrid ladder and stepping
      - Hot restart from the named ``wout_*.nc`` (relative to the deck unless
        absolute); the CLI ``--restart`` flag overrides it.  See
        :doc:`/howto/restart-from-previous-run`.
+   * - ``LPOSITION_CONTROL``
+     - ``F``
+     - VMEX extension
+     - Free boundary only.  Holds the magnetic axis at ``POSITION_TARGET`` with
+       a feedback vertical field and reports it in the run log and
+       ``result.position_control``.  An explicit ``position_control=``
+       argument overrides it.  See :doc:`/explanation/position-control`.
+   * - ``POSITION_TARGET``
+     - ``0``
+     - VMEX extension
+     - Axis radius to hold [m]; a value of zero or less keeps the initial axis.
+   * - ``POSITION_INTERVAL``
+     - ``20``
+     - VMEX extension
+     - Iterations between control updates (a positive integer).
+   * - ``POSITION_GAIN``
+     - ``4``
+     - VMEX extension
+     - Proportional gain in units of ``mu0 |I| / (4 pi R0^2)``, ``I`` the plasma's
+       net toroidal current (NCURR = 0 or 1); the
+       integral and derivative gains keep fixed ratios to it.  Raise it for
+       strongly unstable coil sets.
+   * - ``POSITION_NMAX``
+     - ``0``
+     - VMEX extension
+     - Highest helical harmonic controlled (``0`` is the uniform vertical field
+       only; at most ``NTOR``).  Experimental.
    * - ``PRE_NITER``
      - —
      - rejected when active with 2-D GMRES
@@ -325,7 +355,11 @@ Profiles
    * - ``BLOAT``
      - 1.0
      - implemented
-     - Profile-argument expansion factor.
+     - Profile-argument expansion factor of ``pmass`` and ``pcurr``;
+       ``piota`` ignores it, as in VMEC2000.  ``BLOAT != 1`` with
+       ``NCURR != 1`` is rejected, as VMEC2000 does (ier_flag 3).
+       Deliberate difference: VMEC2000 also multiplies ``PHIEDGE`` by
+       ``BLOAT`` (``readin.f``); VMEX uses ``PHIEDGE`` as written.
    * - ``NCURR``
      - 0
      - implemented
@@ -422,7 +456,9 @@ Free boundary
    * - ``EXTCUR``
      - —
      - implemented
-     - External coil-group currents [A].
+     - External coil-group currents [A].  Missing entries are zero, as in
+       VMEC2000; a nonzero entry beyond the mgrid's coil groups stops the run
+       (VMEC2000 drops it silently).
    * - ``NVACSKIP``
      - 1
      - implemented

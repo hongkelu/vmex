@@ -37,13 +37,6 @@ GOLDEN_DIR = resolve_golden_dir()
 _ITER_ROW = re.compile(r"^\d\.\d{2}E[+-]\d{2}$")
 
 
-@pytest.fixture(autouse=True)
-def _enable_jit():
-    """Full solves need JIT (the repo conftest disables it for unit tests)."""
-    jax.config.update("jax_disable_jit", False)
-    yield
-
-
 def _run_cli(argv: list[str]) -> tuple[int, str]:
     """Run ``cli.main`` in-process, capturing stdout."""
     buffer = io.StringIO()
@@ -69,7 +62,6 @@ def _line_containing(text: str, pattern: str) -> str | None:
 @pytest.fixture(scope="module")
 def solovev_cli(tmp_path_factory) -> tuple[int, str, Path]:
     """One CLI solve of the solovev deck, shared by the checks below."""
-    jax.config.update("jax_disable_jit", False)
     outdir = tmp_path_factory.mktemp("solovev_cli")
     rc, stdout = _run_cli([str(SOLOVEV_DECK), "--outdir", str(outdir)])
     return rc, stdout, outdir / "wout_solovev.nc"
@@ -249,7 +241,7 @@ def test_neoclassical_calls_dkx_with_the_preset(solovev_cli, tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# VMEC++-style JSON input
+# C++ VMEC-style JSON input
 # ---------------------------------------------------------------------------
 
 
@@ -389,11 +381,3 @@ def test_polish_cli_flags_override_file_directives():
     options, sources = cli._resolve_polish_cli(args, file_options)
     assert options.polish is True and sources["polish"] == "cli"
     assert options.polish_fail == "error" and sources["polish_fail"] == "cli"
-    # The free-boundary interface condition follows the same precedence.
-    from vmex.core.run_options import RunOptions
-    deck_vc = RunOptions(boundary_condition="three_term")
-    options, sources = cli._resolve_polish_cli(cli.build_parser().parse_args(["input.x"]), deck_vc)
-    assert options.boundary_condition == "three_term" and sources["boundary_condition"] == "file"
-    args = cli.build_parser().parse_args(["input.x", "--boundary-condition", "nestor"])
-    options, sources = cli._resolve_polish_cli(args, deck_vc)
-    assert options.boundary_condition == "nestor" and sources["boundary_condition"] == "cli"

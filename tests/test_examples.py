@@ -81,7 +81,7 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 
     pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
     coils = pyproject["project"]["optional-dependencies"]["coils"]
-    assert coils == ["essos>=0.20.0"], coils
+    assert coils == ["essos>=0.21.0"], coils
 
     for script in ESSOS_COIL_EXAMPLES:
         text = script.read_text()
@@ -129,9 +129,6 @@ UNTESTED_EXAMPLES = {
     "examples/optimization/stellarator_asymmetry/QI_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/optimization/stellarator_asymmetry/QP_optimization_finite_beta.py": "asymmetric variants share the symmetric drivers",
     "examples/plot_optimized_families.py": "plots families produced by the tested optimization examples",
-    "examples/optimization/single_stage_free_boundary_optimization_coil_constraints.py": "GPU benchmark; FreeBoundaryProblem is covered by tests/test_freeboundary_problem.py",
-    "examples/optimization/single_stage_optimization_coil_constraints.py": "GPU benchmark; the fixed-boundary single-stage example is tested",
-    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "GPU benchmark; ThreeTermFreeBoundaryProblem is covered by tests/test_freeboundary_vc.py",
 }
 
 
@@ -150,10 +147,13 @@ EXECUTED_EXAMPLES = {
     "examples/finite_beta_scan.py",
     "examples/fixed_boundary_run.py",
     "examples/force_balance_polishing.py",
+    "examples/prescribed_current_polishing.py",
     "examples/free_boundary_beta_scan.py",
     "examples/free_boundary_essos_coils.py",
     "examples/free_boundary_mgrid.py",
     "examples/free_boundary_phiedge.py",
+    "examples/free_boundary_position_control.py",
+    "examples/free_boundary_relax_constraint.py",
     "examples/hot_restart_scan.py",
     "examples/mirror/mirror_fixed_boundary_axisymmetric.py",
     "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
@@ -205,6 +205,7 @@ EXECUTED_EXAMPLES = {
     "examples/vmex_fixed_free_boundary_comparison.py",
     "examples/vmex_get_B_gradB.py",
     "examples/vmex_get_B_outside_plasma.py",
+    "examples/vmex_essos_tracing_to_wall.py",
     "examples/vmex_mrx_comparison.py",
 }
 
@@ -443,6 +444,15 @@ def test_force_balance_polishing_example_refuses_an_uncertified_export() -> None
     for field in ("initial_normalized_l2", "final_normalized_l2",
                   "nonlinear_iterations", "termination_reason"):
         assert field in source
+
+
+@pytest.mark.full  # nightly: discrete solve + prescribed-current polish
+def test_prescribed_current_polishing_example(tmp_path):
+    out = _run_example(EXAMPLES / "prescribed_current_polishing.py", tmp_path, timeout=600)
+    assert "Forward result only" in out
+    for label in ("axis", "bulk", "edge"):
+        match = re.search(label + r" force/pressure-gradient RMS: ([0-9.eE+-]+) -> ([0-9.eE+-]+)", out)
+        assert match and np.isfinite([float(v) for v in match.groups()]).all(), out
 
 
 @pytest.mark.full  # nightly: ordinary solve + native strong-force polish (~3 min)
@@ -687,6 +697,8 @@ def test_stellarator_asymmetry_vacuum_examples_run(case, tmp_path):
     assert (tmp_path / f"input.{case}_LASYM_optimized").exists()
     assert (tmp_path / f"wout_{case}_LASYM_optimized.nc").exists()
     assert (tmp_path / f"{case}_LASYM_optimized_objectives.png").exists()
+    if case == "QI":  # NEO on the asymmetric Boozer spectrum, or the stated reason
+        assert "optimized epsilon_eff^(3/2)" in out or "epsilon_eff skipped" in out
 
 
 def test_qa_maxj_example_states_its_physical_scope():
@@ -850,6 +862,15 @@ def test_qa_alpha_losses_optimization(tmp_path):
         assert (tmp_path / name).exists(), name
 
 
+@pytest.mark.full  # nightly: coarse free-boundary solve plus 1,000 relaxation iterations (~1.5 min)
+def test_free_boundary_relax_constraint(tmp_path):
+    pytest.importorskip("essos.fields")
+    out = _run_example(EXAMPLES / "free_boundary_relax_constraint.py", tmp_path, timeout=1500)
+    rows = dict(re.findall(r"^\s*(converged|relaxed)\s+\S+\s+([0-9.eE+-]+)", out, re.M))
+    assert set(rows) == {"converged", "relaxed"}, out
+    assert float(rows["relaxed"]) < 0.5 * float(rows["converged"]), out  # 3x at ns = 12
+
+
 @pytest.mark.full  # nightly: free-bdy NESTOR solve with direct-coil Biot-Savart (~90s)
 def test_free_boundary_essos_coils(tmp_path):
     # The example needs only ``essos.coils`` (loading) + ``essos.fields.BiotSavart``
@@ -867,6 +888,19 @@ def test_free_boundary_essos_coils(tmp_path):
     assert abs(actual - nominal) <= 0.15, (
         f"actual betatotal {actual}% not calibrated to nominal {nominal}%")
     assert fsq < 1e-7, f"free-boundary point should converge, fsq={fsq}"
+
+
+def test_free_boundary_position_control(tmp_path):
+    # Five vertical-field offsets, each without and with control (~1 min).
+    out = _run_example(EXAMPLES / "free_boundary_position_control.py", tmp_path, timeout=600)
+    rows = re.findall(r"^\s*(-?[0-9.]+) \|\s+(\w+)\s+\d+\s+\S+\s+\S+ \|"
+                      r"\s+(\w+)\s+\d+\s+\S+\s+(-?[0-9.]+)\s+(-?[0-9.]+)$", out, re.M)
+    assert len(rows) == 5, out
+    for offset, free, held, shift, bz in rows:
+        assert (free == "NO") == (float(offset) == -40.0), out   # only the deficit defeats it
+        assert held == "yes" and abs(float(shift)) < 1.0, out      # axis within 1 cm
+        assert abs(float(bz) + float(offset)) < 2.0, out           # recovers the offset
+    assert (tmp_path / "output_position_control" / "mgrid_d3d_vertical_deficit.nc").exists()
 
 
 @pytest.mark.full  # nightly: PHIEDGE root solve on the ESSOS QA coils
@@ -1095,31 +1129,6 @@ def test_vacuum_qs_examples_expose_trial_pressure_terms():
         assert "(trial_dmerc, 0.0, stability_weights)" in source
         assert "(trial_dr, 0.0, stability_weights)" in source
         assert "weights rise smoothly toward the edge" in source
-
-
-# The self-consistent-bootstrap examples reproduce arXiv:2205.02914 against the
-# Zenodo dataset, which is a large local-only archive (not in CI) — skip when
-# absent.  Nightly-gated: each runs a multi-iteration Picard loop of solves.
-_ZENODO_2205 = Path(os.environ.get(
-    "VMEX_ZENODO_2205_02914",
-    str(Path.home() / "local" /
-        "20220708-01-zenodo_for_QS_optimization_with_self_consistent_bootstrap_current")))
-
-
-@pytest.mark.full
-@pytest.mark.skipif(not _ZENODO_2205.is_dir(),
-                    reason="arXiv:2205.02914 Zenodo dataset not present")
-@pytest.mark.parametrize("case", ["QA", "QH"])
-def test_bootstrap_selfconsistent_examples(case, tmp_path):
-    script = REPO / "benchmarks" / f"{case}_bootstrap_selfconsistent.py"
-    # The guard above accepts the dataset at its default location, but the
-    # script only reads the environment variable, so pass the resolved path.
-    out = _run_example(script, tmp_path, timeout=1200,
-                       VMEX_ZENODO_2205_02914=str(_ZENODO_2205))
-    m = re.search(r"final f_boot = ([0-9.eE+-]+)", out)
-    assert m is not None and float(m.group(1)) < 5e-2, f"{case} f_boot: {out[-400:]}"
-    assert (tmp_path / f"output_{case}_bootstrap_selfconsistent"
-            / f"wout_{case}_bootstrap_selfconsistent.nc").exists()
 
 
 @pytest.mark.full  # nightly: Picard seed + one exact finite-beta optimization stage
@@ -1404,6 +1413,16 @@ def test_vmex_fieldline_tracing_examples(script, message, output, tmp_path):
         bounded = re.search(r"Exterior trace QA: (\d+)/(\d+) lines remained", out)
         assert bounded is not None and int(bounded.group(1)) > 0
     assert (tmp_path / output).stat().st_size > 10_000
+
+
+# Smoke on one office core, mostly XLA compilation of two traces.
+@pytest.mark.full
+def test_vmex_essos_tracing_to_wall_example(tmp_path):
+    pytest.importorskip("essos")
+    out = _run_example(EXAMPLES / "vmex_essos_tracing_to_wall.py", tmp_path, timeout=900)
+    assert "max |dB|/|B|" in out and "strike the wall" in out
+    assert re.search(r"stay inside +\d+ of 8", out)
+    assert (tmp_path / "vmex_essos_tracing_to_wall.webp").stat().st_size > 10_000
 
 
 def test_vmex_mrx_comparison_example(tmp_path):

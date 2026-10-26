@@ -7,7 +7,7 @@ Self-contained matplotlib (Agg) figure set read from a ``wout_*.nc`` file
   mesh), pressure with the confinement diagnostics ``eps_eff^(3/2)`` (NEO_JAX) and
   ``Gamma_c`` sharing one right axis (bounded-resolution radial trends,
   cached per in-memory WOUT — see :class:`ConfinementSummary`), relative
-  radial force error with the bootstrap current ``<J.B>`` on its right
+  radial force error with the equilibrium's parallel current ``<J.B>`` on its right
   axis, Mercier ``DMerc``
   and Glasser ``D_R`` with ``V''(s)`` on the right axis, a 3-D LCFS,
   a Velasco-style polar second-adiabatic-invariant map ``J(alpha, s)``, ``|B|``
@@ -160,7 +160,6 @@ def plot_optimization_movie(
     fps: int = 10,
     max_frames: int = 50,
     dpi: int = 100,
-    frame_labels: Sequence[str] | None = None,
 ) -> Path:
     """Animate accepted surface and coil geometries from an optimization.
 
@@ -206,10 +205,6 @@ def plot_optimization_movie(
     dpi:
         Output resolution, default 100 — deliberately below the still-figure
         default, since every frame is rendered.
-    frame_labels:
-        Optional title for each entry of ``x_history`` (for example the
-        optimizer step a checkpoint was saved at); the default titles a frame
-        with its index into ``x_history``.
 
     Returns
     -------
@@ -218,8 +213,6 @@ def plot_optimization_movie(
     """
     if not x_history:
         raise ValueError("x_history must contain at least one accepted point")
-    if frame_labels is not None and len(frame_labels) != len(x_history):
-        raise ValueError("frame_labels must have one entry per x_history point")
     if fps < 1 or max_frames < 2 or dpi < 1:
         raise ValueError("fps and dpi must be positive and max_frames at least 2")
     path = Path(path)
@@ -311,9 +304,7 @@ def plot_optimization_movie(
         axis.set_xlim(center[0] - span / 2, center[0] + span / 2)
         axis.set_ylim(center[1] - span / 2, center[1] + span / 2)
         axis.set_zlim(center[2] - span / 2, center[2] + span / 2)
-        axis.set_box_aspect((1, 1, 1)); axis.set_title(
-            f"accepted iteration {indices[frame_index]}" if frame_labels is None
-            else str(frame_labels[indices[frame_index]]))
+        axis.set_box_aspect((1, 1, 1)); axis.set_title(f"accepted iteration {indices[frame_index]}")
         return (*axis.lines, *axis.collections)
 
     animation = FuncAnimation(figure, draw, frames=len(indices), interval=1000 / fps)
@@ -885,21 +876,9 @@ def _boozer_summary_data(
     )
     s_b = np.asarray(bx.s_b, dtype=float)
     iota_b = np.asarray(bx.iota, dtype=float)[np.asarray(indices, dtype=int)]
-    # The same transform feeds NEO's effective ripple (the summary confinement
-    # panel), so the one Boozer run is shared instead of duplicated.  NEO's
-    # BoozerData contract is symmetric-only; ``pmns_b`` carries booz_xform's
-    # ``-numns`` sign convention (see ``epsilon_effective_from_wout``).
-    neo_booz = None
-    if bmns_b is None:
-        neo_booz = {
-            "nfp_b": int(bx.nfp), "ns_b": len(indices),
-            "ixm_b": np.asarray(bx.xm_b), "ixn_b": np.asarray(bx.xn_b),
-            "iota_b": iota_b,
-            "buco_b": np.asarray(bx.Boozer_I), "bvco_b": np.asarray(bx.Boozer_G),
-            "rmnc_b": np.asarray(bx.rmnc_b), "zmns_b": np.asarray(bx.zmns_b),
-            "pmns_b": -np.asarray(bx.numns_b), "bmnc_b": np.asarray(bx.bmnc_b),
-            "s_b": s_b,
-        }
+    from .neoclassical import _neo_boozer_data
+
+    neo_booz = _neo_boozer_data(bx, indices)
     return {
         "bmnc_b": np.asarray(bx.bmnc_b, dtype=float).T,
         "bmns_b": bmns_b,
@@ -1022,8 +1001,10 @@ def _neo_surface_subset(neo_booz: dict[str, Any]) -> dict[str, Any]:
     subset = dict(neo_booz, ns_b=int(keep.size))
     for key in ("iota_b", "buco_b", "bvco_b", "s_b"):
         subset[key] = np.asarray(neo_booz[key])[keep]
-    for key in ("rmnc_b", "zmns_b", "pmns_b", "bmnc_b"):
-        subset[key] = np.asarray(neo_booz[key])[:, keep]
+    for key in ("rmnc_b", "zmns_b", "pmns_b", "bmnc_b",
+                "rmns_b", "zmnc_b", "pmnc_b", "bmns_b"):
+        if key in neo_booz:
+            subset[key] = np.asarray(neo_booz[key])[:, keep]
     return subset
 
 
@@ -1032,7 +1013,7 @@ def _epsilon_effective_profile(booz: dict[str, Any] | None, note: str):
     if booz is None:
         return None, None, note or "Boozer transform unavailable"
     if booz.get("neo_booz") is None:
-        return None, None, "NEO_JAX's BoozerData contract is symmetric-only"
+        return None, None, "NEO Boozer tables unavailable"
     try:
         from .neoclassical import diagnostic_neo_config, epsilon_effective_from_boozer
 
@@ -1041,7 +1022,7 @@ def _epsilon_effective_profile(booz: dict[str, Any] | None, note: str):
     except ImportError:
         return None, None, "effective ripple requires NEO_JAX (vmex[neoclassical])"
     except Exception as exc:  # noqa: BLE001 - summary stays usable without NEO
-        return None, None, f"NEO evaluation failed: {type(exc).__name__}"
+        return None, None, f"NEO evaluation failed: {type(exc).__name__}: {exc}"
     surfaces = np.asarray(surfaces, dtype=float)
     values = np.asarray(values, dtype=float)
     keep = np.isfinite(values) & (values > 0.0)
@@ -1327,7 +1308,8 @@ def _stability_panel(ax, wout, d_r_info: dict[str, Any], *, s_plot_ignore: float
     ax.set_xlim(0.0, 1.0)
 
     well_ax = ax.twinx()
-    s_vpp, vpp = _volume_second_derivative(wout)
+    # V'' needs four surfaces; at NS = 3 the plotted slice is empty anyway.
+    s_vpp, vpp = _volume_second_derivative(wout) if ns >= 4 else (s, np.full(ns, np.nan))
     finite_vpp = vpp[sl][np.isfinite(vpp[sl])]
     peak_vpp = max(float(np.max(np.abs(finite_vpp))) if finite_vpp.size else 1.0,
                    np.finfo(float).tiny)
@@ -1683,7 +1665,8 @@ def _summary_figure(
         )
 
         # Force error normalized by the magnetic pressure gradient (DESC),
-        # with the bootstrap <J.B> against the same rho on its right axis.
+        # with the equilibrium's total <J.B> (all current, not only bootstrap)
+        # against the same rho on its right axis.
         meta["force_error"] = _relative_force_error_panel(axes[0, 2], wout)
         current_axis = axes[0, 2].twinx(); meta["current_axis"] = current_axis
         current_line = current_axis.plot(
@@ -1691,7 +1674,7 @@ def _summary_figure(
             color=_LINE_COLORS[2], label=r"$\langle\mathbf{J}\cdot\mathbf{B}\rangle$",
         )[0]
         current_axis.set_ylabel(
-            r"Bootstrap $\langle \mathbf{J}\cdot\mathbf{B} \rangle$ [kA T/m$^2$]",
+            r"$\langle \mathbf{J}\cdot\mathbf{B} \rangle$ [kA T/m$^2$]",
             color=_LINE_COLORS[2],
         )
         current_axis.tick_params(axis="y", colors=_LINE_COLORS[2])
@@ -1783,7 +1766,8 @@ def plot_summary(
        average of ``|J x B - grad p|`` over the volume average of
        ``|grad(B^2/2mu0)|`` on ``0.1 <= s <= 0.99`` (DESC's normalization;
        the scalar card gives the volume average), on interior surfaces,
-       with the flux-surface-averaged bootstrap current ``<J.B>`` in
+       with the flux-surface-averaged parallel current ``<J.B>`` (the
+       equilibrium's total, not a bootstrap model) in
        kA T m^-2 on a coloured right axis;
     4. Mercier ``DMerc`` and the Glasser-Greene-Johnson ``D_R`` against ``s``,
        with the physical ``d2V/ds2`` on the right axis;
@@ -2605,7 +2589,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
         theta = np.mod(final[lost, 1], 2 * np.pi)
         h = a_map.hist2d(zeta, theta, bins=(24, 36), range=[[0, 2 * np.pi / nfp], [0, 2 * np.pi]],
                          cmap="Blues", cmin=1)
-        fig.colorbar(h[3], ax=a_map, label="lost alphas")
+        fig.colorbar(h[3], ax=a_map, label="lost particles")
         a_map.set(xlabel=r"$\zeta_B$ (one period)", ylabel=r"$\theta_B$", title="loss locations on s = 1")
         bins = np.linspace(-1, 1, 21)
         for mask, label in ((~lost, "confined"), (lost, "lost")):
@@ -2630,7 +2614,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                   if positive_losses else np.linspace(0, t[-1], 30))
             a_b.hist(t_loss, bins=tb)
             a_b.set(xscale="log" if positive_losses else "linear", xlabel="loss time [s]",
-                    ylabel="lost alphas", title="loss-time histogram")
+                    ylabel="lost particles", title="loss-time histogram")
         s_b, iota = np.asarray(bz["s"]), np.asarray(bz["iota"])
         a_i.plot(s_b, iota, "-", color="0.2")
         lo, hi = float(np.min(iota)), float(np.max(iota))
@@ -2642,7 +2626,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                     a_i.annotate(f"{k * nfp}/{m}", (1.0, r), fontsize=8, ha="right", va="bottom")
         if lost.any() and meta.get("birth") == "volume":
             a_i.axvspan(float(birth[lost, 0].min()), float(birth[lost, 0].max()), alpha=0.15,
-                        label="births of lost alphas")
+                        label="births of lost particles")
             a_i.legend(loc="best")
         a_i.set(xlabel="s", ylabel=r"$\iota$", title=r"$\iota(s)$ and rationals $nN_{fp}/m$")
         fig.suptitle(title, fontsize=11)
@@ -2665,7 +2649,7 @@ def plot_tracing(result, outdir: str | Path, *, name: str = "trace") -> dict[str
                          label="log10 loss time [s]" if positive_losses else "loss time [s]")
         ax3.set_axis_off()
         ax3.set_box_aspect((1, 1, 0.35))
-        ax3.set_title(f"{name}: {int(lost.sum())} alpha loss locations")
+        ax3.set_title(f"{name}: {int(lost.sum())} particle loss locations")
         path = outdir / f"{name}_trace_3d.png"
         _save_figure(fig, path, dpi=_DPI)
         plt.close(fig)

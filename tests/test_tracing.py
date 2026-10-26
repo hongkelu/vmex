@@ -23,7 +23,6 @@ from vmex.core.wout import read_wout
 # Skip per test, not at import: a module that collects nothing breaks the
 # manifest ownership check wherever ESSOS is not installed.
 pytestmark = [
-    pytest.mark.usefixtures("_module_jit_enabled"),
     pytest.mark.skipif(importlib.util.find_spec("essos") is None, reason="requires ESSOS"),
 ]
 
@@ -62,6 +61,83 @@ def test_counts_are_consistent(traced):
     assert traced.loss_fraction == pytest.approx(lost / n)
     assert traced.loss_fraction == pytest.approx(float(traced.loss_fractions[-1]))
     assert np.all(np.diff(traced.loss_fractions) >= 0.0)  # cumulative
+
+
+@pytest.mark.parametrize("name,bad", [
+    ("energy_eV", 0), ("energy_eV", -1), ("energy_eV", np.nan),
+    ("energy_eV", np.inf), ("energy_eV", [20000]),
+    ("mass", 0), ("mass", -1), ("mass", -np.inf), ("mass", 1j),
+    ("charge", 0), ("charge", np.nan), ("charge", [1e-19]),
+])
+def test_particle_parameters_reject_nonphysical_values_before_io(name, bad):
+    with pytest.raises(ValueError, match=name):
+        trace_alphas("missing_wout.nc", **{name: bad})
+
+
+def test_particle_parameters_reject_nonfinite_speed_before_io():
+    with pytest.raises(ValueError, match="speed"):
+        trace_alphas("missing_wout.nc", energy_eV=1e308, mass=1e-308)
+
+
+@pytest.mark.parametrize("mass_factor,charge_sign", [(1, 1), (2, 1), (1, -1)])
+def test_particle_parameters_reach_released_integrator(solovev_wout, monkeypatch,
+                                                       mass_factor, charge_sign):
+    """Physical eV/kg/C conversion and H/D speed ratio, through actual RK4."""
+    import essos.boozer
+    from essos import constants as c
+    original = essos.boozer.trace_boozer
+    captured = []
+    def integrate(*args, **kwargs):
+        captured.append(kwargs)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(essos.boozer, "trace_boozer", integrate)
+    mass, charge = mass_factor * c.PROTON_MASS, charge_sign * c.ELEMENTARY_CHARGE
+    result = trace_alphas(solovev_wout, energy_eV=20000, mass=mass, charge=charge,
+                          scale=None, nparticles=2, tmax=1e-6, timestep=1e-8,
+                          times_to_trace=8, mboz=8, nboz=8)
+    call, = captured
+    assert call["mass"] == mass and call["charge"] == charge
+    assert 0.5 * mass * call["speed"]**2 == pytest.approx(20000 * c.ELEMENTARY_CHARGE)
+    assert call["speed"] == pytest.approx(np.sqrt(2 * 20000 * c.ELEMENTARY_CHARGE / c.PROTON_MASS) / np.sqrt(mass_factor))
+    assert result.particle_energy == pytest.approx(20000 * c.ELEMENTARY_CHARGE)
+    assert result.metadata["particle_mass_kg"] == mass
+    assert result.metadata["particle_charge_C"] == charge
+    assert np.isfinite(result.trajectories).all() and result.energy_error.max() < 1e-5
+
+
+def test_particle_parameters_preserve_alpha_defaults(solovev_wout, traced):
+    from essos import constants as c
+    explicit = trace_alphas(solovev_wout, **TRACE_KWARGS,
+                            energy_eV=c.FUSION_ALPHA_PARTICLE_ENERGY / c.ELEMENTARY_CHARGE,
+                            mass=c.ALPHA_PARTICLE_MASS, charge=c.ALPHA_PARTICLE_CHARGE)
+    np.testing.assert_array_equal(explicit.initial_conditions, traced.initial_conditions)
+    np.testing.assert_allclose(explicit.trajectories, traced.trajectories, rtol=1e-14, atol=1e-14)
+    assert traced.metadata["particle_mass_kg"] == c.ALPHA_PARTICLE_MASS
+    assert traced.metadata["particle_charge_C"] == c.ALPHA_PARTICLE_CHARGE
+
+
+def test_cli_particle_parameters_require_trace_and_forward_units(solovev_wout, tmp_path):
+    import json
+    from essos import constants as c
+    parser = cli.build_parser()
+    defaults = parser.parse_args([str(solovev_wout)])
+    assert defaults.trace_energy_eV is defaults.trace_mass_kg is defaults.trace_charge_coulomb is None
+    for flag, value in [("--trace-energy-eV", "20000"), ("--trace-mass-kg", str(c.PROTON_MASS)),
+                        ("--trace-charge-coulomb", str(c.ELEMENTARY_CHARGE))]:
+        with pytest.raises(SystemExit) as exc:
+            cli.main([str(solovev_wout), flag, value, "--quiet"])
+        assert exc.value.code == 2
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        rc = cli.main([str(solovev_wout), "--trace", "--trace-no-scale", "--quiet",
+                       "--trace-energy-eV", "20000", "--trace-mass-kg", str(2*c.PROTON_MASS),
+                       "--trace-charge-coulomb", str(c.ELEMENTARY_CHARGE), "--trace-particles", "2",
+                       "--trace-tmax", "1e-6", "--trace-timestep", "1e-8", "--trace-times", "8",
+                       "--mbooz", "8", "--nbooz", "8", "--outdir", str(tmp_path)])
+    assert rc == 0
+    summary = json.loads((tmp_path / "solovev_trace.json").read_text())
+    assert summary["particle_energy_J"] == pytest.approx(20000 * c.ELEMENTARY_CHARGE)
+    assert summary["particle_mass_kg"] == 2*c.PROTON_MASS
+    assert summary["particle_charge_C"] == c.ELEMENTARY_CHARGE
 
 
 def test_shapes_births_and_energy(traced):
@@ -408,13 +484,38 @@ def test_essos_field_handoff_matches_the_file_route(solovev_wout):
     assert int(from_memory.ns) == int(from_file.ns)
     points = np.array([[0.3, 0.4, 0.1], [0.7, 2.2, 0.9], [0.9, 5.0, 3.0]])
     for point in points:
-        # The temporary wout is already deleted here; ESSOS read its tables
-        # eagerly, so the field stays usable.
         np.testing.assert_allclose(
             float(from_memory.AbsB(point)), float(from_file.AbsB(point)), rtol=0.0)
         np.testing.assert_allclose(
             np.asarray(from_memory.to_xyz(point)),
             np.asarray(from_file.to_xyz(point)), rtol=0.0)
+
+
+def test_essos_field_handoff_is_differentiable(solovev_wout):
+    import jax
+    from dataclasses import replace
+
+    wout = read_wout(solovev_wout)
+    point = np.array([0.7, 2.2, 0.9])
+    grad = jax.grad(lambda scale: essos_vmec_field(replace(wout, bmnc=scale * wout.bmnc)).AbsB(point))(1.0)
+    np.testing.assert_allclose(float(grad), float(essos_vmec_field(wout).AbsB(point)), rtol=1e-12)
+
+
+def test_essos_tracing_fields_from_axis_to_wall(solovev_wout):
+    pytest.importorskip("essos")
+    import jax.numpy as jnp
+    from vmex.core.tracing import essos_tracing_fields
+
+    def toroidal(xyz):  # B_phi = 1 T m / R
+        return jnp.stack((-xyz[:, 1], xyz[:, 0], 0 * xyz[:, 2]), -1) / (xyz[:, 0] ** 2 + xyz[:, 1] ** 2)[:, None]
+
+    assert set(essos_tracing_fields(solovev_wout)) == {"field"}  # fixed boundary, no coils: stop at the LCFS
+    setup = essos_tracing_fields(solovev_wout, toroidal, wall=0.05, n=8, plasma="vacuum", ntheta=16, nphi=8)
+    assert set(setup) == {"field", "wall", "exterior_field"}
+    point = jnp.asarray(setup["wall"].gamma[0, 0])
+    np.testing.assert_allclose(setup["exterior_field"].B(point), toroidal(point[None])[0], rtol=1e-3, atol=1e-3)
+    direct = essos_tracing_fields(solovev_wout, toroidal, wall=0.05, n=None, plasma="vacuum", ntheta=16, nphi=8)
+    np.testing.assert_allclose(direct["exterior_field"].B(point[None])[0], toroidal(point[None])[0], rtol=1e-10)
 
 
 def test_in_memory_equilibrium_matches_the_file_route(traced, solovev_wout):
@@ -804,3 +905,86 @@ def test_trace_devices_default_to_every_cpu_or_one_gpu(solovev_wout, monkeypatch
     monkeypatch.setattr(jax, "devices", lambda: gpus)
     trace_alphas(solovev_wout, **TRACE_KWARGS)
     assert seen[-1] == gpus[:1]
+
+
+def _spectrum(decay, *, mpol=4, ntor=2, nfp=3, lasym=False):
+    from types import SimpleNamespace
+
+    modes = [(m, n) for m in range(mpol) for n in range(-ntor, ntor + 1) if m or n >= 0]
+    xm = np.array([m for m, _ in modes])
+    xn = np.array([n * nfp for _, n in modes])
+    amplitude = np.where((xm == 0) & (xn == 0), 10.0, decay ** (xm + np.abs(xn) // nfp))
+    rmnc = np.vstack([0.5 * amplitude, amplitude])
+    wout = SimpleNamespace(xm=xm, xn=xn, nfp=nfp, lasym=lasym, rmnc=rmnc, zmns=np.zeros_like(rmnc))
+    if lasym:
+        wout.rmns, wout.zmnc = np.zeros_like(rmnc), rmnc.copy()
+    return wout
+
+
+@pytest.mark.parametrize("lasym", [False, True])
+def test_spectral_truncation_reads_the_lcfs_tail_relative_to_m1(lasym):
+    from vmex.core.tracing import RESOLUTION_TOLERANCE, spectral_truncation
+
+    # m = 1, n = 0 has amplitude decay; the edge peaks at m = 0, |n| = 2 with decay^2
+    for decay, expected in ((1e-3, 1e-3), (0.3, 0.3)):
+        value = spectral_truncation(_spectrum(decay, lasym=lasym))
+        assert value == pytest.approx(expected, rel=1e-12)
+    assert spectral_truncation(_spectrum(1e-3)) < RESOLUTION_TOLERANCE < spectral_truncation(_spectrum(0.3))
+    # without toroidal modes only the poloidal edge counts
+    assert spectral_truncation(_spectrum(0.1, ntor=0)) == pytest.approx(0.1 ** 2, rel=1e-12)
+
+
+def test_spectral_truncation_is_undefined_without_an_m1_mode():
+    from vmex.core.tracing import spectral_truncation
+
+    wout = _spectrum(0.1)
+    wout.rmnc[:, wout.xm == 1] = 0.0
+    assert np.isnan(spectral_truncation(wout))
+
+
+def test_trace_reports_and_warns_on_a_truncated_spectrum(solovev_wout, traced, monkeypatch):
+    import vmex.core.tracing as tracing
+
+    value = traced.metadata["spectral_truncation"]
+    assert value == pytest.approx(tracing.spectral_truncation(read_wout(solovev_wout)))
+    assert np.isfinite(value) and value >= 0
+    monkeypatch.setattr(tracing, "RESOLUTION_TOLERANCE", -1.0)
+    with pytest.warns(RuntimeWarning, match="Equilibrium spectrum truncated"):
+        trace_alphas(solovev_wout, **TRACE_KWARGS)
+
+
+def test_truncation_message_names_the_value_the_fix_and_the_switch():
+    from vmex.core.tracing import truncation_message
+
+    text = truncation_message(1.0e-2, "--trace-no-resolution-check")
+    assert "1.0e-02 of m = 1" in text and "mpol = ntor >= 6" in text
+    assert "Monte Carlo error" in text and text.endswith("pass --trace-no-resolution-check to silence.")
+
+
+def test_trace_resolution_check_can_be_silenced(solovev_wout, monkeypatch):
+    import warnings
+
+    import vmex.core.tracing as tracing
+
+    monkeypatch.setattr(tracing, "RESOLUTION_TOLERANCE", -1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        trace_alphas(solovev_wout, check_resolution=False, **TRACE_KWARGS)
+
+
+@pytest.mark.parametrize("silenced", [False, True])
+def test_cli_trace_prints_the_truncation_warning_once(solovev_wout, tmp_path, monkeypatch, silenced):
+    import warnings
+
+    import vmex.core.tracing as tracing
+
+    monkeypatch.setattr(tracing, "RESOLUTION_TOLERANCE", -1.0)
+    argv = [str(solovev_wout), "--trace", "--outdir", str(tmp_path), "--trace-particles", "4",
+            "--trace-tmax", "1e-6", "--trace-times", "4", "--mbooz", "8", "--nbooz", "8"]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()), warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        rc = cli.main(argv + ["--trace-no-resolution-check"] * silenced)
+    assert rc == 0
+    assert buffer.getvalue().count("Equilibrium spectrum truncated") == (0 if silenced else 1)
+    assert silenced or "pass --trace-no-resolution-check to silence." in buffer.getvalue()

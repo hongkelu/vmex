@@ -1,36 +1,73 @@
 # Changelog
 
 Release notes are mirrored from the GitHub releases, which carry each release
-in full. A number appears here only where a committed artifact backs it, and
-`benchmarks/INDEX.md` lists every benchmark artifact with its generator, the
-revision it was measured at, and the pages that cite it.
+in full. A number appears here only where a committed artifact backs it; each
+record under `benchmarks/` names the revision it was measured at.
 
-## Unreleased
+## 0.12.0 - 2026-10-21
 
-- `boundary_condition="three_term"` (Python, CLI, deck `BOUNDARY_CONDITION` or `FreeBoundaryProblem.from_loss`)
-  solves, or optimizes coils and plasma parameters on, the free boundary with B.n, pressure balance and no
-  sheet current; `ThreeTermFreeBoundaryModel` gives its Jacobian for any field. A finite-beta QA step: 265 to
-  74 s (one-pass on-surface virtual casing, one tangent solve per Jacobian, reused Jacobians, per-row pullbacks).
-- `FreeBoundaryProblem.from_loss(..., field_from_parameters=, plasma_from_parameters=)` optimizes the external field
-  (PHIEDGE, current profile) from certified roots; `opt.minimize(method="SLSQP")` drives it.
-- Free-boundary derivatives: dense LU (`adjoint_solver="forward_dense_jax"`) or O(ns) block factors (`structured`,
-  15.4 to 7.8 GiB at 8x8, NS 51), reused for GMRES, root polishing and trials, accepted by backward error.
-- `solve_free_boundary(include_edge_in_convergence=True)` converges the edge force too; `opt.axis_iota`,
-  `opt.axis_field_strength`, `VmecProblem.from_tuples(vary_phiedge=True)`, `opt.major_radius`,
-  `plot_optimization_movie(frame_labels=)`.
+- **Faster optimization.** Implicit executables are keyed on problem structure
+  and share one block factorization: QA stage compile 32-40 s to 24-27 s, a
+  second stage of the same shape 24-38 s to 13-15 s, peak memory about 30 %
+  lower (#599, #618). Adjoint tolerances are traced, so changing one no longer
+  recompiles (#623). Rejected trials stop early (#608), the Jacobian reuses the
+  refinement's block bands (#622), and multi-stage examples share one problem
+  (#621). Geometry synthesis is separable, 10-15 % faster warm solves (#597).
+- **Ballooning stability** is resolved along the field line (Richardson step,
+  fourth-order radial reads) and matches COBRAVMEC within 1.7 %; the hard
+  maximum is the default and the Jacobian is 6x cheaper (#589).
+- **Free boundary:** opt-in Newton anchoring (`solve_free_boundary_newton`, #575),
+  opt-in position control (`LPOSITION_CONTROL`, #570), a DEL-BSQ gate and a
+  coil-gradient test for single-stage runs (#614).
+- Opt-in radial preconditioner for the m = 0 lambda force,
+  `lambda_m0_floor=1e-3` (#598). 3-D force polishing with prescribed current (#558).
+- `boozer_spectrum_state(..., geometry=True)` returns the Boozer R, Z, nu and
+  Jacobian spectra (#610). Tracing takes explicit energy, mass and charge (#540).
+- JAX 0.12 support: the on-axis coil field stays differentiable (#620).
+- Every example finishes in under five minutes on a laptop and prints
+  progress (#562). README and docs restructured, with ballooning, polishing
+  and MRX sections and a CLI reference (#605, #617, #540).
+- CI runs all seven VMEC2000 golden-digest cases on every PR (#616); a
+  packaging-triggered and weekly install check covers Linux, macOS and Windows
+  (#588). `neo-jax>=1.0.6` (#588). About 880 fewer source lines (#601, #602).
+
+## 0.11.11 - 2026-10-18
+
+- **mgrid scaling matches VMEC2000.** EXTCUR multiplies every coil table; VMEX
+  no longer divides by the raw coil current, which gave 5e-5 of the field on a
+  raw mgrid. A deck NFP that differs from the mgrid NFP now stops the run (#591).
+- A free-boundary boundary that leaves the mgrid box warns as VMEC2000 does,
+  naming the side, the overshoot and the grid extents (#604). `piota` ignores
+  BLOAT, as in VMEC2000; BLOAT other than 1 requires NCURR = 1.
+- A PHIEDGE whose sign opposes the external toroidal field stops the run, as
+  VMEC2000's vacuum.f does (#571).
+- LASYM: the theta shift uses VMEC2000's `atan2` form (#606).
+- WOUT `phi` is correct for non-uniform APHI; the namelist reader accepts
+  `&END`, `$END` and a `/` before a comment; the summary plot works at NS = 3 (#593).
+- `import vmex` no longer changes `jax.config`. `vmex.configure()` sets x64,
+  the compilation cache and logging in one place; the CLI and the first core
+  import call it, and the solver refuses to run in float32 (#607).
+- CI runs in seven balanced lanes and the test suite runs jitted (#586, #580).
+- README: VMEX against exact equilibria, with and without stellarator symmetry (#578).
+
+## 0.11.10 - 2026-10-13
+
+- **`vmex --trace` is about twice as fast** on large spectra with ESSOS 0.21:
+  ARIES-CS, 500 alphas over 10 ms on 10 M4 cores, 111 s to 53 s (#581).
+- `trace_alphas` and `vmex --trace` warn when the WOUT spectrum looks truncated
+  (`spectral_truncation` > 3e-3; see the trace how-to for what to do about it).
+- Floor `essos>=0.21.0` (0.20.1 brought per-pair Coulomb logarithms). `vj.essos_tracing_fields(wout, coils, wall=0.03)` gives ESSOS `Tracing`
+  the VMEC field, tabulated exterior field and wall (`examples/vmex_essos_tracing_to_wall.py`).
+- `VmecInteriorField` and the live-state field spectra work without stellarator
+  symmetry (`LASYM = T`): the sine families `rmns`, `zmnc`, `lmnc` and the
+  `B^u`/`B^v` sine tables are evaluated, and symmetric results are unchanged
+  bit for bit. On the exact up-down asymmetric Solov'ev equilibrium at ns = 65
+  the field gives B to 2e-7 and J to 3e-6-2e-5 at mid radius (4e-4 from WOUT).
 - `examples/vmex_mrx_comparison.py` relaxes the 2.5 % beta QA deck with MRX
   from the VMEX ns = 65 field and compares the two (Poincare sections, iota,
   toroidal current, pressure). MRX is optional.
-- `vmex --trace` runs on one GPU when several are visible. Each adaptive step
-  waits on every device, so two A4000s took 2-3 times longer than one;
-  `trace_alphas(devices=jax.devices())` still splits over all of them. CPU
-  runs are unchanged.
-- `vmex --neoclassical` runs DKX neoclassical transport on a WOUT, or after a
-  solve, and writes `*_neoclassical.png` and `*_neoclassical.h5`;
-  `--nc-preset quick|default|full` sets the resolution, `--nc-profiles` takes
-  the n and T profiles (and draws VMEX's Redl `<j.B>` on them) and `--nc-er`
-  fixes `E_r`. The `neoclassical` extra now installs `dkx>=2.8.0`; an older
-  DKX runs without the profiles and says so.
+- `vmex --trace` runs on one GPU when several are visible (two A4000s took 2-3
+  times longer than one); `trace_alphas(devices=jax.devices())` still splits.
 
 ## 0.11.9 - 2026-10-07
 
@@ -154,45 +191,6 @@ surface, optimization results are the states the objective scored (#427), and
 the optimization examples were re-tuned against a five-minute budget. Full
 notes in the GitHub release.
 
-## 0.11.0 - 2026-09-21
+## 0.11.0 and earlier
 
-The interior field is built from the native VMEC form (#403), with a C2
-radial interpolant; radial lifts reject under-determined spline fits (#414),
-stalled restarts get one deterministic cold retry, and warm workflow profiles
-time every stage (#420). Full notes in the GitHub release.
-
-## 0.10.0 - 2026-09-20
-
-The interior field's geometry table carried a spurious `sqrt(s)` on every
-odd-`m` coefficient, which put `li383_low_res` surfaces 1.2 cm (R) and 5.9 cm
-(Z) off at mid-radius; it now reproduces the wout table to 6.7e-16 m and all
-126 adjacent surface pairs nest. Points well outside the plasma return NaN
-instead of raising, the inversion starts from the best of three seeds, and a
-query on the magnetic axis no longer returns NaN. Full notes in the release.
-
-## 0.9.1 - 2026-09-16
-
-Optimization gradients compile on a machine that has a GPU (the host-callback
-pin now applies only within one platform; jax-ml/jax#40722), the coil examples
-install from PyPI (`essos>=0.17`, new `all` extra), `max_fsq_ratio` defaults to
-`1e2`, and the exterior field sizes its source grid from the boundary (4.31e-07
-one minor radius out on the QA wout, against 2.46e-02 before). Full notes in
-the GitHub release.
-
-## 0.9.0 - 2026-09-15
-
-The optimization release. The two workflows users reported as slow and
-inconclusive — quasi-isodynamic boundary design and single-stage plasma-and-coil
-design — now converge and meet the targets they print: the refinement every
-trial pays is a Newton finish through one block factorization, the implicit
-adjoint is solved exactly through that same factorization, and the compiled
-lanes stopped recompiling. The exterior field reports the accuracy it achieved,
-every evaluation carries counters, and the CLI reads DESC inputs. It does not
-close cold compile (median wall per case 23.1 s against VMEC++'s 3.35 s in the
-independent `itpplasma/benchmark_vmec` corpus) or block-Jacobian assembly.
-
-PRs and full notes: the GitHub release (#300-#344, 36 merged since 0.8.1).
-
-## 0.8.1 - 2026-09-02
-
-The cold-start performance release (#227-#234). Full notes in the release.
+See the [GitHub releases](https://github.com/uwplasma/vmex/releases).

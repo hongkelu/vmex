@@ -105,7 +105,8 @@ Every tabulated field ({meth}`~vmex.core.mgrid.MgridField.from_file`,
 {meth}`~vmex.core.mgrid.MgridField.from_input`) takes `order=1` (trilinear,
 the default) or `order=3` (tricubic, C1). The table itself is the same.
 `MgridField.from_input(inp, mgrid_path=None, *, order=1)` builds a deck's
-field with the solver's `EXTCUR` / `raw_coil_cur` scaling, so it is the way
+field with the deck's `EXTCUR` (each coil group's table times its current, as
+VMEC2000 does in every `mgrid_mode`), so it is the way
 to get the tricubic version of the field a deck would use.
 
 Trilinear stays the default because it is the VMEC2000 parity kernel that
@@ -127,103 +128,85 @@ field = vj.MgridField.from_input(inp, order=3)          # deck + mgrid file
 coil_field = vj.MgridField.from_coils(coils, order=3)   # ESSOS coils
 ```
 
-## Three-term free boundary (no sheet current)
-
-NESTOR makes the boundary a flux surface of the vacuum field and balances only
-`|B|` across it, so a VMEC/NESTOR equilibrium may carry an edge sheet current
-`K` (a jump in the direction of the tangential field). Different such states
-can solve the same deck, and the solve can leave the one whose coils were fitted
-to it. `boundary_condition="three_term"` instead solves for the boundary on
-which all three interface conditions hold, with the plasma's own field from
-virtual casing (Conlin et al. 2024, arXiv:2412.05680):
-`B_out . n = 0`, `|B_out|^2 = |B_in|^2 + 2 mu0 p`, and `n x (B_out - B_in) = 0`.
-Each trial boundary is a fixed-boundary equilibrium, and Gauss--Newton with
-exact implicit derivatives drives the three residuals to zero:
-
-```python
-import vmex as vj
-
-result = vj.solve_free_boundary_multigrid(
-    inp, external_field=coil_field, boundary_condition="three_term",
-    three_term_options=dict(max_nfev=30))
-print(result.boundary_residual)   # RMS of B.n, pressure jump and mu0 K, over |B|
-```
-
-or `vmex input.case --boundary-condition three-term` on the command line,
-or a directive in the deck itself, which VMEC2000 reads as a comment (the CLI
-flag and the `solve_file` keyword override it):
-
-```fortran
-!@VMEX BOUNDARY_CONDITION = THREE_TERM
-&INDATA
-  LFREEB = T
-  MGRID_FILE = 'mgrid_case.nc'
-  ...
-/
-```
-
-(`"_vmex": {"boundary_condition": "three_term"}` in a JSON input).
-The deck boundary is the initial guess, so a fixed-boundary design and the
-coils fitted to it are a natural start. The edge pressure must vanish (a
-pressure jump needs a sheet current), and `virtual-casing-jax` must be
-installed. Virtual casing dominates the cost and runs on the default JAX device,
-so use a GPU; expect several times the cost of a NESTOR solve.
-{func}`vmex.core.freeboundary_vc.solve_free_boundary_three_term`
-exposes the grid, weights and least-squares controls, and its `previous=`
-restarts from an earlier result (after a coil change, say) in a few
-equilibrium solves without compiling anything:
-
-```python
-from vmex.core.freeboundary_vc import solve_free_boundary_three_term
-
-fit = solve_free_boundary_three_term(inp, external_field=coil_field)
-fit.boundary_residual, fit.equilibrium.wout          # the conditions, the free boundary
-moved = solve_free_boundary_three_term(inp, external_field=new_coil_field, previous=fit)
-```
-
-For a free-boundary single-stage optimization, pass
-`boundary_condition="three_term"` to `FreeBoundaryProblem.from_loss` (the same
-loss, parameter maps and quantities as with NESTOR): every trial is a
-three-term free boundary, warm-started from the last linearized one, and the
-design gradients follow from the implicit function theorem of the boundary fit
-({class}`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryProblem`).
-
-```python
-problem = opt.FreeBoundaryProblem.from_loss(
-    inp, loss, x0, field_from_parameters=coils_from_x, plasma_from_parameters=plasma_from_x,
-    quantities=(opt.major_radius,), boundary_condition="three_term",
-    three_term_options=dict(quadrature=(4 * inp.nfp * 48, 96)))
-result = opt.minimize(problem, method="SLSQP", constraints=[problem.nonlinear_constraint(lower, upper)])
-```
-
-For other uses of many fields and plasma parameters,
-{class}`vmex.core.freeboundary_vc.ThreeTermFreeBoundaryModel` gives the
-pieces directly: `solve_boundary` (cold or warm), `linearize` (the interface
-Jacobian and the state responses to the boundary and any plasma parameters),
-and `pullback` (reverse-mode gradients of other functions of the equilibrium,
-e.g. a quasi-symmetry residual), with the coils an argument of the compiled
-code.
-
-To check a NESTOR result instead, pass `report_boundary_residual=True`: the
-three conditions are evaluated on the converged boundary and returned as
-`result.boundary_residual`. VMEC + NESTOR (VMEX and VMEC2000 alike) leaves a
-floor of a few 1e-4 even for an exact external field, and the virtual-casing
-evaluation itself is accurate to about 2e-4 on its default 48 x 48 grid, so a
-`sheet_current` well above 1e-3 marks a genuine edge sheet current.
-
-How close each method gets to a known answer at mpol = ntor = 4 to 12, and at
-what cost, is recorded in {doc}`/explanation/validation`
-("Three-term free boundary against VMEC + NESTOR and DESC").
-
 ## Key knobs
 
-- `EXTCUR` — coil-group currents scaling the mgrid field.
+- `EXTCUR` — coil-group currents scaling the mgrid field. Entries missing
+  for the mgrid's coil groups count as zero, as in VMEC2000; a nonzero entry
+  beyond them (a deck written for another mgrid) stops the run, where
+  VMEC2000 would silently ignore it. When the first NESTOR update finds the
+  vacuum field's circulation differing from the toroidal current by more than
+  1 % of R*BTOR (VMEC++'s `I_TOR` check), VMEX warns: the boundary may enclose
+  a coil, or the table is not a pure vacuum field.
 - `NVACSKIP` — iterations between full NESTOR solves; between them, cheap
   incremental updates reuse the factored potential matrix, and the cadence
   adapts toward convergence ({doc}`/explanation/nestor-vacuum`).
 - `--jacobian-retries` — free-boundary recovery after the 75-reset condition
   rebuilds the axis filament and NESTOR structures before continuing
   ({doc}`troubleshoot`).
+
+## Position control for radially unstable coil sets
+
+A plasma carrying net toroidal current has no stable position in a vertical
+field that is the wrong size or has too steep a decay index; the iteration then
+drifts and never settles. Tokamak codes close the loop with a vertical-field
+coil, and VMEX does the same as an opt-in, from the deck or from Python
+({doc}`/explanation/position-control` has the physics and the equations).
+
+From a deck, with no Python:
+
+```fortran
+  LPOSITION_CONTROL = T     ! VMEX extension; VMEC2000 rejects unknown keys
+  POSITION_TARGET   = 1.7199   ! axis radius to hold [m]; <= 0 keeps the initial axis
+```
+
+```bash
+python examples/free_boundary_position_control.py   # writes the deck's mgrid
+vmex output_position_control/input.DIII-D_position_control
+```
+
+That deck is the DIII-D-like tokamak whose coil field is 40 mT short of
+vertical field. Without control the solve fails (fsq 1.1e-5 after 8000
+iterations, axis 23 cm inboard); with `LPOSITION_CONTROL = T` it converges in
+3855 iterations and the log reports `B_Z^ctrl = 39.8 mT`. The deck keys are
+`LPOSITION_CONTROL` (default `F`), `POSITION_TARGET` (default `0`),
+`POSITION_INTERVAL` (default `20`), `POSITION_GAIN` (default `4`) and
+`POSITION_NMAX` (default `0`); see {doc}`/reference/vmec2000-compatibility`.
+
+From Python the call is the same, and an explicit argument wins over the deck
+(`position_control=False` turns a deck's control off):
+
+```python
+from vmex import PositionControl
+
+result = vj.solve_free_boundary_multigrid(
+    inp, external_field=field,
+    position_control=PositionControl(target=0.98))   # metres; None keeps the initial axis
+print(result.position_control.vertical_field)         # the converged B_Z correction [T]
+```
+
+```{image} /_static/figures/position_control_deck.webp
+:alt: Axis position, feedback vertical field and force residual with and without position control on the 40 mT deficit deck
+```
+
+`PositionControl` also takes `integral_gain`, `derivative_gain`, `max_step`,
+`deadband` and `measure="boundary"`. `nmax >= 1` adds helical vacuum
+harmonics driven by the axis coefficients `R_0n` and `Z_0n`; treat them as
+experimental. `result.position_control` holds the amplitudes, targets and the
+per-update history (`iteration, fsq, bz..., br..., measured...`).
+
+```{image} /_static/figures/position_control.webp
+:alt: Axis position, convergence and recovered vertical field with and without position control
+```
+
+`examples/free_boundary_position_control.py` sweeps the offset: a 40 mT
+deficit makes the uncontrolled solve fail and a 40 mT excess carries the axis
+58 cm outboard, while with control the axis stays within 3.5 mm of its target,
+every solve converges, and `B_Z^ctrl` reports the missing field to 0.7 mT.
+
+The default is off: without the deck flag or the argument the code path and
+results are unchanged, and with all gains zero a controlled run is bitwise
+identical to the plain one. A coil set that needs a large correction is a
+poor coil set, not a solved one.
 
 ## Convergence differences from fixed boundary
 
@@ -233,6 +216,15 @@ change character at the `VACUUM PRESSURE TURNED ON` banner. Free-boundary
 ladders carry the active-vacuum state and adaptive `NVACSKIP` across
 `NS_ARRAY` stages ({doc}`/explanation/iteration`). On GPUs, the dense NESTOR
 factor runs on CPU by design ({doc}`run-on-gpu`).
+
+## Remove the constraint bias (opt-in)
+A converged LCFS balances VMEC's spectral-condensation force as well as the vacuum pressure, so `|B|` differs from the coil field by 1e-3 to 1e-2 in VMEC2000, VMEC++ and VMEX alike. `vmex.relax_free_boundary_constraint(inp, result, external_field=field)` restarts a converged state once with `tcon0 = 1e-3` and returns the lowest-`fsq` iterate (`converged = False`: judge it by the field; `examples/free_boundary_relax_constraint.py`). On vacuum mgrids of simsopt or ESSOS coils the largest `|B|` error against the table at `s = 0.25` falls 1.4e-3 to 1.5e-4 (LP-QA 7 / 12), 1.7e-3 to 5.5e-4 (W7-X 10 / 12) and 2.2e-3 to 5.7e-4 (NCSX 10 / 12), and the LCFS moves 1-8 mm. It stays opt-in: it gives up VMEC2000 parity and `ftol`, and needs `mpol` and `ntor` that resolve the coils. Rms force error `|J x B - grad p| / (B^2 / mu0 a)` from each wout alone at `s = 0.25 / 0.9`:
+
+| case (`mpol` / `ntor`) | VMEC2000 | VMEC++ | VMEX | VMEX relaxed |
+|---|---|---|---|---|
+| W7-X vacuum, 10 / 12 | 1.2e-2 / 1.7e-2 | 1.2e-2 / 1.8e-2 | 1.2e-2 / 1.7e-2 | 8.1e-4 / 4.5e-3 |
+| NCSX deck, 7 / 6 | 3.3e-2 / 6.0e-2 | 3.5e-2 / 6.8e-2 | 3.3e-2 / 6.0e-2 | 4.5e-3 / 2.7e-2 |
+| CTH-like deck, 5 / 4 (worse) | 3.3e-3 / 5.6e-3 | 3.2e-3 / 5.7e-3 | 3.3e-3 / 5.6e-3 | 3.6e-3 / 2.9e-2 |
 
 ## Differentiability scope
 
@@ -245,3 +237,14 @@ default `device="auto"` it runs on the CPU even on a GPU host.
 Its coil examples need ESSOS (`pip install "vmex[coils]"`). Scope is in
 {doc}`/reference/capabilities` and the mechanism in
 {doc}`/explanation/nestor-vacuum`.
+
+## Model and references
+
+Outside the plasma the field is $\mathbf{B} = \mathbf{B}_{\rm ext} + \nabla\Phi$ with $\nabla^2\Phi = 0$
+and $\mathbf{B}\cdot\mathbf{n} = 0$ on the plasma boundary. NESTOR solves this Neumann problem with a
+Green's-function integral equation on the boundary, and the pressure balance
+$[\![\,B^2/2\mu_0 + p\,]\!] = 0$ across the boundary moves the plasma surface. Derivation and the
+numerical choices: {doc}`/explanation/nestor-vacuum`.
+
+- P. Merkel, *J. Comput. Phys.* 66, 83 (1986): the Green's-function method for the vacuum field.
+- S. P. Hirshman, W. I. van Rij and P. Merkel, *Comput. Phys. Commun.* 43, 143 (1986).

@@ -92,13 +92,31 @@ Options
      - ``E_r`` [kV/m] for ``--neoclassical`` (default: the ambipolar root).
    * - ``--trace-no-scale``
      - Trace the equilibrium as given.
+   * - ``--trace-no-resolution-check``
+     - Do not warn on a truncated equilibrium spectrum (edge modes above
+       ``3e-3`` of ``m = 1``).
    * - ``--trace-tmax X`` / ``--trace-timestep X``
      - Tracing horizon / integrator step in seconds (defaults ``1e-2`` /
        ``2.5e-7`` times ``Aminor_p / 1.7044 m``).
    * - ``--trace-particles N`` / ``--trace-times N``
-     - Ensemble size / saved samples per orbit (defaults 1000 / 1000).
+     - Ensemble size / saved samples per orbit (defaults 500 / 1000).
    * - ``--trace-s X`` / ``--trace-seed N``
      - Launch surface ``s`` (default 0.25) and sampling seed (default 42).
+   * - ``--trace-energy-eV E`` / ``--trace-mass-kg M`` / ``--trace-charge-coulomb Q``
+     - Kinetic energy [eV], mass [kg] and signed nonzero charge [C] of the
+       traced particle (defaults: the 3.52 MeV fusion alpha). Require
+       ``--trace``.
+   * - ``--trace-method M`` / ``--trace-tolerance TOL`` / ``--no-trace-compact``
+     - Integrator (``adaptive8`` default, ``adaptive``, ``rk4``, ``dopri5``,
+       ``dopri8``), its error tolerance, and compaction of early losses.
+   * - ``--trace-birth {surface,volume}``
+     - Birth on ``--trace-s`` or through the volume at the D-T fusion rate.
+   * - ``--collisional`` / ``--trace-ne0 N`` / ``--trace-te0 T``
+     - Monte Carlo collisions with on-axis density [m^-3] and temperature
+       [keV] (defaults ``4e20`` / ``12``).
+   * - ``--trace-mode-cut C``
+     - Drop Boozer modes below ``C`` times the largest amplitude. Every
+       ``--trace-*`` option and its cost: :doc:`/howto/trace-alpha-particles`.
    * - ``--outdir DIR``
      - Directory for wout/boozmn/figure output (default: alongside the
        input).
@@ -141,11 +159,6 @@ Options
      - Retry a stage from its best finite checkpoint after the VMEC2000
        75-Jacobian-reset condition, using a reduced ``DELT`` (default 2).
        Use 0 to preserve VMEC2000's immediate fatal-stop behavior.
-   * - ``--boundary-condition {nestor,virtual-casing}``
-     - Plasma-vacuum interface condition of an ``LFREEB = T`` deck: NESTOR's
-       vacuum pressure (default), or the three virtual-casing conditions
-       ``B.n = 0``, pressure balance and no sheet current, solved for the
-       boundary starting from the deck's. See :doc:`/howto/free-boundary`.
    * - ``--coils PATH``
      - ESSOS-style coils file (``.json`` or ``.npz`` with ``dofs_curves``,
        ``dofs_currents``, ``n_segments``, ``nfp``, ``stellsym``) supplying

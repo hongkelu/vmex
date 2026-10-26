@@ -43,8 +43,6 @@ from vmex.core import multigrid, solver
 from vmex.core.errors import BAD_JACOBIAN_FLAG, VmecJacobianError
 from vmex.core.input import VmecInput
 
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")  # full solves: run jitted
-
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 CACHE_DIR = Path("/tmp/vmex_ladder_cache")
 
@@ -290,7 +288,7 @@ def test_ladder_forwards_explicit_2d_preconditioner(monkeypatch):
 def test_initial_bad_jacobian_retries_once_through_ns3(
     monkeypatch, capsys,
 ) -> None:
-    """The VMEC++ coarse-axis recovery prepends one bounded stage."""
+    """The C++ VMEC coarse-axis recovery prepends one bounded stage."""
     original = multigrid.solve_multigrid
     monkeypatch.setattr(
         multigrid,

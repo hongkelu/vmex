@@ -33,9 +33,6 @@ import jax.numpy as jnp
 from vmex.core import bootstrap as bs
 from vmex.core import optimize as opt
 from vmex.core.input import VmecInput
-
-pytestmark = pytest.mark.usefixtures("_module_jit_enabled")
-
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data"
 ZENODO = Path(os.environ.get(
     "VMEX_ZENODO_2205_02914", "__external_zenodo_dataset_not_configured__"))
@@ -602,11 +599,7 @@ def _interp_full(wout, surfaces, values):
 @pytest.mark.parametrize("fixture", ["eq", "lasym_eq"])
 def test_vmec_j_dot_B_state_lane_matches_wout_jdotb(request, fixture):
     """Traceable identity <J.B> vs the wout-engine jdotb (jxbforce.f): <= 1%
-    (observed ~5e-5 solovev, ~9e-4 up_down); wout-table identity ditto.
-
-    The LASYM row is the regression gate on the ``geom=None`` synthesis: with
-    the sine families dropped the last assertion missed by 2.8e-3.
-    """
+    (observed ~5e-5 solovev, ~9e-4 up_down)."""
     eq = request.getfixturevalue(fixture)
     surfaces = np.linspace(0.2, 0.9, 8)
     jv = np.asarray(bs.vmec_j_dot_B(eq.state, eq.runtime, surfaces=surfaces))
@@ -614,39 +607,6 @@ def test_vmec_j_dot_B_state_lane_matches_wout_jdotb(request, fixture):
     scale = np.max(np.abs(jw))
     assert scale > 1e3  # the deck carries real current: the gate is nontrivial
     np.testing.assert_allclose(jv, jw, atol=1e-2 * scale)
-    jv_wout = np.asarray(bs.vmec_j_dot_B_from_wout(eq.wout, surfaces))
-    np.testing.assert_allclose(jv_wout, jw, atol=1e-2 * scale)
-    # fsa_B2 reuse path (geom from the same surfaces) is the same identity.
-    geom = bs.redl_geometry_from_wout(eq.wout, surfaces)
-    jv_geom = np.asarray(bs.vmec_j_dot_B_from_wout(eq.wout, surfaces, geom=geom))
-    np.testing.assert_allclose(jv_geom, jv_wout, rtol=1e-3)
-    # The two lanes are the same identity, so they must agree exactly, not
-    # merely within the gate above -- and at the axis too.  Every m != 0
-    # harmonic vanishes where the surface degenerates to a point;
-    # redl_geometry_from_wout zeroes them there and the geom=None lane did
-    # not, which put the two 4.0e-4 apart at s = 0 while they matched
-    # bit-for-bit everywhere else.
-    with_axis = np.concatenate([[0.0], surfaces])
-    axis_geom = bs.redl_geometry_from_wout(eq.wout, with_axis)
-    np.testing.assert_array_equal(
-        np.asarray(bs.vmec_j_dot_B_from_wout(eq.wout, with_axis)),
-        np.asarray(bs.vmec_j_dot_B_from_wout(eq.wout, with_axis,
-                                             geom=axis_geom)))
-
-
-@needs_zenodo
-@pytest.mark.parametrize("config", sorted(OPTIMA))
-def test_zenodo_identity_matches_wout_jdotb(config):
-    """V4: the section-6.2 identity from wout arrays vs wout jdotb, <= 2%
-    interior on the three optimized finite-beta Zenodo wouts (observed
-    <= 5e-4) — both the dI/ds and the mu0*I*dp/ds term live at beta > 0."""
-    path, _, _, _ = OPTIMA[config]
-    from vmex.core.wout import read_wout
-    wout = read_wout(path)
-    surfaces = np.linspace(0.1, 0.9, 17)
-    jv = np.asarray(bs.vmec_j_dot_B_from_wout(wout, surfaces))
-    jw = _interp_full(wout, surfaces, wout.jdotb)
-    np.testing.assert_allclose(jv, jw, atol=2e-2 * np.max(np.abs(jw)))
 
 
 # ---------------------------------------------------------------------------
@@ -761,11 +721,8 @@ def test_current_dof_packing_and_validation():
         opt._current_dof_setup(dataclasses.replace(inp, ncurr=0), 2)
     with pytest.raises(ValueError, match="positive int"):
         opt._current_dof_setup(inp, -1)
-    # knot values of a line-segment profile, as of a spline (a value on every half-mesh surface)
-    segments = dataclasses.replace(inp, pcurr_type="line_segment_ip", ac_aux_s=np.linspace(0.0, 1.0, 5),
-                                   ac_aux_f=np.array([1.0, 2.0, 3.0, 2.0, 0.5]))
-    assert opt._current_dof_setup(segments, 4) == (4, 3.0)
-    np.testing.assert_allclose(opt._pack_current(segments, 4, 3.0)[:4], [1 / 3, 2 / 3, 1.0, 2 / 3])
+    with pytest.raises(ValueError, match="line_segment"):
+        opt._current_dof_setup(dataclasses.replace(inp, pcurr_type="line_segment"), 2)
     with pytest.raises(ValueError, match="current-spline knot"):
         opt._current_dof_setup(
             dataclasses.replace(inp, pcurr_type="cubic_spline_ip"), 2)
@@ -908,72 +865,3 @@ def test_filter_bsubuv_lasym_halves_the_self_conjugate_nyquist_modes():
     assert out_u.shape == bsubu.shape and out_v.shape == bsubv.shape
     assert np.all(np.isfinite(out_u)) and np.all(np.isfinite(out_v))
     assert float(np.max(np.abs(out_u - bsubu))) > 1e-3
-
-
-def test_half_mesh_picard_makes_the_current_redls():
-    """Fixed boundary, LP QA at 0.5% beta: I' on every half-mesh surface iterated to Redl's, I'(0) = 0."""
-    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
-        mpol=3, ntor=3, ntheta=12, nzeta=12)
-    inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
-                              niter_array=np.array([10000]))
-    n0 = 1.5e20
-    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0)
-    profiles = _paper_profiles(n0, T0)
-    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh")
-    assert result.converged and result.input.pcurr_type == "line_segment_ip"
-    assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
-    state, rt = result.equilibrium.solution, result.equilibrium.solver_context
-    # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
-    hm = bs._half_mesh_fields(state, rt)
-    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA), 0)[0])
-    jv = np.asarray(bs._jv_from_half(hm, hm.s_half))
-    s = np.asarray(hm.s_half)
-    inner = (s > 0.1) & (s < 0.9)
-    assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))
-
-
-def test_current_derivative_of_any_jdotb_is_redls_for_redl(eq):
-    """``current_derivative`` (any <J.B>, e.g. DKX's) inverts the same identity as ``redl_current_derivative``."""
-    profiles = _paper_profiles(1e20, 2e3)
-    s, redl = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
-    hm = bs._half_mesh_fields(eq.state, eq.runtime)
-    jr = bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA,
-                                                           refine_extrema=True), 0)[0]
-    s2, generic = bs.current_derivative(jr, eq.state, eq.runtime)
-    np.testing.assert_array_equal(np.asarray(s), np.asarray(s2))
-    np.testing.assert_allclose(np.asarray(generic), np.asarray(redl), rtol=1e-12, atol=1e-9 * np.max(np.abs(redl)))
-
-
-def test_near_axis_redl_ratio_is_banana_or_collisional():
-    """Inside s_1 the ratio is Redl's <J.B> on the s_1 geometry continued to the axis (eps ~ s^(1/2), f_t ~ s^(1/4)):
-    about s^(1/4) at low collisionality, far smaller where nu*_e ~ eps^(-3/2) is large."""
-    geom = bs.RedlGeometry(
-        surfaces=jnp.array([0.01]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
-        R=jnp.array([6.0]), epsilon=jnp.array([1e-4]), f_t=jnp.array([0.0146]), fsa_B2=jnp.array([1.0]),
-        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.98]), Bmax=jnp.array([1.02]), psi_edge=jnp.asarray(-0.5),
-        nfp=2)
-    x = np.array([1 / 64, 1 / 16, 1 / 4, 1.0])
-
-    def ratio(n0, T0):
-        profiles = _paper_profiles(n0, T0)
-        jr, details = bs.j_dot_B_redl(profiles, geom, 0)
-        direct = [float(bs.j_dot_B_redl(profiles, dataclasses.replace(
-            geom, surfaces=geom.surfaces * xi, epsilon=geom.epsilon * np.sqrt(xi), f_t=geom.f_t * xi ** 0.25), 0)[0][0])
-            for xi in x]
-        got = np.asarray(bs.near_axis_redl_ratio(profiles, 0, geom, jr, jnp.asarray(x)))
-        np.testing.assert_allclose(got, np.asarray(direct) / float(jr[0]), rtol=1e-12)
-        return got, float(details["nu_e_star"][0])
-
-    banana, nu = ratio(1e12, 1e6)
-    assert nu < 1e-3 and np.all(np.diff(banana) > 0)
-    # the electron and ion gradient terms nearly cancel, so the sum departs from f_t ~ s^(1/4) by up to ~30%
-    assert np.all((0.7 * x ** 0.25 < banana) & (banana < 1.4 * x ** 0.25))
-    collisional, nu = ratio(1e21, 1e3)
-    assert nu > 10 and collisional[-1] == pytest.approx(1.0)
-    assert np.all(np.diff(collisional) > 0) and np.all(collisional[:-1] < 0.5 * x[:-1] ** 0.25)
-
-
-def test_self_consistent_bootstrap_rejects_unknown_profile():
-    """An unknown current representation fails before any equilibrium is solved."""
-    with pytest.raises(ValueError, match="profile must be"):
-        bs.self_consistent_bootstrap(None, None, 0, profile="spline")

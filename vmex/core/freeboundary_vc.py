@@ -172,25 +172,7 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
-def _equal_arc_rows(gamma):
-    """Rows that vanish when the boundary's poloidal angle is equal-arc on every toroidal cut and the m = 1 part of
-    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.  The phase is
-    the angle of that part, in (-pi, pi]: zero on one branch only (``Im c1 / |c1|`` also vanished for the angle
-    shifted by pi), and not finite where the part vanishes (a rejected trial).
-
-    ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points.  Returns ``(arc, phase)``: ``|d gamma/d theta|`` relative to
-    its mean on each cut, minus one, ``(nphi, ntheta)``; and the phase of ``c1`` per cut, ``(nphi,)``.
-    """
-    ntheta = gamma.shape[-1]
-    wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
-    e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma, axis=-1), axis=-1))
-    speed = jnp.linalg.norm(e_theta, axis=0)
-    arc = speed / jnp.mean(speed, axis=-1, keepdims=True) - 1.0
-    c1 = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]) + 1j * gamma[2], axis=-1)[..., 1]
-    return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
-
-
-def _gauge_rows(R, Z, mpol, ntor, kind="condensation"):
+def _gauge_rows(R, Z, mpol, ntor):
     """The exact gauge of the boundary's poloidal angle: VMEC's spectral condensation (Hirshman & Meier 1985,
     Hirshman & Breslau 1998) as equations, not penalty rows.
 
@@ -200,15 +182,12 @@ def _gauge_rows(R, Z, mpol, ntor, kind="condensation"):
     ``m = 1 .. mpol - 2`` and ``|n| <= ntor`` fix the ``m >= 1`` relabellings.  The ``m = 0`` relabellings (a
     shift of theta on each toroidal cut) leave ``G`` unchanged; the phase of the ``m = 1`` part of ``R + i Z`` per cut
     (odd in phi) fixes them, by its sine components ``n = 1 .. ntor``.  Returns the conditions, flattened.
-    ``kind="equal_arc"`` weights by ``m^2`` (Hirshman's p = 2): ``G`` is then ``(R_theta R_thetatheta + Z_theta
-    Z_thetatheta)``, whose vanishing sine content is equal arc on every cut; its Jacobian along the relabellings is a
-    positive Laplacian for any shaping, while VMEC's ``m(m-1)`` adds a concave term that grows with the shaping.
     """
     ntheta, nphi = R.shape
     k = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)[:, None]
     FR, FZ = jnp.fft.fft(R, axis=0), jnp.fft.fft(Z, axis=0)
     R_theta, Z_theta = (jnp.real(jnp.fft.ifft(1j * k * F, axis=0)) for F in (FR, FZ))
-    weight = jnp.abs(k) * (jnp.abs(k) - 1) if kind == "condensation" else k * k  # equal arc: m^2 (p = 2)
+    weight = jnp.abs(k) * (jnp.abs(k) - 1)  # VMEC's m (m - 1)
     R_c, Z_c = (jnp.real(jnp.fft.ifft(weight * F, axis=0)) for F in (FR, FZ))
     G = (R_c * R_theta + Z_c * Z_theta) / jnp.mean(R_theta**2 + Z_theta**2)
     spectrum = jnp.fft.fft2(G) / G.size
@@ -230,13 +209,7 @@ POLISH_MAX_NFEV = 20
 #: cost (the Jacobian no longer describes the rows there).
 STALL_STEPS = 3
 STALL_GAIN = 0.05
-#: What counts as a stalled step: ``"gain"`` (it gained under STALL_GAIN of the cost, the default) or ``"model"`` (its
-#: gain ratio, actual over predicted reduction, is under 0.25: the Jacobian no longer describes the rows; a step the
-#: model predicted well continues however small its gain, the trust radius growing after full steps).
-STALL_RULE = "gain"
-#: Jacobian of the Levenberg-Marquardt steps between fresh ones: ``"none"`` (fixed, the default) or ``"broyden"``
-#: (a rank-one secant update after every accepted step; every certificate still uses a fresh Jacobian).
-JACOBIAN_UPDATE = "none"
+
 #: The cold boundary fit (no Jacobian to start from): ``"trf"`` (scipy's trust region, a fresh Jacobian after every
 #: accepted step) or ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh Jacobian, Broyden-updated after
 #: each accepted step, a fresh one when a round stalls; at most FIT_ROUNDS fresh Jacobians; the default: LBD 8 x 8
@@ -246,91 +219,34 @@ JACOBIAN_UPDATE = "none"
 FIT_STRATEGY = os.environ.get("VMEX_FIT_STRATEGY", "secant")
 FIT_ROUNDS = 12
 
-#: Extrapolate an accepted Gauss-Newton step: after an undamped step that gained over three quarters of its
-#: prediction, try 2, 4, 8, ... times it (one evaluation each, current coordinates re-solved), keeping each that
-#: lowers the cost.  For a nonzero-residual fit whose Gauss-Newton steps point the same way round after round
-#: (the model's curvature along the step too high), this covers in a few evaluations what fresh Jacobians do in
-#: as many rounds.
-GN_EXTRAPOLATE = False
-GN_EXTRAPOLATE_MAX = 6  # doublings at most
-
-#: Geodesic acceleration (Transtrum & Sethna 2012) of each Levenberg-Marquardt step: one extra evaluation at
-#: ``x + GEODESIC_H dx`` estimates the rows' second directional derivative ``r''(dx, dx)``; the correction ``a``
-#: solves the same damped (reduced) model for it, and the trial is ``x + dx + a / 2`` when ``|a| <= GEODESIC_ALPHA
-#: |dx|`` (Marquardt-scaled).  For rows that curve at the step's own scale (the Redl bootstrap rows at 2.5%: the
-#: linear model misses by 4-60% at a 1e-2 step) the second-order step follows the curved valley.
-GEODESIC = False
-GEODESIC_H = 0.1
-GEODESIC_ALPHA = 0.75
-
 #: Columns per state-tangent solve of :meth:`ThreeTermFreeBoundaryProblem.dense_hessian`: every column's tangent at
 #: once holds a raw-force linearization per column (64 exceed an 80 GB GPU on the QH 2.5% case at 8 x 8).
 EXACT_PRODUCTS_CHUNK = int(os.environ.get("VMEX_EXACT_PRODUCTS_CHUNK", "16"))  # smaller: less memory (nfp 5)
 TANGENT_WIDTH = 16  # tangent batches are padded to a multiple of this: one compiled program for nearby column counts
 
-#: A Krylov Newton step that needs this many exact products refreshes its preconditioner with the iterate's own dense
-#: exact Hessian (255 columns cost ~50 single products): along the flat directions the accepted point's eigenvalues
-#: (~1e-9) change by their own size between nearby points, and CG then runs to its limit (QA 2.5%: 40 per step).
-KRYLOV_REFRESH_PRODUCTS = 20
-
-#: After each accepted Krylov Newton step, its component in the flat subspace (the preconditioner's eigenvectors below
-#: PIN_FLAT_RTOL of its largest eigenvalue) is extended by these multiples in turn while the cost falls: the cost is
-#: quartic there (labelling sensitivity, QA/QH/QI 2.5%) and Newton converges only linearly (a third of the distance
-#: per step). Empty: no extension.
-FLAT_EXTEND = (1.0, 2.0, 4.0)
-
-#: The Krylov polish's Gauss-Newton rescue: when its trust radius has shrunk below GN_RESCUE_RADIUS of where it
-#: started, at most GN_RESCUE_MAX times per polish, Levenberg-Marquardt steps (at most GN_RESCUE_NFEV evaluations) from
-#: a fresh Jacobian; kept if they lower the cost, after which Newton resumes with a fresh radius.
-GN_RESCUE_RADIUS = 1e-2
-GN_RESCUE_MAX = 5
-GN_RESCUE_NFEV = 12
-
-#: The design gradient by block conjugate gradients on exact products (``_krylov_gradients``) uses the accepted
-#: point's exact Hessian as preconditioner while it is at most this many accepted steps old; then a dense one.
-KRYLOV_HESSIAN_AGE = 5
-#: Most block conjugate-gradient iterations of ``_krylov_gradients`` before the dense Hessian is built instead.
-KRYLOV_GRADIENT_MAXITER = 30
-
 #: The Newton polishes' floor: a predicted decrease at most this fraction of the cost is stationarity to the cost's
 #: resolution (tight interior solves resolve it to ~1e-10, QI 2.5%: a restored point's last steps changed it by
-#: 1e-18..1e-17 of 6.6e-8). The step it leaves lies along the flattest directions (~1e-4 scaled), where the design
-#: gradient changes by ~1e-5.  Where the trust region has collapsed (steps rejected at every scale), ten times it:
+#: 1e-18..1e-17 of 6.6e-8).  Where the trust region has collapsed (steps rejected at every scale), ten times it:
 #: a collapse whose predicted decrease is larger is a curved valley the model does not follow there, not a
-#: stationary point (QA 2.5%: a polish so stopped at twice the minimum's cost, 2.4% off in the objective).
+#: stationary point.
 NEWTON_FLOOR = 1e-9
-
-#: Most Newton steps re-converging a restored accepted record (:meth:`ThreeTermFreeBoundaryProblem.refine_accepted`);
-#: the saved record is kept when they do not converge.
-REFINE_MAX_STEPS = 15
+#: The Newton polishes' initial trust radius (scaled coordinates).
+NEWTON_RADIUS = 1e-1
 
 #: The exact gauge (``gauge="condensation"``): the largest |c| a projected boundary may keep, and the most
 #: Gauss-Newton steps of the projection.
 GAUGE_TOL = 1e-12
 GAUGE_PROJECT_STEPS = 20
 
-#: The gauge gradient's block CG is preconditioned by the last exact Hessian while it is at most this many accepted
-#: steps old (then a dense exact Hessian again, which becomes the next one).
-GAUGE_HESSIAN_AGE = 5
 #: The gauge Newton's SR1 update is skipped when ``|s^T (y - B s)| <= SR1_SKIP |s| |y - B s|`` (Nocedal & Wright 6.26).
 SR1_SKIP = 1e-8
-#: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the exact
-#: Hessian instead of crawling.
+#: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the
+#: Hessian (the Gauss-Newton ``J^T J`` at the iterate, then the exact dense one) instead of crawling.
 QUASI_MIN_RADIUS = 1e-4
 #: The relabelling onto the gauge (:meth:`ThreeTermFreeBoundaryProblem._gauge_relabel`): largest Levenberg-Marquardt
 #: step and largest relabelling (rad) of the angle; a larger one is not the identity's continuous neighbour.
 RELABEL_MAX_STEP = 0.5
 RELABEL_MAX_SIZE = 1.5
-#: Flat directions of the multiplicity-corrected Newton step (``newton_polish["multiplicity"]``): scaled-Hessian
-#: eigenvalues below this fraction of the largest.
-MULTIPLICITY_FLAT_RTOL = 1e-6
-#: The gauge Newton escalates a stale quasi-Newton model to the Gauss-Newton ``J^T J`` at the iterate (one
-#: linearization) before the exact dense Hessian (``newton_polish["gauss_newton_model"]``).
-GAUGE_GN_MODEL = True
-
-#: The two-stage trial's flat directions (``newton_polish["pin"]``, :meth:`ThreeTermFreeBoundaryProblem._pinned_fit`):
-#: the accepted point's exact Hessian's eigenvectors below this fraction of its largest eigenvalue.
-PIN_FLAT_RTOL = 1e-6
 
 #: Version of :meth:`ThreeTermFreeBoundaryProblem.save_checkpoint`'s file.
 CHECKPOINT_SCHEMA = "vmex-three-term-checkpoint/4"
@@ -391,11 +307,12 @@ def solve_free_boundary_three_term(
     and 5e-5 at 64 x 64 (whose quadrature needs several times the memory).
     Rows of the boundary points' displacement along the surface in ``theta``,
     relative to the initial boundary and scaled by ``label_weight``, fix the
-    boundary's poloidal labelling, which the interface conditions leave free;
-    ``labelling="equal_arc"`` replaces them by equal arc length of the current surface.
+    boundary's poloidal labelling, which the interface conditions leave free
+    (``labelling="start"``, the only choice; ``label_weight=0`` drops them).
     ``m1_complement`` is the interior's m = 1 complement policy (``ImplicitConfig.m1_complement``):
     ``"solved"`` (default) refines it with the evolved dofs so the interior root is unique; ``"frozen"`` is
-    VMEC2000's released complement.
+    VMEC2000's released complement; ``"gauged"`` fixes it to ``sqrt(s)`` times its edge value (a gauge that
+    certifies at any resolution).
     ``net_current_weight`` scales the row ``(G_plasma - G_coil) / G_coil`` of
     the net poloidal current (edge ``rbtor`` against the external field's
     circulation around the seed's magnetic axis), the direction the
@@ -569,11 +486,11 @@ class ThreeTermFreeBoundaryModel:
         #: The exact gauge of the boundary's poloidal angle (:func:`_gauge_rows`): None (NL: the labelling is whatever
         #: minimizes the interface residual) or "condensation" (VMEC's spectral condensation held exactly: every iterate
         #: of the Newton polish is projected onto it, which needs geometry only). Not part of ``options``.
-        if gauge not in (None, "condensation", "equal_arc"):
-            raise ValueError(f"gauge must be None, 'condensation' or 'equal_arc', got {gauge!r}")
+        if gauge not in (None, "condensation"):
+            raise ValueError(f"gauge must be None or 'condensation', got {gauge!r}")
         self.gauge = gauge
-        if labelling not in ("start", "equal_arc"):
-            raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
+        if labelling != "start":
+            raise ValueError(f"labelling must be 'start', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -653,7 +570,7 @@ class ThreeTermFreeBoundaryModel:
 
             def gauge_rows(x):
                 R, Z = surface(x[:nb])
-                return _gauge_rows(R, Z, mpol_g, ntor_g, self.gauge)
+                return _gauge_rows(R, Z, mpol_g, ntor_g)
 
             self.gauge_rows = jax.jit(gauge_rows)
             self.gauge_jacobian = jax.jit(jax.jacfwd(gauge_rows))
@@ -696,31 +613,26 @@ class ThreeTermFreeBoundaryModel:
             self.relabel_gauge_jacobian = jax.jit(jax.jacfwd(lambda x, fc: gauge_rows(relabel(x, fc)), argnums=1))
         seed = self.solve(self.params0)
         if seed is None:
-            from .errors import VmecConvergenceError
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium: "
                                        f"{getattr(self, '_last_failure', None)}")
         state, mask = seed[:2]
         self.seed = (state, mask)
         if not self.fixed_boundary:
-            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                                  labelling)
+            self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight)
         self._implicit_setup()
-        self.row_blocks, self.column_blocks = self._layout(nphi, ntheta, labelling, net_current_weight)
+        self.row_blocks, self.column_blocks = self._layout(nphi, ntheta, net_current_weight)
         #: Called with a complete record at every certificate round and at the outcome of :meth:`certify` (``None``:
         #: nothing recorded).  See :meth:`certify`.
         self.recorder = None
 
-    def _layout(self, nphi, ntheta, labelling, net_current_weight):
+    def _layout(self, nphi, ntheta, net_current_weight):
         """``(row_blocks, column_blocks)``: ``(name, start, stop)`` of each block of the rows and of the model
         coordinates.  Interface rows are component-major: ``B.n``, ``pressure``, ``K_x``, ``K_y``, ``K_z``, ``label``,
-        each ``nphi * ntheta`` (``(nphi, ntheta)`` row-major), then the labelling phase rows, the net-current row and
-        the bootstrap rows."""
+        each ``nphi * ntheta`` (``(nphi, ntheta)`` row-major), then the net-current row and the bootstrap rows."""
         sizes = []
         if not self.fixed_boundary:
             grid = int(nphi) * int(ntheta)
             sizes += [(name, grid) for name in ("B.n", "pressure", "K_x", "K_y", "K_z", "label")]
-            if labelling == "equal_arc":
-                sizes.append(("phase", int(nphi)))
             if net_current_weight:
                 sizes.append(("net_current", 1))
         if self.bootstrap is not None:
@@ -743,8 +655,7 @@ class ThreeTermFreeBoundaryModel:
                     digits=self.options["digits"], trial_ftol=self.options["trial_ftol"],
                     n_boundary=int(self.n_boundary), n_coordinates=int(self.x0.size))
 
-    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                         labelling="start"):
+    def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium
@@ -766,13 +677,8 @@ class ThreeTermFreeBoundaryModel:
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
-            if labelling == "equal_arc":  # a labelling of the current surface alone: no reference to the start
-                label, phase = _equal_arc_rows(gamma)
-                label, phase = label_weight * label, label_weight * phase / np.sqrt(nphi)
-            else:
-                label, phase = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0), jnp.zeros(0)
-            interface = jnp.concatenate([(jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel(),
-                                         phase])
+            label = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)
+            interface = (jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel()
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))
@@ -914,8 +820,6 @@ class ThreeTermFreeBoundaryModel:
                                           error=repr(im._LAST_STATUS_ERROR.get(cfg))[:300])
                 return None
         else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
-            from .errors import VmecError
-
             with im._device_context(cfg):
                 try:
                     state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)
@@ -1177,8 +1081,7 @@ class ThreeTermFreeBoundaryModel:
             if sol is not None:  # the fit (Levenberg-Marquardt) that produced this point: diagnostics only
                 entry["fit"] = {k: (v if isinstance(v, (str, bool, type(None))) else float(v))
                                 for k, v in sol.items() if k in ("nfev", "accepted", "reason", "projections",
-                                                                  "projection_certified", "jacobian_updates",
-                                                                  "extrapolated", "accelerated")}
+                                                                  "projection_certified", "jacobian_updates")}
             if sol is not None:
                 entry.update(x=np.asarray(sol["x"]), rows=np.asarray(sol["rows"]), J=np.asarray(sol["J"]),
                              x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
@@ -1247,7 +1150,7 @@ class ThreeTermFreeBoundaryModel:
                     break  # the polish gains nothing: the certificate below decides
                 sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
                 sol.update({k: polished[k] for k in ("nfev", "accepted", "reason", "projections", "projection_certified",
-                                                      "jacobian_updates", "extrapolated", "accelerated") if k in polished})
+                                                      "jacobian_updates") if k in polished})
                 stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
             if not settled:
                 normal_note = "" if certificate["normal_step"] is None else (
@@ -1338,6 +1241,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
+        if newton_polish is not None and model_options.get("gauge") is None:  # before the model's seed solve
+            raise ValueError("Newton polish requires gauge='condensation'")
         model = ThreeTermFreeBoundaryModel(inp, **model_options)
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
@@ -1356,12 +1261,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
-        #: Newton refinement of every certified fit on its cost with the exact Hessian (:meth:`_newton_refine`):
-        #: None, or a dict of its options (step_tol, max_steps, quasi, refresh_every, warm, warm_max_step, floor,
-        #: radius, track, verbose).  It makes the fit's stationary point, and so its response, determined.
+        #: Newton refinement of every certified fit on its cost on the exact gauge (:meth:`_newton_refine`; needs
+        #: ``gauge="condensation"``): None, or a dict of its options (step_tol, max_steps, quasi, verbose).  It makes
+        #: the fit's stationary point, and so its response, determined.
         self.newton_polish = None if newton_polish is None else dict(newton_polish)
+        if self.newton_polish is not None and model.gauge is None:
+            raise ValueError("Newton polish requires gauge='condensation'")
         #: The optimizer's design gradient: falsy for Gauss-Newton (no curvature terms: exact only at a zero residual),
-        #: truthy for the exact derivative of the converged stationarity (:meth:`_exact_gradients`; needs
+        #: truthy for the exact derivative of the converged stationarity on the gauge (:meth:`_exact_gradients`; needs
         #: ``newton_polish``, which converges the point it differentiates).
         self.exact_gradient = bool(exact_gradient)
         #: Largest design step (Euclidean, in the problem's parameters) from the accepted point a trial may take; a
@@ -1512,33 +1419,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if error:
                 return self._reject(key, error)
         anchor, J = self._anchor, None
-        if (starts is None and anchor and isinstance(anchor.get("hessian"), np.ndarray) and self.newton_polish is not None
-                and self.newton_polish.get("warm")):
-            # From the accepted point's converged boundary, its Hessian's Newton step is the exact first-order
-            # prediction of this trial's boundary; Newton (fresh Hessians) converges it, no fit needed.
-            if self._continuation is not None:
-                self._restore(self._continuation)
-            t0 = time.perf_counter()
-            try:
-                opt = dict(step_tol=1e-8, max_steps=10)
-                opt.update(self.newton_polish or {})
-                opt["H0"] = anchor["hessian"]
-                extra = self._plasma_directions(params, jnp.asarray(x)) if self._plasma.size else None
-                sol = self._newton_refine_exact(x, params, field, extra, np.asarray(anchor["b"], dtype=float), opt, t0)
-                if sol["newton"]["converged"]:
-                    nb = self.model.x0.size
-                    sol.update(continuation=self._checkpoint(), anchor=dict(
-                        x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=sol["J"][:, :nb], J_p=sol["J"][:, nb:],
-                        state=sol["state"], params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"],
-                        hessian=sol.get("hessian")))
-                    self.stats["warm_newton_trials"] = self.stats.get("warm_newton_trials", 0) + 1
-                    self._cache[key] = sol
-                    return sol
-                self.stats["warm_newton_unconverged"] = self.stats.get("warm_newton_unconverged", 0) + 1
-            except (TrialRejected, VmecError, RuntimeError):  # fall back to the fit from the anchor's prediction
-                self.stats["warm_newton_failed"] = self.stats.get("warm_newton_failed", 0) + 1
-            finally:
-                self.stats["seconds_certify"] += time.perf_counter() - t0
         direct = None  # the index of a start that goes straight to the Newton polish
         if starts is not None:  # given starts (a restore: the saved boundary)
             anchor = {}
@@ -1547,17 +1427,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
-            if self.newton_polish is not None and (isinstance(anchor.get("hessian"), np.ndarray)
-                                                   or self.model.gauge is not None):  # the gauge Newton needs no fit
-                # First: the accepted boundary straight into the Newton polish, preconditioned by the accepted point's
-                # exact Hessian. Its first step is the exact first-order prediction -H^-1 g, held to the trust region:
-                # along the flat (relabelling) directions the unrestricted prediction (and the Gauss-Newton one, which
-                # drops the curvature there) leaves the boundaries that have an equilibrium.  With ``pin``, the
-                # polish starts instead from a fit with the flat directions pinned (:meth:`_pinned_fit`).
-                start = np.asarray(anchor["b"], dtype=float)
-                if self.newton_polish.get("pin"):
-                    start = self._pinned_fit(x, params, field, anchor, float(self.newton_polish["pin"]))
-                starts.insert(0, start)
+            if self.newton_polish is not None:  # the gauge Newton needs no fit
+                # First: the accepted boundary straight into the gauge Newton polish (quasi-Newton from the accepted
+                # point's model, in a trust region on the gauge).
+                starts.insert(0, np.asarray(anchor["b"], dtype=float))
                 direct = 0
         else:
             starts = [None]
@@ -1619,51 +1492,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self._cache[key] = sol
         return sol
 
-    def _pinned_fit(self, x, params, field, anchor, weight):
-        """Stage one of a two-stage trial: the fit with the boundary's position along the flat directions held at the
-        accepted point's, so its rows are a well-conditioned problem (the role of the earlier labelling rows), then
-        handed to the exact Newton polish of the unpinned (NL) cost, which alone defines the trial's record.
-
-        The flat directions are the accepted point's exact Hessian's eigenvectors (scaled coordinates) with
-        eigenvalue below ``PIN_FLAT_RTOL`` of the largest; each gets a pin row ``w v^T (b - b_a) / scale`` with
-        ``w^2 = weight`` times the largest eigenvalue.  Levenberg-Marquardt with the accepted point's Jacobian
-        (augmented by the pin rows), every point solved tight (a trial-tolerance end point of QA 2.5% had no tight
-        interior root for the polish).  Returns the fitted boundary, or the accepted one when the fit fails."""
-        b_a = np.asarray(anchor["b"], dtype=float)
-        scale = np.asarray(self.model.x_scale, dtype=float)
-        H = np.asarray(anchor["hessian"]) * np.outer(scale, scale)
-        lam, V = np.linalg.eigh(0.5 * (H + H.T))
-        flat = V[:, lam < PIN_FLAT_RTOL * lam[-1]]
-        w = float(np.sqrt(weight * lam[-1]))
-        pin = w * flat.T / scale[None, :]
-        model, t0 = self.model, time.perf_counter()
-
-        def evaluate(z):  # tight, as the polish that starts from its result: a trial-tolerance state need not be one
-            got = model.evaluate(z, params, field, tight=True)
-            if got is None:
-                return None
-            return np.r_[np.asarray(got[0]), pin @ (z - b_a)], got[1]
-
-        try:
-            first = evaluate(b_a)
-            if first is None:
-                return b_a
-            J = np.r_[np.asarray(anchor["J_b"]), pin]
-            out = _levenberg_marquardt(evaluate, b_a, *first, J, ftol=self.boundary_ftol,
-                                       max_nfev=self.boundary_max_nfev, verbose=0)
-        except (VmecError, RuntimeError, TrialRejected):
-            return b_a
-        finally:
-            self.stats["seconds_fit"] += time.perf_counter() - t0
-        self.stats["pinned_fits"] = self.stats.get("pinned_fits", 0) + 1
-        self.stats["boundary_evaluations"] += int(out["nfev"])
-        if (self.newton_polish or {}).get("verbose"):
-            print(f"[pinned fit] {flat.shape[1]} flat directions pinned, {out['nfev']} evaluations, cost "
-                  f"{0.5 * float(first[0][:-flat.shape[1]] @ first[0][:-flat.shape[1]]):.3e} -> "
-                  f"{0.5 * float(out['rows'][:-flat.shape[1]] @ out['rows'][:-flat.shape[1]]):.3e}, "
-                  f"{time.perf_counter() - t0:.0f} s", flush=True)
-        return np.asarray(out["x"], dtype=float)
-
     def _reject(self, key, reason):
         self.stats["failed"] += 1
         self.stats["last_rejection"] = str(reason)[:400]
@@ -1694,16 +1522,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
         sol.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=sol["state"],
-            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"], hessian=sol.get("hessian")))
+            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"]))
         return sol
 
     def _newton_refine(self, x, params, field, sol, extra):
-        """Newton steps on the fit's cost ``|r|^2 / 2`` from a certified fit, with the exact Hessian, then its
-        certificate.
+        """Newton steps on the fit's cost ``|r|^2 / 2`` from a certified fit, then its certificate.
 
         The Levenberg-Marquardt polish (Gauss-Newton) converges linearly along the weak (relabelling) directions, so a
         fit certified by its gain can still be far, in the scaled step, from its stationary point there; the response
-        of the stationary point is then not determined by the fit.  :meth:`_newton_refine_exact` (or, with a
+        of the stationary point is then not determined by the fit.  :meth:`_newton_refine_gauged` (or, with a
         bootstrap current, :meth:`_newton_refine_projected`) converges it; the final point is certified by
         :meth:`ThreeTermFreeBoundaryModel.certify` (re-solved, linearized, no further polish), so the record, its
         Jacobian and its values come from the same code as every other trial.  ``sol["newton"]`` records the steps.
@@ -1714,445 +1541,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         b = np.asarray(sol["x"], dtype=float).copy()
         if self.model._projected is not None:
             return self._newton_refine_projected(x, params, field, extra, b, opt, t0)
-        if self.model.gauge is not None:
-            return self._newton_refine_gauged(x, params, field, extra, b, opt, t0)
-        M = (self._anchor or {}).get("hessian")
-        if opt.get("krylov", True) and isinstance(M, np.ndarray) and M.shape == (b.size, b.size):
-            return self._newton_refine_krylov(x, params, field, extra, b, opt, t0, M)
-        return self._newton_refine_exact(x, params, field, extra, b, opt, t0)
-
-    def _newton_refine_exact(self, x, params, field, extra, b, opt, t0):
-        """:meth:`_newton_refine` by full Newton steps on the fit's cost with the exact Hessian, in a trust region.
-
-        At each iterate ``b``: the tight interior solve, ``g`` (:meth:`_cost_gradients`) and the dense exact Hessian
-        ``H`` (:meth:`dense_hessian`, refreshed every step: along the fit's flat, curved directions it changes over
-        one step).  The step solves ``(H + lam D^2) d = -g`` (``D = diag(1/scale)``; ``lam = 0`` when the Newton step
-        fits the radius and ``H`` is positive definite) and is accepted by the ratio of the actual to the predicted
-        decrease of the cost ``|r|^2 / 2`` (not a stationarity norm, which can fall while the cost rises).  Stops
-        when the accepted Newton step is at most ``step_tol`` (scaled), or when its predicted decrease is below the
-        cost's rounding (``floor``).  With ``quasi`` the first step uses the exact Hessian and later ones a damped
-        (Powell) BFGS update on the exact gradient's secant, refreshed exactly every ``refresh_every`` steps and when
-        the model stalls; the record's gradient still builds the exact Hessian.  With ``H0`` (a warm trial: the
-        accepted point's Hessian) the first step is its prediction.  The last exact Hessian is kept for the record's
-        exact gradient (:meth:`_exact_dense_gradients`).  Then certified as every other record.
-        """
-        import scipy.linalg
-
-        model, nb = self.model, self.model.x0.size
-        scale = np.asarray(model.x_scale, dtype=float)
-
-        def point(bb):  # (cost, g, sol-like record) at bb, or None
-            got = model.evaluate(bb, params, field, tight=True)
-            if got is None:
-                return None
-            rows, aux = got
-            state, mask, params_b, _ = aux
-            r = jnp.asarray(rows)
-            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
-            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
-            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
-                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
-
-        here = point(b)
-        if here is None:
-            raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
-        cost, g, rec = here
-        radius = float(opt.get("radius", 1e-1))
-        history, evaluations, converged, seconds_hessian, H = [], 1, False, 0.0, None
-        quasi, secant, refresh, since_exact = bool(opt.get("quasi")), None, False, 0
-        for _ in range(int(opt["max_steps"])):
-            th = time.perf_counter()
-            since_exact += 1
-            if H is None and opt.get("H0") is not None:  # the accepted point's Hessian: the predicted first step
-                H, asymmetry = np.asarray(opt["H0"]), 0.0
-            elif quasi and H is not None and (refresh or since_exact > int(opt.get("refresh_every", 10))):
-                H, asymmetry = self.dense_hessian(x, rec)  # BFGS stalled, or due: the exact Hessian again
-                since_exact, secant = 0, None
-            elif quasi and H is not None:  # damped BFGS (Powell) from the exact start, on the exact g's secant
-                Hs_old = H * np.outer(scale, scale)
-                if secant is not None:
-                    s_, y_ = secant
-                    Bs = Hs_old @ s_
-                    sBs, sy = float(s_ @ Bs), float(s_ @ y_)
-                    if sBs > 0:
-                        if sy < 0.2 * sBs:
-                            theta = 0.8 * sBs / (sBs - sy)
-                            y_ = theta * y_ + (1 - theta) * Bs
-                            sy = float(s_ @ y_)
-                        Hs_old = Hs_old + np.outer(y_, y_) / sy - np.outer(Bs, Bs) / sBs
-                H, asymmetry = 0.5 * (Hs_old + Hs_old.T) / np.outer(scale, scale), 0.0
-            else:
-                H, asymmetry = self.dense_hessian(x, rec)
-            seconds_hessian += time.perf_counter() - th
-            Hs = H * (scale[:, None] * scale[None, :])  # scaled coordinates
-            gs = g * scale
-            try:
-                newton = -scipy.linalg.solve(Hs, gs, assume_a="sym")
-                eigenvalues, eigenvectors = np.linalg.eigh(Hs)
-                definite = bool(np.all(eigenvalues > 0))
-            except np.linalg.LinAlgError:
-                newton, definite, eigenvalues, eigenvectors = None, False, None, None
-            step_newton = float(np.linalg.norm(newton)) if newton is not None else np.inf
-            history.append(dict(cost=cost, step=step_newton, radius=radius, definite=definite,
-                                stationarity=float(abs(gs @ newton)) if newton is not None else np.inf,
-                                evaluations=evaluations, asymmetry=asymmetry))
-            if eigenvalues is not None and newton is not None:  # where the Newton step lives (degenerate minimum?)
-                share = (eigenvectors[:, :5].T @ newton) / max(float(np.linalg.norm(newton)), 1e-300)
-                history[-1].update(smallest_eigenvalues=eigenvalues[:5].tolist(),
-                                   largest_eigenvalue=float(eigenvalues[-1]), step_share_weakest=share.tolist())
-            if opt.get("track"):  # the exact gradient at every iterate: does it settle as the point converges?
-                history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=H)["gradients"].tolist()
-            if opt.get("verbose"):
-                drift = ""
-                if opt.get("track") and len(history) > 1:
-                    G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
-                    drift = (" gradient change vs previous iterate max "
-                             f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
-                eig = ""
-                if "smallest_eigenvalues" in history[-1]:
-                    eig = (" smallest eigenvalues " + " ".join(f"{e:.2e}" for e in history[-1]["smallest_eigenvalues"])
-                           + " step share on them " + " ".join(f"{abs(c):.2f}" for c in history[-1]["step_share_weakest"]))
-                print(f"[newton] iterate {len(history) - 1}: cost {cost:.12e}, Newton step {step_newton:.2e}, "
-                      f"definite {definite}, radius {radius:.1e}, Hessian {seconds_hessian:.0f} s total{drift}{eig}",
-                      flush=True)
-            if definite and step_newton <= opt["step_tol"]:
-                converged = True
-                break
-            if len(history) == 1 and opt.get("H0") is not None and step_newton > opt.get("warm_max_step", 0.05):
-                # the warm prediction is outside Newton's fast region (a large design step): the caller fits instead
-                history[-1]["warm_too_far"] = True
-                break
-            # The cost's own floor: a Newton step whose predicted decrease is below the cost's rounding cannot be
-            # told from noise by the actual/predicted ratio; the point is stationary to the cost's precision.
-            decrease, floor = 0.5 * float(gs @ -newton), opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300)
-            if definite and (decrease <= floor or (radius < 1e-6 and decrease <= 10 * floor)):
-                converged = True
-                history[-1]["floor"] = True
-                break
-            accepted = False
-            multiplicity = float(opt.get("multiplicity") or 0.0)
-            if multiplicity > 1 and definite and eigenvalues is not None:
-                # A degenerate (quartic) minimum: along its flat directions the gradient has a root of multiplicity
-                # 3, where Newton only takes 1/3 of the way (error x 2/3 per iterate).  Schroeder's correction scales
-                # the step's flat component by the multiplicity; the quadratic model cannot judge that step, so it
-                # is kept when its actual cost beats the plain Newton step's.
-                flat = eigenvectors[:, eigenvalues < MULTIPLICITY_FLAT_RTOL * float(eigenvalues[-1])]
-                if flat.shape[1]:
-                    ds_m = newton + (multiplicity - 1.0) * (flat @ (flat.T @ newton))
-                    trial_m = point(b + ds_m * scale)
-                    trial_n = point(b + newton * scale) if step_newton <= radius else None
-                    evaluations += 1 + (step_newton <= radius)
-                    best = min((t for t in ((trial_m, ds_m, "multiplicity"), (trial_n, newton, "newton"))
-                                if t[0] is not None), key=lambda t: t[0][0], default=None)
-                    if best is not None and best[0][0] < cost:
-                        (trial, ds, kind) = best
-                        secant = (np.asarray(ds, dtype=float).copy(), (trial[1] - g) * scale)
-                        b, (cost, g, rec) = b + ds * scale, trial
-                        accepted = True
-                        history[-1].update(taken=float(np.linalg.norm(ds)), kind=kind, flat=int(flat.shape[1]))
-                        if opt.get("verbose"):
-                            print(f"[newton] {kind} step taken ({flat.shape[1]} flat directions), cost {cost:.12e}",
-                                  flush=True)
-            for _ in range(0 if accepted else 8):
-                if definite and step_newton <= radius:
-                    ds = newton
-                else:  # the trust-region step: raise lam until the step fits
-                    lam_lo, lam_hi = 0.0, max(1.0, float(np.abs(np.diag(Hs)).max()))
-                    while np.linalg.norm(scipy.linalg.solve(Hs + lam_hi * np.eye(nb), -gs, assume_a="sym")) > radius:
-                        lam_hi *= 10
-                    for _ in range(40):
-                        lam = 0.5 * (lam_lo + lam_hi)
-                        ds = scipy.linalg.solve(Hs + lam * np.eye(nb), -gs, assume_a="sym")
-                        if np.linalg.norm(ds) > radius or not np.all(np.isfinite(ds)):
-                            lam_lo = lam
-                        else:
-                            lam_hi = lam
-                    ds = scipy.linalg.solve(Hs + lam_hi * np.eye(nb), -gs, assume_a="sym")
-                predicted = -(gs @ ds + 0.5 * ds @ Hs @ ds)
-                trial = point(b + ds * scale)
-                evaluations += 1
-                rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
-                if rho > 0.1:
-                    secant = (np.asarray(ds, dtype=float).copy(), (trial[1] - g) * scale)  # scaled s and y
-                    b, (cost, g, rec) = b + ds * scale, trial
-                    if rho > 0.75 and np.linalg.norm(ds) > 0.9 * radius:
-                        radius *= 2
-                    accepted = True
-                    history[-1].update(taken=float(np.linalg.norm(ds)), rho=float(rho))
-                    break
-                radius = 0.25 * min(radius, float(np.linalg.norm(ds)))
-            if not accepted:
-                history[-1]["stalled"] = True
-                if quasi and since_exact > 1:  # a stale quasi-Newton model: refresh it exactly before giving up
-                    refresh = True
-                    radius = max(radius, float(opt.get("radius", 1e-1)) * 1e-2)
-                    continue
-                break
-            refresh = False
-        self._hessian = dict(b=np.asarray(rec["x"]).copy(), x=np.asarray(x, dtype=float).copy(), H=H) \
-            if converged else None
-        if not converged:
-            raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
-        got = model.evaluate(b, params, field, tight=True)
-        if got is None:
-            raise TrialRejected("the Newton-refined boundary has no certified interior root")
-        rows, aux = got
-        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
-                   accepted=len(history))
-        xj = jnp.asarray(x)
-        # Newton's own convergence is the stationarity test (exact Hessian: a scaled step <= step_tol, or a predicted
-        # decrease below the cost's floor). The certificate's Gauss-Newton gain divides by J^T J, ~1e9 weaker than
-        # the Hessian along the flat directions, and turns a converged point's residual gradient into a false
-        # "not stationary"; its other checks (re-solve, finiteness, rank, interface residuals) still apply.
-        out = model.certify(params, field, fit, gate=np.inf, xtol=None,
-                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
-                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
-        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost,
-                             subspace=nb, products="exact", seconds_hessian=seconds_hessian,
-                             seconds=time.perf_counter() - t0, warm=opt.get("H0") is not None)
-        if converged and H is not None and not quasi:  # carried by the anchor: the next trials' first Newton step
-            out["hessian"] = np.asarray(H)
-        if quasi:  # a quasi-Newton matrix is not the exact Hessian: the record's gradient builds that afresh
-            self._hessian = None
-        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
-        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
-        return out
-
-    def _newton_refine_krylov(self, x, params, field, extra, b, opt, t0, M):
-        """:meth:`_newton_refine_exact` without dense Hessians: each step by truncated conjugate gradients (Steihaug)
-        on exact Hessian products (:meth:`exact_products`, one column per product), preconditioned by ``M``, the
-        accepted point's exact Hessian (a trial is a small design step from it, so few products are needed).
-
-        The step is the exact Newton step to ``cg_rtol`` (or the trust-region boundary, or a direction of negative
-        curvature) and the trust region judges it on the actual cost, as the dense polish; it converges on the same
-        tests (scaled step at most ``step_tol``, or the cost's floor).  No Hessian is kept: the record's exact
-        gradient builds the dense one only for a point the optimizer differentiates.
-
-        With ``response = (vtol, gtol)`` it also converges once what the optimizer uses has settled: the values change
-        by at most ``vtol`` (relative) on two consecutive iterates, and then two exact design gradients (block CG,
-        :meth:`_krylov_gradients`), two settled iterates apart, agree to ``gtol`` (relative Frobenius norm).  Along
-        the flat valley the cost keeps falling by a tiny fraction per iterate long after those have settled."""
-        model, nb = self.model, self.model.x0.size
-        scale = np.asarray(model.x_scale, dtype=float)
-        rtol, maxiter = float(opt.get("cg_rtol", 1e-3)), int(opt.get("cg_maxiter", 40))
-        pre = {}
-
-        def set_preconditioner(H):  # its |eigenvalues| (scaled): the CG preconditioner and the trust region's metric
-            Hs = np.asarray(H) * np.outer(scale, scale)
-            lam, Q = np.linalg.eigh(0.5 * (Hs + Hs.T))
-            flat = Q[:, np.abs(lam) < PIN_FLAT_RTOL * float(np.abs(lam).max())]  # the flat (relabelling) subspace
-            lam = np.maximum(np.abs(lam), 1e-14 * float(np.abs(lam).max()))
-            pre.update(lam=lam, Q=Q, Ms=Q @ (lam[:, None] * Q.T), H=np.asarray(H), flat=flat)
-
-        set_preconditioner(M)
-
-        def precondition(r):
-            Q, lam = pre["Q"], pre["lam"]
-            return Q @ ((Q.T @ r) / lam)
-
-        def mnorm(v):  # the trust region is ||d||_M: along the flat directions a long move is a short one in M
-            return float(np.sqrt(max(v @ (pre["Ms"] @ v), 0.0)))
-
-        def point(bb):  # (cost, g, sol-like record) at bb, or None
-            got = model.evaluate(bb, params, field, tight=True)
-            if got is None:
-                return None
-            rows, aux = got
-            state, mask, params_b, _ = aux
-            r = jnp.asarray(rows)
-            params_bar = self._cost_pullback(state, mask, params_b, r, jnp.asarray(x))
-            b_bar, _ = self._coordinates(params_b, jnp.asarray(bb), jnp.asarray(x), params_bar)
-            return (0.5 * float(np.asarray(rows) @ np.asarray(rows)), np.asarray(b_bar)[0],
-                    dict(state=state, mask=mask, x=np.asarray(bb, dtype=float), params=params_b))
-
-        def steihaug(rec, gs, radius):
-            """``(ds, Hs ds, products, interior)``: truncated preconditioned CG on ``Hs ds = -gs`` within ``radius``."""
-            def hs(v):
-                return scale * np.asarray(self.exact_products(x, rec, (v * scale)[:, None], check=False)[0])[:, 0]
-
-            z, Hz = np.zeros(nb), np.zeros(nb)
-            r = gs.copy()
-            y = precondition(r)
-            d = -y
-            ry, norm0, used = float(r @ y), float(np.linalg.norm(gs)), 0
-            for _ in range(maxiter):
-                Hd = hs(d)
-                used += 1
-                dHd = float(d @ Hd)
-                if dHd <= 0 or mnorm(z + (ry / dHd) * d) >= radius:  # to the boundary along d (M-norm)
-                    Md = pre["Ms"] @ d
-                    a, bq, cq = float(d @ Md), 2 * float(z @ Md), mnorm(z) ** 2 - radius**2
-                    tau = (-bq + np.sqrt(max(bq * bq - 4 * a * cq, 0.0))) / (2 * a)
-                    return z + tau * d, Hz + tau * Hd, used, False
-                alpha = ry / dHd
-                z, Hz, r = z + alpha * d, Hz + alpha * Hd, r + alpha * Hd
-                if float(np.linalg.norm(r)) <= rtol * norm0:
-                    return z, Hz, used, True
-                y = precondition(r)
-                ry_new = float(r @ y)
-                d, ry = -y + (ry_new / ry) * d, ry_new
-            return z, Hz, used, True
-
-        here = point(b)
-        if here is None:
-            raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
-        cost, g, rec = here
-        # The trust radius (M-norm) starts at the preconditioned Newton step's own length: a good model takes the
-        # whole step at once, and the actual/predicted test shrinks the radius where it is not.
-        radius = radius0 = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
-        rescues, seconds_rescue, extensions = 0, 0.0, 0
-        history, evaluations, converged, products, seconds_products, refreshes = [], 1, False, 0, 0.0, 0
-        response = dict(values=None, gradient=None, stable=0)
-        for _ in range(int(opt["max_steps"])):
-            gs = g * scale
-            th = time.perf_counter()
-            ds, Hds, used, interior = steihaug(rec, gs, radius)
-            seconds_products += time.perf_counter() - th
-            products += used
-            if used >= KRYLOV_REFRESH_PRODUCTS:  # the preconditioner is stale here: this iterate's exact Hessian
-                th = time.perf_counter()
-                set_preconditioner(self.dense_hessian(x, rec)[0])
-                refreshes += 1
-                radius = float(np.sqrt(max(gs @ precondition(gs), 0.0))) or 1e-300  # the new metric's Newton step
-                ds, Hds, used, interior = steihaug(rec, gs, radius)
-                seconds_products += time.perf_counter() - th
-                products += used
-            step, step_m = float(np.linalg.norm(ds)), mnorm(ds)
-            predicted = -(gs @ ds + 0.5 * ds @ Hds)
-            history.append(dict(cost=cost, step=step, radius=radius, interior=interior, products=used,
-                                evaluations=evaluations))
-            if opt.get("verbose"):
-                print(f"[newton krylov] iterate {len(history) - 1}: cost {cost:.12e}, step {step:.2e} "
-                      f"({'interior' if interior else 'boundary'}), radius (M) {radius:.1e}, {used} products, "
-                      f"{seconds_products:.0f} s in products, {refreshes} preconditioner refreshes, {extensions} flat extensions",
-                      flush=True)
-            if opt.get("response"):  # converged once the values and the exact design gradient have settled
-                vtol, gtol = map(float, opt["response"])
-                values = np.asarray(self._rows(rec["state"], rec["params"], jnp.asarray(x)), dtype=float)
-                if response["values"] is not None:
-                    dv = float(np.max(np.abs(values - response["values"]) / np.maximum(np.abs(values), 1e-300)))
-                    response["stable"] = response["stable"] + 1 if dv <= vtol else 0
-                    history[-1]["value_change"] = dv
-                response["values"] = values
-                if response["stable"] >= 2:
-                    th = time.perf_counter()
-                    got = self._krylov_gradients(x, rec, None, pre["H"])
-                    seconds_products += time.perf_counter() - th
-                    response["stable"] = 0  # the next check after two more settled iterates
-                    if got is not None:
-                        G = np.asarray(got["gradients"])
-                        if response["gradient"] is not None:
-                            dg = float(np.linalg.norm(G - response["gradient"]) / max(np.linalg.norm(G), 1e-300))
-                            history[-1]["gradient_change"] = dg
-                            if opt.get("verbose"):
-                                print(f"[newton krylov] response check: values {history[-1]['value_change']:.1e}, "
-                                      f"gradient {dg:.1e} (tolerances {vtol:.0e}, {gtol:.0e})", flush=True)
-                            if dg <= gtol:
-                                converged = True
-                                history[-1]["response"] = True
-                                break
-                        response["gradient"] = G
-            if interior and step <= opt["step_tol"]:
-                converged = True
-                break
-            if interior and predicted <= opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300):
-                converged = True
-                history[-1]["floor"] = True
-                break
-            trial = point(b + ds * scale)
-            evaluations += 1
-            rho = (cost - trial[0]) / predicted if trial is not None and predicted > 0 else -1.0
-            history[-1]["rho"] = float(rho)
-            if rho > 0.1:
-                b, (cost, g, rec) = b + ds * scale, trial
-                if rho > 0.75 and not interior:
-                    radius *= 2
-                # Along the flat directions the cost is quartic: there the Hessian vanishes at the minimum and a Newton
-                # step covers a third of the remaining distance. Extend the step's flat component while the cost falls
-                # (cost evaluations only; the iterate only moves to a lower cost).
-                flat = pre["flat"]
-                d_flat = flat @ (flat.T @ ds) if flat.size else np.zeros(0)
-                if FLAT_EXTEND and d_flat.size and float(np.linalg.norm(d_flat)) > 0:
-                    for a in FLAT_EXTEND:
-                        extended = point(b + a * d_flat * scale)
-                        evaluations += 1
-                        if extended is None or extended[0] >= cost:
-                            break
-                        b, (cost, g, rec) = b + a * d_flat * scale, extended
-                        extensions += 1
-            else:
-                radius = 0.25 * min(radius, step_m)
-                if radius < GN_RESCUE_RADIUS * radius0 and rescues < GN_RESCUE_MAX:
-                    # Far from the minimum the exact quadratic model of the cost fails over the distances that matter
-                    # (large residuals: their curvature term dominates), while a Gauss-Newton step on the linearized
-                    # rows still holds (QA 2.5%: one predicted 96% of the cost where Newton's radius had collapsed).
-                    th, rescues = time.perf_counter(), rescues + 1
-                    rescued = self._gauss_newton_rescue(b, params, field, cost)
-                    seconds_rescue += time.perf_counter() - th
-                    if rescued is not None:
-                        here = point(rescued)
-                        if here is not None and here[0] < cost:
-                            b, (cost, g, rec) = rescued, here
-                            radius = radius0 = float(np.sqrt(max(g * scale @ precondition(g * scale), 0.0))) or 1e-300
-                            history[-1]["rescued"] = float(cost)
-                            if opt.get("verbose"):
-                                print(f"[newton krylov] Gauss-Newton rescue {rescues}: cost {cost:.6e}, "
-                                      f"{seconds_rescue:.0f} s in rescues", flush=True)
-                            continue
-                # Stationary to the cost's resolution only if the rejected step's own predicted decrease is below the
-                # floor: a radius collapsed with a larger prediction is a curved valley the model cannot follow at this
-                # scale (QA 2.5%: collapsed at a cost twice the minimum), not a converged point.
-                if radius < 1e-12 or predicted <= 10 * opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300):
-                    converged = predicted <= 10 * opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300)
-                    history[-1]["floor" if converged else "stalled"] = True
-                    break
-        self._hessian = None
-        if not converged:
-            raise TrialRejected(f"the Newton polish did not converge ({len(history)} steps)")
-        got = model.evaluate(b, params, field, tight=True)
-        if got is None:
-            raise TrialRejected("the Newton-refined boundary has no certified interior root")
-        rows, aux = got
-        fit = dict(x=b, aux=aux, rows=np.asarray(rows), nfev=evaluations, converged=True, reason="newton",
-                   accepted=len(history))
-        xj = jnp.asarray(x)
-        # Newton's own convergence is the stationarity test (exact Hessian: a scaled step <= step_tol, or a predicted
-        # decrease below the cost's floor). The certificate's Gauss-Newton gain divides by J^T J, ~1e9 weaker than
-        # the Hessian along the flat directions, and turns a converged point's residual gradient into a false
-        # "not stationary"; its other checks (re-solve, finiteness, rank, interface residuals) still apply.
-        out = model.certify(params, field, fit, gate=np.inf, xtol=None,
-                            polish=False, max_residual=self.boundary_max_residual, extra=extra,
-                            values=lambda state, params_b: self._rows(state, params_b, xj), stats=self.stats)
-        out["newton"] = dict(steps=history, converged=converged, evaluations=evaluations, merit=cost, subspace=nb,
-                             products="krylov", product_calls=products, seconds_hessian=seconds_products,
-                             seconds=time.perf_counter() - t0, warm=False, refreshes=refreshes, rescues=rescues,
-                             extensions=extensions,
-                             seconds_rescue=seconds_rescue)
-        if refreshes:  # the last refreshed exact Hessian, near this record: the next trials' preconditioner
-            out["hessian"] = pre["H"]
-        self.stats["newton_evaluations"] = self.stats.get("newton_evaluations", 0) + evaluations
-        self.stats["newton_products"] = self.stats.get("newton_products", 0) + products
-        self.stats["seconds_newton"] = self.stats.get("seconds_newton", 0.0) + out["newton"]["seconds"]
-        return out
-
-    def _gauss_newton_rescue(self, b, params, field, cost):
-        """Levenberg-Marquardt steps on the rows from a fresh Jacobian at ``b`` (the Krylov polish's rescue when its
-        trust region collapses far from the minimum).  Returns the new boundary if it lowers ``cost``, else None."""
-        model = self.model
-        try:
-            got = model.evaluate(b, params, field, tight=True)
-            if got is None:
-                return None
-            rows, aux = got
-            J, _, _, aux = model.linearize(b, aux, field)
-            out = _levenberg_marquardt(lambda z: model.evaluate(z, params, field, tight=True), b, rows, aux,
-                                       np.asarray(J), ftol=self.boundary_ftol, max_nfev=GN_RESCUE_NFEV, verbose=0,
-                                       project=model._projected)
-        except (VmecError, RuntimeError, TrialRejected):
-            return None
-        self.stats["gauss_newton_rescues"] = self.stats.get("gauss_newton_rescues", 0) + 1
-        new = 0.5 * float(np.asarray(out["rows"]) @ np.asarray(out["rows"]))
-        return np.asarray(out["x"], dtype=float) if new < cost else None
+        if self.model.gauge is None:
+            raise ValueError("Newton polish requires gauge='condensation'")
+        return self._newton_refine_gauged(x, params, field, extra, b, opt, t0)
 
     def _gn_hessian(self, rec, field):
         """The Gauss-Newton Hessian ``J^T J`` of the fit's cost at the record ``rec`` (one linearization: the rows'
@@ -2267,8 +1658,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if here is None:
             raise TrialRejected("the gauge-projected boundary has no tight interior root")
         cost, g, rec = here
-        radius = float(opt.get("radius", 1e-1))
-        floor = opt.get("floor", NEWTON_FLOOR)
+        radius, floor = NEWTON_RADIUS, NEWTON_FLOOR
         history, evaluations, converged, seconds_hessian, red = [], 1, False, 0.0, None
         # Quasi-Newton from the accepted point's exact Hessian (the gauge's minimum is not degenerate): SR1 on
         # the exact gradients' secants, a dense exact Hessian at the start of a run and when a step stalls or the trust
@@ -2279,15 +1669,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         H_before, definite = None, False
         # model level: 0 quasi-Newton (SR1), 1 Gauss-Newton J^T J at the iterate (one linearization), 2 the exact
         # dense Hessian; a stale or indefinite model escalates one level (the converged point does not depend on it:
-        # stationarity is the exact gradient's)
-        gn = bool(opt.get("gauss_newton_model", GAUGE_GN_MODEL))
-        # A cold start (no accepted Hessian) begins at the Gauss-Newton model too: one dense exact Hessian is 255
-        # exact products (~140-280 s at 8 x 8), and the escalation below reaches it only where Gauss-Newton stalls.
-        level = 2 if exact and not gn else 0
+        # stationarity is the exact gradient's).  A cold start (no accepted Hessian) begins at the Gauss-Newton model
+        # too: one dense exact Hessian is 255 exact products (~140-280 s at 8 x 8), and the escalation below reaches
+        # it only where Gauss-Newton stalls.
+        level = 0
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
             if H_cost is None or refresh:
-                if gn and level < 1:
+                if level < 1:
                     H_cost, level = self._gn_hessian(rec, field), 1
                 else:
                     (H_cost, _), level = self.dense_hessian(x, rec), 2
@@ -2390,7 +1779,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return out
 
     def _newton_refine_projected(self, x, params, field, extra, b, opt, t0):
-        """:meth:`_newton_refine_exact` with a bootstrap current: Newton on the boundary with the current projected.
+        """:meth:`_newton_refine` with a bootstrap current: Newton on the boundary with the current projected.
 
         The joint Hessian is round-off at the bootstrap weight (:meth:`projected_hessian`), so each step is taken on
         the reduced cost ``min_c f(b, c)``: its gradient ``g_b - K^T g_c`` and Hessian ``H_red`` (exact at every
@@ -2437,7 +1826,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         if here is None:
             raise TrialRejected("the certified fit has no tight interior root for its Newton polish")
         cost, g, rec = here
-        radius = float(opt.get("radius", 1e-1))
+        radius = NEWTON_RADIUS
         history, evaluations, converged, seconds_hessian, P = [], 1, False, 0.0, None
         for _ in range(int(opt["max_steps"])):
             th = time.perf_counter()
@@ -2460,24 +1849,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if eigenvalues is not None:
                 history[-1].update(smallest_eigenvalues=eigenvalues[:5].tolist(),
                                    largest_eigenvalue=float(eigenvalues[-1]))
-            if opt.get("track"):
-                history[-1]["gradients"] = self._exact_dense_gradients(x, rec, H=P)["gradients"].tolist()
             if opt.get("verbose"):
-                drift = ""
-                if opt.get("track") and len(history) > 1:
-                    G0, G1 = np.array(history[-2]["gradients"]), np.array(history[-1]["gradients"])
-                    drift = (" gradient change vs previous iterate max "
-                             f"{float(np.max(np.linalg.norm(G1 - G0, axis=1) / np.linalg.norm(G1, axis=1))):.1e}")
                 eig = "" if eigenvalues is None else (" smallest eigenvalues " + " ".join(
                     f"{e:.2e}" for e in eigenvalues[:5]) + f" largest {eigenvalues[-1]:.2e}")
                 print(f"[newton projected] iterate {len(history) - 1}: cost {cost:.12e}, Newton step "
                       f"{step_newton:.2e}, definite {definite}, radius {radius:.1e}, current gain {current_gain:.1e}, "
-                      f"leak {P['leak']:.1e}, Hessian {seconds_hessian:.0f} s total{drift}{eig}", flush=True)
+                      f"leak {P['leak']:.1e}, Hessian {seconds_hessian:.0f} s total{eig}", flush=True)
             if definite and step_newton <= opt["step_tol"]:
                 converged = True
                 break
             decrease = 0.5 * float(gs @ -newton) + current_gain
-            floor = opt.get("floor", NEWTON_FLOOR) * max(cost, 1e-300)
+            floor = NEWTON_FLOOR * max(cost, 1e-300)
             if definite and (decrease <= floor or (radius < 1e-6 and decrease <= 10 * floor)):
                 converged = True
                 history[-1]["floor"] = True
@@ -2667,54 +2049,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         leak = float(np.linalg.norm(HP[c]) / max(np.linalg.norm(Hc[c]), 1e-300))
         return dict(Hred=0.5 * (Hred + Hred.T), Hcc=Hcc, K=K, b=bi, c=c, leak=leak), asymmetry
 
-    def _exact_dense_gradients(self, x, sol, rows=None, H=None):
-        """Every row's exact design gradient with the dense exact Hessian: ``mu = H^-1 Q_b^T`` (one factorization for
-        every row; with a bootstrap current the block solve of :meth:`projected_hessian`), then ``Q_d - F_d^T mu`` and
-        each row's true residual ``|Q_b - H mu| / |Q_b|`` from one more exact call on the multipliers.  No difference
-        step, no iteration; the Hessian is kept (``self._hessian``)."""
-        import scipy.linalg
-
-        xj = jnp.asarray(x)
-        state, params_b = sol["state"], sol["params"]
-        b0 = np.asarray(sol["x"], dtype=float)
-        try:
-            params_bar = self._pullback(state, sol["mask"], params_b, xj)
-        except (VmecError, RuntimeError) as error:
-            raise TrialRejected(str(error)) from error
-        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
-        direct = np.asarray(self._direct(state, params_b, xj))
-        rows = list(range(G_b.shape[0]) if rows is None else rows)
-        t0 = time.perf_counter()
-        kept = getattr(self, "_hessian", None)
-        scale = np.asarray(self.model.x_scale, dtype=float)
-        if H is not None:
-            asymmetry = 0.0
-        elif (kept is not None and np.array_equal(kept["x"], np.asarray(x, dtype=float))
-                and float(np.linalg.norm((kept["b"] - b0) / scale)) <= 1e-6):
-            H, asymmetry = kept["H"], 0.0  # the converged Newton polish's Hessian at this record
-        elif self.model._projected is not None:
-            H, asymmetry = self.projected_hessian(x, sol)
-        else:
-            H, asymmetry = self.dense_hessian(x, sol)
-        seconds_hessian = time.perf_counter() - t0
-        Q = G_b[rows].T  # a column per row
-        if isinstance(H, dict):  # the current block eliminated (projected_hessian)
-            mu = _projected_solve(H, Q)
-        else:
-            mu = scipy.linalg.lu_solve(scipy.linalg.lu_factor(H), Q)
-        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
-        gradients = direct[rows] + G_x[rows] - Fd_mu.T
-        norms = np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300)
-        true = (np.linalg.norm(Q - H_mu, axis=0) / norms).tolist()
-        self._hessian = dict(b=b0, x=np.asarray(x, dtype=float).copy(), H=H)
-        condition = float(np.linalg.cond(H["Hred"] if isinstance(H, dict) else H))
-        if isinstance(sol.get("anchor"), dict):  # this record's exact Hessian: later trials' predicted start
-            sol["anchor"]["hessian"] = H
-        if not isinstance(H, dict):
-            sol["hessian"] = H
-        return dict(gradients=gradients, rows=rows, true_residual=true, asymmetry=asymmetry, condition=condition,
-                    seconds_hessian=seconds_hessian)
-
     def _gauge_block_cg(self, x, sol, rows, red, G_b, G_x, direct, scale, t0, rtol=1e-8, maxiter=40):
         """The gauge gradient's multipliers by block conjugate gradients on the reduced system ``Z^T S H_L S Z y = Z^T S
         Q``, its products exact (:meth:`exact_products` plus the gauge's curvature), preconditioned by ``red``'s reduced
@@ -2750,7 +2084,6 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         for _ in range(maxiter):
             if not active.any():
                 break
-            HD = np.zeros_like(D)
             HD = products(D)  # every column: one shape, one compilation (each active-column count recompiled, ~145 s)
             curvature = np.sum(D * HD, axis=0)
             if np.any(curvature[active] <= 0):
@@ -2809,7 +2142,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if got is not None:
                 self.stats["gauge_block_cg"] = self.stats.get("gauge_block_cg", 0) + 1
                 if isinstance(sol.get("anchor"), dict):  # the next trials start from this point's last model
-                    sol["anchor"].update(gauge_H=np.asarray(kept["H_cost"]), gauge_H_age=0)
+                    sol["anchor"].update(gauge_H=np.asarray(kept["H_cost"]))
                 return got
             matches = False
         if matches and kept.get("exact", True):
@@ -2831,106 +2164,15 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         eig = np.linalg.eigvalsh(Hr)
         if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start and preconditioner (exact)
             sol["anchor"].update(gauge_H=np.asarray(red["H_L"]) - np.asarray(
-                self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))), gauge_H_age=0)
+                self.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))))
         return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
                     asymmetry=0.0, condition=float(eig[-1] / eig[0]) if eig[0] > 0 else float("inf"),
                     seconds_hessian=time.perf_counter() - t0)
 
     def _exact_gradients(self, x, sol, rows=None):
-        """The exact derivative of the converged stationarity ``J_b^T r = 0`` for every requested row: ``dQ/dd = Q_d -
-        F_d^T mu``, ``H mu = Q_b^T``, with both curvature blocks, the interior equilibrium's response and the coupled
-        bootstrap-current coordinates.
-
-        With a recent exact Hessian of the accepted point (the anchor's, at most :data:`KRYLOV_HESSIAN_AGE` steps
-        old), the multipliers come from block conjugate gradients on exact products preconditioned by it
-        (:meth:`_krylov_gradients`, every row's column in one product call per iteration); otherwise, or when those
-        miss, from the dense exact Hessian (:meth:`_exact_dense_gradients`), which then becomes the anchor's.  Either
-        way the true residual ``|Q_b - H mu| / |Q_b|`` is at most 1e-6, or this raises."""
-        if self.model.gauge is not None:
-            return self._gauge_gradients(x, sol, rows)
-        own = sol.get("anchor") if isinstance(sol.get("anchor"), dict) else {}
-        anchor = own if isinstance(own.get("hessian"), np.ndarray) else (self._anchor or {})  # the freshest Hessian
-        M = anchor.get("hessian")
-        if (isinstance(M, np.ndarray) and M.shape == (self.model.x0.size,) * 2 and self.model._projected is None
-                and getattr(self, "_hessian", None) is None and anchor.get("hessian_age", 0) < KRYLOV_HESSIAN_AGE):
-            got = self._krylov_gradients(x, sol, rows, M)
-            if got is not None:
-                if isinstance(sol.get("anchor"), dict):  # the preconditioner carries over, one step older
-                    sol["anchor"].update(hessian=M, hessian_age=anchor.get("hessian_age", 0) + 1)
-                return got
-        got = self._exact_dense_gradients(x, sol, rows)
-        if max(got["true_residual"]) > 1e-6 and getattr(self, "_hessian", None) is not None:
-            self._hessian = None
-            got = self._exact_dense_gradients(x, sol, rows)
-        if max(got["true_residual"]) > 1e-6:
-            raise RuntimeError(f"dense exact multipliers missed: true residuals {got['true_residual']}")
-        if isinstance(sol.get("anchor"), dict):
-            sol["anchor"]["hessian_age"] = 0
-        return got
-
-    def _krylov_gradients(self, x, sol, rows, M, rtol=1e-8, maxiter=KRYLOV_GRADIENT_MAXITER):
-        """:meth:`_exact_dense_gradients` by block preconditioned conjugate gradients: each iteration one
-        :meth:`exact_products` call on every unconverged row's search direction, preconditioned by ``M`` (a nearby
-        exact Hessian), in the scaled coordinates, until each row's residual is at most ``rtol``; then the
-        multipliers' true residual and ``F_d^T mu`` from one more exact call.  None when a row does not converge, a
-        direction has nonpositive curvature, or the true residual exceeds 1e-6 (the caller builds the dense
-        Hessian)."""
-        xj = jnp.asarray(x)
-        state, params_b = sol["state"], sol["params"]
-        b0 = np.asarray(sol["x"], dtype=float)
-        t0 = time.perf_counter()
-        try:
-            params_bar = self._pullback(state, sol["mask"], params_b, xj)
-        except (VmecError, RuntimeError) as error:
-            raise TrialRejected(str(error)) from error
-        G_b, G_x = map(np.asarray, self._coordinates(params_b, jnp.asarray(b0), xj, params_bar))
-        direct = np.asarray(self._direct(state, params_b, xj))
-        rows = list(range(G_b.shape[0]) if rows is None else rows)
-        scale = np.asarray(self.model.x_scale, dtype=float)
-        lam, V = np.linalg.eigh(0.5 * (M + M.T) * np.outer(scale, scale))
-        if lam[0] <= 0:
-            return None
-        Q = G_b[rows].T * scale[:, None]  # scaled right-hand sides, a column per row
-
-        def products(D):
-            return scale[:, None] * np.asarray(self.exact_products(x, sol, D * scale[:, None], check=False,
-                                                                 chunk=min(D.shape[1], EXACT_PRODUCTS_CHUNK))[0])
-
-        def precondition(R):
-            return V @ ((V.T @ R) / lam[:, None])
-
-        mu, R = np.zeros_like(Q), Q.copy()
-        Z = precondition(R)
-        D, rz = Z.copy(), np.sum(R * Z, axis=0)
-        norms = np.maximum(np.linalg.norm(Q, axis=0), 1e-300)
-        active, calls = np.linalg.norm(R, axis=0) > rtol * norms, 0
-        for _ in range(maxiter):
-            if not active.any():
-                break
-            HD = np.zeros_like(D)
-            HD = products(D)  # every column: one shape, one compilation (each active-column count recompiled, ~145 s)
-            calls += 1
-            curvature = np.sum(D * HD, axis=0)
-            if np.any(curvature[active] <= 0):
-                return None
-            alpha = np.where(active, rz / np.where(active, curvature, 1.0), 0.0)
-            mu, R = mu + alpha * D, R - alpha * HD
-            Z = precondition(R)
-            rz_new = np.sum(R * Z, axis=0)
-            D = np.where(active, Z + (rz_new / np.where(active, rz, 1.0)) * D, D)
-            rz = np.where(active, rz_new, rz)
-            active &= np.linalg.norm(R, axis=0) > rtol * norms
-        if active.any():
-            return None
-        mu = mu * scale[:, None]  # model coordinates
-        H_mu, Fd_mu, _ = self.exact_products(x, sol, mu, check=False)
-        true = (np.linalg.norm(G_b[rows].T - H_mu, axis=0) / np.maximum(np.linalg.norm(G_b[rows], axis=1), 1e-300))
-        if max(true) > 1e-6:
-            return None
-        self.stats["krylov_gradient_calls"] = self.stats.get("krylov_gradient_calls", 0) + calls + 1
-        return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true.tolist(),
-                    asymmetry=0.0, condition=float(lam[-1] / lam[0]), seconds_hessian=time.perf_counter() - t0,
-                    krylov_calls=calls + 1)
+        """The exact derivative of the converged stationarity for every requested row, on the exact gauge
+        (:meth:`_gauge_gradients`: the only Newton polish, so the only point an exact gradient differentiates)."""
+        return self._gauge_gradients(x, sol, rows)
 
     def exact_products(self, x, sol, V, check=True, chunk=None):
         """``H V`` and ``F_d^T V`` exactly, by the second-order adjoint of the fit's cost at the record ``sol``.
@@ -3241,22 +2483,17 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         xj = jnp.asarray(x)
         params, field = self._params_at(xj), self.field(xj)
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
-        polish = self.newton_polish
-        if self.model.gauge is None:  # the gauge Newton converges (quadratically) from far: its full budget
-            self.newton_polish = dict(polish, max_steps=min(int(polish.get("max_steps", 10)), REFINE_MAX_STEPS))
-        try:
+        try:  # the gauge Newton converges (quadratically) from far: its full budget
             new = self._newton_refine(x, params, field, sol, extra)
         except TrialRejected as error:
             self.stats["refine_unconverged"] = str(error)[:200]
             if self._continuation is not None:
                 self._restore(self._continuation)
             return float("nan")
-        finally:
-            self.newton_polish = polish
         nb = self.model.x0.size
         new.update(continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=new["x"], J_b=new["J"][:, :nb], J_p=new["J"][:, nb:],
-            state=new["state"], params=new["params"], cost=0.5 * new["rows"] @ new["rows"], hessian=new.get("hessian")))
+            state=new["state"], params=new["params"], cost=0.5 * new["rows"] @ new["rows"]))
         change = float(np.max(np.abs(new["values"] - sol["values"]) / np.maximum(np.abs(sol["values"]), 1e-300)))
         self._promote(new)
         self._cache[key] = new
@@ -3338,15 +2575,10 @@ class _AcceptedPoint:
 #: Most Gauss-Newton corrections of the projected (bootstrap-current) coordinates after one boundary step.
 PROJECTION_CORRECTIONS = 4
 
-#: An absolute ceiling on the conditional-stationarity gate of the projected (current) coordinates: the gate is
-#: ``min(0.1 ftol, PROJECTION_GATE)`` (None: ``0.1 ftol``).  Along the current-following path the rows are close to
-#: their reduced linear model, but a current left at ``0.1 ftol`` adds evaluation noise of that order.
-PROJECTION_GATE = None
-
 
 def _projection_gate(ftol):
-    """The conditional-stationarity gate of the projected coordinates (:data:`PROJECTION_GATE`)."""
-    return 0.1 * ftol if PROJECTION_GATE is None else min(0.1 * ftol, float(PROJECTION_GATE))
+    """The conditional-stationarity gate of the projected (current) coordinates: ``0.1 ftol``."""
+    return 0.1 * ftol
 
 
 def _projected_solve(P, rhs):
@@ -3416,6 +2648,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     certified with the current operator: if the fresh columns show a conditional gain above ``0.1 ftol``, the
     corrections are rerun with them, and a finish that still misses it reports ``reason = "projection_unconverged"``
     and is not converged.  ``projection_certified`` is True, False, or None (no fresh check).
+
+    ``update="broyden"`` updates ``J`` by a rank-one secant (Broyden) step after every accepted step (the secant fit
+    rounds, :data:`FIT_STRATEGY`); ``jacobian_updates`` counts them.  Default: ``J`` stays fixed.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -3446,7 +2681,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         return Q_c, R_c, norms, U, sv, Vt
 
     Q_c, R_c, norms, U, sv, Vt = decompose(J)
-    updates = extrapolated = accelerated = 0
+    updates = 0
     nfev, accepted, converged, slow, reason, unprojected = 1, 0, False, 0, "max_nfev", 0
     started = time.perf_counter()
 
@@ -3482,21 +2717,6 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         x_new[free] += db
         if Q_c is not None:  # the projected coordinates' linear correction along the composite step
             x_new[project] -= np.linalg.lstsq(R_c, Q_c.T @ (r + J[:, free] @ db), rcond=None)[0]
-        if GEODESIC and nfev + 2 <= max_nfev:
-            dx = x_new - x
-            probe = evaluate(x + GEODESIC_H * dx)
-            nfev += 1
-            if probe is not None:
-                r2 = (2.0 / GEODESIC_H) * ((np.asarray(probe[0]) - r) / GEODESIC_H - J @ dx)
-                g2 = U.T @ (r2 if Q_c is None else r2 - Q_c @ (Q_c.T @ r2))
-                a_z = step(g2, lam)
-                a = np.zeros(n)
-                a[free] = (Vt.T @ a_z) / norms
-                if Q_c is not None:
-                    a[project] -= np.linalg.lstsq(R_c, Q_c.T @ (r2 + J[:, free] @ a[free]), rcond=None)[0]
-                if np.all(np.isfinite(a)) and np.linalg.norm(a_z) <= GEODESIC_ALPHA * np.linalg.norm(z):
-                    x_new = x_new + 0.5 * a
-                    accelerated += 1
         got = evaluate(x_new)
         nfev += 1
         if got is not None and Q_c is not None:
@@ -3514,39 +2734,15 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        if STALL_RULE == "model":
-            slow = slow + 1 if rho < 0.25 else 0
-        else:
-            slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
+        slow = slow + 1 if cost_new > (1.0 - STALL_GAIN) * cost else 0
         if cost_new < cost:
-            if (update or JACOBIAN_UPDATE) == "broyden":  # rank-one secant update along the accepted step
+            if update == "broyden":  # rank-one secant update along the accepted step
                 dx, dr = x_new - x, got[0] - r
                 if dx @ dx > 0:
                     J = J + np.outer(dr - J @ dx, dx) / (dx @ dx)
                     Q_c, R_c, norms, U, sv, Vt = decompose(J)
                     updates += 1
-            x_prev = x
             x, (r, aux), accepted = x_new, got, accepted + 1
-            if GN_EXTRAPOLATE and lam == 0.0 and rho > 0.75:
-                d, factor = x_new - x_prev, 1.0
-                for _ in range(GN_EXTRAPOLATE_MAX):
-                    if nfev >= max_nfev:
-                        break
-                    factor *= 2.0
-                    x_try = x_prev + factor * d
-                    trial = evaluate(x_try)
-                    nfev += 1
-                    if trial is not None and Q_c is not None:
-                        x_try, trial, used, stationary = _project(evaluate, x_try, trial, Q_c, R_c, project,
-                                                                  max_nfev - nfev, _projection_gate(ftol))
-                        nfev += used
-                        unprojected += not stationary
-                    cost_try = np.inf if trial is None else 0.5 * trial[0] @ trial[0]
-                    if verbose:
-                        print(f"  extrapolated x{factor:.0f}: cost {cost_new:.6e} -> {cost_try:.6e}", flush=True)
-                    if not cost_try < cost_new:
-                        break
-                    x, (r, aux), cost_new, extrapolated = x_try, trial, cost_try, extrapolated + 1
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
@@ -3573,4 +2769,4 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
                 converged, reason = False, "projection_unconverged"
     return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
                 reason=reason, projections=unprojected, projection_certified=certified_projection,
-                jacobian_updates=updates, extrapolated=extrapolated, accelerated=accelerated)
+                jacobian_updates=updates)

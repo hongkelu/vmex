@@ -1671,7 +1671,8 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
     """Memoized :func:`_refined_state` (see ``_LAST_REFINED``)."""
     key = _params_key(params)
     hit = _LAST_REFINED.get(cfg)
-    if hit is None or hit[0] != key:
+    # an uncertified record (non-finite residual) stays for the status lane but is never served again
+    if hit is None or hit[0] != key or not np.isfinite(hit[3]):
         with _timed(cfg, "refinement"):
             _count(cfg, refinements=1)
             refined = _refined_state(

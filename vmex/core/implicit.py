@@ -961,9 +961,10 @@ M1_COMPLEMENTS = ("frozen", "gauged")
 
 def _m1_gauged(cfg: ImplicitConfig) -> bool:
     """Whether the refinement fixes the m=1 complement to its gauge profile (``cfg.m1_complement``)."""
+    if getattr(cfg, "m1_complement", "frozen") != "gauged":
+        return False
     res = cfg.resolution
-    return bool(cfg.m1_complement == "gauged" and bool(cfg.lconm1) and int(res.ntor) > 0
-                and not bool(res.lasym))
+    return bool(bool(cfg.lconm1) and int(res.ntor) > 0 and not bool(res.lasym))
 
 
 def _m1_gauge_state(cfg: ImplicitConfig, state: SpectralState) -> SpectralState:

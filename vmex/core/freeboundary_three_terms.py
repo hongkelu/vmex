@@ -331,7 +331,18 @@ def _newton_refine_one(im, cfg, params_np, seed):
                     if not (np.isfinite(norm) and norm < best):
                         break
                     z, best = trial, norm
+                if best > tol and best < base:
+                    # the block Newton stopped short of the root: finish with the refinement's own Krylov
+                    # Newton (implicit._refined_state, GCROT) from its best point, ~3 s, instead of the
+                    # descent's thousands of iterations from there (QH 2.5 %: |F| ~ 1e-4, ~4000 iterations, ~20 s)
+                    partial = jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
+                    finished = im._refined_state(cfg, params, partial, mask)
+                    im._ANCHOR_STALLED.pop(id(cfg), None)
+                    norm = float(im._tree_norm(F(project(finished), params)))
+                    if np.isfinite(norm) and norm < best:
+                        z, best = project(finished), norm
             except (VmecError, RuntimeError, FloatingPointError):
+                im._ANCHOR_STALLED.pop(id(cfg), None)
                 return None
         if not best < base:
             im._count(cfg, newton_seeds_declined=1)

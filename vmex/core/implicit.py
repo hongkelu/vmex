@@ -1583,6 +1583,121 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     return result
 
 
+#: Newton steps (one block factorization each) of a seed's refinement (:func:`_newton_refined_candidates`) at most.
+NEWTON_SEED_FACTORIZATIONS = 8
+#: Backtracking of a seed's Newton step that does not lower ``|F|``: each entry halves the remaining step (so the
+#: step is tried at 1/2, 1/4, 1/8 of its length; one residual evaluation each).  QH 2.5 %: trial seeds far along
+#: weak boundary directions (|F| ~ 1e-2) were declined by the full step and left ~4000 descent iterations each.
+NEWTON_SEED_BACKTRACK = (0.5, 0.5, 0.5)
+
+
+def _newton_refined_candidates(cfg, params_np, seeds):
+    """The best of a tight solve's candidate ``seeds`` Newton-refined onto the root of the frozen residual, or
+    ``None``.
+
+    The candidates are the perturbation seed (the first-order prediction from the latest linearization) and the
+    hot-restart state (the last converged solve, i.e. the previous trial point of a polish): along a polish's long
+    steps in weak boundary directions the prediction from the accepted point can sit far outside Newton's basin
+    (QH 2.5 %: |F| ~ 2e-2, ~4000 descent iterations per solve) while the previous iterate's state is close.  Each
+    is refined as below, and the one with the lowest residual is returned.
+
+    The seed (the first-order prediction of a nearby solved state) is usually inside Newton's basin: block
+    preconditioned Newton steps with fresh factors at every iterate (:func:`_refine_block_factors`,
+    :func:`_refine_block_step`) reach ``refine_tol`` in a few steps, and the host solver's descent then starts at the
+    root, where its ``ftol`` test holds within an iteration or so.  From the plain seed the descent took ~1290
+    iterations (5.6 s) per tight solve at gauge QA 2.5 % 8 x 8, half a trial's polish; seeded, a QA trial's interior
+    solves took 89 s instead of 332 s and reached the same root (design 4e-9, boundary 3e-7, values 9e-7 relative).
+    Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
+    before.  Returns ``None`` (the plain seed is used) when Newton lowers no candidate's residual."""
+    best = None
+    for seed in seeds:
+        if seed is None:
+            continue
+        got = _newton_refine_one(cfg, params_np, seed)
+        if got is not None and (best is None or got[1] < best[1]):
+            best = got
+        if best is not None and best[1] <= float(cfg.refine_tol):
+            break
+    return None if best is None else best[0]
+
+
+def _newton_refine_one(cfg, params_np, seed):
+    """``(state, |F|)``: one candidate seed Newton-refined (:func:`_newton_refined_candidates`), or ``None``."""
+    with _device_context(cfg):
+        _template_runtime(cfg)
+        _boundary_pack_tables(cfg)
+        key = _mask_cache_key(cfg)
+        mask = _MASK_CACHE.get(key)
+        if mask is None:
+            mask = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), _fixed_boundary_dof_mask(cfg))
+            _MASK_CACHE[key] = mask
+        params = _device_pin(cfg, jax.tree.map(jnp.asarray, params_np))
+        home = cfg.device if cfg.device is not None else _params_committed_device(params)
+        state = seed if home is None else jax.device_put(seed, home)
+        mask = _device_pin(cfg, jax.tree.map(jnp.asarray, mask))
+        tol = float(cfg.refine_tol)
+        with _timed(cfg, "newton_seed"):
+            _count(cfg, newton_seeds=1)
+            try:
+                state = _m1_gauge_state(cfg, state)
+                state, params, mask = commit_to_single_device((state, params, mask))
+                project = _dof_projector(cfg, mask)
+                F = residual_fn(cfg, state, mask)
+                z0 = project(state)
+                base = float(_tree_norm(F(z0, params)))
+                if not np.isfinite(base):
+                    return None
+                if base <= tol:  # already at the root (a restored or repeated point)
+                    return state, base
+                z, best = z0, base
+                for _ in range(NEWTON_SEED_FACTORIZATIONS):
+                    if best <= tol:
+                        break
+                    factors = _refine_block_factors(cfg, params, state, mask, z)
+                    trial, _, norm, _ = _refine_block_step(cfg, params, state, mask, z, factors)
+                    norm = float(norm)
+                    for fraction in NEWTON_SEED_BACKTRACK:  # a step that does not lower |F|: shortened
+                        if np.isfinite(norm) and norm < best:
+                            break
+                        trial = jax.tree.map(lambda a, b: a + fraction * (b - a), z, trial)
+                        norm = float(_tree_norm(F(trial, params)))
+                    if not (np.isfinite(norm) and norm < best):
+                        break
+                    z, best = trial, norm
+                if best > tol and best < base:
+                    # the block Newton stopped short of the root: finish with the refinement's own Krylov
+                    # Newton (_refined_state, GCROT) from its best point, ~3 s, instead of the
+                    # descent's thousands of iterations from there (QH 2.5 %: |F| ~ 1e-4, ~4000 iterations, ~20 s)
+                    partial = jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
+                    finished = _refined_state(cfg, params, partial, mask)
+                    _ANCHOR_STALLED.pop(id(cfg), None)
+                    norm = float(_tree_norm(F(project(finished), params)))
+                    if np.isfinite(norm) and norm < best:
+                        z, best = project(finished), norm
+            except (VmecError, RuntimeError, FloatingPointError):
+                _ANCHOR_STALLED.pop(id(cfg), None)
+                return None
+        if not best < base:
+            _count(cfg, newton_seeds_declined=1)
+            return None
+        return jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0))), best
+
+
+def newton_refined_seed(cfg: ImplicitConfig, params_np, seed: SpectralState | None) -> SpectralState | None:
+    """The initial state of a hot-restarted solve at ``params_np``: the better of ``seed`` (a perturbation
+    prediction) and the hot-restart state, Newton-refined toward the root of the frozen residual
+    (:func:`_newton_refined_candidates`), or ``None`` when Newton lowers neither residual.
+
+    For :data:`_PERTURB_SEED`: only the descent's initial state changes; the solve, its refinement and the
+    status certificate decide as without it."""
+    if not cfg.hot_restart:
+        return None
+    hot = _HOT_CACHE.get(cfg)
+    if seed is None and hot is None:
+        return None
+    return _newton_refined_candidates(cfg, params_np, (seed, hot))
+
+
 #: Probe of a later seed-ladder rung after one exhausted its budget: by this
 #: fraction of the budget it must have reached a best ``fsqr + fsqz + fsql``
 #: _RUNG_PROBE_GAIN below the exhausted rung's best at the same iteration,

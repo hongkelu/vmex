@@ -1386,3 +1386,39 @@ def test_projection_gate_and_seed_start(monkeypatch):
     np.testing.assert_allclose(b, [1.0, 0.2 * 1.001, -0.1 * 1.001, 0.05 * 1.001, 7.0])
     with pytest.raises(ValueError, match="seed_start"):
         fvc.ThreeTermFreeBoundaryProblem._seed_start(owner, ("twist", 1e-3))
+
+
+@needs_vc
+@pytest.mark.full
+def test_secant_fit_reaches_the_trust_region_fit_with_fewer_jacobians(monkeypatch):
+    """The fit's strategy changes the path, not the certified free boundary: secant rounds (Broyden-updated
+    Jacobians) and scipy's trust region (a fresh Jacobian per step) certify the same root, the secant one with
+    fewer Jacobians; and secant rounds that cannot converge hand over to the trust region instead of failing."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 4, 25), phiedge=-0.025, curtor=0.0,
+                  am=np.zeros(21))
+    field = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    fits = {}
+    for strategy in ("trf", "secant"):
+        monkeypatch.setattr(fvc, "FIT_STRATEGY", strategy)
+        fits[strategy] = fvc.solve_free_boundary_three_term(inp, external_field=field)
+        assert fits[strategy].converged and fits[strategy].success
+    trf, secant = fits["trf"], fits["secant"]
+    assert secant.njev < trf.njev
+    np.testing.assert_allclose(secant.cost, trf.cost, rtol=1e-3)
+    assert _lcfs_distance(secant.equilibrium.wout, trf.equilibrium.wout) < 1e-4
+    monkeypatch.setattr(fvc, "FIT_STRATEGY", "secant")
+    monkeypatch.setattr(fvc, "FIT_ROUNDS", 1)
+    monkeypatch.setattr(fvc, "_levenberg_marquardt", _unconverged(fvc._levenberg_marquardt))
+    fallback = fvc.solve_free_boundary_three_term(inp, external_field=field)
+    assert fallback.converged and fallback.success and fallback.model.fit_fallbacks >= 1
+    assert _lcfs_distance(fallback.equilibrium.wout, trf.equilibrium.wout) < 1e-4
+
+
+def _unconverged(levenberg_marquardt):
+    """The secant rounds' Levenberg-Marquardt (``update="broyden"``) stops after one step, unconverged."""
+    def wrapped(*args, update=None, **kwargs):
+        if update != "broyden":
+            return levenberg_marquardt(*args, update=update, **kwargs)
+        out = levenberg_marquardt(*args, update=update, **dict(kwargs, max_nfev=2))
+        return dict(out, converged=False, reason="max_nfev")
+    return wrapped

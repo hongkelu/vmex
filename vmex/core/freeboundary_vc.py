@@ -241,7 +241,8 @@ JACOBIAN_UPDATE = "none"
 #: accepted step) or ``"secant"`` (rounds of Levenberg-Marquardt steps on one fresh Jacobian, Broyden-updated after
 #: each accepted step, a fresh one when a round stalls; at most FIT_ROUNDS fresh Jacobians; the default: LBD 8 x 8
 #: cold gauge fit 899 s -> 299 s, 36 -> 6 Jacobians, the same certified boundary).  The fit's end point is then
-#: certified as before; only the path there differs.
+#: certified as before; only the path there differs.  Rounds that end unconverged hand their end point to the trust
+#: region, so a hard start costs time, never the solve.
 FIT_STRATEGY = os.environ.get("VMEX_FIT_STRATEGY", "secant")
 FIT_ROUNDS = 12
 
@@ -1099,8 +1100,9 @@ class ThreeTermFreeBoundaryModel:
                 nfev += out["nfev"]
                 x, r, aux = out["x"], out["rows"], out["aux"]
                 if out["converged"]:
-                    break
-            return dict(out, jacobian=J, nfev=nfev, njev=njev)
+                    return dict(out, jacobian=J, nfev=nfev, njev=njev)
+            # FIT_ROUNDS fresh Jacobians and still not converged: the trust region below finishes from here
+            self.fit_fallbacks = getattr(self, "fit_fallbacks", 0) + 1
         memo = {}
 
         def fun(z):

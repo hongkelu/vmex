@@ -754,6 +754,7 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
     The same number is ``f . M_grid + (S f) . M_polar``: the density interpolated to the polar points by the
     interpolation the patch geometry already uses.  No scatter (45% of a boundary Jacobian's GPU time at 8 x 8,
     LBD), the same sum regrouped; the far field is :func:`_remat_fxd_u_eval`."""
+    del interp_block_size  # the package function's keyword (a drop-in replacement): no interpolation blocks here
     from virtual_casing_jax import integrals as I
 
     X_src, dX_src, density = jnp.asarray(X_src), jnp.asarray(dX_src), jnp.asarray(density)

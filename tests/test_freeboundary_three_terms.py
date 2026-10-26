@@ -677,6 +677,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
 
 
+@pytest.mark.full
 def test_fixed_boundary_bootstrap_model_matches_picard():
     """fixed_boundary=True: the Gauss-Newton current at a fixed boundary is the Picard loop's (both on VMEC2000's
     released m = 1 complement), with exact columns."""

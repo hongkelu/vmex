@@ -60,6 +60,9 @@ class _SlsqpHook:
     def __enter__(self):
         from scipy.optimize import _slsqp_py
 
+        if not callable(getattr(_slsqp_py, "slsqp", None)):  # the resume hooks SciPy's SLSQP iteration routine
+            raise ImportError("SLSQP state resume needs scipy.optimize._slsqp_py.slsqp (SciPy >= 1.16); "
+                              f"this SciPy ({__import__('scipy').__version__}) does not provide it")
         self.module, self.real = _slsqp_py, _slsqp_py.slsqp
         _slsqp_py.slsqp = self
         return self

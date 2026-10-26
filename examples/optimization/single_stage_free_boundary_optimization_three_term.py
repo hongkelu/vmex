@@ -63,9 +63,10 @@ PHIEDGE = -0.025
 
 # The three-term free boundary: interface grid per field period, its fixed
 # singular quadrature (4 nfp nphi, 2 ntheta), the boundary modes solved for,
+# (None: all; a truncated boundary on the gauge keeps a larger residual),
 # and the trials' looser interior tolerance (each record is re-solved tight):
 GRID = 16
-MAX_MODE = 2
+MAX_MODE = None
 TRIAL_FTOL = 1e-11
 
 # Design: each base coil's current is I_0 (1 + CURRENT_STEP x_k) and PHIEDGE is
@@ -98,8 +99,9 @@ RESUME = False
 
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 if ci_smoke:
+    # Coarser plasma, and the interface floor of that resolution:
     MPOL = NTOR = 3
-    NS, MAX_STEPS = 11, 1
+    NS, MAX_STEPS, MAX_INTERFACE_RESIDUAL = 11, 1, 5e-2
 
 ###############################################################################
 # End of input parameters.

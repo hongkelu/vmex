@@ -60,7 +60,7 @@ OUTPUT_DIR = Path("output_free_boundary_three_term")
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 if ci_smoke:
     MPOL = NTOR = 3
-    NS, FTOL, GRID, MAX_MODE = 11, 1e-11, 16, 2
+    NS, FTOL, GRID = 11, 1e-11, 16
 
 ###############################################################################
 # End of input parameters.

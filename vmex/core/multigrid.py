@@ -218,6 +218,7 @@ def _launch_lane_prefetch(
     inp: VmecInput, *, ns_next: int, ftol_next: float, niter_next: int,
     lconm1: bool, time_step, tcon0, gamma, nstep, precon_type,
     prec2d_threshold, prec2d, use_fft, device, lambda_m0_floor=None,
+    m1_hold=False,
 ) -> threading.Thread:
     """Start compiling the NEXT rung's block-lane executable in the background.
 
@@ -243,6 +244,7 @@ def _launch_lane_prefetch(
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft, lambda_m0_floor=lambda_m0_floor,
+                    m1_hold=m1_hold,
                 )
                 _prefetch_block_lane(
                     rt, use_fft=use_fft, time_step0=time_step0
@@ -283,6 +285,7 @@ def solve_multigrid(
     polish_force_balance: bool | str = False,
     polish_config: Any = None,
     lambda_m0_floor: float | None = None,
+    m1_hold: bool = False,
 ) -> SolveResult:
     """Fixed-boundary multigrid solve over the ``NS_ARRAY`` ladder.
 
@@ -359,7 +362,8 @@ def solve_multigrid(
     the radial ``m = 0`` lambda preconditioner, e.g. ``1e-3``
     (:func:`~vmex.core.preconditioner.lamcal_m0_radial`); 3-D decks only.
     ``use_fft`` has the same measured-hardware default and implicit-AD role as in
-    :func:`vmex.core.solver.solve`.
+    :func:`vmex.core.solver.solve`, and ``m1_hold`` (every stage holds the m = 1
+    complement; ``ImplicitConfig.m1_complement = "gauged"``) the same meaning.
 
     ``release_stage_cache=True`` clears JAX's in-memory compilation/staging
     caches between distinct radial grids. This lowers peak RSS for a one-shot
@@ -444,7 +448,7 @@ def solve_multigrid(
                 tcon0=tcon0, gamma=gamma,
                 precon_type=precon_type, prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d, use_fft=stage_use_fft,
-                lambda_m0_floor=lambda_m0_floor,
+                lambda_m0_floor=lambda_m0_floor, m1_hold=m1_hold,
             )
             target = _placement_device(device, resolution)
             state = _put_numeric_leaves(state, target)
@@ -487,7 +491,7 @@ def solve_multigrid(
                 bool(use_fft_next), int(inp.mpol), int(inp.ntor),
                 int(inp.nfp), bool(inp.lasym), bool(lconm1), time_step, tcon0,
                 gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
-                str(device),
+                str(device), bool(m1_hold),
             )
             if attempt_key not in _PREFETCH_ATTEMPTED:
                 _PREFETCH_ATTEMPTED.add(attempt_key)
@@ -499,7 +503,7 @@ def solve_multigrid(
                     gamma=gamma, nstep=nstep, precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft_next, device=device,
-                    lambda_m0_floor=lambda_m0_floor,
+                    lambda_m0_floor=lambda_m0_floor, m1_hold=m1_hold,
                 )
         with device_context(device, resolution):
             carry = _solve_stage(
@@ -565,6 +569,7 @@ def solve_multigrid(
                 polish_force_balance=polish,
                 polish_config=polish_config,
                 lambda_m0_floor=lambda_m0_floor,
+                m1_hold=m1_hold,
             )
         last_stage = not np.any(ns_arr[igrid + 1:] >= nsval)
         if ier not in (SUCCESSFUL_TERM_FLAG, MORE_ITER_FLAG) or (

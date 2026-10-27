@@ -952,7 +952,7 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
 #: start.  ``"gauged"``: the complement is an angle gauge in the continuum (its
 #: force vanishes for any value as the resolution grows), so it is fixed --
 #: set to ``sqrt(s)`` times its edge value (the boundary's) before the
-#: refinement, held there by the host solve (:data:`~vmex.core.setup.M1_HOLD`),
+#: refinement, held there by the host solve (``solve(..., m1_hold=True)``),
 #: its force released as in ``"frozen"``.  The refined state is then a function
 #: of the parameters alone, at any resolution (the three-term free boundary's
 #: interior).  3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
@@ -1523,6 +1523,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     hot = _HOT_CACHE.get(cfg) if cfg.hot_restart else None
     perturb = _PERTURB_SEED.pop(cfg, None) if cfg.hot_restart else None
     solver_device = AUTO
+    m1_hold = _m1_gauged(cfg)  # "gauged": the solver never evolves the m=1 complement
     if cfg.multigrid:
         ns_arr = np.asarray(inp2.ns_array)
         ftol_arr = np.asarray(inp2.ftol_array, dtype=float).copy()
@@ -1534,13 +1535,13 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
             inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
             lconm1=cfg.lconm1, raise_on_max_iterations=False,
             initial_state=init, use_fft=False,
-                device=solver_device)
+                device=solver_device, m1_hold=m1_hold)
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, mode=cfg.mode,
             lconm1=cfg.lconm1, initial_state=init, use_fft=False,
-                device=solver_device)
+                device=solver_device, m1_hold=m1_hold)
     # Seed ladder: perturbation prediction -> plain hot restart -> cold.
     # A bad warm seed must not fail the trial (only the initial guess is at
     # stake — every rung converges to the same fixed point), whether it
@@ -1552,13 +1553,11 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     attempts = [s for s in (perturb, hot) if s is not None] + [None]
     result = reference = None
     limited = 0
-    from .setup import M1_HOLD
 
     with _timed(cfg, "solve"):
         for k, init in enumerate(attempts):
             token = STOP_HOOK.set(
                 None if reference is None else _rung_probe(reference))
-            hold = M1_HOLD.set(_m1_gauged(cfg))  # "gauged": the solver never evolves the m=1 complement
             try:
                 trial = run(init)
             except VmecError:
@@ -1568,7 +1567,6 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 continue
             finally:
                 STOP_HOOK.reset(token)
-                M1_HOLD.reset(hold)
             if result is None or _fsq(trial) < _fsq(result):
                 result = trial
             if bool(result.converged):

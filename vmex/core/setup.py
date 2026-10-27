@@ -47,7 +47,6 @@ Ported from the parity-proven legacy implementation
 
 from __future__ import annotations
 
-import contextvars
 import dataclasses
 import functools
 import types
@@ -227,12 +226,8 @@ class RunSetup:
     lconm1: bool
     ncurr: int
     #: The constrained m=1 complement's force is released at every iteration (it stays at its initial
-    #: ``sqrt(s)`` profile): ``ImplicitConfig.m1_complement = "gauged"`` (:data:`M1_HOLD`).
+    #: ``sqrt(s)`` profile): ``ImplicitConfig.m1_complement = "gauged"`` (``run_setup(..., m1_hold=True)``).
     m1_hold: bool = False
-
-
-#: Context for :func:`run_setup`: setups built while it is True hold the m=1 complement (``RunSetup.m1_hold``).
-M1_HOLD = contextvars.ContextVar("vmex_m1_hold", default=False)
 
 
 _register(RadialGrids)
@@ -1226,6 +1221,7 @@ def run_setup(
     lconm1: bool = True,
     infer_axis_if_missing: bool = True,
     use_fft: bool = False,
+    m1_hold: bool = False,
 ) -> RunSetup:
     """Build the complete pre-iteration setup for one radial resolution.
 
@@ -1248,6 +1244,12 @@ def run_setup(
         ``False`` because VMEC2000 starts from the supplied zero axis and
         calls ``guess_axis`` exactly once after its first bad-Jacobian or
         high-force control transfer.
+    m1_hold:
+        Hold the constrained m = 1 complement at its initial ``sqrt(s)``
+        profile: its force is released at every iteration
+        (``RunSetup.m1_hold``; ``ImplicitConfig.m1_complement = "gauged"``).
+        Only applies with ``lconm1``.  ``False`` (the default) is VMEC2000's
+        ``"frozen"`` behavior.
 
     Returns
     -------
@@ -1307,6 +1309,6 @@ def run_setup(
         )
         setup = lane(_setup_lane_inputs(inp, scaled, r00, axis, dtype=dtype))
 
-    if M1_HOLD.get() and bool(lconm1):
+    if bool(m1_hold) and bool(lconm1):
         setup = dataclasses.replace(setup, m1_hold=True)
     return setup

@@ -1109,7 +1109,7 @@ def test_shared_minimize_restarts_slsqp_after_a_rejected_trial():
 
         def value_and_grad(x):
             calls.append(1)
-            if len(calls) == 4:  # one rejected Jacobian, after the first accepted steps
+            if len(calls) == 7:  # one rejected Jacobian, after two accepted steps (each a Jacobian and a promotion)
                 raise TrialRejected("no equilibrium here")
             return float(np.sum(x**4)), 4 * x**3
 

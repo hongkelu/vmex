@@ -282,7 +282,7 @@ def test_min_abs_iota_floors_the_profile_not_its_average(solovev_eq):
 def test_vacuum_iota_of_a_vacuum_equilibrium_is_its_own_iota():
     """``vacuum_iota`` re-solves the state's boundary without pressure or current: for a vacuum deck that is
     the deck's own implicit solve, so it returns that equilibrium's axis, half-mesh and edge |iota|, with a
-    finite derivative along the state.  (The implicit solve and ``solve_equilibrium`` of this deck differ by
+    finite reverse-mode derivative along the state.  (The implicit solve and ``solve_equilibrium`` of this deck differ by
     1.5e-4 in iota, both converged to ftol 1e-13.)"""
     from vmex.core import implicit as imp
     from vmex.core.statephysics import _iotas_half
@@ -301,9 +301,8 @@ def test_vacuum_iota_of_a_vacuum_equilibrium_is_its_own_iota():
     np.testing.assert_allclose(values[-1], 1.5 * half[-1] - 0.5 * half[-2], rtol=1e-8)
     np.testing.assert_allclose(values[0], abs(float(opt.axis_iota(state, runtime))), rtol=1e-8)
     np.testing.assert_allclose(values[1:-1], np.abs(np.asarray(eq.wout.iotas)[1:]), rtol=1e-3)
-    tangent = jax.tree_util.tree_map(lambda a: 1e-3 * jnp.ones_like(a), eq.state)
-    _, jvp = jax.jvp(lambda state: iota(state, eq.runtime)[1], (eq.state,), (tangent,))
-    assert np.isfinite(float(jvp))
+    gradient = jax.grad(lambda state: iota(state, eq.runtime)[1])(eq.state)  # reverse mode: the implicit adjoint
+    assert all(np.all(np.isfinite(np.asarray(g))) for g in jax.tree_util.tree_leaves(gradient))
 
 
 def test_min_abs_iota_gradient_is_finite_and_matches_fd(solovev_eq):

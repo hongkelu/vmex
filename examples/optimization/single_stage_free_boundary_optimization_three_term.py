@@ -1049,6 +1049,10 @@ def parse_args(argv=None):
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--current-constraint", action="store_true",
+                        help="the current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design "
+                        "variables) held Redl-self-consistent by a constraint row, instead of solved with every "
+                        "equilibrium (BOOTSTRAP_IN_SOLVE, the qa4-beta and qh4-beta default)")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
@@ -1223,7 +1227,10 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
+    global BOOTSTRAP_IN_SOLVE
     args = parse_args(argv)
+    if args.current_constraint:
+        BOOTSTRAP_IN_SOLVE = False
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:

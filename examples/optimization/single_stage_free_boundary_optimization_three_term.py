@@ -110,7 +110,7 @@ MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >
 # DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
 MERCIER_S_MIN = 0.2
 MERCIER_MARGIN = 0.02             # SLSQP holds a row only to its tolerance: DMerc stays strictly positive
-CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (opt.current_iota), shrinking the bootstrap current
+CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row about B0
@@ -396,24 +396,46 @@ def bootstrap_input(inp, beta, device):
 
 
 def min_abs_iota(state, runtime):
-    """|iota| floor row: ``opt.min_abs_iota``, with ``IOTA_EDGE`` including the edge iotaf."""
+    """|iota| floor row: the half-mesh |iota| (``opt.abs_iota_profile``), with ``IOTA_EDGE`` also the edge iotaf."""
+    import jax.numpy as jnp
     from vmex import optimize as opt
 
-    return opt.min_abs_iota(state, runtime, include_edge=IOTA_EDGE)
+    return jnp.min(opt.abs_iota_profile(state, runtime, include_edge=IOTA_EDGE))
 
 
 def max_abs_iota(state, runtime):
     """|iota| ceiling row, the counterpart of ``min_abs_iota``."""
+    import jax.numpy as jnp
     from vmex import optimize as opt
 
-    return opt.max_abs_iota(state, runtime, include_edge=IOTA_EDGE)
+    return jnp.max(opt.abs_iota_profile(state, runtime, include_edge=IOTA_EDGE))
 
 
 def min_d_merc(state, runtime):
-    """Mercier floor row: ``opt.min_d_merc`` over ``MERCIER_S_MIN <= s``."""
+    """Mercier floor row: the smallest ``DMerc`` of VMEC's interior surfaces [2:-1] with ``MERCIER_S_MIN <= s``."""
+    import jax.numpy as jnp
     from vmex import optimize as opt
 
-    return opt.min_d_merc(state, runtime, s_min=MERCIER_S_MIN)
+    s = jnp.asarray(runtime.setup.s_full)
+    index = jnp.arange(s.size)
+    return jnp.min(jnp.where((index >= 2) & (index < s.size - 1) & (s >= MERCIER_S_MIN),
+                             opt.d_merc_state(state, runtime), jnp.inf))
+
+
+def current_iota(state, runtime):
+    """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
+    plasma's major radius, minor radius ``R0 / aspect`` and axis field -- the current's share of iota."""
+    import jax.numpy as jnp
+    from vmex import optimize as opt
+    from vmex.core.fields import surface_currents
+    from vmex.core.statephysics import _field_chain  # private: the covariant fields behind ctor
+
+    fields = _field_chain(state, runtime)[3]
+    mu0_current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=runtime.trig,
+                                   s=jnp.asarray(runtime.setup.s_full), signgs=runtime.setup.signgs).ctor
+    radius = opt.major_radius(state, runtime)
+    minor = radius / opt.aspect_ratio(state, runtime)
+    return jnp.abs(mu0_current) * radius / (2 * jnp.pi * minor**2 * opt.axis_field_strength(state, runtime))
 
 
 def bootstrap_mismatch(inp, redl, device):
@@ -906,14 +928,14 @@ def main(argv=None):
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
+    # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
-    vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
-
+    vacuum_floor = ((lambda rbc, zbs, x: jnp.min(vacuum(rbc, zbs))),) if VACUUM_IOTA_FLOOR else ()
     limits = coil_limits()
 
-    def boundary_surface(state, runtime):
-        rbc, zbs, _, _ = opt.boundary_coefficients(state, runtime)
-        return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
+    def clearance(rbc, zbs, x):
+        surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
+        return limits.surface_clearance(chart.coils_from_x(x), surface)
 
     ext_rows, ext_terms = load_extension(args.extension)
 
@@ -922,11 +944,8 @@ def main(argv=None):
 
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
-        current = 0.5 * CURRENT_IOTA_WEIGHT * opt.current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
+        current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
-
-    def clearance(state, runtime, x):
-        return limits.surface_clearance(chart.coils_from_x(x), boundary_surface(state, runtime))
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -934,11 +953,11 @@ def main(argv=None):
     problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
-        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
+        quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
-                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([opt.current_iota] if CURRENT_IOTA_WEIGHT else []),
+                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
-        parameter_quantities=(clearance, aspect),
+        parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
         config=vj.ThreeTermsConfig(labelling=args.labelling, label_weight=args.label_weight, nphi=args.vc_grid,
                                    ntheta=args.vc_grid, chunk=args.chunk,
                                    quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
@@ -962,13 +981,13 @@ def main(argv=None):
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
         *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
-        (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
-        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
+        (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
+        *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
+        (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
     # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
     coil_rows = vj.coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
                                    forward_chunk=32 if COIL_POINT_ROWS else None)
@@ -980,7 +999,7 @@ def main(argv=None):
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last = dict(time=time.monotonic())
-    diagnostics = jax.jit(lambda state, params: (opt.current_iota(state, im.runtime_from_params(params, model.cfg)),
+    diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     extension_values = jax.jit(lambda state, params: (
         {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
@@ -1018,7 +1037,7 @@ def main(argv=None):
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
-            vac = np.asarray(vacuum(state_x, runtime_x))
+            vac = np.asarray(vacuum(params_x.rbc, params_x.zbs))
         except RuntimeError as error:
             vac = np.full(3, np.nan)
             print(f"[step {problem.accepted_step}] vacuum iota not available: {str(error).splitlines()[0][:200]}",
@@ -1034,9 +1053,9 @@ def main(argv=None):
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
-                   **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling) + len(vacuum_floor)])} if nredl else {}),
+                   **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling)])} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
-                   coil_surface_distance_m=float(h[-2]), aspect=float(h[-1]),
+                   coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,

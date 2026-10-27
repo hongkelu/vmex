@@ -255,8 +255,12 @@ initial boundary, weight `1e-2`) or `"none"`. Use a fixed singular quadrature
 `vj.solve_free_boundary_three_terms` is one solve, with `previous=` to continue
 after a coil change, and `vj.ThreeTermsFreeBoundaryProblem` is the
 single-stage problem with exact design gradients, for
-`vmex.optimize.minimize(problem, method="SLSQP")`
-(`examples/optimization/single_stage_free_boundary_optimization_three_terms.py`).
+`vmex.optimize.minimize(problem, method="SLSQP")`. Any function of the
+equilibrium is a loss term or a constraint row (`quantities=`): at finite beta,
+as in VMEC, the pressure and current are inputs, the current profile is a design
+variable (`plasma_from_parameters=`) and its Redl self-consistency a constraint
+row (`examples/optimization/single_stage_free_boundary_optimization_three_terms.py`,
+QA at 1% beta).
 `examples/free_boundary_three_terms.py` compares the labellings with NESTOR.
 
 ## Differentiability scope

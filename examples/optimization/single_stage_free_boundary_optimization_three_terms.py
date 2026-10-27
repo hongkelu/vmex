@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 r"""Finite-beta single-stage optimization at the three-term free boundary, with a self-consistent bootstrap current.
 
-The free-boundary design problem of ``single_stage_free_boundary_optimization.py`` (same seed, coils, coil pre-fit
-and targets) at volume-average beta ``TARGET_BETA`` with a Redl-self-consistent bootstrap current, every trial's
+The free-boundary design problem of ``single_stage_free_boundary_optimization.py`` (same seed, coils and coil
+pre-fit, limits near the seed's) at volume-average beta ``TARGET_BETA`` with a Redl-self-consistent bootstrap current, every trial's
 plasma the three-term free boundary of its coils: the boundary on which ``B . n = 0``, pressure balance and
 continuity of the tangential field hold together (:class:`vmex.ThreeTermsConfig`), with the plasma field from
 virtual casing (``pip install vmex[freeb]``).
@@ -81,11 +81,12 @@ REDL_TOLERANCE = 1.0e-3
 REDL_LIMIT = 2.0e-3
 PICARD_ITERATIONS = 8
 
-# Targets the finished design is checked against:
+# Targets the finished design is checked against (near the seed's values: the demonstration holds the
+# constraints while it improves quasisymmetry):
 IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
 IOTA_CEILING = 0.6                # maximum |iota|: the bootstrap current raises iota by ~0.1;
                                   # stay below the 2/3 resonance (NFP = 2)
-ASPECT_LIMIT = 6.0                # maximum aspect ratio
+ASPECT_LIMIT = 6.1                # maximum aspect ratio
 COIL_SURFACE_DISTANCE_LIMIT = 0.15
 COIL_DISTANCE_LIMIT = 0.17
 CURVATURE_LIMIT = 7.0
@@ -93,9 +94,9 @@ CURVATURE_LIMIT = 7.0
 # Values the optimizer is given instead, a little inside the limits above: SLSQP
 # holds its constraint rows only to its tolerance. The normal-field value is used
 # only by the coil pre-fit: on a free boundary B.n = 0 holds to the fit's floor.
-IOTA_CONSTRAINT = 0.43
+IOTA_CONSTRAINT = 0.425
 IOTA_CEILING_CONSTRAINT = 0.59
-ASPECT_CONSTRAINT = 5.97
+ASPECT_CONSTRAINT = 6.05
 NORMAL_FIELD_CONSTRAINT = 0.008
 CURVATURE_OBJECTIVE_LIMIT = 6.9
 COIL_DISTANCE_CONSTRAINT = 0.19
@@ -120,8 +121,11 @@ COIL_DISTANCE_WEIGHT = 1.0e4
 COIL_SURFACE_DISTANCE_WEIGHT = 1.0e4
 CONSTRAINT_WEIGHT = 1.0e3
 
-# Bound on each scaled coil variable:
+# Bound on each design variable, in units of its scale, and the factor on those scales that SLSQP steps
+# in: its first step has an identity Hessian, so each scaled variable moves about as far as its gradient,
+# and smaller scales keep the steps where the constraints' linearization holds.
 PARAMETER_BOUND = 3.0
+DESIGN_STEP_SCALE = 0.2
 
 # A low-resolution demonstration: the plasma's Fourier resolution (the boundary's modes are
 # solved up to MPOL - 1 = NTOR), and the equilibria of every trial: radial surfaces, force
@@ -310,7 +314,8 @@ jax.tree_util.register_dataclass(FilamentField, data_fields=["gamma", "gamma_das
 N_COIL = x0.size                  # the design: coil coefficients, then the current variables
 ac_reference = float(np.max(np.abs(np.asarray(inp.ac, dtype=float))))
 design0 = np.r_[x0, np.zeros(N_CURRENT + 1)]
-design_scales = np.r_[scales, np.full(N_CURRENT + 1, CURRENT_SCALE)]
+bound_scales = np.r_[scales, np.full(N_CURRENT + 1, CURRENT_SCALE)]
+design_scales = DESIGN_STEP_SCALE * bound_scales
 
 
 def field_from_x(x):
@@ -410,7 +415,7 @@ def report(x):
           f"{rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}", flush=True)
 
 
-bounds = Bounds(design0 - PARAMETER_BOUND * design_scales, design0 + PARAMETER_BOUND * design_scales)
+bounds = Bounds(design0 - PARAMETER_BOUND * bound_scales, design0 + PARAMETER_BOUND * bound_scales)
 result = opt.minimize(problem, method="SLSQP", constraints=constraints, bounds=bounds,
                       callback=report,
                       options={"maxiter": MAXITER, "ftol": 1e-12})

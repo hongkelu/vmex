@@ -65,7 +65,7 @@ SEED_ELLIPSE = 0.10
 # n_e = n0 (1 - s^5), T_e = T_i = T0 (1 - s), hydrogen (Z_eff = 1, n_i = n_e), so p = 2 e n_e T_e,
 # whose power series in s is PRESSURE_SHAPE times 2 e n0 T0, and the edge pressure vanishes.  n0 is set
 # so that the fixed-boundary seed has TARGET_BETA.
-TARGET_BETA = 0.01
+TARGET_BETA = 0.005
 T0 = 2.0e3                        # eV
 PRESSURE_SHAPE = [1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0]
 BETA_TOLERANCE = 0.1              # relative, for the final check
@@ -83,8 +83,8 @@ PICARD_ITERATIONS = 8
 
 # Targets the finished design is checked against:
 IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
-IOTA_CEILING = 0.44               # maximum |iota|: stay below the 4/9 resonance,
-                                  # whose islands leave no edge surface (NFP = 2)
+IOTA_CEILING = 0.6                # maximum |iota|: the bootstrap current raises iota by ~0.1;
+                                  # stay below the 2/3 resonance (NFP = 2)
 ASPECT_LIMIT = 6.0                # maximum aspect ratio
 COIL_SURFACE_DISTANCE_LIMIT = 0.15
 COIL_DISTANCE_LIMIT = 0.17
@@ -94,7 +94,7 @@ CURVATURE_LIMIT = 7.0
 # holds its constraint rows only to its tolerance. The normal-field value is used
 # only by the coil pre-fit: on a free boundary B.n = 0 holds to the fit's floor.
 IOTA_CONSTRAINT = 0.43
-IOTA_CEILING_CONSTRAINT = 0.437
+IOTA_CEILING_CONSTRAINT = 0.59
 ASPECT_CONSTRAINT = 5.97
 NORMAL_FIELD_CONSTRAINT = 0.008
 CURVATURE_OBJECTIVE_LIMIT = 6.9

@@ -260,7 +260,7 @@ equilibrium is a loss term or a constraint row (`quantities=`): at finite beta,
 as in VMEC, the pressure and current are inputs, the current profile is a design
 variable (`plasma_from_parameters=`) and its Redl self-consistency a constraint
 row (`examples/optimization/single_stage_free_boundary_optimization_three_terms.py`,
-QA at 1% beta).
+QA at 0.5% beta).
 `examples/free_boundary_three_terms.py` compares the labellings with NESTOR.
 
 ## Differentiability scope

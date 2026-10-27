@@ -153,7 +153,7 @@ that research budget as one commented set of constants next to the default.
   adjoint. Each single-stage script runs in 2.1-4.6 min end to end on a laptop,
   with a cold JAX cache, and states its own measured time.
   `single_stage_free_boundary_optimization_three_terms.py` *(preview)* is the
-  free-boundary design problem at 1% beta with a self-consistent bootstrap
+  free-boundary design problem at 0.5% beta with a self-consistent bootstrap
   current, at the three-term free boundary: every trial is a certified boundary
   fit with exact design gradients (`vj.ThreeTermsFreeBoundaryProblem`); the
   coils and the current profile are the variables, and SLSQP holds the Redl

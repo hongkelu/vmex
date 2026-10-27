@@ -264,6 +264,29 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
 
 @needs_vc
 @pytest.mark.full
+def test_boundary_quantities_are_rows_of_the_fitted_boundary():
+    """A ``boundary_quantities`` row is its function of the trial's fitted boundary (INDATA arrays) and of x, and
+    its design derivative (through the boundary fit and directly through x) matches re-solved differences."""
+    inp, field = _small_vacuum()
+
+    def size(rbc, zbs, x):  # a smooth boundary measure that also depends on x directly
+        return jnp.sum(rbc[:, 1:] ** 2 + zbs ** 2) * (1 + 0.1 * x[0])
+
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
+        field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]), boundary_quantities=(size,),
+        config=SMALL_ANCHORED, boundary_ftol=1e-8, boundary_max_nfev=80)
+    x0 = problem.x0
+    _, params = problem.state(x0)
+    np.testing.assert_allclose(problem.constraint_values(x0), [size(params.rbc, params.zbs, x0)], rtol=1e-12)
+    h = 1e-3
+    fd = (problem.constraint_values(x0 + h) - problem.constraint_values(x0 - h)) / (2 * h)
+    np.testing.assert_allclose(problem.constraint_jac(x0)[:, 0], fd, rtol=1e-3)
+    problem.close()
+
+
+@needs_vc
+@pytest.mark.full
 def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
     """A boundary fit whose Jacobian point has no certified equilibrium raises RuntimeError (a rejected trial),
     not KeyError (which ended a campaign run), and never linearizes another point's state."""

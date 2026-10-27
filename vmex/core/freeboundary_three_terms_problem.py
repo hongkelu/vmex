@@ -52,8 +52,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     sets the external field through ``field_from_parameters(x)`` (coils, currents or any differentiable field;
     coil charts live with the caller, for example in ESSOS) and, optionally, plasma parameters through
     ``plasma_from_parameters(params, x)`` (an :class:`~vmex.core.implicit.ImplicitParams` map: PHIEDGE, the
-    current profile, ...).  Row 0 is ``loss(state, runtime, x)``, then the ``quantities(state, runtime)`` and
-    the ``parameter_quantities(state, runtime, x)``.  Every trial is the K = 0 boundary
+    current profile, ...).  Row 0 is ``loss(state, runtime, x)``, then the ``quantities(state, runtime)``,
+    the ``parameter_quantities(state, runtime, x)`` and the ``boundary_quantities(rbc, zbs, x)``: functions of
+    the trial's fitted boundary itself (INDATA arrays, the model's boundary coordinates), such as a
+    coil-plasma clearance.  Every trial is the K = 0 boundary
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsModel`), warm-started from the
     first-order prediction of the latest linearized solution; a trial without a certified solution raises
     :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
@@ -70,8 +72,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
-                  quantities=(), parameter_quantities=(), config=None, boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None):
+                  quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_xtol=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
@@ -84,7 +86,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).
         """
-        functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
+        functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
                                                            or callable(plasma_from_parameters)):
             raise TypeError("loss, parameter maps and quantities must be callable")
@@ -94,12 +96,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
-                   boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
+                   boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
                    boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None):
+                 boundary_xtol=None, boundary_quantities=()):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -115,8 +117,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 return jnp.ravel(jnp.asarray(f(state, runtime, x) if with_x else f(state, runtime)))
             return value
 
+        def on_boundary(f):
+            return lambda state, params, x: jnp.ravel(jnp.asarray(f(params.rbc, params.zbs, x)))
+
         parts = (part(loss, True), *(part(f, False) for f in quantities),
-                 *(part(f, True) for f in parameter_quantities))
+                 *(part(f, True) for f in parameter_quantities), *(on_boundary(f) for f in boundary_quantities))
 
         def rows(state, params, x):
             return jnp.concatenate([f(state, params, x) for f in parts])

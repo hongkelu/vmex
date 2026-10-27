@@ -415,20 +415,6 @@ def d_merc_state(state: SpectralState, rt: SolverRuntime) -> Array:
     return _mercier_profiles_state(state, rt)[0]
 
 
-def min_d_merc(state: SpectralState, rt: SolverRuntime, *, s_min: float = 0.0) -> Array:
-    """Smallest :func:`d_merc_state` value (positive is stable) for a Mercier floor.
-
-    Over the full-mesh surfaces ``s >= s_min`` of VMEC's validated interior
-    ``[2:-1]``: ``s_min`` keeps the near-axis surfaces, where a bootstrap
-    current's steep shear makes ``DMerc`` large and resolution dependent, out
-    of the floor.
-    """
-    d_merc = d_merc_state(state, rt)
-    s = jnp.asarray(rt.setup.s_full)
-    interior = (jnp.arange(s.size) >= 2) & (jnp.arange(s.size) < s.size - 1) & (s >= s_min)
-    return jnp.min(jnp.where(interior, d_merc, jnp.inf))
-
-
 def jdotb_state(state: SpectralState, rt: SolverRuntime) -> Array:
     """Traceable VMEC ``jdotb = <J.B>`` profile in WOUT units."""
     return _mercier_profiles_state(state, rt)[1]

@@ -23,7 +23,8 @@ links to the module that documents it.
 - :func:`~vmex.core.freeboundary.relax_free_boundary_constraint` — remove the constraint bias of a free-boundary LCFS
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
 - :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms` /
-  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` (its Newton
+  polish options :class:`~vmex.core.freeboundary_three_terms.ThreeTermsNewtonOptions`) /
   :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` — free boundary
   from the three plasma-vacuum interface conditions (no sheet current; the
   plasma field by virtual casing), also ``three_terms=`` of the free-boundary

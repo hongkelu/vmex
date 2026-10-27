@@ -1077,6 +1077,9 @@ def parse_args(argv=None):
                         "see ThreeTermFreeBoundaryModel")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the model's, 1e-2; 0 drops them)")
+    parser.add_argument("--reanchor", action="store_true",
+                        help="with --labelling start: move the labelling reference to every accepted boundary, "
+                        "instead of keeping the start boundary's for the whole run")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1339,6 +1342,7 @@ def main(argv=None):
                                 trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                 bootstrap_helicity=REDL_HELICITY, boundary_ftol=args.trial_ftol,
                                 boundary_max_residual=args.max_boundary_residual, labelling=args.labelling,
+                                reanchor=args.reanchor,
                                 **({} if args.label_weight is None else {"label_weight": args.label_weight})))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "

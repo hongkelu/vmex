@@ -381,8 +381,10 @@ class ThreeTermFreeBoundaryModel:
     :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
     and the state responses), :meth:`pullback` (reverse-mode gradients of other
     functions of the equilibrium), :meth:`boundary_residual` and
-    :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
-    runtime, field)`` are the traceable rows themselves.
+    :meth:`solve`; ``rows(state, params, field, reference)`` and ``rows_at(state,
+    runtime, field, reference)`` are the traceable rows themselves (``reference``
+    the "start" labelling's, ``label_reference`` when omitted; :meth:`anchor_labelling`
+    moves it).
 
     ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
     force residual (each is re-solved to the deck's before it is
@@ -484,6 +486,7 @@ class ThreeTermFreeBoundaryModel:
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
         self.seed = (state, mask)
+        self.label_reference = None
         if not self.fixed_boundary:
             self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
                                   labelling)
@@ -500,16 +503,24 @@ class ThreeTermFreeBoundaryModel:
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
         precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        gamma0 = jnp.asarray(surface.gamma)
         wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
-        e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma0, axis=-1), axis=-1))
-        length = jnp.linalg.norm(e_theta, axis=0)
-        tangent = e_theta / (length * jnp.mean(length))[None]
+
+        def reference(gamma):
+            """The "start" labelling's reference at a surface: its points and poloidal tangents of unit mean length."""
+            e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma, axis=-1), axis=-1))
+            length = jnp.linalg.norm(e_theta, axis=0)
+            return gamma, e_theta / (length * jnp.mean(length))[None]
+
+        #: The reference the "start" rows measure tangential offsets from: the seed's surface until
+        #: :meth:`anchor_labelling` moves it.  An argument of the compiled rows, so moving it recompiles nothing.
+        self.label_reference = reference(jnp.asarray(surface.gamma))
+        self._reference_at = lambda state, params: reference(jnp.asarray(vc.surface_field_data_from_state(
+            fixed, state, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta).gamma))
         scale = jnp.repeat(jnp.asarray(weights, dtype=float), jnp.asarray([1, 1, 3]))[:, None, None]
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)
 
-        def rows_at(state, runtime, field):
+        def rows_at(state, runtime, field, reference=None):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
             if labelling == "equal_arc":  # a labelling of the current surface alone: no reference to the start
@@ -521,6 +532,7 @@ class ThreeTermFreeBoundaryModel:
                 phase = label_weight * jnp.concatenate([jnp.sqrt(jnp.sum(area)) * _condensation_rows(
                     gamma, int(fixed.mpol), int(fixed.ntor)), phase])
             else:
+                gamma0, tangent = self.label_reference if reference is None else reference
                 label, phase = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0), jnp.zeros(0)
             interface = jnp.concatenate([(jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel(),
                                          phase])
@@ -539,9 +551,9 @@ class ThreeTermFreeBoundaryModel:
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
         im, cfg = self._im, self.cfg
 
-        def rows(state, params, field):
+        def rows(state, params, field, reference=None):
             runtime = im.runtime_from_params(params, cfg)
-            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field, reference)]
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -584,8 +596,8 @@ class ThreeTermFreeBoundaryModel:
 
         self._tangents = jax.jit(tangents)
         self.push = push
-        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
-            lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
+        self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field, reference: push(
+            lambda s, p: rows(s, p, field, reference), state, mask, params, dz, pb))
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
@@ -669,7 +681,13 @@ class ThreeTermFreeBoundaryModel:
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x, tight)
+        return np.asarray(self._rows(state, params_x, field, self.label_reference)), (state, mask, params_x, tight)
+
+    def anchor_labelling(self, state, params):
+        """Move the "start" labelling's reference to the boundary of the solved ``state`` at ``params``: the rows
+        then measure the tangential offset from that boundary instead of the seed's (nothing recompiles)."""
+        self.label_reference = self._reference_at(state, params)
+        self._last_linearize = None  # its columns were taken with the old reference
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -721,7 +739,8 @@ class ThreeTermFreeBoundaryModel:
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
-        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
+        columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field,
+                                                        self.label_reference)).T
                              for dz, batch in parts])
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
@@ -831,7 +850,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_ftol=1e-3, boundary_max_nfev=40,
-                  boundary_max_residual=None, boundary_xtol=None, **model_options):
+                  boundary_max_residual=None, boundary_xtol=None, reanchor=False, **model_options):
         """Solve the seed design's free boundary.
 
         ``model_options`` are :class:`ThreeTermFreeBoundaryModel` keywords (``nphi``, ``ntheta``,
@@ -842,6 +861,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or is
         rejected.  With ``boundary_xtol`` a trial's certified fit must also be within that (scaled) length of
         its stationary point (the certificate's ``step``; it is always recorded, ``stats["max_step"]``).
+        ``reanchor`` (``labelling="start"`` only) moves the labelling reference to every accepted boundary
+        (:meth:`ThreeTermFreeBoundaryModel.anchor_labelling`): the rows pin the labelling against the last
+        accepted step's instead of the seed's, which goes stale as the design moves.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -849,18 +871,21 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             raise TypeError("loss, parameter maps and quantities must be callable")
         if not jax.config.x64_enabled:
             raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
+        if reanchor and model_options.get("labelling", "start") != "start":
+            raise ValueError("reanchor moves the 'start' labelling's reference: the other labellings have none")
         model = ThreeTermFreeBoundaryModel(inp, **model_options)
         return cls(model, loss, x0, field_from_parameters=field_from_parameters,
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_ftol=boundary_ftol, boundary_max_nfev=boundary_max_nfev,
-                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol)
+                   boundary_max_residual=boundary_max_residual, boundary_xtol=boundary_xtol, reanchor=reanchor)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_xtol=None):
+                 boundary_xtol=None, reanchor=False):
         im = model._im
         self.model, self.field = model, field_from_parameters
+        self.reanchor = bool(reanchor)
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         self.boundary_xtol = None if boundary_xtol is None else float(boundary_xtol)
@@ -910,10 +935,10 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
+        self._field_vjp = jax.jit(lambda state, params, x, lam, reference=None: jax.vjp(
+            lambda z: model.rows(state, params, field_from_parameters(z), reference), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx, reference=None: jax.jvp(
+            lambda z: model.rows(state, params, field_from_parameters(z), reference), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
                           max_condition=0.0)
@@ -966,7 +991,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         elif anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), anchor["reference"]))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         else:
             starts = [None]
@@ -1016,12 +1041,14 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         :class:`~vmex.core.errors.TrialRejected`."""
         model, xj, nb = self.model, jnp.asarray(x), self.model.x0.size
         extra = self._plasma_directions(params, xj) if self._plasma.size else None
+        reference = model.label_reference  # the record's rows, Jacobian and gradients all use this one
 
         def tight(b, aux, project=True):
             try:  # the trial's state may not tighten to the deck's tolerance, or a row's own solve may fail
                 J, _, _, aux = model.linearize(b, aux, field, extra=extra)
                 state, mask, params_b, _ = aux
-                rows, values = np.asarray(model._rows(state, params_b, field)), np.asarray(self._rows(state, params_b, xj))
+                rows = np.asarray(model._rows(state, params_b, field, reference))
+                values = np.asarray(self._rows(state, params_b, xj))
             except (VmecError, RuntimeError) as error:  # RuntimeError: the relayed sentinel of a VmecError
                 raise TrialRejected(str(error)) from error
             J = np.asarray(J)
@@ -1079,9 +1106,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
                 raise TrialRejected("the certified fit is not a free boundary: an interface residual is above "
                                     "boundary_max_residual")
         # What later trials start from if the optimizer accepts this one (accept_x): its linearization now.
-        sol.update(continuation=self._checkpoint(), anchor=dict(
+        sol.update(reference=reference, continuation=self._checkpoint(), anchor=dict(
             x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=sol["state"],
-            params=sol["params"], cost=0.5 * sol["rows"] @ sol["rows"]))
+            params=sol["params"], reference=reference, cost=0.5 * sol["rows"] @ sol["rows"]))
         return sol
 
     def _record(self, x):
@@ -1107,7 +1134,8 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         Q, R = np.linalg.qr(J_b)
         lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), sol["reference"]))
+                               for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
         if not np.all(np.isfinite(gradients)):
             raise TrialRejected("nonfinite design gradient")
@@ -1149,6 +1177,9 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
         self._promote(self._cache[key])
         self._cache = {key: self._cache[key]}
+        if self.reanchor:  # later trials pin their labelling against this boundary; its own record keeps its rows
+            sol = self._cache[key]
+            self.model.anchor_labelling(sol["state"], sol["params"])
 
     def state(self, x):
         """``(state, params)`` of ``x``'s free boundary (``params`` the ``ImplicitParams`` it was solved at)."""
@@ -1191,7 +1222,7 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         return json.loads(json.dumps(dict(
             deck=deck, model=self.model.options, boundary_ftol=self.boundary_ftol,
             boundary_max_nfev=self.boundary_max_nfev, boundary_max_residual=self.boundary_max_residual,
-            boundary_xtol=self.boundary_xtol,
+            boundary_xtol=self.boundary_xtol, **({"reanchor": True} if self.reanchor else {}),
             design_size=int(np.size(self.accepted.parameters)), plasma_coordinates=self._plasma.tolist())))
 
     def _maps(self, x):
@@ -1208,8 +1239,11 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         leaves = jax.tree.leaves(sol["state"])
         meta = dict(schema=CHECKPOINT_SCHEMA, accepted_step=self.accepted_step, definition=self._definition(),
                     maps=self._maps(x), certificate=sol.get("certificate"), state_leaves=len(leaves))
+        # Re-anchored: the reference the record was certified with, and the one later trials use.
+        references = dict(zip(("record_gamma", "record_tangent", "label_gamma", "label_tangent"),
+                              map(np.asarray, (*sol["reference"], *self.model.label_reference)))) if self.reanchor else {}
         np.savez(path, x=x, b=np.asarray(sol["x"]), values=sol["values"], rows=sol["rows"],
-                 meta=json.dumps(meta), **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
+                 meta=json.dumps(meta), **references, **{f"state{i}": np.asarray(a) for i, a in enumerate(leaves)})
 
     def restore_checkpoint(self, path, *, rtol=1e-6):
         """Make a saved accepted point (:meth:`save_checkpoint`) this problem's accepted point.
@@ -1236,8 +1270,12 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
         state = jax.tree.unflatten(jax.tree.structure(model.seed[0]),
                                    [jnp.asarray(data[f"state{i}"]) for i in range(meta["state_leaves"])])
         previous = self._continuation  # back in place unless the saved point restores and validates
+        reference = model.label_reference
         self._restore(dict(linearization=None, radius=None, hot={cfg: state for cfg in {model.cfg, model.cfg_trial}}))
         try:
+            if self.reanchor:  # the record is certified with its own reference
+                model.label_reference, model._last_linearize = (jnp.asarray(data["record_gamma"]),
+                                                                jnp.asarray(data["record_tangent"])), None
             b, xj = np.asarray(data["b"], dtype=float), jnp.asarray(x)
             params, field = self._params_at(xj), self.field(xj)
             got = model.evaluate(b, params, field, seed=state, tight=True)
@@ -1255,9 +1293,13 @@ class ThreeTermFreeBoundaryProblem(FunctionProblem):
             if not change <= rtol:
                 raise VmecError(f"the restored equilibrium changes the saved values by {change:.2e} (> {rtol:g})")
         except Exception:
+            model.label_reference, model._last_linearize = reference, None
             if previous is not None:
                 self._restore(previous)
             raise
+        if self.reanchor:  # later trials, as in the saved run
+            model.label_reference, model._last_linearize = (jnp.asarray(data["label_gamma"]),
+                                                            jnp.asarray(data["label_tangent"])), None
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), int(meta["accepted_step"])
         self._promote(sol)
         self._cache = {x.tobytes(): sol}

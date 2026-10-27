@@ -641,6 +641,44 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     assert float(done.stdout.split("change")[-1]) <= 1e-6
 
 
+@needs_vc
+@pytest.mark.full
+def test_reanchor_moves_the_labelling_reference_to_the_accepted_boundary(tmp_path):
+    """With ``reanchor`` an accepted boundary becomes the "start" labelling's reference: its labelling rows vanish
+    there and every other row is unchanged, while its own record keeps the reference it was certified with;
+    without it the seed's reference stays.  A checkpoint carries both references over."""
+    with pytest.raises(ValueError, match="reanchor"):
+        _small_problem(reanchor=True, labelling="equal_arc")
+    x1, seen = np.zeros(1) + 0.01, {}
+    for reanchor in (False, True):
+        problem = _small_problem(reanchor=reanchor)
+        model, seed = problem.model, problem.model.label_reference
+        problem.value_and_grad(problem.x0)
+        problem.value_and_grad(x1)
+        problem.accept_x(x1)
+        sol = problem._record(x1)
+        assert sol["reference"] is seed
+        field = problem.field(jnp.asarray(x1))
+        old, new = (np.asarray(model._rows(sol["state"], sol["params"], field, r)) for r in (seed, model.label_reference))
+        n = SMALL["nphi"] * SMALL["ntheta"]  # the labelling rows: the interface rows' last block, then G
+        label_old, label_new = old[:-1].reshape(-1, n)[-1], new[:-1].reshape(-1, n)[-1]
+        seen[reanchor] = (model.label_reference is seed, float(np.max(np.abs(label_old))), float(np.max(np.abs(label_new))))
+        np.testing.assert_allclose(np.delete(new, np.s_[-1 - n:-1]), np.delete(old, np.s_[-1 - n:-1]), rtol=0, atol=0)
+        if reanchor:
+            path = tmp_path / "reanchored.npz"
+            problem.save_checkpoint(path)
+            moved = tuple(map(np.asarray, model.label_reference))
+        problem.close()
+    assert seen[False][0] and seen[False][1] == seen[False][2] > 0
+    assert not seen[True][0] and seen[True][1] > 0 and seen[True][2] < 1e-12 * seen[True][1]
+    fresh = _small_problem(reanchor=True)
+    assert fresh.restore_checkpoint(path) <= 1e-6
+    for a, b in zip(fresh.model.label_reference, moved):
+        np.testing.assert_array_equal(np.asarray(a), b)
+    with pytest.raises(ValueError, match="reanchor"):
+        _small_problem().restore_checkpoint(path)
+
+
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

@@ -57,7 +57,8 @@ def _scaled(field, factor):
     from essos.coils import Coils
     from essos.fields import BiotSavart
 
-    return BiotSavart(Coils(field.coils.curves, field.coils.currents * factor))
+    return BiotSavart(Coils(field.coils.curves, field.coils.currents * factor,
+                            currents_scale=field.coils.currents_scale))  # fixed: hashable under jit
 
 
 def test_nonzero_edge_pressure_is_rejected():

@@ -121,6 +121,13 @@ links to the module that documents it.
 - :class:`~vmex.core.position_control.PositionControl` — opt-in feedback on a
   vertical field that holds a plasma at a target radius in a free-boundary
   solve (``position_control=`` of the free-boundary solvers)
+- :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` /
+  :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms` —
+  opt-in free boundary from the three plasma-vacuum interface conditions
+  (``three_terms=`` of :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`);
+  :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
+  — single-stage optimization at that free boundary
 - :class:`~vmex.core.extender.MagneticField` — base JAX field with explicit
   and stored-point evaluation;
   :class:`~vmex.core.extender.VmecInteriorField` — field inside the plasma;
@@ -313,6 +320,10 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "MgridData": (".core.mgrid", "MgridData"),
     "MgridField": (".core.mgrid", "MgridField"),
     "PositionControl": (".core.position_control", "PositionControl"),
+    "ThreeTermsConfig": (".core.freeboundary_three_terms", "ThreeTermsConfig"),
+    "ThreeTermsResult": (".core.freeboundary_three_terms", "ThreeTermsResult"),
+    "solve_free_boundary_three_terms": (".core.freeboundary_three_terms", "solve_free_boundary_three_terms"),
+    "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_three_terms_problem", "ThreeTermsFreeBoundaryProblem"),
     "read_mgrid": (".core.mgrid", "read_mgrid"),
     "tabulate_cartesian_field": (".core.mgrid", "tabulate_cartesian_field"),
     "write_mgrid": (".core.mgrid", "write_mgrid"),

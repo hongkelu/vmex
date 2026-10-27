@@ -2006,7 +2006,9 @@ class SolveResult:
     ``(fsqr, fsqz, fsql, fsqr1, fsqz1, fsql1)``.  ``wmhd`` is the printed
     ``WMHD = (wb + wp/(gamma-1)) * (2 pi)^2``.  ``vacuum`` is ``None`` for
     fixed-boundary solves.  The five polish fields are ``None`` on the
-    unchanged default path.
+    unchanged default path.  ``three_terms`` is the
+    :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` of a free
+    boundary solved from the three interface conditions, else ``None``.
     """
 
     converged: bool; iterations: int; ier_flag: int
@@ -2024,6 +2026,7 @@ class SolveResult:
     strong_force: Any = None
     polish_report: Any = None
     position_control: Any = None
+    three_terms: Any = None
 
 
 def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:

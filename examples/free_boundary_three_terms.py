@@ -19,11 +19,10 @@ NESTOR's last closed surface.  The same solve runs from a deck with
 """
 
 import os
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 import vmex as vj
@@ -60,28 +59,9 @@ if ci_smoke:
 ###############################################################################
 
 from essos.coils import Coils  # noqa: E402 (optional heavy import)
+from essos.fields import BiotSavart  # noqa: E402
 
-
-@dataclass(frozen=True)
-class FilamentField:
-    """Biot-Savart field of the coil filaments, exact (no field table); its arrays are pytree leaves."""
-
-    gamma: jax.Array
-    gamma_dash: jax.Array
-    currents: jax.Array
-
-    def b_cyl(self, r, phi, z):
-        xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
-        d = xyz[..., None, None, :] - self.gamma
-        dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
-        B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
-        cos, sin = jnp.cos(phi), jnp.sin(phi)
-        return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
-
-
-jax.tree_util.register_dataclass(FilamentField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
-coils = Coils.from_json(str(COILS_FILE))
-field = FilamentField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
+field = BiotSavart(Coils.from_json(str(COILS_FILE)))  # the coils' exact filament field (no field table)
 
 inp = vj.VmecInput.from_file(INPUT_FILE).change_resolution(mpol=MPOL, ntor=NTOR, ntheta=2 * MPOL + 6,
                                                            nzeta=NZETA)

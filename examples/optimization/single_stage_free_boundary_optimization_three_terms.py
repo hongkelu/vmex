@@ -28,7 +28,7 @@ target says which and exits 1.
 
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 import time
 
@@ -291,26 +291,6 @@ print(f"[bootstrap] n0 = {n0:.3e} m^-3 at T0 = {T0:.0f} eV for beta {100 * TARGE
 ###############################################################################
 
 
-@dataclass(frozen=True)
-class FilamentField:
-    """Biot-Savart field of the coil filaments; its arrays are pytree leaves, so the model compiles once."""
-
-    gamma: jax.Array
-    gamma_dash: jax.Array
-    currents: jax.Array
-
-    def b_cyl(self, r, phi, z):
-        xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
-        d = xyz[..., None, None, :] - self.gamma
-        dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
-        B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
-        cos, sin = jnp.cos(phi), jnp.sin(phi)
-        return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
-
-
-jax.tree_util.register_dataclass(FilamentField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
-
-
 N_COIL = x0.size                  # the design: coil coefficients, then the current variables
 ac_reference = float(np.max(np.abs(np.asarray(inp.ac, dtype=float))))
 design0 = np.r_[x0, np.zeros(N_CURRENT + 1)]
@@ -319,8 +299,7 @@ design_scales = DESIGN_STEP_SCALE * bound_scales
 
 
 def field_from_x(x):
-    coils = coils_from_x(x[:N_COIL])
-    return FilamentField(coils.gamma, coils.gamma_dash, coils.currents)
+    return BiotSavart(coils_from_x(x[:N_COIL]))
 
 
 def plasma_from_x(params, x):
@@ -348,19 +327,8 @@ def redl_mismatch(equilibrium_state, runtime):
 
 def boundary_surface(equilibrium_state, runtime, nphi=NPHI, ntheta=NTHETA):
     """The free boundary of a solved state, as an ESSOS surface."""
-    rmnc, _, _, zmns = im._edge_physical(equilibrium_state, runtime)
-    modes = runtime.modes
-    ntor = int(np.max(np.abs(modes.n)))
-    rows = jnp.asarray(np.asarray(modes.n) + ntor)
-    cols = jnp.asarray(np.asarray(modes.m))
-    shape = (2 * ntor + 1, int(np.max(modes.m)) + 1)
-    rbc = jnp.zeros(shape).at[rows, cols].set(rmnc)
-    zbs = jnp.zeros(shape).at[rows, cols].set(zmns)
+    rbc, zbs, _, _ = opt.boundary_coefficients(equilibrium_state, runtime)
     return surfacerzfourier_from_boundary(rbc, zbs, NFP, nphi=nphi, ntheta=ntheta)
-
-
-def max_abs_iota(equilibrium_state, runtime):
-    return jnp.max(jnp.abs(im.iota_profile(equilibrium_state, runtime)[1:]))
 
 
 def loss(equilibrium_state, runtime, x):
@@ -375,7 +343,7 @@ def plasma_values(equilibrium_state, runtime):
             "aspect": float(opt.aspect_ratio(equilibrium_state, runtime)),
             "mean iota": float(opt.mean_iota(equilibrium_state, runtime)),
             "min |iota|": float(opt.min_abs_iota(equilibrium_state, runtime)),
-            "max |iota|": float(max_abs_iota(equilibrium_state, runtime)),
+            "max |iota|": float(opt.max_abs_iota(equilibrium_state, runtime)),
             "beta": float(opt.volume_average_beta(equilibrium_state, runtime)),
             "Redl mismatch": float(redl_mismatch(equilibrium_state, runtime))}
 
@@ -386,7 +354,7 @@ config = vj.ThreeTermsConfig(labelling=LABELLING, label_weight=LABEL_WEIGHT, nph
                              ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE), max_residual=2e-2)
 problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
     inp, loss, design0, field_from_parameters=field_from_x, plasma_from_parameters=plasma_from_x,
-    scales=design_scales, quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio, redl_mismatch),
+    scales=design_scales, quantities=(opt.min_abs_iota, opt.max_abs_iota, opt.aspect_ratio, redl_mismatch),
     config=config)
 state0, params0 = problem.state(design0)
 runtime0 = im.runtime_from_params(params0, problem.model.cfg)

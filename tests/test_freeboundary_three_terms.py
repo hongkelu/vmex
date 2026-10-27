@@ -9,12 +9,11 @@ coils, where the solve agrees with NESTOR and is independent of its start.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import json
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import numpy as np
 import pytest
@@ -44,33 +43,21 @@ def _deck(name, mpol, ns):
                    niter_array=np.array([5000]), ftol_array=np.array([1e-10]), delt=0.5)
 
 
-@dataclass(frozen=True)
-class _FilamentField:
-    """Biot-Savart field of filament coils as a pytree (arrays as leaves, so the model compiles once)."""
-
-    gamma: Any  # (coils, points, 3)
-    gamma_dash: Any
-    currents: Any  # (coils,)
-
-    def b_cyl(self, r, phi, z):
-        xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
-        d = xyz[..., None, None, :] - self.gamma
-        dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
-        B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
-        cos, sin = jnp.cos(phi), jnp.sin(phi)
-        return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
-
-
-jax.tree_util.register_dataclass(_FilamentField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
-
-
 def _coil_field(name):
-    """The bundled ESSOS coils as an exact filament field (no mgrid tabulation)."""
+    """The bundled ESSOS coils' exact filament field (``essos.fields.BiotSavart``, a pytree: no mgrid tabulation)."""
     pytest.importorskip("essos")
     from essos.coils import Coils
+    from essos.fields import BiotSavart
 
-    coils = Coils.from_json(str(DATA / name))
-    return _FilamentField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
+    return BiotSavart(Coils.from_json(str(DATA / name)))
+
+
+def _scaled(field, factor):
+    """``field`` with every coil current multiplied by ``factor``."""
+    from essos.coils import Coils
+    from essos.fields import BiotSavart
+
+    return BiotSavart(Coils(field.coils.curves, field.coils.currents * factor))
 
 
 def test_nonzero_edge_pressure_is_rejected():
@@ -248,10 +235,9 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
     differences, one SLSQP step through ``minimize``, and the accepted point's reports."""
     inp, field = _small_vacuum()
-    base = field.currents
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
-        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]),
         quantities=(opt.mean_iota,), config=SMALL_ANCHORED)
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
@@ -311,11 +297,10 @@ def _small_problem(**options):
     """A one-coil-current design on the small vacuum free boundary: aspect ratio, with mean iota as a quantity.
     ``boundary_*`` options are the problem's, the others the configuration's (``SMALL_ANCHORED``)."""
     inp, field = _small_vacuum()
-    base = field.currents
     fit = {name: options.pop(name) for name in list(options) if name.startswith("boundary_")}
     return ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
-        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]),
         quantities=(opt.mean_iota,), config=replace(SMALL_ANCHORED, **options), **fit)
 
 
@@ -564,10 +549,9 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
     Tight fits: the gradient is the implicit derivative of a stationary fit, and the default fits' trials stop
     short of it (their differences are 1.8% off; at ftol 1e-6 they agree to 5e-4)."""
     inp, field = _small_vacuum()
-    base = field.currents
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(3),
-        field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
+        field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
         config=SMALL_ANCHORED, boundary_ftol=1e-6, boundary_max_nfev=200)
@@ -660,7 +644,7 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     with pytest.raises(ValueError, match="model"):
         _small_problem(label_weight=0.0).restore_checkpoint(path)
     other, field = _small_problem(), _small_vacuum()[1]  # same settings, another coil-field map
-    other.field = lambda x: replace(field, currents=field.currents * (1 + 0.06 * x[0]))
+    other.field = lambda x: _scaled(field, 1 + 0.06 * x[0])
     with pytest.raises(ValueError, match="coil field"):
         other.restore_checkpoint(path)
     # and in a fresh process: nothing but the checkpoint carries the state over.  It shares this process's
@@ -788,7 +772,7 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-        field_from_parameters=lambda x: replace(coils, currents=coils.currents * (1 + x[1])),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.mean_iota,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),

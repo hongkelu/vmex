@@ -280,14 +280,7 @@ qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
 
 def boundary_surface(equilibrium_state, nphi=NPHI, ntheta=NTHETA):
     """The free boundary of a solved state, as an ESSOS surface."""
-    rmnc, _, _, zmns = im._edge_physical(equilibrium_state, solver_context)
-    modes = solver_context.modes
-    ntor = int(np.max(np.abs(modes.n)))
-    rows = jnp.asarray(np.asarray(modes.n) + ntor)
-    cols = jnp.asarray(np.asarray(modes.m))
-    shape = (2 * ntor + 1, int(np.max(modes.m)) + 1)
-    rbc = jnp.zeros(shape).at[rows, cols].set(rmnc)
-    zbs = jnp.zeros(shape).at[rows, cols].set(zmns)
+    rbc, zbs, _, _ = opt.boundary_coefficients(equilibrium_state, solver_context)
     return surfacerzfourier_from_boundary(rbc, zbs, NFP, nphi=nphi, ntheta=ntheta)
 
 

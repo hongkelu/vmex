@@ -10,10 +10,13 @@ One home for the small private helpers that :mod:`~vmex.core.optimize`,
 - :func:`_iotas_half` / :func:`_iotas_half_from_fields` — the ``ncurr``-aware
   half-mesh rotational transform (``add_fluxes.f90`` conventions);
 - the **canonical wout-parity scalar targets**:
-  :func:`aspect_ratio` / :func:`volume` (``aspectratio.f`` boundary
-  quadrature, equal to the wout ``aspect``/``volume_p`` scalars) and
+  :func:`aspect_ratio` / :func:`major_radius` / :func:`volume`
+  (``aspectratio.f`` boundary quadrature, equal to the wout
+  ``aspect``/``Rmajor_p``/``volume_p`` scalars) and
   :func:`mean_iota` / :func:`edge_iota` (wout ``iotas``/``iotaf[-1]``
-  conventions), re-exported unchanged by :mod:`~vmex.core.optimize`.
+  conventions), re-exported unchanged by :mod:`~vmex.core.optimize`;
+  :func:`axis_iota` (from :func:`geometric_iota`, the half-mesh iota without
+  its enclosed-current part) is the axis value free of the current;
   :func:`elongation_profile` / :func:`max_elongation` evaluate the boundary
   cross-section elongation from the same physical edge coefficients;
   :mod:`~vmex.core.implicit` keeps its historical ``aspect_ratio`` /
@@ -49,6 +52,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .fields import magnetic_fields, surface_currents
 from .fourier import Resolution, mode_table, trig_tables
 from .residuals import m1_constrained_to_physical
 from .solver import SolverRuntime, SpectralState, _field_chain_lane
@@ -172,6 +176,41 @@ def _iotas_half(state: SpectralState, rt: SolverRuntime) -> jnp.ndarray:
     return _iotas_half_from_fields(setup, fields)
 
 
+#: Lagrange weights at ``s = 0`` of the quadratic through the first three
+#: half-mesh surfaces ``s = h/2, 3h/2, 5h/2`` (independent of ``h``).
+_AXIS_WEIGHTS = (15 / 8, -5 / 4, 3 / 8)
+
+
+@jax.jit
+def geometric_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Half-mesh iota without its enclosed-current part, and its axis value.
+
+    With a prescribed current (``ncurr = 1``) ``add_fluxes.f`` gives
+    ``iota = icurv / (phips <guu/sqrt(g)>) + iota_geo`` with
+    ``iota_geo = -<guu B^u_lambda + guv B^v> / (phips <guu/sqrt(g)>)``, here
+    the same field chain solved with ``icurv = 0``.  The enclosed current
+    vanishes on the axis, so the axis iota is ``iota_geo(0)``: a bootstrap
+    current (``I' ~ s^(1/4)``) makes iota itself steep off the axis, and
+    VMEC's ``iotaf[0] = 1.5 iotas[1] - 0.5 iotas[2]`` mostly extrapolates
+    that current part, while ``iota_geo`` is smooth there.  Index 0 is its
+    quadratic extrapolation in ``s`` through the first three half-mesh
+    surfaces (:data:`_AXIS_WEIGHTS`), indices ``1..`` the half-mesh values.
+    ``ncurr = 0``: the prescribed profile, with its axis value ``iotaf[0]``.
+    """
+    setup = rt.setup
+    if int(setup.ncurr) != 1:
+        iotas = jnp.asarray(setup.iotas)
+        axis = jnp.asarray(setup.iotaf)[0] * (-1.0 if setup.lflip else 1.0)
+        return iotas.at[0].set(axis)
+    geometry, jacobian, metrics, fields, _ = _field_chain(state, rt)
+    currentless = magnetic_fields(
+        geometry=geometry, jacobian=jacobian, metrics=metrics, trig=rt.trig, s=setup.s_full,
+        phips=setup.phips, phipf=setup.phipf, chips=setup.chips, signgs=setup.signgs,
+        lamscale=fields.lamscale, ncurr=1)
+    iotas = _iotas_half_from_fields(setup, currentless)
+    return iotas.at[0].set(jnp.asarray(_AXIS_WEIGHTS) @ iotas[1:4])
+
+
 # ---------------------------------------------------------------------------
 # Canonical wout-parity scalar targets
 # ---------------------------------------------------------------------------
@@ -212,6 +251,16 @@ def aspect_ratio(state: SpectralState, rt: SolverRuntime) -> Array:
     return _aspect_scalars(state, rt)[2]
 
 
+def major_radius(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Major radius ``Rmajor_p`` [m] (wout convention, boundary quadrature).
+
+    ``volume_p / (2 pi <cross-section area>)``, equal to the wout
+    ``Rmajor_p`` scalar of the same state; re-exported as
+    ``vmex.core.optimize.major_radius``.
+    """
+    return _aspect_scalars(state, rt)[1]
+
+
 def volume(state: SpectralState, rt: SolverRuntime) -> Array:
     """Plasma volume ``volume_p`` [m^3] (wout convention, boundary quadrature).
 
@@ -228,6 +277,50 @@ def volume_average_beta(state: SpectralState, rt: SolverRuntime) -> Array:
     _, _, _, _, energies = _field_chain(state, rt)
     wb = jnp.asarray(energies.wb)
     return jnp.where(wb != 0.0, jnp.asarray(energies.wp) / wb, 0.0)
+
+
+def _edge_modes(state: SpectralState, rt: SolverRuntime):
+    """Physical boundary coefficients ``(R_cos, Z_sin, R_sin, Z_cos)`` on ``rt.modes``."""
+    R_cos, Z_sin, R_sin, Z_cos = m1_constrained_to_physical(
+        state.R_cos,
+        state.Z_sin,
+        state.R_sin,
+        state.Z_cos,
+        modes=rt.modes,
+        lthreed=bool(rt.setup.lthreed),
+        lasym=bool(rt.setup.lasym),
+        lconm1=bool(rt.setup.lconm1),
+    )
+    mode_scale = jnp.asarray(
+        1.0 / physical_to_internal_scale(rt.modes, rt.trig)
+    )
+    rc = jnp.asarray(R_cos)[-1] * mode_scale
+    zs = jnp.asarray(Z_sin)[-1] * mode_scale
+    if bool(rt.setup.lasym):
+        rs = jnp.asarray(R_sin)[-1] * mode_scale
+        zc = jnp.asarray(Z_cos)[-1] * mode_scale
+    else:
+        # These fields are inactive work arrays in a symmetric solve.  Do not
+        # let their undefined implicit tangents enter an otherwise symmetric
+        # boundary objective through a formal ``0 * NaN`` product.
+        rs = jnp.zeros_like(rc)
+        zc = jnp.zeros_like(zs)
+    return rc, zs, rs, zc
+
+
+def boundary_coefficients(state: SpectralState, rt: SolverRuntime):
+    """The state's plasma boundary as INDATA arrays ``(rbc, zbs, rbs, zbc)``.
+
+    Shape ``(2 ntor + 1, mpol)``, row ``n + ntor`` and column ``m`` as
+    :class:`~vmex.VmecInput` (``rbs``/``zbc`` are zero without ``lasym``).
+    Traceable, so a target of the boundary (an ESSOS surface for coil
+    clearances, a vacuum re-solve) differentiates through the equilibrium.
+    """
+    res = rt.resolution
+    rows = np.asarray(rt.modes.n) + int(res.ntor)
+    cols = np.asarray(rt.modes.m)
+    shape = (2 * int(res.ntor) + 1, int(res.mpol))
+    return tuple(jnp.zeros(shape, dtype=c.dtype).at[rows, cols].set(c) for c in _edge_modes(state, rt))
 
 
 def elongation_profile(
@@ -259,30 +352,7 @@ def elongation_profile(
     if ntheta < 4 or nphi < 1:
         raise ValueError("ntheta must be at least 4 and nphi must be positive")
 
-    R_cos, Z_sin, R_sin, Z_cos = m1_constrained_to_physical(
-        state.R_cos,
-        state.Z_sin,
-        state.R_sin,
-        state.Z_cos,
-        modes=rt.modes,
-        lthreed=bool(rt.setup.lthreed),
-        lasym=bool(rt.setup.lasym),
-        lconm1=bool(rt.setup.lconm1),
-    )
-    mode_scale = jnp.asarray(
-        1.0 / physical_to_internal_scale(rt.modes, rt.trig)
-    )
-    rc = jnp.asarray(R_cos)[-1] * mode_scale
-    zs = jnp.asarray(Z_sin)[-1] * mode_scale
-    if bool(rt.setup.lasym):
-        rs = jnp.asarray(R_sin)[-1] * mode_scale
-        zc = jnp.asarray(Z_cos)[-1] * mode_scale
-    else:
-        # These fields are inactive work arrays in a symmetric solve.  Do not
-        # let their undefined implicit tangents enter an otherwise symmetric
-        # boundary objective through a formal ``0 * NaN`` product.
-        rs = jnp.zeros_like(rc)
-        zc = jnp.zeros_like(zs)
+    rc, zs, rs, zc = _edge_modes(state, rt)
 
     theta = 2.0 * np.pi * np.arange(ntheta, dtype=float) / ntheta
     zeta = 2.0 * np.pi * np.arange(nphi, dtype=float) / (nphi * int(res.nfp))
@@ -387,6 +457,13 @@ def min_abs_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     return jnp.min(jnp.abs(iotas[1:]))
 
 
+def max_abs_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Largest ``|iota|`` over the half-mesh surfaces (axis excluded), the
+    counterpart of :func:`min_abs_iota` for a transform ceiling."""
+    iotas = _iotas_half(state, rt)
+    return jnp.max(jnp.abs(iotas[1:]))
+
+
 def soft_min_abs_iota(
     state: SpectralState, rt: SolverRuntime, *, tau: float = 0.02
 ) -> Array:
@@ -424,6 +501,49 @@ def edge_iota(state: SpectralState, rt: SolverRuntime) -> Array:
 
 
 iota_edge = edge_iota   # naming-flip alias (see the edge_iota docstring)
+
+
+def axis_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Rotational transform on the magnetic axis, free of the enclosed current.
+
+    The extrapolated geometric iota of :func:`geometric_iota` (``ncurr = 1``;
+    the prescribed ``iotaf[0]`` at ``ncurr = 0``), which converges in ``ns``
+    where the wout ``iotaf[0]`` of a bootstrap current does not.
+    """
+    return geometric_iota(state, rt)[0]
+
+
+def current_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+    """The net toroidal current's share of the edge iota, ``mu0 |I| R0 / (2 pi a^2 B0)``.
+
+    The edge iota the current gives a cylinder of the plasma's major radius
+    ``R0`` (:func:`major_radius`), minor radius ``a = R0 / aspect`` and axis
+    field ``B0`` (:func:`axis_field_strength`); ``mu0 I`` is the state's
+    ``ctor`` (:func:`~vmex.core.fields.surface_currents`), the bootstrap current
+    where it is solved with the equilibrium.  A ceiling on it keeps the
+    rotational transform the shaping's, not the current's.
+    """
+    fields = _field_chain(state, rt)[3]
+    mu0_current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=rt.trig,
+                                   s=jnp.asarray(rt.setup.s_full), signgs=rt.setup.signgs).ctor
+    radius = major_radius(state, rt)
+    minor = radius / aspect_ratio(state, rt)
+    return jnp.abs(mu0_current) * radius / (2 * jnp.pi * minor**2 * axis_field_strength(state, rt))
+
+
+def axis_field_strength(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Toroidally averaged ``|B|`` on the magnetic axis [T].
+
+    The angle-averaged half-mesh ``|B| = sqrt(2 (bsq - p))`` (``wint``
+    weights) on the first three surfaces, extrapolated to ``s = 0`` with the
+    weights of :func:`geometric_iota`.  The wout ``b0`` is instead ``R B_phi``
+    over the axis radius at one toroidal angle (``eqfor.f``).
+    """
+    _, _, _, fields, _ = _field_chain(state, rt)
+    b_squared = 2.0 * (jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None])
+    wint = jnp.asarray(rt.trig.wint)
+    mean = jnp.sum(jnp.sqrt(jnp.maximum(b_squared[1:4], 0.0)) * wint, axis=(1, 2)) / jnp.sum(wint)
+    return jnp.asarray(_AXIS_WEIGHTS) @ mean
 
 
 # ---------------------------------------------------------------------------

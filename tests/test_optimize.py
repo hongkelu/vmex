@@ -153,6 +153,26 @@ def test_scalar_targets_match_own_wout(solovev_eq):
                                (v0 - v1) / v0, rtol=1e-8)
     mirror = float(opt.mirror_ratio(eq.state, eq.runtime))
     assert 0.0 < mirror < 1.0
+    # the single-stage targets: iota ceiling, major radius, boundary, Mercier floor, current's iota
+    np.testing.assert_allclose(float(opt.max_abs_iota(eq.state, eq.runtime)),
+                               float(np.max(np.abs(np.asarray(w.iotas)[1:]))), rtol=1e-8)
+    np.testing.assert_allclose(float(opt.major_radius(eq.state, eq.runtime)), float(w.Rmajor_p), rtol=1e-8)
+    rbc, zbs, _, _ = map(np.asarray, opt.boundary_coefficients(eq.state, eq.runtime))
+    ntor = int(eq.inp.ntor)
+    for m, n, r, z in zip(np.asarray(w.xm, int), np.asarray(w.xn, int) // int(w.nfp),
+                          np.asarray(w.rmnc)[-1], np.asarray(w.zmns)[-1]):
+        np.testing.assert_allclose((rbc[n + ntor, m], zbs[n + ntor, m]), (r, z), atol=1e-12)
+    s_full = np.linspace(0.0, 1.0, int(w.ns))
+    d_merc = np.asarray(w.DMerc)
+    for s_min in (0.0, 0.5):
+        interior = (np.arange(s_full.size) >= 2) & (np.arange(s_full.size) < s_full.size - 1) & (s_full >= s_min)
+        np.testing.assert_allclose(float(opt.min_d_merc(eq.state, eq.runtime, s_min=s_min)),
+                                   np.min(d_merc[interior]), rtol=1e-6, atol=1e-12)
+    minor = float(opt.major_radius(eq.state, eq.runtime) / opt.aspect_ratio(eq.state, eq.runtime))
+    np.testing.assert_allclose(
+        float(opt.current_iota(eq.state, eq.runtime)) * 2 * np.pi * minor**2
+        * float(opt.axis_field_strength(eq.state, eq.runtime)) / float(w.Rmajor_p),
+        4e-7 * np.pi * abs(float(w.ctor)), rtol=1e-8, atol=1e-14)
 
 
 def test_boundary_elongation_is_traceable_and_grid_converged(solovev_eq):
@@ -251,6 +271,24 @@ def test_min_abs_iota_floors_the_profile_not_its_average(solovev_eq):
     # tau carries the units of iota; a non-positive width has no softmin.
     with pytest.raises(ValueError, match="tau must be positive"):
         opt.soft_min_abs_iota(eq.state, eq.runtime, tau=0.0)
+
+
+@pytest.mark.full
+def test_vacuum_iota_of_a_vacuum_equilibrium_is_its_own_iota():
+    """``vacuum_iota`` re-solves the state's boundary without pressure or current: for a vacuum deck that is
+    the same equilibrium, so it returns the state's own axis, half-mesh and edge |iota|, with a finite
+    derivative along the state."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_lowres")
+    eq = opt.solve_equilibrium(inp)
+    iota = opt.vacuum_iota(eq.inp)
+    values = np.asarray(iota(eq.state, eq.runtime))
+    own = np.abs(np.asarray(eq.wout.iotas)[1:])
+    np.testing.assert_allclose(values[1:-1], own, rtol=1e-6)
+    np.testing.assert_allclose(values[-1], abs(float(eq.wout.iotaf[-1])), rtol=1e-6)
+    np.testing.assert_allclose(values[0], abs(float(opt.axis_iota(eq.state, eq.runtime))), rtol=1e-6)
+    tangent = jax.tree_util.tree_map(lambda a: 1e-3 * jnp.ones_like(a), eq.state)
+    _, jvp = jax.jvp(lambda state: iota(state, eq.runtime)[1], (eq.state,), (tangent,))
+    assert np.isfinite(float(jvp))
 
 
 def test_min_abs_iota_gradient_is_finite_and_matches_fd(solovev_eq):

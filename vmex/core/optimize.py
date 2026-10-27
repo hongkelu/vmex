@@ -99,6 +99,7 @@ from .stability import (
     jdotb_state,
     mercier_shear_state,
     mercier_stability_residual,
+    min_d_merc,
     trial_pressure_d_merc_state,
     trial_pressure_glasser_d_r_state,
     trial_pressure_mercier_stability_residual,
@@ -119,9 +120,16 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    axis_field_strength,
+    axis_iota,
+    boundary_coefficients,
+    current_iota,
     edge_iota,
     elongation_profile,
+    geometric_iota,
     iota_edge,
+    major_radius,
+    max_abs_iota,
     max_elongation,
     mean_iota,
     min_abs_iota,
@@ -146,11 +154,19 @@ __all__ = [
     "solve_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
+    "major_radius",
     "mean_iota",
     "min_abs_iota",
+    "max_abs_iota",
     "soft_min_abs_iota",
     "edge_iota",
     "iota_edge",
+    "axis_iota",
+    "axis_field_strength",
+    "geometric_iota",
+    "current_iota",
+    "vacuum_iota",
+    "boundary_coefficients",
     "mirror_ratio",
     "volume",
     "volume_average_beta",
@@ -159,6 +175,7 @@ __all__ = [
     "max_elongation",
     "d_merc",
     "d_merc_state",
+    "min_d_merc",
     "mercier_stability_residual",
     "jdotb_state",
     "jdotb_residual",
@@ -1489,6 +1506,40 @@ def _current_uses_spline(inp: VmecInput) -> bool:
 def _current_values(inp: VmecInput, k: int) -> np.ndarray:
     source = inp.ac_aux_f if _current_uses_spline(inp) else inp.ac
     return np.asarray(source, dtype=float)[:k]
+
+
+def vacuum_iota(inp: VmecInput, *, device=None) -> Callable[[SpectralState, SolverRuntime], Array]:
+    """``(state, runtime) -> |iota|`` of the vacuum field inside the state's plasma boundary.
+
+    The fixed-boundary equilibrium of that boundary without pressure or
+    current (``inp`` otherwise, hot-restarted), differentiable through its
+    implicit adjoint: the shaping's share of the transform, which a floor
+    keeps from being carried by a bootstrap current.  The values are the axis
+    (:func:`axis_iota`), the half-mesh surfaces and the edge (wout
+    ``iotaf[-1]``).  ``device`` defaults to JAX's first device, where the
+    free-boundary state lives.
+    """
+    from . import implicit as imp
+    from .statephysics import _edge_modes, _iotas_half
+
+    vacuum = dataclasses.replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
+                     ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
+    device = jax.devices()[0] if device is None else device
+    cfg = imp.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
+    base = imp.params_from_input(vacuum, device=device)
+    imp.runtime_from_params(base, cfg)  # build its setup here: the setup cannot be traced inside a jit
+
+    def iota(state: SpectralState, runtime: SolverRuntime) -> Array:
+        rmnc, zmns = jax.device_put(_edge_modes(state, runtime)[:2], device)
+        rows, cols = np.asarray(runtime.modes.n) + int(inp.ntor), np.asarray(runtime.modes.m)
+        params = dataclasses.replace(base, rbc=jnp.zeros_like(base.rbc).at[rows, cols].set(rmnc),
+                         zbs=jnp.zeros_like(base.zbs).at[rows, cols].set(zmns))
+        vstate = imp.solve_implicit(params, cfg)
+        vrt = imp.runtime_from_params(params, cfg)
+        half = _iotas_half(vstate, vrt)[1:]
+        return jnp.abs(jnp.concatenate([axis_iota(vstate, vrt)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]]))
+
+    return iota
 
 
 def resample_current_profile(

@@ -754,7 +754,7 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
     The same number is ``f . M_grid + (S f) . M_polar``: the density interpolated to the polar points by the
     interpolation the patch geometry already uses.  No scatter (45% of a boundary Jacobian's GPU time at 8 x 8,
     LBD), the same sum regrouped; the far field is :func:`_remat_fxd_u_eval`."""
-    del interp_block_size  # the package function's keyword (a drop-in replacement): no interpolation blocks here
+    del interp_block_size  # the package signature's keyword: no interpolation blocks here
     from virtual_casing_jax import integrals as I
 
     X_src, dX_src, density = jnp.asarray(X_src), jnp.asarray(dX_src), jnp.asarray(density)
@@ -827,35 +827,40 @@ def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None
     return base.reshape((3, trg_nt, trg_np)) + corr.T.reshape((3, trg_nt, trg_np))
 
 
-class _RematFarField:
-    """Context: the package's vector singular evaluator uses :func:`_fxd_u_eval_singular` (rematerialized far field,
-    no polar scatter) for each density; it calls ``integrals.laplace_fxd_u_eval_singular`` by its module name at
-    trace time."""
+def _vec_fxd_u_eval_singular(X_src, dX_src, density_vec, trg_nt, trg_np, nfp, *, singular_eval=_fxd_u_eval_singular,
+                             X_trg=None, digits=5, patch_dim0=None, rad_dim=None, chunk_size=1024,
+                             target_chunk_size=None, patch_idx=None, orient=None, pou_dtype=None, patch_dtype=None,
+                             interp_block_size="auto", remat=False):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval_vec_singular`` with the scalar evaluator passed explicitly.
 
-    def __enter__(self):
-        from virtual_casing_jax import integrals
+    The package's vector evaluator is a ``vmap`` over densities of ``integrals.laplace_fxd_u_eval_singular``
+    (looked up by module name); this is the same ``vmap`` over ``singular_eval``, by default
+    :func:`_fxd_u_eval_singular` (rematerialized far field, no polar scatter), so no third-party function is
+    replaced."""
+    return jax.vmap(
+        lambda dens: singular_eval(
+            X_src, dX_src, dens, trg_nt, trg_np, nfp, X_trg=X_trg, digits=digits, patch_dim0=patch_dim0,
+            rad_dim=rad_dim, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
+            orient=orient, pou_dtype=pou_dtype, patch_dtype=patch_dtype, interp_block_size=interp_block_size,
+            remat=remat),
+        in_axes=0, out_axes=0,
+    )(jnp.asarray(density_vec))
 
-        self._saved = integrals.laplace_fxd_u_eval_singular
-        integrals.laplace_fxd_u_eval_singular = _fxd_u_eval_singular
 
-    def __exit__(self, *exc):
-        from virtual_casing_jax import integrals
-
-        integrals.laplace_fxd_u_eval_singular = self._saved
-        return False
-
-
-def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):
+def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None,
+                         singular_eval=_fxd_u_eval_singular):
     """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
 
     The package evaluates the two single-layer gradients in two passes over the same source-target
     kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
     its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
-    round-off).  Otherwise the package's on-surface assembly, internal sign.
+    round-off).  Otherwise the package's on-surface assembly, internal sign.  ``singular_eval`` is the
+    per-density singular evaluator (the package's ``laplace_fxd_u_eval_singular`` signature), by default
+    :func:`_fxd_u_eval_singular`.
     """
     import math
 
-    from virtual_casing_jax.integrals import curl_single_layer_gradient, laplace_fxd_u_eval_vec_singular
+    from virtual_casing_jax.integrals import curl_single_layer_gradient
     from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
 
     quad_nt, quad_np, patch_dim0, patch_idx = vcj._apply_precision(precision, quad_nt, quad_np, None, None)
@@ -871,12 +876,11 @@ def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=N
                             vcj.src_nt, vcj.src_np, dtheta)
     B_quad = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, setup.quad_nt, setup.quad_np)
     density = jnp.concatenate([cross_prod(B_quad, setup.normal), dot_prod(B_quad, setup.normal)[None]], axis=0)
-    with _RematFarField():
-        grad = laplace_fxd_u_eval_vec_singular(
-            setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, digits=digits,
-            patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
-            orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
-            patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
+    grad = _vec_fxd_u_eval_singular(
+        setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, singular_eval=singular_eval,
+        digits=digits, patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size,
+        patch_idx=patch_idx, orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
+        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
     grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
     B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
     return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on

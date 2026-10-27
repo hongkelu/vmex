@@ -82,3 +82,29 @@ def test_scatter_free_singular_traces_under_jit():
                                     target_chunk_size=8, orient=1.0)
 
     assert np.all(np.isfinite(np.asarray(run(0.3))))
+
+
+def test_vector_singular_takes_the_evaluator_explicitly():
+    """The vector evaluator is the package's ``vmap`` over an explicit scalar evaluator; the package is untouched."""
+    from virtual_casing_jax import integrals
+
+    from vmex.core.virtual_casing import _fxd_u_eval_singular, _vec_fxd_u_eval_singular
+
+    package_scalar = integrals.laplace_fxd_u_eval_singular
+    nfp, nt, npol = 2, 32, 16
+    t = jnp.arange(nt) * 2 * jnp.pi / nt
+    p = jnp.arange(npol) * 2 * jnp.pi / npol
+    T, P = jnp.meshgrid(t, p, indexing="ij")
+    R = 1.0 + 0.3 * jnp.cos(P)
+    X = jnp.stack([R * jnp.cos(T), R * jnp.sin(T), 0.3 * jnp.sin(P)])
+    dX = jnp.concatenate([jnp.gradient(X, t, axis=1), jnp.gradient(X, p, axis=2)])
+    dens = jnp.stack([jnp.cos(P), jnp.sin(P - nfp * T)])
+    kw = dict(digits=4, patch_dim0=8, chunk_size=128, target_chunk_size=8)
+
+    ref = integrals.laplace_fxd_u_eval_vec_singular(X, dX, dens, 4, 8, nfp, **kw)
+    same = _vec_fxd_u_eval_singular(X, dX, dens, 4, 8, nfp, singular_eval=package_scalar, **kw)
+    np.testing.assert_allclose(same, ref, rtol=1e-12, atol=1e-16)  # GPU scatter-add atomics: round-off only
+    out = _vec_fxd_u_eval_singular(X, dX, dens, 4, 8, nfp, **kw)  # default: the scatter-free evaluator
+    for k in range(dens.shape[0]):
+        np.testing.assert_allclose(out[k], _fxd_u_eval_singular(X, dX, dens[k], 4, 8, nfp, **kw), rtol=1e-12, atol=1e-16)
+    assert integrals.laplace_fxd_u_eval_singular is package_scalar

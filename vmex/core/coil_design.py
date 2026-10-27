@@ -20,6 +20,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .._compat import require_optional
+
 
 class CoilDesign:
     """Design vector -> ESSOS coils and plasma parameters.
@@ -42,6 +44,7 @@ class CoilDesign:
 
     def __init__(self, coils, *, current_dofs=(), scales=None, phiedge=None, phiedge_scale=0.05,
                  plasma_current=None, plasma_current_spline=False, plasma_current_scale=0.05):
+        require_optional("essos", "coil designs")
         self.coefficients = np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :]
         self.currents = np.asarray(coils.dofs_currents_raw, dtype=float)
         self.current_dofs = tuple(int(i) for i in current_dofs)
@@ -167,6 +170,7 @@ class CoilLimits:
         and the coil-coil and self distances.  ``per_point`` gives the curvature and distances one row per
         sample point instead of their extremes: smooth where the extreme switches points, the smallest of
         them equal to the extreme row."""
+        require_optional("essos", "coil constraint rows")
         from essos.objective_functions import (coil_coil_distances, coil_mean_squared_curvature,
                                                coil_self_distances)
 
@@ -188,6 +192,7 @@ class CoilLimits:
 
     def surface_clearance(self, coils, surface):
         """Smallest distance [m] from the coils (every symmetry copy) to ``surface.gamma``."""
+        require_optional("essos", "coil clearances")
         from essos.objective_functions import coil_surface_distances
 
         return jnp.min(coil_surface_distances(resampled(coils, self.distance_points), surface))

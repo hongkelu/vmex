@@ -1293,65 +1293,20 @@ class ThreeTermsFreeBoundaryModel:
         ``failed_polishes``.
         """
         stats = {} if stats is None else stats
-        n, scale = self.x0.size, np.asarray(self.x_scale)[None]
-        rounds = [0]
-
-        def record(kind, sol, certificate=None, normal=None, reason=None):
-            """Hand the recorder (if any) a complete record of this certificate round or of the outcome."""
-            if self.recorder is None:
-                return
-            entry = dict(kind=kind, round=rounds[0], reason=reason, gate=float(gate), polish_target=float(
-                min(gate, POLISH_FTOL)), xtol=xtol, certificate=certificate,
-                resolution=self.resolution(), row_blocks=self.row_blocks, column_blocks=self.column_blocks,
-                options=self.options)
-            if sol is not None:  # the fit (Levenberg-Marquardt) that produced this point: diagnostics only
-                entry["fit"] = {k: (v if isinstance(v, (str, bool, type(None))) else float(v))
-                                for k, v in sol.items() if k in ("nfev", "accepted", "reason", "projections",
-                                                                  "projection_certified", "jacobian_updates")}
-            if sol is not None:
-                entry.update(x=np.asarray(sol["x"]), rows=np.asarray(sol["rows"]), J=np.asarray(sol["J"]),
-                             x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
-                             rbc=np.asarray(sol["params"].rbc), zbs=np.asarray(sol["params"].zbs),
-                             curtor=float(np.asarray(sol["params"].curtor)),
-                             ac_aux_f=np.asarray(sol["params"].ac_aux_f), closure=sol.get("closure"))
-                if normal is not None:
-                    entry["normal"] = normal
-                if values is not None and kind == "round":  # a diagnostic only: the record's values come last
-                    try:
-                        entry["values"] = np.asarray(values(sol["state"], sol["params"]))
-                    except (VmecError, RuntimeError):
-                        entry["values"] = None
-            self.recorder(entry)
-
-        def tight(b, aux):
-            try:  # the state may not tighten to the deck's tolerance, or a row's own solve may fail
-                J, _, _, aux = self.linearize(b, aux, field, extra=extra)
-                state, mask, params_b, _ = aux
-                rows = np.asarray(self._rows(state, params_b, field))
-            except (VmecError, RuntimeError) as error:  # RuntimeError: the relayed sentinel of a VmecError
-                raise TrialRejected(str(error)) from error
-            J = np.asarray(J)
-            if not (np.all(np.isfinite(J)) and np.all(np.isfinite(rows))):
-                raise TrialRejected("nonfinite rows or boundary Jacobian at the tightened state")
-            stats["linearizations"] = stats.get("linearizations", 0) + 1
-            return dict(x=np.asarray(b), aux=aux, state=state, mask=mask, params=params_b, rows=rows, J=J)
-
+        rounds = 0
+        context = dict(gate=gate, xtol=xtol, values=values)
         sol = certificate = None
         try:
-            sol = dict(fit, **tight(fit["x"], fit["aux"]))
+            sol = dict(fit, **self._tighten(fit["x"], fit["aux"], field, extra, stats))
             out_of_rounds = False  # the loop ended on the polish budget, not on a stalled or failed polish
             polish_error = ""
             previous = np.inf
             cap = max(POLISH_ROUNDS, POLISH_ROUNDS_MAX)
             for round_ in range(cap + 1):
-                normal = None
-                if self._normal_operator is not None:  # the remaining step's motion of the surface itself
-                    N, a = map(np.asarray, self._normal_operator(jnp.asarray(sol["x"])))
-                    normal = np.hstack([N * scale[:, :N.shape[1]], np.zeros((N.shape[0], n - N.shape[1]))]) / a
-                Js = sol["J"][:, :n] * scale
-                sol["certificate"] = certificate = _fit_certificate(Js, sol["rows"], normal)
-                record("round", sol, certificate, normal)
-                rounds[0] += 1
+                certificate, normal = self._scaled_certificate(sol)
+                sol["certificate"] = certificate
+                self._record_certificate("round", sol, rounds, certificate, normal, **context)
+                rounds += 1
                 stats["max_condition"] = max(stats.get("max_condition", 0.0), certificate["condition"])
                 if certificate["rank_deficient"]:
                     raise TrialRejected(f"rank-deficient boundary Jacobian (condition {certificate['condition']:.2e})")
@@ -1366,64 +1321,134 @@ class ThreeTermsFreeBoundaryModel:
                 if done or not polish or budget:
                     out_of_rounds = polish and not done and budget
                     break
-                # Short of the polish target: polish with this (fresh, tight) Jacobian and certify again.
-                try:
-                    # Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones (a
-                    # looser force residual) Redl's target differs enough that a current solved there leaves most of
-                    # the tight cost in the bootstrap rows, and the polish cycles.
-                    # fresh Jacobians (fit="trf"): the polish finishes along the weak relabelling directions,
-                    # where a secant-updated Jacobian stalls short of the gate (the cheap secant fit only gets close)
-                    polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :n],
-                                                   ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
-                                                   tight=True, fresh_current=True, fit="trf")
-                except (VmecError, RuntimeError) as error:
-                    stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
-                    polish_error = f"; its polish failed: {error}"
+                gained, polish_error = self._polish(sol, params, field, gate, extra, stats)
+                if not gained:
                     break
-                stats["boundary_evaluations"] = stats.get("boundary_evaluations", 0) + polished["nfev"]
-                if not polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
-                    break  # the polish gains nothing: the certificate below decides
-                sol.update(tight(polished["x"], polished["aux"]))  # the same fit, nearer its stationary point
-                sol.update({k: polished[k] for k in ("nfev", "accepted", "reason", "projections", "projection_certified",
-                                                      "jacobian_updates") if k in polished})
-                stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
-            if not settled:
-                normal_note = "" if certificate["normal_step"] is None else (
-                    f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
-                budget_note = f" when the polish budget of {rounds[0] - 1} rounds ran out" if out_of_rounds else ""
-                raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
-                                    f"{certificate['stationarity']:.2e} of the cost{normal_note}{budget_note}"
-                                    f"{polish_error}")
-            if certificate["normal_step"] is not None:
-                stats["max_normal_step"] = max(stats.get("max_normal_step", 0.0), certificate["normal_step"])
-            stats["max_step"] = max(stats.get("max_step", 0.0), certificate["step"])
-            if xtol is not None and certificate["step"] > xtol:
-                raise TrialRejected(f"boundary fit not stationary: its Gauss-Newton step is {certificate['step']:.2e} "
-                                    f"(scaled) long, above boundary_xtol")
-            sol["boundary_residual"] = residual = self.boundary_residual(sol["state"], sol["params"], field) \
-                if not self.fixed_boundary else None
-            if max_residual is not None and residual is not None and max(
-                    residual.normal, residual.pressure, residual.sheet_current) > max_residual:
-                raise TrialRejected("the certified fit is not a free boundary: an interface residual is above "
-                                    "boundary_max_residual")
-            if self.bootstrap is not None:  # a separate gate: a stationary finite-weight fit need not close
-                sol["closure"] = closure = self.bootstrap_closure(sol["state"], sol["params"])
-                if not closure["passed"]:
-                    raise TrialRejected(f"the bootstrap current does not close: max |I' - I'_Redl| "
-                                        f"{closure['max_abs']:.3e} A above {CLOSURE_ATOL:g} + {CLOSURE_RTOL:g} "
-                                        f"x {closure['target_inf']:.3e}")
-            if values is not None:
-                try:
-                    sol["values"] = np.asarray(values(sol["state"], sol["params"]))
-                except (VmecError, RuntimeError) as error:
-                    raise TrialRejected(str(error)) from error
-                if not np.all(np.isfinite(sol["values"])):
-                    raise TrialRejected("nonfinite values at the certified state")
+            shortfall = (f" when the polish budget of {rounds - 1} rounds ran out" if out_of_rounds else "") \
+                + polish_error
+            self._accept_certified(sol, field, settled=settled, shortfall=shortfall, xtol=xtol,
+                                   max_residual=max_residual, values=values, stats=stats)
         except TrialRejected as error:
-            record("rejected", sol, certificate, reason=str(error))
+            self._record_certificate("rejected", sol, rounds, certificate, reason=str(error), **context)
             raise
-        record("certified", sol, certificate)
+        self._record_certificate("certified", sol, rounds, certificate, **context)
         return sol
+
+    def _record_certificate(self, kind, sol, round_, certificate=None, normal=None, reason=None, *, gate, xtol,
+                            values):
+        """Hand the recorder (if any) a complete record of a :meth:`certify` round or of its outcome."""
+        if self.recorder is None:
+            return
+        entry = dict(kind=kind, round=round_, reason=reason, gate=float(gate), polish_target=float(
+            min(gate, POLISH_FTOL)), xtol=xtol, certificate=certificate,
+            resolution=self.resolution(), row_blocks=self.row_blocks, column_blocks=self.column_blocks,
+            options=self.options)
+        if sol is not None:  # the fit (Levenberg-Marquardt) that produced this point: diagnostics only
+            entry["fit"] = {k: (v if isinstance(v, (str, bool, type(None))) else float(v))
+                            for k, v in sol.items() if k in ("nfev", "accepted", "reason", "projections",
+                                                              "projection_certified", "jacobian_updates")}
+        if sol is not None:
+            entry.update(x=np.asarray(sol["x"]), rows=np.asarray(sol["rows"]), J=np.asarray(sol["J"]),
+                         x_scale=np.asarray(self.x_scale), state=[np.asarray(a) for a in jax.tree.leaves(sol["state"])],
+                         rbc=np.asarray(sol["params"].rbc), zbs=np.asarray(sol["params"].zbs),
+                         curtor=float(np.asarray(sol["params"].curtor)),
+                         ac_aux_f=np.asarray(sol["params"].ac_aux_f), closure=sol.get("closure"))
+            if normal is not None:
+                entry["normal"] = normal
+            if values is not None and kind == "round":  # a diagnostic only: the record's values come last
+                try:
+                    entry["values"] = np.asarray(values(sol["state"], sol["params"]))
+                except (VmecError, RuntimeError):
+                    entry["values"] = None
+        self.recorder(entry)
+
+    def _tighten(self, b, aux, field, extra, stats):
+        """The state at boundary ``b`` re-solved to the deck's tolerance, its rows and its Jacobian (with the
+        ``extra`` columns), all finite, or :class:`~vmex.core.errors.TrialRejected`."""
+        try:  # the state may not tighten to the deck's tolerance, or a row's own solve may fail
+            J, _, _, aux = self.linearize(b, aux, field, extra=extra)
+            state, mask, params_b, _ = aux
+            rows = np.asarray(self._rows(state, params_b, field))
+        except (VmecError, RuntimeError) as error:  # RuntimeError: the relayed sentinel of a VmecError
+            raise TrialRejected(str(error)) from error
+        J = np.asarray(J)
+        if not (np.all(np.isfinite(J)) and np.all(np.isfinite(rows))):
+            raise TrialRejected("nonfinite rows or boundary Jacobian at the tightened state")
+        stats["linearizations"] = stats.get("linearizations", 0) + 1
+        return dict(x=np.asarray(b), aux=aux, state=state, mask=mask, params=params_b, rows=rows, J=J)
+
+    def _scaled_certificate(self, sol):
+        """:func:`_fit_certificate` of a tightened fit in the scaled model coordinates, and the rows of the
+        remaining step's normal motion of the surface itself (``None`` without a normal operator)."""
+        n, scale = self.x0.size, np.asarray(self.x_scale)[None]
+        normal = None
+        if self._normal_operator is not None:
+            N, a = map(np.asarray, self._normal_operator(jnp.asarray(sol["x"])))
+            normal = np.hstack([N * scale[:, :N.shape[1]], np.zeros((N.shape[0], n - N.shape[1]))]) / a
+        return _fit_certificate(sol["J"][:, :n] * scale, sol["rows"], normal), normal
+
+    def _polish(self, sol, params, field, gate, extra, stats):
+        """One polish of a tightened fit with its own (fresh, tight) Jacobian; ``sol`` takes the polished point
+        only if it lowers the cost.  Returns ``(gained, error_note)``.
+
+        Tight evaluations: the polish makes the final record, judged on tight states.  On trial ones (a looser force
+        residual) Redl's target differs enough that a current solved there leaves most of the tight cost in the
+        bootstrap rows, and the polish cycles.  Fresh Jacobians (``fit="trf"``): the polish finishes along the weak
+        relabelling directions, where a secant-updated Jacobian stalls short of the gate (the cheap secant fit only
+        gets close).
+        """
+        try:
+            polished = self.solve_boundary(params, field, x0=sol["x"], jacobian=sol["J"][:, :self.x0.size],
+                                           ftol=0.1 * min(gate, POLISH_FTOL), max_nfev=POLISH_MAX_NFEV,
+                                           tight=True, fresh_current=True, fit="trf")
+        except (VmecError, RuntimeError) as error:
+            stats["failed_polishes"] = stats.get("failed_polishes", 0) + 1
+            return False, f"; its polish failed: {error}"
+        stats["boundary_evaluations"] = stats.get("boundary_evaluations", 0) + polished["nfev"]
+        if not polished["rows"] @ polished["rows"] < sol["rows"] @ sol["rows"]:
+            return False, ""  # the polish gains nothing: the certificate decides
+        sol.update(self._tighten(polished["x"], polished["aux"], field, extra, stats))  # nearer its stationary point
+        sol.update({k: polished[k] for k in ("nfev", "accepted", "reason", "projections", "projection_certified",
+                                              "jacobian_updates") if k in polished})
+        stats["polish_rounds"] = stats.get("polish_rounds", 0) + 1
+        return True, ""
+
+    def _accept_certified(self, sol, field, *, settled, shortfall, xtol, max_residual, values, stats):
+        """The final state's gates after the polish (stationarity, step, interface residual, bootstrap closure,
+        finite ``values``), each a :class:`~vmex.core.errors.TrialRejected`; ``sol`` gains ``boundary_residual``,
+        ``closure`` (with a bootstrap current) and ``values``.  ``shortfall`` ends a stationarity rejection: why the
+        polish stopped short."""
+        certificate = sol["certificate"]
+        if not settled:
+            normal_note = "" if certificate["normal_step"] is None else (
+                f" and moves the boundary normally by {certificate['normal_step']:.2e} of the minor radius")
+            raise TrialRejected(f"boundary fit not stationary: a Gauss-Newton step with its own Jacobian gains "
+                                f"{certificate['stationarity']:.2e} of the cost{normal_note}{shortfall}")
+        if certificate["normal_step"] is not None:
+            stats["max_normal_step"] = max(stats.get("max_normal_step", 0.0), certificate["normal_step"])
+        stats["max_step"] = max(stats.get("max_step", 0.0), certificate["step"])
+        if xtol is not None and certificate["step"] > xtol:
+            raise TrialRejected(f"boundary fit not stationary: its Gauss-Newton step is {certificate['step']:.2e} "
+                                f"(scaled) long, above boundary_xtol")
+        sol["boundary_residual"] = residual = self.boundary_residual(sol["state"], sol["params"], field) \
+            if not self.fixed_boundary else None
+        if max_residual is not None and residual is not None and max(
+                residual.normal, residual.pressure, residual.sheet_current) > max_residual:
+            raise TrialRejected("the certified fit is not a free boundary: an interface residual is above "
+                                "boundary_max_residual")
+        if self.bootstrap is not None:  # a separate gate: a stationary finite-weight fit need not close
+            sol["closure"] = closure = self.bootstrap_closure(sol["state"], sol["params"])
+            if not closure["passed"]:
+                raise TrialRejected(f"the bootstrap current does not close: max |I' - I'_Redl| "
+                                    f"{closure['max_abs']:.3e} A above {CLOSURE_ATOL:g} + {CLOSURE_RTOL:g} "
+                                    f"x {closure['target_inf']:.3e}")
+        if values is not None:
+            try:
+                sol["values"] = np.asarray(values(sol["state"], sol["params"]))
+            except (VmecError, RuntimeError) as error:
+                raise TrialRejected(str(error)) from error
+            if not np.all(np.isfinite(sol["values"])):
+                raise TrialRejected("nonfinite values at the certified state")
 
 
 def _fit_certificate(J, r, normal=None):

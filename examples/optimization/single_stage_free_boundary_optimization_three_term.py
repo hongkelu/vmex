@@ -14,7 +14,7 @@ boundary, Redl's on every half-grid surface, and neither its values nor the
 bootstrap-mismatch row enter the optimization. The coil currents are design
 variables too (``FREE_COIL_CURRENTS``, no bounds), with a row holding the axis
 |B| at ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the
-vacuum |iota| of the plasma boundary (``vacuum_iota``).
+vacuum |iota| of the plasma boundary (``opt.vacuum_iota``).
 
 The problem is :class:`vmex.ThreeTermsFreeBoundaryProblem` (``from_loss(..., config=vj.ThreeTermsConfig(...))``,
 the PR's three-term core; this campaign driver stays off main): warm-started
@@ -36,13 +36,12 @@ the saved steps.
 """
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import json
 import math
 import os
 from pathlib import Path
 import time
-from typing import Any
 
 import numpy as np
 
@@ -111,7 +110,7 @@ MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >
 # DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
 MERCIER_S_MIN = 0.2
 MERCIER_MARGIN = 0.02             # SLSQP holds a row only to its tolerance: DMerc stays strictly positive
-CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
+CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (opt.current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
 B_AXIS_TOLERANCE, B_AXIS_MARGIN = 1e-3, 1e-4  # T, the band of the axis |B| row about B0
@@ -396,100 +395,25 @@ def bootstrap_input(inp, beta, device):
     return inp, fixed, redl
 
 
-def abs_iota(state, runtime):
-    """|iota| bounded by the floor and ceiling rows.
-
-    The half-mesh surfaces (axis slot excluded), as ``opt.min_abs_iota``; with
-    ``IOTA_EDGE`` also VMEC's edge iotaf[-1] = 1.5 iotas[-1] - 0.5 iotas[-2].
-    The axis is left out: there a bootstrap current's steep part of iota
-    (~ s^(1/4)) makes VMEC's extrapolated iotaf[0] drift with ns, and the
-    vacuum iota row bounds the shaping's share (``vacuum_iota``).
-    """
-    import jax.numpy as jnp
-    from vmex.core.statephysics import _iotas_half  # private: opt exposes only the half-mesh minimum
-
-    half = _iotas_half(state, runtime)[1:]
-    if IOTA_EDGE:
-        half = jnp.concatenate([half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
-    return jnp.abs(half)
-
-
-def vacuum_iota(inp):
-    """(state, runtime) -> the vacuum |iota| of the state's plasma boundary: axis, half-mesh surfaces and edge.
-
-    The fixed-boundary equilibrium of that boundary without pressure or current
-    (``inp`` otherwise, hot-restarted), differentiable through its implicit
-    adjoint; the axis value is ``opt.axis_iota``, the edge VMEC's iotaf[-1].
-    """
-    import jax
-    import jax.numpy as jnp
-    from vmex import optimize as opt
-    from vmex.core import implicit as im
-    from vmex.core.statephysics import _iotas_half
-
-    vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
-                     ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
-    device = jax.devices()[0]  # as ThreeTermFreeBoundaryModel: unpinned, the certification runs on the host CPU
-    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
-    base = im.params_from_input(vacuum, device=device)
-    im.runtime_from_params(base, cfg)  # its setup, built here: run_setup cannot be traced inside a jit
-
-    def iota(state, runtime):
-        rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
-        rmnc, zmns = jax.device_put((rmnc, zmns), device)  # a fixed-boundary state may live on the host
-        rows, cols = np.asarray(runtime.modes.n) + int(inp.ntor), np.asarray(runtime.modes.m)
-        params = replace(base, rbc=jnp.zeros_like(base.rbc).at[rows, cols].set(rmnc),
-                         zbs=jnp.zeros_like(base.zbs).at[rows, cols].set(zmns))
-        vstate = im.solve_implicit(params, cfg)
-        vrt = im.runtime_from_params(params, cfg)
-        half = _iotas_half(vstate, vrt)[1:]
-        return jnp.abs(jnp.concatenate([opt.axis_iota(vstate, vrt)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]]))
-
-    return iota
-
-
-def current_iota(state, runtime):
-    """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
-    plasma's major radius ``R0``, minor radius ``a = R0 / aspect`` and axis field -- the current's share of iota.
-
-    ``mu0 I`` is VMEX's ``ctor`` (``fields.surface_currents``, in T m), the bootstrap current where it is solved
-    with the equilibrium.
-    """
-    import jax.numpy as jnp
-    from vmex import optimize as opt
-    from vmex.core.fields import surface_currents
-    from vmex.core.statephysics import _field_chain  # private: the covariant fields behind ctor
-
-    fields = _field_chain(state, runtime)[3]
-    mu0_current = surface_currents(bsubu=fields.bsubu, bsubv=fields.bsubv, trig=runtime.trig,
-                               s=jnp.asarray(runtime.setup.s_full), signgs=runtime.setup.signgs).ctor
-    radius = opt.major_radius(state, runtime)
-    minor = radius / opt.aspect_ratio(state, runtime)
-    return jnp.abs(mu0_current) * radius / (2 * jnp.pi * minor**2 * opt.axis_field_strength(state, runtime))
-
-
-def min_d_merc(state, runtime):
-    """Smallest Mercier ``DMerc`` (positive is stable) of the full-mesh surfaces ``MERCIER_S_MIN <= s < 1``."""
-    import jax.numpy as jnp
-    from vmex import optimize as opt
-
-    d_merc = opt.d_merc_state(state, runtime)
-    s = jnp.asarray(runtime.setup.s_full)
-    return jnp.min(jnp.where((s >= MERCIER_S_MIN) & (s < 1.0), d_merc, jnp.inf))
-
-
 def min_abs_iota(state, runtime):
-    """Smallest |iota| of ``abs_iota``: ``opt.min_abs_iota``, with ``IOTA_EDGE`` including the edge."""
-    import jax.numpy as jnp
+    """|iota| floor row: ``opt.min_abs_iota``, with ``IOTA_EDGE`` including the edge iotaf."""
+    from vmex import optimize as opt
 
-    return jnp.min(abs_iota(state, runtime))
+    return opt.min_abs_iota(state, runtime, include_edge=IOTA_EDGE)
 
 
 def max_abs_iota(state, runtime):
-    """Largest |iota| of ``abs_iota``, the counterpart of ``min_abs_iota``."""
-    import jax.numpy as jnp
+    """|iota| ceiling row, the counterpart of ``min_abs_iota``."""
+    from vmex import optimize as opt
 
-    return jnp.max(abs_iota(state, runtime))
+    return opt.max_abs_iota(state, runtime, include_edge=IOTA_EDGE)
+
+
+def min_d_merc(state, runtime):
+    """Mercier floor row: ``opt.min_d_merc`` over ``MERCIER_S_MIN <= s``."""
+    from vmex import optimize as opt
+
+    return opt.min_d_merc(state, runtime, s_min=MERCIER_S_MIN)
 
 
 def bootstrap_mismatch(inp, redl, device):
@@ -623,52 +547,25 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
-def boundary_from_wout(inp, wout):
-    """``inp`` with the boundary of ``wout``'s last surface, truncated to its resolution."""
-
-    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
-    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
-                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
-        if m < inp.mpol and abs(n) <= inp.ntor:
-            rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
-    return replace(inp, rbc=rbc, zbs=zbs)
-
-
 def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current (``--restart``)."""
+    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``)."""
     import vmex as vj
 
-    inp, w = vj.VmecInput.from_file(run / "input.run"), vj.read_wout(run / "wout.nc")
-    return current_from_wout(replace(boundary_from_wout(inp, w), phiedge=float(w.phi[-1]), lfreeb=False), w)
-
-
-def current_from_wout(inp, w):
-    """``inp`` with ``w``'s current profile -- its type, knots or coefficients -- and CURTOR, when ``inp``
-    prescribes the current (a run that solved the current changes its type and knots: line_segment_ip)."""
-
-    if int(inp.ncurr) == 1:
-        kind = str(w.pcurr_type).strip()
-        if "spline" in kind or "line_segment" in kind:  # VmecInput trims both to the knots before the -1 padding
-            inp = replace(inp, pcurr_type=kind, ac_aux_s=np.asarray(w.ac_aux_s, dtype=float),
-                          ac_aux_f=np.asarray(w.ac_aux_f, dtype=float), curtor=float(w.ctor))
-        else:
-            inp = replace(inp, pcurr_type=kind, ac=np.asarray(w.ac, dtype=float)[: np.size(inp.ac)],
-                          curtor=float(w.ctor))
-    return inp
+    final = vj.VmecInput.from_wout(run / "wout.nc")
+    return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
+        name: getattr(final, name) for name in ("rbc", "zbs", "phiedge", "pcurr_type", "ac", "ac_aux_s", "ac_aux_f",
+                                                "curtor")})
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
 def resize_coils(coils, order, n_segments):
-    """Zero-pad higher Fourier modes without changing the curves or currents."""
-    import jax.numpy as jnp
-    from essos.coils import Coils, Curves
+    """Zero-pad higher Fourier modes (ESSOS ``Curves.order``) without changing the curves or currents."""
+    from essos.coils import Coils
 
     if order < coils.order:
         raise ValueError(f"cannot truncate order-{coils.order} coils to order {order}")
-    old = coils.curves
-    raw = jnp.pad(old.dofs / old.scaling, ((0, 0), (0, 0), (0, 2 * (order - coils.order))))
-    curves = Curves(raw, n_segments=n_segments, nfp=coils.nfp, stellsym=coils.stellsym,
-                    scaling_type=old.scaling_type, scaling_factor=old.scaling_factor, scale_fixed=old.scale_fixed)
+    curves = coils.curves.copy()
+    curves.order, curves.n_segments = order, n_segments
     return Coils(curves, coils.dofs_currents_raw, currents_scale=coils.currents_scale)
 
 
@@ -714,312 +611,22 @@ def total_normal_field(interface, field):
     return interface.bnormal_residual(field) / jnp.linalg.norm(interface.total_B_out(field), axis=0)
 
 
-# ---- coil chart and coil inequalities -------------------------------------------------------------------------------
+# ---- coil limits ----------------------------------------------------------------------------------------------------
 CURVATURE_POINTS = max(512, 64*COIL_ORDER)
 COIL_POINT_ROWS = False  # --coil-point-rows
 DISTANCE_POINTS = max(128, 16*COIL_ORDER)
 SURFACE_GRID = (61, 64)
-SELF_CLEARANCE = 1e-6  # numerical nonintersection guard, metres
 
 
-@dataclass(frozen=True, eq=False)
-class DirectCoilField:
-    """Biot-Savart field of filament coils, as a differentiable pytree.
+def coil_limits():
+    """The case's coil limits and margins as ``vj.CoilLimits`` (self clearance 1e-6 m, minimum speed 1e-4)."""
+    import vmex as vj
 
-    ESSOS' ``BiotSavart`` jit-compiles its methods with the coil object as a
-    static ``self``, so every new coil geometry recompiles and no derivative
-    flows back to the coil arrays. This pytree carries the arrays as leaves
-    instead: one compiled program serves every trial and JAX differentiates
-    the field with respect to the coil parameters. The field is the mean over
-    each coil's quadrature points of the filament Biot-Savart integrand.
-    ``gamma``/``gamma_dash`` are ESSOS' points and tangents, shape
-    ``(coils, points, 3)`` in metres; ``currents`` are in amperes.
-    """
-
-    gamma: Any
-    gamma_dash: Any
-    currents: Any
-
-    def b_cyl(self, r, phi, z):
-        """Evaluate the filament field in cylindrical coordinates, in tesla."""
-        import jax.numpy as jnp
-
-        rr, pp, zz = jnp.broadcast_arrays(jnp.asarray(r), jnp.asarray(phi), jnp.asarray(z))
-        cosine, sine = jnp.cos(pp), jnp.sin(pp)
-        xyz = jnp.stack((rr * cosine, rr * sine, zz), axis=-1)
-        displacement = xyz[..., None, None, :] - jnp.asarray(self.gamma)
-        radius2 = jnp.sum(displacement * displacement, axis=-1)
-        inv_radius3 = jnp.maximum(radius2, 1.0e-30) ** -1.5
-        differential = jnp.cross(jnp.asarray(self.gamma_dash), displacement)
-        differential = differential * inv_radius3[..., None]
-        current_shape = (1,) * (xyz.ndim - 1) + (-1, 1, 1)
-        weighted = differential * jnp.reshape(jnp.asarray(self.currents), current_shape)
-        bxyz = 1.0e-7 * jnp.mean(jnp.sum(weighted, axis=-3), axis=-2)
-        br = cosine * bxyz[..., 0] + sine * bxyz[..., 1]
-        bphi = -sine * bxyz[..., 0] + cosine * bxyz[..., 1]
-        return br, bphi, bxyz[..., 2]
-
-
-class CoilChart:
-    """Design vector -> ESSOS coils and plasma parameters: the free arm's ``field_from_parameters``.
-
-    ``x`` holds, in order: with ``phiedge`` (the deck's PHIEDGE in Wb) a relative
-    PHIEDGE change, PHIEDGE = phiedge * (1 + x[0]); with ``plasma_current`` (the
-    deck's leading ``k`` AC coefficients, or AC_AUX_F spline values when
-    ``plasma_current_spline``, then CURTOR in A; ``ncurr = 1``) ``k + 1``
-    additive changes of those values in units of the largest nominal shape value
-    and of ``abs(CURTOR)``; relative changes of the selected base-coil currents
-    (``current[i] = nominal[i] * (1 + x[k])``); and additive changes of every
-    base coil's Cartesian Fourier coefficients in metres. ``x0 = 0`` is the
-    nominal state. Calling the chart gives the :class:`DirectCoilField` of
-    ``coils_from_x(x)``; ``plasma_from_parameters`` (``None`` without plasma
-    coordinates) is ``ThreeTermsFreeBoundaryProblem``'s map of the plasma parameters.
-    ``scales`` default to 0.06 per relative current, 0.002 m per constant Fourier
-    coefficient, ``0.002 / k**2`` m per coefficient of order ``k``, and
-    ``phiedge_scale`` / ``plasma_current_scale`` for the plasma coordinates.
-    """
-
-    def __init__(self, coils, *, current_dofs, scales=None, phiedge=None, phiedge_scale=0.05, plasma_current=None,
-                 plasma_current_spline=False, plasma_current_scale=0.05):
-        import jax
-
-        try:  # the field is a pytree of its arrays; registered here, after main() has configured JAX
-            jax.tree_util.register_dataclass(DirectCoilField, data_fields=["gamma", "gamma_dash", "currents"],
-                                             meta_fields=[])
-        except ValueError:  # registered by an earlier chart
-            pass
-        self.coefficients = np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :]
-        self.currents = np.asarray(coils.dofs_currents_raw, dtype=float)
-        self.current_dofs = tuple(int(i) for i in current_dofs)
-        if len(set(self.current_dofs)) != len(self.current_dofs) or any(
-                not 0 <= i < len(self.currents) or self.currents[i] == 0 for i in self.current_dofs):
-            raise ValueError("current_dofs must be unique indices of base coils with nonzero currents")
-        self.nfp, self.stellsym, self.n_segments = int(coils.nfp), bool(coils.stellsym), int(coils.n_segments)
-        if phiedge is not None and not (np.isfinite(phiedge) and phiedge != 0 and phiedge_scale > 0):
-            raise ValueError("phiedge must be finite and nonzero with a positive phiedge_scale")
-        self.phiedge = None if phiedge is None else float(phiedge)
-        self.nphiedge = int(phiedge is not None)
-        self.plasma_current = None if plasma_current is None else np.asarray(plasma_current, dtype=float)
-        self.plasma_current_spline = bool(plasma_current_spline)
-        self.nplasma = 0 if self.plasma_current is None else self.plasma_current.size
-        if self.plasma_current is not None:
-            nominal = self.plasma_current
-            if nominal.ndim != 1 or nominal.size < 2 or not plasma_current_scale > 0:
-                raise ValueError("plasma_current is [k >= 1 shape values..., CURTOR], with a positive scale")
-            self.plasma_current_units = np.r_[np.full(nominal.size - 1, np.max(np.abs(nominal[:-1]))),
-                                              abs(nominal[-1])]
-            if not np.all(np.isfinite(self.plasma_current_units)) or np.any(self.plasma_current_units == 0):
-                raise ValueError("plasma_current needs finite values, a nonzero shape value and a nonzero CURTOR")
-        self._coil0 = self.nphiedge + self.nplasma
-        self.size = self._coil0 + len(self.current_dofs) + self.coefficients.size
-        self.x0 = np.zeros(self.size)
-        order = (self.coefficients.shape[2] - 1) // 2
-        modes = ["constant"] + [f"{kind}({k})" for k in range(1, order + 1) for kind in ("sin", "cos")]
-        self.dof_names = tuple(["phiedge/nominal"] * self.nphiedge
-                               + [f"plasma_current[{j}]/unit" for j in range(self.nplasma - 1)]
-                               + ["curtor/nominal"] * bool(self.nplasma)
-                               + [f"current[{i}]/nominal" for i in self.current_dofs]
-                               + [f"coil[{i}].{axis}.{mode}" for i in range(len(self.currents))
-                                  for axis in "xyz" for mode in modes])
-        if scales is None:
-            mode_scales = [0.002] + [0.002 / k**2 for k in range(1, order + 1) for _ in range(2)]
-            scales = np.r_[np.full(self.nphiedge, phiedge_scale), np.full(self.nplasma, plasma_current_scale),
-                           np.full(len(self.current_dofs), 0.06), np.tile(mode_scales, 3 * len(self.currents))]
-        self.scales = np.asarray(scales, dtype=float)
-        if self.scales.shape != self.x0.shape or not np.all(np.isfinite(self.scales)) or np.any(self.scales <= 0):
-            raise ValueError("one positive finite scale per coordinate required")
-        self.plasma_from_parameters = self.plasma_params_at if self._coil0 else None
-
-    def phiedge_at(self, x):
-        """PHIEDGE [Wb] at ``x``; only for a chart built with ``phiedge``."""
-        import jax.numpy as jnp
-
-        if self.phiedge is None:
-            raise ValueError("this chart does not vary PHIEDGE")
-        return self.phiedge * (1.0 + jnp.asarray(x)[0])
-
-    def plasma_params_at(self, params, x):
-        """``params`` (``ImplicitParams``) with the PHIEDGE and current profile of ``x``."""
-        import jax.numpy as jnp
-
-        x = jnp.asarray(x)
-        if self.phiedge is not None:
-            params = replace(params, phiedge=self.phiedge_at(x))
-        if self.plasma_current is not None:
-            values = jnp.asarray(self.plasma_current) + x[self.nphiedge:self._coil0] * self.plasma_current_units
-            name = "ac_aux_f" if self.plasma_current_spline else "ac"
-            profile = getattr(params, name).at[: self.nplasma - 1].set(values[:-1])
-            params = replace(params, curtor=values[-1], **{name: profile})
-        return params
-
-    def base_currents_at(self, x):
-        """Physical base-coil currents in amperes."""
-        import jax.numpy as jnp
-
-        x = jnp.asarray(x)
-        currents = jnp.asarray(self.currents)
-        for local, base in enumerate(self.current_dofs):
-            currents = currents.at[base].add(x[self._coil0 + local] * self.currents[base])
-        return currents
-
-    def coils_from_x(self, x):
-        """ESSOS coils at ``x``, without changing the nominal coils."""
-        import jax.numpy as jnp
-        from essos.coils import Coils, Curves
-
-        x = jnp.asarray(x)
-        raw = jnp.asarray(self.coefficients) + x[self._coil0 + len(self.current_dofs):].reshape(
-            self.coefficients.shape)
-        return Coils(Curves(raw, self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
-
-    def __call__(self, x):
-        """The differentiable filament field of ``coils_from_x(x)``."""
-        import jax.numpy as jnp
-
-        coils = self.coils_from_x(x)
-        return DirectCoilField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
-
-
-def resampled(coils, points, *, symmetric=True):
-    """ESSOS curves of ``coils`` on ``points`` quadrature points; base curves only unless ``symmetric``."""
-    curves = coils.curves.copy()
-    curves.n_segments = points
-    if not symmetric:
-        curves.nfp, curves.stellsym = 1, False
-    return curves
-
-
-def segment_distances(a, b):
-    """All distances between two closed polygons' segments, including interiors."""
-    import jax.numpy as jnp
-
-    u, v = jnp.roll(a, -1, axis=0)-a, jnp.roll(b, -1, axis=0)-b
-    w = a[:, None]-b[None, :]
-    aa, bb = jnp.sum(u*u, axis=-1)[:, None], jnp.sum(v*v, axis=-1)[None, :]
-    uv = jnp.einsum('ik,jk->ij', u, v)
-    uw, vw = jnp.sum(u[:, None]*w, axis=-1), jnp.sum(v[None, :]*w, axis=-1)
-    aa, bb = jnp.maximum(aa, 1e-30), jnp.maximum(bb, 1e-30)
-    den = aa*bb-uv*uv
-    safe = jnp.where(den > 1e-24, den, 1.0)
-    s, t = (uv*vw-bb*uw)/safe, (aa*vw-uv*uw)/safe
-    def distance(s, t):
-        q = w+s[..., None]*u[:, None]-t[..., None]*v[None, :]
-        return jnp.sum(q*q, axis=-1)
-    candidates = [distance(jnp.zeros_like(uw), jnp.clip(vw/bb, 0, 1)),
-                  distance(jnp.ones_like(uw), jnp.clip((vw+uv)/bb, 0, 1)),
-                  distance(jnp.clip(-uw/aa, 0, 1), jnp.zeros_like(uw)),
-                  distance(jnp.clip((uv-uw)/aa, 0, 1), jnp.ones_like(uw)),
-                  jnp.where((den > 1e-24)&(s>=0)&(s<=1)&(t>=0)&(t<=1), distance(s,t), jnp.inf)]
-    return jnp.sqrt(jnp.min(jnp.stack(candidates), axis=0)+1e-30)
-
-
-def separations(points):
-    """Minimum intercoil and nonadjacent self-segment distance, all symmetry copies."""
-    import jax
-    import jax.numpy as jnp
-
-    pairs = jnp.asarray([(i,j) for i in range(len(points)) for j in range(i+1,len(points))])
-    inter = jax.lax.map(lambda ij: jnp.min(segment_distances(points[ij[0]], points[ij[1]])), pairs)
-    n = points.shape[1]
-    diff = jnp.abs(jnp.arange(n)[:,None]-jnp.arange(n)[None,:])
-    nonadjacent = jnp.minimum(diff, n-diff)>1
-    own = jax.lax.map(lambda p: jnp.min(jnp.where(nonadjacent, segment_distances(p,p), jnp.inf)), points)
-    return jnp.min(inter), jnp.min(own)
-
-
-def coil_metrics(coils, *, curvature_points=CURVATURE_POINTS, distance_points=DISTANCE_POINTS):
-    """ESSOS length, peak curvature and speed of each base coil, plus what ESSOS lacks."""
-    import jax.numpy as jnp
-
-    base = resampled(coils, curvature_points, symmetric=False)
-    speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
-    curvature = base.curvature
-    cc, own = separations(resampled(coils, distance_points).gamma)
-    return dict(length=base.length, peak=jnp.max(curvature, axis=1),
-                msc=jnp.sum(curvature**2*speed, axis=1)/jnp.sum(speed, axis=1),
-                coil_distance=cc, self_distance=own, min_speed=jnp.min(speed, axis=1))
-
-
-def coil_inequalities(coils):
-    import jax.numpy as jnp
-
-    m = coil_metrics(coils)
-    return jnp.concatenate(((LENGTH_LIMIT-LENGTH_MARGIN-m['length'])/LENGTH_LIMIT,
-        (CURVATURE_LIMIT-CURVATURE_MARGIN-m['peak'])/CURVATURE_LIMIT,
-        (MSC_LIMIT-MSC_MARGIN-m['msc'])/MSC_LIMIT,
-        jnp.atleast_1d((m['coil_distance']-COIL_DISTANCE_LIMIT-DISTANCE_MARGIN)/COIL_DISTANCE_LIMIT),
-        jnp.atleast_1d((m['self_distance']-SELF_CLEARANCE)/COIL_DISTANCE_LIMIT),
-        (m['min_speed']-1e-4)/LENGTH_LIMIT))
-
-
-def coil_point_inequalities(coils):
-    """:func:`coil_inequalities` with one row per sample point instead of each coil's extreme: the peak curvature,
-    coil-coil and self distance become every base-coil point's (its curvature; its distance to the other coils, all
-    symmetry copies; to its own non-adjacent segments).  Each row is smooth where the extreme switches points, and
-    the smallest of them equals the extreme row."""
-    import jax.numpy as jnp
-
-    base = resampled(coils, CURVATURE_POINTS, symmetric=False)
-    speed = jnp.linalg.norm(base.gamma_dash, axis=-1)
-    curvature = base.curvature
-    nbase = curvature.shape[0]
-    points = resampled(coils, DISTANCE_POINTS).gamma  # base coils first, then their symmetry copies
-    n = points.shape[1]
-    diff = jnp.abs(jnp.arange(n)[:, None] - jnp.arange(n)[None, :])
-    nonadjacent = jnp.minimum(diff, n - diff) > 1
-
-    def per_point(b):
-        others = jnp.stack([jnp.min(segment_distances(points[b], points[j]), axis=1)
-                            for j in range(points.shape[0]) if j != b])
-        own = jnp.min(jnp.where(nonadjacent, segment_distances(points[b], points[b]), jnp.inf), axis=1)
-        return jnp.min(others, axis=0), own
-
-    coil_distance, self_distance = map(jnp.concatenate, zip(*[per_point(b) for b in range(nbase)]))
-    return jnp.concatenate(((LENGTH_LIMIT - LENGTH_MARGIN - base.length) / LENGTH_LIMIT,
-                            jnp.ravel(CURVATURE_LIMIT - CURVATURE_MARGIN - curvature) / CURVATURE_LIMIT,
-                            (MSC_LIMIT - MSC_MARGIN - jnp.sum(curvature**2 * speed, axis=1) / jnp.sum(speed, axis=1))
-                            / MSC_LIMIT,
-                            (coil_distance - COIL_DISTANCE_LIMIT - DISTANCE_MARGIN) / COIL_DISTANCE_LIMIT,
-                            (self_distance - SELF_CLEARANCE) / COIL_DISTANCE_LIMIT,
-                            (jnp.min(speed, axis=1) - 1e-4) / LENGTH_LIMIT))
-
-
-def chunked_jacfwd(fun, chunk=32):
-    """Forward-mode Jacobian of ``fun`` with ``chunk`` input directions at a time: memory of the point rows' distance
-    kernels grows with the directions pushed at once (35 GiB for all of a QI design)."""
-    import jax
-    import jax.numpy as jnp
-
-    def jac(x):
-        n = x.size
-        basis = jnp.eye(-(-n // chunk) * chunk, n, dtype=x.dtype).reshape(-1, chunk, n)
-        columns = jax.lax.map(jax.vmap(lambda v: jax.jvp(fun, (x,), (v,))[1]), basis)
-        return columns.reshape(-1, columns.shape[-1])[:n].T
-    return jac
-
-
-def surface_distance(coils, surface):
-    """Sampled coil-to-moving-surface clearance; JAX differentiates both sides."""
-    import jax
-    import jax.numpy as jnp
-
-    points = resampled(coils, DISTANCE_POINTS).gamma
-    targets = surface.gamma.reshape(-1,3)
-    # Mapping bounds memory and preserves exact differentiation of the active min.
-    return jnp.min(jax.lax.map(lambda p: jnp.sqrt(jnp.min(jnp.sum((p-targets)**2,axis=1))+1e-30),
-                               points.reshape(-1,3)))
-
-
-def coil_constraint(coils_from_x):
-    """Pure-coil rows require no equilibrium solves or adjoint right-hand sides."""
-    import jax
-    import jax.numpy as jnp
-    from scipy.optimize import NonlinearConstraint
-    rows = coil_point_inequalities if COIL_POINT_ROWS else coil_inequalities
-    fun = jax.jit(lambda x: rows(coils_from_x(x)))
-    jac = jax.jit(chunked_jacfwd(fun) if COIL_POINT_ROWS else jax.jacrev(fun))  # thousands of point rows: forward
-    return NonlinearConstraint(lambda x: np.asarray(fun(jnp.asarray(x))), 0, np.inf,
-                               jac=lambda x: np.asarray(jac(jnp.asarray(x))))
+    return vj.CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT, mean_squared_curvature=MSC_LIMIT,
+                         coil_distance=COIL_DISTANCE_LIMIT, length_margin=LENGTH_MARGIN,
+                         curvature_margin=CURVATURE_MARGIN, mean_squared_curvature_margin=MSC_MARGIN,
+                         distance_margin=DISTANCE_MARGIN, curvature_points=CURVATURE_POINTS,
+                         distance_points=DISTANCE_POINTS)
 
 
 # ---- the optimization ------------------------------------------------------------------------------------------------
@@ -1096,6 +703,7 @@ def fit_coils_to_plasma(coils, wout, inp):
     surface = surfacerzfourier_from_boundary(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), inp.nfp,
                                              nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
     x0 = jnp.asarray(coils.curves.dofs).ravel()
+    limits = coil_limits()
 
     def coils_from_u(u):
         return coils.with_dofs(jnp.concatenate((x0 + COIL_STEP * u, coils.dofs_currents)))
@@ -1105,8 +713,8 @@ def fit_coils_to_plasma(coils, wout, inp):
 
     def objective(u):
         new = coils_from_u(u)
-        rows = jnp.concatenate([coil_inequalities(new), jnp.atleast_1d(
-            (surface_distance(new, surface) - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
+        rows = jnp.concatenate([limits.rows(new), jnp.atleast_1d(
+            (limits.surface_clearance(new, surface) - COIL_SURFACE_DISTANCE_LIMIT - DISTANCE_MARGIN)
             / COIL_SURFACE_DISTANCE_LIMIT)])
         return (0.5 * (normal_field_rms(new) / COIL_FIT_NORMAL_SCALE)**2
                 + 0.5 * COIL_FIT_WEIGHT * jnp.sum(jnp.minimum(rows, 0.0)**2))
@@ -1258,7 +866,6 @@ def main(argv=None):
     from vmex.core import implicit as im
 
     started = time.monotonic()
-    mpol, ntor, ns = RESOLUTION
     inp, redl = seed_input(), None
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
@@ -1293,20 +900,19 @@ def main(argv=None):
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
-    chart = CoilChart(coils0, current_dofs=current_dofs, scales=scales,
+    chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
-    vacuum = vacuum_iota(inp)
+    vacuum = opt.vacuum_iota(inp)
     vacuum_floor = ((lambda state, runtime: jnp.min(vacuum(state, runtime))),) if VACUUM_IOTA_FLOOR else ()
 
+    limits = coil_limits()
+
     def boundary_surface(state, runtime):
-        rmnc, _, _, zmns = im._edge_physical(state, runtime)  # private: no public traced LCFS of a state
-        rows, cols = np.asarray(runtime.modes.n) + ntor, np.asarray(runtime.modes.m)
-        rbc = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(rmnc)
-        zbs = jnp.zeros((2 * ntor + 1, mpol)).at[rows, cols].set(zmns)
+        rbc, zbs, _, _ = opt.boundary_coefficients(state, runtime)
         return surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
 
     ext_rows, ext_terms = load_extension(args.extension)
@@ -1316,11 +922,11 @@ def main(argv=None):
 
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
-        current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
+        current = 0.5 * CURRENT_IOTA_WEIGHT * opt.current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
     def clearance(state, runtime, x):
-        return surface_distance(chart.coils_from_x(x), boundary_surface(state, runtime))
+        return limits.surface_clearance(chart.coils_from_x(x), boundary_surface(state, runtime))
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -1330,7 +936,7 @@ def main(argv=None):
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling, *vacuum_floor,
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
-                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
+                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([opt.current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(clearance, aspect),
         config=vj.ThreeTermsConfig(labelling=args.labelling, label_weight=args.label_weight, nphi=args.vc_grid,
@@ -1363,7 +969,9 @@ def main(argv=None):
         *extension_bounds,
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT),
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
-    coil_rows = coil_constraint(chart.coils_from_x)
+    # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
+    coil_rows = vj.coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
+                                   forward_chunk=32 if COIL_POINT_ROWS else None)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
     def save(tag):
@@ -1372,7 +980,7 @@ def main(argv=None):
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last = dict(time=time.monotonic())
-    diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
+    diagnostics = jax.jit(lambda state, params: (opt.current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     extension_values = jax.jit(lambda state, params: (
         {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
@@ -1458,14 +1066,10 @@ def main(argv=None):
         check_gradient(problem, args.check_gradient, out)
         return
     log_step()
-    while True:  # a rejected trial ends an SLSQP call; restart it from the accepted point
-        before = problem.accepted_step
-        result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
-                              callback=lambda x: log_step(),
-                              options=dict(maxiter=args.steps - before, ftol=OPTIMIZER_FTOL))
-        if (result.stop_reason != "equilibrium_trial_rejected" or problem.accepted_step == before
-                or problem.accepted_step >= args.steps):
-            break
+    result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
+                          callback=lambda x: log_step(),
+                          options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
+                                       restart_on_rejection=True))
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),

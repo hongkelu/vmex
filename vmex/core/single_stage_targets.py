@@ -295,13 +295,16 @@ def coil_plasma_distance(coils_from_x: Callable[[Any], Any], nfp: int, *, distan
     return distance
 
 
-def vacuum_iota(inp, *, device=None):
+def vacuum_iota(inp, *, device=None, m1_complement="gauged"):
     """``f(state, runtime)``: the vacuum ``|iota|`` of the state's plasma boundary on the axis, the half-mesh
     surfaces and the edge.
 
     The fixed-boundary equilibrium of that boundary without pressure or current (``inp`` otherwise, hot-restarted
     from its previous solve), differentiable through its implicit adjoint; the axis value is
-    :func:`~vmex.core.optimize.axis_iota`, the edge one extrapolated from the last two half-mesh surfaces."""
+    :func:`~vmex.core.optimize.axis_iota`, the edge one extrapolated from the last two half-mesh surfaces.
+    ``m1_complement`` as :attr:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig.m1_complement`: with upstream's
+    ``"frozen"`` the vacuum root depends on the hot-restart state (a restored checkpoint's vacuum iota moved by
+    5e-7)."""
     import jax
     import jax.numpy as jnp
 
@@ -312,7 +315,7 @@ def vacuum_iota(inp, *, device=None):
     vacuum = replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
                      ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None, lfreeb=False)
     device = jax.devices()[0] if device is None else device
-    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
+    cfg = im.make_config(vacuum, multigrid=True, hot_restart=True, device=device, m1_complement=m1_complement)
     base = im.params_from_input(vacuum, device=device)
     im.runtime_from_params(base, cfg)  # its setup, built here: run_setup cannot be traced inside a jit
 

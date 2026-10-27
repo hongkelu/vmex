@@ -1098,6 +1098,34 @@ def test_shared_minimize_counts_accepted_steps_of_a_stateful_problem():
         opt.minimize([(lambda *a: 0., 0., 1.)])
 
 
+def test_shared_minimize_restarts_slsqp_after_a_rejected_trial():
+    """A rejected Jacobian request ends SciPy's run; ``restart_on_rejection`` continues from the accepted point
+    with the remaining step budget, as long as the rejected run made progress."""
+    from vmex import optimize as opt
+    from vmex.core.errors import TrialRejected
+
+    def problem():
+        calls = []
+
+        def value_and_grad(x):
+            calls.append(1)
+            if len(calls) == 4:  # one rejected Jacobian, after the first accepted steps
+                raise TrialRejected("no equilibrium here")
+            return float(np.sum(x**4)), 4 * x**3
+
+        q = _Stateful([3., 4.])
+        q.value_and_grad, q.fun = value_and_grad, lambda x: float(np.sum(x**4))
+        return q
+
+    stopped = opt.minimize(problem(), method="SLSQP", options=dict(maxiter=8))
+    assert stopped.stop_reason == "equilibrium_trial_rejected" and 0 < stopped.accepted_steps < 8
+    q = problem()
+    result = opt.minimize(q, method="SLSQP", options=dict(maxiter=8, restart_on_rejection=True))
+    assert result.stop_reason == "accepted_step_budget_reached" and result.accepted_steps == 8
+    assert len(q.promoted) == 8
+    np.testing.assert_array_equal(result.x, q.promoted[-1])
+
+
 def test_status_branch_is_python_when_concrete_and_cond_when_traced(monkeypatch):
     """A concrete status picks its branch in Python; a traced one keeps lax.cond."""
     import jax

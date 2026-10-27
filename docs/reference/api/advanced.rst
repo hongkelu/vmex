@@ -152,6 +152,9 @@ Free boundary
 .. automodule:: vmex.core.freeboundary_three_terms_problem
    :members: ThreeTermsFreeBoundaryProblem
 
+.. automodule:: vmex.core.coil_design
+   :members: CoilDesign, CoilLimits, coil_constraint, chunked_jacfwd, resampled
+
 .. automodule:: vmex.core.extender
    :members:
 

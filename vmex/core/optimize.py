@@ -2469,7 +2469,11 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         named ``intermediate_result``; ``StopIteration`` stops the run.
     options:
         SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
-        accepted steps for a stateful problem.
+        accepted steps for a stateful problem.  ``restart_on_rejection``
+        (default ``False``) restarts SLSQP from the accepted point, with the
+        remaining budget, after a rejected equilibrium trial that followed at
+        least one accepted step: a rejection ends SciPy's run and its
+        quasi-Newton Hessian, not the optimization.
 
     Returns
     -------
@@ -2487,6 +2491,21 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
 
     if method != "SLSQP":
         raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
+    options = dict(options or {})
+    if options.pop("restart_on_rejection", False):
+        budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
+        while True:
+            result = _minimize_problem(problem, x0=x0, method=method, bounds=bounds, constraints=constraints,
+                                       callback=callback, options=dict(options, maxiter=budget - steps), tol=tol)
+            steps += result.accepted_steps
+            for key in counts:
+                counts[key] += int(getattr(result, key, 0) or 0)
+            if (result.stop_reason != "equilibrium_trial_rejected" or not result.accepted_steps
+                    or steps >= budget):
+                break
+            x0 = result.x
+        result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
+        return result
     start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
     scales = np.asarray(problem.scales, dtype=float)
     if (start.shape != scales.shape or start.ndim != 1 or not np.all(np.isfinite(start))
@@ -2495,7 +2514,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     promote = getattr(problem, "accept_x", None)
     if promote is not None and not np.array_equal(start, problem.accepted.parameters):
         raise ValueError("stateful minimization must start at the accepted equilibrium")
-    options = dict(options or {})
     budget = int(options.get("maxiter", 100))
     if budget < 0:
         raise ValueError("maxiter must be nonnegative")

@@ -71,6 +71,10 @@ SR1_SKIP = 1e-8
 #: A quasi-Newton gauge iterate whose trust radius fell below this (or whose model is indefinite) refreshes the
 #: Hessian (the Gauss-Newton ``J^T J`` at the iterate, then the exact dense one) instead of crawling.
 QUASI_MIN_RADIUS = 1e-4
+#: The final exact Newton step of the gauge polish (a quasi-Newton convergence): its conjugate-gradient tolerance
+#: and iterations (each one exact-product call of one column).
+FINAL_STEP_RTOL = 1e-6
+FINAL_STEP_MAXITER = 30
 #: Three accepted SR1 steps in a row, each longer than this fraction of the one before: linear convergence, so the
 #: gauge Newton rebuilds its Gauss-Newton model (the converged point is the exact gradient's either way).
 SR1_LINEAR_RATIO = 0.2
@@ -364,6 +368,24 @@ def _newton_refine_gauged(design, x, params, field, extra, b, opt, t0, *, stats,
         if definite and (step <= opt["step_tol"] or decrease <= floor * max(cost, 1e-300)
                          or (exact and radius < 1e-6 and decrease <= 10 * floor * max(cost, 1e-300))):
             converged = True
+            if opt["step_tol"] < step <= radius:
+                # Below the floor the cost cannot judge the step, but the reduced gradient left here moves with the
+                # design, so differences of the records miss the root's derivative (small vacuum problem: 1.8 % on
+                # the loss, 10 % on mean iota, whose weak shape mode a quasi-Newton step leaves at 9e-8); the
+                # final step is exact Newton (conjugate gradients on exact products, this model preconditioning),
+                # which removes it quadratically.  Its Hessian is then the previous point's: only a
+                # preconditioner for the record's exact gradient.
+                if not exact:
+                    y, count = _reduced_cg(design, x, rec, red, -gr[:, None], FINAL_STEP_RTOL, FINAL_STEP_MAXITER)
+                    stats["final_step_cg"] = count
+                    newton = newton if y is None else y[:, 0]
+                target = _gauge_project(model, b + (red["Z"] @ newton) * scale)
+                trial = point(target) if target is not None else None
+                evaluations += 1
+                if trial is not None and trial[0] <= cost + floor * max(cost, 1e-300):
+                    b, (cost, g, rec) = target, trial
+                    red, exact = _gauge_reduced(model, b, g, H_cost), False
+                    history[-1]["final_step"] = step
             break
         if level < 2 and (radius < QUASI_MIN_RADIUS or not definite):  # stale, or far from the (non-degenerate)
             # minimum: a fresher model here (Gauss-Newton, then exact)
@@ -690,16 +712,16 @@ def projected_hessian(design, x, sol, chunk=None):
     return dict(Hred=0.5 * (Hred + Hred.T), Hcc=Hcc, K=K, b=bi, c=c, leak=leak), asymmetry
 
 
-def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stats, rtol=1e-8, maxiter=40):
-    """The gauge gradient's multipliers by block conjugate gradients on the reduced system ``Z^T S H_L S Z y = Z^T S
-    Q``, its products exact (:func:`exact_products` plus the gauge's curvature), preconditioned by ``red``'s reduced
-    Hessian (a quasi-Newton one); None when a column does not converge or the true residual exceeds 1e-6."""
+def _reduced_cg(design, x, rec, red, B, rtol, maxiter):
+    """``Y = (Z^T S H_L S Z)^-1 B`` by block conjugate gradients on exact reduced products at the record ``rec``
+    (:func:`exact_products` plus the gauge's curvature), preconditioned by ``red``'s reduced Hessian (a quasi-Newton
+    or Gauss-Newton one).  Returns ``(Y, count)``, ``Y`` None when a column meets non-positive curvature or does not
+    reach ``rtol`` in ``maxiter`` iterations."""
     Z, lam = red["Z"], red["lam"]
-    b0 = np.asarray(sol["x"], dtype=float)
-    Kc = np.asarray(design.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
+    scale = np.asarray(design.model.x_scale, dtype=float)
+    Kc = np.asarray(design.model.gauge_curvature(jnp.asarray(rec["x"], dtype=float), jnp.asarray(lam)))
     evals, evecs = np.linalg.eigh(0.5 * (red["Hr"] + red["Hr"].T))
     evals = np.maximum(np.abs(evals), 1e-14 * float(np.abs(evals).max()))
-
     count = dict(calls=0, columns=0, seconds=0.0, per_call=[])
 
     def products(Y):  # Hr Y with the exact Hessian
@@ -707,7 +729,7 @@ def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stat
         count["calls"] += 1
         count["columns"] += int(Y.shape[1])
         U = scale[:, None] * (Z @ Y)
-        HU = np.asarray(exact_products(design, x, sol, U, check=False, chunk=min(U.shape[1], EXACT_PRODUCTS_CHUNK))[0])
+        HU = np.asarray(exact_products(design, x, rec, U, check=False, chunk=min(U.shape[1], EXACT_PRODUCTS_CHUNK))[0])
         count["seconds"] += time.perf_counter() - tp
         count["per_call"].append([int(Y.shape[1]), round(time.perf_counter() - tp, 2)])
         return Z.T @ (scale[:, None] * (HU + Kc @ U))
@@ -715,8 +737,6 @@ def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stat
     def precondition(R):
         return evecs @ ((evecs.T @ R) / evals[:, None])
 
-    Q = G_b[rows].T
-    B = Z.T @ (scale[:, None] * Q)
     Y, R = np.zeros_like(B), B.copy()
     P = precondition(R)
     D, rz = P.copy(), np.sum(R * P, axis=0)
@@ -728,7 +748,7 @@ def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stat
         HD = products(D)  # every column: one shape, one compilation (each active-column count recompiled, ~145 s)
         curvature = np.sum(D * HD, axis=0)
         if np.any(curvature[active] <= 0):
-            return None
+            return None, count
         alpha = np.where(active, rz / np.where(active, curvature, 1.0), 0.0)
         Y, R = Y + alpha * D, R - alpha * HD
         P = precondition(R)
@@ -736,18 +756,33 @@ def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stat
         D = np.where(active, P + (rz_new / np.where(active, rz, 1.0)) * D, D)
         rz = np.where(active, rz_new, rz)
         active &= np.linalg.norm(R, axis=0) > rtol * norms
-    stats["gauge_cg_last"] = dict(count, rows=int(B.shape[1]), converged=not bool(active.any()),
-                                  seconds_total=time.perf_counter() - t0)
-    if active.any():
+    count["converged"] = not bool(active.any())
+    return (None if active.any() else Y), count
+
+
+def _gauge_block_cg(design, x, sol, rows, red, G_b, G_x, direct, scale, t0, stats, rtol=1e-8, maxiter=40):
+    """The gauge gradient's multipliers by :func:`_reduced_cg` on ``Z^T S H_L S Z y = Z^T S Q``, preconditioned by
+    ``red``'s reduced Hessian; None when a column does not converge or the true residual exceeds 1e-6."""
+    Z, lam = red["Z"], red["lam"]
+    b0 = np.asarray(sol["x"], dtype=float)
+    Kc = np.asarray(design.model.gauge_curvature(jnp.asarray(b0), jnp.asarray(lam)))
+    Q = G_b[rows].T
+    B = Z.T @ (scale[:, None] * Q)
+    Y, count = _reduced_cg(design, x, sol, red, B, rtol, maxiter)
+    stats["gauge_cg_last"] = dict(count, rows=int(B.shape[1]), seconds_total=time.perf_counter() - t0)
+    if Y is None:
         return None
+    norms = np.maximum(np.linalg.norm(B, axis=0), 1e-300)
     mu = scale[:, None] * (Z @ Y)
     H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
     residual = Z.T @ (scale[:, None] * (Q - np.asarray(H_mu) - Kc @ mu))
     true = (np.linalg.norm(residual, axis=0) / norms).tolist()
     if max(true) > 1e-6:
         return None
+    evals = np.abs(np.linalg.eigvalsh(0.5 * (red["Hr"] + red["Hr"].T)))
     return dict(gradients=direct[rows] + G_x[rows] - np.asarray(Fd_mu).T, rows=rows, true_residual=true,
-                asymmetry=0.0, condition=float(evals[-1] / evals[0]), seconds_hessian=time.perf_counter() - t0)
+                asymmetry=0.0, condition=float(evals.max() / max(evals.min(), 1e-300)),
+                seconds_hessian=time.perf_counter() - t0)
 
 
 def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):

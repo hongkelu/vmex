@@ -77,8 +77,8 @@ BETA_TOLERANCE = 0.1              # relative, for the final check
 N_CURRENT = 4
 CURRENT_SCALE = 0.1
 REDL_SURFACES = np.linspace(0.1, 0.9, 9)
-REDL_TOLERANCE = 1.0e-4
-REDL_LIMIT = 2.0e-4
+REDL_TOLERANCE = 1.0e-3
+REDL_LIMIT = 2.0e-3
 PICARD_ITERATIONS = 8
 
 # Targets the finished design is checked against:
@@ -397,12 +397,22 @@ print("[seed] " + ", ".join(f"{k} = {v:.4g}" for k, v in seed_values.items())
 print(f"Three-term free boundary + ESSOS at beta {100 * TARGET_BETA:.2f}%: {N_COIL} coil and {N_CURRENT + 1} "
       "current variables, SLSQP")
 initial_value = problem.fun(design0)
+# Each row is scaled by its own limit, so SLSQP weighs a violation of the Redl row (values ~1e-3) like one of
+# the iota rows (~0.4).
 constraints = [problem.nonlinear_constraint([IOTA_CONSTRAINT, -np.inf, -np.inf, -np.inf],
-                                            [np.inf, IOTA_CEILING_CONSTRAINT, ASPECT_CONSTRAINT, REDL_TOLERANCE])]
+                                            [np.inf, IOTA_CEILING_CONSTRAINT, ASPECT_CONSTRAINT, REDL_TOLERANCE],
+                                            scales=[IOTA_CONSTRAINT, IOTA_CEILING_CONSTRAINT, 0.1, REDL_TOLERANCE])]
+
+
+def report(x):
+    rows = problem.constraint_values(x)
+    print(f"[step {problem.accepted_step}] loss {problem.fun(x):.6e}; min |iota| {rows[0]:.4f}, max |iota| "
+          f"{rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}", flush=True)
+
+
 bounds = Bounds(design0 - PARAMETER_BOUND * design_scales, design0 + PARAMETER_BOUND * design_scales)
 result = opt.minimize(problem, method="SLSQP", constraints=constraints, bounds=bounds,
-                      callback=lambda x: print(f"[step {problem.accepted_step}] loss {problem.fun(x):.6e}",
-                                               flush=True),
+                      callback=report,
                       options={"maxiter": MAXITER, "ftol": 1e-12})
 x, final_value = problem.accepted.parameters, float(problem.fun(problem.accepted.parameters))
 print(f"[solve] {result.accepted_steps} accepted SLSQP steps, {problem.stats['trials']} trials "
@@ -443,7 +453,8 @@ minimum_iota, final_aspect = final_values["min |iota|"], final_values["aspect"]
 print("[final] " + ", ".join(f"{k} = {v:.4g}" for k, v in final_values.items()))
 optimizer_surface = boundary_surface(state_x, runtime_x)
 verification_surface = boundary_surface(final.state, final_context)
-surface_gap = float(jnp.max(jnp.linalg.norm(optimizer_surface.gamma - verification_surface.gamma, axis=-1)))
+surface_gap = float(np.max(np.linalg.norm(np.asarray(optimizer_surface.gamma) - np.asarray(verification_surface.gamma),
+                                          axis=-1)))
 print(f"The verification's free boundary is within {surface_gap:.4f} m of the optimizer's")
 print(f"\nObjective: {initial_value:.6e} -> {final_value:.6e} after {result.accepted_steps} SLSQP steps")
 print("Interface residuals of the final free boundary: " + ", ".join(

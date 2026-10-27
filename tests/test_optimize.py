@@ -276,16 +276,26 @@ def test_min_abs_iota_floors_the_profile_not_its_average(solovev_eq):
 @pytest.mark.full
 def test_vacuum_iota_of_a_vacuum_equilibrium_is_its_own_iota():
     """``vacuum_iota`` re-solves the state's boundary without pressure or current: for a vacuum deck that is
-    the same equilibrium, so it returns the state's own axis, half-mesh and edge |iota|, with a finite
-    derivative along the state."""
+    the deck's own implicit solve, so it returns that equilibrium's axis, half-mesh and edge |iota|, with a
+    finite derivative along the state.  (The implicit solve and ``solve_equilibrium`` of this deck differ by
+    1.5e-4 in iota, both converged to ftol 1e-13.)"""
+    from vmex.core import implicit as imp
+    from vmex.core.statephysics import _iotas_half
+
     inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_lowres")
     eq = opt.solve_equilibrium(inp)
     iota = opt.vacuum_iota(eq.inp)
     values = np.asarray(iota(eq.state, eq.runtime))
-    own = np.abs(np.asarray(eq.wout.iotas)[1:])
-    np.testing.assert_allclose(values[1:-1], own, rtol=1e-6)
-    np.testing.assert_allclose(values[-1], abs(float(eq.wout.iotaf[-1])), rtol=1e-6)
-    np.testing.assert_allclose(values[0], abs(float(opt.axis_iota(eq.state, eq.runtime))), rtol=1e-6)
+    device = jax.devices()[0]
+    params = imp.params_from_input(inp, device=device)
+    cfg = imp.make_config(inp, multigrid=True, device=device)
+    state = imp.solve_implicit(params, cfg)
+    runtime = imp.runtime_from_params(params, cfg)
+    half = np.abs(np.asarray(_iotas_half(state, runtime))[1:])
+    np.testing.assert_allclose(values[1:-1], half, rtol=1e-8)
+    np.testing.assert_allclose(values[-1], 1.5 * half[-1] - 0.5 * half[-2], rtol=1e-8)
+    np.testing.assert_allclose(values[0], abs(float(opt.axis_iota(state, runtime))), rtol=1e-8)
+    np.testing.assert_allclose(values[1:-1], np.abs(np.asarray(eq.wout.iotas)[1:]), rtol=1e-3)
     tangent = jax.tree_util.tree_map(lambda a: 1e-3 * jnp.ones_like(a), eq.state)
     _, jvp = jax.jvp(lambda state: iota(state, eq.runtime)[1], (eq.state,), (tangent,))
     assert np.isfinite(float(jvp))

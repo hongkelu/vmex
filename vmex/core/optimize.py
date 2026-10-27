@@ -1481,7 +1481,9 @@ _CURTOR_SCALE = 1.0e6
 
 
 def _current_uses_spline(inp: VmecInput) -> bool:
-    return "spline" in str(inp.pcurr_type).strip().lower()
+    """Whether the current profile is given by knot values (``AC_AUX_F``: splines and line segments)."""
+    kind = str(inp.pcurr_type).strip().lower()
+    return "spline" in kind or "line_segment" in kind
 
 
 def _current_values(inp: VmecInput, k: int) -> np.ndarray:
@@ -1549,11 +1551,6 @@ def _current_dof_setup(inp: VmecInput, current_dofs: int | None) -> tuple[int, f
         raise ValueError(f"current_dofs must be a positive int, got {current_dofs!r}")
     if int(inp.ncurr) != 1:
         raise ValueError("current_dofs requires ncurr = 1 (prescribed current)")
-    kind = str(inp.pcurr_type).strip().lower()
-    if "line_segment" in kind:
-        raise ValueError(
-            "current_dofs supports AC coefficients or spline knot values, "
-            f"not pcurr_type={inp.pcurr_type!r}")
     source = inp.ac_aux_f if _current_uses_spline(inp) else inp.ac
     size = int(np.asarray([] if source is None else source).size)
     if k > size:

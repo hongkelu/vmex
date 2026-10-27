@@ -26,7 +26,7 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 (``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.  The interface conditions leave the boundary's poloidal labelling
-free: ``ThreeTermsConfig.labelling`` fixes it (``"start"``, ``"equal_arc"`` or
+free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"`` or
 ``"none"``).
 
 This is an opt-in alternative to NESTOR (a VMEX extension, like position
@@ -191,10 +191,10 @@ def _equal_arc_rows(gamma):
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
 
-#: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the start
+#: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; ``"none"`` drops the rows (the start labelling at weight 0).
-LABEL_WEIGHTS = {"start": 1e-2, "equal_arc": 1e-3, "none": 0.0}
+#: on the benchmark designs; ``"none"`` drops the rows (the anchored labelling at weight 0).
+LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
 
 
 @dataclass(frozen=True)
@@ -202,7 +202,8 @@ class ThreeTermsConfig:
     """Settings of a three-term free-boundary solve (``three_terms=`` of the free-boundary solvers).
 
     ``labelling`` fixes the boundary's poloidal labelling, which the interface conditions leave free:
-    ``"start"`` penalizes the tangential offset of the boundary points from the initial boundary, ``"equal_arc"``
+    ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary (the
+    initial one: each labelled point is held near its position there, the surface free to move), ``"equal_arc"``
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
     part), and ``"none"`` adds no labelling rows.  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
@@ -271,7 +272,7 @@ class ThreeTermsConfig:
         return dict(max_mode=self.max_mode, nphi=int(self.nphi), ntheta=int(self.ntheta), digits=self.digits,
                     weights=tuple(self.weights), net_current_weight=self.net_current_weight,
                     label_weight=self.resolved_label_weight,
-                    labelling="start" if self.labelling == "none" else self.labelling,
+                    labelling="anchored" if self.labelling == "none" else self.labelling,
                     quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
                     bootstrap_weight=self.bootstrap_weight)
@@ -446,7 +447,7 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="start"):
+                 fixed_boundary=False, labelling="anchored"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -465,8 +466,8 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        if labelling not in ("start", "equal_arc"):
-            raise ValueError(f"labelling must be 'start' or 'equal_arc', got {labelling!r}")
+        if labelling not in ("anchored", "equal_arc"):
+            raise ValueError(f"labelling must be 'anchored' or 'equal_arc', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -519,7 +520,7 @@ class ThreeTermsModel:
         self._implicit_setup()
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                         labelling="start"):
+                         labelling="anchored"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium

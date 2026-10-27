@@ -311,13 +311,13 @@ Multigrid ladder and stepping
    * - ``THREE_TERMS_LABELLING``
      - ``'equal_arc'``
      - VMEX extension
-     - The boundary's poloidal labelling: ``'start'`` (offset from the initial
+     - The boundary's poloidal labelling: ``'anchored'`` (offset from the initial
        boundary), ``'equal_arc'`` or ``'none'``.
    * - ``THREE_TERMS_LABEL_WEIGHT``
      - ``-1``
      - VMEX extension
      - Weight of the labelling rows; a negative value is the labelling's default
-       (``1e-2`` for ``'start'``, ``1e-3`` for ``'equal_arc'``).
+       (``1e-2`` for ``'anchored'``, ``1e-3`` for ``'equal_arc'``).
    * - ``PRE_NITER``
      - —
      - rejected when active with 2-D GMRES

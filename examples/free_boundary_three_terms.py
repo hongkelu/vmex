@@ -11,7 +11,7 @@ casing (``pip install vmex[freeb]``).
 
 This solves the Landreman & Paul (2021) QA plasma at 0.5% beta in its fitted
 ESSOS coils with NESTOR and with the three-term solver in its labellings
-(``"start"``, ``"equal_arc"`` and ``"none"``: how the boundary's poloidal
+(``"anchored"``, ``"equal_arc"`` and ``"none"``: how the boundary's poloidal
 angle, which the interface conditions leave free, is fixed), and reports each
 result's interface residuals, edge rotational transform and distance from
 NESTOR's last closed surface.  The same solve runs from a deck with
@@ -41,8 +41,8 @@ NZETA = 16
 
 # The interface grid over one field period and its fixed singular quadrature, (4 nfp N, 2 N):
 N_INTERFACE = 48
-# Labellings and the weights of their rows (None: the default, 1e-2 for start and 1e-3 for equal arc):
-LABELLINGS = {"start": None, "equal_arc": None, "none": None}
+# Labellings and the weights of their rows (None: the default, 1e-2 for anchored and 1e-3 for equal arc):
+LABELLINGS = {"anchored": None, "equal_arc": None, "none": None}
 
 # VMEX_EXAMPLES_CI=1 is the short smoke pass the test suite runs: a coarse
 # plasma, one labelling and a short fit:

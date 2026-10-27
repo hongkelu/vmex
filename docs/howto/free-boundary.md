@@ -249,7 +249,7 @@ res = result.three_terms.boundary_residual   # RMS B.n, pressure balance and she
 
 The interface conditions leave the boundary's poloidal labelling free;
 `labelling` fixes it: `"equal_arc"` (equal arc length on every toroidal cut of
-the current surface, weight `1e-3`), `"start"` (the tangential offset from the
+the current surface, weight `1e-3`), `"anchored"` (the tangential offset from the
 initial boundary, weight `1e-2`) or `"none"`. Use a fixed singular quadrature
 `(4 nfp N, 2 N)` for an `N x N` interface grid. The edge pressure must vanish.
 `vj.solve_free_boundary_three_terms` is one solve, with `previous=` to continue

@@ -803,7 +803,7 @@ class VmecInput:
     position_gain: float = 4.0       #: proportional gain, in units of mu0 I / (4 pi R0^2)
     position_nmax: int = 0           #: highest helical harmonic controlled (0 = uniform B_Z only)
     lthree_terms: bool = False       #: free boundary from the three interface conditions instead of NESTOR
-    three_terms_labelling: str = "equal_arc"  #: the boundary's poloidal labelling: start, equal_arc or none
+    three_terms_labelling: str = "equal_arc"  #: the boundary's poloidal labelling: anchored, equal_arc or none
     three_terms_label_weight: float = -1.0    #: labelling-row weight; < 0 is the labelling's default
 
     def __post_init__(self) -> None:
@@ -838,8 +838,8 @@ class VmecInput:
         set_(self, "lthree_terms", bool(self.lthree_terms))
         set_(self, "three_terms_labelling", str(self.three_terms_labelling).strip().lower())
         set_(self, "three_terms_label_weight", float(self.three_terms_label_weight))
-        if self.three_terms_labelling not in ("start", "equal_arc", "none"):
-            raise ValueError("THREE_TERMS_LABELLING must be 'start', 'equal_arc' or 'none'")
+        if self.three_terms_labelling not in ("anchored", "equal_arc", "none"):
+            raise ValueError("THREE_TERMS_LABELLING must be 'anchored', 'equal_arc' or 'none'")
 
         # readin.f stops at the first nonpositive or decreasing entry; later
         # values are outside multi_ns_grid and never reach runvmec.f.

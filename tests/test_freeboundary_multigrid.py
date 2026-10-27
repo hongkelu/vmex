@@ -572,11 +572,11 @@ def test_three_terms_dispatches_and_polishes(monkeypatch) -> None:
     # The ladder converges on any boundary: an interface fit that did not succeed is not converged.
     calls.update(fit_converged=False, fits=[])
     del calls["nestor"]
-    deck = replace(inp, lthree_terms=True, three_terms_labelling="start")
+    deck = replace(inp, lthree_terms=True, three_terms_labelling="anchored")
     result = solve_free_boundary_multigrid(deck, ns_array=[5, 9], external_field=field,
                                            three_terms=ftt.ThreeTermsConfig(start="deck"))
     assert not result.converged and "nestor" not in calls and len(calls["fits"]) == 1
     calls["fits"] = []
     solve_free_boundary_multigrid(replace(deck, three_terms_label_weight=0.05), ns_array=[5, 9],
                                   external_field=field)  # None follows the deck's keys
-    assert [(c.labelling, c.label_weight) for _, c, _ in calls["fits"]] == [("start", 0.05)] * 2
+    assert [(c.labelling, c.label_weight) for _, c, _ in calls["fits"]] == [("anchored", 0.05)] * 2

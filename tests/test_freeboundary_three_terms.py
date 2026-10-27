@@ -87,7 +87,7 @@ def test_asymmetric_boundary_is_rejected():
 
 
 def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
-    """The configuration's choices and default weights, ``"none"`` as the start labelling without rows, and the
+    """The configuration's choices and default weights, ``"none"`` as the anchored labelling without rows, and the
     deck keys: ``None`` follows ``LTHREE_TERMS``, ``True`` is the defaults, ``False`` disables; the keys round-trip
     through an INDATA file."""
     for bad, match in ((dict(labelling="condensed"), "labelling"), (dict(start="coils"), "start"),
@@ -95,18 +95,18 @@ def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
         with pytest.raises(ValueError, match=match):
             vj.ThreeTermsConfig(**bad)
     weights = {name: vj.ThreeTermsConfig(labelling=name).resolved_label_weight
-               for name in ("start", "equal_arc", "none")}
-    assert weights == {"start": 1e-2, "equal_arc": 1e-3, "none": 0.0}
+               for name in ("anchored", "equal_arc", "none")}
+    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
     options = vj.ThreeTermsConfig(labelling="none").model_options()
-    assert options["labelling"] == "start" and options["label_weight"] == 0.0
+    assert options["labelling"] == "anchored" and options["label_weight"] == 0.0
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     assert fvc.resolve_three_terms(None, inp) is None and fvc.resolve_three_terms(True, inp) == vj.ThreeTermsConfig()
-    deck = replace(inp, lthree_terms=True, three_terms_labelling="START", three_terms_label_weight=-1.0)
+    deck = replace(inp, lthree_terms=True, three_terms_labelling="ANCHORED", three_terms_label_weight=-1.0)
     config = fvc.resolve_three_terms(None, deck)
-    assert config.labelling == "start" and config.label_weight is None
+    assert config.labelling == "anchored" and config.label_weight is None
     assert fvc.resolve_three_terms(False, deck) is None
     read = vj.VmecInput.from_file(replace(deck, three_terms_label_weight=0.05).to_indata(tmp_path / "input.three"))
-    assert (read.lthree_terms, read.three_terms_labelling, read.three_terms_label_weight) == (True, "start", 0.05)
+    assert (read.lthree_terms, read.three_terms_labelling, read.three_terms_label_weight) == (True, "anchored", 0.05)
     assert not vj.VmecInput.from_file(inp.to_indata(tmp_path / "input.nestor")).lthree_terms
     with pytest.raises(ValueError, match="THREE_TERMS_LABELLING"):
         replace(inp, three_terms_labelling="gauge")
@@ -196,8 +196,8 @@ def test_coil_net_current_is_the_circulation_around_the_axis():
 #: The smallest vacuum case that still has a free boundary: LP QA at mpol = ntor = 2, ns 7, a 12 x 12 interface
 #: grid with the boundary modes up to 1, and its fixed singular quadrature (4 nfp nphi, 2 ntheta).
 SMALL = dict(nphi=12, ntheta=12, max_mode=1, quadrature=(96, 24))
-#: ``SMALL`` with the start labelling at its default weight (the labelling these tests were written for).
-SMALL_START = vj.ThreeTermsConfig(labelling="start", **SMALL)
+#: ``SMALL`` with the anchored labelling at its default weight (the labelling these tests were written for).
+SMALL_ANCHORED = vj.ThreeTermsConfig(labelling="anchored", **SMALL)
 
 
 def _small_vacuum():
@@ -213,10 +213,10 @@ def test_three_term_option_fits_the_best_of_two_starts():
     inp, field = _small_vacuum()
     design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field, n=12)
     result = vj.solve_free_boundary_multigrid(inp, external_field=field,
-                                              three_terms=replace(SMALL_START, max_nfev=20))
+                                              three_terms=replace(SMALL_ANCHORED, max_nfev=20))
     res = result.three_terms.boundary_residual
     assert result.vacuum is None and res.normal < design.normal and res.sheet_current < design.sheet_current
-    assert result.three_terms.start in ("deck", "nestor") and result.three_terms.config.labelling == "start"
+    assert result.three_terms.start in ("deck", "nestor") and result.three_terms.config.labelling == "anchored"
 
 
 @needs_vc
@@ -249,7 +249,7 @@ def test_three_term_problem_gradient_and_one_slsqp_step():
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
-        quantities=(opt.mean_iota,), config=SMALL_START)
+        quantities=(opt.mean_iota,), config=SMALL_ANCHORED)
     x0 = problem.x0
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)
@@ -306,14 +306,14 @@ def test_equal_arc_problem_gradient_matches_resolved_differences(label_weight):
 
 def _small_problem(**options):
     """A one-coil-current design on the small vacuum free boundary: aspect ratio, with mean iota as a quantity.
-    ``boundary_*`` options are the problem's, the others the configuration's (``SMALL_START``)."""
+    ``boundary_*`` options are the problem's, the others the configuration's (``SMALL_ANCHORED``)."""
     inp, field = _small_vacuum()
     base = field.currents
     fit = {name: options.pop(name) for name in list(options) if name.startswith("boundary_")}
     return ThreeTermsFreeBoundaryProblem.from_loss(
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(1),
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
-        quantities=(opt.mean_iota,), config=replace(SMALL_START, **options), **fit)
+        quantities=(opt.mean_iota,), config=replace(SMALL_ANCHORED, **options), **fit)
 
 
 @needs_vc
@@ -474,7 +474,7 @@ def test_a_design_with_edge_pressure_is_rejected():
         inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
         field_from_parameters=lambda x: field,
         plasma_from_parameters=lambda params, x: replace(params, am=params.am.at[0].add(1.0e3 * x[1])),
-        config=SMALL_START)
+        config=SMALL_ANCHORED)
     assert problem._solve(np.array([0.0, 0.01])) is None
     with pytest.raises(TrialRejected, match="edge pressure"):
         problem.fun(np.array([0.0, 0.01]))
@@ -565,7 +565,7 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        config=SMALL_START)
+        config=SMALL_ANCHORED)
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, grad = problem.value_and_grad(x)
@@ -716,7 +716,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     # free boundary's edge R B_phi equals the coil current that _coil_net_current integrates on the axis.
     np.testing.assert_allclose(abs(fvc._coil_net_current(field, nestor.wout)), abs(float(nestor.wout.rbtor)),
                                rtol=1e-3)
-    config = vj.ThreeTermsConfig(labelling="start")
+    config = vj.ThreeTermsConfig(labelling="anchored")
     fits = [fvc.solve_free_boundary_three_terms(inp, config, external_field=field, initial_boundary=start)
             for start in (None, nestor_deck)]
     for fit in fits:
@@ -753,7 +753,7 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     design = _residual(inp, opt.solve_equilibrium(replace(inp, lfreeb=False)), field)
     result = vj.solve_free_boundary_multigrid(inp, external_field=field,
-                                              three_terms=vj.ThreeTermsConfig(labelling="start"))
+                                              three_terms=vj.ThreeTermsConfig(labelling="anchored"))
     assert result.converged and result.vacuum is None
     res = result.three_terms.boundary_residual
     for name in ("normal", "pressure", "sheet_current"):
@@ -763,7 +763,7 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.parametrize("labelling, label_weight", [("start", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2)])
+@pytest.mark.parametrize("labelling, label_weight", [("anchored", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2)])
 def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
@@ -848,7 +848,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     field = _coil_field("ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json")
     profiles = _lp_beta0p5_profiles(inp)
     fit = fvc.solve_free_boundary_three_terms(
-        inp, vj.ThreeTermsConfig(labelling="start", bootstrap=profiles, jacobian_ftol=None), external_field=field)
+        inp, vj.ThreeTermsConfig(labelling="anchored", bootstrap=profiles, jacobian_ftol=None), external_field=field)
     model = fit.model
     state, mask, params, _ = fit.aux
     assert fit.x.size == model.n_boundary + 3 + 24
@@ -970,7 +970,7 @@ def test_three_term_on_the_cth_like_deck(case):
     inp = replace(vj.VmecInput.from_file(DATA / "input.cth_like_free_bdy"), mgrid_file=str(CTH_MGRID))
     if case == "vacuum":
         inp = replace(inp, pres_scale=0.0, curtor=0.0)
-    three = vj.solve_free_boundary_multigrid(inp, three_terms=vj.ThreeTermsConfig(labelling="start"))
+    three = vj.solve_free_boundary_multigrid(inp, three_terms=vj.ThreeTermsConfig(labelling="anchored"))
     assert three.converged
     w = _wout(inp, three)
     vmec2000 = SimpleNamespace(nfp=int(w.nfp), xm=np.asarray(reference["xm"]), xn=np.asarray(reference["xn"]),

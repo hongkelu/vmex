@@ -106,9 +106,12 @@ NS = 16
 FTOL = 1.0e-10
 NITER = 4000
 
-# The three-term free boundary of every trial: labelling, the interface grid over
-# one field period, and its fixed singular quadrature (4 nfp N, 2 N).
+# The three-term free boundary of every trial: the labelling ("equal_arc", "start" or
+# "none") and the weight of its rows (None: the labelling's default, 1e-3 for equal
+# arc and 1e-2 for start), the interface grid over one field period, and its fixed
+# singular quadrature (4 nfp N, 2 N).
 LABELLING = "equal_arc"
+LABEL_WEIGHT = None
 N_INTERFACE = 32
 
 # Budgets: accepted SLSQP steps (each trial is one certified free boundary and,
@@ -304,8 +307,8 @@ def plasma_values(equilibrium_state, runtime):
             "max |iota|": float(max_abs_iota(equilibrium_state, runtime))}
 
 
-config = vj.ThreeTermsConfig(labelling=LABELLING, nphi=N_INTERFACE, ntheta=N_INTERFACE,
-                             quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE))
+config = vj.ThreeTermsConfig(labelling=LABELLING, label_weight=LABEL_WEIGHT, nphi=N_INTERFACE,
+                             ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE))
 problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
     inp, loss, x0, field_from_parameters=field_from_x, scales=scales,
     quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio), config=config)
@@ -401,7 +404,7 @@ summary = {
     "optimization_seconds": round(optimization_seconds, 1), "coil_fit_iterations": int(coil_fit.nit),
     "accepted_steps": int(result.accepted_steps), "stop_reason": result.stop_reason,
     "trials": int(problem.stats["trials"]), "rejected_trials": int(problem.stats["failed"]),
-    "labelling": LABELLING, "phiedge": float(inp.phiedge), "seed boundary shift": boundary_shift,
+    "labelling": LABELLING, "label_weight": config.resolved_label_weight, "phiedge": float(inp.phiedge), "seed boundary shift": boundary_shift,
     "seed": seed_values,
     "final": {**final_values, "interface residuals": vars(final_residual),
               "B.n/B RMS": normal_field_rms_final, "coil-surface distance": coil_surface_distance,

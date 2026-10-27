@@ -41,7 +41,8 @@ NZETA = 16
 
 # The interface grid over one field period and its fixed singular quadrature, (4 nfp N, 2 N):
 N_INTERFACE = 48
-LABELLINGS = ["start", "equal_arc", "none"]
+# Labellings and the weights of their rows (None: the default, 1e-2 for start and 1e-3 for equal arc):
+LABELLINGS = {"start": None, "equal_arc": None, "none": None}
 
 # VMEX_EXAMPLES_CI=1 is the short smoke pass the test suite runs: a coarse
 # plasma, one labelling and a short fit:
@@ -49,7 +50,7 @@ ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
 MAX_NFEV = 60
 if ci_smoke:
     MPOL, NTOR, NS, N_INTERFACE, MAX_NFEV = 3, 3, 13, 24, 20
-    LABELLINGS = ["equal_arc"]
+    LABELLINGS = {"equal_arc": None}
 
 ###############################################################################
 # End of input parameters.
@@ -82,8 +83,8 @@ def lcfs_distance_mm(a, b, nphi=5, ntheta=181):
 
 nestor = vj.wout_from_result(inp, vj.solve_free_boundary_multigrid(inp, external_field=field))
 print(f"NESTOR: iota edge {float(np.asarray(nestor.iotaf)[-1]):+.5f}")
-for labelling in LABELLINGS:
-    config = vj.ThreeTermsConfig(labelling=labelling, start="deck", nphi=N_INTERFACE, ntheta=N_INTERFACE,
+for labelling, label_weight in LABELLINGS.items():
+    config = vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, start="deck", nphi=N_INTERFACE, ntheta=N_INTERFACE,
                                  quadrature=(4 * int(inp.nfp) * N_INTERFACE, 2 * N_INTERFACE), max_nfev=MAX_NFEV)
     result = vj.solve_free_boundary_multigrid(inp, external_field=field, three_terms=config)
     three, res = result.three_terms, result.three_terms.boundary_residual

@@ -560,7 +560,9 @@ def test_rejected_trial_leaves_the_continuation(monkeypatch):
 @pytest.mark.full
 def test_plasma_map_derivatives_at_nonzero_offsets():
     """The design gradient differentiates the plasma map itself, phiedge0 (1 + x1/2) + x2^2 / 100: at a nonzero
-    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0."""
+    offset, not with the updated PHIEDGE as its base, and through x2 although its derivative is zero at x0.
+    Tight fits: the gradient is the implicit derivative of a stationary fit, and the default fits' trials stop
+    short of it (their differences are 1.8% off; at ftol 1e-6 they agree to 5e-4)."""
     inp, field = _small_vacuum()
     base = field.currents
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -568,7 +570,7 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
         field_from_parameters=lambda x: replace(field, currents=base * (1 + 0.05 * x[0])),
         plasma_from_parameters=lambda params, x: replace(
             params, phiedge=params.phiedge * (1 + 0.5 * x[1]) + 0.01 * x[2] ** 2),
-        config=SMALL_ANCHORED)
+        config=SMALL_ANCHORED, boundary_ftol=1e-6, boundary_max_nfev=200)
     assert list(problem._plasma) == [1, 2]
     x = np.array([0.0, 0.1, 0.3])
     _, grad = problem.value_and_grad(x)

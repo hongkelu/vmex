@@ -47,6 +47,9 @@ class CoilDesign:
         require_optional("essos", "coil designs")
         self.coefficients = np.asarray(coils.dofs_curves) / np.asarray(coils.curves.scaling)[None, None, :]
         self.currents = np.asarray(coils.dofs_currents_raw, dtype=float)
+        # a fixed current normalization: ESSOS' default (the mean |current|) of traced currents would be a tracer
+        # in the coils' pytree metadata, which jit cannot hash
+        self.currents_scale = float(np.mean(np.abs(self.currents)))
         self.current_dofs = tuple(int(i) for i in current_dofs)
         if len(set(self.current_dofs)) != len(self.current_dofs) or any(
                 not 0 <= i < len(self.currents) or self.currents[i] == 0 for i in self.current_dofs):
@@ -120,7 +123,8 @@ class CoilDesign:
         x = jnp.asarray(x)
         raw = jnp.asarray(self.coefficients) + x[self._coil0 + len(self.current_dofs):].reshape(
             self.coefficients.shape)
-        return Coils(Curves(raw, self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x))
+        return Coils(Curves(raw, self.n_segments, self.nfp, self.stellsym), self.base_currents_at(x),
+                     currents_scale=self.currents_scale)
 
     def __call__(self, x):
         """The differentiable filament field (``essos.fields.BiotSavart``) of :meth:`coils_from_x`."""

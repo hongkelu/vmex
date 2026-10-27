@@ -43,6 +43,9 @@ def test_nominal_design_is_the_coils_and_their_field(coils):
     x[1] = 0.1  # the second current coordinate: base coil 1 up 10%
     np.testing.assert_allclose(design.base_currents_at(x)[1], 1.1 * coils.dofs_currents_raw[1], rtol=1e-14)
     assert design.plasma_from_parameters is None and len(design.dof_names) == design.size
+    # the field of a traced design passes into a jitted function (its pytree metadata stays hashable)
+    inner = jax.jit(lambda field: field.b_cyl(r, phi, z)[0])
+    np.testing.assert_allclose(jax.jit(lambda x: inner(design(x)))(x), inner(design(x)), rtol=1e-13)
 
 
 def test_plasma_coordinates_move_phiedge_and_the_current_profile(coils):

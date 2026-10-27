@@ -193,7 +193,7 @@ ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; ``"none"`` drops the rows (the anchored labelling at weight 0).
+#: on the benchmark designs; ``"none"`` has no labelling rows, as either labelling at weight 0 (the same model).
 LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
 
 
@@ -205,7 +205,7 @@ class ThreeTermsConfig:
     ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary (the
     initial one: each labelled point is held near its position there, the surface free to move), ``"equal_arc"``
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
-    part), and ``"none"`` adds no labelling rows.  ``label_weight`` scales those rows against the interface rows
+    part), and ``"none"`` adds no labelling rows (either labelling at ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
     NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
     minima).
@@ -276,7 +276,7 @@ class ThreeTermsConfig:
         return dict(max_mode=self.max_mode, nphi=int(self.nphi), ntheta=int(self.ntheta), digits=self.digits,
                     weights=tuple(self.weights), net_current_weight=self.net_current_weight,
                     label_weight=self.resolved_label_weight,
-                    labelling="anchored" if self.labelling == "none" else self.labelling,
+                    labelling=self.labelling if self.resolved_label_weight else "none",
                     quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
                     bootstrap_weight=self.bootstrap_weight)
@@ -457,6 +457,10 @@ class ThreeTermsModel:
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
+        if labelling not in ("anchored", "equal_arc", "none"):
+            raise ValueError(f"labelling must be 'anchored', 'equal_arc' or 'none', got {labelling!r}")
+        if not label_weight:  # no labelling rows: the same problem whichever labelling was named
+            labelling, label_weight = "none", 0.0
         #: The settings that define the discrete problem (a checkpoint must match them to restore).
         self.options = dict(max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, weights=list(weights),
                             net_current_weight=net_current_weight, label_weight=label_weight, trial_ftol=trial_ftol,
@@ -470,8 +474,6 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        if labelling not in ("anchored", "equal_arc"):
-            raise ValueError(f"labelling must be 'anchored' or 'equal_arc', got {labelling!r}")
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -546,13 +548,13 @@ class ThreeTermsModel:
         def rows_at(state, runtime, field):
             values, area, gamma = _interface_terms(fixed, state, field, runtime=runtime, nphi=nphi, ntheta=ntheta,
                                                    digits=digits, precision=precision, p_edge=0.0)
+            rows, phase = scale * values, jnp.zeros(0)
             if labelling == "equal_arc":  # a labelling of the current surface alone: no reference to the start
                 label, phase = _equal_arc_rows(gamma)
-                label, phase = label_weight * label, label_weight * phase / np.sqrt(nphi)
-            else:
-                label, phase = label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0), jnp.zeros(0)
-            interface = jnp.concatenate([(jnp.sqrt(area)[None] * jnp.concatenate([scale * values, label[None]])).ravel(),
-                                         phase])
+                rows, phase = jnp.concatenate([rows, label_weight * label[None]]), label_weight * phase / np.sqrt(nphi)
+            elif labelling == "anchored":
+                rows = jnp.concatenate([rows, label_weight * jnp.sum((gamma - gamma0) * tangent, axis=0)[None]])
+            interface = jnp.concatenate([(jnp.sqrt(area)[None] * rows).ravel(), phase])
             if not net_current_weight:
                 return interface
             G_coil = jnp.abs(_net_current(field, *axis))

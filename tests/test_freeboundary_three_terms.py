@@ -98,7 +98,10 @@ def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
                for name in ("anchored", "equal_arc", "none")}
     assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
     options = vj.ThreeTermsConfig(labelling="none").model_options()
-    assert options["labelling"] == "anchored" and options["label_weight"] == 0.0
+    assert options["labelling"] == "none" and options["label_weight"] == 0.0
+    # at weight 0 every labelling is the no-label model
+    assert all(vj.ThreeTermsConfig(labelling=name, label_weight=0.0).model_options() == options
+               for name in ("anchored", "equal_arc"))
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     assert fvc.resolve_three_terms(None, inp) is None and fvc.resolve_three_terms(True, inp) == vj.ThreeTermsConfig()
     deck = replace(inp, lthree_terms=True, three_terms_labelling="ANCHORED", three_terms_label_weight=-1.0)

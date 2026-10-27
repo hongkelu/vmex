@@ -45,7 +45,9 @@ ESSOS_COIL_EXAMPLES = (
     EXAMPLES / "optimization" / "single_stage_optimization_finite_beta.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization.py",
     EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_finite_beta.py",
+    EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_three_terms.py",
     EXAMPLES / "optimization" / "QA_optimization_alpha_losses.py",
+    EXAMPLES / "free_boundary_three_terms.py",
 )
 
 
@@ -154,6 +156,7 @@ EXECUTED_EXAMPLES = {
     "examples/free_boundary_phiedge.py",
     "examples/free_boundary_position_control.py",
     "examples/free_boundary_relax_constraint.py",
+    "examples/free_boundary_three_terms.py",
     "examples/hot_restart_scan.py",
     "examples/mirror/mirror_fixed_boundary_axisymmetric.py",
     "examples/mirror/mirror_fixed_boundary_nonaxisymmetric.py",
@@ -185,6 +188,7 @@ EXECUTED_EXAMPLES = {
     "examples/optimization/optimize_bootstrap_current.py",
     "examples/optimization/single_stage_free_boundary_optimization.py",
     "examples/optimization/single_stage_free_boundary_optimization_finite_beta.py",
+    "examples/optimization/single_stage_free_boundary_optimization_three_terms.py",
     "examples/optimization/single_stage_optimization.py",
     "examples/optimization/single_stage_optimization_augmented_lagrangian.py",
     "examples/optimization/single_stage_optimization_finite_beta.py",
@@ -547,6 +551,26 @@ def test_fixed_free_boundary_comparison(tmp_path):
     assert field is not None and 3.0e-2 < float(field.group(1)) < 2.5e-1
     assert surfaces is not None and np.max(np.fromstring(surfaces.group(1), sep=" ")) < 1.5e-2
     assert (tmp_path / "vmex_fixed_free_boundary_comparison.png").stat().st_size > 10_000
+
+
+@pytest.mark.full  # three-term free boundaries: virtual casing and exact boundary Jacobians
+def test_free_boundary_three_terms(tmp_path):
+    pytest.importorskip("essos")
+    pytest.importorskip("virtual_casing_jax")
+    out = _run_example(EXAMPLES / "free_boundary_three_terms.py", tmp_path, timeout=3600)
+    assert "NESTOR: iota edge" in out and "three terms, equal_arc labelling" in out
+    assert (tmp_path / "wout_three_terms_equal_arc.nc").stat().st_size > 10_000
+
+
+@pytest.mark.full  # one certified three-term free boundary per trial
+def test_single_stage_free_boundary_three_terms(tmp_path):
+    pytest.importorskip("essos")
+    pytest.importorskip("virtual_casing_jax")
+    out = _run_example(EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_three_terms.py",
+                       tmp_path, timeout=3600)
+    assert "[seed]" in out and "[final]" in out
+    summary = json.loads((tmp_path / "single_stage_free_boundary_three_terms_summary.json").read_text())
+    assert summary["accepted_steps"] >= 1 and summary["final"]["interface residuals"]["sheet_current"] < 1e-2
 
 
 def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():

@@ -299,6 +299,25 @@ Multigrid ladder and stepping
      - VMEX extension
      - Highest helical harmonic controlled (``0`` is the uniform vertical field
        only; at most ``NTOR``).  Experimental.
+   * - ``LTHREE_TERMS``
+     - ``F``
+     - VMEX extension
+     - Free boundary only.  Solves for the boundary on which all three
+       plasma-vacuum interface conditions hold (``B . n = 0``, pressure balance
+       and no sheet current; virtual casing) instead of NESTOR, and reports the
+       interface residuals in the run log and ``result.three_terms``.  An
+       explicit ``three_terms=`` argument overrides it.  See
+       :doc:`/howto/free-boundary`.
+   * - ``THREE_TERMS_LABELLING``
+     - ``'equal_arc'``
+     - VMEX extension
+     - The boundary's poloidal labelling: ``'start'`` (offset from the initial
+       boundary), ``'equal_arc'`` or ``'none'``.
+   * - ``THREE_TERMS_LABEL_WEIGHT``
+     - ``-1``
+     - VMEX extension
+     - Weight of the labelling rows; a negative value is the labelling's default
+       (``1e-2`` for ``'start'``, ``1e-3`` for ``'equal_arc'``).
    * - ``PRE_NITER``
      - —
      - rejected when active with 2-D GMRES

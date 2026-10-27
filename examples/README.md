@@ -58,6 +58,10 @@ that research budget as one commented set of constants next to the default.
   - `free_boundary_phiedge.py` — find the PHIEDGE whose free-boundary LCFS
     passes through a target outboard-midplane radius (`vj.solve_phiedge`), for
     comparing with codes pinned by an edge point instead of a flux.
+  - `free_boundary_three_terms.py` — the LP QA plasma at 0.5% beta in its
+    fitted coils, solved with NESTOR and with `three_terms=vj.ThreeTermsConfig(...)`
+    (all three plasma-vacuum interface conditions, virtual casing), in each
+    labelling: interface residuals, edge iota and the distance from NESTOR.
   - `vmex_essos_workflow.py` — both Python seams in one round trip: a solved
     equilibrium becomes an `essos.fields.Vmec` (`vj.essos_vmec_field`) that
     ESSOS traces field lines through, and an ESSOS coil set becomes the
@@ -148,6 +152,11 @@ that research budget as one commented set of constants next to the default.
   the LCFS implicit and vary only the coil shapes, through the coupled NESTOR
   adjoint. Each single-stage script runs in 2.1-4.6 min end to end on a laptop,
   with a cold JAX cache, and states its own measured time.
+  `single_stage_free_boundary_optimization_three_terms.py` *(preview)* is the
+  free-boundary design problem at the three-term free boundary: every trial is
+  a certified boundary fit with exact design gradients
+  (`vj.ThreeTermsFreeBoundaryProblem`), and SLSQP holds the iota window and the
+  aspect limit as constraints.
   `QA_optimization_DMerc_vacuum.py` screens a vacuum candidate with the
   frozen-geometry pressure proxies before re-solving at finite pressure, and
   `QA_optimization_global.py` explores basins with SciPy basin hopping before

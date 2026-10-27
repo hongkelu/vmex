@@ -977,7 +977,8 @@ def exact_products(design, x, sol, V, check=True, chunk=None):
     single = V.shape[1] == 1
     if single:  # a one-column call compiles without the product loop (one trip), with far more device memory
         V = np.repeat(V, 2, axis=1)
-    chunk = None if chunk is None or int(chunk) >= V.shape[1] else max(int(chunk), 1)
+    # one column (repeated) is never chunked: the chunked reshape fails on an empty design (a free boundary alone)
+    chunk = None if chunk is None or single or int(chunk) >= V.shape[1] else max(int(chunk), 1)
     got = design._exact_products_core(sol["state"], sol["mask"], jnp.asarray(x, dtype=float),
                                       jnp.asarray(sol["x"], dtype=float), jnp.asarray(V), chunk=chunk)
     HV, FdV, L_b, L_x, mu_ok, tangent_ok, adjoint_ok = got

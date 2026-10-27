@@ -520,3 +520,63 @@ def test_prefetch_compile_parity_and_bookkeeping() -> None:
     assert float(result.wb) == float(baseline.wb)
     assert float(result.r00) == float(baseline.r00)
     assert int(result.iterations) == int(baseline.iterations)
+
+
+@dataclass(frozen=True)
+class _Result:
+    state: object
+    three_terms: object = None
+    converged: bool = True
+
+
+def test_three_terms_dispatches_and_polishes(monkeypatch) -> None:
+    """``three_terms=`` fits the boundary from the configured starts, keeps the lower cost, and returns the
+    fixed-boundary ladder's final stage on it with ``result.three_terms``; ``None`` follows the deck."""
+    from vmex.core import freeboundary_three_terms as ftt
+
+    inp = VmecInput.from_file(DECK)
+    with pytest.raises(NotImplementedError, match="deck boundary"):
+        solve_free_boundary_multigrid(inp, external_field=object(), three_terms=True,
+                                      initial_state=_state(3, 1, 0.0))
+    calls = {"fits": []}
+    solution = _state(9, 1, 2.0)
+    fit_input = replace(inp, ftol_array=np.asarray([1e-11]), niter_array=np.asarray([50]))
+
+    def fake_fit(ladder, config, **kwargs):
+        calls["fits"].append((ladder, config, kwargs))
+        cost = 2.0 if kwargs.get("initial_boundary") is None else 1.0  # NESTOR's basin is the lower here
+        return SimpleNamespace(input=fit_input, equilibrium=SimpleNamespace(solution=solution), cost=cost,
+                               success=calls.get("fit_converged", True), start=kwargs.get("initial_boundary"))
+
+    def fake_solve_multigrid(inp_, **kwargs):
+        calls["polish"] = (inp_, kwargs)
+        return _Result(kwargs["initial_state"])
+
+    monkeypatch.setattr(ftt, "solve_free_boundary_three_terms", fake_fit)
+    monkeypatch.setattr(MG, "solve_multigrid", fake_solve_multigrid)
+    nestor_start = object()
+    monkeypatch.setattr(MG, "_nestor_boundary", lambda ladder, **kw: calls.setdefault("nestor", (ladder, kw))
+                        and nestor_start)
+    field, config = object(), ftt.ThreeTermsConfig(max_nfev=3)
+    result = solve_free_boundary_multigrid(inp, ns_array=[5, 9], external_field=field, three_terms=config)
+
+    (ladder, got, deck_kwargs), (_, _, nestor_kwargs) = calls["fits"]
+    np.testing.assert_array_equal(ladder.ns_array, [5, 9])
+    assert got is config and deck_kwargs == {"external_field": field, "mgrid_path": None}
+    assert calls["nestor"][0] is ladder and calls["nestor"][1]["external_field"] is field
+    assert nestor_kwargs["initial_boundary"] is nestor_start
+    polish_input, polish = calls["polish"]
+    assert polish_input is fit_input
+    assert polish["ns_array"] == [9] and polish["ftol_array"] == [1e-11] and polish["niter_array"] == [50]
+    assert result.state is solution and result.converged and result.three_terms.start is nestor_start
+    # The ladder converges on any boundary: an interface fit that did not succeed is not converged.
+    calls.update(fit_converged=False, fits=[])
+    del calls["nestor"]
+    deck = replace(inp, lthree_terms=True, three_terms_labelling="start")
+    result = solve_free_boundary_multigrid(deck, ns_array=[5, 9], external_field=field,
+                                           three_terms=ftt.ThreeTermsConfig(start="deck"))
+    assert not result.converged and "nestor" not in calls and len(calls["fits"]) == 1
+    calls["fits"] = []
+    solve_free_boundary_multigrid(replace(deck, three_terms_label_weight=0.05), ns_array=[5, 9],
+                                  external_field=field)  # None follows the deck's keys
+    assert [(c.labelling, c.label_weight) for _, c, _ in calls["fits"]] == [("start", 0.05)] * 2

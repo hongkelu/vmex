@@ -123,9 +123,12 @@ CONSTRAINT_WEIGHT = 1.0e3
 # Bound on each scaled coil variable:
 PARAMETER_BOUND = 3.0
 
-# Equilibria of every trial: radial surfaces, force tolerance and iteration cap;
-# the check at the end re-solves the final coils' free boundary on the same grid.
-NS = 16
+# A low-resolution demonstration: the plasma's Fourier resolution (the boundary's modes are
+# solved up to MPOL - 1 = NTOR), and the equilibria of every trial: radial surfaces, force
+# tolerance and iteration cap; the check at the end re-solves the final coils' free boundary
+# on the same grid.
+MPOL = NTOR = 3
+NS = 11
 FTOL = 1.0e-10
 NITER = 4000
 
@@ -135,11 +138,11 @@ NITER = 4000
 # singular quadrature (4 nfp N, 2 N).
 LABELLING = "equal_arc"
 LABEL_WEIGHT = None
-N_INTERFACE = 32
+N_INTERFACE = 24
 
 # Budgets: accepted SLSQP steps (each trial is one certified free boundary and,
 # when SLSQP asks, one gradient), and the coil-only pre-fit.
-MAXITER = 8
+MAXITER = 5
 COIL_FIT_MAXITER = 200            # coil-only pre-fit, no equilibrium solves
 
 # Surface grid the coil terms use:
@@ -170,7 +173,7 @@ am = np.zeros(21)
 am[:len(PRESSURE_SHAPE)] = PRESSURE_SHAPE
 inp = replace(inp, rbc=rbc, zbs=zbs, delt=0.5, pmass_type="power_series", am=am, pres_scale=1.0,
               ncurr=1, curtor=0.0, ac=np.zeros(21)).change_resolution(
-    mpol=5, ntor=5, ntheta=16, nzeta=14)
+    mpol=MPOL, ntor=NTOR, ntheta=2 * MPOL + 6, nzeta=2 * NTOR + 6)
 surface_seed = surfacerzfourier_from_boundary(
     jnp.asarray(inp.rbc), jnp.asarray(inp.zbs), NFP, nphi=NPHI, ntheta=NTHETA)
 

@@ -35,24 +35,24 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 COILS_FILE = DATA_DIR / "ESSOS_biot_savart_LandremanPaulQA_beta0p5_bootstrap.json"
 INPUT_FILE = DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap"
 
-# Plasma resolution (the boundary's Fourier modes are solved up to MPOL - 1 = NTOR):
-MPOL, NTOR, NS = 4, 4, 25
+# A low-resolution demonstration: the plasma's resolution (the boundary's Fourier modes are
+# solved up to MPOL - 1 = NTOR):
+MPOL, NTOR, NS = 3, 3, 13
 NITER, FTOL = 5000, 1e-10
 
 # Toroidal grid of the plasma solve:
 NZETA = 16
 
 # The interface grid over one field period and its fixed singular quadrature, (4 nfp N, 2 N):
-N_INTERFACE = 48
+N_INTERFACE = 24
 # Labellings and the weights of their rows (None: the default, 1e-2 for anchored and 1e-3 for equal arc):
 LABELLINGS = {"anchored": None, "equal_arc": None, "none": None}
 
-# VMEX_EXAMPLES_CI=1 is the short smoke pass the test suite runs: a coarse
-# plasma, one labelling and a short fit:
+# VMEX_EXAMPLES_CI=1 is the short smoke pass the test suite runs: one labelling and a short fit:
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
-MAX_NFEV = 60
+MAX_NFEV = 30
 if ci_smoke:
-    MPOL, NTOR, NS, N_INTERFACE, MAX_NFEV = 3, 3, 13, 24, 20
+    MAX_NFEV = 20
     LABELLINGS = {"equal_arc": None}
 
 ###############################################################################

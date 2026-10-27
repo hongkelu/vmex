@@ -829,13 +829,20 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
         red = _gauge_reduced(model, b0, g, H)
     Z, Hr = red["Z"], red["Hr"]
     Q = G_b[rows].T
-    mu = scale[:, None] * (Z @ scipy.linalg.solve(Hr, Z.T @ (scale[:, None] * Q), assume_a="sym"))
-    H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
-    curvature = np.asarray(model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"]))) @ mu
-    residual = Z.T @ (scale[:, None] * (Q - np.asarray(H_mu) - curvature))
-    true = (np.linalg.norm(residual, axis=0) / np.maximum(np.linalg.norm(Z.T @ (scale[:, None] * Q), axis=0),
-                                                          1e-300)).tolist()
-    if max(true) > 1e-6:
+    Kc = np.asarray(model.gauge_curvature(jnp.asarray(b0), jnp.asarray(red["lam"])))
+    rhs = Z.T @ (scale[:, None] * Q)
+    norms = np.maximum(np.linalg.norm(rhs, axis=0), 1e-300)
+    mu = scale[:, None] * (Z @ scipy.linalg.solve(Hr, rhs, assume_a="sym"))
+    # Iterative refinement on the true residual (exact products): one solve at the reduced condition (~1e8 at
+    # 8 x 8) keeps ~1e-6 of the right-hand side, at the gate (QA production missed it at 2.5e-6)
+    for _ in range(MULTIPLIER_REFINEMENTS + 1):
+        H_mu, Fd_mu, _ = exact_products(design, x, sol, mu, check=False)
+        residual = Z.T @ (scale[:, None] * (Q - np.asarray(H_mu) - Kc @ mu))
+        true = (np.linalg.norm(residual, axis=0) / norms).tolist()
+        if max(true) <= 1e-6:
+            break
+        mu = mu + scale[:, None] * (Z @ scipy.linalg.solve(Hr, residual, assume_a="sym"))
+    else:
         raise RuntimeError(f"gauge multipliers missed: true residuals {true}")
     eig = np.linalg.eigvalsh(Hr)
     if isinstance(sol.get("anchor"), dict):  # the next trials' quasi-Newton start and preconditioner (exact)
@@ -846,6 +853,8 @@ def _gauge_gradients(design, x, sol, G_b, G_x, direct, rows, kept, stats):
                 seconds_hessian=time.perf_counter() - t0)
 
 
+#: Iterative refinements of the dense gauge multipliers on their true residual (each one exact-product call).
+MULTIPLIER_REFINEMENTS = 3
 #: Conjugate-gradient iterations of the projected gauge multipliers (each one exact-product call).
 PROJECTED_CG_MAXITER = 30
 #: Restarts of that CG on its true defect.

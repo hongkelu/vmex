@@ -1143,74 +1143,103 @@ class ThreeTermsFreeBoundaryModel:
         Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
-        import scipy.optimize
-
         x = np.asarray(self.x0 if x0 is None else x0, dtype=float)
         nfev = njev = 0
+        evaluate, steps = self._boundary_steps(params, field, tight=tight, fresh_current=fresh_current,
+                                               max_nfev=max_nfev, verbose=verbose)
+        if jacobian is not None:
+            done, x, nfev = self._warm_fit(evaluate, steps, x, jacobian, field, ftol=ftol, target_cost=target_cost)
+            if done is not None:
+                return done
+        if (self.fit if fit is None else fit) == "secant":  # cold, or the warm reuse fell short: secant rounds
+            done, x, nfev, njev = self._secant_fit(evaluate, steps, x, field, ftol=ftol, jacobian_ftol=jacobian_ftol,
+                                                   refresh_on_stall=refresh_on_stall, nfev=nfev, njev=njev)
+            if done is not None:
+                return done
+        return self._trust_region_fit(evaluate, steps, x, field, ftol=ftol, jacobian_ftol=jacobian_ftol,
+                                      max_nfev=max_nfev, refresh_on_stall=refresh_on_stall, verbose=verbose,
+                                      nfev=nfev, njev=njev)
+
+    def _boundary_steps(self, params, field, *, tight, fresh_current, max_nfev, verbose):
+        """``evaluate(x)`` of the boundary rows at ``params`` and ``field``, and ``steps(x, r, aux, J, ftol,
+        update=None)``: :func:`_levenberg_marquardt` from there, from the radius the model carries at the call, with
+        a fresh current block certifying each finish if ``fresh_current`` (and the current is projected)."""
         columns = ((lambda z, aux: self.current_columns(z, aux, field))
                    if fresh_current and self._projected is not None else None)
-        if jacobian is not None:
-            first = self.evaluate(x, params, field, tight=tight)
-            if first is None:
-                raise VmecConvergenceError("the warm-start boundary has no certified equilibrium")
-            out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
-                                   current_columns=columns)
+
+        def evaluate(z):
+            return self.evaluate(z, params, field, tight=tight)
+
+        def steps(x, r, aux, J, ftol, update=None):
+            return _levenberg_marquardt(evaluate, x, r, aux, J, ftol=ftol, max_nfev=max_nfev, verbose=verbose,
+                                        radius=self._radius, project=self._projected, current_columns=columns,
+                                        update=update)
+        return evaluate, steps
+
+    def _warm_fit(self, evaluate, steps, x, jacobian, field, *, ftol, target_cost):
+        """Steps on a nearby solve's ``jacobian`` from ``x``, then on one fresh Jacobian where they stalled, before a
+        full fit.  Returns ``(result, x, nfev)``: the finished fit (``x`` and ``nfev`` then unused), or ``None`` with
+        the point and evaluations a cold fit continues from."""
+        first = evaluate(x)
+        if first is None:
+            raise VmecConvergenceError("the warm-start boundary has no certified equilibrium")
+        out = steps(x, *first, jacobian, ftol)
+        self._radius = out["radius"]
+        close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
+        if (out["accepted"] or out["converged"]) and close:
+            return dict(out, jacobian=jacobian, njev=0), x, 0
+        J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
+        again = steps(out["x"], out["rows"], aux1, J1, ftol)
+        self._radius = again["radius"]
+        again["nfev"] += out["nfev"]
+        if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
+            return dict(again, jacobian=J1, njev=1), x, 0
+        return None, again["x"], again["nfev"]
+
+    def _secant_fit(self, evaluate, steps, x, field, *, ftol, jacobian_ftol, refresh_on_stall, nfev, njev):
+        """The secant fit from ``x``: as the trust region's two stages, rounds on fresh Jacobians to
+        ``jacobian_ftol`` (each round its own evaluation budget, the rounds bounded by their Jacobians), then the
+        finish to ``ftol`` on the last one (Broyden-updated), with one fresh Jacobian if it stalls; the certificate's
+        polish takes it from there.  Returns ``(result, x, nfev, njev)``; ``result`` is ``None`` after
+        ``FIT_ROUNDS`` unconverged rounds (counted in ``fit_fallbacks``), for the trust region to finish from ``x``.
+        """
+        got = evaluate(x)
+        if got is None:
+            raise VmecConvergenceError("the start boundary has no certified equilibrium")
+        r, aux = got
+        nfev += 1
+        for _ in range(FIT_ROUNDS):
+            J, _, _, aux = self.linearize(x, aux, field)
+            njev += 1
+            out = steps(x, r, aux, J, max(ftol, jacobian_ftol), update="broyden")
             self._radius = out["radius"]
-            close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
-            if (out["accepted"] or out["converged"]) and close:
-                return dict(out, jacobian=jacobian, njev=0)
-            # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
-            J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
-            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
-                                   current_columns=columns)
-            self._radius = again["radius"]
-            again["nfev"] += out["nfev"]
-            if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
-                return dict(again, jacobian=J1, njev=1)
-            x, nfev = again["x"], again["nfev"]
-        if (self.fit if fit is None else fit) == "secant":  # cold, or the warm reuse fell short: secant rounds
-            got = self.evaluate(x, params, field, tight=tight)
-            if got is None:
-                raise VmecConvergenceError("the start boundary has no certified equilibrium")
-            r, aux = got
-            nfev += 1
+            nfev += out["nfev"]
+            x, r, aux = out["x"], out["rows"], out["aux"]
+            if out["converged"]:
+                break
+        else:
+            self.fit_fallbacks = getattr(self, "fit_fallbacks", 0) + 1
+            return None, x, nfev, njev
+        out = steps(x, r, aux, J, ftol, update="broyden")
+        nfev += out["nfev"]
+        if refresh_on_stall and not out["converged"]:
+            J, _, _, aux = self.linearize(out["x"], out["aux"], field)
+            njev += 1
+            out = steps(out["x"], out["rows"], aux, J, ftol, update="broyden")
+            nfev += out["nfev"]
+        self._radius = out["radius"]
+        return dict(out, jacobian=J, nfev=nfev, njev=njev), x, nfev, njev
 
-            def lm(x, r, aux, J, tol):
-                return _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), x, r, aux, J,
-                                            ftol=tol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
-                                            project=self._projected, current_columns=columns, update="broyden")
+    def _trust_region_fit(self, evaluate, steps, x, field, *, ftol, jacobian_ftol, max_nfev, refresh_on_stall,
+                          verbose, nfev, njev):
+        """SciPy's trust region with fresh Jacobians from ``x`` to ``jacobian_ftol``, then the reuse steps to
+        ``ftol`` on its last Jacobian (one fresh one if they stall, with ``refresh_on_stall``)."""
+        import scipy.optimize
 
-            # As the trust region's two stages: rounds on fresh Jacobians to ``jacobian_ftol`` (each round its own
-            # evaluation budget, the rounds bounded by their Jacobians), then the finish to ``ftol`` on the last one
-            # (updated), with one fresh Jacobian if it stalls.  The certificate's polish takes it from there.
-            for _ in range(FIT_ROUNDS):
-                J, _, _, aux = self.linearize(x, aux, field)
-                njev += 1
-                out = lm(x, r, aux, J, max(ftol, jacobian_ftol))
-                self._radius = out["radius"]
-                nfev += out["nfev"]
-                x, r, aux = out["x"], out["rows"], out["aux"]
-                if out["converged"]:
-                    break
-            else:  # FIT_ROUNDS fresh Jacobians and still not converged: the trust region below finishes from here
-                self.fit_fallbacks = getattr(self, "fit_fallbacks", 0) + 1
-                out = None
-            if out is not None:
-                out = lm(x, r, aux, J, ftol)
-                nfev += out["nfev"]
-                if refresh_on_stall and not out["converged"]:
-                    J, _, _, aux = self.linearize(out["x"], out["aux"], field)
-                    njev += 1
-                    out = lm(out["x"], out["rows"], aux, J, ftol)
-                    nfev += out["nfev"]
-                self._radius = out["radius"]
-                return dict(out, jacobian=J, nfev=nfev, njev=njev)
         memo = {}
 
         def fun(z):
-            got = self.evaluate(z, params, field, tight=tight)
+            got = evaluate(z)
             if got is None:  # no state here: a Jacobian asked at z must not linearize another point's state
                 memo.update(key=z.tobytes(), rows=None, aux=None)
                 return np.full(memo.get("size", 1), 1e6)
@@ -1234,15 +1263,11 @@ class ThreeTermsFreeBoundaryModel:
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
-        out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
-                                   current_columns=columns)
+        out = steps(fit.x, memo["rows"], memo["aux"], J, ftol)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
-            again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field, tight=tight), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected,
-                                   current_columns=columns)
+            again = steps(out["x"], out["rows"], aux, J, ftol)
             self._radius, njev = again["radius"], njev + 1
             # Still stalled on a fresh Jacobian: possibly stationary, but only a certificate at the final state
             # says so (:meth:`certify`); ``converged`` stays the finish's own cost-change test.

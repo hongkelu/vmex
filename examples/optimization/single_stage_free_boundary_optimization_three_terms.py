@@ -408,6 +408,11 @@ x, final_value = problem.accepted.parameters, float(problem.fun(problem.accepted
 print(f"[solve] {result.accepted_steps} accepted SLSQP steps, {problem.stats['trials']} trials "
       f"({problem.stats['failed']} rejected): {result.message}", flush=True)
 optimization_seconds = time.perf_counter() - started
+state_x, params_x = problem.state(x)  # the optimizer's own certified free boundary of the result
+runtime_x = im.runtime_from_params(params_x, problem.model.cfg)
+optimizer_values = plasma_values(state_x, runtime_x)
+print("[optimizer] " + ", ".join(f"{k} = {v:.4g}" for k, v in optimizer_values.items()) + "; interface residuals "
+      + ", ".join(f"{k} {v:.2e}" for k, v in vars(problem.boundary_residual(x)).items()))
 
 ###############################################################################
 ### Check the result against the targets ######################################
@@ -436,6 +441,10 @@ maximum_curvature = float(np.max(np.asarray(coils_final.curvature)))
 minimum_iota, final_aspect = final_values["min |iota|"], final_values["aspect"]
 
 print("[final] " + ", ".join(f"{k} = {v:.4g}" for k, v in final_values.items()))
+optimizer_surface = boundary_surface(state_x, runtime_x)
+verification_surface = boundary_surface(final.state, final_context)
+surface_gap = float(jnp.max(jnp.linalg.norm(optimizer_surface.gamma - verification_surface.gamma, axis=-1)))
+print(f"The verification's free boundary is within {surface_gap:.4f} m of the optimizer's")
 print(f"\nObjective: {initial_value:.6e} -> {final_value:.6e} after {result.accepted_steps} SLSQP steps")
 print("Interface residuals of the final free boundary: " + ", ".join(
     f"{k} {v:.2e}" for k, v in vars(final_residual).items()))
@@ -482,7 +491,8 @@ summary = {
     "labelling": LABELLING, "label_weight": config.resolved_label_weight, "phiedge": float(inp.phiedge),
     "target beta": TARGET_BETA, "n0": n0, "T0": T0, "picard iterations": int(picard.iterations),
     "seed curtor": float(inp.curtor), "final curtor": float(final_input.curtor),
-    "seed boundary shift": boundary_shift, "seed": seed_values,
+    "seed boundary shift": boundary_shift, "seed": seed_values, "optimizer": optimizer_values,
+    "verification surface gap": surface_gap,
     "final": {**final_values, "interface residuals": vars(final_residual),
               "coil-surface distance": coil_surface_distance,
               "coil-coil distance": coil_distance, "maximum curvature": maximum_curvature},

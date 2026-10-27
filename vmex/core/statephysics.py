@@ -444,24 +444,33 @@ def mean_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     return jnp.mean(iotas[1:])
 
 
-def min_abs_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+def _abs_iota(state: SpectralState, rt: SolverRuntime, include_edge: bool) -> Array:
+    """``|iota|`` of the half-mesh surfaces (axis excluded), with ``include_edge`` also the wout ``iotaf[-1]``."""
+    half = _iotas_half(state, rt)[1:]
+    if include_edge:
+        half = jnp.concatenate([half, 1.5 * half[-1:] - 0.5 * half[-2:-1]])
+    return jnp.abs(half)
+
+
+def min_abs_iota(state: SpectralState, rt: SolverRuntime, *, include_edge: bool = False) -> Array:
     """Smallest ``|iota|`` over the half-mesh surfaces (axis excluded).
 
     The transform floor that matters for a stellarator is the profile
     minimum, not its average: a mean target is satisfiable while a shear
     reversal or a current-carried profile leaves an interior surface near
     zero transform.  The absolute value keeps the metric sign-free, since
-    only the magnitude of the transform is physical here.
+    only the magnitude of the transform is physical here.  ``include_edge``
+    also bounds the edge value (wout ``iotaf[-1]``, as :func:`edge_iota`),
+    which a bootstrap current's edge shear can move past the last half-mesh
+    surface.
     """
-    iotas = _iotas_half(state, rt)
-    return jnp.min(jnp.abs(iotas[1:]))
+    return jnp.min(_abs_iota(state, rt, include_edge))
 
 
-def max_abs_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+def max_abs_iota(state: SpectralState, rt: SolverRuntime, *, include_edge: bool = False) -> Array:
     """Largest ``|iota|`` over the half-mesh surfaces (axis excluded), the
     counterpart of :func:`min_abs_iota` for a transform ceiling."""
-    iotas = _iotas_half(state, rt)
-    return jnp.max(jnp.abs(iotas[1:]))
+    return jnp.max(_abs_iota(state, rt, include_edge))
 
 
 def soft_min_abs_iota(

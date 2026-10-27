@@ -156,6 +156,11 @@ def test_scalar_targets_match_own_wout(solovev_eq):
     # the single-stage targets: iota ceiling, major radius, boundary, Mercier floor, current's iota
     np.testing.assert_allclose(float(opt.max_abs_iota(eq.state, eq.runtime)),
                                float(np.max(np.abs(np.asarray(w.iotas)[1:]))), rtol=1e-8)
+    iotas = np.abs(np.r_[np.asarray(w.iotas)[1:], np.asarray(w.iotaf)[-1]])
+    np.testing.assert_allclose(float(opt.min_abs_iota(eq.state, eq.runtime, include_edge=True)), iotas.min(),
+                               rtol=1e-8)
+    np.testing.assert_allclose(float(opt.max_abs_iota(eq.state, eq.runtime, include_edge=True)), iotas.max(),
+                               rtol=1e-8)
     np.testing.assert_allclose(float(opt.major_radius(eq.state, eq.runtime)), float(w.Rmajor_p), rtol=1e-8)
     rbc, zbs, _, _ = map(np.asarray, opt.boundary_coefficients(eq.state, eq.runtime))
     ntor = int(eq.inp.ntor)

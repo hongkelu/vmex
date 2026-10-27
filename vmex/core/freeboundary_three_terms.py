@@ -169,6 +169,13 @@ def _coil_net_current(external_field, wout) -> float:
     return float(_net_current(external_field, *_axis_loop(wout)))
 
 
+def _poloidal_tangent(gamma):
+    """``d gamma / d theta`` of boundary points ``(3, nphi, ntheta)``, spectrally on each toroidal cut."""
+    ntheta = gamma.shape[-1]
+    wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
+    return jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma, axis=-1), axis=-1))
+
+
 def _equal_arc_rows(gamma):
     """Rows that vanish when the boundary's poloidal angle is equal-arc on every toroidal cut and the m = 1 part of
     ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.  The phase is
@@ -178,10 +185,7 @@ def _equal_arc_rows(gamma):
     ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points.  Returns ``(arc, phase)``: ``|d gamma/d theta|`` relative to
     its mean on each cut, minus one, ``(nphi, ntheta)``; and the phase of ``c1`` per cut, ``(nphi,)``.
     """
-    ntheta = gamma.shape[-1]
-    wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
-    e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma, axis=-1), axis=-1))
-    speed = jnp.linalg.norm(e_theta, axis=0)
+    speed = jnp.linalg.norm(_poloidal_tangent(gamma), axis=0)
     arc = speed / jnp.mean(speed, axis=-1, keepdims=True) - 1.0
     c1 = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]) + 1j * gamma[2], axis=-1)[..., 1]
     return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
@@ -536,11 +540,11 @@ class ThreeTermsModel:
         surface = vc.surface_field_data_from_state(fixed, state, runtime=runtime, nphi=nphi, ntheta=ntheta)
         quad_nt, quad_np = (None, None) if quadrature is None else map(int, quadrature)
         precision = vc.plan_vc_precision(surface, digits=digits, quad_nt=quad_nt, quad_np=quad_np)
-        gamma0 = jnp.asarray(surface.gamma)
-        wavenumber = jnp.fft.fftfreq(ntheta, 1.0 / ntheta)
-        e_theta = jnp.real(jnp.fft.ifft(1j * wavenumber * jnp.fft.fft(gamma0, axis=-1), axis=-1))
-        length = jnp.linalg.norm(e_theta, axis=0)
-        tangent = e_theta / (length * jnp.mean(length))[None]
+        if labelling == "anchored":  # the reference: the seed's points and poloidal tangents of unit mean length
+            gamma0 = jnp.asarray(surface.gamma)
+            e_theta = _poloidal_tangent(gamma0)
+            length = jnp.linalg.norm(e_theta, axis=0)
+            tangent = e_theta / (length * jnp.mean(length))[None]
         scale = jnp.repeat(jnp.asarray(weights, dtype=float), jnp.asarray([1, 1, 3]))[:, None, None]
         # A closed curve inside the coils for G_coil: the seed's magnetic axis.
         axis = _axis_loop(solve_equilibrium(fixed, initial_state=state).wout)

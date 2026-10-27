@@ -133,6 +133,8 @@ UNTESTED_EXAMPLES = {
     "are tests/test_freeboundary_three_terms.py and tests/test_freeboundary_three_terms_implicit.py",
     "examples/optimization/single_stage_free_boundary_optimization_three_terms.py": "needs virtual-casing-jax and a GPU; "
     "its problem is tests/test_freeboundary_three_terms_problem.py::test_three_terms_problem_gradient_and_one_slsqp_step",
+    "examples/optimization/single_stage_free_boundary_three_terms_coils.py": "needs ESSOS, virtual-casing-jax and a GPU; "
+    "its coil rows are tests/test_single_stage_targets.py and its problem rows tests/test_freeboundary_three_terms_problem.py",
 }
 
 

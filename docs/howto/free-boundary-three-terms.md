@@ -105,7 +105,9 @@ problem = vj.ThreeTermsFreeBoundaryProblem.from_tuples(
 bounds.
 
 `examples/optimization/single_stage_free_boundary_optimization_three_terms.py`
-optimizes coil currents this way. For other uses of many fields and plasma
+optimizes coil currents this way, and
+`examples/optimization/single_stage_free_boundary_three_terms_coils.py` coil shapes and currents with the
+coil limits and the coil-plasma distance as above. For other uses of many fields and plasma
 parameters, {class}`vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` gives the pieces
 directly: `solve_boundary` (cold or warm), `linearize` (the interface Jacobian
 and the state responses to the boundary and any plasma parameters), and

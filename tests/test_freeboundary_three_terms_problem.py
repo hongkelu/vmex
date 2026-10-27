@@ -428,11 +428,13 @@ def test_from_tuples_assembles_the_loss_rows_and_bounds(monkeypatch):
     distance = lambda state, runtime, x: jnp.asarray(0.3)  # noqa: E731
     problem = ThreeTermsFreeBoundaryProblem.from_tuples(
         None, [(aspect, 6.0, 0.5), (vector, 1.0, 2.0)], np.zeros(2), constraints=[(iota, 0.42, np.inf)],
-        parameter_constraints=[(distance, 0.2, np.inf, 0.1)], field_from_parameters=lambda x: None)
+        parameter_constraints=[(distance, 0.2, np.inf, 0.1)], design_constraints=["coil limits"],
+        field_from_parameters=lambda x: None)
     # 0.5 * 0.5 * (2 * 4 - 6)^2 + 0.5 * 2 * ((1 - 1)^2 + (3 - 1)^2) = 1 + 4
     assert float(captured["loss"](4.0, None, None)) == pytest.approx(5.0)
     assert captured["quantities"] == (iota,) and captured["parameter_quantities"] == (distance,)
-    assert ThreeTermsFreeBoundaryProblem.constraints(problem) == [([0.42, 0.2], [np.inf, np.inf], [1.0, 0.1])]
+    assert ThreeTermsFreeBoundaryProblem.constraints(problem) == [([0.42, 0.2], [np.inf, np.inf], [1.0, 0.1]),
+                                                             "coil limits"]
     with pytest.raises(TypeError, match="constraints"):
         ThreeTermsFreeBoundaryProblem.from_tuples(None, [(aspect, 6.0, 0.5)], np.zeros(2), constraints=[(iota, 0.4)],
                                                   field_from_parameters=lambda x: None)

@@ -200,6 +200,11 @@ that research budget as one commented set of constants next to the default.
   quasisymmetry with the rotational transform and aspect ratio bounded, saving
   a checkpoint and SLSQP's state after every step. Needs `vmex[coils,freeb]`
   and a GPU.
+- `optimization/single_stage_free_boundary_three_terms_coils.py`: the same
+  three-term single stage with the LP QA coil shapes and currents as the
+  design, the coil limits (`single_stage_targets.coil_constraint`) as a design
+  constraint and the coil-plasma distance as a parameter constraint. Needs
+  `vmex[coils,freeb]` and a GPU.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

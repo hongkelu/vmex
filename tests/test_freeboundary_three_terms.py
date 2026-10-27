@@ -655,14 +655,16 @@ def test_checkpoint_restores_the_accepted_equilibrium(tmp_path):
     other.field = lambda x: replace(field, currents=field.currents * (1 + 0.06 * x[0]))
     with pytest.raises(ValueError, match="coil field"):
         other.restore_checkpoint(path)
-    # and in a fresh process: nothing but the checkpoint carries the state over
+    # and in a fresh process: nothing but the checkpoint carries the state over.  It shares this process's
+    # device, so it must not preallocate (a GPU this process preallocated has no room for a second pool).
+    import os
     import subprocess
     import sys
 
     script = ("import sys; sys.path.insert(0, 'tests'); from test_freeboundary_three_terms import _small_problem; "
               f"print('change', _small_problem().restore_checkpoint({str(path)!r}))")
     done = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1], capture_output=True,
-                          text=True, check=True)
+                          text=True, check=True, env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"))
     assert float(done.stdout.split("change")[-1]) <= 1e-6
 
 

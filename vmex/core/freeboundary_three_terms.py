@@ -221,7 +221,11 @@ class ThreeTermsConfig:
     and ``chunk`` bounds the Jacobian columns per batch.  ``success`` also requires every RMS interface residual
     at or below ``max_residual``.  ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` and ``bootstrap_weight``) solves a Redl-self-consistent current profile together with
-    the boundary.
+    the boundary (opt-in).  The default, as in VMEC, holds the deck's pressure and current as inputs; in
+    single-stage optimization the current is then a design variable held self-consistent by a constraint row
+    (:class:`~vmex.optimize.RedlBootstrapMismatch`).  Prefer that: with the current in the fit, its rows dominate
+    the fit's cost and its stopping test, and the interface residuals end where the path leaves them (QA at
+    2.5 % beta).
     """
 
     labelling: str = "equal_arc"

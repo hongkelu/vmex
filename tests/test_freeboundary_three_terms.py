@@ -285,6 +285,25 @@ def test_boundary_fit_without_an_equilibrium_raises_runtime_error(monkeypatch):
         model.solve_boundary(model.params0, field)
 
 
+@needs_vc
+@pytest.mark.full
+@pytest.mark.parametrize("label_weight", [1e-3, 1e-2])
+def test_equal_arc_problem_gradient_matches_resolved_differences(label_weight):
+    """The equal-arc labelling's loss gradient and constraint Jacobian on the small vacuum design, against
+    re-solved central differences at two step sizes, with tight fits."""
+    problem = _small_problem(labelling="equal_arc", label_weight=label_weight, boundary_ftol=1e-10,
+                             boundary_max_nfev=80)
+    x0 = problem.x0
+    value, grad = problem.value_and_grad(x0)
+    jac = problem.constraint_jac(x0)
+    for h in (1e-3, 3e-4):
+        fd = [(problem.fun(x0 + h) - problem.fun(x0 - h)) / (2 * h),
+              (problem.constraint_values(x0 + h) - problem.constraint_values(x0 - h)) / (2 * h)]
+        np.testing.assert_allclose(grad, fd[0], rtol=1e-2)
+        np.testing.assert_allclose(jac[:, 0], fd[1], rtol=1e-2)
+    problem.close()
+
+
 def _small_problem(**options):
     """A one-coil-current design on the small vacuum free boundary: aspect ratio, with mean iota as a quantity.
     ``boundary_*`` options are the problem's, the others the configuration's (``SMALL_START``)."""
@@ -744,9 +763,12 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.full
-def test_three_term_problem_gradients_match_resolved_differences():
+@pytest.mark.parametrize("labelling, label_weight", [("start", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2)])
+def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
-    differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents)."""
+    differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
+    labelling and for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
+    pinned only to the fit's tolerance)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -755,7 +777,8 @@ def test_three_term_problem_gradients_match_resolved_differences():
         plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
         quantities=(opt.mean_iota,),
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
-        config=vj.ThreeTermsConfig(labelling="start", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        config=vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, nphi=24, ntheta=24,
+                                   quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80)
     assert isinstance(problem, ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0

@@ -111,7 +111,21 @@ and composable with both gradient modes:
   current-carried finite-beta profile does.
   :func:`~vmex.core.optimize.soft_min_abs_iota` is the smooth variant
   (``softmax``-weighted, so it stays within ``[min, max]``) for optimizers
-  that stall on the ties of a hard minimum;
+  that stall on the ties of a hard minimum.
+  :func:`~vmex.core.optimize.max_abs_iota` is its ceiling counterpart, and
+  ``include_edge=True`` makes either bound the edge ``iotaf[-1]`` too;
+- :func:`~vmex.core.optimize.vacuum_iota` — ``vacuum_iota(inp)`` returns the
+  ``|iota|`` of the vacuum field inside a state's boundary (a differentiable
+  fixed-boundary re-solve without pressure or current), and
+  :func:`~vmex.core.optimize.current_iota` the net current's share of the edge
+  iota: together they keep a finite-beta transform the shaping's rather than a
+  bootstrap current's;
+- :func:`~vmex.core.optimize.axis_iota` /
+  :func:`~vmex.core.optimize.axis_field_strength` /
+  :func:`~vmex.core.optimize.major_radius` — the current-free axis transform,
+  the axis ``|B|`` and the wout ``Rmajor_p``;
+- :func:`~vmex.core.optimize.boundary_coefficients` — the state's boundary as
+  INDATA ``rbc``/``zbs`` arrays, e.g. for an ESSOS surface of coil clearances;
 - :func:`~vmex.core.optimize.mean_iota` /
   :func:`~vmex.core.optimize.edge_iota` — profile-average and boundary
   transform, for decks that genuinely want a target rather than a floor;
@@ -173,6 +187,8 @@ Two reporting diagnostics run on the host-side wout engine:
 :func:`~vmex.core.optimize.d_merc` (Mercier interchange criterion) and
 :func:`~vmex.core.optimize.l_grad_b` (the ``L_grad_B`` coil-complexity proxy).
 Their live-state counterparts :func:`~vmex.core.stability.d_merc_state`,
+:func:`~vmex.core.stability.min_d_merc` (its smallest interior value over
+``s >= s_min``, a Mercier floor row),
 :func:`~vmex.core.stability.jdotb_state`,
 :func:`~vmex.core.stability.jdotb_residual`,
 :func:`~vmex.core.stability.glasser_d_r_state`, and

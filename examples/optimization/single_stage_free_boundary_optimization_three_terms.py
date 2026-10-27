@@ -380,8 +380,10 @@ def plasma_values(equilibrium_state, runtime):
             "Redl mismatch": float(redl_mismatch(equilibrium_state, runtime))}
 
 
+# At this low resolution (MPOL = 3) the interface residuals' floor is ~1e-2 (the seed's sheet current is
+# 1.03e-2), at the default ``max_residual``: a free boundary counts as solved below 2e-2 here.
 config = vj.ThreeTermsConfig(labelling=LABELLING, label_weight=LABEL_WEIGHT, nphi=N_INTERFACE,
-                             ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE))
+                             ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE), max_residual=2e-2)
 problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
     inp, loss, design0, field_from_parameters=field_from_x, plasma_from_parameters=plasma_from_x,
     scales=design_scales, quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio, redl_mismatch),

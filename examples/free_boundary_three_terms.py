@@ -19,12 +19,16 @@ NESTOR's last closed surface.  The same solve runs from a deck with
 """
 
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 import vmex as vj
+
+jax.config.update("jax_enable_x64", True)
 
 # The fitted coils and the plasma deck that seeds the initial guess:
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -35,8 +39,7 @@ INPUT_FILE = DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap"
 MPOL, NTOR, NS = 4, 4, 25
 NITER, FTOL = 5000, 1e-10
 
-# Coil-field table; NZETA must divide its toroidal plane count for NESTOR:
-GRID = dict(rmin=0.45, rmax=1.55, zmin=-0.6, zmax=0.6, ir=96, jz=96, kp=32)
+# Toroidal grid of the plasma solve:
 NZETA = 16
 
 # The interface grid over one field period and its fixed singular quadrature, (4 nfp N, 2 N):
@@ -58,9 +61,27 @@ if ci_smoke:
 
 from essos.coils import Coils  # noqa: E402 (optional heavy import)
 
+
+@dataclass(frozen=True)
+class FilamentField:
+    """Biot-Savart field of the coil filaments, exact (no field table); its arrays are pytree leaves."""
+
+    gamma: jax.Array
+    gamma_dash: jax.Array
+    currents: jax.Array
+
+    def b_cyl(self, r, phi, z):
+        xyz = jnp.stack(jnp.broadcast_arrays(r * jnp.cos(phi), r * jnp.sin(phi), z), axis=-1)
+        d = xyz[..., None, None, :] - self.gamma
+        dB = jnp.cross(self.gamma_dash, d) * (jnp.sum(d * d, axis=-1) ** -1.5)[..., None]
+        B = 1e-7 * jnp.mean(jnp.sum(dB * self.currents[:, None, None], axis=-3), axis=-2)
+        cos, sin = jnp.cos(phi), jnp.sin(phi)
+        return cos * B[..., 0] + sin * B[..., 1], -sin * B[..., 0] + cos * B[..., 1], B[..., 2]
+
+
+jax.tree_util.register_dataclass(FilamentField, data_fields=["gamma", "gamma_dash", "currents"], meta_fields=[])
 coils = Coils.from_json(str(COILS_FILE))
-# Tricubic: virtual casing samples the field between the table's planes, where a trilinear table has kinks.
-field = vj.MgridField.from_coils(coils, order=3, **GRID)
+field = FilamentField(jnp.asarray(coils.gamma), jnp.asarray(coils.gamma_dash), jnp.asarray(coils.currents))
 
 inp = vj.VmecInput.from_file(INPUT_FILE).change_resolution(mpol=MPOL, ntor=NTOR, ntheta=2 * MPOL + 6,
                                                            nzeta=NZETA)

@@ -77,8 +77,10 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 # self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
-# DKX: the current is a line segment through a value on every half-mesh surface (those values,
-# the axis one and CURTOR are design variables), its seed DKX's on the same surfaces.
+# DKX: the current is a CURRENT_KNOTS spline, its seed DKX's (dkx_current: each Picard target
+# least-squares fitted to the spline, as the ion root jitters from surface to surface). With
+# --fixed-current it is no design variable and no row: rounds of --restart --resolve-current
+# --fixed-current re-solve it between them.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
 # --profiles stellaris: Stellaris' design point A instead (Lion et al. 2025, Fusion Eng. Des., Eq. (2)-(3) and
 # Table 5): n = n0 (1 - s)^0.35 (flat), Te = Te0 (1 - s)^1.2 (peaked), Ti = 0.95 Te, n0 = 5.06e20 1/m^3 (peak
@@ -574,13 +576,13 @@ def dkx_mismatch(inp):
 
 
 def dkx_current(inp, fixed, device):
-    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface.
+    """``inp`` with DKX's self-consistent bootstrap current on ``CURRENT_KNOTS`` spline knots.
 
     Picard steps I' <- I'_DKX from the equilibrium ``fixed``: DKX's ``<j.B>`` on its rows,
     interpolated onto every half-mesh surface and inverted for dI/ds there
-    (``bootstrap.current_derivative``), under-relaxed by ``PICARD_RELAX``. The profile is
-    ``line_segment_ip`` through those values, the axis and edge ones extrapolated linearly,
-    and CURTOR its integral: no spline fit.
+    (``bootstrap.current_derivative``), least-squares fitted to the ``cubic_spline_ip`` profile
+    on uniform knots (the ambipolar root jitters from surface to surface), under-relaxed by
+    ``PICARD_RELAX``. CURTOR is the spline's integral.
     """
     import jax
     import jax.numpy as jnp
@@ -591,28 +593,36 @@ def dkx_current(inp, fixed, device):
     kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
     rows = kinetic.rows(ns)[1]
-    knots = np.r_[0.0, s, 1.0]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
     total = float(enclosed(1.0))
     v = (np.zeros(s.size) if total == 0.0  # a zero-current profile starts the Picard loop from I' = 0
          else float(inp.curtor) / total * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))))
+    knots = np.linspace(0.0, 1.0, CURRENT_KNOTS)
+    # I'(s) on the half mesh is linear in the knot values: one column per knot
+    basis = np.stack([np.asarray(jax.vmap(jax.grad(lambda z, e=e: current(
+        "cubic_spline_ip", inp.ac, knots, e, z, bloat=inp.bloat)))(jnp.asarray(s))) for e in np.eye(knots.size)], 1)
+    fit = lambda target: np.linalg.lstsq(basis, target, rcond=None)[0]  # noqa: E731
+    values = fit(v)
     kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
     kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
     derivative = jax.jit(current_derivative)
     for iteration in range(PICARD_ITERATIONS):
-        values = np.r_[1.5 * v[0] - 0.5 * v[1], v, 1.5 * v[-1] - 0.5 * v[-2]]
-        inp = replace(inp, pcurr_type="line_segment_ip", ac_aux_s=knots, ac_aux_f=values,
-                      curtor=float(current("line_segment_ip", inp.ac, knots, values, 1.0)))
+        inp = replace(inp, pcurr_type="cubic_spline_ip", ac_aux_s=knots, ac_aux_f=values,
+                      curtor=float(current("cubic_spline_ip", inp.ac, knots, values, 1.0, bloat=inp.bloat)))
         fixed = opt.solve_equilibrium(inp, initial_state=fixed.state, device=device, raise_on_max_iterations=True,
                                       polish_force_balance=False)
         jk = np.interp(s, rows, np.asarray(kinetic_j(fixed.state, fixed.runtime)))
         target = np.asarray(derivative(jnp.asarray(jk), fixed.state, fixed.runtime)[1])
-        delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
+        smooth = fit(target)
+        scale = np.max(np.abs(basis @ smooth))
+        delta = float(np.max(np.abs(basis @ (smooth - values))) / scale)
         print(f"DKX Picard {iteration}: CURTOR = {float(inp.curtor):.1f} A, max|I' - I'_DKX| / max|I'_DKX| = "
-              f"{delta:.2e}", flush=True)
+              f"{delta:.2e} (spline fit off DKX's surfaces by max {np.max(np.abs(basis @ smooth - target)) / scale:.2e}"
+              + (f"; unconverged roots {kinetic.unconverged}, E_r = [{kinetic.electric_field().min():.1f}, "
+                 f"{kinetic.electric_field().max():.1f}] kV/m" if DKX_AMBIPOLAR else "") + ")", flush=True)
         if delta <= PICARD_TOLERANCE:
             break
-        v = (1.0 - PICARD_RELAX) * v + PICARD_RELAX * target
+        values = (1.0 - PICARD_RELAX) * values + PICARD_RELAX * smooth
     return inp
 
 
@@ -763,6 +773,10 @@ def parse_args(argv=None):
     parser.add_argument("--resolve-current", action="store_true",
                         help="with --restart and --bootstrap: first Picard the current to DKX's self-consistent one at "
                         "the restart's final design (e.g. to continue a zero-current run with its bootstrap current)")
+    parser.add_argument("--fixed-current", action="store_true",
+                        help="with --bootstrap: the deck's current (e.g. --resolve-current's) is held fixed, no design "
+                        "variable and no bootstrap row; rounds of --restart --resolve-current --fixed-current re-solve "
+                        "it between them")
     parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
                         help="--bootstrap kinetic profiles: Landreman-Buller-Drevlak at Helios-like values (lbd) or "
                         "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
@@ -803,6 +817,8 @@ def parse_args(argv=None):
         parser.error("--bootstrap needs --beta > 0")
     if args.resolve_current and (args.restart is None or not args.bootstrap):
         parser.error("--resolve-current needs --restart and --bootstrap")
+    if args.fixed_current and not args.bootstrap:
+        parser.error("--fixed-current needs --bootstrap")
     return args
 
 
@@ -958,7 +974,7 @@ def main(argv=None):
     DKX_AMBIPOLAR, PROFILES = bool(args.dkx_ambipolar), args.profiles
     if args.coil_limits is not None:
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
-    if args.current_constraint:
+    if args.current_constraint or args.fixed_current:
         BOOTSTRAP_IN_SOLVE = False
     if args.current_iota_weight is not None:
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
@@ -1009,7 +1025,7 @@ def main(argv=None):
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
     fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if fold else None
-    redl = None if fold else redl
+    redl = None if fold or args.fixed_current else redl
     if args.max_iterations:
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     inp.to_indata(out / "input.run")
@@ -1023,7 +1039,8 @@ def main(argv=None):
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     design = (inp if args.restart is None  # PHIEDGE, current and boundary of x0
               else restart_input(args.restart, resolved=resolved))
-    current = np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor] if args.bootstrap and not fold else None
+    current = (np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor]
+               if args.bootstrap and not fold and not args.fixed_current else None)
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
@@ -1174,7 +1191,7 @@ def main(argv=None):
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    **({"dkx_er_kv_per_m": DKX_ROWS[-1].electric_field().tolist(),
-                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)} if DKX_AMBIPOLAR and DKX_ROWS else {}),
+                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)} if DKX_AMBIPOLAR and DKX_ROWS and nredl else {}),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         last.update(time=now)

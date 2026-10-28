@@ -625,8 +625,8 @@ RESOLVED_FIELDS = ("phiedge", "am", "pres_scale", *CURRENT_FIELDS)
 def restart_input(run, resolved=None):
     """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
 
-    The restart's model keeps ``input.run`` itself (the anchored labelling's reference): this is its design's
-    PHIEDGE and current and the boundary its first fit starts from. ``resolved`` (a deck, ``--resolve-current``)
+    The restart's model keeps ``input.run`` itself (the anchored labelling's reference) and resumes at the final
+    WOUT (``boundary_start``): this is its design's PHIEDGE and current. ``resolved`` (a deck, ``--resolve-current``)
     replaces its PHIEDGE, pressure and current."""
     import vmex as vj
 
@@ -1071,7 +1071,8 @@ def main(argv=None):
                                    trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                    bootstrap_helicity=REDL_HELICITY),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
-        boundary_start=None if args.restart is None else design)
+        # a restart resumes at the final WOUT (its equilibrium seeds the first solve), a resolved one at its deck
+        boundary_start=None if args.restart is None else design if args.resolve_current else args.restart / "wout.nc")
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

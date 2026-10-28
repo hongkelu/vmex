@@ -671,6 +671,8 @@ def parse_args(argv=None):
                         help="aspect-ratio bounds (default: ASPECT_RANGE); the coil limits keep the case's")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
     parser.add_argument("--coils", type=Path, default=COILS_FILE)
+    parser.add_argument("--coil-limits", type=float, nargs=3, metavar=("LENGTH", "CURVATURE", "MSC"),
+                        help="per-coil limits (m, 1/m, 1/m^2) in place of the case's (e.g. Gil et al.'s)")
     parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
@@ -856,8 +858,10 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global BOOTSTRAP_IN_SOLVE
+    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT
     args = parse_args(argv)
+    if args.coil_limits is not None:
+        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
     if args.current_constraint:
         BOOTSTRAP_IN_SOLVE = False
     if args.current_iota_weight is not None:

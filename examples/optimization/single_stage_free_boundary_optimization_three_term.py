@@ -515,8 +515,9 @@ def dkx_current(inp, fixed, device):
     rows = kinetic.rows(ns)[1]
     knots = np.r_[0.0, s, 1.0]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
-    v = (np.zeros(s.size) if float(inp.curtor) == 0.0  # a zero-current deck starts the Picard loop from I' = 0
-         else float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))))
+    total = float(enclosed(1.0))
+    v = (np.zeros(s.size) if total == 0.0  # a zero-current profile starts the Picard loop from I' = 0
+         else float(inp.curtor) / total * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))))
     kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
     kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
     derivative = jax.jit(current_derivative)

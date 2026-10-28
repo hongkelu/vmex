@@ -17,9 +17,9 @@ holds the Redl self-consistency as a constraint row, beside the rotational-trans
     subject to IOTA_CONSTRAINT <= min |iota|,  max |iota| <= IOTA_CEILING_CONSTRAINT,
                aspect <= ASPECT_CONSTRAINT,  sum_j ((<J.B>_j - <J.B>_Redl,j) / ...)^2 <= REDL_TOLERANCE
 
-with the clearance measured to each trial's free boundary.  :class:`vmex.ThreeTermsFreeBoundaryProblem` certifies
-each trial's boundary fit before it has a value and differentiates the fit implicitly; the coil field is a filament
-field whose arrays are pytree leaves, so new coils never recompile.  The seed's current comes from a
+with the clearance measured to each trial's free boundary.  :class:`vmex.ThreeTermsFreeBoundaryProblem` warm-starts
+each trial's boundary fit, accepts it within an interface-residual cap and differentiates the fit implicitly; the coil
+field is ESSOS' ``BiotSavart``, a pytree, so new coils never recompile.  The seed's current comes from a
 fixed-boundary Picard iteration to Redl's (:func:`vmex.core.bootstrap.self_consistent_bootstrap`).
 
 Run it with ``VMEX_EXAMPLES_CI=1`` for a short smoke pass that reports and exits 0.  Otherwise a run that misses a
@@ -144,7 +144,7 @@ LABELLING = "equal_arc"
 LABEL_WEIGHT = None
 N_INTERFACE = 24
 
-# Budgets: accepted SLSQP steps (each trial is one certified free boundary and,
+# Budgets: accepted SLSQP steps (each trial is one three-term free boundary and,
 # when SLSQP asks, one gradient), and the coil-only pre-fit.
 MAXITER = 5
 COIL_FIT_MAXITER = 200            # coil-only pre-fit, no equilibrium solves
@@ -404,7 +404,7 @@ x, final_value = problem.accepted.parameters, float(problem.fun(problem.accepted
 print(f"[solve] {result.accepted_steps} accepted SLSQP steps, {problem.stats['trials']} trials "
       f"({problem.stats['failed']} rejected): {result.message}", flush=True)
 optimization_seconds = time.perf_counter() - started
-state_x, params_x = problem.state(x)  # the optimizer's own certified free boundary of the result
+state_x, params_x = problem.state(x)  # the optimizer's own free boundary of the result
 runtime_x = im.runtime_from_params(params_x, problem.model.cfg)
 optimizer_values = plasma_values(state_x, runtime_x)
 print("[optimizer] " + ", ".join(f"{k} = {v:.4g}" for k, v in optimizer_values.items()) + "; interface residuals "

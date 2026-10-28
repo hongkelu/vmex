@@ -753,8 +753,9 @@ def solve_free_boundary_multigrid(
     design) is the better start.  The result is the fixed-boundary ladder's
     final stage on that boundary, with ``result.three_terms`` set,
     ``result.vacuum = None`` and ``result.converged`` False when the boundary
-    fit did not succeed.  Only the ladder, external-field, ``verbose``/``emit``
-    and ``device`` arguments apply to it.
+    fit did not succeed.  Only the ladder and external-field arguments apply to
+    the fit (on JAX's default device); ``verbose``/``emit`` and ``device`` apply
+    to the NESTOR start and the final stage.
 
     ``prefetch_compile=True`` (False by default, exactly like
     :func:`solve_multigrid`: a library call must not spawn background

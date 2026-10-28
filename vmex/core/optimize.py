@@ -1516,7 +1516,6 @@ def vacuum_iota(inp: VmecInput, *, device=None) -> Callable[[Array, Array], Arra
     edge (wout ``iotaf[-1]``).  ``device`` defaults to JAX's first device.
     """
     from . import implicit as imp
-    from .statephysics import _iotas_half
 
     vacuum = dataclasses.replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
                                  ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None,
@@ -1531,8 +1530,8 @@ def vacuum_iota(inp: VmecInput, *, device=None) -> Callable[[Array, Array], Arra
                                      zbs=jax.device_put(jnp.asarray(zbs), device))
         vstate = imp.solve_implicit(params, cfg)
         vrt = imp.runtime_from_params(params, cfg)
-        half = _iotas_half(vstate, vrt)[1:]
-        return jnp.abs(jnp.concatenate([axis_iota(vstate, vrt)[None], half, 1.5 * half[-1:] - 0.5 * half[-2:-1]]))
+        return jnp.concatenate([jnp.abs(axis_iota(vstate, vrt))[None],
+                                abs_iota_profile(vstate, vrt, include_edge=True)])
 
     return iota
 

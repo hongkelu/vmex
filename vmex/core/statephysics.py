@@ -181,7 +181,6 @@ def _iotas_half(state: SpectralState, rt: SolverRuntime) -> jnp.ndarray:
 _AXIS_WEIGHTS = (15 / 8, -5 / 4, 3 / 8)
 
 
-@jax.jit
 def geometric_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     """Half-mesh iota without its enclosed-current part, and its axis value.
 

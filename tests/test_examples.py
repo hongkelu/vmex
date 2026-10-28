@@ -562,7 +562,7 @@ def test_free_boundary_three_terms(tmp_path):
     assert (tmp_path / "wout_three_terms_equal_arc.nc").stat().st_size > 10_000
 
 
-@pytest.mark.full  # one certified three-term free boundary per trial
+@pytest.mark.full  # one residual-capped three-term boundary fit per trial
 def test_single_stage_free_boundary_three_terms(tmp_path):
     pytest.importorskip("essos")
     pytest.importorskip("virtual_casing_jax")
@@ -570,7 +570,7 @@ def test_single_stage_free_boundary_three_terms(tmp_path):
                        tmp_path, timeout=3600)
     assert "[seed]" in out and "[final]" in out
     summary = json.loads((tmp_path / "single_stage_free_boundary_three_terms_summary.json").read_text())
-    assert summary["accepted_steps"] >= 1 and summary["final"]["interface residuals"]["sheet_current"] < 1e-2
+    assert summary["accepted_steps"] >= 1 and summary["final"]["interface residuals"]["sheet_current"] < 2e-2  # the example's cap
 
 
 def test_free_boundary_single_stage_examples_show_explicit_optimizer_contract():

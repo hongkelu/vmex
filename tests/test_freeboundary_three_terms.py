@@ -194,7 +194,6 @@ def test_three_term_option_fits_the_best_of_two_starts():
 
 
 @needs_vc
-@needs_vc
 @pytest.mark.full
 def test_three_term_problem_gradient_and_one_slsqp_step():
     """A coil-current design at low resolution: the loss gradient and constraint Jacobian against re-solved central
@@ -321,28 +320,8 @@ def test_levenberg_marquardt_rejects_a_bad_jacobian():
                                  ftol=1e-4, max_nfev=5, verbose=0)
 
 
-@needs_vc
-@needs_vc
-@needs_vc
-def _short_trial_fits(monkeypatch, model):
-    """Trial boundary fits that end short of their stationary point (the polish then moves them), as the
-    production fits do in soft directions."""
-    solve_boundary = model.solve_boundary
-
-    def short(params, field, **kwargs):
-        fit = solve_boundary(params, field, **kwargs)
-        if not kwargs.get("refresh_on_stall"):  # a polish, not a trial's fit
-            return fit
-        x = fit["x"] + 1e-3 * np.asarray(model.x_scale)
-        rows, aux = model.evaluate(x, params, field)
-        return dict(fit, x=x, rows=rows, aux=aux)
-
-    monkeypatch.setattr(model, "solve_boundary", short)
 
 
-@needs_vc
-@needs_vc
-@needs_vc
 @needs_vc
 @pytest.mark.full
 def test_plasma_map_derivatives_at_nonzero_offsets():
@@ -368,7 +347,6 @@ def test_plasma_map_derivatives_at_nonzero_offsets():
     problem.close()
 
 
-@needs_vc
 @needs_vc
 @pytest.mark.full
 def test_interior_state_does_not_depend_on_its_start():
@@ -405,7 +383,6 @@ def test_interior_state_does_not_depend_on_its_start():
         assert np.linalg.norm(rows - rows0) <= 1e-2 * np.linalg.norm(rows0)
 
 
-@needs_vc
 def _lcfs_distance(w, w0, nphi=5, ntheta=361):
     """Max over sampled planes of the distance from ``w``'s LCFS to ``w0``'s, in metres."""
     theta, worst = np.linspace(0, 2 * np.pi, ntheta), 0.0

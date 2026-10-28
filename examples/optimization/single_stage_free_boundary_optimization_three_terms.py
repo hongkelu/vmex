@@ -229,7 +229,7 @@ def coil_fit_objective(u):
     return jnp.sum(coil_costs(coils, surface_seed)) + hinge(normal_field[None])
 
 
-print("Running single_stage_free_boundary_optimization.py")
+print("Running single_stage_free_boundary_optimization_three_terms.py")
 coil_fit_value_and_grad = jax.jit(jax.value_and_grad(coil_fit_objective))
 coil_fit = minimize(
     lambda u: tuple(map(np.asarray, coil_fit_value_and_grad(jnp.asarray(u)))),
@@ -360,13 +360,14 @@ def plasma_values(equilibrium_state, runtime):
 
 
 # At this low resolution (MPOL = 3) the interface residuals' floor is ~1e-2 (the seed's sheet current is
-# 1.03e-2), at the default ``max_residual``: a free boundary counts as solved below 2e-2 here.
+# 1.03e-2), above the default ``max_residual`` (1e-2): a free boundary counts as solved below 2e-2 here, for the
+# final solve and for every trial (``boundary_max_residual``).
 config = vj.ThreeTermsConfig(labelling=LABELLING, label_weight=LABEL_WEIGHT, nphi=N_INTERFACE,
                              ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE), max_residual=2e-2)
 problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
     inp, loss, design0, field_from_parameters=field_from_x, plasma_from_parameters=plasma_from_x,
     scales=design_scales, quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio, redl_mismatch),
-    config=config)
+    config=config, boundary_max_residual=config.max_residual)
 state0, params0 = problem.state(design0)
 runtime0 = im.runtime_from_params(params0, problem.model.cfg)
 free_seed = boundary_surface(state0, runtime0)

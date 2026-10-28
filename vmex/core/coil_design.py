@@ -159,7 +159,6 @@ class CoilLimits:
     curvature: float
     mean_squared_curvature: float
     coil_distance: float
-    surface_distance: float | None = None
     length_margin: float = 1e-5
     curvature_margin: float = 0.10
     mean_squared_curvature_margin: float = 0.02

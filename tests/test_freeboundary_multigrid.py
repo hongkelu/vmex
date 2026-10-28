@@ -529,7 +529,7 @@ class _Result:
     converged: bool = True
 
 
-def test_three_terms_dispatches_and_polishes(monkeypatch) -> None:
+def test_three_terms_dispatches_and_reruns_the_ladder(monkeypatch) -> None:
     """``three_terms=`` fits the boundary from the configured starts, keeps the lower cost, and returns the
     fixed-boundary ladder's final stage on it with ``result.three_terms``; ``None`` follows the deck."""
     from vmex.core import freeboundary_three_terms as ftt

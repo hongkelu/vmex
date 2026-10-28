@@ -459,8 +459,8 @@ class ThreeTermsModel:
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
-        if labelling not in ("anchored", "equal_arc", "none"):
-            raise ValueError(f"labelling must be 'anchored', 'equal_arc' or 'none', got {labelling!r}")
+        if labelling not in LABEL_WEIGHTS:
+            raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {labelling!r}")
         if not label_weight:  # no labelling rows: the same problem whichever labelling was named
             labelling, label_weight = "none", 0.0
         if _edge_pressure_error(inp):
@@ -653,8 +653,6 @@ class ThreeTermsModel:
             if int(status) != 0:
                 return None
         else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
-            from .errors import VmecError
-
             with im._device_context(cfg):
                 try:
                     state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)

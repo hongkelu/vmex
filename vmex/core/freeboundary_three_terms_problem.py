@@ -21,6 +21,10 @@ from .errors import TrialRejected, VmecError
 from .freeboundary_three_terms import BoundaryResidual, ThreeTermsConfig, ThreeTermsModel
 from .problem import FunctionProblem
 
+#: The gradient's polish of a trial: its own Jacobian, to this relative cost change in at most this many evaluations,
+#: kept when it cuts the cost below this fraction.
+GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP = 1e-4, 20, 0.9
+
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
     """A SciPy ``NonlinearConstraint`` of ``lower <= values(x) <= upper``, rows divided by ``scales``."""
@@ -67,8 +71,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
-        quadrature, trial tolerance and bootstrap current of the model; its fit tolerances and ``start`` are
-        the solver's, not the problem's.  A trial's boundary fit stops at a relative cost change of
+        quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
+        ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's boundary fit stops at a relative cost change of
         ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
         the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
@@ -88,8 +92,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
-                 parameter_quantities, boundary_ftol, boundary_max_nfev, boundary_max_residual=None,
-                 boundary_quantities=()):
+                 parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
+                 boundary_max_residual=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -213,7 +217,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return sol
 
     def _linearize(self, x, sol):
-        """Every row's design gradient at ``sol`` (cached), re-solved tight and polished with its own Jacobian."""
+        """Every row's design gradient at ``sol`` (cached), re-solved tight and polished with its own Jacobian.
+
+        The record's values become those of the tight (or polished) state it differentiates, so a value asked for
+        after its gradient is that state's."""
         if "gradients" in sol:
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
@@ -233,12 +240,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return J
 
         J = tight()
-        polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=1e-4,
-                                        max_nfev=20)
-        self.stats["boundary_evaluations"] += polished["nfev"]
-        if polished["rows"] @ polished["rows"] < 0.9 * sol["rows"] @ sol["rows"]:
-            sol.update(x=polished["x"], aux=polished["aux"])
-            J = tight()
+        try:
+            polished = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb],
+                                            ftol=GRADIENT_POLISH_FTOL, max_nfev=GRADIENT_POLISH_NFEV)
+        except (VmecError, RuntimeError):  # no polish: the tightened fit's own Jacobian stands
+            polished = None
+        if polished is not None:
+            self.stats["boundary_evaluations"] += polished["nfev"]
+            if polished["rows"] @ polished["rows"] < GRADIENT_POLISH_KEEP * sol["rows"] @ sol["rows"]:
+                sol.update(x=polished["x"], aux=polished["aux"])
+                J = tight()
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)

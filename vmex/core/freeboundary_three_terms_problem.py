@@ -70,9 +70,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
-        ``boundary_start`` (a deck) starts that fit from its boundary (and, with ``bootstrap``, its current) instead
-        of ``inp``'s: a restart keeps its first run's deck, whose boundary is the anchored labelling's reference and
-        the quadrature plan's, and starts from its final boundary.
+        ``boundary_start`` (a deck: a run's final, fitted boundary and, with ``bootstrap``, current) is the seed
+        design's boundary as it is, re-fitted only if it misses ``boundary_max_residual``, and the start of the fits
+        before the first gradient: a restart keeps its first run's deck ``inp`` (the anchored labelling's reference
+        and the quadrature plan's boundary) and resumes at its final state.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
         quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
@@ -158,6 +159,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self._start = None if boundary_start is None else model.coordinates(boundary_start)
+        self._start_key = x0.tobytes()
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
@@ -181,20 +183,24 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
-        for start in starts:
+        if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
+            evaluated = self.model.evaluate(self._start, params, field, tight=True)
+            if evaluated is not None:
+                fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
+                if not self._fits(fit, field):
+                    self.stats["boundary_evaluations"] += 1
+                    fit = None
+        for start in [] if fit else starts:
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev,
                                                 target_cost=4 * anchor["cost"] if anchor else None)
             except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
                 continue
-            if self.boundary_max_residual is not None:
-                state, _, params_b, _ = fit["aux"]
-                residual = self.model.boundary_residual(state, params_b, field)
-                if max(residual.normal, residual.pressure, residual.sheet_current) > self.boundary_max_residual:
-                    self.stats["boundary_evaluations"] += fit["nfev"]
-                    fit = None  # the fit stalled away from the free boundary: try the next start
-                    continue
+            if not self._fits(fit, field):
+                self.stats["boundary_evaluations"] += fit["nfev"]
+                fit = None  # the fit stalled away from the free boundary: try the next start
+                continue
             break
         if fit is None:
             return self._reject(key, "no three-term free boundary at this design point")
@@ -206,6 +212,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._reject(key, str(error))
         self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
         return self._cache[key]
+
+    def _fits(self, fit, field):
+        """Every interface residual of ``fit`` within ``boundary_max_residual`` (when set)."""
+        if self.boundary_max_residual is None:
+            return True
+        state, _, params_b, _ = fit["aux"]
+        residual = self.model.boundary_residual(state, params_b, field)
+        return max(residual.normal, residual.pressure, residual.sheet_current) <= self.boundary_max_residual
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1

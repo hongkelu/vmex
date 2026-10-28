@@ -516,6 +516,18 @@ class ThreeTermsModel:
                                   labelling)
         self._implicit_setup()
 
+    def coordinates(self, inp: VmecInput) -> np.ndarray:
+        """The model coordinates of another deck's boundary (and, with ``bootstrap``, its current), as ``x0`` of
+        :meth:`solve_boundary`: a start that keeps this model's labelling reference and quadrature plan."""
+        from .bootstrap import HalfMeshCurrent
+        from .optimize import pack_boundary
+
+        x = pack_boundary(inp, self.max_mode, vary_major_radius=True)[:self.n_boundary]
+        if self.bootstrap is None:
+            return x
+        b = self.bootstrap
+        return np.r_[x, HalfMeshCurrent(inp, b.profiles, b.helicity_n, b.weight).x0]
+
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
                          labelling="anchored"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""

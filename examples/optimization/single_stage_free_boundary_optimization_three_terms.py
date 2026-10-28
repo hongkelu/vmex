@@ -416,10 +416,13 @@ print("[optimizer] " + ", ".join(f"{k} = {v:.4g}" for k, v in optimizer_values.i
 ###############################################################################
 
 # Re-solve the optimized coils' free boundary, with the optimized current profile, independently
-# of the optimizer, cold from the seed boundary, and check every target there, the interface
-# residuals and the Redl self-consistency included.
+# of the optimizer, and check every target there, the interface residuals and the Redl
+# self-consistency included.  The fit starts from the optimizer's boundary: at this resolution the
+# interface least squares has several minima, and a cold start from the seed lands centimetres away,
+# on another free boundary of the same coils.
 coils_final = coils_from_x(jnp.asarray(x[:N_COIL]))
-final_input = input_from_x(x)
+start = im.input_with_params(inp, params_x)
+final_input = replace(input_from_x(x), rbc=start.rbc, zbs=start.zbs)
 final = vj.solve_free_boundary_multigrid(final_input, external_field=field_from_x(jnp.asarray(x)),
                                          three_terms=replace(config, start="deck"))
 final_deck = final.three_terms.input  # the free boundary as a fixed-boundary deck

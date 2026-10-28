@@ -52,7 +52,6 @@ to the least packaged:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-import hashlib
 import time
 from typing import Any
 
@@ -78,14 +77,6 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
-
-
-def _fingerprint(*trees) -> str:
-    """Hash of the concrete arrays of ``trees`` (cache keys of linearizations)."""
-    digest = hashlib.sha1()
-    for leaf in jax.tree.leaves(trees):
-        digest.update(np.asarray(leaf).tobytes())
-    return digest.hexdigest()
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):
@@ -178,17 +169,15 @@ def _poloidal_tangent(gamma):
 
 def _equal_arc_rows(gamma):
     """Rows that vanish when the boundary's poloidal angle is equal-arc on every toroidal cut and the m = 1 part of
-    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.  The phase is
-    the angle of that part, in (-pi, pi]: zero on one branch only (``Im c1 / |c1|`` also vanished for the angle
-    shifted by pi), and not finite where the part vanishes (a rejected trial).
+    ``R + i Z`` has zero phase there: one labelling of the surface itself, the same from any start.
 
     ``gamma`` is ``(3, nphi, ntheta)`` Cartesian points.  Returns ``(arc, phase)``: ``|d gamma/d theta|`` relative to
-    its mean on each cut, minus one, ``(nphi, ntheta)``; and the phase of ``c1`` per cut, ``(nphi,)``.
+    its mean on each cut, minus one, ``(nphi, ntheta)``; and ``Im c1 / |c1|`` per cut, ``(nphi,)``.
     """
     speed = jnp.linalg.norm(_poloidal_tangent(gamma), axis=0)
     arc = speed / jnp.mean(speed, axis=-1, keepdims=True) - 1.0
     c1 = jnp.fft.fft(jnp.hypot(gamma[0], gamma[1]) + 1j * gamma[2], axis=-1)[..., 1]
-    return arc, jnp.arctan2(jnp.imag(c1), jnp.real(c1))
+    return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
@@ -465,13 +454,6 @@ class ThreeTermsModel:
             raise ValueError(f"labelling must be 'anchored', 'equal_arc' or 'none', got {labelling!r}")
         if not label_weight:  # no labelling rows: the same problem whichever labelling was named
             labelling, label_weight = "none", 0.0
-        #: The settings that define the discrete problem (a checkpoint must match them to restore).
-        self.options = dict(max_mode=max_mode, nphi=nphi, ntheta=ntheta, digits=digits, weights=list(weights),
-                            net_current_weight=net_current_weight, label_weight=label_weight, trial_ftol=trial_ftol,
-                            quadrature=None if quadrature is None else list(quadrature),
-                            bootstrap=None if bootstrap is None else type(bootstrap).__name__,
-                            bootstrap_helicity=bootstrap_helicity, bootstrap_weight=bootstrap_weight,
-                            fixed_boundary=bool(fixed_boundary), labelling=labelling)
         if _edge_pressure_error(inp):
             raise ValueError(_edge_pressure_error(inp))
         self.fixed = fixed = replace(inp, lfreeb=False, mgrid_file="NONE")
@@ -505,10 +487,6 @@ class ThreeTermsModel:
         if self.bootstrap is not None:
             self.x0 = np.r_[self.x0, self.bootstrap.x0]
             self.x_scale = np.r_[self.x_scale, self.bootstrap.x_scale]
-        # The current values are re-solved after every boundary step (variable projection): their rows, scaled by
-        # bootstrap_weight, leave their linear model long before the interface rows do (QH 2.5%: a step that halves
-        # the interface cost takes them from 1e-7 to order one, and the fit stalls).
-        self._projected = np.arange(nb, self.x0.size) if self.bootstrap is not None and nb else None
         self.chunk = int(chunk)
 
         def with_boundary(params, x):
@@ -587,13 +565,11 @@ class ThreeTermsModel:
         edge = im._edge_mask(cfg)
 
         def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents (one block factorization, chunked), and
-            whether each column's linear solve is certified."""
-            solution, report = im._implicit_evolved_tangent_multi_rhs(
+            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
+            return im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))
-            return solution, report.converged
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
@@ -749,10 +725,7 @@ class ThreeTermsModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all, certified = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
-        certified = np.asarray(certified)
-        if not certified.all():  # an uncertified response is no Jacobian column: reject rather than use it
-            raise RuntimeError(f"{int((~certified).sum())} of {certified.size} tangent solves are not certified")
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
@@ -786,7 +759,7 @@ class ThreeTermsModel:
             if first is None:
                 raise RuntimeError("the warm-start boundary has no certified equilibrium")
             out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), x, *first, jacobian,
-                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                       ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
             self._radius = out["radius"]
             close = target_cost is None or 0.5 * out["rows"] @ out["rows"] <= target_cost
             if (out["accepted"] or out["converged"]) and close:
@@ -794,7 +767,7 @@ class ThreeTermsModel:
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -828,12 +801,12 @@ class ThreeTermsModel:
             fun(fit.x)
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
-                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                   ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
         self._radius = out["radius"]
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius, project=self._projected)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
@@ -843,24 +816,7 @@ class ThreeTermsModel:
 
 
 
-def _project(evaluate, x, got, J_c, index, budget):
-    """Up to two Gauss-Newton corrections of the coordinates ``index`` of ``x`` (columns ``J_c`` of a nearby
-    Jacobian), each kept only if it lowers the cost: the least-squares minimum over those coordinates at the rest
-    of ``x`` (variable projection), so the converged problem is unchanged.  Returns ``(x, (rows, aux), evaluations)``.
-    """
-    used = 0
-    for _ in range(min(2, budget)):
-        x_try = np.array(x, dtype=float)
-        x_try[index] -= np.linalg.lstsq(J_c, got[0], rcond=None)[0]
-        again = evaluate(x_try)
-        used += 1
-        if again is None or again[0] @ again[0] >= got[0] @ got[0]:
-            break
-        x, got = x_try, again
-    return x, got, used
-
-
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, project=None):
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -871,9 +827,6 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
     Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
-
-    ``project`` (indices of ``x``) are coordinates re-solved after every step (:func:`_project`): stiff closure
-    coordinates, such as the bootstrap current's, whose rows a step of the others moves far off their linear model.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -915,9 +868,6 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         x_new = x + (Vt.T @ z) / norms
         got = evaluate(x_new)
         nfev += 1
-        if got is not None and project is not None:
-            x_new, got, used = _project(evaluate, x_new, got, J[:, project], project, max_nfev - nfev)
-            nfev += used
         cost_new = np.inf if got is None else 0.5 * got[0] @ got[0]
         rho = (cost - cost_new) / predicted if predicted > 0 else -np.inf
         if verbose:

@@ -92,6 +92,9 @@ REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 # current, instead of the single sum of squares under REDL_TOLERANCE (whose allowance a many-knot current spends on
 # point-to-point wiggles); the current itself is a CURRENT_KNOTS spline (seed and restart decks are resampled).
 REDL_SURFACE_TOLERANCE = 1e-2
+# Rows only on s >= REDL_ROW_S_MIN: near the axis Redl's geometry extrapolates the s = 0.01 |B| variation linearly
+# (as simsopt's RedlGeomVmec), so its <J.B> stays finite where no smooth current follows it.
+REDL_ROW_S_MIN = 0.15
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
@@ -291,12 +294,13 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
 
 
 def redl_surface_rows(redl):
-    """(state, runtime) -> (<J.B>_vmec - <J.B>_Redl) / rms <J.B> on each of ``redl``'s surfaces.
+    """(state, runtime) -> (<J.B>_vmec - <J.B>_Redl) / rms <J.B> on ``redl``'s surfaces with s >= ``REDL_ROW_S_MIN``.
 
     Redl's normalized residuals R_j = (Jv - Jr) / sqrt(sum_k (Jv + Jr)^2) times 2 sqrt(n): near
     self-consistency the denominator is 2 sqrt(n) rms J."""
     factor = 2.0 * np.sqrt(np.size(redl.surfaces))
-    return lambda state, runtime: factor * redl.residuals_state(state, runtime)
+    kept = np.flatnonzero(np.asarray(redl.surfaces) >= REDL_ROW_S_MIN)
+    return lambda state, runtime: factor * redl.residuals_state(state, runtime)[kept]
 
 
 def smooth_redl_current(inp, device):
@@ -310,7 +314,8 @@ def smooth_redl_current(inp, device):
 
     picard = self_consistent_bootstrap(inp, redl_profiles(inp)[0], REDL_HELICITY, n_iter=PICARD_ITERATIONS,
                                        tol=PICARD_TOLERANCE, relax=PICARD_RELAX, degree=CURRENT_KNOTS - 1,
-                                       s_eval=redl_surfaces(), solve_kwargs=dict(device=device))
+                                       s_eval=redl_surfaces()[redl_surfaces() >= REDL_ROW_S_MIN],
+                                       solve_kwargs=dict(device=device))
     smooth = opt.resample_current_profile(picard.input, CURRENT_KNOTS)
     print(f"Redl current on {CURRENT_KNOTS} spline knots: Picard {picard.iterations} iterations (converged "
           f"{picard.converged}), CURTOR = {float(smooth.curtor):.1f} A", flush=True)
@@ -1073,7 +1078,8 @@ def main(argv=None):
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = 0 if redl is None else np.size(redl.surfaces) if BOOTSTRAP_MODEL == "redl" else 1
+    nredl = (0 if redl is None else int(np.sum(np.asarray(redl.surfaces) >= REDL_ROW_S_MIN))
+             if BOOTSTRAP_MODEL == "redl" else 1)
     redl_bound = ((-REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE)
                   if BOOTSTRAP_MODEL == "redl" else (-np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
     state0, params0 = problem.state(problem.x0)

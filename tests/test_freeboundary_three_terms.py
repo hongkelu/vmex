@@ -290,12 +290,15 @@ def small_lane():
     inp, field = _small_vacuum()
     config = vj.make_free_boundary_config(
         inp, field, field_from_parameters=lambda u: _scaled(field, 1 + 0.05 * u[0]),
-        three_terms=replace(SMALL_ANCHORED, ftol=1e-10, max_nfev=80, max_residual=0.1))
+        three_terms=replace(SMALL_ANCHORED, ftol=1e-10, jacobian_ftol=1e-10, max_nfev=80, max_residual=0.1))
     return im.params_from_input(inp), config
 
 
-def _lane_rows(params, config, v, u):
-    """Aspect ratio and mean iota at the free boundary of ``PHIEDGE (1 + v)`` and the field of ``u``."""
+def _lane_rows(params, config, v, u, *, cold=False):
+    """Aspect ratio and mean iota at the free boundary of ``PHIEDGE (1 + v)`` and the field of ``u``; ``cold`` fits
+    from the deck's boundary, independent of earlier solves."""
+    if cold:
+        config.three_terms.reset()
     plasma = replace(params, phiedge=params.phiedge * (1 + v[0]))
     state, status, worst, _ = vj.solve_free_boundary_implicit_status(plasma, u, config)
     runtime = im.runtime_from_params(plasma, config.implicit)
@@ -307,18 +310,20 @@ def _lane_rows(params, config, v, u):
 def test_three_term_lane_gradients_match_resolved_differences(small_lane):
     """The lane's custom VJP (fixed-boundary implicit adjoint, then the boundary fit's implicit function theorem)
     along a plasma parameter (PHIEDGE) and a field parameter (the coil currents), both rows in one ``jacrev`` pass
-    (batched cotangents), against re-solved central differences; one row by ``grad`` agrees with the batch."""
+    (batched cotangents), against central differences of cold, converged fits (a warm fit's end depends on the
+    solves before it); one row by ``grad`` agrees with the batch."""
     params, config = small_lane
     v0, u0 = jnp.zeros(1), jnp.zeros(1)
     (jac_v, jac_u), (status, worst) = jax.jacrev(
-        lambda v, u: _lane_rows(params, config, v, u), argnums=(0, 1), has_aux=True)(v0, u0)
+        lambda v, u: _lane_rows(params, config, v, u, cold=True), argnums=(0, 1), has_aux=True)(v0, u0)
     assert int(status) == 0 and float(worst) < 0.1
     assert config.three_terms.stats["linearizations"] >= 1
     grad_u = jax.grad(lambda u: _lane_rows(params, config, v0, u)[0][0])(u0)
     np.testing.assert_allclose(grad_u, jac_u[0], rtol=1e-8)
     h = 1e-3
     for jac, at in ((jac_v, lambda s: (v0 + s, u0)), (jac_u, lambda s: (v0, u0 + s))):
-        fd = (_lane_rows(params, config, *at(h))[0] - _lane_rows(params, config, *at(-h))[0]) / (2 * h)
+        fd = (_lane_rows(params, config, *at(h), cold=True)[0]
+              - _lane_rows(params, config, *at(-h), cold=True)[0]) / (2 * h)
         np.testing.assert_allclose(jac[:, 0], fd, rtol=1e-2)
 
 

@@ -836,7 +836,8 @@ class ThreeTermsLane:
     its boundary, with its Jacobian.  The solve has status 0 when every RMS interface residual is at most
     ``max_residual``, else 1.  A solve whose gradient is asked for is re-solved to the deck's tolerance,
     linearized, polished once with that Jacobian (kept if it cuts the fit's cost by 10%) and becomes the anchor.
-    Solves are cached by their arguments, so a value and a gradient at one point fit once.
+    Solves are cached by their arguments, so a value and a gradient at one point fit once; :meth:`reset` forgets
+    the cache and the warm start.
     """
 
     def __init__(self, inp, external_field, config: ThreeTermsConfig, field_from_parameters, *, device=None):
@@ -851,6 +852,12 @@ class ThreeTermsLane:
         self._field_jvp = jax.jit(lambda state, params, f, df: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (f,), (df,))[1])
         self._pullback = jax.jit(self._pullback_impl)
+
+    def reset(self):
+        """Forget the cached solves and the warm start: the next solve fits cold from the deck's boundary."""
+        self._cache, self._anchor = {}, None
+        model = self.model
+        model._radius = model._linearization = model._last_linearize = None
 
     def _key(self, params, field_parameters):
         return _fingerprint(params, field_parameters)

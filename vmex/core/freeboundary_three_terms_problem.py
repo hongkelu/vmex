@@ -10,6 +10,7 @@ of the boundary fit).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 import numpy as np
@@ -70,10 +71,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
-        ``boundary_start`` (a deck: a run's final, fitted boundary and, with ``bootstrap``, current) is the seed
-        design's boundary as it is, re-fitted only if it misses ``boundary_max_residual``, and the start of the fits
-        before the first gradient: a restart keeps its first run's deck ``inp`` (the anchored labelling's reference
-        and the quadrature plan's boundary) and resumes at its final state.
+        ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
+        the seed design's boundary as it is, re-fitted only if it misses ``boundary_max_residual``, and the start of
+        the fits before the first gradient; a WOUT's equilibrium also seeds the seed design's solve (the interior
+        state is not unique to the force tolerance).  A restart keeps its first run's deck ``inp`` (the anchored
+        labelling's reference and the quadrature plan's boundary) and resumes at its final WOUT.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
         quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
@@ -158,7 +160,18 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
-        self._start = None if boundary_start is None else model.coordinates(boundary_start)
+        self._start, self._start_state = None, None
+        if boundary_start is not None:
+            from .input import VmecInput
+
+            deck = boundary_start
+            if not isinstance(boundary_start, VmecInput):  # a WOUT: its state seeds the first solve too
+                from .restart import state_from_wout
+                from .wout import read_wout
+
+                wout = read_wout(boundary_start) if isinstance(boundary_start, (str, Path)) else boundary_start
+                deck, self._start_state = VmecInput.from_wout(wout), state_from_wout(wout, inp=model.fixed)
+            self._start = model.coordinates(deck)
         self._start_key = x0.tobytes()
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
         if self._solve(x0) is None:
@@ -184,7 +197,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
-            evaluated = self.model.evaluate(self._start, params, field, tight=True)
+            evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state, tight=True)
             if evaluated is not None:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
                 if not self._fits(fit, field):

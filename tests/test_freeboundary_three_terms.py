@@ -287,8 +287,9 @@ def test_equal_arc_problem_gradient_matches_resolved_differences(label_weight):
 @pytest.mark.full
 def test_restart_from_a_final_boundary_keeps_the_values():
     """A restart: the first run's deck (the anchored labelling's reference) with ``boundary_start`` at a later
-    design's fitted boundary takes that boundary as it is and reproduces the design's values (a re-fit from it
-    moves along the fit's flat directions, 0.15% in mean iota here); the deck's own coordinates are the model's."""
+    design's fitted boundary takes that boundary as it is (a re-fit moves along the fit's flat directions, 0.15% in
+    mean iota here); from a deck it re-solves the equilibrium (equal to the force tolerance), from the design's WOUT
+    it resumes that equilibrium.  The deck's own coordinates are the model's."""
     inp, field = _small_vacuum()
     options = dict(field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]), quantities=(opt.mean_iota,),
                    config=SMALL_ANCHORED, boundary_ftol=1e-8, boundary_max_nfev=80)
@@ -300,12 +301,12 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     np.testing.assert_array_equal(first.model.coordinates(first.model.fixed), first.model.x0)
     x = np.array([0.1])
     _, params = first.state(x)
-    final = first.model._im.input_with_params(first.model.fixed, params)
-    restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=final, **options)
-    # the restart solves its equilibrium afresh: equal to the force tolerance
-    np.testing.assert_allclose(restart.constraint_values(x), first.constraint_values(x), rtol=1e-5)
-    assert restart.fun(x) == pytest.approx(first.fun(x), rel=1e-5)
-    assert restart.stats["boundary_evaluations"] == 1
+    values = np.r_[first.fun(x), first.constraint_values(x)]
+    for start, rtol in ((first.model._im.input_with_params(first.model.fixed, params), 1e-5),
+                        (first.equilibrium_from_x(x).wout, 1e-8)):
+        restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=start, **options)
+        np.testing.assert_allclose(np.r_[restart.fun(x), restart.constraint_values(x)], values, rtol=rtol)
+        assert restart.stats["boundary_evaluations"] == 1
 
 
 def _small_problem(**options):

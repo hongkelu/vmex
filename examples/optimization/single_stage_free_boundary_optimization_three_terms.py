@@ -483,8 +483,7 @@ steps = {"accepted": 0}
 
 
 def report(u):
-    steps["accepted"] += 1
-    monitor(u)
+    steps["accepted"] += 1  # SLSQP reports an iterate before it asks for its gradient: values only here
     rows = np.asarray(constraints(jnp.asarray(u)))
     print(f"[step {steps['accepted']}] loss {float(objective(jnp.asarray(u))[0]):.6e}; min |iota| {rows[0]:.4f}, "
           f"max |iota| {rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}", flush=True)

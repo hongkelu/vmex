@@ -4,7 +4,8 @@
 the pressure jump and the sheet current vanish. Lanes: input validation and the
 configuration's deck keys; the residual rows' definitions on a converged finite-beta state; and (``full``)
 the vacuum and finite-beta Landreman--Paul QA cases with their bundled ESSOS
-coils, where the solve agrees with NESTOR and is independent of its start.
+coils, where the solve agrees with NESTOR and is independent of its start; and the three-term lane of
+``solve_free_boundary_implicit_status``, whose custom VJP is checked against re-solved differences.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import jax.numpy as jnp  # noqa: E402
 import vmex as vj  # noqa: E402
 from vmex import optimize as opt  # noqa: E402
 from vmex.core import freeboundary_three_terms as fvc  # noqa: E402
+from vmex.core import implicit as im  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 from vmex.core.errors import TrialRejected  # noqa: E402
 from vmex.core.freeboundary_three_terms_problem import ThreeTermsFreeBoundaryProblem  # noqa: E402
@@ -279,6 +281,66 @@ def test_equal_arc_problem_gradient_matches_resolved_differences(label_weight):
         np.testing.assert_allclose(grad, fd[0], rtol=1e-2)
         np.testing.assert_allclose(jac[:, 0], fd[1], rtol=1e-2)
     problem.close()
+
+
+@pytest.fixture(scope="module")
+def small_lane():
+    """The three-term lane of ``solve_free_boundary_implicit_status`` on the small vacuum design, with a coil-current
+    factor ``1 + u / 20`` as its field parameter and tight fits (the gradient is that of a stationary fit)."""
+    inp, field = _small_vacuum()
+    config = vj.make_free_boundary_config(
+        inp, field, field_from_parameters=lambda u: _scaled(field, 1 + 0.05 * u[0]),
+        three_terms=replace(SMALL_ANCHORED, ftol=1e-10, max_nfev=80, max_residual=0.1))
+    return im.params_from_input(inp), config
+
+
+def _lane_rows(params, config, v, u):
+    """Aspect ratio and mean iota at the free boundary of ``PHIEDGE (1 + v)`` and the field of ``u``."""
+    plasma = replace(params, phiedge=params.phiedge * (1 + v[0]))
+    state, status, worst, _ = vj.solve_free_boundary_implicit_status(plasma, u, config)
+    runtime = im.runtime_from_params(plasma, config.implicit)
+    return jnp.stack([opt.aspect_ratio(state, runtime), opt.mean_iota(state, runtime)]), (status, worst)
+
+
+@needs_vc
+@pytest.mark.full
+def test_three_term_lane_gradients_match_resolved_differences(small_lane):
+    """The lane's custom VJP (fixed-boundary implicit adjoint, then the boundary fit's implicit function theorem)
+    along a plasma parameter (PHIEDGE) and a field parameter (the coil currents), both rows in one ``jacrev`` pass
+    (batched cotangents), against re-solved central differences; one row by ``grad`` agrees with the batch."""
+    params, config = small_lane
+    v0, u0 = jnp.zeros(1), jnp.zeros(1)
+    (jac_v, jac_u), (status, worst) = jax.jacrev(
+        lambda v, u: _lane_rows(params, config, v, u), argnums=(0, 1), has_aux=True)(v0, u0)
+    assert int(status) == 0 and float(worst) < 0.1
+    assert config.three_terms.stats["linearizations"] >= 1
+    grad_u = jax.grad(lambda u: _lane_rows(params, config, v0, u)[0][0])(u0)
+    np.testing.assert_allclose(grad_u, jac_u[0], rtol=1e-8)
+    h = 1e-3
+    for jac, at in ((jac_v, lambda s: (v0 + s, u0)), (jac_u, lambda s: (v0, u0 + s))):
+        fd = (_lane_rows(params, config, *at(h))[0] - _lane_rows(params, config, *at(-h))[0]) / (2 * h)
+        np.testing.assert_allclose(jac[:, 0], fd, rtol=1e-2)
+
+
+@needs_vc
+@pytest.mark.full
+def test_three_term_lane_failed_fit_is_status_one_without_gradient(small_lane, monkeypatch):
+    """A design without a boundary fit returns status 1, an infinite residual and zero cotangents, not an error;
+    the raising entry point refuses a three-term configuration."""
+    params, config = small_lane
+
+    def no_fit(*args, **kwargs):
+        raise RuntimeError("the warm-start boundary has no certified equilibrium")
+
+    monkeypatch.setattr(config.three_terms.model, "solve_boundary", no_fit)
+    def aspect(u):
+        rows, aux = _lane_rows(params, config, jnp.zeros(1), u)
+        return rows[0], aux
+
+    grad, (status, worst) = jax.grad(aspect, has_aux=True)(jnp.full(1, 0.37))
+    assert int(status) == 1 and np.isinf(float(worst)) and np.all(np.asarray(grad) == 0.0)
+    with pytest.raises(ValueError, match="solve_free_boundary_implicit_status"):
+        vj.solve_free_boundary_implicit(params, jnp.zeros(1), config)
 
 
 def _small_problem(**options):

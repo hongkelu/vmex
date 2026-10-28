@@ -14,6 +14,13 @@ root (:func:`_anchor_root`), because VMEC's ``ftol`` test does not put it
 there, and a trial whose restart from the configuration's reference cannot
 converge falls back to a cold solve after a bounded budget
 (:func:`_restart_budget`).
+
+``make_free_boundary_config(..., three_terms=ThreeTermsConfig(...))`` selects
+the three-term lane of :func:`solve_free_boundary_implicit_status` instead of
+NESTOR: the boundary on which ``B.n = 0``, pressure balance and ``K = 0``
+hold together (:mod:`vmex.core.freeboundary_three_terms`), differentiated
+through the fixed-boundary implicit adjoint and the implicit function
+theorem of the boundary fit.
 """
 
 from __future__ import annotations
@@ -63,7 +70,10 @@ class FreeBoundaryImplicitConfig:
 
     ``field_from_parameters`` reconstructs the differentiable field from the
     second solve argument. ``implicit`` holds the shared Krylov tolerances and
-    differentiable input-to-runtime map.
+    differentiable input-to-runtime map. ``three_terms`` is the cached
+    :class:`~vmex.core.freeboundary_three_terms.ThreeTermsLane` of a
+    three-term configuration (else ``None``); ``implicit`` is then its
+    fixed-boundary configuration, the one the returned states belong to.
     """
 
     implicit: im.ImplicitConfig
@@ -72,6 +82,7 @@ class FreeBoundaryImplicitConfig:
     adjoint_fail: str = "error"
     schur_probe_chunk_size: int = 1
     vacuum_program: Any = None
+    three_terms: Any = None
 
     @property
     def resolution(self):
@@ -97,6 +108,7 @@ def make_free_boundary_config(
     device: Any = AUTO,
     max_fsq_ratio: float = 1.0,
     refine_tol: float = 1.0e-10,
+    three_terms: Any = None,
 ) -> FreeBoundaryImplicitConfig:
     """Build a coupled free-boundary derivative configuration.
 
@@ -138,9 +150,32 @@ def make_free_boundary_config(
     Newton-refined until ``|F| <= refine_tol`` and differentiated there.  A
     solve the anchor cannot land is status 3.  ``inf`` skips the anchor and
     restores the unanchored behaviour.
+
+    ``three_terms`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`)
+    replaces NESTOR by the three interface conditions ``B.n = 0``, pressure
+    balance and ``K = 0`` (virtual casing, ``pip install vmex[freeb]``), in
+    :func:`solve_free_boundary_implicit_status` only.  Every solve is then a
+    least-squares fit of the boundary whose trial points are fixed-boundary
+    equilibria on the deck's ``NS_ARRAY`` ladder (``ns``, ``ftol`` and
+    ``max_iterations`` replace its last rung), and ``implicit`` is that
+    fixed-boundary configuration: build the solver context of the returned
+    states with ``runtime_from_params(params, config.implicit)``.  The
+    labelling, interface grid, quadrature, fit tolerances (``ftol``,
+    ``max_nfev``) and ``max_residual`` come from the ``ThreeTermsConfig``;
+    the NESTOR and adjoint controls do not apply.  Building the configuration
+    solves the deck's fixed-boundary equilibrium and plans the quadrature on
+    it, once.
     """
     if not inp.lfreeb:
         raise ValueError("free-boundary implicit differentiation requires LFREEB=T")
+    field_map = (lambda value: value) if field_from_parameters is None else field_from_parameters
+    if three_terms is not None:
+        from .freeboundary_three_terms import ThreeTermsLane
+
+        lane = ThreeTermsLane(_last_rung(inp, ns, ftol, max_iterations), external_field, three_terms,
+                              field_map, device=None if device is AUTO else device)
+        return FreeBoundaryImplicitConfig(implicit=lane.model.cfg, field_from_parameters=field_map,
+                                          three_terms=lane)
     resolution = free_boundary_resolution(inp, external_field, ns=ns)
     solve_device = resolve_implicit_device(device, resolution)
     cfg = im.make_config(
@@ -162,13 +197,27 @@ def make_free_boundary_config(
         raise ValueError("schur_probe_chunk_size must be positive")
     config = FreeBoundaryImplicitConfig(
         implicit=cfg,
-        field_from_parameters=(lambda value: value) if field_from_parameters is None
-        else field_from_parameters,
+        field_from_parameters=field_map,
         adjoint_solver=adjoint_solver,
         adjoint_fail=adjoint_fail,
         schur_probe_chunk_size=int(schur_probe_chunk_size),
     )
     return dataclasses.replace(config, vacuum_program=_vacuum_program(config))
+
+
+def _last_rung(inp: VmecInput, ns, ftol, max_iterations) -> VmecInput:
+    """``inp`` with ``ns`` (a one-rung ladder), ``ftol`` and ``max_iterations`` on its last rung."""
+    if ns is None and ftol is None and max_iterations is None:
+        return inp
+    ns_array, ftol_array, niter_array = (np.array(a, copy=True) for a in (
+        inp.ns_array, inp.ftol_array, inp.niter_array))
+    if ns is not None:
+        ns_array, ftol_array, niter_array = np.array([ns]), ftol_array[-1:], niter_array[-1:]
+    if ftol is not None:
+        ftol_array[-1] = ftol
+    if max_iterations is not None:
+        niter_array[-1] = max_iterations
+    return dataclasses.replace(inp, ns_array=ns_array, ftol_array=ftol_array, niter_array=niter_array)
 
 
 def _vacuum_program(cfg: FreeBoundaryImplicitConfig):
@@ -670,6 +719,8 @@ def solve_free_boundary_implicit(
     status value instead of raising and suppresses the pullback for a trial
     whose derivatives are not certified.
     """
+    if cfg.three_terms is not None:
+        raise ValueError("a three-term configuration solves through solve_free_boundary_implicit_status")
     icfg = cfg.implicit
     with im._device_context(icfg):
         params, field_parameters = im._device_pin(
@@ -1538,11 +1589,28 @@ def solve_free_boundary_implicit_status(
     status 2 is exactly ``ratio`` exceeding the configuration's
     ``max_fsq_ratio`` on a solve that did not converge.  Both are infinite
     on a failed solve.
+
+    With a three-term configuration (``make_free_boundary_config(...,
+    three_terms=...)``) the state is the fixed-boundary equilibrium of the
+    fitted free boundary, on ``cfg.implicit``; ``params`` sets the plasma
+    (its boundary arrays are replaced by the fit's, so their cotangents are
+    zero).  Status 0 is a fit with every RMS interface residual within the
+    configuration's ``max_residual``, 1 any other; ``fsq`` is then the largest
+    RMS interface residual (relative to ``|B|``) and ``ratio`` its ratio to
+    ``max_residual``.  A gradient re-solves the fit tight, polishes it once
+    with its own Jacobian and differentiates it: the state cotangent passes
+    the fixed-boundary implicit adjoint, then the fit's implicit function
+    theorem, ``lambda = J_b (J_b^T J_b)^-1 g_b``, onto ``params`` and
+    ``field_parameters``.  The pullback batches under ``jax.vmap``, so
+    ``jax.jacrev`` of several rows costs one forward solve and one block
+    factorization.
     """
     icfg = cfg.implicit
     with im._device_context(icfg):
         params, field_parameters = im._device_pin(
             icfg, (params, field_parameters))
+        if cfg.three_terms is not None:
+            return _callback_three_terms(params, field_parameters, cfg)
         state, _, _, _, status, fsq, ratio = _callback_status(
             params, field_parameters, cfg)
     return state, status, fsq, ratio
@@ -1553,6 +1621,11 @@ def _solve_status_fwd(params, field_parameters, cfg):
     with im._device_context(icfg):
         params, field_parameters = im._device_pin(
             icfg, (params, field_parameters))
+        if cfg.three_terms is not None:
+            state, mask, b, jacobian, status, worst, ratio = _callback_three_terms(
+                params, field_parameters, cfg, gradient=True)
+            saved = (params, field_parameters, state, mask, b, jacobian, status)
+            return (state, status, worst, ratio), saved
         state, mask, rcon0, zcon0, status, fsq, ratio = _callback_status(
             params, field_parameters, cfg)
         state, mask, rcon0, zcon0 = im._device_pin(
@@ -1568,6 +1641,9 @@ def _solve_status_bwd(cfg, saved, cotangents):
              jax.tree.map(jnp.zeros_like, field_parameters))
 
     def success(values):
+        if cfg.three_terms is not None:  # rcon0, zcon0 hold the fit's b and J_b
+            with im._device_context(cfg.implicit), im._forward_trace_context():
+                return cfg.three_terms._pullback(*values)
         prm, field, solved, dof_mask, rcon, zcon, bar = values
         return _solve_bwd(
             cfg, (prm, field, solved, dof_mask, rcon, zcon), bar)
@@ -1580,6 +1656,30 @@ def _solve_status_bwd(cfg, saved, cotangents):
         status == 0, success, lambda _: zeros,
         (params, field_parameters, state, mask, rcon0, zcon0, state_bar),
     )
+
+
+def _host_three_terms(cfg, params_np, field_parameters_np):
+    state, _, _, _, status, worst, ratio = cfg.three_terms.solve(params_np, field_parameters_np)
+    return state, status, worst, ratio
+
+
+def _host_three_terms_gradient(cfg, params_np, field_parameters_np):
+    return cfg.three_terms.solve(params_np, field_parameters_np, gradient=True)
+
+
+def _callback_three_terms(params, field_parameters, cfg, *, gradient=False):
+    """The three-term lane's host solve: ``(state, status, worst, ratio)``, and with ``gradient`` the mask, the
+    fit's boundary coordinates and their Jacobian after the state."""
+    lane, icfg = cfg.three_terms, cfg.implicit
+    scalar = jax.ShapeDtypeStruct((), jnp.float64)
+    status = jax.ShapeDtypeStruct((), jnp.int32)
+    n_b = lane.model.x0.size
+    structs = ((im._state_struct(icfg), im._state_struct(icfg), jax.ShapeDtypeStruct((n_b,), jnp.float64),
+                jax.ShapeDtypeStruct((lane.n_rows, n_b), jnp.float64), status, scalar, scalar) if gradient
+               else (im._state_struct(icfg), status, scalar, scalar))
+    return jax.pure_callback(
+        im._host_callable(_host_three_terms_gradient if gradient else _host_three_terms, cfg),
+        structs, params, field_parameters, sharding=im._callback_sharding(icfg))
 
 
 # ``residual`` is a static jit key, so its identity must be stable across

@@ -825,6 +825,179 @@ class ThreeTermsModel:
 
 
 
+class ThreeTermsLane:
+    """The three-term solver lane of :func:`~vmex.core.freeboundary_implicit.solve_free_boundary_implicit_status`.
+
+    Built by ``make_free_boundary_config(..., three_terms=ThreeTermsConfig(...))``, which caches it in the
+    configuration as it caches the NESTOR program; ``model`` is its :class:`ThreeTermsModel`.  A solve is the
+    boundary fit of the plasma parameters and field (:meth:`ThreeTermsModel.solve_boundary`, at the
+    configuration's ``ftol`` and ``max_nfev``), cold from the deck's boundary the first time and then warm from the
+    latest differentiated solve (the anchor): first from its first-order prediction of the new boundary, then from
+    its boundary, with its Jacobian.  The solve has status 0 when every RMS interface residual is at most
+    ``max_residual``, else 1.  A solve whose gradient is asked for is re-solved to the deck's tolerance,
+    linearized, polished once with that Jacobian (kept if it cuts the fit's cost by 10%) and becomes the anchor.
+    Solves are cached by their arguments, so a value and a gradient at one point fit once.
+    """
+
+    def __init__(self, inp, external_field, config: ThreeTermsConfig, field_from_parameters, *, device=None):
+        if not jax.config.x64_enabled:
+            raise ValueError("free-boundary optimization requires JAX_ENABLE_X64=1")
+        self.config = config
+        self.model = model = ThreeTermsModel(inp, device=device, **config.model_options())
+        self.field_from_parameters = field_from_parameters
+        self.n_rows = int(jax.eval_shape(model.rows, model.seed[0], model.params0, external_field).shape[0])
+        self._cache, self._anchor = {}, None
+        self.stats = dict(solves=0, failed=0, boundary_evaluations=0, linearizations=0)
+        self._field_jvp = jax.jit(lambda state, params, f, df: jax.jvp(
+            lambda z: model.rows(state, params, field_from_parameters(z)), (f,), (df,))[1])
+        self._pullback = jax.jit(self._pullback_impl)
+
+    def _key(self, params, field_parameters):
+        return _fingerprint(params, field_parameters)
+
+    def solve(self, params, field_parameters, gradient=False):
+        """``(state, mask, b, J_b, status, worst, ratio)`` at concrete arguments (``J_b`` zero without
+        ``gradient``); ``worst`` is the largest RMS interface residual, ``ratio`` its ratio to ``max_residual``."""
+        key = self._key(params, field_parameters)
+        hit = self._cache.get(key)
+        if hit is None:
+            hit = self._fit(jax.tree.map(jnp.asarray, params), jax.tree.map(jnp.asarray, field_parameters))
+            while len(self._cache) >= 8:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[key] = hit
+        if gradient and hit["status"] == 0 and "jacobian" not in hit:
+            self._linearize(hit)
+        model, state, mask = self.model, hit["state"], hit["mask"]
+        jacobian = hit.get("jacobian", np.zeros((self.n_rows, model.x0.size)))
+        to_numpy = lambda tree: jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), tree)  # noqa: E731
+        return (to_numpy(state), to_numpy(mask), np.asarray(hit["x"], dtype=np.float64),
+                np.asarray(jacobian, dtype=np.float64), np.int32(hit["status"]), np.float64(hit["worst"]),
+                np.float64(hit["worst"] / self.config.max_residual))
+
+    def _starts(self, params, field, field_parameters):
+        """Initial boundaries and Jacobian of a fit: the anchor's prediction and boundary, or the deck's."""
+        anchor = self._anchor
+        if anchor is None:
+            return [None], None, None
+        model = self.model
+        dfield = jax.tree.map(jnp.subtract, field_parameters, anchor["field_parameters"])
+        dr = np.asarray(self._field_jvp(anchor["state"], anchor["params_b"], anchor["field_parameters"], dfield))
+        moved = jax.tree.map(jnp.subtract, model.with_boundary(params, jnp.asarray(anchor["x"])), anchor["params_b"])
+        if any(bool(jnp.any(leaf != 0)) for leaf in jax.tree.leaves(moved)):  # the plasma's own tangent
+            batch = jax.tree.map(lambda a: a[None], moved)
+            dz = model._tangents(anchor["params_b"], anchor["state"], anchor["mask"], batch)
+            dr = dr + np.asarray(model._push_rows(anchor["state"], anchor["mask"], anchor["params_b"], dz, batch,
+                                                  field))[0]
+        predicted = anchor["x"] - np.linalg.lstsq(anchor["jacobian"], dr, rcond=None)[0]
+        return [predicted, anchor["x"]], anchor["jacobian"], 4.0 * anchor["cost"]
+
+    def _fit(self, params, field_parameters):
+        """The boundary fit at ``params`` and ``field_parameters``, the best of its starts."""
+        model, config = self.model, self.config
+        self.stats["solves"] += 1
+        field = self.field_from_parameters(field_parameters)
+        starts, jacobian, target = self._starts(params, field, field_parameters)
+        best = None
+        for start in starts:
+            try:
+                out = model.solve_boundary(
+                    params, field, x0=start, jacobian=jacobian, ftol=config.ftol,
+                    jacobian_ftol=config.ftol if config.jacobian_ftol is None else config.jacobian_ftol,
+                    max_nfev=config.max_nfev, target_cost=target, refresh_on_stall=jacobian is None)
+            except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
+                continue
+            self.stats["boundary_evaluations"] += int(out["nfev"])
+            state, mask, params_b, _ = out["aux"]
+            residual = model.boundary_residual(state, params_b, field)
+            worst = max(residual.normal, residual.pressure, residual.sheet_current)
+            if best is None or worst < best["worst"]:
+                best = dict(x=np.asarray(out["x"]), rows=np.asarray(out["rows"]), aux=out["aux"], state=state,
+                            mask=mask, worst=worst, params=params, field_parameters=field_parameters)
+            if worst <= config.max_residual:
+                break
+        if best is None:  # no fit: the anchor's (or the seed's) state, with status 1
+            self.stats["failed"] += 1
+            state, mask = ((model.seed[0], jax.tree.map(jnp.zeros_like, model.seed[1])) if self._anchor is None
+                           else (self._anchor["state"], jax.tree.map(jnp.zeros_like, self._anchor["mask"])))
+            x = model.x0 if self._anchor is None else self._anchor["x"]
+            return dict(x=np.asarray(x), state=state, mask=mask, worst=np.inf, status=1)
+        best["status"] = 0 if best["worst"] <= config.max_residual else 1
+        self.stats["failed"] += best["status"]
+        return best
+
+    def _linearize(self, hit):
+        """Re-solve ``hit`` tight, linearize it, polish it once, and make it the anchor."""
+        model, config = self.model, self.config
+        field = self.field_from_parameters(hit["field_parameters"])
+
+        def tight():
+            try:
+                J, _, _, aux = model.linearize(hit["x"], hit["aux"], field)
+            except RuntimeError:  # the trial's state does not tighten to the deck's tolerance
+                return None
+            state, mask, params_b, _ = aux
+            hit.update(aux=aux, state=state, mask=mask, rows=np.asarray(model._rows(state, params_b, field)))
+            self.stats["linearizations"] += 1
+            return np.asarray(J)
+
+        J = tight()
+        if J is None:
+            hit.update(status=1)
+            self.stats["failed"] += 1
+            return
+        try:
+            polished = model.solve_boundary(hit["params"], field, x0=hit["x"], jacobian=J, ftol=config.ftol,
+                                            max_nfev=20)
+        except (VmecError, RuntimeError):
+            polished = None
+        if polished is not None:
+            self.stats["boundary_evaluations"] += int(polished["nfev"])
+            if polished["rows"] @ polished["rows"] < 0.9 * hit["rows"] @ hit["rows"]:
+                unpolished = {name: hit[name] for name in ("x", "aux", "state", "mask", "rows")}
+                hit.update(x=np.asarray(polished["x"]), aux=polished["aux"])
+                J_polished = tight()
+                if J_polished is None:  # keep the unpolished linearization
+                    hit.update(unpolished)
+                else:
+                    J = J_polished
+        state, _, params_b, _ = hit["aux"]
+        residual = model.boundary_residual(state, params_b, field)
+        hit.update(jacobian=J, worst=max(residual.normal, residual.pressure, residual.sheet_current))
+        self._anchor = dict(x=hit["x"], jacobian=J, state=state, mask=hit["mask"], params_b=params_b,
+                            field_parameters=hit["field_parameters"], cost=0.5 * hit["rows"] @ hit["rows"])
+
+    def _pullback_impl(self, params, field_parameters, state, mask, b, jacobian, state_bar):
+        """Cotangents of ``params`` and ``field_parameters`` from a state cotangent, at a linearized solve.
+
+        The state cotangent goes through the fixed-boundary implicit adjoint onto the parameters ``params_b`` of
+        the fitted boundary; their boundary part ``g_b`` (the model coordinates ``b``) moves with the fit, whose
+        stationarity ``J_b^T r = 0`` gives, by the implicit function theorem (Gauss-Newton),
+
+            d/dtheta = d/dtheta|_b - lambda^T dr/dtheta,   lambda = J_b (J_b^T J_b)^-1 g_b,
+
+        with ``dr/dtheta`` the interface rows' derivative through the equilibrium (plasma parameters) and the
+        field (``field_parameters``).  Traceable and batchable: under ``jax.vmap`` (``jax.jacrev``) only the
+        cotangents carry the batch, so every row shares one block factorization and one QR.
+        """
+        model = self.model
+        im = model._im
+        frozen = jax.lax.stop_gradient(state)
+        params_b = model.with_boundary(params, b)
+        back = im._block_state_pullback(params_b, model.cfg, frozen, mask,
+                                        active_fields=im._active_state_fields(model.cfg),
+                                        probe_chunk_size=model.chunk)
+        _, split = jax.vjp(model.with_boundary, params, b)
+        params_bar, g_b = split(back(state_bar)[0])
+        Q, R = jnp.linalg.qr(jacobian)
+        lam = Q @ jax.scipy.linalg.solve_triangular(R.T, g_b, lower=True)
+        _, rows_vjp = jax.vjp(lambda s, p, f: model.rows(s, p, self.field_from_parameters(f)),
+                              frozen, params_b, field_parameters)
+        state_rows, params_rows, field_bar = rows_vjp(lam)
+        through_rows, _ = split(jax.tree.map(jnp.add, params_rows, back(state_rows)[0]))
+        return (jax.tree.map(jnp.subtract, params_bar, through_rows), jax.tree.map(jnp.negative, field_bar))
+
+
+
 def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 

@@ -515,7 +515,8 @@ def dkx_current(inp, fixed, device):
     rows = kinetic.rows(ns)[1]
     knots = np.r_[0.0, s, 1.0]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
-    v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
+    v = (np.zeros(s.size) if float(inp.curtor) == 0.0  # a zero-current deck starts the Picard loop from I' = 0
+         else float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))))
     kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
     kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
     derivative = jax.jit(current_derivative)
@@ -536,17 +537,36 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
-def restart_input(run):
+CURRENT_FIELDS = ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor")
+
+
+def restart_input(run, current=None):
     """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
 
     The restart's model keeps ``input.run`` itself (the anchored labelling's reference): this is its design's
-    PHIEDGE and current and the boundary its first fit starts from."""
+    PHIEDGE and current and the boundary its first fit starts from. ``current`` (a deck) replaces the WOUT's current
+    profile (``--resolve-current``)."""
     import vmex as vj
 
     final = vj.VmecInput.from_wout(run / "wout.nc")
     return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
-        name: getattr(final, name) for name in ("rbc", "zbs", "phiedge", "pcurr_type", "ac", "ac_aux_s", "ac_aux_f",
-                                                "curtor")})
+        name: getattr(final if current is None or name not in CURRENT_FIELDS else current, name)
+        for name in ("rbc", "zbs", "phiedge", *CURRENT_FIELDS)})
+
+
+def resolved_current(inp, run, device):
+    """``inp`` with the DKX self-consistent bootstrap current of ``run``'s final design (``--resolve-current``).
+
+    The Picard loop of ``dkx_current`` at that design's fixed boundary, from the run's own current (zero for a
+    zero-current run), so a run can continue with a bootstrap current it did not carry."""
+    from vmex import optimize as opt
+
+    if BOOTSTRAP_MODEL != "dkx":
+        raise ValueError("--resolve-current needs the DKX bootstrap model (a QI case)")
+    design = restart_input(run)
+    fixed = opt.solve_equilibrium(design, device=device, raise_on_max_iterations=True, polish_force_balance=False)
+    current = dkx_current(design, fixed, device)
+    return replace(inp, **{name: getattr(current, name) for name in CURRENT_FIELDS})
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -651,6 +671,9 @@ def parse_args(argv=None):
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--resolve-current", action="store_true",
+                        help="with --restart and --bootstrap: first Picard the current to DKX's self-consistent one at "
+                        "the restart's final design (e.g. to continue a zero-current run with its bootstrap current)")
     parser.add_argument("--dkx-ambipolar", action="store_true",
                         help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
     parser.add_argument("--current-constraint", action="store_true",
@@ -686,6 +709,8 @@ def parse_args(argv=None):
         args.coils = args.restart / "coils.json"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
+    if args.resolve_current and (args.restart is None or not args.bootstrap):
+        parser.error("--resolve-current needs --restart and --bootstrap")
     return args
 
 
@@ -876,6 +901,8 @@ def main(argv=None):
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
         inp = replace(vj.VmecInput.from_file(str(args.restart / "input.run")), lfreeb=False)
+        if args.resolve_current:
+            inp = resolved_current(inp, args.restart, "gpu")
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
@@ -899,7 +926,8 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    design = inp if args.restart is None else restart_input(args.restart)  # PHIEDGE, current and boundary of x0
+    design = (inp if args.restart is None  # PHIEDGE, current and boundary of x0
+              else restart_input(args.restart, current=inp if args.resolve_current else None))
     current = np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor] if args.bootstrap and not fold else None
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[

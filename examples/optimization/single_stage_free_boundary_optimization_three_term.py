@@ -88,6 +88,10 @@ STELLARIS_R0, STELLARIS_B0, STELLARIS_N0, STELLARIS_T0 = 12.74, 9.0, 5.06e20, 15
 STELLARIS_ALPHA_N, STELLARIS_ALPHA_T, STELLARIS_TI_TE = 0.35, 1.2, 0.95
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+# With the current as an input (Redl): one row per surface, <J.B>_vmec - <J.B>_Redl within this fraction of the rms
+# current, instead of the single sum of squares under REDL_TOLERANCE (whose allowance a many-knot current spends on
+# point-to-point wiggles); the current itself is a CURRENT_KNOTS spline (seed and restart decks are resampled).
+REDL_SURFACE_TOLERANCE = 1e-2
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
@@ -286,6 +290,33 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
     return inp, fixed
 
 
+def redl_surface_rows(redl):
+    """(state, runtime) -> (<J.B>_vmec - <J.B>_Redl) / rms <J.B> on each of ``redl``'s surfaces.
+
+    Redl's normalized residuals R_j = (Jv - Jr) / sqrt(sum_k (Jv + Jr)^2) times 2 sqrt(n): near
+    self-consistency the denominator is 2 sqrt(n) rms J."""
+    factor = 2.0 * np.sqrt(np.size(redl.surfaces))
+    return lambda state, runtime: factor * redl.residuals_state(state, runtime)
+
+
+def smooth_redl_current(inp, device):
+    """``inp`` with Redl's self-consistent current at its fixed boundary on ``CURRENT_KNOTS`` spline knots.
+
+    The fresh seed's Picard loop and resampling (``bootstrap_input``), for a seed or restart deck whose current
+    has another representation (e.g. one value on every half-mesh surface): its knot values would be free
+    design variables, which the optimizer can make jagged."""
+    from vmex import optimize as opt
+    from vmex.core.bootstrap import self_consistent_bootstrap
+
+    picard = self_consistent_bootstrap(inp, redl_profiles(inp)[0], REDL_HELICITY, n_iter=PICARD_ITERATIONS,
+                                       tol=PICARD_TOLERANCE, relax=PICARD_RELAX, degree=CURRENT_KNOTS - 1,
+                                       s_eval=redl_surfaces(), solve_kwargs=dict(device=device))
+    smooth = opt.resample_current_profile(picard.input, CURRENT_KNOTS)
+    print(f"Redl current on {CURRENT_KNOTS} spline knots: Picard {picard.iterations} iterations (converged "
+          f"{picard.converged}), CURTOR = {float(smooth.curtor):.1f} A", flush=True)
+    return smooth
+
+
 def redl_surfaces():
     """Surfaces of the Redl self-consistency check: ``REDL_SURFACES``, or by default every VMEC
     half-grid surface s = (j - 1/2) / (ns - 1) at the run's ns, as simsopt's ``RedlGeomVmec``."""
@@ -480,13 +511,15 @@ def current_iota(state, runtime):
 
 
 def bootstrap_mismatch(inp, redl, device):
-    """(state, runtime) -> the bootstrap self-consistency mismatch held under ``REDL_TOLERANCE``.
+    """(state, runtime) -> the bootstrap self-consistency rows.
 
-    Redl's, or with ``BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
-    drift-kinetic one on ``DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry).
+    Redl's per surface, (<J.B>_vmec - <J.B>_Redl) / rms <J.B> (``redl_surface_rows``) held within
+    ``REDL_SURFACE_TOLERANCE``; or with ``BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
+    drift-kinetic one on ``DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry), one
+    sum held under ``REDL_TOLERANCE``.
     """
     if BOOTSTRAP_MODEL == "redl":
-        return redl.total_state
+        return redl_surface_rows(redl)
     mismatch = dkx_mismatch(inp)
     # DKX builds its per-surface operators and Boozer plan on the host at the first
     # call and caches them; make that call on a concrete equilibrium, so the
@@ -599,16 +632,25 @@ def restart_input(run, resolved=None):
 
 
 def resolved_current(run, beta, device):
-    """``run``'s final design with ``PROFILES``' pressure at ``beta`` and DKX's self-consistent bootstrap current.
+    """``run``'s final design with ``PROFILES``' pressure at ``beta`` and a self-consistent bootstrap current.
 
     The pressure becomes ``pressure_shape()`` (so the kinetic profiles and the equilibrium describe the same
     plasma), rescaled with PHIEDGE to ``beta`` and the axis ``B0`` (``finite_beta_input``) at that design's fixed
     boundary; then the Picard loop of ``dkx_current`` from the run's own current (I' = 0 if zero). A run can so continue
-    with a bootstrap current (and profiles) it did not carry, e.g. a zero-current run (``--resolve-current``)."""
-    if BOOTSTRAP_MODEL != "dkx":
-        raise ValueError("--resolve-current needs the DKX bootstrap model (a QI case)")
-    design, fixed = finite_beta_input(restart_input(run), beta, device, am=pressure_shape())
-    return dkx_current(design, fixed, device)
+    with a bootstrap current (and profiles) it did not carry, e.g. a zero-current run (``--resolve-current``); with
+    Redl, the current becomes Redl's on ``CURRENT_KNOTS`` spline knots (``smooth_redl_current``)."""
+    from vmex import optimize as opt
+
+    design = restart_input(run)
+    shape = np.zeros_like(np.asarray(design.am, dtype=float))
+    shape[: len(pressure_shape())] = pressure_shape()
+    if np.allclose(shape, design.am):  # already the profiles' pressure: keep the design's PRES_SCALE and PHIEDGE
+        fixed = opt.solve_equilibrium(design, device=device, raise_on_max_iterations=True, polish_force_balance=False)
+    else:
+        design, fixed = finite_beta_input(design, beta, device, am=pressure_shape())
+    if BOOTSTRAP_MODEL == "dkx":
+        return dkx_current(design, fixed, device)
+    return smooth_redl_current(design, device)
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -952,6 +994,8 @@ def main(argv=None):
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+        if args.bootstrap and not BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
+            inp = smooth_redl_current(inp, "gpu")
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:
@@ -1029,7 +1073,9 @@ def main(argv=None):
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = int(redl is not None)
+    nredl = 0 if redl is None else np.size(redl.surfaces) if BOOTSTRAP_MODEL == "redl" else 1
+    redl_bound = ((-REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE)
+                  if BOOTSTRAP_MODEL == "redl" else (-np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
     state0, params0 = problem.state(problem.x0)
     runtime0 = im.runtime_from_params(params0, model.cfg)
     extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
@@ -1040,7 +1086,7 @@ def main(argv=None):
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
+        *[redl_bound] * nredl,
         *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
@@ -1112,7 +1158,8 @@ def main(argv=None):
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
-                   **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling)])} if nredl else {}),
+                   **({"redl_mismatch": float(np.max(np.abs(h[3 + len(mirror) + len(ceiling):][:nredl])))}
+                      if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),

@@ -525,7 +525,11 @@ class ThreeTermsModel:
         x = pack_boundary(inp, self.max_mode, vary_major_radius=True)[:self.n_boundary]
         if self.bootstrap is None:
             return x
-        b = self.bootstrap
+        b, n = self.bootstrap, self.bootstrap.knots.size
+        if inp.pcurr_type == "line_segment_ip":  # this model's own profile: its knot values (a WOUT's CURTOR is solved)
+            knots = np.asarray(inp.ac_aux_s, dtype=float)
+            if knots.size >= n and np.allclose(knots[:n], b.knots, rtol=0, atol=1e-12):
+                return np.r_[x, np.asarray(inp.ac_aux_f, dtype=float)[1:n - 1]]
         return np.r_[x, HalfMeshCurrent(inp, b.profiles, b.helicity_n, b.weight).x0]
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,

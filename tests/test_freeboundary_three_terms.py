@@ -287,7 +287,8 @@ def test_equal_arc_problem_gradient_matches_resolved_differences(label_weight):
 @pytest.mark.full
 def test_restart_from_a_final_boundary_keeps_the_values():
     """A restart: the first run's deck (the anchored labelling's reference) with ``boundary_start`` at a later
-    design's fitted boundary reproduces that design's values; that deck's own coordinates are the model's."""
+    design's fitted boundary takes that boundary as it is and reproduces the design's values (a re-fit from it
+    moves along the fit's flat directions, 0.15% in mean iota here); the deck's own coordinates are the model's."""
     inp, field = _small_vacuum()
     options = dict(field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]), quantities=(opt.mean_iota,),
                    config=SMALL_ANCHORED, boundary_ftol=1e-8, boundary_max_nfev=80)
@@ -303,6 +304,7 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=final, **options)
     np.testing.assert_allclose(restart.constraint_values(x), first.constraint_values(x), rtol=1e-6)
     assert restart.fun(x) == pytest.approx(first.fun(x), rel=1e-6)
+    assert restart.stats["boundary_evaluations"] == 1
 
 
 def _small_problem(**options):

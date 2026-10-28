@@ -80,6 +80,12 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 # DKX: the current is a line segment through a value on every half-mesh surface (those values,
 # the axis one and CURTOR are design variables), its seed DKX's on the same surfaces.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
+# --profiles stellaris: Stellaris' design point A instead (Lion et al. 2025, Fusion Eng. Des., Eq. (2)-(3) and
+# Table 5): n = n0 (1 - s)^0.35 (flat), Te = Te0 (1 - s)^1.2 (peaked), Ti = 0.95 Te, n0 = 5.06e20 1/m^3 (peak
+# electron density), Te0 = 15.4 keV, R = 12.74 m, B = 9 T; ni = ne and Zeff = 1 (no helium ash or tungsten).
+PROFILES = "lbd"
+STELLARIS_R0, STELLARIS_B0, STELLARIS_N0, STELLARIS_T0 = 12.74, 9.0, 5.06e20, 15.4e3
+STELLARIS_ALPHA_N, STELLARIS_ALPHA_T, STELLARIS_TI_TE = 0.35, 1.2, 0.95
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
@@ -290,17 +296,51 @@ def redl_surfaces():
     return (np.arange(1, ns) - 0.5) / (ns - 1)
 
 
+def power_profile(alpha, degree=8, s_fit=0.85, slope_weight=0.3):
+    """Power-series coefficients in s of (1 - s)^alpha, 1 on axis and 0 at the edge.
+
+    Redl and DKX take polynomial profiles, and (1 - s)^alpha with alpha < 1 has an infinite edge slope: a
+    least-squares fit of its values and slopes relative to (1 - s)^alpha on s <= ``s_fit`` keeps the gradient
+    length a/L right in the core (alpha = 0.35: within 7% for s = 0.05-0.85, values within 1.4% for s <= 0.9;
+    alpha = 1.2: within 0.1%)."""
+    s = np.linspace(0.0, s_fit, 1000)
+    f, df = (1 - s) ** alpha, -alpha * (1 - s) ** (alpha - 1)
+    values = np.vander(s, degree + 1, increasing=True)
+    slopes = np.hstack([np.zeros((s.size, 1)), values[:, :-1] * np.arange(1, degree + 1)])
+    ends = 1e4 * np.vander([0.0, 1.0], degree + 1, increasing=True)
+    rows = np.vstack([values / f[:, None], slope_weight * slopes / f[:, None], ends])
+    return np.linalg.lstsq(rows, np.r_[np.ones(s.size), slope_weight * df / f, 1e4, 0.0], rcond=None)[0]
+
+
+def profile_shapes():
+    """(ne, Te shapes as power series in s, Ti / Te, reactor R0, B0, n0, T0) of ``PROFILES``."""
+    if PROFILES == "stellaris":
+        return (power_profile(STELLARIS_ALPHA_N), power_profile(STELLARIS_ALPHA_T), STELLARIS_TI_TE,
+                (STELLARIS_R0, STELLARIS_B0, STELLARIS_N0, STELLARIS_T0))
+    return (np.array([1.0, 0, 0, 0, 0, -1.0]), np.array([1.0, -1.0]), 1.0,
+            (REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0))
+
+
+def pressure_shape():
+    """The pressure p ~ ne (Te + Ti) of ``profile_shapes`` (ni = ne), as power-series coefficients in s."""
+    ne, te, _, _ = profile_shapes()
+    return tuple(np.polynomial.polynomial.polymul(ne, te))
+
+
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch.
+
+    ``PROFILES``' reactor values scaled to the deck's major radius and ``B0`` at fixed beta and collisionality
+    (n T ~ B^2, n R / T^2), then to the deck's PRES_SCALE = e n0 (Te0 + Ti0)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
+    ne, te, ti_te, (reactor_r0, reactor_b0, reactor_n0, reactor_t0) = profile_shapes()
     r0, b0 = float(inp.rbc[inp.ntor, 0]), B0
-    t0 = REACTOR_T0 * (b0 / REACTOR_B0) ** (2 / 3) * (r0 / REACTOR_R0) ** (1 / 3)
-    n0 = REACTOR_N0 * (b0 / REACTOR_B0) ** (4 / 3) * (REACTOR_R0 / r0) ** (1 / 3)
-    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
+    t0 = reactor_t0 * (b0 / reactor_b0) ** (2 / 3) * (r0 / reactor_r0) ** (1 / 3)
+    n0 = reactor_n0 * (b0 / reactor_b0) ** (4 / 3) * (reactor_r0 / r0) ** (1 / 3)
+    scale = float(inp.pres_scale) / ((1 + ti_te) * ELEMENTARY_CHARGE * n0 * t0)
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
-    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
-                               t0 * np.array([1.0, -1.0]))
+    profiles = KineticProfiles(n0 * ne, t0 * te, ti_te * t0 * te)
     return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
@@ -352,7 +392,7 @@ def bootstrap_input(inp, beta, device):
         ohmic[:2] = 2.0 * OHMIC_CURRENT * np.array([1.0, -1.0])
         inp = replace(inp, ac=ohmic, curtor=OHMIC_CURRENT)
         for stage_beta in betas:
-            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=pressure_shape())
         for weight in (0.25, 0.5, 0.75):
             boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
             ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
@@ -365,7 +405,7 @@ def bootstrap_input(inp, beta, device):
         profiles, redl = redl_profiles(inp)
         inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
-        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=pressure_shape())
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
         inp = picard.input
@@ -541,33 +581,34 @@ def dkx_current(inp, fixed, device):
 CURRENT_FIELDS = ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor")
 
 
-def restart_input(run, current=None):
+RESOLVED_FIELDS = ("phiedge", "am", "pres_scale", *CURRENT_FIELDS)
+
+
+def restart_input(run, resolved=None):
     """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
 
     The restart's model keeps ``input.run`` itself (the anchored labelling's reference): this is its design's
-    PHIEDGE and current and the boundary its first fit starts from. ``current`` (a deck) replaces the WOUT's current
-    profile (``--resolve-current``)."""
+    PHIEDGE and current and the boundary its first fit starts from. ``resolved`` (a deck, ``--resolve-current``)
+    replaces its PHIEDGE, pressure and current."""
     import vmex as vj
 
     final = vj.VmecInput.from_wout(run / "wout.nc")
-    return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
-        name: getattr(final if current is None or name not in CURRENT_FIELDS else current, name)
-        for name in ("rbc", "zbs", "phiedge", *CURRENT_FIELDS)})
+    design = replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
+        name: getattr(final, name) for name in ("rbc", "zbs", "phiedge", *CURRENT_FIELDS)})
+    return design if resolved is None else replace(design, **{name: getattr(resolved, name) for name in RESOLVED_FIELDS})
 
 
-def resolved_current(inp, run, device):
-    """``inp`` with the DKX self-consistent bootstrap current of ``run``'s final design (``--resolve-current``).
+def resolved_current(run, beta, device):
+    """``run``'s final design with ``PROFILES``' pressure at ``beta`` and DKX's self-consistent bootstrap current.
 
-    The Picard loop of ``dkx_current`` at that design's fixed boundary, from the run's own current (zero for a
-    zero-current run), so a run can continue with a bootstrap current it did not carry."""
-    from vmex import optimize as opt
-
+    The pressure becomes ``pressure_shape()`` (so the kinetic profiles and the equilibrium describe the same
+    plasma), rescaled with PHIEDGE to ``beta`` and the axis ``B0`` (``finite_beta_input``) at that design's fixed
+    boundary; then the Picard loop of ``dkx_current`` from the run's own current (I' = 0 if zero). A run can so continue
+    with a bootstrap current (and profiles) it did not carry, e.g. a zero-current run (``--resolve-current``)."""
     if BOOTSTRAP_MODEL != "dkx":
         raise ValueError("--resolve-current needs the DKX bootstrap model (a QI case)")
-    design = restart_input(run)
-    fixed = opt.solve_equilibrium(design, device=device, raise_on_max_iterations=True, polish_force_balance=False)
-    current = dkx_current(design, fixed, device)
-    return replace(inp, **{name: getattr(current, name) for name in CURRENT_FIELDS})
+    design, fixed = finite_beta_input(restart_input(run), beta, device, am=pressure_shape())
+    return dkx_current(design, fixed, device)
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -675,6 +716,9 @@ def parse_args(argv=None):
     parser.add_argument("--resolve-current", action="store_true",
                         help="with --restart and --bootstrap: first Picard the current to DKX's self-consistent one at "
                         "the restart's final design (e.g. to continue a zero-current run with its bootstrap current)")
+    parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
+                        help="--bootstrap kinetic profiles: Landreman-Buller-Drevlak at Helios-like values (lbd) or "
+                        "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
     parser.add_argument("--dkx-ambipolar", action="store_true",
                         help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
     parser.add_argument("--current-constraint", action="store_true",
@@ -862,9 +906,9 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR
+    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR, PROFILES
     args = parse_args(argv)
-    DKX_AMBIPOLAR = bool(args.dkx_ambipolar)
+    DKX_AMBIPOLAR, PROFILES = bool(args.dkx_ambipolar), args.profiles
     if args.coil_limits is not None:
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
     if args.current_constraint:
@@ -902,8 +946,9 @@ def main(argv=None):
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
         inp = replace(vj.VmecInput.from_file(str(args.restart / "input.run")), lfreeb=False)
-        if args.resolve_current:
-            inp = resolved_current(inp, args.restart, "gpu")
+        resolved = resolved_current(args.restart, args.beta, "gpu") if args.resolve_current else None
+        if resolved is not None:
+            inp = replace(inp, **{name: getattr(resolved, name) for name in RESOLVED_FIELDS if name != "phiedge"})
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
@@ -928,7 +973,7 @@ def main(argv=None):
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
     design = (inp if args.restart is None  # PHIEDGE, current and boundary of x0
-              else restart_input(args.restart, current=inp if args.resolve_current else None))
+              else restart_input(args.restart, resolved=resolved))
     current = np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor] if args.bootstrap and not fold else None
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[

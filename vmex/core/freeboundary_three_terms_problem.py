@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 
 import numpy as np
 
@@ -162,7 +163,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, fit_reasons={},
-                          max_condition=0.0)
+                          rejection_reasons={}, max_condition=0.0)
         self._continuation = None
         seed = self._solve(x0)
         if seed is None:
@@ -252,6 +253,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _reject(self, key, reason):
         self.stats["failed"] += 1
+        kind = re.sub(r"[-+]?\d[\d.]*(e[-+]?\d+)?", "#", reason)[:80]  # the reason without its numbers
+        self.stats["rejection_reasons"][kind] = self.stats["rejection_reasons"].get(kind, 0) + 1
         self._cache[key], self._rejections[key] = None, reason
         return None
 

@@ -526,7 +526,10 @@ def dkx_current(inp, fixed, device):
 
 
 def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``)."""
+    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
+
+    The restart's model keeps ``input.run`` itself (the anchored labelling's reference): this is its design's
+    PHIEDGE and current and the boundary its first fit starts from."""
     import vmex as vj
 
     final = vj.VmecInput.from_wout(run / "wout.nc")
@@ -858,7 +861,7 @@ def main(argv=None):
     if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
-        inp = restart_input(args.restart)
+        inp = replace(vj.VmecInput.from_file(str(args.restart / "input.run")), lfreeb=False)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
@@ -882,14 +885,15 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold else None
+    design = inp if args.restart is None else restart_input(args.restart)  # PHIEDGE, current and boundary of x0
+    current = np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor] if args.bootstrap and not fold else None
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
-                      phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
+                      phiedge=float(design.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
@@ -929,7 +933,8 @@ def main(argv=None):
                                    quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                    trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                    bootstrap_helicity=REDL_HELICITY),
-        boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual)
+        boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
+        boundary_start=None if args.restart is None else design)
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)

@@ -255,12 +255,30 @@ initial boundary, weight `1e-2`) or `"none"`. Use a fixed singular quadrature
 `vj.solve_free_boundary_three_terms` is one solve, with `previous=` to continue
 after a coil change, and `vj.ThreeTermsFreeBoundaryProblem` is the
 single-stage problem with exact design gradients, for
-`vmex.optimize.minimize(problem, method="SLSQP")`. Any function of the
-equilibrium is a loss term or a constraint row (`quantities=`): at finite beta,
-as in VMEC, the pressure and current are inputs, the current profile is a design
-variable (`plasma_from_parameters=`) and its Redl self-consistency a constraint
-row (`examples/optimization/single_stage_free_boundary_optimization_three_terms.py`,
-QA at 0.5% beta).
+`vmex.optimize.minimize(problem, method="SLSQP")`.
+
+The same free boundary is a differentiable solve, as NESTOR's is: give
+`make_free_boundary_config` a `three_terms=` configuration and
+`solve_free_boundary_implicit_status` returns the fixed-boundary equilibrium of
+the fitted boundary, with status 0 when every RMS interface residual is within
+`max_residual`. Its custom VJP takes the state cotangent through the
+fixed-boundary implicit adjoint and the boundary fit's implicit function
+theorem onto the plasma parameters and the field parameters, and batches, so
+`jax.jacrev` of several constraint rows costs one pullback:
+
+```python
+config = vj.make_free_boundary_config(
+    inp, field, field_from_parameters=field_from_u,
+    three_terms=vj.ThreeTermsConfig(labelling="equal_arc", quadrature=(4 * inp.nfp * 24, 48)))
+state, status, worst, _ = vj.solve_free_boundary_implicit_status(params, u, config)
+runtime = im.runtime_from_params(params, config.implicit)   # the state's solver context
+```
+
+Any function of the equilibrium is then a loss term or a constraint row: at
+finite beta, as in VMEC, the pressure and current are inputs, the current
+profile is a design variable and its Redl self-consistency a constraint row
+(`examples/optimization/single_stage_free_boundary_optimization_three_terms.py`,
+QA at 0.5% beta, SciPy SLSQP).
 `examples/free_boundary_three_terms.py` compares the labellings with NESTOR.
 
 ## Differentiability scope

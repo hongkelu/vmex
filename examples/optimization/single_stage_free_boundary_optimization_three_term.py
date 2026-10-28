@@ -462,57 +462,13 @@ def bootstrap_mismatch(inp, redl, device):
 def dkx_kinetic(inp):
     """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``).
 
-    The surfaces run through one ``lax.map`` instead of DKX's Python loop, which traces a Boozer transform, kinetic
-    operator and solve per surface: at 50 surfaces the gradient compiled in 1016 s, mapped in 40 s, at the same run
-    time and memory and the same values to the linear solve's tolerance (2e-7).
+    DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0.
     """
-    import dataclasses
-
-    import jax
-    import jax.numpy as jnp
-    from booz_xform_jax.jax_api import booz_xform_jax_impl
-    from dkx.bootstrap import PARALLEL_CURRENT, KineticBootstrapMismatch
-    from dkx.run import profile_moments_from_operator
-    from dkx.solve import solve
-    from dkx.workflows.geometry_adapters import PSI_A_HAT_LEAVES, kinetic_operator_on_boozer_surface
-    from vmex.core.boozer_tables import boozer_input_tables
-
-    class Mapped(KineticBootstrapMismatch):
-        def _kinetic(self, state, rt):
-            setup = rt.setup
-            s_full = np.asarray(setup.s_full)
-            nfp = int(rt.resolution.nfp)
-            rows, s_rows, templates = self._setup(int(s_full.size))
-            psi_a = jnp.abs((s_full[1] - s_full[0]) * jnp.sum(jnp.asarray(setup.phipf)[1:]))
-            tables = boozer_input_tables(state, rt, int(rows[0]))
-            xm, xn = np.asarray(tables["xm"]), np.asarray(tables["xn"])
-            plan = self._plan(xm, xn, nfp)
-
-            def surface(args):  # dkx.bootstrap.KineticBootstrapMismatch._kinetic's loop body
-                row, template = args
-                tables = boozer_input_tables(state, rt, row)
-                booz = booz_xform_jax_impl(
-                    **{k: jnp.asarray(tables[k])[None] for k in (
-                        "rmnc", "zmns", "lmns", "bmnc", "bsubumnc", "bsubvmnc", "iota")},
-                    xm=jnp.asarray(xm), xn=jnp.asarray(xn), xm_nyq=jnp.asarray(xm), xn_nyq=jnp.asarray(xn),
-                    constants=plan.constants, grids=plan.grids, plan=plan)
-                operator = kinetic_operator_on_boozer_surface(
-                    dataclasses.replace(template, **{leaf: getattr(template, leaf) / psi_a
-                                                     for leaf in PSI_A_HAT_LEAVES}),
-                    bmnc_b=booz["bmnc_b"][0], ixm_b=np.asarray(plan.grids.xm_b), ixn_b=np.asarray(plan.grids.xn_b),
-                    nfp=nfp, iota=booz["iota_b"][0], g_hat=booz["bvco_b"][0], i_hat=booz["buco_b"][0],
-                    signgs=int(np.sign(setup.signgs)))
-                solved = solve(operator, operator.rhs(), method="auto", tol=self.tol, differentiable=True,
-                               tier1_keep_lowest=operator.n_xi, emit=None)
-                moments = profile_moments_from_operator(operator, solved.x.reshape(-1))
-                return moments["FSABjHat"].reshape(()) * PARALLEL_CURRENT
-
-            stacked = jax.tree.map(lambda *a: jnp.stack([jnp.asarray(x) for x in a]), *templates)
-            return s_rows, jax.lax.map(surface, (jnp.asarray(rows), stacked))
+    from dkx.bootstrap import KineticBootstrapMismatch
 
     surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
-    return Mapped(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
-                  mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
+                                    mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
 
 
 def on_grid(runtime):

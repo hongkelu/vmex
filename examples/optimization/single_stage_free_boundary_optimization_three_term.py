@@ -660,6 +660,8 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
+    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
+                        help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -754,14 +756,18 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4)):
+def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None):
     """Implicit design gradients of the loss and every quantity at the seed against central differences of
     re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
     ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector)."""
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (ftol, max_nfev)``
+    the differenced trials' boundary fits run to that tolerance, so each lands on its design's free boundary
+    rather than near the first-order prediction it starts from."""
     x = np.asarray(problem.accepted.parameters, dtype=float)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
+    if fit is not None:
+        problem.boundary_ftol, problem.boundary_max_nfev = float(fit[0]), int(fit[1])
     rng = np.random.default_rng(0)
     records = []
     for k in range(directions):
@@ -1086,7 +1092,7 @@ def main(argv=None):
             save(f".step{row['step']}")
 
     if args.check_gradient:
-        check_gradient(problem, args.check_gradient, out)
+        check_gradient(problem, args.check_gradient, out, fit=args.check_gradient_fit)
         return
     log_step()
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,

@@ -100,6 +100,7 @@ QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
+DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -462,13 +463,23 @@ def bootstrap_mismatch(inp, redl, device):
 def dkx_kinetic(inp):
     """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``).
 
-    DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0.
+    DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0, or
+    with ``DKX_AMBIPOLAR`` (DKX >= 2.12) each surface's ambipolar root, found by DKX's warm-started Newton
+    iteration on its default ambipolar grid (spectral angles) and differentiated through the root. E_r is in kV/m
+    over the minor radius R0 / aspect at the middle of ``ASPECT_RANGE``.
     """
     from dkx.bootstrap import KineticBootstrapMismatch
 
     surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
-    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
-                                    mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+    ambipolar = dict(ambipolar=True, spectral_angles=True,
+                     minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE)) if DKX_AMBIPOLAR else {}
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
+                                       mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"], **ambipolar)
+    DKX_ROWS.append(kinetic)
+    return kinetic
+
+
+DKX_ROWS = []  # the DKX rows built, for the step log's ambipolar roots
 
 
 def on_grid(runtime):
@@ -640,6 +651,8 @@ def parse_args(argv=None):
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--dkx-ambipolar", action="store_true",
+                        help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
     parser.add_argument("--current-constraint", action="store_true",
                         help="the current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design "
                         "variables) held Redl-self-consistent by a constraint row, instead of solved with every "
@@ -823,8 +836,9 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT
+    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR
     args = parse_args(argv)
+    DKX_AMBIPOLAR = bool(args.dkx_ambipolar)
     if args.coil_limits is not None:
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
     if args.current_constraint:
@@ -1031,6 +1045,8 @@ def main(argv=None):
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
+                   **({"dkx_er_kv_per_m": DKX_ROWS[-1].electric_field().tolist(),
+                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)} if DKX_AMBIPOLAR and DKX_ROWS else {}),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         last.update(time=now)
@@ -1046,6 +1062,8 @@ def main(argv=None):
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
+              + (f"E_r=[{min(row['dkx_er_kv_per_m']):.1f}, {max(row['dkx_er_kv_per_m']):.1f}] kV/m "
+                 f"unconverged={row['dkx_unconverged']} " if "dkx_unconverged" in row else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)

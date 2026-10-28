@@ -67,8 +67,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_max_residual=None):
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
+
+        ``boundary_start`` (a deck) starts that fit from its boundary (and, with ``bootstrap``, its current) instead
+        of ``inp``'s: a restart keeps its first run's deck, whose boundary is the anchored labelling's reference and
+        the quadrature plan's, and starts from its final boundary.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
         quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
@@ -89,11 +93,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
-                   boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual)
+                   boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
+                   boundary_start=boundary_start)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_max_residual=None):
+                 boundary_max_residual=None, boundary_start=None):
         im = model._im
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -152,6 +157,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
+        self._start = None if boundary_start is None else model.coordinates(boundary_start)
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
@@ -168,7 +174,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        anchor, starts, J = self._anchor, [None], None
+        anchor, starts, J = self._anchor, [self._start], None
         if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(

@@ -52,6 +52,7 @@ to the least packaged:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import hashlib
 import time
 from typing import Any
 
@@ -77,6 +78,14 @@ class BoundaryResidual:
     normal: float
     pressure: float
     sheet_current: float
+
+
+def _fingerprint(*trees) -> str:
+    """Hash of the concrete arrays of ``trees`` (cache keys of linearizations)."""
+    digest = hashlib.sha1()
+    for leaf in jax.tree.leaves(trees):
+        digest.update(np.asarray(leaf).tobytes())
+    return digest.hexdigest()
 
 
 def _interface_terms(inp, state, external_field, *, runtime, nphi, ntheta, digits, precision, p_edge):

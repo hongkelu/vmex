@@ -577,7 +577,7 @@ def test_three_term_single_stage_example_owns_its_optimization():
     """The three-term example composes the differentiable solve, AD and SciPy itself, as the NESTOR ones do."""
     text = (EXAMPLES / "optimization" / "single_stage_free_boundary_optimization_three_terms.py").read_text()
     for snippet in ("solve_free_boundary_implicit_status", "three_terms=three_terms", "jax.value_and_grad",
-                    "jax.jacrev", "FunctionProblem.from_functions", "minimize(free_problem.value_and_grad",
+                    "jax.jacrev", "FunctionProblem.from_functions", "minimize(free_problem.fun",
                     'method="SLSQP"', "coil_fit = minimize(", "toroidal_flux"):
         assert snippet in text, snippet
     assert "ThreeTermsFreeBoundaryProblem" not in text

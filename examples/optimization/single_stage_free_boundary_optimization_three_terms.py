@@ -437,16 +437,23 @@ value_and_grad_jax = jax.value_and_grad(objective, has_aux=True)
 # Every row's gradient in one pass: jax.jacrev batches the state cotangents through one block factorization.
 constraint_jacobian = jax.jacrev(constraints)
 monitor = opt.OptimizationMonitor()
-counts = {"trials": 0, "rejected": 0}
+counts = {"trials": 0, "rejected": 0, "gradients": 0}
+
+
+def value(u):
+    """A trial's value alone: its boundary fit, without the linearization a gradient needs."""
+    cost, (_, _, status) = objective(jnp.asarray(u))
+    counts["trials"] += 1
+    counts["rejected"] += int(status) != 0
+    return cost
 
 
 def value_and_grad(u):
-    counts["trials"] += 1
+    counts["gradients"] += 1
     (value, (qs_rows, costs, status)), gradient = value_and_grad_jax(jnp.asarray(u))
     qs_rows = np.asarray(qs_rows)
     terms = {"quasisymmetry": 0.5 * float(qs_rows @ qs_rows)}
     terms.update(zip(COIL_TERMS, map(float, np.asarray(costs))))
-    counts["rejected"] += int(status) != 0
     terms["rejected trial"] = float(value) if int(status) else 0.0
     return monitor.cache_evaluation(u, value, gradient, terms)
 
@@ -466,8 +473,10 @@ nonlinear = NonlinearConstraint(
 
 print(f"Three-term free boundary + ESSOS at beta {100 * TARGET_BETA:.2f}%: {N_COIL} coil and {N_CURRENT + 1} "
       "current variables, no boundary variables and no mgrid file, SLSQP")
+# SLSQP asks for gradients only at its major iterates, so its line-search trials pass fun (a fit alone) and
+# only an iterate is linearized and becomes the warm start of the next fits.
 free_problem = vj.FunctionProblem.from_functions(
-    u0, value_and_grad=value_and_grad, evaluation_progress=not ci_smoke)
+    u0, fun=value, value_and_grad=value_and_grad, evaluation_progress=not ci_smoke)
 first = free_problem.compile_value_and_gradient(progress=not ci_smoke, report_interval=10.0)
 initial_value = float(first.value)
 steps = {"accepted": 0}
@@ -482,7 +491,7 @@ def report(u):
 
 
 bound = PARAMETER_BOUND / DESIGN_STEP_SCALE
-result = minimize(free_problem.value_and_grad, u0, jac=True, method="SLSQP", constraints=[nonlinear],
+result = minimize(free_problem.fun, u0, jac=free_problem.grad, method="SLSQP", constraints=[nonlinear],
                   bounds=Bounds(-bound, bound), callback=report, options={"maxiter": MAXITER, "ftol": 1e-12})
 u = np.asarray(result.x)
 state_x, plasma_x, status_x, worst_x = solve(jnp.asarray(u))
@@ -492,7 +501,7 @@ x = np.asarray(x_from_u(jnp.asarray(u)))
 final_value = float(objective(jnp.asarray(u))[0])
 lane = config.three_terms.stats
 print(f"[solve] {steps['accepted']} SLSQP steps ({result.nit} iterations), {counts['trials']} trials "
-      f"({counts['rejected']} rejected), {lane['solves']} boundary fits with {lane['boundary_evaluations']} "
+      f"({counts['rejected']} rejected) and {counts['gradients']} gradients, {lane['solves']} boundary fits with {lane['boundary_evaluations']} "
       f"evaluations and {lane['linearizations']} linearizations: {result.message}", flush=True)
 optimization_seconds = time.perf_counter() - started
 runtime_x = im.runtime_from_params(plasma_x, config.implicit)
@@ -574,7 +583,8 @@ summary = {
     "example": "single_stage_free_boundary_optimization_three_terms.py", "smoke": ci_smoke,
     "optimization_seconds": round(optimization_seconds, 1), "coil_fit_iterations": int(coil_fit.nit),
     "accepted_steps": steps["accepted"], "slsqp_iterations": int(result.nit), "stop_reason": result.message,
-    "trials": counts["trials"], "rejected_trials": counts["rejected"], "boundary_fits": lane,
+    "trials": counts["trials"], "rejected_trials": counts["rejected"], "gradients": counts["gradients"],
+    "boundary_fits": lane,
     "labelling": LABELLING, "label_weight": three_terms.resolved_label_weight, "phiedge": float(inp.phiedge),
     "target beta": TARGET_BETA, "n0": n0, "T0": T0, "picard iterations": int(picard.iterations),
     "seed curtor": float(inp.curtor), "final curtor": float(final_input.curtor),

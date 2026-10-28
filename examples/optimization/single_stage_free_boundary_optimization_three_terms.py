@@ -477,7 +477,7 @@ def report(u):
     steps["accepted"] += 1
     monitor(u)
     rows = np.asarray(constraints(jnp.asarray(u)))
-    print(f"[step {steps['accepted']}] loss {free_problem.value_and_grad(u)[0]:.6e}; min |iota| {rows[0]:.4f}, "
+    print(f"[step {steps['accepted']}] loss {float(objective(jnp.asarray(u))[0]):.6e}; min |iota| {rows[0]:.4f}, "
           f"max |iota| {rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}", flush=True)
 
 
@@ -489,7 +489,7 @@ state_x, plasma_x, status_x, worst_x = solve(jnp.asarray(u))
 if int(status_x) != 0:
     raise RuntimeError("SLSQP ended on a design without a three-term free boundary; see the trial log")
 x = np.asarray(x_from_u(jnp.asarray(u)))
-final_value = float(free_problem.value_and_grad(u)[0])
+final_value = float(objective(jnp.asarray(u))[0])
 lane = config.three_terms.stats
 print(f"[solve] {steps['accepted']} SLSQP steps ({result.nit} iterations), {counts['trials']} trials "
       f"({counts['rejected']} rejected), {lane['solves']} boundary fits with {lane['boundary_evaluations']} "

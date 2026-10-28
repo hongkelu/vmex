@@ -858,7 +858,9 @@ class ThreeTermsLane:
     def solve(self, params, field_parameters, gradient=False):
         """``(state, mask, b, J_b, status, worst, ratio)`` at concrete arguments (``J_b`` zero without
         ``gradient``); ``worst`` is the largest RMS interface residual, ``ratio`` its ratio to ``max_residual``.
-        Runs on the model's device: a ``pure_callback`` body otherwise defaults to the CPU."""
+        Runs on the model's device: a ``pure_callback`` body otherwise defaults to the CPU, and may receive its
+        arguments committed there."""
+        params, field_parameters = jax.tree.map(np.asarray, (params, field_parameters))
         with jax.default_device(self.model.cfg.device):
             return self._solve(params, field_parameters, gradient)
 

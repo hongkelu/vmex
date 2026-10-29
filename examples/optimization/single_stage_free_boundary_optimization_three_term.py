@@ -116,6 +116,8 @@ MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror rati
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0
+DKX_RESOLUTION, DKX_MBOZ = None, None  # --dkx-grid: DKX's Ntheta, Nzeta, Nxi, NL, Nx and the Boozer mboz = nboz
+EDGE_FIELDS = np.arange(-40.0, 20.5, 1.0)  # kV/m: DkxPicardRows' J_r scan where a surface has no ambipolar root
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -550,16 +552,145 @@ def dkx_kinetic(inp):
     """
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
-    ambipolar = dict(ambipolar=True, spectral_angles=True,
-                     minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE)) if DKX_AMBIPOLAR else {}
-    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
-                                       mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"], **ambipolar)
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], **dkx_options(dkx_surfaces()))
     DKX_ROWS.append(kinetic)
     return kinetic
 
 
 DKX_ROWS = []  # the DKX rows built, for the step log's ambipolar roots
+
+
+def dkx_surfaces():
+    return np.asarray(redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES, dtype=float)
+
+
+def dkx_options(surfaces, ambipolar=None):
+    """``KineticBootstrapMismatch`` keywords: ``surfaces``, the collision operator, ``DKX_RESOLUTION`` (None: DKX's
+    default for the row) and ``DKX_MBOZ`` (None: ``QI_OPTIONS``'), ambipolar with ``DKX_AMBIPOLAR``."""
+    mboz = QI_OPTIONS["mboz"] if DKX_MBOZ is None else DKX_MBOZ
+    ambipolar = DKX_AMBIPOLAR if ambipolar is None else ambipolar
+    return dict(surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR, resolution=DKX_RESOLUTION, mboz=mboz,
+                nboz=QI_OPTIONS["nboz"] if DKX_MBOZ is None else DKX_MBOZ,
+                **(dict(ambipolar=True, spectral_angles=True, minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE))
+                   if ambipolar else {}))
+
+
+class DkxPicardRows:
+    """DKX's ``<j.B>`` on the ``DKX_SURFACES`` rows for ``dkx_current``'s Picard loop (``DKX_AMBIPOLAR``).
+
+    Each row is at its ambipolar root, found by DKX's warm-started Newton search. Where the search finds none (the
+    radial current J_r(E_r) can come close to zero without crossing it, e.g. qi8gil-A at s >= 0.8), the row is at
+    the E_r closest to ambipolar instead: the smallest |J_r| on ``EDGE_FIELDS``, within the stretch between sign
+    changes (poles of the resonant E x B drift, or noise) that holds the E_r extrapolated from the inner roots, refined
+    by a parabola; later calls rescan +-2 kV/m around it. Those rows are dropped from the root search."""
+
+    def __init__(self, inp, ns):
+        import jax
+        from dkx.bootstrap import KineticBootstrapMismatch
+
+        class Ambipolar(KineticBootstrapMismatch):
+            """DKX 2.12's ``_find_roots``, also keeping which rows converged (``ok``)."""
+
+            def _find_roots(self, roots, stacked, spectra, psi):
+                n = np.asarray(spectra["iota"]).shape[0]
+                if self._er.size != n:
+                    self._er = np.full(n, self.er_initial)
+                e, d_r, d_b, converged = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                self.ok = converged & np.isfinite(e)
+                self._er = np.where(self.ok, e, self._er)
+                self.unconverged = int(np.sum(~self.ok))
+                return e, d_r, d_b
+
+        class FixedField(KineticBootstrapMismatch):
+            """The ambipolar row with its search replaced by one solve at ``_er``: (J_r, <j.B>) in ``last``."""
+
+            def _newton(self, evaluate, operator, er0):
+                import jax.numpy as jnp
+                from dkx.er import operator_at_er
+
+                j_r, j_b = evaluate(operator_at_er(operator, er0, dphi_per_er=operator.dphi_hat_dpsi_hat_kinetic))
+                return er0, j_r, j_b, jnp.ones_like(er0, dtype=bool)
+
+            def _find_roots(self, roots, stacked, spectra, psi):
+                e, j_r, j_b, _ = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                self.last = (j_r, j_b)
+                return e, np.where(j_r == 0.0, 1.0, j_r), j_b
+
+        self.jax, self.ns, self.profiles, self.fixed_class = jax, ns, redl_profiles(inp)[0], FixedField
+        self.root = Ambipolar(self.profiles, **dkx_options(dkx_surfaces(), ambipolar=True))
+        self.rows = self.root.rows(ns)[1]
+        self.good, self.edge, self.edge_er = np.arange(self.rows.size), None, None
+        self.evaluate_root = jax.jit(lambda state, runtime: self.root.current_profiles(state, on_grid(runtime))[2])
+
+    def electric_field(self):
+        er = np.empty(self.rows.size)
+        er[self.good] = self.root.electric_field()
+        if self.edge is not None:
+            er[self.edge] = self.edge_er
+        return er
+
+    def _edge_scan(self, state, runtime, fields):
+        """(J_r, <j.B>) at each of ``fields`` (one E_r per edge row and scan point)."""
+        j_r, j_b = [], []
+        for field in fields:
+            self.fixed._er = np.asarray(field, dtype=float).copy()
+            self.jax.block_until_ready(self.evaluate_fixed(state, runtime))
+            j_r.append(self.fixed.last[0])
+            j_b.append(self.fixed.last[1])
+        return np.asarray(j_r), np.asarray(j_b)
+
+    @staticmethod
+    def _closest(fields, j_r, k):
+        """Parabola vertex of |J_r| through the grid minimum ``k`` and its neighbours (the minimum at an end)."""
+        if 0 < k < len(fields) - 1:
+            y = np.abs(j_r[k - 1:k + 2])
+            curvature = y[0] - 2 * y[1] + y[2]
+            if curvature > 0:
+                step = fields[k + 1] - fields[k]
+                return float(fields[k] + 0.5 * step * (y[0] - y[2]) / curvature)
+        return float(fields[k])
+
+    def __call__(self, state, runtime):
+        jk = np.empty(self.rows.size)
+        jk[self.good] = np.asarray(self.evaluate_root(state, runtime))
+        if self.edge is None and not np.all(self.root.ok):  # first call: move the rows without a root to the scan
+            bad, roots_er = self.good[~self.root.ok], self.root._er[self.root.ok]
+            self.good = self.good[self.root.ok]
+            if self.good.size < 2:
+                raise RuntimeError("DKX: fewer than two surfaces with an ambipolar root")
+            self.edge, roots_s = bad, self.rows[self.good]
+            self.root = type(self.root)(self.profiles, **dkx_options(roots_s, ambipolar=True))
+            self.root._er = roots_er.copy()  # warm start at the roots just found
+            self.evaluate_root = self.jax.jit(
+                lambda state, runtime: self.root.current_profiles(state, on_grid(runtime))[2])
+            self.fixed = self.fixed_class(self.profiles, **dkx_options(self.rows[bad], ambipolar=True))
+            self.evaluate_fixed = self.jax.jit(
+                lambda state, runtime: self.fixed.current_profiles(state, on_grid(runtime))[2])
+            j_r, _ = self._edge_scan(state, runtime, [np.full(bad.size, f) for f in EDGE_FIELDS])
+            self.edge_er = np.empty(bad.size)
+            for i, s in enumerate(self.rows[bad]):
+                inner = np.argsort(np.abs(roots_s - s))[:2]  # the two nearest rows with a root
+                (s1, s2), (e1, e2) = roots_s[inner], roots_er[inner]
+                guess = e1 + (s - s1) * (e2 - e1) / (s2 - s1)
+                breaks = np.flatnonzero(np.sign(j_r[1:, i]) != np.sign(j_r[:-1, i])) + 1
+                home = np.searchsorted(breaks, np.argmin(np.abs(EDGE_FIELDS - guess)), side="right")
+                lo, hi = (([0, *breaks])[home], ([*breaks, len(EDGE_FIELDS)])[home])
+                k = lo + int(np.argmin(np.abs(j_r[lo:hi, i])))
+                self.edge_er[i] = self._closest(EDGE_FIELDS[lo:hi], j_r[lo:hi, i], k - lo)
+                print(f"DKX: no ambipolar root at s = {s:.3f}; E_r = {self.edge_er[i]:.2f} kV/m of smallest |J_r| "
+                      f"(guess {guess:.1f}, stretch [{EDGE_FIELDS[lo]:.0f}, {EDGE_FIELDS[hi - 1]:.0f}] kV/m)",
+                      flush=True)
+        elif self.edge is not None:  # rescan around the previous E_r
+            offsets = np.arange(-2.0, 2.5, 1.0)
+            j_r, _ = self._edge_scan(state, runtime, [self.edge_er + o for o in offsets])
+            for i in range(self.edge.size):
+                k = int(np.argmin(np.abs(j_r[:, i])))
+                self.edge_er[i] = self._closest(self.edge_er[i] + offsets, j_r[:, i], k)
+        if self.edge is not None:
+            j_r, j_b = self._edge_scan(state, runtime, [self.edge_er])
+            jk[self.edge] = j_b[0]
+            self.edge_j_r = j_r[0]
+        return jk
 
 
 def on_grid(runtime):
@@ -590,9 +721,10 @@ def dkx_current(inp, fixed, device):
     from vmex.core.bootstrap import current_derivative
     from vmex.core.profiles import current
 
-    kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
+    ns = int(np.asarray(inp.ns_array)[-1])
+    kinetic = DkxPicardRows(inp, ns) if DKX_AMBIPOLAR else dkx_kinetic(inp)
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
-    rows = kinetic.rows(ns)[1]
+    rows = kinetic.rows if DKX_AMBIPOLAR else kinetic.rows(ns)[1]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
     total = float(enclosed(1.0))
     v = (np.zeros(s.size) if total == 0.0  # a zero-current profile starts the Picard loop from I' = 0
@@ -605,7 +737,8 @@ def dkx_current(inp, fixed, device):
     values = fit(v)
     # jitted from the start: DKX builds its host operators at trace time, and an eager first call runs its
     # Fokker-Planck solve op by op (over an hour on the qi8gil-A design; ~30 s compile + 1 s per surface jitted)
-    kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+    kinetic_j = (kinetic if DKX_AMBIPOLAR
+                 else jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2]))
     derivative = jax.jit(current_derivative)
     for iteration in range(PICARD_ITERATIONS):
         inp = replace(inp, pcurr_type="cubic_spline_ip", ac_aux_s=knots, ac_aux_f=values,
@@ -619,8 +752,9 @@ def dkx_current(inp, fixed, device):
         delta = float(np.max(np.abs(basis @ (smooth - values))) / scale)
         print(f"DKX Picard {iteration}: CURTOR = {float(inp.curtor):.1f} A, max|I' - I'_DKX| / max|I'_DKX| = "
               f"{delta:.2e} (spline fit off DKX's surfaces by max {np.max(np.abs(basis @ smooth - target)) / scale:.2e}"
-              + (f"; unconverged roots {kinetic.unconverged}, E_r = [{kinetic.electric_field().min():.1f}, "
-                 f"{kinetic.electric_field().max():.1f}] kV/m" if DKX_AMBIPOLAR else "") + ")", flush=True)
+              + (f"; unconverged roots {kinetic.root.unconverged}, E_r = "
+                 f"{np.array2string(kinetic.electric_field(), precision=2)} kV/m" if DKX_AMBIPOLAR else "") + ")",
+              flush=True)
         if delta <= PICARD_TOLERANCE:
             break
         values = (1.0 - PICARD_RELAX) * values + PICARD_RELAX * smooth
@@ -779,6 +913,11 @@ def parse_args(argv=None):
                         help="with --bootstrap: the deck's current (e.g. --resolve-current's) is held fixed, no design "
                         "variable and no bootstrap row; rounds of --restart --resolve-current --fixed-current re-solve "
                         "it between them")
+    parser.add_argument("--dkx-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="DKX's grid (Ntheta, Nzeta, Nxi, NL, Nx) and the Boozer mboz = nboz of its rows "
+                        "(default: DKX's grid for the row, QI_OPTIONS' mboz)")
+    parser.add_argument("--dkx-surfaces", type=int, metavar="N",
+                        help="DKX rows on N evenly spaced surfaces s = (k - 1/2) / N (default: every half-mesh surface)")
     parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
                         help="--bootstrap kinetic profiles: Landreman-Buller-Drevlak at Helios-like values (lbd) or "
                         "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
@@ -1003,7 +1142,13 @@ def write_run_record(out, args):
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR, PROFILES
+    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES
     args = parse_args(argv)
+    if args.dkx_grid is not None:
+        DKX_RESOLUTION = dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_grid[:5]))
+        DKX_MBOZ = args.dkx_grid[5]
+    if args.dkx_surfaces is not None:
+        DKX_SURFACES = (np.arange(args.dkx_surfaces) + 0.5) / args.dkx_surfaces
     DKX_AMBIPOLAR, PROFILES = bool(args.dkx_ambipolar), args.profiles
     if args.coil_limits is not None:
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits

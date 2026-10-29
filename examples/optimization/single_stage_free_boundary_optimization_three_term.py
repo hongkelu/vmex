@@ -862,8 +862,12 @@ def dkx_current_rows(inp, design, args, out):
     s = KineticBootstrapMismatch(profiles, dkx_surfaces()).rows(ns)[1]
     path = args.dkx_row_state or (args.restart / "dkx_rows.json" if args.restart is not None else None)
     record = json.loads(Path(path).read_text()) if path is not None and Path(path).exists() else None
-    previous = {round(r["s"], 9): r for r in record["surfaces"]} if record else {}
-    seeds = args.dkx_er or [previous.get(round(float(v), 9), {}).get("er", -2.0) for v in s]
+    if args.dkx_er:  # E_r at s = (k + 1/2) / N (e.g. a fixed-current pass's Picard log), interpolated
+        seeds = np.interp(s, (np.arange(len(args.dkx_er)) + 0.5) / len(args.dkx_er), args.dkx_er)
+    elif record:
+        seeds = np.interp(s, [r["s"] for r in record["surfaces"]], [r["er"] for r in record["surfaces"]])
+    else:
+        seeds = np.full(s.size, -2.0)
     specs = [dict(s=float(v), er=float(e), hold=k < args.dkx_hold) for k, (v, e) in enumerate(zip(s, seeds))]
     grid = DKX_ROW_GRID if args.dkx_row_grid is None else (
         dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_row_grid[:5])), args.dkx_row_grid[5])
@@ -1103,7 +1107,8 @@ def parse_args(argv=None):
     parser.add_argument("--dkx-rendezvous", type=Path, help="the workers' rendezvous file (default: in --output)")
     parser.add_argument("--dkx-row-state", type=Path, help="E_r, holds, I'_ref and delta of a previous round "
                         "(default: the restart's dkx_rows.json)")
-    parser.add_argument("--dkx-er", type=float, nargs="+", help="E_r seeds [kV/m] per surface (default -2)")
+    parser.add_argument("--dkx-er", type=float, nargs="+", help="E_r seeds [kV/m] at s = (k + 1/2) / N, interpolated "
+                        "onto the surfaces (default: the round state's, else -2)")
     parser.add_argument("--dkx-hold", type=int, default=0, metavar="N",
                         help="the innermost N surfaces always hold the E_r of smallest |J_r| (a flat-J_r axis)")
     parser.add_argument("--dkx-er-tol", type=float, default=0.05, help="Newton tolerance of the roots [kV/m]")

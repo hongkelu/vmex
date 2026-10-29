@@ -581,8 +581,8 @@ def dkx_options(surfaces, ambipolar=None, grid=None):
 class DkxPicardRows:
     """DKX's ``<j.B>`` on the ``DKX_SURFACES`` rows for ``dkx_current``'s Picard loop (``DKX_AMBIPOLAR``).
 
-    One DKX row per surface, solved in turn (a converged grid takes 5-15 GiB per surface, so the surfaces do not fit
-    in one batch). Each is at its ambipolar root, found by DKX's warm-started Newton search. Where the search finds
+    One DKX row per surface (a converged grid takes 5-15 GiB per surface, so the surfaces do not fit in one batch),
+    the surfaces shared out over every visible GPU, each GPU's in turn on a thread of its own. Each is at its ambipolar root, found by DKX's warm-started Newton search. Where the search finds
     none (J_r(E_r) can come close to zero without crossing it, e.g. qi8gil-A at s >= 0.8), the surface is at the E_r
     closest to ambipolar instead: the smallest |J_r| on a 1 kV/m grid within ``EDGE_WINDOW`` of the E_r extrapolated
     from the two nearest roots, inside the stretch between sign changes (poles of the resonant E x B drift, or noise)
@@ -602,35 +602,46 @@ class DkxPicardRows:
                 n = np.asarray(spectra["iota"]).shape[0]
                 if self._er.size != n:
                     self._er = np.full(n, self.er_initial)
-                e, d_r, d_b, converged = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                with jax.default_device(self.device):  # the host callback runs off the caller's thread
+                    e, d_r, d_b, converged = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
                 self.ok = converged & np.isfinite(e)
                 self._er = np.where(self.ok, e, self._er)
                 self.unconverged = int(np.sum(~self.ok))
                 return e, d_r, d_b
 
         class FixedField(KineticBootstrapMismatch):
-            """The ambipolar row with its search replaced by one solve at ``_er``: (J_r, <j.B>) in ``last``."""
+            """The ambipolar row with its search replaced by one solve at ``_er``: (J_r, <j.B>) in ``last``. With
+            ``radial = False`` that solve is skipped and the traced program's own solve at ``_er`` is the <j.B>
+            (the implicit-function correction is zeroed): one solve per call."""
+
+            radial = True
 
             def _newton(self, evaluate, operator, er0):
                 import jax.numpy as jnp
                 from dkx.er import operator_at_er
 
+                if not self.radial:
+                    return er0, jnp.ones_like(er0), jnp.zeros_like(er0), jnp.ones_like(er0, dtype=bool)
                 j_r, j_b = evaluate(operator_at_er(operator, er0, dphi_per_er=operator.dphi_hat_dpsi_hat_kinetic))
                 return er0, j_r, j_b, jnp.ones_like(er0, dtype=bool)
 
             def _find_roots(self, roots, stacked, spectra, psi):
-                e, j_r, j_b, _ = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                with jax.default_device(self.device):
+                    e, j_r, j_b, _ = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
                 self.last = (j_r, j_b)
                 return e, np.where(j_r == 0.0, 1.0, j_r), j_b
 
-        def row(cls, s, grid=DKX_ROOT_GRID):
-            kinetic = cls(profiles, **dkx_options([s], ambipolar=True, grid=grid))
+        def row(cls, i, grid=DKX_ROOT_GRID, radial=True):
+            kinetic = cls(profiles, **dkx_options([self.rows[i]], ambipolar=True, grid=grid))
+            kinetic.device, kinetic.radial = self.device_of[i], radial
             return kinetic, jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
 
         profiles = redl_profiles(inp)[0]
         self.rows = KineticBootstrapMismatch(profiles, **dkx_options(dkx_surfaces(), ambipolar=True)).rows(ns)[1]
+        self.devices = jax.devices()  # every visible GPU takes its share of the surfaces, one thread each
+        self.device_of = {i: self.devices[i % len(self.devices)] for i in range(self.rows.size)}
         self.row, self.fixed_class = row, FixedField
-        self.roots = {i: row(Ambipolar, s) for i, s in enumerate(self.rows)}
+        self.roots = {i: row(Ambipolar, i) for i in range(self.rows.size)}
         self.edge = {}  # row index -> (FixedField row, its jitted call, E_r)
         # <j.B> rows on DKX_RESOLUTION at the root grid's E_r (DKX_ROOT_GRID), built on first use
         self.current = {} if DKX_ROOT_GRID is not None else None
@@ -644,8 +655,27 @@ class DkxPicardRows:
         """(J_r, <j.B>) of edge row ``i`` at ``field`` kV/m."""
         kinetic, evaluate = self.edge[i][:2]
         kinetic._er = np.array([field], dtype=float)
-        self.jax.block_until_ready(evaluate(self.state, self.runtime))
+        self.jax.block_until_ready(evaluate(*self.inputs[self.device_of[i]]))
         return float(kinetic.last[0][0]), float(kinetic.last[1][0])
+
+    def _parallel(self, rows, work):
+        """``{i: work(i)}`` over ``rows``, each device's rows in turn on a thread of its own (under that device)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        groups = {}
+        for i in rows:
+            groups.setdefault(self.device_of[i], []).append(i)
+
+        def run(item):
+            device, group = item
+            with self.jax.default_device(device):
+                return {i: work(i) for i in group}
+
+        out = {}
+        with ThreadPoolExecutor(max(1, len(groups))) as pool:
+            for part in pool.map(run, groups.items()):
+                out.update(part)
+        return out
 
     @staticmethod
     def _closest(fields, j_r, k):
@@ -660,51 +690,71 @@ class DkxPicardRows:
     def __call__(self, state, runtime):
         import jax
 
-        self.jax, self.state, self.runtime = jax, state, runtime
-        jk, lost = np.empty(self.rows.size), []
-        for i, (kinetic, evaluate) in self.roots.items():
-            jk[i] = float(np.asarray(evaluate(state, runtime))[0])
-            if not kinetic.ok[0]:
-                lost.append(i)
+        self.jax = jax
+        on = lambda tree, device: jax.tree.map(  # noqa: E731
+            lambda a: jax.device_put(a, device) if isinstance(a, jax.Array) else a, tree)
+        self.inputs = {device: (on(state, device), on(runtime, device)) for device in self.devices}
+        jk = np.empty(self.rows.size)
+
+        def root(i):
+            kinetic, evaluate = self.roots[i]
+            return float(np.asarray(evaluate(*self.inputs[self.device_of[i]]))[0]), bool(kinetic.ok[0])
+
+        found = self._parallel(list(self.roots), root)
+        lost = sorted(i for i, (_, ok) in found.items() if not ok)
+        for i, (value, _) in found.items():
+            jk[i] = value
         self.unconverged = len(lost)
         good = sorted(set(self.roots) - set(lost))
         if len(good) < 2:
             raise RuntimeError("DKX: fewer than two surfaces with an ambipolar root")
+        guesses = {}
         for i in lost:  # a surface without a root leaves the search for the |J_r| minimum
-            del self.roots[i]
             s, inner = self.rows[i], sorted(good, key=lambda g: abs(self.rows[g] - self.rows[i]))[:2]
             (s1, s2), (e1, e2) = self.rows[inner], [float(self.roots[g][0]._er[0]) for g in inner]
-            guess = e1 + (s - s1) * (e2 - e1) / (s2 - s1)
-            self.edge[i] = (*self.row(self.fixed_class, s), None)
-            fields = np.arange(np.floor(guess) - EDGE_WINDOW, min(np.floor(guess) + EDGE_WINDOW, 20.0) + 0.5, 1.0)
-            j_r = np.array([self._fixed(i, f)[0] for f in fields])
-            breaks = np.flatnonzero(np.sign(j_r[1:]) != np.sign(j_r[:-1])) + 1
-            home = np.searchsorted(breaks, np.argmin(np.abs(fields - guess)), side="right")
-            lo, hi = [0, *breaks][home], [*breaks, fields.size][home]
-            k = int(np.argmin(np.abs(j_r[lo:hi])))
-            field = self._closest(fields[lo:hi], j_r[lo:hi], k)
-            for end, across in ((0, lo - 1), (hi - lo - 1, hi)):  # the minimum against a sign change: a root
-                if k == end and 0 <= across < fields.size and abs(j_r[across]) < 3 * abs(j_r[lo + k]):
-                    a, b = lo + k, across
-                    field = float(fields[a] - j_r[a] * (fields[b] - fields[a]) / (j_r[b] - j_r[a]))
-            self.edge[i] = (*self.edge[i][:2], field)
-            print(f"DKX: no ambipolar root at s = {s:.3f}; E_r = {field:.2f} kV/m of smallest |J_r| (guess "
-                  f"{guess:.1f}, stretch [{fields[lo]:.0f}, {fields[hi - 1]:.0f}] kV/m)", flush=True)
-        for i, (kinetic, evaluate, field) in self.edge.items():
-            if i not in lost:  # refine around the previous E_r
+            guesses[i] = e1 + (s - s1) * (e2 - e1) / (s2 - s1)
+        for i in lost:
+            del self.roots[i]
+            self.edge[i] = (*self.row(self.fixed_class, i), None)
+
+        def edge(i):
+            kinetic, evaluate, field = self.edge[i]
+            if i in guesses:  # new: scan the window around the guess
+                guess = guesses[i]
+                fields = np.arange(np.floor(guess) - EDGE_WINDOW, min(np.floor(guess) + EDGE_WINDOW, 20.0) + 0.5, 1.0)
+                j_r = np.array([self._fixed(i, f)[0] for f in fields])
+                breaks = np.flatnonzero(np.sign(j_r[1:]) != np.sign(j_r[:-1])) + 1
+                home = np.searchsorted(breaks, np.argmin(np.abs(fields - guess)), side="right")
+                lo, hi = [0, *breaks][home], [*breaks, fields.size][home]
+                k = int(np.argmin(np.abs(j_r[lo:hi])))
+                field = self._closest(fields[lo:hi], j_r[lo:hi], k)
+                for end, across in ((0, lo - 1), (hi - lo - 1, hi)):  # the minimum against a sign change: a root
+                    if k == end and 0 <= across < fields.size and abs(j_r[across]) < 3 * abs(j_r[lo + k]):
+                        a, b = lo + k, across
+                        field = float(fields[a] - j_r[a] * (fields[b] - fields[a]) / (j_r[b] - j_r[a]))
+                print(f"DKX: no ambipolar root at s = {self.rows[i]:.3f}; E_r = {field:.2f} kV/m of smallest |J_r| "
+                      f"(guess {guess:.1f}, stretch [{fields[lo]:.0f}, {fields[hi - 1]:.0f}] kV/m)", flush=True)
+            else:  # refine around the previous E_r
                 offsets = np.array([-1.0, 0.0, 1.0])
                 j_r = np.array([self._fixed(i, field + o)[0] for o in offsets])
                 field = self._closest(field + offsets, j_r, int(np.argmin(np.abs(j_r))))
-                self.edge[i] = (kinetic, evaluate, field)
-            jk[i] = self._fixed(i, field)[1]
-        if self.current is not None:  # <j.B> on DKX_RESOLUTION at these E_r
-            for i, field in enumerate(self.electric_field()):
+            self.edge[i] = (kinetic, evaluate, field)
+            return self._fixed(i, field)[1]
+
+        for i, value in self._parallel(list(self.edge), edge).items():
+            jk[i] = value
+        if self.current is not None:  # <j.B> on DKX_RESOLUTION at these E_r, one solve per surface
+            fields = self.electric_field()
+
+            def current(i):
                 if i not in self.current:
-                    self.current[i] = self.row(self.fixed_class, self.rows[i], grid=(DKX_RESOLUTION, DKX_MBOZ))
+                    self.current[i] = self.row(self.fixed_class, i, grid=(DKX_RESOLUTION, DKX_MBOZ), radial=False)
                 kinetic, evaluate = self.current[i]
-                kinetic._er = np.array([field], dtype=float)
-                jax.block_until_ready(evaluate(state, runtime))
-                jk[i] = float(kinetic.last[1][0])
+                kinetic._er = np.array([fields[i]], dtype=float)
+                return float(np.asarray(evaluate(*self.inputs[self.device_of[i]]))[0])
+
+            for i, value in self._parallel(range(self.rows.size), current).items():
+                jk[i] = value
         return jk
 
 

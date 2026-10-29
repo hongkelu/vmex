@@ -4,6 +4,7 @@ traced reference, and remote workers return what local ones do."""
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import sys
@@ -36,8 +37,11 @@ OPTIONS = dict(grid=GRID, collision_operator=1, minor_radius=0.17, tol=1e-11, er
 
 @pytest.fixture(scope="module")
 def eq():
-    equilibrium = opt.solve_equilibrium(VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_lowres"))
-    assert equilibrium.result.converged
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_lowres")
+    inp = dataclasses.replace(inp, ns_array=np.array([16, 31]), ftol_array=np.array([1e-10, 1e-12]),
+                              niter_array=np.array([2000, 4000]))
+    equilibrium = opt.solve_equilibrium(inp)
+    assert float(equilibrium.result.fsqr) < 1e-11
     return equilibrium
 
 

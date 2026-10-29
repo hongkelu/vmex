@@ -750,8 +750,9 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
-    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
-                        help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
+    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("TOL", "ROUNDS"),
+                        help="with --check-gradient: converge each differenced fit with fresh Jacobians until the "
+                        "Gauss-Newton step's predicted relative gain is below TOL (e.g. 1e-12 8)")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -866,14 +867,45 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
     """Implicit design gradients of the loss and every quantity at the seed against central differences of
     re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
     ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (ftol, max_nfev)``
-    the differenced trials' boundary fits run to that tolerance, so each lands on its design's free boundary
-    rather than near the first-order prediction it starts from."""
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (tol, rounds)``
+    each differenced fit is converged with fresh Jacobians instead (``converged_values``): a trial's fit reuses
+    the accepted point's Jacobian and stalls near its first-order prediction, which reproduces the implicit
+    gradient rather than testing it."""
+    import jax.numpy as jnp
+    from vmex.core.freeboundary_three_terms import _levenberg_marquardt
+
     x = np.asarray(problem.accepted.parameters, dtype=float)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
-    if fit is not None:
-        problem.boundary_ftol, problem.boundary_max_nfev = float(fit[0]), int(fit[1])
+    start = problem._cache[x.tobytes()]["x"]  # the gradient's tight, polished fit
+    model = problem.model
+
+    def converged_values(xv):
+        """[loss, quantities] at design ``xv`` on its fit converged with fresh Jacobians on tight states: rounds of a
+        tight linearization, then Levenberg-Marquardt with it, until the Gauss-Newton step's predicted relative gain
+        is below ``tol``, at most ``rounds``."""
+        tol, rounds = float(fit[0]), int(fit[1])
+        params, field = problem._params_at(jnp.asarray(xv)), problem.field(jnp.asarray(xv))
+        evaluate = lambda z: model.evaluate(z, params, field, tight=True)  # noqa: E731
+        got = evaluate(start)
+        if got is None:
+            raise RuntimeError(f"no equilibrium at the gradient's fit for design {xv}")
+        b, (r, aux) = np.asarray(start, dtype=float), got
+        for k in range(rounds + 1):
+            J, _, _, aux = model.linearize(b, aux, field)
+            r = np.asarray(model._rows(aux[0], aux[2], field))
+            norms = np.linalg.norm(J, axis=0)
+            U = np.linalg.svd(J / np.where(norms == 0.0, 1.0, norms), full_matrices=False)[0]
+            if (U.T @ r) @ (U.T @ r) / max(r @ r, 1e-300) < tol or k == rounds:
+                break
+            step = _levenberg_marquardt(evaluate, b, r, aux, J, ftol=tol, max_nfev=40, verbose=0, radius=None)
+            if step["accepted"] == 0:
+                break
+            b, aux = step["x"], step["aux"]
+        return np.asarray(problem._rows(aux[0], aux[2], jnp.asarray(xv)))
+
+    values_at = ((lambda xv: np.r_[problem.fun(xv), problem.constraint_values(xv)]) if fit is None
+                 else converged_values)
     rng = np.random.default_rng(0)
     records = []
     for k in range(directions):
@@ -881,7 +913,7 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
         d /= np.linalg.norm(d)
         implicit = np.r_[grad @ d, jac @ d]
         for h in steps:
-            values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
+            values = [values_at(x + s * h * d) for s in (1, -1)]
             fd = (values[0] - values[1]) / (2 * h)
             loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
             rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)

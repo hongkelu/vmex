@@ -603,7 +603,8 @@ def dkx_current(inp, fixed, device):
         "cubic_spline_ip", inp.ac, knots, e, z, bloat=inp.bloat)))(jnp.asarray(s))) for e in np.eye(knots.size)], 1)
     fit = lambda target: np.linalg.lstsq(basis, target, rcond=None)[0]  # noqa: E731
     values = fit(v)
-    kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
+    # jitted from the start: DKX builds its host operators at trace time, and an eager first call runs its
+    # Fokker-Planck solve op by op (over an hour on the qi8gil-A design; ~30 s compile + 1 s per surface jitted)
     kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
     derivative = jax.jit(current_derivative)
     for iteration in range(PICARD_ITERATIONS):

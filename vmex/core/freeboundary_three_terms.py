@@ -411,7 +411,9 @@ class ThreeTermsModel:
     (``params0`` the deck's) whose boundary ``with_boundary(params, x)``
     replaces.  The rows are those of :func:`solve_free_boundary_three_terms`,
     with the quadrature plan and the labelling reference fixed on the deck's
-    boundary (``seed``: its ``(state, mask)``).
+    boundary (``seed``: its ``(state, mask)``).  ``labelling`` and
+    ``label_weight`` are those of :class:`ThreeTermsConfig` (default equal arc
+    at :data:`LABEL_WEIGHTS`).
 
     Methods: :meth:`solve_boundary` (the K = 0 boundary, cold or warm),
     :meth:`evaluate` (rows at a boundary), :meth:`linearize` (their Jacobian
@@ -451,9 +453,9 @@ class ThreeTermsModel:
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
-                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=1e-2, chunk=8, device=None,
+                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="anchored"):
+                 fixed_boundary=False, labelling="equal_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -461,6 +463,8 @@ class ThreeTermsModel:
         self._im = im
         if labelling not in LABEL_WEIGHTS:
             raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {labelling!r}")
+        if label_weight is None:
+            label_weight = LABEL_WEIGHTS[labelling]
         if not label_weight:  # no labelling rows: the same problem whichever labelling was named
             labelling, label_weight = "none", 0.0
         if _edge_pressure_error(inp):
@@ -533,7 +537,7 @@ class ThreeTermsModel:
         return np.r_[x, HalfMeshCurrent(inp, b.profiles, b.helicity_n, b.weight).x0]
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                         labelling="anchored"):
+                         labelling="equal_arc"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium

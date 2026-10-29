@@ -117,6 +117,7 @@ BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl i
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
 DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0
 DKX_RESOLUTION, DKX_MBOZ = None, None  # --dkx-grid: DKX's Ntheta, Nzeta, Nxi, NL, Nx and the Boozer mboz = nboz
+DKX_ROOT_GRID = None  # --dkx-root-grid: (resolution, mboz) of DkxPicardRows' E_r search; None: DKX_RESOLUTION's
 EDGE_WINDOW = 10.0  # kV/m: DkxPicardRows scans J_r over the guess +- this where a surface has no ambipolar root
 
 # Physical targets, imposed as hard inequalities.
@@ -564,13 +565,15 @@ def dkx_surfaces():
     return np.asarray(redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES, dtype=float)
 
 
-def dkx_options(surfaces, ambipolar=None):
+def dkx_options(surfaces, ambipolar=None, grid=None):
     """``KineticBootstrapMismatch`` keywords: ``surfaces``, the collision operator, ``DKX_RESOLUTION`` (None: DKX's
-    default for the row) and ``DKX_MBOZ`` (None: ``QI_OPTIONS``'), ambipolar with ``DKX_AMBIPOLAR``."""
-    mboz = QI_OPTIONS["mboz"] if DKX_MBOZ is None else DKX_MBOZ
+    default for the row) and ``DKX_MBOZ`` (None: ``QI_OPTIONS``'), or ``grid = (resolution, mboz)``, ambipolar with
+    ``DKX_AMBIPOLAR``."""
+    resolution, mboz = (DKX_RESOLUTION, DKX_MBOZ) if grid is None else grid
+    mboz = QI_OPTIONS["mboz"] if mboz is None else mboz
     ambipolar = DKX_AMBIPOLAR if ambipolar is None else ambipolar
-    return dict(surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR, resolution=DKX_RESOLUTION, mboz=mboz,
-                nboz=QI_OPTIONS["nboz"] if DKX_MBOZ is None else DKX_MBOZ,
+    return dict(surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR, resolution=resolution, mboz=mboz,
+                nboz=mboz,
                 **(dict(ambipolar=True, spectral_angles=True, minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE))
                    if ambipolar else {}))
 
@@ -583,7 +586,10 @@ class DkxPicardRows:
     none (J_r(E_r) can come close to zero without crossing it, e.g. qi8gil-A at s >= 0.8), the surface is at the E_r
     closest to ambipolar instead: the smallest |J_r| on a 1 kV/m grid within ``EDGE_WINDOW`` of the E_r extrapolated
     from the two nearest roots, inside the stretch between sign changes (poles of the resonant E x B drift, or noise)
-    that holds that guess, refined by a parabola; later calls refine it over +-1 kV/m."""
+    that holds that guess, refined by a parabola (or interpolated to the crossing, where that minimum sits against a
+    sign change with a small |J_r| across it: a root between grid points); later calls refine it over +-1 kV/m.
+    With ``DKX_ROOT_GRID`` the roots and scans use that grid and ``<j.B>`` is one solve per surface on
+    ``DKX_RESOLUTION`` at their E_r (E_r converges on a coarser grid than <j.B>, and <j.B> depends on it weakly)."""
 
     def __init__(self, inp, ns):
         import jax
@@ -617,8 +623,8 @@ class DkxPicardRows:
                 self.last = (j_r, j_b)
                 return e, np.where(j_r == 0.0, 1.0, j_r), j_b
 
-        def row(cls, s):
-            kinetic = cls(profiles, **dkx_options([s], ambipolar=True))
+        def row(cls, s, grid=DKX_ROOT_GRID):
+            kinetic = cls(profiles, **dkx_options([s], ambipolar=True, grid=grid))
             return kinetic, jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
 
         profiles = redl_profiles(inp)[0]
@@ -626,6 +632,8 @@ class DkxPicardRows:
         self.row, self.fixed_class = row, FixedField
         self.roots = {i: row(Ambipolar, s) for i, s in enumerate(self.rows)}
         self.edge = {}  # row index -> (FixedField row, its jitted call, E_r)
+        # <j.B> rows on DKX_RESOLUTION at the root grid's E_r (DKX_ROOT_GRID), built on first use
+        self.current = {} if DKX_ROOT_GRID is not None else None
         self.unconverged = 0
 
     def electric_field(self):
@@ -675,6 +683,10 @@ class DkxPicardRows:
             lo, hi = [0, *breaks][home], [*breaks, fields.size][home]
             k = int(np.argmin(np.abs(j_r[lo:hi])))
             field = self._closest(fields[lo:hi], j_r[lo:hi], k)
+            for end, across in ((0, lo - 1), (hi - lo - 1, hi)):  # the minimum against a sign change: a root
+                if k == end and 0 <= across < fields.size and abs(j_r[across]) < 3 * abs(j_r[lo + k]):
+                    a, b = lo + k, across
+                    field = float(fields[a] - j_r[a] * (fields[b] - fields[a]) / (j_r[b] - j_r[a]))
             self.edge[i] = (*self.edge[i][:2], field)
             print(f"DKX: no ambipolar root at s = {s:.3f}; E_r = {field:.2f} kV/m of smallest |J_r| (guess "
                   f"{guess:.1f}, stretch [{fields[lo]:.0f}, {fields[hi - 1]:.0f}] kV/m)", flush=True)
@@ -685,6 +697,14 @@ class DkxPicardRows:
                 field = self._closest(field + offsets, j_r, int(np.argmin(np.abs(j_r))))
                 self.edge[i] = (kinetic, evaluate, field)
             jk[i] = self._fixed(i, field)[1]
+        if self.current is not None:  # <j.B> on DKX_RESOLUTION at these E_r
+            for i, field in enumerate(self.electric_field()):
+                if i not in self.current:
+                    self.current[i] = self.row(self.fixed_class, self.rows[i], grid=(DKX_RESOLUTION, DKX_MBOZ))
+                kinetic, evaluate = self.current[i]
+                kinetic._er = np.array([field], dtype=float)
+                jax.block_until_ready(evaluate(state, runtime))
+                jk[i] = float(kinetic.last[1][0])
         return jk
 
 
@@ -911,6 +931,11 @@ def parse_args(argv=None):
     parser.add_argument("--dkx-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
                         help="DKX's grid (Ntheta, Nzeta, Nxi, NL, Nx) and the Boozer mboz = nboz of its rows "
                         "(default: DKX's grid for the row, QI_OPTIONS' mboz)")
+    parser.add_argument("--dkx-root-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="with --dkx-ambipolar: the --resolve-current Picard finds E_r on this grid and solves <j.B> "
+                        "on --dkx-grid at it (default: both on --dkx-grid)")
+    parser.add_argument("--picard-relax", type=float, help="relaxation of the bootstrap Picard steps (default: "
+                        "PICARD_RELAX; > 1 over-relaxes a loop whose change shrinks by a steady factor c: 1 / (1 - c))")
     parser.add_argument("--dkx-surfaces", type=int, metavar="N",
                         help="DKX rows on N evenly spaced surfaces s = (k - 1/2) / N (default: every half-mesh surface)")
     parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
@@ -1137,8 +1162,12 @@ def write_run_record(out, args):
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR, PROFILES
-    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES
+    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES, DKX_ROOT_GRID, PICARD_RELAX
     args = parse_args(argv)
+    if args.dkx_root_grid is not None:
+        DKX_ROOT_GRID = (dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_root_grid[:5])), args.dkx_root_grid[5])
+    if args.picard_relax is not None:
+        PICARD_RELAX = args.picard_relax
     if args.dkx_grid is not None:
         DKX_RESOLUTION = dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_grid[:5]))
         DKX_MBOZ = args.dkx_grid[5]

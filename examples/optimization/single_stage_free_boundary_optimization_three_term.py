@@ -98,6 +98,7 @@ REDL_SURFACE_TOLERANCE = 1e-2
 # (as simsopt's RedlGeomVmec), so its <J.B> stays finite where no smooth current follows it.
 REDL_ROW_S_MIN = 0.15
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
+PICARD_CURTOR_TOL = None  # --picard-curtor-tol: dkx_current also stops once a step changes CURTOR by less
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
@@ -778,7 +779,9 @@ def dkx_current(inp, fixed, device):
     interpolated onto every half-mesh surface and inverted for dI/ds there
     (``bootstrap.current_derivative``), least-squares fitted to the ``cubic_spline_ip`` profile
     on uniform knots (the ambipolar root jitters from surface to surface), under-relaxed by
-    ``PICARD_RELAX``. CURTOR is the spline's integral.
+    ``PICARD_RELAX``. CURTOR is the spline's integral. It stops at ``PICARD_TOLERANCE`` on I' or, with
+    ``PICARD_CURTOR_TOL``, once the step changes CURTOR by less than that fraction (DKX's root noise and the
+    spline misfit keep I' from reaching ``PICARD_TOLERANCE``).
     """
     import jax
     import jax.numpy as jnp
@@ -822,7 +825,12 @@ def dkx_current(inp, fixed, device):
               flush=True)
         if delta <= PICARD_TOLERANCE:
             break
-        values = (1.0 - PICARD_RELAX) * values + PICARD_RELAX * smooth
+        new = (1.0 - PICARD_RELAX) * values + PICARD_RELAX * smooth
+        if PICARD_CURTOR_TOL is not None:
+            curtor = float(current("cubic_spline_ip", inp.ac, knots, new, 1.0, bloat=inp.bloat))
+            if abs(curtor - float(inp.curtor)) <= PICARD_CURTOR_TOL * abs(curtor):
+                break
+        values = new
     return inp
 
 
@@ -990,6 +998,8 @@ def parse_args(argv=None):
                         "on --dkx-grid at it (default: both on --dkx-grid)")
     parser.add_argument("--picard-relax", type=float, help="relaxation of the bootstrap Picard steps (default: "
                         "PICARD_RELAX; > 1 over-relaxes a loop whose change shrinks by a steady factor c: 1 / (1 - c))")
+    parser.add_argument("--picard-curtor-tol", type=float, metavar="TOL",
+                        help="the DKX --resolve-current Picard also stops once a step changes CURTOR by less than TOL")
     parser.add_argument("--dkx-surfaces", type=int, metavar="N",
                         help="DKX rows on N evenly spaced surfaces s = (k - 1/2) / N (default: every half-mesh surface)")
     parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
@@ -1224,12 +1234,14 @@ def write_run_record(out, args):
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR, PROFILES
-    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES, DKX_ROOT_GRID, PICARD_RELAX
+    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES, DKX_ROOT_GRID, PICARD_RELAX, PICARD_CURTOR_TOL
     args = parse_args(argv)
     if args.dkx_root_grid is not None:
         DKX_ROOT_GRID = (dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_root_grid[:5])), args.dkx_root_grid[5])
     if args.picard_relax is not None:
         PICARD_RELAX = args.picard_relax
+    if args.picard_curtor_tol is not None:
+        PICARD_CURTOR_TOL = args.picard_curtor_tol
     if args.dkx_grid is not None:
         DKX_RESOLUTION = dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_grid[:5]))
         DKX_MBOZ = args.dkx_grid[5]

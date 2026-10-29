@@ -122,8 +122,9 @@ class KineticSurface:
 
     ``s`` is moved to the nearest half-mesh row of an ``ns`` grid (``row``, ``s_row``).  ``grid`` is
     ``(resolution, mboz)`` (DKX ``Ntheta Nzeta Nxi NL Nx`` keys); the other keywords are
-    ``KineticBootstrapMismatch``'s.  ``er`` [kV/m] is the warm start (or the held field with ``hold``),
-    ``ion_side`` the largest E_r accepted as an ion root.
+    ``KineticBootstrapMismatch``'s.  ``er`` [kV/m] is the warm start, ``ion_side`` the largest E_r accepted as an
+    ion root, ``hold`` holds the field of smallest ``|J_r|`` whether or not a root exists (e.g. the axis surface,
+    whose flat J_r lets its root wander); ``held`` says whether the surface holds its field this round.
     """
 
     def __init__(self, profiles, s, ns, *, grid, er=-2.0, hold=False, ion_side=0.0, edge_window=10.0,
@@ -142,6 +143,7 @@ class KineticSurface:
         self.ns = int(ns)
         (self.row,), (self.s_row,) = self.dkx.rows(self.ns)
         self.er, self.hold = float(er), bool(hold)
+        self.held = self.hold
         self.ion_side, self.edge_window = float(ion_side), float(edge_window)
         self.unconverged = 0  # calls whose root search failed (the row then used the last E_r, held)
         self._template, self._kernel = None, None
@@ -172,8 +174,8 @@ class KineticSurface:
         """
         root = None if self.hold else self._root(spectrum, psi)
         if root is not None:
-            self.er = root[0]
-            return dict(er=self.er, hold=False)
+            self.er, self.held = root[0], False
+            return dict(er=self.er, held=False)
         guess = self.er
         fields = np.arange(np.floor(guess) - self.edge_window, min(np.floor(guess) + self.edge_window,
                                                                    self.ion_side) + 0.5, 1.0)
@@ -187,14 +189,14 @@ class KineticSurface:
             if k == end and 0 <= across < fields.size and abs(j_r[across]) < 3 * abs(j_r[lo + k]):
                 a, b = lo + k, across
                 field = float(fields[a] - j_r[a] * (fields[b] - fields[a]) / (j_r[b] - j_r[a]))
-        self.er, self.hold = min(field, self.ion_side), True
-        return dict(er=self.er, hold=True, scan=[fields.tolist(), j_r.tolist()])
+        self.er, self.held = min(field, self.ion_side), True
+        return dict(er=self.er, held=True, scan=[fields.tolist(), j_r.tolist()])
 
     def evaluate(self, spectrum, psi, gradient=False):
         """``(<j.B> [A T/m^2], (d/d spectrum, d/d psi) or None)`` at the root (or the held E_r)."""
-        root = None if self.hold else self._root(spectrum, psi)
+        root = None if self.held else self._root(spectrum, psi)
         if root is None:
-            self.unconverged += not self.hold
+            self.unconverged += not self.held
             er, d_r, d_b = self.er, 1.0, 0.0
         else:
             (er, d_r, d_b), self.er = root, root[0]
@@ -216,7 +218,7 @@ class KineticSurface:
         return value
 
     def record(self):
-        return dict(s=float(self.s_row), er=self.er, hold=self.hold, unconverged=self.unconverged)
+        return dict(s=float(self.s_row), er=self.er, hold=self.hold, held=self.held, unconverged=self.unconverged)
 
 
 class _Worker:

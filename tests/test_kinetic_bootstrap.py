@@ -59,7 +59,7 @@ def test_held_value_is_dkx_row_at_that_field(eq):
 
     surface, spectrum, psi = _surface(eq, 0.5, er=-1.5, hold=True)
     row = KineticBootstrapMismatch(PROFILES, [surface.s_row], resolution=GRID[0], mboz=GRID[1], nboz=GRID[1],
-                                   collision_operator=1, minor_radius=0.17, er_kV_per_m=-1.5, tol=1e-11)
+                                   collision_operator=1, minor_radius=0.17, er_kV_per_m=-1.5, tol=1e-11, spectral_angles=True)
     reference = float(row.current_profiles(eq.state, eq.runtime)[2][0])
     value, _ = surface.evaluate(spectrum, psi)
     assert value == pytest.approx(reference, rel=1e-8)
@@ -68,7 +68,7 @@ def test_held_value_is_dkx_row_at_that_field(eq):
 @pytest.mark.parametrize("hold", [True, False])
 def test_gradient_matches_central_differences(eq, hold):
     surface, spectrum, psi = _surface(eq, 0.5, er=-1.0, hold=hold)
-    if not hold and surface.refresh(spectrum, psi)["hold"]:
+    if not hold and surface.refresh(spectrum, psi)["held"]:
         pytest.skip("no ion root on this grid")
     er = surface.er
     value, (g_spectrum, g_psi) = surface.evaluate(spectrum, psi, gradient=True)

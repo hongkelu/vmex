@@ -120,6 +120,10 @@ DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipola
 DKX_RESOLUTION, DKX_MBOZ = None, None  # --dkx-grid: DKX's Ntheta, Nzeta, Nxi, NL, Nx and the Boozer mboz = nboz
 DKX_ROOT_GRID = None  # --dkx-root-grid: (resolution, mboz) of DkxPicardRows' E_r search; None: DKX_RESOLUTION's
 EDGE_WINDOW = 10.0  # kV/m: DkxPicardRows scans J_r over the guess +- this where a surface has no ambipolar root
+# --dkx-rows: DKX's ion-root <j.B> in the loop, one row (I' - I'_DKX) / I'_ref per DKX surface held within
+# DKX_ROW_TOLERANCE, the current's knots and CURTOR design variables (vmex.core.kinetic_bootstrap; --dkx-row-grid)
+DKX_ROW_GRID = (dict(Ntheta=15, Nzeta=25, Nxi=48, NL=4, Nx=5), 12)
+DKX_ROW_TOLERANCE = 0.05
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -834,6 +838,78 @@ def dkx_current(inp, fixed, device):
     return inp
 
 
+def dkx_current_rows(inp, design, args, out):
+    """--dkx-rows: ``KineticCurrentRows`` on the ``DKX_SURFACES`` half-mesh rows, each surface on a DKX worker.
+
+    Workers are processes (one per ``--dkx-row-gpus`` UUID, spawned here, or ``--dkx-row-workers`` started by srun);
+    without either, threads over this process's other GPUs. The round's state (E_r seeds and holds, I'_ref, delta)
+    comes from ``--dkx-row-state`` or the restart's ``dkx_rows.json``; every surface's E_r is then re-picked at the
+    design's fixed-boundary equilibrium (``refresh``), I'_ref set there on a fresh start, and with
+    ``--dkx-correction-grid`` the fine-grid delta measured there."""
+    import atexit
+    import subprocess
+    import sys
+
+    import jax
+    import jax.numpy as jnp
+    from dkx.bootstrap import KineticBootstrapMismatch
+    from vmex import optimize as opt
+    from vmex.core.kinetic_bootstrap import KineticCurrentRows, KineticSurfaces
+    from vmex.core.profiles import current
+
+    ns = int(np.asarray(inp.ns_array)[-1])
+    profiles = redl_profiles(inp)[0]
+    s = KineticBootstrapMismatch(profiles, dkx_surfaces()).rows(ns)[1]
+    path = args.dkx_row_state or (args.restart / "dkx_rows.json" if args.restart is not None else None)
+    record = json.loads(Path(path).read_text()) if path is not None and Path(path).exists() else None
+    previous = {round(r["s"], 9): r for r in record["surfaces"]} if record else {}
+    seeds = args.dkx_er or [previous.get(round(float(v), 9), {}).get("er", -2.0) for v in s]
+    specs = [dict(s=float(v), er=float(e), hold=k < args.dkx_hold) for k, (v, e) in enumerate(zip(s, seeds))]
+    grid = DKX_ROW_GRID if args.dkx_row_grid is None else (
+        dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_row_grid[:5])), args.dkx_row_grid[5])
+    options = dict(profiles=profiles, ns=ns, surface=dict(
+        grid=grid, collision_operator=DKX_COLLISION_OPERATOR, minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE),
+        er_tol=args.dkx_er_tol))
+    gpus = args.dkx_row_gpus.split(",") if args.dkx_row_gpus else []
+    if gpus or args.dkx_row_workers:
+        rendezvous = args.dkx_rendezvous or out / "dkx_rendezvous.json"
+        root = Path(__file__).resolve().parents[2]
+        for k, uuid in enumerate(gpus):
+            env = dict(os.environ, CUDA_VISIBLE_DEVICES=uuid,
+                       PYTHONPATH=os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]))
+            subprocess.Popen([sys.executable, "-u", "-m", "vmex.core.kinetic_bootstrap", str(rendezvous)], env=env,
+                             stdout=open(out / f"dkx_worker{k}.log", "w"), stderr=subprocess.STDOUT)
+        surfaces = KineticSurfaces.remote(specs, options, rendezvous, workers=len(gpus) or args.dkx_row_workers)
+    else:
+        surfaces = KineticSurfaces.local(specs, options, devices=jax.devices()[1:] or None)
+    atexit.register(surfaces.stop)
+    basis = None
+    if args.dkx_row_project:  # I' at the surfaces per unit knot value (CURRENT_KNOTS spline)
+        knots = np.asarray(design.ac_aux_s, dtype=float)
+        basis = np.stack([np.asarray(jax.vmap(jax.grad(lambda z, e=e: current(
+            "cubic_spline_ip", design.ac, knots, e, z, bloat=design.bloat)))(jnp.asarray(s))) for e in np.eye(knots.size)], 1)
+    rows = KineticCurrentRows(surfaces, ns, reference=record["reference"] if record else 1.0,
+                              delta=record["delta"] if record else None, basis=basis)
+    started = time.monotonic()
+    fixed = opt.solve_equilibrium(replace(design, lfreeb=False), device="gpu", raise_on_max_iterations=True,
+                                  polish_force_balance=False)
+    records = rows.refresh(fixed.state, fixed.runtime)
+    target = np.asarray(rows.mismatch(fixed.state, fixed.runtime)[1])
+    if record is None:
+        rows.reference = float(np.max(np.abs(target)))
+    if args.dkx_correction_grid is not None:
+        fine = (dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_correction_grid[:5])),
+                args.dkx_correction_grid[5])
+        print(f"DKX rows: fine-grid delta {np.array2string(rows.correct(fixed.state, fixed.runtime, fine), precision=0)}"
+              f" A T/m^2", flush=True)
+    for r, t in zip(records, target):
+        print(f"DKX row s = {r['s']:.4f}: E_r = {r['er']:7.3f} kV/m{' (held)' if r['held'] else ''}, "
+              f"I'_DKX = {t:.1f} A", flush=True)
+    print(f"DKX rows: {len(records)} surfaces on {len(surfaces.workers)} workers, I'_ref = {rows.reference:.1f} A, "
+          f"set up in {time.monotonic() - started:.0f} s", flush=True)
+    return rows
+
+
 CURRENT_FIELDS = ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor")
 
 
@@ -1007,6 +1083,30 @@ def parse_args(argv=None):
                         "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
     parser.add_argument("--dkx-ambipolar", action="store_true",
                         help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
+    parser.add_argument("--dkx-rows", action="store_true",
+                        help="with --bootstrap: DKX's ion-root bootstrap current in the loop, a row (I' - I'_DKX) / "
+                        "I'_ref per --dkx-surfaces surface, the current's knots and CURTOR design variables; each "
+                        "surface on a DKX worker of its own (--dkx-row-gpus or --dkx-row-workers)")
+    parser.add_argument("--dkx-row-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="the in-loop rows' DKX grid (default: DKX_ROW_GRID, g15)")
+    parser.add_argument("--dkx-correction-grid", type=int, nargs=6,
+                        metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="freeze delta = <j.B> on this grid - <j.B> on the row grid per surface at the start "
+                        "(e.g. 25 37 96 4 6 16); without it a restart keeps its dkx_rows.json delta")
+    parser.add_argument("--dkx-row-tol", type=float, help="bound on |row| (default: DKX_ROW_TOLERANCE)")
+    parser.add_argument("--dkx-row-project", action="store_true",
+                        help="rows = the least-squares knot correction of the surface mismatches (one row per knot)")
+    parser.add_argument("--dkx-row-gpus", help="comma-separated GPU UUIDs: one DKX worker process on each")
+    parser.add_argument("--dkx-row-workers", type=int, default=0,
+                        help="wait for this many DKX workers started elsewhere (srun: python -m "
+                        "vmex.core.kinetic_bootstrap RENDEZVOUS) instead of spawning them")
+    parser.add_argument("--dkx-rendezvous", type=Path, help="the workers' rendezvous file (default: in --output)")
+    parser.add_argument("--dkx-row-state", type=Path, help="E_r, holds, I'_ref and delta of a previous round "
+                        "(default: the restart's dkx_rows.json)")
+    parser.add_argument("--dkx-er", type=float, nargs="+", help="E_r seeds [kV/m] per surface (default -2)")
+    parser.add_argument("--dkx-hold", type=int, default=0, metavar="N",
+                        help="the innermost N surfaces always hold the E_r of smallest |J_r| (a flat-J_r axis)")
+    parser.add_argument("--dkx-er-tol", type=float, default=0.05, help="Newton tolerance of the roots [kV/m]")
     parser.add_argument("--current-constraint", action="store_true",
                         help="the current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design "
                         "variables) held Redl-self-consistent by a constraint row, instead of solved with every "
@@ -1044,6 +1144,8 @@ def parse_args(argv=None):
         parser.error("--resolve-current needs --restart and --bootstrap")
     if args.fixed_current and not args.bootstrap:
         parser.error("--fixed-current needs --bootstrap")
+    if args.dkx_rows and (not args.bootstrap or args.fixed_current):
+        parser.error("--dkx-rows needs --bootstrap without --fixed-current")
     return args
 
 
@@ -1293,6 +1395,8 @@ def main(argv=None):
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
         if args.bootstrap and not BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
             inp = smooth_redl_current(inp, "gpu")
+        elif args.dkx_rows and inp.pcurr_type != "cubic_spline_ip":  # the rows' design variables: CURRENT_KNOTS
+            inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:
@@ -1325,6 +1429,7 @@ def main(argv=None):
     chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(design.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
+    kinetic = dkx_current_rows(inp, design, args, out) if args.dkx_rows else None
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
@@ -1354,7 +1459,8 @@ def main(argv=None):
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
-                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
+                    *([kinetic] if kinetic is not None else
+                      [bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
@@ -1376,6 +1482,12 @@ def main(argv=None):
              if BOOTSTRAP_MODEL == "redl" else 1)
     redl_bound = ((-REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE)
                   if BOOTSTRAP_MODEL == "redl" else (-np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
+    if kinetic is not None:
+        tolerance = DKX_ROW_TOLERANCE if args.dkx_row_tol is None else args.dkx_row_tol
+        nredl = kinetic.index.size if kinetic.projection is None else kinetic.projection.shape[0]
+        redl_bound = (-tolerance, tolerance, tolerance)
+        first = 3 + len(mirror) + len(ceiling)
+        print(f"[dkx rows] quantity rows {first}..{first + nredl - 1}", flush=True)
     state0, params0 = problem.state(problem.x0)
     runtime0 = im.runtime_from_params(params0, model.cfg)
     extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
@@ -1401,6 +1513,8 @@ def main(argv=None):
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
+        if kinetic is not None:
+            (out / f"dkx_rows{tag}.json").write_text(json.dumps(kinetic.record(), indent=1) + "\n")
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last = dict(time=time.monotonic())
@@ -1466,8 +1580,13 @@ def main(argv=None):
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
+                   **({"dkx_er_kv_per_m": [r["er"] for r in kinetic.surfaces.records()],
+                       "dkx_held": [r["held"] for r in kinetic.surfaces.records()],
+                       "dkx_unconverged": sum(r["unconverged"] for r in kinetic.surfaces.records()),
+                       "dkx_calls": dict(kinetic.calls)} if kinetic is not None else {}),
                    **({"dkx_er_kv_per_m": DKX_ROWS[-1].electric_field().tolist(),
-                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)} if DKX_AMBIPOLAR and DKX_ROWS and nredl else {}),
+                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)}
+                      if DKX_AMBIPOLAR and DKX_ROWS and nredl and kinetic is None else {}),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         last.update(time=now)

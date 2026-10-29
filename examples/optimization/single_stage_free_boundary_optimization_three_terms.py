@@ -13,11 +13,14 @@ The kinetic profiles ``n_e = n0 (1 - s^5)``, ``T_e = T_i = T0 (1 - s)`` (hydroge
 the current profile (its first ``N_CURRENT`` AC coefficients and CURTOR), and SLSQP (:func:`vmex.optimize.minimize`)
 holds the Redl self-consistency as a constraint row, beside the rotational-transform window and the aspect limit:
 
-    minimize   (1/2) |r_QS|^2 + coil length, curvature, separation and clearance penalties
+    minimize   (1/2) |r_QS|^2
     subject to IOTA_CONSTRAINT <= min |iota|,  max |iota| <= IOTA_CEILING_CONSTRAINT,
-               aspect <= ASPECT_CONSTRAINT,  sum_j ((<J.B>_j - <J.B>_Redl,j) / ...)^2 <= REDL_TOLERANCE
+               aspect <= ASPECT_CONSTRAINT,  sum_j ((<J.B>_j - <J.B>_Redl,j) / ...)^2 <= REDL_TOLERANCE,
+               coil-surface distance >= COIL_SURFACE_DISTANCE_CONSTRAINT,  the coil limits (``vmex.CoilLimits``)
 
-with the clearance measured to each trial's free boundary.  :class:`vmex.ThreeTermsFreeBoundaryProblem` warm-starts
+with the clearance measured to each trial's free boundary.  The coils are ESSOS' (``essos.coil_design``):
+:class:`vmex.CoilDesign` puts the current profile in front of ESSOS' coil coordinates, and the coil length,
+curvature and separation rows (``vmex.CoilLimits``, ``vmex.coil_constraint``) need no equilibrium solve.  :class:`vmex.ThreeTermsFreeBoundaryProblem` warm-starts
 each trial's boundary fit, accepts it within an interface-residual cap and differentiates the fit implicitly; the coil
 field is ESSOS' ``BiotSavart``, a pytree, so new coils never recompile.  The seed's current comes from a
 fixed-boundary Picard iteration to Redl's (:func:`vmex.core.bootstrap.self_consistent_bootstrap`).
@@ -44,7 +47,6 @@ from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstra
 
 from essos.coils import Coils, CreateEquallySpacedCurves
 from essos.fields import BiotSavart
-from essos.objective_functions import loss_coil_separation, loss_coil_surface_distance
 from essos.surfaces import SurfaceRZFourier, surfacerzfourier_from_boundary
 
 jax.config.update("jax_enable_x64", True)
@@ -91,15 +93,18 @@ COIL_SURFACE_DISTANCE_LIMIT = 0.15
 COIL_DISTANCE_LIMIT = 0.17
 CURVATURE_LIMIT = 7.0
 
+LENGTH_LIMIT = 5.5                # each coil's length
+MEAN_SQUARED_CURVATURE_LIMIT = 25.0
+
 # Values the optimizer is given instead, a little inside the limits above: SLSQP
-# holds its constraint rows only to its tolerance. The normal-field value is used
-# only by the coil pre-fit: on a free boundary B.n = 0 holds to the fit's floor.
+# holds its constraint rows only to its tolerance (the coil rows' margins: curvature 0.1 1/m,
+# coil-coil distance COIL_DISTANCE_MARGIN). The normal-field value is used only by the coil
+# pre-fit: on a free boundary B.n = 0 holds to the fit's floor.
 IOTA_CONSTRAINT = 0.425
 IOTA_CEILING_CONSTRAINT = 0.59
 ASPECT_CONSTRAINT = 6.05
 NORMAL_FIELD_CONSTRAINT = 0.008
-CURVATURE_OBJECTIVE_LIMIT = 6.9
-COIL_DISTANCE_CONSTRAINT = 0.19
+COIL_DISTANCE_MARGIN = 0.02
 COIL_SURFACE_DISTANCE_CONSTRAINT = 0.16
 
 # Coils: number of unique shapes, Fourier order, and the circle they start on.
@@ -111,19 +116,15 @@ COIL_CURRENT = 2.7e5
 N_SEGMENTS = 64
 STELLSYM = True
 
-# Weights, and the longest coil the optimizer may build. The length term is
-# one-sided: coils shorter than LENGTH_TARGET cost nothing, so it never pulls
-# against quasisymmetry or the normal field.
-LENGTH_TARGET = 5.5
-LENGTH_WEIGHT = 0.5
-CURVATURE_WEIGHT = 10.0
-COIL_DISTANCE_WEIGHT = 1.0e4
-COIL_SURFACE_DISTANCE_WEIGHT = 1.0e4
+# Weight of the coil pre-fit's quadratic penalty on its violated rows (normal field, coil limits,
+# clearance to the seed): the pre-fit is unconstrained L-BFGS-B.
 CONSTRAINT_WEIGHT = 1.0e3
 
-# Bound on each design variable, in units of its scale, and the factor on those scales that SLSQP steps
-# in: its first step has an identity Hessian, so each scaled variable moves about as far as its gradient,
-# and smaller scales keep the steps where the constraints' linearization holds.
+# Bound on each design variable, in units of its scale (COIL_SCALE m on every coil Fourier coefficient's
+# ESSOS degree of freedom, CURRENT_SCALE on the current variables), and the factor on those scales that
+# SLSQP steps in: its first step has an identity Hessian, so each scaled variable moves about as far as its
+# gradient, and smaller scales keep the steps where the constraints' linearization holds.
+COIL_SCALE = 0.05
 PARAMETER_BOUND = 3.0
 DESIGN_STEP_SCALE = 0.2
 
@@ -185,8 +186,13 @@ curves0 = CreateEquallySpacedCurves(
     N_COILS, COIL_ORDER, COIL_MAJOR_RADIUS, COIL_MINOR_RADIUS,
     n_segments=N_SEGMENTS, nfp=NFP, stellsym=STELLSYM)
 coils_circular = Coils(curves0, np.full(N_COILS, COIL_CURRENT))
-x_circular = np.asarray(curves0.dofs).ravel()
-scales = np.full(x_circular.size, 0.05)
+# ESSOS' design takes unscaled coefficients: COIL_SCALE on each scaled degree of freedom
+coil_scales = COIL_SCALE / np.broadcast_to(np.asarray(curves0.scaling), curves0.dofs.shape).ravel()
+circular = vj.CoilDesign(coils_circular, scales=coil_scales)
+limits = vj.CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT,
+                       mean_squared_curvature=MEAN_SQUARED_CURVATURE_LIMIT, coil_distance=COIL_DISTANCE_LIMIT,
+                       distance_margin=COIL_DISTANCE_MARGIN, curvature_points=N_SEGMENTS,
+                       distance_points=N_SEGMENTS)
 
 
 def normal_field_rms(coils, surface):
@@ -203,41 +209,23 @@ def hinge(constraints):
     return 0.5 * CONSTRAINT_WEIGHT * jnp.sum(jnp.maximum(-constraints, 0.0)**2)
 
 
-def coil_costs(coils, surface):
-    """Coil length, curvature, separation and clearance to ``surface``."""
-    length = jnp.sqrt(LENGTH_WEIGHT) * jnp.maximum(coils.length[:N_COILS] - LENGTH_TARGET, 0.0)
-    curvature = jnp.sqrt(CURVATURE_WEIGHT) * jnp.maximum(
-        coils.curvature[:N_COILS] - CURVATURE_OBJECTIVE_LIMIT, 0.0)
-    return jnp.asarray([
-        0.5 * jnp.vdot(length, length),
-        0.5 * jnp.vdot(curvature, curvature),
-        0.5 * COIL_DISTANCE_WEIGHT * loss_coil_separation(
-            coils, COIL_DISTANCE_CONSTRAINT, block_size=32),
-        0.5 * COIL_SURFACE_DISTANCE_WEIGHT * loss_coil_surface_distance(
-            coils, surface, COIL_SURFACE_DISTANCE_CONSTRAINT, block_size=32),
-    ])
-
-
-def coils_from_x(x):
-    return coils_circular.with_dofs(jnp.concatenate((x, coils_circular.dofs_currents)))
-
-
 def coil_fit_objective(u):
-    """The coil half of single_stage_optimization.py with the boundary frozen."""
-    coils = coils_from_x(jnp.asarray(x_circular) + jnp.asarray(scales) * u)
+    """The coil half of single_stage_optimization.py with the boundary frozen: the normal field, the coil
+    limits and the clearance to the seed as penalties."""
+    coils = circular.coils_from_x(jnp.asarray(circular.scales) * u)
     normal_field = 1.0 - normal_field_rms(coils, surface_seed) / NORMAL_FIELD_CONSTRAINT
-    return jnp.sum(coil_costs(coils, surface_seed)) + hinge(normal_field[None])
+    clearance = limits.surface_clearance(coils, surface_seed) / COIL_SURFACE_DISTANCE_CONSTRAINT - 1.0
+    return hinge(jnp.r_[normal_field, limits.rows(coils), clearance])
 
 
 print("Running single_stage_free_boundary_optimization_three_terms.py")
 coil_fit_value_and_grad = jax.jit(jax.value_and_grad(coil_fit_objective))
 coil_fit = minimize(
     lambda u: tuple(map(np.asarray, coil_fit_value_and_grad(jnp.asarray(u)))),
-    np.zeros_like(x_circular), jac=True, method="L-BFGS-B",
-    bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * x_circular.size,
+    np.zeros(circular.size), jac=True, method="L-BFGS-B",
+    bounds=[(-PARAMETER_BOUND, PARAMETER_BOUND)] * circular.size,
     options={"maxiter": COIL_FIT_MAXITER, "maxcor": 20, "ftol": 1e-15, "gtol": 1e-10})
-x0 = x_circular + scales * coil_fit.x
-coils0 = coils_from_x(jnp.asarray(x0))
+coils0 = circular.coils_from_x(circular.scales * coil_fit.x)
 print(f"[coil fit] {coil_fit.nit} L-BFGS-B iterations, no equilibrium solves: B.n/B RMS "
       f"= {100 * float(normal_field_rms(coils0, surface_seed)):.3f}% on the seed")
 
@@ -291,30 +279,20 @@ print(f"[bootstrap] n0 = {n0:.3e} m^-3 at T0 = {T0:.0f} eV for beta {100 * TARGE
 ###############################################################################
 
 
-N_COIL = x0.size                  # the design: coil coefficients, then the current variables
-ac_reference = float(np.max(np.abs(np.asarray(inp.ac, dtype=float))))
-design0 = np.r_[x0, np.zeros(N_CURRENT + 1)]
-bound_scales = np.r_[scales, np.full(N_CURRENT + 1, CURRENT_SCALE)]
-design_scales = DESIGN_STEP_SCALE * bound_scales
-
-
-def field_from_x(x):
-    return BiotSavart(coils_from_x(x[:N_COIL]))
-
-
-def plasma_from_x(params, x):
-    """The current profile of the design: AC coefficients and CURTOR moved from the seed's."""
-    current = x[N_COIL:]
-    return replace(params, ac=params.ac.at[:N_CURRENT].add(ac_reference * current[:N_CURRENT]),
-                   curtor=params.curtor * (1.0 + current[N_CURRENT]))
+# The design: the current variables (the first N_CURRENT AC coefficients and CURTOR, in units of the largest
+# of those coefficients and of CURTOR), then the fitted coils' coordinates.
+bound_scales = np.r_[np.full(N_CURRENT + 1, CURRENT_SCALE), coil_scales]
+chart = vj.CoilDesign(coils0, plasma_current=np.r_[np.asarray(inp.ac)[:N_CURRENT], inp.curtor],
+                      scales=DESIGN_STEP_SCALE * bound_scales)
+design0 = chart.x0
 
 
 def input_from_x(x):
     """The deck of the design ``x`` (its current profile), for the verification solve."""
-    current = np.asarray(x[N_COIL:], dtype=float)
+    values = chart.plasma_current + np.asarray(x[:N_CURRENT + 1], dtype=float) * chart.plasma_current_units
     ac = np.asarray(inp.ac, dtype=float).copy()
-    ac[:N_CURRENT] += ac_reference * current[:N_CURRENT]
-    return replace(inp, ac=ac, curtor=float(inp.curtor) * (1.0 + current[N_CURRENT]))
+    ac[:N_CURRENT] = values[:-1]
+    return replace(inp, ac=ac, curtor=float(values[-1]))
 
 
 qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
@@ -342,11 +320,16 @@ def boundary_surface(equilibrium_state, runtime, nphi=NPHI, ntheta=NTHETA):
     return surfacerzfourier_from_boundary(rbc, zbs, NFP, nphi=nphi, ntheta=ntheta)
 
 
+def clearance(rbc, zbs, x):
+    """The coils' distance to this trial's free boundary (rows of the fitted boundary)."""
+    surface = surfacerzfourier_from_boundary(rbc, zbs, NFP, nphi=NPHI, ntheta=NTHETA)
+    return limits.surface_clearance(chart.coils_from_x(x), surface)
+
+
 def loss(equilibrium_state, runtime, x):
-    """Quasisymmetry plus the coil penalties, with the clearance to this trial's free boundary."""
+    """Quasisymmetry; the coils enter through the constraints."""
     qs_rows = qs.residuals_state(equilibrium_state, runtime)
-    return 0.5 * jnp.vdot(qs_rows, qs_rows) + jnp.sum(coil_costs(coils_from_x(x[:N_COIL]),
-                                                                 boundary_surface(equilibrium_state, runtime)))
+    return 0.5 * jnp.vdot(qs_rows, qs_rows)
 
 
 def plasma_values(equilibrium_state, runtime):
@@ -365,8 +348,9 @@ def plasma_values(equilibrium_state, runtime):
 config = vj.ThreeTermsConfig(labelling=LABELLING, label_weight=LABEL_WEIGHT, nphi=N_INTERFACE,
                              ntheta=N_INTERFACE, quadrature=(4 * NFP * N_INTERFACE, 2 * N_INTERFACE), max_residual=2e-2)
 problem = vj.ThreeTermsFreeBoundaryProblem.from_loss(
-    inp, loss, design0, field_from_parameters=field_from_x, plasma_from_parameters=plasma_from_x,
-    scales=design_scales, quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio, redl_mismatch),
+    inp, loss, design0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_from_parameters,
+    scales=chart.scales, names=chart.dof_names,
+    quantities=(opt.min_abs_iota, max_abs_iota, opt.aspect_ratio, redl_mismatch), boundary_quantities=(clearance,),
     config=config, boundary_max_residual=config.max_residual)
 state0, params0 = problem.state(design0)
 runtime0 = im.runtime_from_params(params0, problem.model.cfg)
@@ -381,20 +365,22 @@ print("[seed] " + ", ".join(f"{k} = {v:.4g}" for k, v in seed_values.items())
 ### Run the optimization ######################################################
 ###############################################################################
 
-print(f"Three-term free boundary + ESSOS at beta {100 * TARGET_BETA:.2f}%: {N_COIL} coil and {N_CURRENT + 1} "
-      "current variables, SLSQP")
+print(f"Three-term free boundary + ESSOS at beta {100 * TARGET_BETA:.2f}%: {chart.coils.size} coil and "
+      f"{N_CURRENT + 1} current variables, SLSQP")
 initial_value = problem.fun(design0)
 # Each row is scaled by its own limit, so SLSQP weighs a violation of the Redl row (values ~1e-3) like one of
-# the iota rows (~0.4).
-constraints = [problem.nonlinear_constraint([IOTA_CONSTRAINT, -np.inf, -np.inf, -np.inf],
-                                            [np.inf, IOTA_CEILING_CONSTRAINT, ASPECT_CONSTRAINT, REDL_TOLERANCE],
-                                            scales=[IOTA_CONSTRAINT, IOTA_CEILING_CONSTRAINT, 0.1, REDL_TOLERANCE])]
+# the iota rows (~0.4).  The coil rows are already scaled by their limits.
+constraints = [problem.nonlinear_constraint(
+    [IOTA_CONSTRAINT, -np.inf, -np.inf, -np.inf, COIL_SURFACE_DISTANCE_CONSTRAINT],
+    [np.inf, IOTA_CEILING_CONSTRAINT, ASPECT_CONSTRAINT, REDL_TOLERANCE, np.inf],
+    scales=[IOTA_CONSTRAINT, IOTA_CEILING_CONSTRAINT, 0.1, REDL_TOLERANCE, COIL_SURFACE_DISTANCE_LIMIT]),
+    vj.coil_constraint(lambda x: limits.rows(chart.coils_from_x(x)))]
 
 
 def report(x):
     rows = problem.constraint_values(x)
     print(f"[step {problem.accepted_step}] loss {problem.fun(x):.6e}; min |iota| {rows[0]:.4f}, max |iota| "
-          f"{rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}", flush=True)
+          f"{rows[1]:.4f}, aspect {rows[2]:.4f}, Redl mismatch {rows[3]:.3e}, clearance {rows[4]:.4f} m", flush=True)
 
 
 bounds = Bounds(design0 - PARAMETER_BOUND * bound_scales, design0 + PARAMETER_BOUND * bound_scales)
@@ -420,10 +406,10 @@ print("[optimizer] " + ", ".join(f"{k} = {v:.4g}" for k, v in optimizer_values.i
 # self-consistency included.  The fit starts from the optimizer's boundary: at this resolution the
 # interface least squares has several minima, and a cold start from the seed lands centimetres away,
 # on another free boundary of the same coils.
-coils_final = coils_from_x(jnp.asarray(x[:N_COIL]))
+coils_final = chart.coils_from_x(x)
 start = im.input_with_params(inp, params_x)
 final_input = replace(input_from_x(x), rbc=start.rbc, zbs=start.zbs)
-final = vj.solve_free_boundary_multigrid(final_input, external_field=field_from_x(jnp.asarray(x)),
+final = vj.solve_free_boundary_multigrid(final_input, external_field=chart(x),
                                          three_terms=replace(config, start="deck"))
 final_deck = final.three_terms.input  # the free boundary as a fixed-boundary deck
 final_context = im.runtime_from_params(im.params_from_input(final_deck), im.make_config(final_deck))

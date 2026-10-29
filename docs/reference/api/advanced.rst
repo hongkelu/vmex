@@ -153,7 +153,9 @@ Free boundary
    :members: ThreeTermsFreeBoundaryProblem
 
 .. automodule:: vmex.core.coil_design
-   :members: CoilDesign, CoilLimits, coil_constraint, chunked_jacfwd, resampled
+   :members: CoilDesign
+
+``vmex.CoilLimits`` and ``vmex.coil_constraint`` are ESSOS' (``essos.coil_design``).
 
 .. automodule:: vmex.core.extender
    :members:

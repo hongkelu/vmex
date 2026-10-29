@@ -59,8 +59,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .mgrid import MgridField
-
 try:  # optional dependency (uwplasma/virtual_casing_jax)
     from virtual_casing_jax import (
         ExteriorFieldConfig,
@@ -127,7 +125,7 @@ def _require_vcj() -> None:
             "vmex.core.virtual_casing requires the optional dependency "
             "'virtual_casing_jax' (canonical repository "
             "https://github.com/uwplasma/virtual_casing_jax). Install it "
-            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.8)."
+            "with `pip install vmex[freeb]` (virtual-casing-jax>=0.0.9)."
         ) from _IMPORT_ERROR
 
 
@@ -707,9 +705,185 @@ def plasma_field_on_boundary(
         kwargs["quad_np"] = int(quad_np)
     if precision is not None:
         kwargs["precision"] = precision
+    if hasattr(field, "_vc") and hasattr(field._vc, "_b_setup"):
+        return _internal_B_one_pass(field._vc, field.B_total, **kwargs)
     if hasattr(field, "B_plasma_on_surface"):
         return field.B_plasma_on_surface(**kwargs)
     return field._vc.compute_internal_B(field.B_total, **kwargs)
+
+
+def _remat_fxd_u_eval(X_src, X_trg, density, area_elem, *, chunk_size=1024, target_chunk_size=None):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval`` with each (target block, source chunk) term rematerialized.
+
+    The package's chunked far-field sum saves every chunk's pair intermediates for reverse mode, i.e. the whole
+    one-period-target x full-torus-source kernel: at nfp 5 with a few thousand targets, ~1e5 sources and four
+    densities, tens of GB in the exact Hessian products.  Here each term is recomputed in the
+    backward pass, so memory is one block's pairs, independent of nfp; the values are the same sum."""
+    from virtual_casing_jax import integrals
+    from virtual_casing_jax.kernels import laplace_fxd_u
+
+    Xs = integrals._flatten_soa(X_src, "X_src").T
+    Xt = integrals._flatten_soa(X_trg, "X_trg").T
+    weights = jnp.asarray(density).reshape(-1) * jnp.asarray(area_elem).reshape(-1)
+    ntrg = Xt.shape[0]
+    chunk = int(chunk_size) if chunk_size and int(chunk_size) > 0 else Xs.shape[0]
+    target_chunk = int(target_chunk_size) if target_chunk_size and int(target_chunk_size) > 0 else ntrg
+    Xs, pad = integrals._pad_to_multiple(Xs, 0, chunk)
+    weights = jnp.pad(weights, (0, pad))  # zero weights: padded sources add nothing
+    Xt, _ = integrals._pad_to_multiple(Xt, 0, target_chunk)
+    sources = (Xs.reshape(-1, chunk, 3), weights.reshape(-1, chunk))
+
+    @jax.checkpoint
+    def term(block, Xc, wc):
+        return jnp.sum(laplace_fxd_u(block[:, None, :] - Xc[None, :, :], wc), axis=1)
+
+    def target_block(block):
+        return jax.lax.scan(lambda acc, s: (acc + term(block, *s), None), jnp.zeros_like(block), sources)[0]
+
+    out = jax.lax.map(target_block, Xt.reshape(-1, target_chunk, 3)).reshape(-1, 3)[:ntrg]
+    return out.T
+
+
+def _fxd_u_eval_singular(X_src, dX_src, density, trg_nt, trg_np, nfp, X_trg=None, digits=5, patch_dim0=None,
+                         rad_dim=None, chunk_size=1024, target_chunk_size=None, patch_idx=None, orient=None,
+                         pou_dtype=None, patch_dtype=None, interp_block_size="auto", remat=False):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval_singular`` without the polar-to-grid scatter.
+
+    The package adds each target's polar-patch kernel into its grid patch through the interpolation's transpose,
+    ``M_grid += S^T M_polar`` (a scatter-add per component), and then contracts with the grid density ``f``.
+    The same number is ``f . M_grid + (S f) . M_polar``: the density interpolated to the polar points by the
+    interpolation the patch geometry already uses.  No scatter (45% of a boundary Jacobian's GPU time at 8 x 8,
+    LBD), the same sum regrouped; the far field is :func:`_remat_fxd_u_eval`."""
+    del interp_block_size  # the package signature's keyword: no interpolation blocks here
+    from virtual_casing_jax import integrals as I
+
+    X_src, dX_src, density = jnp.asarray(X_src), jnp.asarray(dX_src), jnp.asarray(density)
+    nt, npol = X_src.shape[1], X_src.shape[2]
+    X_trg = I.field_period_target_coords(X_src, trg_nt, trg_np, nfp) if X_trg is None else jnp.asarray(X_trg)
+    base = _remat_fxd_u_eval(X_src, X_trg, density, I.surf_normal_area_elem(dX_src, X_src)[1],
+                             chunk_size=chunk_size, target_chunk_size=target_chunk_size)
+    if patch_dim0 is None:
+        patch_dim0 = I.select_patch_dim(digits, float(I._surface_cond(dX_src, nt, npol)))
+    if rad_dim is None:
+        rad_dim = int(patch_dim0 * 1.6)
+    precomp = I.precompute_singular(patch_dim0, rad_dim, pou_dtype=pou_dtype, patch_dtype=patch_dtype)
+    skip_nt, skip_np = nt // (nfp * trg_nt), npol // trg_np
+    tt, pp = jnp.meshgrid(jnp.arange(trg_nt) * skip_nt, jnp.arange(trg_np) * skip_np, indexing="ij")
+    if patch_idx is None:
+        patch_idx = I._build_patch_indices(tt.reshape(-1), pp.reshape(-1), nt, npol, patch_dim0)
+    X_flat, dX_flat, dens_flat = X_src.reshape((3, -1)), dX_src.reshape((6, -1)), density.reshape(-1)
+    if orient is None:
+        orient = float(I.surf_normal_area_elem(dX_src, X_src, return_orientation=True)[2])
+    inv_nt, inv_np = 1.0 / nt, 1.0 / npol
+    # The grid-to-polar interpolation as one dense matrix S (npolar x ngrid, a few MB): its gathers, batched over
+    # targets and Jacobian columns, were memory bound (70% of a push); ``values @ S^T`` is a batched GEMM.
+    # built with JAX ops (the patch tables may be traced): one small scatter per call, not per target or column
+    weights = jnp.asarray(precomp.M_G2P).reshape(precomp.npolar, -1)
+    columns = jnp.asarray(precomp.interp_idx).reshape(precomp.npolar, -1)
+    rows = jnp.repeat(jnp.arange(precomp.npolar), columns.shape[1])
+    S_T = jnp.zeros((precomp.ngrid, precomp.npolar), dtype=weights.dtype).at[columns.ravel(), rows].add(weights.ravel())
+
+    def interp(values):
+        return values.astype(S_T.dtype) @ S_T
+
+    def corr_one(Gi, Ggi, GiF, trg):
+        n0 = Ggi[2] * Ggi[5] - Ggi[3] * Ggi[4]
+        n1 = Ggi[4] * Ggi[1] - Ggi[5] * Ggi[0]
+        n2 = Ggi[0] * Ggi[3] - Ggi[1] * Ggi[2]
+        Ga = jnp.sqrt(n0 * n0 + n1 * n1 + n2 * n2) * inv_nt * inv_np
+        Ggs = Ggi * jnp.asarray([inv_nt, inv_np, inv_nt, inv_np, inv_nt, inv_np], dtype=Ggi.dtype)[:, None]
+        M_grid = I.laplace_fxd_u(trg[None, :] - Gi.T, jnp.ones((precomp.ngrid,))) * (Ga * precomp.Gpou)[:, None]
+        # one interpolation of the position, its scaled derivatives and the density (separate calls lay out the
+        # one-row density badly: a transpose was 54% of the push)
+        Q = interp(jnp.concatenate([Gi, Ggs, GiF[None].astype(Gi.dtype)])).astype(trg.dtype)
+        P, Pg, FP = Q[:3], Q[3:9], Q[9]
+        n0p = Pg[2] * Pg[5] - Pg[3] * Pg[4]
+        n1p = Pg[4] * Pg[1] - Pg[5] * Pg[0]
+        n2p = Pg[0] * Pg[3] - Pg[1] * Pg[2]
+        rp = jnp.sqrt(n0p * n0p + n1p * n1p + n2p * n2p)
+        M_polar = I.laplace_fxd_u(trg[None, :] - P.T, jnp.ones((precomp.npolar,))) * (rp * precomp.Ppou)[:, None]
+        return GiF @ M_grid + FP @ M_polar
+
+    corr_fn = jax.checkpoint(corr_one) if remat else corr_one
+    trg_flat = X_trg.reshape((3, -1)).T
+
+    def chunk(pidx, trg):
+        G = jax.vmap(lambda ii: X_flat[:, ii])(pidx)
+        Gg = jax.vmap(lambda ii: dX_flat[:, ii])(pidx)
+        GF = jax.vmap(lambda ii: dens_flat[ii])(pidx)
+        return jax.vmap(corr_fn)(G, Gg, GF, trg)
+
+    if target_chunk_size is None or target_chunk_size <= 0:
+        corr = chunk(patch_idx, trg_flat)
+    else:
+        ntrg = trg_flat.shape[0]
+        pad = (-ntrg) % target_chunk_size
+        if pad:
+            patch_idx, trg_flat = jnp.pad(patch_idx, ((0, pad), (0, 0))), jnp.pad(trg_flat, ((0, pad), (0, 0)))
+        n_chunks = trg_flat.shape[0] // target_chunk_size
+        corr = jax.lax.map(lambda a: chunk(*a), (patch_idx.reshape((n_chunks, target_chunk_size, -1)),
+                                                 trg_flat.reshape((n_chunks, target_chunk_size, 3))))
+        corr = corr.reshape((-1, 3))[:ntrg]
+    return base.reshape((3, trg_nt, trg_np)) + corr.T.reshape((3, trg_nt, trg_np))
+
+
+def _vec_fxd_u_eval_singular(X_src, dX_src, density_vec, trg_nt, trg_np, nfp, *, singular_eval=_fxd_u_eval_singular,
+                             X_trg=None, digits=5, patch_dim0=None, rad_dim=None, chunk_size=1024,
+                             target_chunk_size=None, patch_idx=None, orient=None, pou_dtype=None, patch_dtype=None,
+                             interp_block_size="auto", remat=False):
+    """``virtual_casing_jax.integrals.laplace_fxd_u_eval_vec_singular`` with the scalar evaluator passed explicitly.
+
+    The package's vector evaluator is a ``vmap`` over densities of ``integrals.laplace_fxd_u_eval_singular``
+    (looked up by module name); this is the same ``vmap`` over ``singular_eval``, by default
+    :func:`_fxd_u_eval_singular` (rematerialized far field, no polar scatter), so no third-party function is
+    replaced."""
+    return jax.vmap(
+        lambda dens: singular_eval(
+            X_src, dX_src, dens, trg_nt, trg_np, nfp, X_trg=X_trg, digits=digits, patch_dim0=patch_dim0,
+            rad_dim=rad_dim, chunk_size=chunk_size, target_chunk_size=target_chunk_size, patch_idx=patch_idx,
+            orient=orient, pou_dtype=pou_dtype, patch_dtype=patch_dtype, interp_block_size=interp_block_size,
+            remat=remat),
+        in_axes=0, out_axes=0,
+    )(jnp.asarray(density_vec))
+
+
+def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None,
+                         singular_eval=_fxd_u_eval_singular):
+    """``VirtualCasingJAX.compute_internal_B`` with ``n x B`` and ``B.n`` in one singular evaluation.
+
+    The package evaluates the two single-layer gradients in two passes over the same source-target
+    kernel; stacked as four densities of one ``laplace_fxd_u_eval_vec_singular`` call, the kernel and
+    its singular patches are built once (25% less time, 32% less for a Jacobian; the same values to
+    round-off).  Otherwise the package's on-surface assembly, internal sign.  ``singular_eval`` is the
+    per-density singular evaluator (the package's ``laplace_fxd_u_eval_singular`` signature), by default
+    :func:`_fxd_u_eval_singular`.
+    """
+    import math
+
+    from virtual_casing_jax.integrals import curl_single_layer_gradient
+    from virtual_casing_jax.surface_ops import complete_vec_field, cross_prod, dot_prod, resample
+
+    quad_nt, quad_np, patch_dim0, patch_idx = vcj._apply_precision(precision, quad_nt, quad_np, None, None)
+    vcj._ensure_b_setup(quad_nt, quad_np, digits)
+    setup = vcj._b_setup
+    if patch_dim0 is None or patch_idx is None:
+        patch_dim0, patch_idx = vcj._get_patch_idx(setup, digits)
+    nsrc, ntrg = setup.quad_nt * setup.quad_np, vcj.trg_nt * vcj.trg_np
+    chunk_size, target_chunk_size = vcj._resolve_chunk_sizes("b", chunk_size, "auto", nsrc=nsrc, ntrg=ntrg)
+    dtheta = (math.pi * (1.0 / (vcj.nfp * vcj.trg_nt * 2) - 1.0 / (vcj.nfp * vcj.src_nt * 2))
+              if vcj.half_period else 0.0)
+    B0 = complete_vec_field(jnp.asarray(B0).reshape((3, vcj.src_nt, vcj.src_np)), False, vcj.half_period, vcj.nfp,
+                            vcj.src_nt, vcj.src_np, dtheta)
+    B_quad = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, setup.quad_nt, setup.quad_np)
+    density = jnp.concatenate([cross_prod(B_quad, setup.normal), dot_prod(B_quad, setup.normal)[None]], axis=0)
+    grad = _vec_fxd_u_eval_singular(
+        setup.quad_coord, setup.dX, density, vcj.trg_nt, vcj.trg_np, vcj.nfp_eff, singular_eval=singular_eval,
+        digits=digits, patch_dim0=patch_dim0, chunk_size=chunk_size, target_chunk_size=target_chunk_size,
+        patch_idx=patch_idx, orient=setup.orient, pou_dtype=vcj._resolve_pou_dtype(None, B_quad.dtype),
+        patch_dtype=vcj._resolve_patch_dtype(None, B_quad.dtype))
+    grad = jnp.asarray(grad).reshape((4, 3, vcj.trg_nt, vcj.trg_np))
+    B_on = resample(B0, vcj.nfp_eff * vcj.src_nt, vcj.src_np, vcj.nfp_eff * vcj.trg_nt, vcj.trg_np)[:, : vcj.trg_nt]
+    return -(curl_single_layer_gradient(grad[:3]) + grad[3]) + 0.5 * B_on
 
 
 # ---------------------------------------------------------------------------
@@ -1038,7 +1212,8 @@ def external_B_cartesian(
     Dispatches on the external-field type, staying differentiable in its dofs:
 
     - :class:`~vmex.core.mgrid.MgridField` -> trilinear mgrid (diff. in
-      ``extcur``),
+      ``extcur``), or any field with the same ``b_cyl(r, phi, z)`` method
+      (a pytree whose arrays are leaves stays differentiable and compiles once),
     - a plain callable ``xyz(..., 3) -> B(..., 3)`` (e.g. an ESSOS ``Coils``
       Biot-Savart field, ``lambda pts: coils.B(pts)``; diff. in its own dofs).
 
@@ -1047,7 +1222,7 @@ def external_B_cartesian(
 
     x, y, z = gamma[0], gamma[1], gamma[2]
 
-    if isinstance(external_field, MgridField):
+    if hasattr(external_field, "b_cyl"):
         r = jnp.sqrt(x * x + y * y)
         phi = jnp.arctan2(y, x) if phi_grid is None else phi_grid[:, None]
         Br, Bphi, Bz = external_field.b_cyl(r, phi, z)
@@ -1062,7 +1237,7 @@ def external_B_cartesian(
         return jnp.moveaxis(B, -1, 0) if B.shape[-1] == 3 else B
 
     raise TypeError(
-        f"external_field must be an MgridField or callable, got {type(external_field).__name__}"
+        f"external_field must have b_cyl (e.g. an MgridField) or be callable, got {type(external_field).__name__}"
     )
 
 

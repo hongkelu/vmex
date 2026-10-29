@@ -56,6 +56,9 @@ own.
 .. automodule:: vmex.core.problem
    :members:
 
+.. automodule:: vmex.core.problem_minimize
+   :members:
+
 .. automodule:: vmex.core.monitoring
    :members:
 

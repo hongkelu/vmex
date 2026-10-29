@@ -47,6 +47,7 @@ Ported from the parity-proven legacy implementation
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import types
 from dataclasses import dataclass
@@ -224,11 +225,14 @@ class RunSetup:
     lthreed: bool
     lconm1: bool
     ncurr: int
+    #: The constrained m=1 complement's force is released at every iteration (it stays at its initial
+    #: ``sqrt(s)`` profile): ``ImplicitConfig.m1_complement = "gauged"`` (``run_setup(..., m1_hold=True)``).
+    m1_hold: bool = False
 
 
 _register(RadialGrids)
 _register(ProcessedBoundary, meta=("signgs", "lflip"))
-_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr"))
+_register(RunSetup, meta=("signgs", "lflip", "lasym", "lthreed", "lconm1", "ncurr", "m1_hold"))
 
 
 def radial_grids(ns: int, *, dtype=jnp.float64) -> RadialGrids:
@@ -1217,6 +1221,7 @@ def run_setup(
     lconm1: bool = True,
     infer_axis_if_missing: bool = True,
     use_fft: bool = False,
+    m1_hold: bool = False,
 ) -> RunSetup:
     """Build the complete pre-iteration setup for one radial resolution.
 
@@ -1239,6 +1244,12 @@ def run_setup(
         ``False`` because VMEC2000 starts from the supplied zero axis and
         calls ``guess_axis`` exactly once after its first bad-Jacobian or
         high-force control transfer.
+    m1_hold:
+        Hold the constrained m = 1 complement at its initial ``sqrt(s)``
+        profile: its force is released at every iteration
+        (``RunSetup.m1_hold``; ``ImplicitConfig.m1_complement = "gauged"``).
+        Only applies with ``lconm1``.  ``False`` (the default) is VMEC2000's
+        ``"frozen"`` behavior.
 
     Returns
     -------
@@ -1298,4 +1309,6 @@ def run_setup(
         )
         setup = lane(_setup_lane_inputs(inp, scaled, r00, axis, dtype=dtype))
 
+    if bool(m1_hold) and bool(lconm1):
+        setup = dataclasses.replace(setup, m1_hold=True)
     return setup

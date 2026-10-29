@@ -7,8 +7,8 @@ Simsopt-style vocabulary for the QA/QH/QP/QI examples on the pure new core:
   wout-engine field tables of a converged core state (parity port of the
   legacy ``quasisymmetry_ratio_residual_from_wout``).
 - practical scalar targets — :func:`aspect_ratio`, :func:`mean_iota`,
-  :func:`edge_iota`, :func:`mirror_ratio`, :func:`volume`,
-  :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
+  :func:`edge_iota`, :func:`axis_iota`, :func:`axis_field_strength`,
+  :func:`mirror_ratio`, :func:`volume`, :func:`magnetic_well`, :func:`max_elongation` — each a pure function of
   ``(SpectralState, SolverRuntime)``.
 - :func:`quasi_isodynamic_residual` — a distilled Goodman-style QI residual
   keeping exactly the four terms the legacy minimal-seed QI examples
@@ -79,7 +79,7 @@ from solvax import (
 )
 
 from .device import AUTO
-from .errors import AdjointSolveError, VmecConvergenceError
+from .errors import AdjointSolveError, TrialRejected, VmecConvergenceError
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .solver import (
@@ -119,9 +119,13 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    axis_field_strength,
+    axis_iota,
     edge_iota,
     elongation_profile,
+    geometric_iota,
     iota_edge,
+    major_radius,
     max_elongation,
     mean_iota,
     min_abs_iota,
@@ -132,9 +136,11 @@ from .statephysics import (
 from .wout import WoutData, wout_from_state
 from .problem import Evaluation, FunctionProblem, VmecProblem, _run_with_progress
 from .monitoring import EquilibriumReporter, OptimizationMonitor, OptimizationRecord
+from .problem_minimize import load_slsqp_state, save_slsqp_state  # noqa: F401 (the public SLSQP-resume helpers)
 
 __all__ = [
     "report_targets",
+    "TrialRejected",
     "VmecProblem",
     "FunctionProblem",
     "Evaluation",
@@ -146,11 +152,15 @@ __all__ = [
     "solve_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
+    "major_radius",
     "mean_iota",
     "min_abs_iota",
     "soft_min_abs_iota",
     "edge_iota",
     "iota_edge",
+    "axis_iota",
+    "axis_field_strength",
+    "geometric_iota",
     "mirror_ratio",
     "volume",
     "volume_average_beta",
@@ -2385,8 +2395,8 @@ def least_squares(
 
 
 def minimize(
-    objective_terms: Sequence[tuple[Callable, float, Any]],
-    inp: VmecInput,
+    objective_terms: Sequence[tuple[Callable, float, Any]] | FunctionProblem,
+    inp: VmecInput | None = None,
     *,
     max_mode: int | Sequence[int] = 1,
     vary_major_radius: bool = False,
@@ -2405,7 +2415,25 @@ def minimize(
     forward_max_iterations: int | None = None,
     **scipy_kwargs,
 ):
-    """Minimize the scalarized residual norm with one adjoint per gradient.
+    """Minimize a FunctionProblem, or a scalarized VMEC residual definition.
+
+    ``minimize(problem, method="SLSQP", x0=..., bounds=..., constraints=...,
+    callback=..., options=..., tol=...)`` runs SciPy SLSQP on a
+    :class:`~vmex.core.problem.FunctionProblem` through its public
+    value/gradient interface (see :func:`_minimize_problem`). All coordinates,
+    bounds, constraints, callbacks and returned derivatives use the problem's
+    units; ``problem.scales`` conditions SciPy internally. A problem exposing
+    ``accept_x``, such as
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`, promotes
+    only accepted iterates and ``options["maxiter"]`` counts accepted steps.
+    Besides SciPy's fields the result carries ``accepted_steps`` and
+    ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,
+    ``"callback_stopped"`` or ``"equilibrium_trial_rejected"``; the last
+    three with ``success=False`` and ``status=99``). The equilibrium and
+    adjoint keywords below belong to the problem and must stay at their
+    defaults.
+
+    The ``minimize(objective_terms, inp, ...)`` interface:
 
     The objective is exactly ``0.5 * sum(rows**2)``, with ``rows`` defined by
     :func:`least_squares`.  Unlike Gauss--Newton least squares, a reverse
@@ -2428,6 +2456,19 @@ def minimize(
     defaults are certified on the QI, QS, ``L_grad_B``, ``DMerc`` and ``D_R``
     objective lanes; an unconverged adjoint is never returned as a gradient.
     """
+    if isinstance(objective_terms, FunctionProblem):
+        if inp is not None:
+            raise TypeError("a FunctionProblem already owns its input")
+        if (not np.isscalar(max_mode) or max_mode != 1 or vary_major_radius or current_dofs is not None
+                or not hot_restart or device is not AUTO or solve_kwargs is not None or verbose != 0
+                or adjoint_tol != 1e-6 or adjoint_maxiter != 300 or max_fsq_ratio != 1e2
+                or refine_tol != 1e-10 or forward_ftol is not None or forward_max_iterations is not None):
+            raise TypeError("configure equilibrium, coordinates and adjoint controls when building the problem")
+        from .problem_minimize import _minimize_problem
+
+        return _minimize_problem(objective_terms, x0=x0, method=method, **scipy_kwargs)
+    if inp is None:
+        raise TypeError("objective tuples require a VmecInput")
     inp = _with_forward_controls(inp, forward_ftol, forward_max_iterations)
     modes_schedule = ([int(max_mode)] if np.isscalar(max_mode)
                       else [int(m) for m in max_mode])
@@ -3671,7 +3712,9 @@ def _least_squares_implicit(
         if refined is None or refined[0] != hit[0]:
             imp._host_solve_and_mask_status(cfg, params_np)
             refined = imp._LAST_REFINED.get(cfg)
-        if refined is None or refined[0] != hit[0] or refined[2]:
+        if (refined is None or refined[0] != hit[0] or refined[2]
+                or (refined[3] is not None and np.isfinite(cfg.refine_tol)
+                    and not refined[3] <= cfg.refine_tol)):
             raise RuntimeError(
                 "decision vector did not produce a usable VMEC equilibrium"
             )

@@ -121,8 +121,47 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
             f"(rel {rel:.2e}) — the implicit gradient must match the frozen path")
 
 
+def _li383_mean_iota_grad(m1_complement):
+    """``d(mean iota)/d(RBC(1,1), ZBS(-1,1))`` (implicit) and the refined state on li383_low_res."""
+    inp = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
+    cfg = im.make_config(inp, **CASES["li383_low_res"], m1_complement=m1_complement)
+    p0 = im.params_from_input(inp)
+    grad = jax.grad(lambda p: mean_iota(im.solve_implicit(p, cfg), im.runtime_from_params(p, cfg)))(p0)
+    ntor = int(inp.ntor)
+    x, _ = im.solve_implicit_with_aux(p0, cfg)
+    return np.array([float(grad.rbc[ntor + 1, 1]), float(grad.zbs[ntor - 1, 1])]), np.asarray(x.Z_sin)
+
+
+def test_m1_policy_is_part_of_the_config_identity():
+    """gauged -> frozen -> gauged in one process, no cache clearing: each config solves and differentiates its own
+    equations (the policy is a field of ImplicitConfig, so compiled residuals and memoized solves cannot cross over),
+    and the frozen values equal a fresh process's."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    k1, zk1 = _li383_mean_iota_grad("gauged")
+    f1, zf1 = _li383_mean_iota_grad("frozen")
+    k2, zk2 = _li383_mean_iota_grad("gauged")
+    np.testing.assert_array_equal(k1, k2)
+    np.testing.assert_array_equal(zk1, zk2)
+    assert np.max(np.abs(f1 / k1 - 1.0)) > 1e-3  # different equations, different derivatives
+    script = ("import sys; sys.path.insert(0, 'tests'); import numpy as np; "
+              "import json; from test_implicit_grad_fd import _li383_mean_iota_grad; "
+              "g, z = _li383_mean_iota_grad('frozen'); print('grad', json.dumps(g.tolist()))")
+    done = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+                          capture_output=True, text=True, check=True)
+    fresh = np.array(json.loads(done.stdout.split("grad")[-1].strip()))
+    np.testing.assert_allclose(f1, fresh, rtol=1e-9)
+    with pytest.raises(ValueError, match="m1_complement"):
+        im.make_config(VmecInput.from_file(str(DATA_DIR / "input.li383_low_res")), m1_complement="gauge")
+
+
 def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
-    """Mean iota: the implicit derivative against an independent re-solve FD.
+    """Mean iota: the implicit derivative against an independent re-solve FD,
+    with the m=1 complement frozen as VMEC2000 leaves it (``m1_complement=
+    "frozen"``, the default).
 
     The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
     2.8% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
@@ -140,7 +179,7 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     """
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
-    cfg = im.make_config(inp, **CASES[name])
+    cfg = im.make_config(inp, **CASES[name], m1_complement="frozen")
     p0 = im.params_from_input(inp)
     ntor = int(inp.ntor)
     assert int(inp.ncurr) == 1
@@ -270,3 +309,61 @@ def test_multigrid_gradient_vs_frozen_path_fd():
           f"(Newton res {res:.0e})")
     assert res < 1e-8, f"frozen solve not converged (res {res:.1e})"
     assert rel <= 1e-6
+
+
+def test_status_certifies_the_refined_root_not_the_host_solve(monkeypatch):
+    """With the m=1 complement gauged, the status lane certifies the returned state in the config's equations: a
+    successful refinement is status 0 with its residual recorded under refine_tol; a non-finite refined state is
+    status 4, not a certified derivative point (the default "frozen" keeps upstream's status lane)."""
+    inp = VmecInput.from_file(str(DATA_DIR / "input.li383_low_res"))
+    cfg = im.make_config(inp, **CASES["li383_low_res"], m1_complement="gauged")
+    params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), im.params_from_input(inp))
+
+    def status():
+        im._LAST_REFINED.pop(cfg, None)
+        im._LAST_REFINEMENT_CORRECTION.pop(cfg, None)
+        return int(im._host_solve_and_mask_status(cfg, params_np)[2])
+
+    assert status() == 0
+    assert im._LAST_REFINED[cfg][3] <= cfg.refine_tol
+    original = im._refined_state
+    monkeypatch.setattr(im, "_refined_state", lambda cfg, params, state, mask, **kw: jax.tree.map(
+        lambda a: a * np.nan if jnp.issubdtype(a.dtype, jnp.inexact) else a, original(cfg, params, state, mask)))
+    assert status() == 4
+    assert im._LAST_REFINED[cfg][3] == np.inf
+
+
+def test_li383_mean_iota_matches_resolve_fd_with_the_m1_complement_gauged():
+    """Mean iota with the m=1 complement gauged (``m1_complement="gauged"``: fixed to ``sqrt(s)`` times its edge
+    value, a function of the boundary): the refined state depends on the parameters alone, so the implicit derivative
+    is an independent re-solve FD's -- the gap the frozen treatment leaves closes without solving the complement's
+    near-singular force."""
+    name = "li383_low_res"
+    inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
+    cfg = im.make_config(inp, **CASES[name], m1_complement="gauged")
+    p0 = im.params_from_input(inp)
+    ntor = int(inp.ntor)
+    grad = jax.grad(lambda p: mean_iota(
+        im.solve_implicit(p, cfg), im.runtime_from_params(p, cfg)))(p0)
+    x0, _ = im.solve_implicit_with_aux(p0, cfg)
+    pos, neg = im._m1_pair_columns(cfg)
+    edge_anti = 0.5 * (np.asarray(x0.Z_sin)[-1, pos] - np.asarray(x0.Z_sin)[-1, neg])
+    anti = 0.5 * (np.asarray(x0.Z_sin)[:, pos] - np.asarray(x0.Z_sin)[:, neg])
+    s = np.linspace(0.0, 1.0, anti.shape[0])
+    np.testing.assert_allclose(anti, np.sqrt(s)[:, None] * edge_anti[None, :], atol=1e-14)
+    h = 5e-4
+    zero = jax.tree.map(jnp.zeros_like, p0)
+    for field, n in (("rbc", 1), ("zbs", -1)):
+        tangent = dataclasses.replace(zero, **{field: getattr(zero, field).at[ntor + n, 1].set(1.0)})
+        implicit = float(sum(jnp.vdot(a, b) for a, b in zip(
+            jax.tree.leaves(grad), jax.tree.leaves(tangent))))
+        values = []
+        for sign in (1.0, -1.0):
+            p = jax.tree.map(lambda a, d, s=sign: a + s * h * d, p0, tangent)
+            x, _ = im.solve_implicit_with_aux(p, cfg)
+            values.append(float(mean_iota(x, im.runtime_from_params(p, cfg))))
+        resolve = (values[0] - values[1]) / (2 * h)
+        gap = abs(implicit / resolve - 1.0)
+        print(f"\n[{name}, gauged] d(mean iota)/d({field.upper()}(n={n:+d},m=1)): "
+              f"implicit {implicit:+.6e} re-solve {resolve:+.6e} (gap {gap:.1e})")
+        assert gap < 1e-4

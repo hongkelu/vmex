@@ -372,6 +372,14 @@ class ImplicitConfig:
     #: gradient evaluated outside such a context creates its constants on
     #: JAX's default device and mixes devices with the committed state.
     device: Any = None
+    #: The m=1 complement policy (:data:`M1_COMPLEMENTS`): part of the
+    #: config's identity, so every compiled residual, projector and memoized
+    #: solve belongs to one equation set.
+    m1_complement: str = "frozen"
+
+    def __post_init__(self):
+        if self.m1_complement not in M1_COMPLEMENTS:
+            raise ValueError(f"m1_complement must be one of {M1_COMPLEMENTS}, got {self.m1_complement!r}")
 
     def _structure(self) -> tuple:
         """Content token without the adjoint tolerances (cached)."""
@@ -415,8 +423,12 @@ def make_config(
     max_fsq_ratio: float = 1.0e2,
     hot_restart: bool = False,
     device: Any = None,
+    m1_complement: str = "frozen",
 ) -> ImplicitConfig:
     """Build the static config; ``resolution`` is the (final-stage) grid.
+
+    ``m1_complement`` selects the m=1 complement treatment at the refined
+    root (:data:`M1_COMPLEMENTS`).
 
     ``max_fsq_ratio`` is the largest ``(fsqr + fsqz + fsql) / ftol`` at which
     an iteration-limited solve still counts as derivative-certified (status 0
@@ -452,6 +464,7 @@ def make_config(
         refine_tol=refine_tol,
         max_fsq_ratio=float(max_fsq_ratio),
         hot_restart=bool(hot_restart), device=device,
+        m1_complement=str(m1_complement),
     ))
 
 
@@ -931,6 +944,41 @@ def _edge_mask(cfg: ImplicitConfig) -> SpectralState:
                          L_cos=mk(z), L_sin=mk(z))
 
 
+#: The m=1 complement policies (``ImplicitConfig.m1_complement``): how
+#: ``zcs_int = (rss - zcs)/2`` of ``residue.f90``'s ``lconm1`` basis is treated
+#: at the root the implicit layer refines to.  ``"frozen"`` (VMEC2000, the
+#: default): its force is released once ``fsqz < 1e-6`` and the complement
+#: stays wherever the iteration had it then, so the root depends on the solve's
+#: start.  ``"gauged"``: the complement is an angle gauge in the continuum (its
+#: force vanishes for any value as the resolution grows), so it is fixed --
+#: set to ``sqrt(s)`` times its edge value (the boundary's) before the
+#: refinement, held there by the host solve (``solve(..., m1_hold=True)``),
+#: its force released as in ``"frozen"``.  The refined state is then a function
+#: of the parameters alone, at any resolution (the three-term free boundary's
+#: interior).  3D stellarator-symmetric runs only; ``lasym`` keeps ``"frozen"``.
+M1_COMPLEMENTS = ("frozen", "gauged")
+
+
+def _m1_gauged(cfg: ImplicitConfig) -> bool:
+    """Whether the refinement fixes the m=1 complement to its gauge profile (``cfg.m1_complement``)."""
+    if getattr(cfg, "m1_complement", "frozen") != "gauged":
+        return False
+    res = cfg.resolution
+    return bool(bool(cfg.lconm1) and int(res.ntor) > 0 and not bool(res.lasym))
+
+
+def _m1_gauge_state(cfg: ImplicitConfig, state: SpectralState) -> SpectralState:
+    """``state`` with the m=1 complement (the antisymmetric ``Z_sin`` pair combination) set to ``sqrt(s)`` times its
+    edge value; the symmetric combination and every other coefficient unchanged."""
+    if not _m1_gauged(cfg):
+        return state
+    pos, neg = _m1_pair_columns(cfg)
+    v = jnp.asarray(state.Z_sin)
+    sym = 0.5 * (v[:, pos] + v[:, neg])
+    anti = jnp.sqrt(jnp.linspace(0.0, 1.0, v.shape[0]))[:, None] * (0.5 * (v[-1, pos] - v[-1, neg]))[None, :]
+    return dataclasses.replace(state, Z_sin=v.at[:, pos].set(sym + anti).at[:, neg].set(sym - anti))
+
+
 def _m1_pair_columns(cfg: ImplicitConfig) -> tuple[np.ndarray, np.ndarray]:
     """Signed-packing column indices of the m=1 ``(+n, -n)`` pairs."""
     modes = _static_tables(cfg.resolution)[0]
@@ -1022,12 +1070,15 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
                 out["Z_cos"] = v.at[:, pos].set(anti).at[:, neg].set(-anti)
         return SpectralState(**out)
 
+    if _m1_gauged(cfg):  # the complement is a function of the boundary: _assemble applies it (differentiably)
+        P.m1_gauge = functools.partial(_m1_gauge_state, cfg)
     return P
 
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
               P: Callable, edge_mask: SpectralState) -> SpectralState:
-    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``.
+    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``, then (``m1_complement="gauged"``) the m=1
+    complement set from the boundary row (:func:`_m1_gauge_state`), so it moves with the parameters.
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
@@ -1044,7 +1095,8 @@ def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
             e = getattr(edge_mask, name)
             x = x + e * (boundary[name][None, :] - getattr(frozen, name))
         out[name] = x
-    return SpectralState(**out)
+    gauge = getattr(P, "m1_gauge", None)  # "gauged": the m=1 complement from the edge (boundary) row
+    return SpectralState(**out) if gauge is None else gauge(SpectralState(**out))
 
 
 def _raw_force_state(
@@ -1325,6 +1377,10 @@ def _dof_mask(x_star: SpectralState, rt: SolverRuntime,
 _HOT_CACHE: weakref.WeakKeyDictionary[ImplicitConfig, SpectralState] = \
     weakref.WeakKeyDictionary()
 
+# cfg -> (state, params as NumPy): the hot-restart state of _HOT_CACHE with the parameters it solved, for the
+# Newton seed's continuation (:func:`_newton_continuation`); used only while that state is still the hot one.
+_HOT_PARAMS: weakref.WeakKeyDictionary[ImplicitConfig, tuple[SpectralState, Any]] = weakref.WeakKeyDictionary()
+
 # cfg -> (params-bytes key, SolveResult): one-entry memo of the LAST solve.
 # scipy trust-region drivers evaluate jac(x) at exactly the x that fun(x)
 # just converged (DESC's ``_update_equilibrium``/``f_where_x`` pattern), so
@@ -1424,12 +1480,13 @@ _HOST_ERROR: list[VmecError] = []
 _LAST_STATUS_ERROR: weakref.WeakKeyDictionary[ImplicitConfig, Exception] = \
     weakref.WeakKeyDictionary()
 
-# cfg -> (params-bytes key, refined state, stalled): one-entry memo mirroring
+# cfg -> (params-bytes key, refined state, stalled, residual): one-entry memo mirroring
 # _LAST_SOLVE, so the fun(x)-then-jac(x) pattern that already skips the second
 # equilibrium solve also skips the second frozen-residual measurement.
-# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL).
+# ``stalled`` marks an anchor abandoned far from the root (_REFINE_FAR_STALL); ``residual`` is the root
+# certificate of a ``"gauged"`` m=1 complement (:func:`_refined_residual`), ``None`` for the other policies.
 _LAST_REFINED: weakref.WeakKeyDictionary[
-    ImplicitConfig, tuple[bytes, SpectralState, bool]] = weakref.WeakKeyDictionary()
+    ImplicitConfig, tuple[bytes, SpectralState, bool, float | None]] = weakref.WeakKeyDictionary()
 
 # cfg -> (params key, evolved iterate, bands) of the latest block factorization
 # (see _BANDS_REUSE_TOL).
@@ -1466,6 +1523,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     hot = _HOT_CACHE.get(cfg) if cfg.hot_restart else None
     perturb = _PERTURB_SEED.pop(cfg, None) if cfg.hot_restart else None
     solver_device = AUTO
+    m1_hold = _m1_gauged(cfg)  # "gauged": the solver never evolves the m=1 complement
     if cfg.multigrid:
         ns_arr = np.asarray(inp2.ns_array)
         ftol_arr = np.asarray(inp2.ftol_array, dtype=float).copy()
@@ -1477,13 +1535,13 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
             inp2, ns_array=ns_arr, ftol_array=ftol_arr, mode=cfg.mode,
             lconm1=cfg.lconm1, raise_on_max_iterations=False,
             initial_state=init, use_fft=False,
-                device=solver_device)
+                device=solver_device, m1_hold=m1_hold)
     else:
         run = lambda init: solve(  # noqa: E731
             inp2, cfg.resolution, ftol=cfg.ftol,
             max_iterations=cfg.max_iterations, mode=cfg.mode,
             lconm1=cfg.lconm1, initial_state=init, use_fft=False,
-                device=solver_device)
+                device=solver_device, m1_hold=m1_hold)
     # Seed ladder: perturbation prediction -> plain hot restart -> cold.
     # A bad warm seed must not fail the trial (only the initial guess is at
     # stake — every rung converges to the same fixed point), whether it
@@ -1495,6 +1553,7 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     attempts = [s for s in (perturb, hot) if s is not None] + [None]
     result = reference = None
     limited = 0
+
     with _timed(cfg, "solve"):
         for k, init in enumerate(attempts):
             token = STOP_HOOK.set(
@@ -1521,9 +1580,164 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 break
         if cfg.hot_restart and bool(result.converged):
             _HOT_CACHE[cfg] = result.state
+            _HOT_PARAMS[cfg] = (result.state, jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params))
         _LAST_SOLVE[cfg] = (key, result)
         _count(cfg, solves=1, iterations=int(result.iterations))
     return result
+
+
+#: Newton steps (one block factorization each) of a seed's refinement (:func:`_newton_refined_candidates`) at most.
+NEWTON_SEED_FACTORIZATIONS = 8
+#: Backtracking of a seed's Newton step that does not lower ``|F|``: each entry halves the remaining step (so the
+#: step is tried at 1/2, 1/4, 1/8 of its length; one residual evaluation each) before the seed is given up.
+NEWTON_SEED_BACKTRACK = (0.5, 0.5, 0.5)
+
+
+def _newton_refined_candidates(cfg, params_np, seeds):
+    """The best of a tight solve's candidate ``seeds`` Newton-refined onto the root of the frozen residual, or
+    ``None``.
+
+    The candidates are the perturbation seed (the first-order prediction from the latest linearization) and the
+    hot-restart state (the last converged solve, i.e. the previous trial point of a polish): along a polish's long
+    steps in weak boundary directions the prediction from the accepted point can sit far outside Newton's basin
+    while the previous iterate's state is close.  Each is refined as below, and the one with the lowest residual
+    is returned.
+
+    The seed (the first-order prediction of a nearby solved state) is usually inside Newton's basin: block
+    preconditioned Newton steps with fresh factors at every iterate (:func:`_refine_block_factors`,
+    :func:`_refine_block_step`) reach ``refine_tol`` in a few steps, and the host solver's descent then starts at the
+    root, where its ``ftol`` test holds within an iteration or so, instead of the thousands of descent iterations
+    from the plain seed.  Only the descent's initial state changes: the solve, its refinement and the status certificate decide as
+    before.  Returns ``None`` (the plain seed is used) when Newton lowers no candidate's residual."""
+    best = None
+    for seed in seeds:
+        if seed is None:
+            continue
+        got = _newton_refine_one(cfg, params_np, seed)
+        if got is not None and (best is None or got[1] < best[1]):
+            best = got
+        if best is not None and best[1] <= float(cfg.refine_tol):
+            break
+    if best is None or best[1] > float(cfg.refine_tol):
+        continued = _newton_continuation(cfg, params_np)
+        if continued is not None and (best is None or continued[1] < best[1]):
+            best = continued
+    if best is None or not best[1] <= NEWTON_SEED_NEAR * float(cfg.refine_tol):
+        # a state Newton only partly improved is no better a start for the descent than the plain seed
+        _count(cfg, newton_seeds_far=1)
+        return None
+    return best[0]
+
+
+#: A refined seed is used only within this multiple of ``refine_tol`` of the root (:func:`_newton_refined_candidates`).
+NEWTON_SEED_NEAR = 1e3
+#: The continuation of a seed (:func:`_newton_continuation`): the fractions of the way from the hot state's
+#: parameters to the new ones at which Newton re-converges.
+NEWTON_SEED_CONTINUATION = (0.25, 0.5, 0.75, 1.0)
+
+
+def _newton_continuation(cfg, params_np):
+    """``(state, |F|)``: the hot state carried to ``params_np`` by Newton along the straight path of parameters
+    (:data:`NEWTON_SEED_CONTINUATION`), or ``None``.
+
+    A trial far from the last solved one (a long step along weak boundary directions) puts every candidate
+    seed outside Newton's basin; each stage of the path starts near its own root instead.  A stage that does
+    not converge ends the continuation with the best state so far."""
+    hot = _HOT_PARAMS.get(cfg)
+    if hot is None or hot[0] is not _HOT_CACHE.get(cfg):
+        return None
+    state, start = hot
+    best = None
+    for t in NEWTON_SEED_CONTINUATION:
+        stage = jax.tree.map(lambda a, b, t=t: a + t * (b - a) if np.issubdtype(np.asarray(b).dtype, np.inexact)
+                             else b, start, params_np)
+        got = _newton_refine_one(cfg, stage, state)
+        if got is None:
+            return best if t == 1.0 else None
+        state = got[0]
+        if t == 1.0:
+            best = got
+        elif got[1] > float(cfg.refine_tol) * 1e3:  # off the path's roots: stop
+            return None
+    if best is not None:
+        _count(cfg, newton_seed_continuations=1)
+    return best
+
+
+def _newton_refine_one(cfg, params_np, seed):
+    """``(state, |F|)``: one candidate seed Newton-refined (:func:`_newton_refined_candidates`), or ``None``."""
+    with _device_context(cfg):
+        _template_runtime(cfg)
+        _boundary_pack_tables(cfg)
+        key = _mask_cache_key(cfg)
+        mask = _MASK_CACHE.get(key)
+        if mask is None:
+            mask = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), _fixed_boundary_dof_mask(cfg))
+            _MASK_CACHE[key] = mask
+        params = _device_pin(cfg, jax.tree.map(jnp.asarray, params_np))
+        home = cfg.device if cfg.device is not None else _params_committed_device(params)
+        state = seed if home is None else jax.device_put(seed, home)
+        mask = _device_pin(cfg, jax.tree.map(jnp.asarray, mask))
+        tol = float(cfg.refine_tol)
+        with _timed(cfg, "newton_seed"):
+            _count(cfg, newton_seeds=1)
+            try:
+                state = _m1_gauge_state(cfg, state)
+                state, params, mask = commit_to_single_device((state, params, mask))
+                project = _dof_projector(cfg, mask)
+                F = residual_fn(cfg, state, mask)
+                z0 = project(state)
+                base = float(_tree_norm(F(z0, params)))
+                if not np.isfinite(base):
+                    return None
+                if base <= tol:  # already at the root (a restored or repeated point)
+                    return state, base
+                z, best = z0, base
+                for _ in range(NEWTON_SEED_FACTORIZATIONS):
+                    if best <= tol:
+                        break
+                    factors = _refine_block_factors(cfg, params, state, mask, z)
+                    trial, _, norm, _ = _refine_block_step(cfg, params, state, mask, z, factors)
+                    norm = float(norm)
+                    for fraction in NEWTON_SEED_BACKTRACK:  # a step that does not lower |F|: shortened
+                        if np.isfinite(norm) and norm < best:
+                            break
+                        trial = jax.tree.map(lambda a, b: a + fraction * (b - a), z, trial)
+                        norm = float(_tree_norm(F(trial, params)))
+                    if not (np.isfinite(norm) and norm < best):
+                        break
+                    z, best = trial, norm
+                if best > tol and best < base:
+                    # the block Newton stopped short of the root: finish with the refinement's own Krylov Newton
+                    # (_refined_state, GCROT) from its best point, far cheaper than the descent from there
+                    partial = jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0)))
+                    finished = _refined_state(cfg, params, partial, mask)
+                    _ANCHOR_STALLED.pop(id(cfg), None)
+                    norm = float(_tree_norm(F(project(finished), params)))
+                    if np.isfinite(norm) and norm < best:
+                        z, best = project(finished), norm
+            except (VmecError, RuntimeError, FloatingPointError):
+                _ANCHOR_STALLED.pop(id(cfg), None)
+                return None
+        if not best < base:
+            _count(cfg, newton_seeds_declined=1)
+            return None
+        return jax.tree.map(jnp.add, state, project(jax.tree.map(jnp.subtract, z, z0))), best
+
+
+def newton_refined_seed(cfg: ImplicitConfig, params_np, seed: SpectralState | None) -> SpectralState | None:
+    """The initial state of a hot-restarted solve at ``params_np``: the better of ``seed`` (a perturbation
+    prediction) and the hot-restart state, Newton-refined toward the root of the frozen residual
+    (:func:`_newton_refined_candidates`), or ``None`` when Newton lowers neither residual.
+
+    For :data:`_PERTURB_SEED`: only the descent's initial state changes; the solve, its refinement and the
+    status certificate decide as without it."""
+    if not cfg.hot_restart:
+        return None
+    hot = _HOT_CACHE.get(cfg)
+    if seed is None and hot is None:
+        return None
+    return _newton_refined_candidates(cfg, params_np, (seed, hot))
 
 
 #: Probe of a later seed-ladder rung after one exhausted its budget: by this
@@ -1615,7 +1829,8 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
     """Memoized :func:`_refined_state` (see ``_LAST_REFINED``)."""
     key = _params_key(params)
     hit = _LAST_REFINED.get(cfg)
-    if hit is None or hit[0] != key:
+    # an uncertified record (non-finite residual) stays for the status lane but is never served again
+    if hit is None or hit[0] != key or (hit[3] is not None and not np.isfinite(hit[3])):
         with _timed(cfg, "refinement"):
             _count(cfg, refinements=1)
             refined = _refined_state(
@@ -1623,15 +1838,27 @@ def _refine_fixed_point(cfg: ImplicitConfig, params: ImplicitParams,
                 initial_correction=_LAST_REFINEMENT_CORRECTION.get(cfg),
             )
             stalled = _ANCHOR_STALLED.pop(id(cfg), False)
+            # The root certificate of a gauged m=1 complement: the returned state's own residual in the
+            # config's equations, measured independently of the refinement's bookkeeping.
+            residual = _refined_residual(cfg, params, refined, dof_mask) if _m1_gauged(cfg) else None
             correction = jax.tree.map(jnp.subtract, refined, state)
             correction_norm = float(_tree_norm(correction))
         if not stalled and np.isfinite(correction_norm) and correction_norm > 0.0:
             _LAST_REFINEMENT_CORRECTION[cfg] = correction
         else:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
-        hit = (key, refined, stalled)
+        hit = (key, refined, stalled, residual)
         _LAST_REFINED[cfg] = hit
     return hit[1]
+
+
+def _refined_residual(cfg: ImplicitConfig, params: ImplicitParams, state: SpectralState,
+                      dof_mask: SpectralState) -> float:
+    """``|F(P x, p)|`` of ``state`` in the config's equations (inf if not finite): the root certificate."""
+    state, params, dof_mask = commit_to_single_device((state, params, dof_mask))
+    F = residual_fn(cfg, state, dof_mask)
+    value = float(_tree_norm(F(_dof_projector(cfg, dof_mask)(state), params)))
+    return value if np.isfinite(value) else float("inf")
 
 
 # One staged Newton refinement step per config (the ``_adjoint_gcrot_core``
@@ -1840,6 +2067,7 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
     tol = float(cfg.refine_tol)
     if not np.isfinite(tol) or tol <= 0.0:
         return state
+    state = _m1_gauge_state(cfg, state)  # a fixed gauge of the m=1 complement (``"gauged"`` only)
     # A first trial passes eager arrays and a later one the previous refined,
     # committed state; one commitment keeps one residual executable.
     state, params, dof_mask = commit_to_single_device((state, params, dof_mask))
@@ -1908,7 +2136,10 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
         return best_z, best
 
     if initial_correction is not None:
-        candidate = jax.tree.map(jnp.add, z0, P(initial_correction))
+        # The memo outlives the problem that stored it: another problem on
+        # the same canonical config may run on a different device.
+        home = jax.tree.leaves(z0)[0].sharding
+        candidate = jax.tree.map(jnp.add, z0, P(jax.device_put(initial_correction, home)))
         candidate_f = F(candidate, params)
         candidate_residual = float(_tree_norm(candidate_f))
         if np.isfinite(candidate_residual) and candidate_residual < base:
@@ -2058,7 +2289,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
 
     Status is 0 for a derivative-certified state, 1 for a failed solve, 2
     when the iteration budget was exhausted above ``cfg.max_fsq_ratio``, and
-    3 when the fixed-point anchor stalled far from the root.
+    3 when the fixed-point anchor stalled far from the root, and (``m1_complement="gauged"``) 4 when the
+    returned (refined) state's residual in the config's equations is above ``refine_tol`` or not finite:
+    a best-effort state, not a certified derivative point.
     The final force residual and its ratio to ``ftol`` accompany the state so
     every optimizer interface applies the same acceptance policy.  That
     residual is the host solver's own, from before the fixed-point refinement
@@ -2111,6 +2344,9 @@ def _host_solve_and_mask_status(cfg: ImplicitConfig, params_np) -> tuple:
         refined = _LAST_REFINED.get(cfg)
         if status == 0 and refined is not None and refined[0] == hit[0] and refined[2]:
             status = 3  # anchor stalled far from the root: no certified gradient
+        if (status == 0 and refined is not None and refined[0] == hit[0] and refined[3] is not None
+                and np.isfinite(cfg.refine_tol) and not refined[3] <= cfg.refine_tol):
+            status = 4  # the returned state is not a root of the selected equations to refine_tol
         if status != 0:
             _LAST_REFINEMENT_CORRECTION.pop(cfg, None)
         return state, mask, np.int32(status), np.float64(fsq), np.float64(ratio)
@@ -3089,6 +3325,7 @@ def _implicit_evolved_tangent_multi_rhs(
     certify_rtol: float | None = None,
     certify_maxiter: int | None = None,
     bands: tuple | None = None,
+    system: "_RawBlockSystem | None" = None,
 ) -> tuple[SpectralState, LinearResponseReport]:
     """State responses ``dz_j = -(dF/dz)^{-1} dF/dp t_j`` of every tangent.
 
@@ -3100,9 +3337,12 @@ def _implicit_evolved_tangent_multi_rhs(
     are consumed through, so the certificate needs no second formulation.
     """
     frozen = jax.lax.stop_gradient(x_star)
-    system = _raw_block_system(
-        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size,
-        bands=bands)
+    # ``system``: this linearization's factorization when the caller already holds it (the three-terms exact
+    # Hessian products), else built here.
+    if system is None:
+        system = _raw_block_system(
+            params, cfg, frozen, dof_mask, active_fields, probe_chunk_size,
+            bands=bands)
     z_star = system.project(x_star)
     raw_residual = residual_fn(cfg, frozen, dof_mask, formulation="raw")
 
@@ -3111,7 +3351,9 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda prm: raw_residual(z_star, prm), (params,), (tangent,))[1]
         return jax.tree.map(jnp.negative, value)
 
-    rhs_batch = jax.vmap(raw_rhs)(tangent_batch)
+    # The right-hand sides in chunks: one batch of every direction holds a force linearization per direction
+    # at once (14.6 GiB for 255 directions at 8 x 8).
+    rhs_batch = chunk_map(raw_rhs, tangent_batch, chunk_size=max(1, int(response_chunk_size)))
     initial, _ = _raw_block_solve(system, rhs_batch, cfg)
 
     # Supplied bands may be a nearby point's (see _BANDS_REUSE_TOL): their

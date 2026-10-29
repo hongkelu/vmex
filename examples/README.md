@@ -47,6 +47,10 @@ that research budget as one commented set of constants next to the default.
   - `free_boundary_essos_coils.py` — free-boundary beta scan directly from
     ESSOS coils (tabulated to a temporary mgrid); `PRES_SCALE` is calibrated per point so the
     *actual* wout `betatotal` hits 0/1/2/3 %.
+  - `free_boundary_three_terms.py` — the free boundary on which B.n, pressure
+    balance and the sheet current all vanish (plasma field by virtual casing),
+    with the gauge and the "none" labelling, then a warm continuation after a
+    coil change (`previous=`). Needs `vmex[coils,freeb]` and a GPU.
   - `free_boundary_relax_constraint.py` — relax a free-boundary equilibrium in
     the ESSOS coils with the spectral constraint off; prints `|B|` against
     Biot-Savart before and after.
@@ -189,6 +193,18 @@ that research budget as one commented set of constants next to the default.
   ripple proxy), the smooth `GammaCSmooth` surrogate, and the
   outer-volume maximum-J residual — then reports hard `Gamma_c` and NEO_JAX
   `epsilon_eff^(3/2)` before and after.
+- `optimization/single_stage_free_boundary_optimization_three_terms.py`:
+  single-stage optimization of the LP QA coil currents and PHIEDGE on the
+  three-term free boundary (`ThreeTermsFreeBoundaryProblem`: B.n, pressure
+  balance and no sheet current, exact gradients on the gauge), SLSQP lowering
+  quasisymmetry with the rotational transform and aspect ratio bounded, saving
+  a checkpoint and SLSQP's state after every step. Needs `vmex[coils,freeb]`
+  and a GPU.
+- `optimization/single_stage_free_boundary_three_terms_coils.py`: the same
+  three-term single stage with the LP QA coil shapes and currents as the
+  design, the coil limits (`single_stage_targets.coil_constraint`) as a design
+  constraint and the coil-plasma distance as a parameter constraint. Needs
+  `vmex[coils,freeb]` and a GPU.
 - `epsilon_effective.py` computes the NEO_JAX effective ripple from a solved
   equilibrium without writing a `boozmn` file; raise its `NeoConfig` controls
   for anything beyond a radial trend.

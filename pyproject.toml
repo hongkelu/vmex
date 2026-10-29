@@ -168,17 +168,13 @@ markers = [
 ]
 
 [tool.coverage.run]
-# virtual_casing.py requires the optional virtual-casing-jax >= 0.0.8
-# extra (see [project.optional-dependencies]). Its FD-validated gradient
-# tests are importorskip-gated and skip in the dependency-minimal core CI,
-# so the module is excluded from the core >=95% coverage gate. It is
-# exercised by the optional-integrations CI lane. turbulence.py is
-# likewise gated on the optional ``turbulence`` extra (gkx), as is gk_run.py
-# (the ``vmex --turbulence`` driver).
-omit = ["*/virtual_casing.py", "*/turbulence.py", "*/gk_run.py"]
+# turbulence.py is gated on the optional ``turbulence`` extra (gkx), as is
+# gk_run.py (the ``vmex --turbulence`` driver). virtual_casing.py is measured:
+# the parity lanes install the ``freeb`` extra its tests need.
+omit = ["*/turbulence.py", "*/gk_run.py"]
 
 [tool.coverage.report]
-omit = ["*/virtual_casing.py", "*/turbulence.py", "*/gk_run.py"]
+omit = ["*/turbulence.py", "*/gk_run.py"]
 
 [tool.ruff]
 line-length = 120

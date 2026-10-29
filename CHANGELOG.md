@@ -4,6 +4,15 @@ Release notes are mirrored from the GitHub releases, which carry each release
 in full. A number appears here only where a committed artifact backs it; each
 record under `benchmarks/` names the revision it was measured at.
 
+## Unreleased
+
+- **Three-terms free boundary:** `three_terms=ThreeTermsConfig()` on
+  `solve_free_boundary_multigrid` (or `LTHREE_TERMS = T` in the deck) solves for
+  the boundary where B.n, pressure balance and the sheet current vanish (plasma
+  field by virtual casing), labelling `"gauge"` (VMEC's spectral condensation,
+  exact, Newton-converged) or `"none"`; `ThreeTermsFreeBoundaryProblem`
+  optimizes coils and plasma on the gauge with exact gradients (`opt.minimize`).
+
 ## 0.12.0 - 2026-10-21
 
 - **Faster optimization.** Implicit executables are keyed on problem structure
@@ -183,14 +192,6 @@ A compilation-cache directory set through `JAX_COMPILATION_CACHE_DIR` or
 features; XLA rejected the other node's executables ("Target machine feature
 ... is not supported on the host machine") and recompiled on every run.
 
-## 0.11.1 - 2026-09-23
-
-Free-boundary trials are anchored on the coupled root their gradients
-differentiate (#432), the exterior field is accurate next to the plasma
-surface, optimization results are the states the objective scored (#427), and
-the optimization examples were re-tuned against a five-minute budget. Full
-notes in the GitHub release.
-
-## 0.11.0 and earlier
+## 0.11.1 and earlier
 
 See the [GitHub releases](https://github.com/uwplasma/vmex/releases).

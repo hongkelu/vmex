@@ -22,6 +22,16 @@ links to the module that documents it.
 - :func:`~vmex.core.freeboundary.solve_free_boundary` — NESTOR free boundary
 - :func:`~vmex.core.freeboundary.relax_free_boundary_constraint` — remove the constraint bias of a free-boundary LCFS
 - :func:`~vmex.core.multigrid.solve_free_boundary_multigrid` — free-boundary ladder
+- :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms` /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig` (its Newton
+  polish options :class:`~vmex.core.freeboundary_three_terms.ThreeTermsNewtonOptions`) /
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` — free boundary
+  from the three plasma-vacuum interface conditions (no sheet current; the
+  plasma field by virtual casing), also ``three_terms=`` of the free-boundary
+  ladder; :func:`~vmex.core.freeboundary_three_terms.interface_rows` — the
+  three conditions on any equilibrium;
+  :class:`~vmex.core.freeboundary_three_terms.ThreeTermsFreeBoundaryModel` — its
+  residual, Jacobian and gradients for any coils without recompiling
 - :func:`~vmex.core.freeboundary.solve_phiedge` — PHIEDGE whose free-boundary
   LCFS meets a target outboard radius or volume
 - :func:`~vmex.core.freeboundary_implicit.phiedge_root` — that PHIEDGE with
@@ -86,6 +96,9 @@ links to the module that documents it.
   :class:`~vmex.core.problem.FunctionProblem` /
   :class:`~vmex.core.problem.Evaluation` — optimizer-neutral value,
   residual, and derivative callables
+- :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
+  — single-stage optimization of coils (and plasma parameters) on the
+  three-term free boundary, for :func:`~vmex.core.optimize.minimize`
 - :class:`~vmex.core.monitoring.OptimizationMonitor` /
   :class:`~vmex.core.monitoring.OptimizationRecord` — accepted iterations;
   :class:`~vmex.core.monitoring.EquilibriumReporter` — compact diagnostics
@@ -231,6 +244,12 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "relax_free_boundary_constraint": (".core.freeboundary", "relax_free_boundary_constraint"),
     "solve_free_boundary": (".core.freeboundary", "solve_free_boundary"),
     "solve_phiedge": (".core.freeboundary", "solve_phiedge"),
+    "solve_free_boundary_three_terms": (".core.freeboundary_three_terms", "solve_free_boundary_three_terms"),
+    "ThreeTermsConfig": (".core.freeboundary_three_terms", "ThreeTermsConfig"),
+    "ThreeTermsNewtonOptions": (".core.freeboundary_three_terms", "ThreeTermsNewtonOptions"),
+    "ThreeTermsResult": (".core.freeboundary_three_terms", "ThreeTermsResult"),
+    "interface_rows": (".core.freeboundary_three_terms", "interface_rows"),
+    "ThreeTermsFreeBoundaryModel": (".core.freeboundary_three_terms", "ThreeTermsFreeBoundaryModel"),
     "phiedge_root": (".core.freeboundary_implicit", "phiedge_root"),
     "solve_free_boundary_newton": (".core.newton", "solve_free_boundary_newton"),
     "NewtonResult": (".core.newton", "NewtonResult"),
@@ -297,6 +316,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     # optimizer-neutral problem callables
     "Evaluation": (".core.problem", "Evaluation"),
     "FunctionProblem": (".core.problem", "FunctionProblem"),
+    "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_three_terms_problem", "ThreeTermsFreeBoundaryProblem"),
     "VmecProblem": (".core.problem", "VmecProblem"),
     "EquilibriumReporter": (".core.monitoring", "EquilibriumReporter"),
     "OptimizationMonitor": (".core.monitoring", "OptimizationMonitor"),

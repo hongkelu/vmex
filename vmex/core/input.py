@@ -138,6 +138,8 @@ _KNOWN_INDATA_NAMES = {
     "LBOOZ", "MBOOZ", "NBOOZ", "BOOZ_SURFACES",
     # VMEX extension: hot restart from a wout file (no VMEC2000 equivalent).
     "RESTART_WOUT",
+    # VMEX extension: the three-term free boundary (no VMEC2000 equivalent).
+    "LTHREE_TERMS", "THREE_TERMS_LABELLING",
     # VMEX extension: free-boundary position control (see core/position_control.py).
     "LPOSITION_CONTROL", "POSITION_TARGET", "POSITION_INTERVAL",
     "POSITION_GAIN", "POSITION_NMAX",
@@ -713,6 +715,11 @@ def _validate_json_modes(data: Dict[str, Any]) -> None:
         )
 
 
+#: The boundary labellings of the three-term free boundary (``THREE_TERMS_LABELLING``; see
+#: :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`).
+THREE_TERMS_LABELLINGS = ("gauge", "none")
+
+
 @dataclass(frozen=True, eq=False)
 class VmecInput:
     """Full ``&INDATA`` content with VMEC2000 semantics and defaults.
@@ -794,6 +801,9 @@ class VmecInput:
     # -- VMEX extension: hot restart (no VMEC2000 equivalent) --
     restart_wout: str = ""       #: wout path to seed the solve from ('' = cold)
 
+    # -- VMEX extension: the three-term free boundary (no VMEC2000 equivalent) --
+    lthree_terms: bool = False             #: solve the free boundary from the three interface conditions
+    three_terms_labelling: str = "gauge"   #: its boundary labelling: 'gauge' or 'none'
     # -- VMEX extension: free-boundary position control (no VMEC2000 equivalent) --
     lposition_control: bool = False  #: hold the plasma at a target radius with a vertical field
     position_target: float = 0.0     #: target axis radius [m]; <= 0 keeps the initial axis
@@ -819,6 +829,10 @@ class VmecInput:
         set_(self, "precon_type", str(self.precon_type).strip())
         set_(self, "mgrid_file", str(self.mgrid_file).strip())
         set_(self, "restart_wout", str(self.restart_wout).strip())
+        set_(self, "lthree_terms", bool(self.lthree_terms))
+        set_(self, "three_terms_labelling", str(self.three_terms_labelling).strip().lower())
+        if self.three_terms_labelling not in THREE_TERMS_LABELLINGS:
+            raise ValueError(f"THREE_TERMS_LABELLING must be one of {THREE_TERMS_LABELLINGS}")
         set_(self, "lposition_control", bool(self.lposition_control))
         set_(self, "position_target", float(self.position_target))
         set_(self, "position_interval", int(self.position_interval))
@@ -1289,6 +1303,8 @@ class VmecInput:
             precon_type=str(get("PRECON_TYPE", "NONE")),
             prec2d_threshold=float(get("PREC2D_THRESHOLD", 1e-30)),
             restart_wout=str(get("RESTART_WOUT", "")),
+            lthree_terms=bool(get("LTHREE_TERMS", False)),
+            three_terms_labelling=str(get("THREE_TERMS_LABELLING", "gauge")),
             lposition_control=bool(get("LPOSITION_CONTROL", False)),
             position_target=float(get("POSITION_TARGET", 0.0)),
             position_interval=int(get("POSITION_INTERVAL", 20)),
@@ -1445,6 +1461,9 @@ class VmecInput:
         put("PREC2D_THRESHOLD", self.prec2d_threshold)
         if self.restart_wout:
             put("RESTART_WOUT", self.restart_wout)
+        if self.lthree_terms:
+            put("LTHREE_TERMS", True)
+            put("THREE_TERMS_LABELLING", self.three_terms_labelling)
         if self.lposition_control:
             put("LPOSITION_CONTROL", True)
             put("POSITION_TARGET", self.position_target)

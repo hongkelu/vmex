@@ -16,6 +16,7 @@ and pasted to 8-9 significant digits, bounding fsa_* comparisons at ~1e-7.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 from pathlib import Path
 
@@ -693,6 +694,10 @@ def test_self_consistent_bootstrap_picard_converges():
         inp, TOKAMAK_PROFILES, 0, n_iter=10, tol=1e-3, relax=0.5, degree=6,
         s_eval=np.linspace(0.02, 0.98, 25))
     assert res.converged and res.iterations <= 10
+    # the closure of the iterate against the polynomial it was solved with: converged, or limited by the fit
+    assert res.status in ("converged", "projection_limited")
+    assert np.isfinite(res.history[-1]["closure_error"])
+    assert (res.status == "converged") == (res.history[-1]["closure_error"] <= 1e-3)
     assert res.input.ncurr == 1 and res.input.pcurr_type == "power_series"
     # fixed point: ~0.38 MA of bootstrap current, sign preserved
     assert 2e5 < -res.input.curtor < 6e5
@@ -865,3 +870,309 @@ def test_filter_bsubuv_lasym_halves_the_self_conjugate_nyquist_modes():
     assert out_u.shape == bsubu.shape and out_v.shape == bsubv.shape
     assert np.all(np.isfinite(out_u)) and np.all(np.isfinite(out_v))
     assert float(np.max(np.abs(out_u - bsubu))) > 1e-3
+
+
+def test_half_mesh_picard_makes_the_current_redls():
+    """Fixed boundary, LP QA at 0.5% beta: I' on every half-mesh surface iterated to Redl's, I'(0) = 0."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+        mpol=3, ntor=3, ntheta=12, nzeta=12)
+    inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+                              niter_array=np.array([10000]))
+    n0 = 1.5e20
+    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0)
+    profiles = _paper_profiles(n0, T0)
+    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=30, tol=1e-4, relax=0.5, profile="half_mesh",
+                                          verbose=True)
+    assert result.converged and result.input.pcurr_type == "line_segment_ip" and result.status == "converged"
+    assert np.isfinite(result.history[-1]["closure_error"]) and result.history[-1]["closure_error"] <= 1e-4
+    assert result.input.ac_aux_f[0] == 0.0 and np.size(result.input.ac_aux_s) == 24 + 5
+    state, rt = result.equilibrium.solution, result.equilibrium.solver_context
+    # independently of the inversion: VMEC's finite-difference <J.B> is Redl's away from the ends
+    hm = bs._half_mesh_fields(state, rt)
+    jr = np.asarray(bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA), 0)[0])
+    jv = np.asarray(bs._jv_from_half(hm, hm.s_half))
+    s = np.asarray(hm.s_half)
+    inner = (s > 0.1) & (s < 0.9)
+    assert np.max(np.abs(jv - jr)[inner]) < 0.05 * np.max(np.abs(jr))
+
+
+def test_current_derivative_of_any_jdotb_is_redls_for_redl(eq):
+    """``current_derivative`` (any <J.B>, e.g. DKX's) inverts the same identity as ``redl_current_derivative``."""
+    profiles = _paper_profiles(1e20, 2e3)
+    s, redl = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
+    hm = bs._half_mesh_fields(eq.state, eq.runtime)
+    jr = bs.j_dot_B_redl(profiles, bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA,
+                                                           refine_extrema=True), 0)[0]
+    s2, generic = bs.current_derivative(jr, eq.state, eq.runtime)
+    np.testing.assert_array_equal(np.asarray(s), np.asarray(s2))
+    np.testing.assert_allclose(np.asarray(generic), np.asarray(redl), rtol=1e-12, atol=1e-9 * np.max(np.abs(redl)))
+
+
+def test_near_axis_redl_ratio_is_banana_or_collisional():
+    """Inside s_1 the ratio is Redl's <J.B> on the s_1 geometry continued to the axis (eps ~ s^(1/2), f_t ~ s^(1/4)):
+    about s^(1/4) at low collisionality, far smaller where nu*_e ~ eps^(-3/2) is large."""
+    geom = bs.RedlGeometry(
+        surfaces=jnp.array([0.01]), iota=jnp.array([0.4]), G=jnp.array([6.0]), I=jnp.array([0.0]),
+        R=jnp.array([6.0]), epsilon=jnp.array([1e-4]), f_t=jnp.array([0.0146]), fsa_B2=jnp.array([1.0]),
+        fsa_1overB=jnp.array([1.0]), Bmin=jnp.array([0.98]), Bmax=jnp.array([1.02]), psi_edge=jnp.asarray(-0.5),
+        nfp=2)
+    x = np.array([1 / 64, 1 / 16, 1 / 4, 1.0])
+
+    def ratio(n0, T0):
+        profiles = _paper_profiles(n0, T0)
+        jr, details = bs.j_dot_B_redl(profiles, geom, 0)
+        direct = [float(bs.j_dot_B_redl(profiles, dataclasses.replace(
+            geom, surfaces=geom.surfaces * xi, epsilon=geom.epsilon * np.sqrt(xi), f_t=geom.f_t * xi ** 0.25), 0)[0][0])
+            for xi in x]
+        got = np.asarray(bs.near_axis_redl_ratio(profiles, 0, geom, jr, jnp.asarray(x)))
+        np.testing.assert_allclose(got, np.asarray(direct) / float(jr[0]), rtol=1e-12)
+        return got, float(details["nu_e_star"][0])
+
+    banana, nu = ratio(1e12, 1e6)
+    assert nu < 1e-3 and np.all(np.diff(banana) > 0)
+    # the electron and ion gradient terms nearly cancel, so the sum departs from f_t ~ s^(1/4) by up to ~30%
+    assert np.all((0.7 * x ** 0.25 < banana) & (banana < 1.4 * x ** 0.25))
+    collisional, nu = ratio(1e21, 1e3)
+    assert nu > 10 and collisional[-1] == pytest.approx(1.0)
+    assert np.all(np.diff(collisional) > 0) and np.all(collisional[:-1] < 0.5 * x[:-1] ** 0.25)
+
+
+# ---------------------------------------------------------------------------
+# HalfMeshCurrent: edge extrapolation, near-axis limit, closure identity
+# ---------------------------------------------------------------------------
+
+
+def _half_mesh_block(ns, profiles=None):
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap")
+    inp = dataclasses.replace(inp, ns_array=np.array([ns]))
+    return bs.HalfMeshCurrent(inp, _paper_profiles(1.5e20, 2e3) if profiles is None else profiles, 0)
+
+
+@pytest.mark.parametrize("ns", [11, 51, 97])
+def test_half_mesh_edge_knot_extrapolates_to_s_equal_one(ns):
+    """The last half-mesh values sit at 1 - 3h/2 and 1 - h/2: an affine I' reaches s = 1 exactly, (3 v_-1 - v_-2)/2,
+    and CURTOR is the profile's exact integral (with 2 v_-1 - v_-2 the edge was a + b (1 + h/2): v = s gave 1.01
+    and 0.50005 at ns = 51)."""
+    from vmex.core.profiles import current
+
+    block = _half_mesh_block(ns)
+    a, b = 0.3, 1.7
+    v = a + b * block.knots[1:-1]
+    values = np.asarray(block.values(jnp.asarray(v)))
+    assert values[-1] == pytest.approx(a + b, rel=1e-14)
+    np.testing.assert_allclose(values[1:-1], v, rtol=0, atol=0)
+    curtor = float(block.deck_with(block.deck, jnp.asarray(v)).curtor)
+    assert curtor == pytest.approx(np.trapezoid(values, block.knots), rel=1e-13)  # piecewise linear: exact
+    s0 = block.knots[4]  # the first half-mesh surface: affine from there on, so the integral is exact
+    tail = float(current("line_segment_ip", block.deck.ac, block.knots, values, 1.0)) - float(
+        current("line_segment_ip", block.deck.ac, block.knots, values, s0))
+    assert tail == pytest.approx(a * (1 - s0) + 0.5 * b * (1 - s0**2), rel=1e-13)
+
+
+def test_half_mesh_target_is_finite_where_the_drive_vanishes(eq):
+    """Flat kinetic profiles drive no bootstrap current: the sub-axis targets are finite (the I dp/ds term alone),
+    where the ratio to the first surface's <J.B> is 0/0."""
+    inp = dataclasses.replace(VmecInput.from_file(DATA_DIR / "input.solovev"), ncurr=1)
+    flat = bs.KineticProfiles(ne_coeffs=4.0e20, Te_coeffs=1.0e4, Ti_coeffs=1.0e4)
+    block = bs.HalfMeshCurrent(inp, flat, 0)
+    target = np.asarray(block.target(eq.state, eq.runtime))
+    assert np.all(np.isfinite(target))
+    hm = bs._half_mesh_fields(eq.state, eq.runtime)
+    a, b = map(np.asarray, bs._current_derivative_terms(hm))
+    np.testing.assert_allclose(target[:3], b[0] * np.asarray(block.SUB), rtol=1e-12)
+    np.testing.assert_allclose(target[3:], b, rtol=1e-12)  # no drive: I' = -I p' / <B^2> alone
+    geom = bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA, refine_extrema=True)
+    jr = bs.j_dot_B_redl(flat, geom, 0)[0]
+    assert not np.all(np.isfinite(np.asarray(bs.near_axis_redl_ratio(flat, 0, geom, jr, np.asarray(block.SUB)))))
+
+
+def test_half_mesh_target_continues_redl_inside_the_first_surface(eq):
+    """With a drive, the sub-axis targets are Redl's <J.B> on the continued s_1 geometry times the s_1
+    coefficient, plus x I(s_1) p'(s_1) / <B^2>; the half-mesh ones are redl_current_derivative's."""
+    inp = dataclasses.replace(VmecInput.from_file(DATA_DIR / "input.solovev"), ncurr=1)
+    profiles = _paper_profiles(1e20, 2e3)
+    block = bs.HalfMeshCurrent(inp, profiles, 0)
+    target = np.asarray(block.target(eq.state, eq.runtime))
+    _, redl = bs.redl_current_derivative(profiles, 0, eq.state, eq.runtime)
+    np.testing.assert_allclose(target[3:], np.asarray(redl), rtol=1e-12)
+    hm = bs._half_mesh_fields(eq.state, eq.runtime)
+    a, b = map(np.asarray, bs._current_derivative_terms(hm))
+    geom = bs._geometry_from_half(hm, hm.s_half, n_lambda=bs.N_LAMBDA, refine_extrema=True)
+    x = np.asarray(block.SUB)
+    near = np.asarray(bs.near_axis_redl_j_dot_b(profiles, 0, geom, x))
+    np.testing.assert_allclose(target[:3], a[0] * near + b[0] * x, rtol=1e-12)
+    assert np.all(np.sign(target[:3]) == np.sign(target[3]))
+
+
+def test_half_mesh_identity_names_the_kinetic_profiles():
+    """The closure's identity carries the profiles themselves: another density is another problem."""
+    import json
+
+    one, two = _half_mesh_block(25), _half_mesh_block(25, _paper_profiles(1.6e20, 2e3))
+    assert json.loads(json.dumps(one.identity())) == one.identity()
+    assert one.identity() != two.identity() and one.identity()["ne"] != two.identity()["ne"]
+    assert one.identity()["g_convention"] == "simsopt" and one.identity()["edge"] == "linear_half_step"
+    with pytest.raises(ValueError, match="g_convention"):
+        bs.HalfMeshCurrent(one.deck, one.profiles, 0, g_convention="tokamak")
+
+
+def test_g_convention_isomorphism_scales_by_one_plus_N_I_over_G():
+    """G -> G + N I (the full quasisymmetry isomorphism) multiplies <J.B> by 1 + N I / G; the same for N = 0."""
+    geom = _toy_geometry()
+    for helicity in (-1, 0, 1):
+        simsopt = np.asarray(bs.j_dot_B_redl(PAPER_PROFILES, geom, helicity)[0])
+        full = np.asarray(bs.j_dot_B_redl(PAPER_PROFILES, geom, helicity, g_convention="isomorphism")[0])
+        shift = np.asarray(bs.isomorphism_g_shift(geom, helicity))
+        np.testing.assert_allclose(full, simsopt * (1 + shift), rtol=1e-13)
+        assert (helicity == 0) == np.all(shift == 0)
+    with pytest.raises(ValueError, match="g_convention"):
+        bs.j_dot_B_redl(PAPER_PROFILES, geom, 1, g_convention="raw")
+
+
+@pytest.mark.parametrize("profile", ["half_mesh", "power_series"])
+def test_picard_budget_exit_returns_the_solved_iterate(profile):
+    """Out of iterations, the returned input is the one the returned equilibrium was solved from, and the last
+    history entry describes it (not the unsolved next update)."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+        mpol=3, ntor=3, ntheta=12, nzeta=12)
+    inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+                              niter_array=np.array([10000]))
+    n0 = 1.5e20
+    profiles = _paper_profiles(n0, float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * n0))
+    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=2, tol=1e-14, relax=0.5, profile=profile)
+    assert not result.converged and result.iterations == 2
+    assert float(result.input.curtor) == result.history[-1]["curtor"]
+    assert float(result.input.curtor) != result.history[0]["curtor"]  # it did move once
+    again = opt.solve_equilibrium(result.input, initial_state=result.equilibrium.state)
+    np.testing.assert_allclose(float(again.wout.ctor), float(result.equilibrium.wout.ctor), rtol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# HalfMeshCurrent: edge knot, near-axis limit, conventions (PR #121 review)
+# ---------------------------------------------------------------------------
+
+
+def _lp_deck(ns):
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap")
+    return dataclasses.replace(inp, ns_array=np.array([ns]), lfreeb=False)
+
+
+@pytest.mark.parametrize("ns", [11, 25, 51, 97])
+def test_half_mesh_current_edge_knot_is_linear_to_s_equal_one(ns):
+    """The edge knot continues the last two half-mesh values (at 1 - 3h/2 and 1 - h/2) linearly to s = 1, not to
+    1 + h/2: an affine I' is exact there and its integral over the last half cell is exact."""
+    block = bs.HalfMeshCurrent(_lp_deck(ns), _paper_profiles(1e20, 2e3), 0)
+    knots = np.asarray(block.knots[1:-1])
+    a, b = 0.3, 1.7
+    values = np.asarray(block.values(a + b * knots))
+    assert block.knots[-1] == 1.0
+    np.testing.assert_allclose(values[-1], a + b, rtol=1e-14)
+    s_last = knots[-1]
+    tail = float(block.current(values, 1.0)) - float(block.current(values, s_last))
+    np.testing.assert_allclose(tail, a * (1 - s_last) + 0.5 * b * (1 - s_last**2), rtol=1e-12)
+    # v(s) = s: edge 1 and integral 1/2 up to the axis cell (I'(0) = 0 is pinned, the rest is affine)
+    values = np.asarray(block.values(knots))
+    assert values[-1] == pytest.approx(1.0, rel=1e-14)
+    assert float(block.current(values, 1.0)) == pytest.approx(0.5, rel=1e-12)
+
+
+def _flat_geometry(nfp=4, boozer_i=0.05):
+    one = jnp.ones(1)
+    return bs.RedlGeometry(surfaces=0.01 * one, iota=1.2 * one, G=5.0 * one, I=boozer_i * one, R=1.0 * one,
+                           epsilon=0.02 * one, f_t=0.2 * one, fsa_B2=25.0 * one, fsa_1overB=0.2 * one,
+                           Bmin=4.8 * one, Bmax=5.2 * one, psi_edge=-0.5 * one, nfp=nfp)
+
+
+def test_near_axis_current_is_finite_where_the_drive_vanishes():
+    """Flat n and T: no bootstrap drive. The sub-axis <J.B> is zero and finite with finite derivatives; the old
+    ratio to the s_1 value is 0/0."""
+    flat = bs.KineticProfiles(ne_coeffs=np.array([1e20]), Te_coeffs=np.array([2e3]), Ti_coeffs=np.array([2e3]))
+    geom, x = _flat_geometry(), jnp.asarray(bs.HalfMeshCurrent.SUB)
+    near = np.asarray(bs.near_axis_redl_j_dot_b(flat, 1, geom, x))
+    np.testing.assert_array_equal(near, 0.0)
+    assert not np.all(np.isfinite(np.asarray(bs.near_axis_redl_ratio(flat, 1, geom, jnp.zeros(1), x))))
+
+    def drive(eps):  # a slope eps in Te: the derivative of the sub-axis current at zero drive
+        p = bs.KineticProfiles(ne_coeffs=jnp.array([1e20]), Te_coeffs=jnp.array([2e3, -eps]),
+                               Ti_coeffs=jnp.array([2e3]))
+        return bs.near_axis_redl_j_dot_b(p, 1, geom, x)
+
+    d = np.asarray(jax.jacfwd(drive)(0.0))
+    assert np.all(np.isfinite(d)) and np.all(d != 0.0)
+    # linear in a small drive, of either sign
+    np.testing.assert_allclose(np.asarray(drive(1.0)), d, rtol=1e-3)
+    np.testing.assert_allclose(np.asarray(drive(-1.0)), -d, rtol=1e-3)
+
+
+def test_g_convention_isomorphism_scales_by_one_plus_NI_over_G():
+    """``g_convention="isomorphism"`` is G + N I in the prefactor (iota - N everywhere): <J.B> scales by 1 + N I/G;
+    identical for QA (N = 0) and for I = 0."""
+    profiles = _paper_profiles(1e20, 2e3)
+    geom = _flat_geometry(nfp=4, boozer_i=0.05)
+    base = np.asarray(bs.j_dot_B_redl(profiles, geom, 1)[0])
+    iso = np.asarray(bs.j_dot_B_redl(profiles, geom, 1, g_convention="isomorphism")[0])
+    shift = np.asarray(bs.isomorphism_g_shift(geom, 1))
+    np.testing.assert_allclose(shift, 4 * 0.05 / 5.0)
+    np.testing.assert_allclose(iso, base * (1 + shift), rtol=1e-13)
+    np.testing.assert_allclose(np.asarray(bs.j_dot_B_redl(profiles, geom, 0, g_convention="isomorphism")[0]),
+                               np.asarray(bs.j_dot_B_redl(profiles, geom, 0)[0]), rtol=0)
+    with pytest.raises(ValueError, match="g_convention"):
+        bs.j_dot_B_redl(profiles, geom, 1, g_convention="G")
+
+
+def test_half_mesh_current_identity_names_the_closure():
+    """The closure's identity (what a checkpoint compares) carries the kinetic profiles and conventions: two
+    profiles with the same pressure product but different n and T are different problems."""
+    deck = _lp_deck(25)
+    one = bs.HalfMeshCurrent(deck, _paper_profiles(1e20, 2e3), 0).identity()
+    other = bs.HalfMeshCurrent(deck, _paper_profiles(2e20, 1e3), 0).identity()
+    assert one != other and one["ne"] != other["ne"]
+    assert one["g_convention"] == "simsopt" and one["edge"] == "linear_half_step"
+    assert json.loads(json.dumps(one)) == one
+
+
+@pytest.mark.parametrize("profile", ["half_mesh", "power_series"])
+def test_picard_returns_the_iterate_it_solved_when_out_of_iterations(profile):
+    """Out of iterations, the returned input is the one the returned equilibrium was solved with, and the last
+    history entry describes it (not an unsolved update)."""
+    if profile == "half_mesh":
+        inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+            mpol=3, ntor=3, ntheta=12, nzeta=12)
+        inp = dataclasses.replace(inp, ns_array=np.array([25]), ftol_array=np.array([1e-12]),
+                                  niter_array=np.array([10000]))
+        T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * 1.5e20)
+        profiles, kwargs = _paper_profiles(1.5e20, T0), {}
+    else:
+        inp, profiles, kwargs = _tokamak_ncurr1(curtor=-2.0e5, ac01=(1.0, 0.0)), TOKAMAK_PROFILES, dict(
+            degree=6, s_eval=np.linspace(0.02, 0.98, 25))
+    result = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=2, tol=1e-12, relax=0.5, profile=profile,
+                                          **kwargs)
+    assert not result.converged and result.iterations == 2
+    assert result.input.curtor == result.history[-1]["curtor"]
+    again = opt.solve_equilibrium(result.input, initial_state=result.equilibrium.state)
+    np.testing.assert_allclose(float(again.wout.ctor), float(result.equilibrium.wout.ctor), rtol=1e-6)
+
+
+def test_zero_drive_picard_and_closure_are_finite():
+    """Flat n and T: Redl's current vanishes.  The half-mesh Picard's relative errors stay finite (the closure scale's
+    absolute floor), it converges to zero current, and closure_scale never divides by zero."""
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_beta0p5_bootstrap").change_resolution(
+        mpol=3, ntor=3, ntheta=12, nzeta=12)
+    inp = dataclasses.replace(inp, ns_array=np.array([13]), ftol_array=np.array([1e-12]),
+                              niter_array=np.array([10000]))
+    T0 = float(inp.am[0]) / (2 * bs.ELEMENTARY_CHARGE * 1.5e20)
+    flat = bs.KineticProfiles(ne_coeffs=np.array([1.5e20]), Te_coeffs=np.array([T0]), Ti_coeffs=np.array([T0]))
+    # the zero-drive iteration contracts about 1000-fold per step (delta 1e2, 0.5, 1e-3, 1.5e-6, ...)
+    result = bs.self_consistent_bootstrap(inp, flat, 0, n_iter=8, tol=1e-8, relax=1.0, profile="half_mesh")
+    deltas = [h["delta"] for h in result.history]
+    assert all(np.isfinite(d) for d in deltas)
+    assert result.converged and result.status == "converged" and abs(float(result.input.curtor)) < 1e-6
+    assert bs.closure_scale(np.zeros(5)) == bs.CLOSURE_ATOL / bs.CLOSURE_RTOL
+
+
+def test_g_convention_threads_through_the_mismatch():
+    """RedlBootstrapMismatch carries the convention; an unknown one is refused."""
+    profiles = _paper_profiles(1e20, 2e3)
+    assert bs.RedlBootstrapMismatch(profiles, 1, g_convention="isomorphism").g_convention == "isomorphism"
+    with pytest.raises(ValueError, match="g_convention"):
+        bs.RedlBootstrapMismatch(profiles, 1, g_convention="raw")

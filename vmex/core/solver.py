@@ -706,6 +706,7 @@ def prepare_runtime(
     prec2d: Prec2DConfig | None = None,
     use_fft: bool = False,
     lambda_m0_floor: float | None = None,
+    m1_hold: bool = False,
 ) -> SolverRuntime:
     """Build the static solver context from an input file or a RunSetup.
 
@@ -731,6 +732,9 @@ def prepare_runtime(
     (:func:`~vmex.core.preconditioner.lamcal_m0_radial`); ``None`` restores
     VMEC2000's diagonal lambda preconditioner (the default, which keeps
     iteration-for-iteration VMEC2000 parity); ``1e-3`` enables it.
+    ``m1_hold`` builds the setup with the m = 1 complement held
+    (:func:`~vmex.core.setup.run_setup`; ``ImplicitConfig.m1_complement =
+    "gauged"``); a prebuilt :class:`RunSetup` carries its own ``m1_hold``.
     """
     from .._compat import require_x64
 
@@ -755,7 +759,7 @@ def prepare_runtime(
             # second time in _solve_stage.
             setup = run_setup(
                 inp, resolution, lconm1=lconm1,
-                infer_axis_if_missing=False, use_fft=use_fft,
+                infer_axis_if_missing=False, use_fft=use_fft, m1_hold=m1_hold,
             )
         defaults = dict(ftol=float(inp.ftol_array[0]), niter=int(inp.niter_array[0]),
                         tcon0=float(inp.tcon0), gamma=float(inp.gamma),
@@ -1070,6 +1074,8 @@ def _force_pipeline(
     # -- residue.f90 chain ---------------------------------------------------
     rotated = m1_residue_rotation(spectral, lconm1=setup.lconm1)
     zero_gate = m1_zero_condition(fsqz_previous=fsqz_previous, iterations_since_restart=iteration)
+    if setup.m1_hold:  # the m=1 complement is a fixed gauge (ImplicitConfig.m1_complement="gauged"): never evolved
+        zero_gate = jnp.ones_like(zero_gate, dtype=bool)
     released = zero_m1_z_force(rotated, zero_gate)
     spectral_finite = (
         _all_finite((spectral, rotated, released)) if collect_health else passing
@@ -2018,7 +2024,9 @@ class SolveResult:
     ``(fsqr, fsqz, fsql, fsqr1, fsqz1, fsql1)``.  ``wmhd`` is the printed
     ``WMHD = (wb + wp/(gamma-1)) * (2 pi)^2``.  ``vacuum`` is ``None`` for
     fixed-boundary solves.  The five polish fields are ``None`` on the
-    unchanged default path.
+    unchanged default path.  ``three_terms`` is the
+    :class:`~vmex.core.freeboundary_three_terms.ThreeTermsResult` of a
+    three-term free boundary (``three_terms=`` of the free-boundary solvers).
     """
 
     converged: bool; iterations: int; ier_flag: int
@@ -2036,6 +2044,7 @@ class SolveResult:
     strong_force: Any = None
     polish_report: Any = None
     position_control: Any = None
+    three_terms: Any = None
 
 
 def _result_from_carry(carry: _LoopCarry, rt: SolverRuntime) -> SolveResult:
@@ -2696,6 +2705,7 @@ def solve(
     polish: bool | str | None = None,
     polish_force_balance: bool | str = False,
     polish_config: Any = None,
+    m1_hold: bool = False,
 ) -> SolveResult:
     """Single-grid fixed-boundary solve (VMEC2000 ``eqsolve.f``).
 
@@ -2748,6 +2758,11 @@ def solve(
     ``lambda_m0_floor=None`` (default) keeps VMEC2000's diagonal lambda
     preconditioner; ``1e-3`` adds the radial ``m = 0`` block
     (:func:`~vmex.core.preconditioner.lamcal_m0_radial`).
+
+    ``m1_hold=True`` holds the constrained m = 1 complement at its initial
+    ``sqrt(s)`` profile (its force released at every iteration;
+    ``ImplicitConfig.m1_complement = "gauged"``).  ``False`` (default) is
+    VMEC2000's behavior.
 
     ``use_fft=None`` (default) selects separable FFT only above 512 modes on
     accelerators and ARM CPUs; smaller problems and x86 CPUs retain the dense
@@ -2816,6 +2831,7 @@ def solve(
             lconm1=lconm1, precon_type=precon_type,
             prec2d_threshold=prec2d_threshold, prec2d=prec2d,
             use_fft=use_fft_resolved, lambda_m0_floor=lambda_m0_floor,
+            m1_hold=m1_hold,
         )
     with device_context(device, rt.resolution):
         if initial_state is not None:

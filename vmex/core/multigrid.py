@@ -218,6 +218,7 @@ def _launch_lane_prefetch(
     inp: VmecInput, *, ns_next: int, ftol_next: float, niter_next: int,
     lconm1: bool, time_step, tcon0, gamma, nstep, precon_type,
     prec2d_threshold, prec2d, use_fft, device, lambda_m0_floor=None,
+    m1_hold=False,
 ) -> threading.Thread:
     """Start compiling the NEXT rung's block-lane executable in the background.
 
@@ -243,6 +244,7 @@ def _launch_lane_prefetch(
                     precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft, lambda_m0_floor=lambda_m0_floor,
+                    m1_hold=m1_hold,
                 )
                 _prefetch_block_lane(
                     rt, use_fft=use_fft, time_step0=time_step0
@@ -283,6 +285,7 @@ def solve_multigrid(
     polish_force_balance: bool | str = False,
     polish_config: Any = None,
     lambda_m0_floor: float | None = None,
+    m1_hold: bool = False,
 ) -> SolveResult:
     """Fixed-boundary multigrid solve over the ``NS_ARRAY`` ladder.
 
@@ -359,7 +362,8 @@ def solve_multigrid(
     the radial ``m = 0`` lambda preconditioner, e.g. ``1e-3``
     (:func:`~vmex.core.preconditioner.lamcal_m0_radial`); 3-D decks only.
     ``use_fft`` has the same measured-hardware default and implicit-AD role as in
-    :func:`vmex.core.solver.solve`.
+    :func:`vmex.core.solver.solve`, and ``m1_hold`` (every stage holds the m = 1
+    complement; ``ImplicitConfig.m1_complement = "gauged"``) the same meaning.
 
     ``release_stage_cache=True`` clears JAX's in-memory compilation/staging
     caches between distinct radial grids. This lowers peak RSS for a one-shot
@@ -444,7 +448,7 @@ def solve_multigrid(
                 tcon0=tcon0, gamma=gamma,
                 precon_type=precon_type, prec2d_threshold=prec2d_threshold,
                 prec2d=prec2d, use_fft=stage_use_fft,
-                lambda_m0_floor=lambda_m0_floor,
+                lambda_m0_floor=lambda_m0_floor, m1_hold=m1_hold,
             )
             target = _placement_device(device, resolution)
             state = _put_numeric_leaves(state, target)
@@ -487,7 +491,7 @@ def solve_multigrid(
                 bool(use_fft_next), int(inp.mpol), int(inp.ntor),
                 int(inp.nfp), bool(inp.lasym), bool(lconm1), time_step, tcon0,
                 gamma, nstep, precon_type, prec2d_threshold, prec2d is None,
-                str(device),
+                str(device), bool(m1_hold),
             )
             if attempt_key not in _PREFETCH_ATTEMPTED:
                 _PREFETCH_ATTEMPTED.add(attempt_key)
@@ -499,7 +503,7 @@ def solve_multigrid(
                     gamma=gamma, nstep=nstep, precon_type=precon_type,
                     prec2d_threshold=prec2d_threshold, prec2d=prec2d,
                     use_fft=use_fft_next, device=device,
-                    lambda_m0_floor=lambda_m0_floor,
+                    lambda_m0_floor=lambda_m0_floor, m1_hold=m1_hold,
                 )
         with device_context(device, resolution):
             carry = _solve_stage(
@@ -565,6 +569,7 @@ def solve_multigrid(
                 polish_force_balance=polish,
                 polish_config=polish_config,
                 lambda_m0_floor=lambda_m0_floor,
+                m1_hold=m1_hold,
             )
         last_stage = not np.any(ns_arr[igrid + 1:] >= nsval)
         if ier not in (SUCCESSFUL_TERM_FLAG, MORE_ITER_FLAG) or (
@@ -643,6 +648,7 @@ def solve_free_boundary_multigrid(
     use_fft: bool | None = None,
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
+    three_terms: Any = None,
     position_control: Any = None,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
@@ -710,9 +716,46 @@ def solve_free_boundary_multigrid(
     results are bit-identical, any prefetch failure falls back silently to
     on-demand compilation, and background threads are joined before the
     ``release_stage_cache`` point exactly like the fixed-boundary ladder.
+
+    ``three_terms`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`;
+    ``None`` follows the deck's ``LTHREE_TERMS``, ``False`` forces it off)
+    replaces NESTOR by the three plasma-vacuum interface conditions (``B . n =
+    0``, pressure balance, no sheet current; the plasma field from virtual
+    casing): the boundary is solved for on this ladder by
+    :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms`,
+    ``result.three_terms`` reports it and ``result.vacuum`` is ``None``.  The
+    NESTOR ladder's controls (time stepping, preconditioner, retries, FFT,
+    stage caching, position control) do not apply to it: setting any of them
+    raises :class:`ValueError`.
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
+    if three_terms is not None or bool(getattr(inp, "lthree_terms", False)):
+        from .freeboundary_three_terms import resolve_three_terms, solve_free_boundary_three_terms
+        three_terms = resolve_three_terms(three_terms, inp)
+        if three_terms is not None:
+            # (keyword, value, default) of the NESTOR ladder's controls, which the three-terms solve does not use
+            unused = [name for name, value, default in (
+                ("time_step", time_step, None), ("tcon0", tcon0, None), ("gamma", gamma, None),
+                ("nstep", nstep, None), ("lconm1", lconm1, True), ("precon_type", precon_type, None),
+                ("prec2d_threshold", prec2d_threshold, None), ("prec2d", prec2d, None),
+                ("jacobian_retries", jacobian_retries, 2), ("coarse_grid_retry", coarse_grid_retry, True),
+                ("use_fft", use_fft, None), ("release_stage_cache", release_stage_cache, False),
+                ("prefetch_compile", prefetch_compile, False), ("position_control", position_control or None, None))
+                if value is not default and value != default]
+            if unused:
+                raise ValueError("three_terms solves the boundary from its interface conditions: "
+                                 + ", ".join(unused) + " apply to the NESTOR ladder only")
+            ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
+                             ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
+                             niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
+            result = solve_free_boundary_three_terms(
+                ladder, external_field=external_field, mgrid_path=mgrid_path, initial_state=initial_state,
+                restart_from=restart_from, config=three_terms, verbose=verbose, emit=emit, device=device)
+            if raise_on_max_iterations and not result.converged:
+                from .errors import VmecConvergenceError
+                raise VmecConvergenceError(result.three_terms.message)
+            return result
     from .position_control import resolve_position_control
     position_control = resolve_position_control(position_control, inp)
 

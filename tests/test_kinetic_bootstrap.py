@@ -123,7 +123,7 @@ def test_rows_custom_vjp_matches_traced_reference(eq):
     np.testing.assert_allclose(np.asarray(jax.jit(rows)(eq.state, eq.runtime)), np.asarray(reference(eq.state)),
                                rtol=1e-12)
     got = jax.jit(jax.jacrev(lambda st: rows(st, eq.runtime)))(eq.state)
-    want = jax.jacrev(reference)(eq.state)
+    want = jax.jit(jax.jacrev(reference))(eq.state)  # both jitted: eager XLA rounds this cancelling difference apart
     for a, b in zip(jax.tree.leaves(got), jax.tree.leaves(want)):
         np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-9, atol=1e-12 * np.max(np.abs(b)))
 

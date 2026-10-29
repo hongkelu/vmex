@@ -120,7 +120,7 @@ DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipola
 DKX_RESOLUTION, DKX_MBOZ = None, None  # --dkx-grid: DKX's Ntheta, Nzeta, Nxi, NL, Nx and the Boozer mboz = nboz
 DKX_ROOT_GRID = None  # --dkx-root-grid: (resolution, mboz) of DkxPicardRows' E_r search; None: DKX_RESOLUTION's
 EDGE_WINDOW = 10.0  # kV/m: DkxPicardRows scans J_r over the guess +- this where a surface has no ambipolar root
-# --dkx-rows: DKX's ion-root <j.B> in the loop, one row (I' - I'_DKX) / I'_ref per DKX surface held within
+# --in-loop-dkx: DKX's ion-root <j.B> in the loop, one row (I' - I'_DKX) / I'_ref per DKX surface held within
 # DKX_ROW_TOLERANCE, the current's knots and CURTOR design variables (vmex.core.kinetic_bootstrap; --dkx-row-grid)
 DKX_ROW_GRID = (dict(Ntheta=15, Nzeta=25, Nxi=48, NL=4, Nx=5), 12)
 DKX_ROW_TOLERANCE = 0.05
@@ -839,7 +839,7 @@ def dkx_current(inp, fixed, device):
 
 
 def dkx_current_rows(inp, design, args, out):
-    """--dkx-rows: ``KineticCurrentRows`` on the ``DKX_SURFACES`` half-mesh rows, each surface on a DKX worker.
+    """--in-loop-dkx: ``KineticCurrentRows`` on the ``DKX_SURFACES`` half-mesh rows, each surface on a DKX worker.
 
     Workers are processes (one per ``--dkx-row-gpus`` UUID, spawned here, or ``--dkx-row-workers`` started by srun);
     without either, threads over this process's other GPUs. The round's state (E_r seeds and holds, I'_ref, delta)
@@ -1087,7 +1087,7 @@ def parse_args(argv=None):
                         "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
     parser.add_argument("--dkx-ambipolar", action="store_true",
                         help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
-    parser.add_argument("--dkx-rows", action="store_true",
+    parser.add_argument("--in-loop-dkx", action="store_true",
                         help="with --bootstrap: DKX's ion-root bootstrap current in the loop, a row (I' - I'_DKX) / "
                         "I'_ref per --dkx-surfaces surface, the current's knots and CURTOR design variables; each "
                         "surface on a DKX worker of its own (--dkx-row-gpus or --dkx-row-workers)")
@@ -1149,8 +1149,8 @@ def parse_args(argv=None):
         parser.error("--resolve-current needs --restart and --bootstrap")
     if args.fixed_current and not args.bootstrap:
         parser.error("--fixed-current needs --bootstrap")
-    if args.dkx_rows and (not args.bootstrap or args.fixed_current):
-        parser.error("--dkx-rows needs --bootstrap without --fixed-current")
+    if args.in_loop_dkx and (not args.bootstrap or args.fixed_current):
+        parser.error("--in-loop-dkx needs --bootstrap without --fixed-current")
     return args
 
 
@@ -1400,7 +1400,7 @@ def main(argv=None):
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
         if args.bootstrap and not BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
             inp = smooth_redl_current(inp, "gpu")
-        elif args.dkx_rows and inp.pcurr_type != "cubic_spline_ip":  # the rows' design variables: CURRENT_KNOTS
+        elif args.in_loop_dkx and inp.pcurr_type != "cubic_spline_ip":  # the rows' design variables: CURRENT_KNOTS
             inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
@@ -1434,7 +1434,7 @@ def main(argv=None):
     chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
                       phiedge=float(design.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
-    kinetic = dkx_current_rows(inp, design, args, out) if args.dkx_rows else None
+    kinetic = dkx_current_rows(inp, design, args, out) if args.in_loop_dkx else None
     qs = target_residual()
     mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()

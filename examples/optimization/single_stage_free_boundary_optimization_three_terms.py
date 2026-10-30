@@ -16,11 +16,11 @@ holds the Redl self-consistency as a constraint row, beside the rotational-trans
     minimize   (1/2) |r_QS|^2
     subject to IOTA_CONSTRAINT <= min |iota|,  max |iota| <= IOTA_CEILING_CONSTRAINT,
                aspect <= ASPECT_CONSTRAINT,  sum_j ((<J.B>_j - <J.B>_Redl,j) / ...)^2 <= REDL_TOLERANCE,
-               coil-surface distance >= COIL_SURFACE_DISTANCE_CONSTRAINT,  the coil limits (``vmex.CoilLimits``)
+               coil-surface distance >= COIL_SURFACE_DISTANCE_CONSTRAINT,  the coil limits (``essos.coil_design.CoilLimits``)
 
 with the clearance measured to each trial's free boundary.  The coils are ESSOS' (``essos.coil_design``):
 :class:`vmex.CoilDesign` puts the current profile in front of ESSOS' coil coordinates, and the coil length,
-curvature and separation rows (``vmex.CoilLimits``, ``vmex.coil_constraint``) need no equilibrium solve.  :class:`vmex.ThreeTermsFreeBoundaryProblem` warm-starts
+curvature and separation rows (``CoilLimits``, ``coil_constraint``) need no equilibrium solve.  :class:`vmex.ThreeTermsFreeBoundaryProblem` warm-starts
 each trial's boundary fit, accepts it within an interface-residual cap and differentiates the fit implicitly; the coil
 field is ESSOS' ``BiotSavart``, a pytree, so new coils never recompile.  The seed's current comes from a
 fixed-boundary Picard iteration to Redl's (:func:`vmex.core.bootstrap.self_consistent_bootstrap`).
@@ -38,6 +38,7 @@ import time
 import jax
 import jax.numpy as jnp
 import numpy as np
+from essos.coil_design import CoilLimits, coil_constraint
 from scipy.optimize import Bounds, minimize
 
 import vmex as vj
@@ -189,7 +190,7 @@ coils_circular = Coils(curves0, np.full(N_COILS, COIL_CURRENT))
 # ESSOS' design takes unscaled coefficients: COIL_SCALE on each scaled degree of freedom
 coil_scales = COIL_SCALE / np.broadcast_to(np.asarray(curves0.scaling), curves0.dofs.shape).ravel()
 circular = vj.CoilDesign(coils_circular, scales=coil_scales)
-limits = vj.CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT,
+limits = CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT,
                        mean_squared_curvature=MEAN_SQUARED_CURVATURE_LIMIT, coil_distance=COIL_DISTANCE_LIMIT,
                        distance_margin=COIL_DISTANCE_MARGIN, curvature_points=N_SEGMENTS,
                        distance_points=N_SEGMENTS)
@@ -374,7 +375,7 @@ constraints = [problem.nonlinear_constraint(
     [IOTA_CONSTRAINT, -np.inf, -np.inf, -np.inf, COIL_SURFACE_DISTANCE_CONSTRAINT],
     [np.inf, IOTA_CEILING_CONSTRAINT, ASPECT_CONSTRAINT, REDL_TOLERANCE, np.inf],
     scales=[IOTA_CONSTRAINT, IOTA_CEILING_CONSTRAINT, 0.1, REDL_TOLERANCE, COIL_SURFACE_DISTANCE_LIMIT]),
-    vj.coil_constraint(lambda x: limits.rows(chart.coils_from_x(x)))]
+    coil_constraint(lambda x: limits.rows(chart.coils_from_x(x)))]
 
 
 def report(x):

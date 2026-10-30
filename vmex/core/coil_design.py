@@ -3,7 +3,7 @@
 The coils live in ESSOS (``essos.coil_design``): its ``CoilDesign`` maps a design vector to coils and their
 differentiable ``BiotSavart`` field, ``CoilLimits`` turns coil lengths, curvatures and distances into scaled
 inequality rows, and ``coil_constraint`` makes pure-coil rows a SciPy ``NonlinearConstraint`` that needs no
-equilibrium solve; the last two are re-exported here.  :class:`CoilDesign` prepends the plasma's PHIEDGE and
+equilibrium solve.  :class:`CoilDesign` prepends the plasma's PHIEDGE and
 current profile to ESSOS' coil coordinates: it is the ``field_from_parameters`` and ``plasma_from_parameters``
 of a free-boundary problem such as
 :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`.
@@ -18,18 +18,6 @@ import numpy as np
 import jax.numpy as jnp
 
 from .._compat import require_optional
-
-#: ESSOS' coil API, re-exported here (imported on first use: ESSOS is optional).
-ESSOS_NAMES = ("CoilLimits", "chunked_jacfwd", "coil_constraint", "resampled")
-
-
-def __getattr__(name):
-    if name in ESSOS_NAMES:
-        require_optional("essos", "coil constraint rows")
-        import essos.coil_design
-
-        return getattr(essos.coil_design, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class CoilDesign:

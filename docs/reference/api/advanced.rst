@@ -155,8 +155,6 @@ Free boundary
 .. automodule:: vmex.core.coil_design
    :members: CoilDesign
 
-``vmex.CoilLimits`` and ``vmex.coil_constraint`` are ESSOS' (``essos.coil_design``).
-
 .. automodule:: vmex.core.extender
    :members:
 

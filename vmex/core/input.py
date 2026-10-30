@@ -141,6 +141,8 @@ _KNOWN_INDATA_NAMES = {
     # VMEX extension: free-boundary position control (see core/position_control.py).
     "LPOSITION_CONTROL", "POSITION_TARGET", "POSITION_INTERVAL",
     "POSITION_GAIN", "POSITION_NMAX",
+    # VMEX extension: three-term free boundary (see core/freeboundary_three_terms.py).
+    "LTHREE_TERMS", "THREE_TERMS_LABELLING", "THREE_TERMS_LABEL_WEIGHT",
 }
 
 def _strip_fortran_comments(line: str) -> str:
@@ -800,6 +802,9 @@ class VmecInput:
     position_interval: int = 20      #: iterations between control updates
     position_gain: float = 4.0       #: proportional gain, in units of mu0 I / (4 pi R0^2)
     position_nmax: int = 0           #: highest helical harmonic controlled (0 = uniform B_Z only)
+    lthree_terms: bool = False       #: free boundary from the three interface conditions instead of NESTOR
+    three_terms_labelling: str = "equal_arc"  #: the boundary's poloidal labelling: anchored, equal_arc or none
+    three_terms_label_weight: float = -1.0    #: labelling-row weight; < 0 is the labelling's default
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
@@ -830,6 +835,11 @@ class VmecInput:
             raise ValueError("POSITION_GAIN must be positive")
         if not 0 <= self.position_nmax <= max(int(self.ntor), 0):
             raise ValueError("POSITION_NMAX must lie between 0 and NTOR")
+        set_(self, "lthree_terms", bool(self.lthree_terms))
+        set_(self, "three_terms_labelling", str(self.three_terms_labelling).strip().lower())
+        set_(self, "three_terms_label_weight", float(self.three_terms_label_weight))
+        if self.three_terms_labelling not in ("anchored", "equal_arc", "none"):
+            raise ValueError("THREE_TERMS_LABELLING must be 'anchored', 'equal_arc' or 'none'")
 
         # readin.f stops at the first nonpositive or decreasing entry; later
         # values are outside multi_ns_grid and never reach runvmec.f.
@@ -1294,6 +1304,9 @@ class VmecInput:
             position_interval=int(get("POSITION_INTERVAL", 20)),
             position_gain=float(get("POSITION_GAIN", 4.0)),
             position_nmax=int(get("POSITION_NMAX", 0)),
+            lthree_terms=bool(get("LTHREE_TERMS", False)),
+            three_terms_labelling=str(get("THREE_TERMS_LABELLING", "equal_arc")),
+            three_terms_label_weight=float(get("THREE_TERMS_LABEL_WEIGHT", -1.0)),
         )
 
     @classmethod
@@ -1451,6 +1464,10 @@ class VmecInput:
             put("POSITION_INTERVAL", self.position_interval)
             put("POSITION_GAIN", self.position_gain)
             put("POSITION_NMAX", self.position_nmax)
+        if self.lthree_terms:
+            put("LTHREE_TERMS", True)
+            put("THREE_TERMS_LABELLING", self.three_terms_labelling)
+            put("THREE_TERMS_LABEL_WEIGHT", self.three_terms_label_weight)
         put("RAXIS_CC", self.raxis_c)
         put("ZAXIS_CS", self.zaxis_s)
         if self.lasym or np.any(self.raxis_s) or np.any(self.zaxis_c):

@@ -111,7 +111,19 @@ and composable with both gradient modes:
   current-carried finite-beta profile does.
   :func:`~vmex.core.optimize.soft_min_abs_iota` is the smooth variant
   (``softmax``-weighted, so it stays within ``[min, max]``) for optimizers
-  that stall on the ties of a hard minimum;
+  that stall on the ties of a hard minimum, and
+  :func:`~vmex.core.optimize.abs_iota_profile` the profile itself (with
+  ``include_edge=True`` also the edge ``iotaf[-1]``), whose maximum is a
+  transform ceiling;
+- :func:`~vmex.core.optimize.vacuum_iota` — ``vacuum_iota(inp)`` returns the
+  ``|iota|`` of the vacuum field inside a boundary ``(rbc, zbs)`` (a
+  differentiable fixed-boundary re-solve without pressure or current), which
+  keeps a finite-beta transform the shaping's rather than a bootstrap
+  current's;
+- :func:`~vmex.core.optimize.axis_iota` /
+  :func:`~vmex.core.optimize.axis_field_strength` /
+  :func:`~vmex.core.optimize.major_radius` — the current-free axis transform,
+  the axis ``|B|`` and the wout ``Rmajor_p``;
 - :func:`~vmex.core.optimize.mean_iota` /
   :func:`~vmex.core.optimize.edge_iota` — profile-average and boundary
   transform, for decks that genuinely want a target rather than a floor;

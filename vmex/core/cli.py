@@ -934,6 +934,12 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
         if ctl is not None:
             emit(f" POSITION CONTROL: B_Z^ctrl = {1e3 * ctl.vertical_field:.3f} mT, "
                  f"axis R = {ctl.measured[0]:.4f} m (target {ctl.target[0]:.4f} m)")
+        three = getattr(result, "three_terms", None)
+        if three is not None:
+            res = three.boundary_residual
+            emit(f" THREE TERMS ({three.config.labelling} labelling, {three.start} start): RMS B.n "
+                 f"{res.normal:.2e}, pressure balance {res.pressure:.2e}, sheet current {res.sheet_current:.2e}"
+                 + ("" if three.success else f"; not solved: {three.message}"))
     else:
         from .multigrid import solve_multigrid
 

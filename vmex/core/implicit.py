@@ -1908,7 +1908,10 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
         return best_z, best
 
     if initial_correction is not None:
-        candidate = jax.tree.map(jnp.add, z0, P(initial_correction))
+        # The memo outlives the problem that stored it: another problem on
+        # the same canonical config may run on a different device.
+        home = jax.tree.leaves(z0)[0].sharding
+        candidate = jax.tree.map(jnp.add, z0, P(jax.device_put(initial_correction, home)))
         candidate_f = F(candidate, params)
         candidate_residual = float(_tree_norm(candidate_f))
         if np.isfinite(candidate_residual) and candidate_residual < base:
@@ -3111,7 +3114,9 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda prm: raw_residual(z_star, prm), (params,), (tangent,))[1]
         return jax.tree.map(jnp.negative, value)
 
-    rhs_batch = jax.vmap(raw_rhs)(tangent_batch)
+    # The right-hand sides in chunks too: one batch of every direction holds a
+    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
+    rhs_batch = chunk_map(raw_rhs, tangent_batch, chunk_size=max(1, int(response_chunk_size)))
     initial, _ = _raw_block_solve(system, rhs_batch, cfg)
 
     # Supplied bands may be a nearby point's (see _BANDS_REUSE_TOL): their

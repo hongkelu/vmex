@@ -1018,14 +1018,14 @@ SURFACE_GRID = (61, 64)
 
 
 def coil_limits():
-    """The case's coil limits and margins as ``vj.CoilLimits`` (self clearance 1e-6 m, minimum speed 1e-4)."""
-    import vmex as vj
+    """The case's coil limits and margins as ESSOS' ``CoilLimits`` (self clearance 1e-6 m, minimum speed 1e-4)."""
+    from essos.coil_design import CoilLimits
 
-    return vj.CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT, mean_squared_curvature=MSC_LIMIT,
-                         coil_distance=COIL_DISTANCE_LIMIT, length_margin=LENGTH_MARGIN,
-                         curvature_margin=CURVATURE_MARGIN, mean_squared_curvature_margin=MSC_MARGIN,
-                         distance_margin=DISTANCE_MARGIN, curvature_points=CURVATURE_POINTS,
-                         distance_points=DISTANCE_POINTS)
+    return CoilLimits(length=LENGTH_LIMIT, curvature=CURVATURE_LIMIT, mean_squared_curvature=MSC_LIMIT,
+                      coil_distance=COIL_DISTANCE_LIMIT, length_margin=LENGTH_MARGIN,
+                      curvature_margin=CURVATURE_MARGIN, mean_squared_curvature_margin=MSC_MARGIN,
+                      distance_margin=DISTANCE_MARGIN, curvature_points=CURVATURE_POINTS,
+                      distance_points=DISTANCE_POINTS)
 
 
 # ---- the optimization ------------------------------------------------------------------------------------------------
@@ -1380,6 +1380,7 @@ def main(argv=None):
 
     import jax
     import jax.numpy as jnp
+    from essos.coil_design import coil_constraint
     from essos.coils import Coils
     from essos.surfaces import surfacerzfourier_from_boundary
     import vmex as vj
@@ -1511,8 +1512,8 @@ def main(argv=None):
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
     # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
-    coil_rows = vj.coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
-                                   forward_chunk=32 if COIL_POINT_ROWS else None)
+    coil_rows = coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
+                                forward_chunk=32 if COIL_POINT_ROWS else None)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
     def save(tag):

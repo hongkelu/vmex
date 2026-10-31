@@ -113,6 +113,9 @@ HELICITY = (1, 0)                  # quasisymmetry (M, N); None minimizes the co
 TARGET_NAME = "QA"
 QI_SURFACES = tuple(i / 5 for i in range(1, 6))
 QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples/optimization/QI_optimization.py
+# TARGET_NAME "eps_eff": the target rows are sqrt(w_s) eps_eff^(3/2) / EPS_EFF_REFERENCE from NEO_JAX
+# (vmex.core.neoclassical.EffectiveRippleResidual), equal weights on EPS_EFF_SURFACES.
+EPS_EFF_SURFACES, EPS_EFF_REFERENCE = (0.25, 0.5, 0.75), 1.0
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
@@ -147,6 +150,7 @@ LENGTH_LIMIT = 5.0                 # m, each independent coil
 # LENGTH_LIMIT = c_L 2 pi (a + d), CURVATURE_LIMIT = c_k / (a + d), MSC_LIMIT = c_m / (a + d)^2.
 COIL_LIMIT_FACTORS = None          # (c_L, c_k, c_m)
 COIL_FIT_MAXITER = 200             # L-BFGS-B iterations of the free arm's finite-beta coil refit
+COIL_FIT_VACUUM = False            # True: the coils are refitted to the seed at --beta 0 too (coils of another shape)
 CURVATURE_LIMIT = 5.0              # 1/m, everywhere along each coil
 MSC_LIMIT = 5.0                    # 1/m^2, each coil
 COIL_DISTANCE_LIMIT = 0.15         # m, including symmetry copies
@@ -172,6 +176,16 @@ elif CASE in ("qa3", "qh", "qi"):
     else:
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 8.0, 0.5), None, "QI", (7.9, 8.1), 0.21
         IOTA_FLOOR = 0.51          # above the iota = 1/2 resonance
+elif CASE == "pwo2":
+    # The piecewise-omnigenous setup of uwplasma/vmex#596 (NFP 2, aspect 6, a near-circular seed with a 5% helical
+    # ripple, iota >= 0.42, edge mirror ratio <= 0.2, vacuum) with eps_eff^(3/2) itself as the target instead of
+    # its mapped contour variance. The coils start from Landreman & Paul's QA coils, refitted to the seed.
+    COILS_FILE = DATA / "ESSOS_biot_savart_LandremanPaulQA.json"
+    COIL_ORDER, COIL_FIT_VACUUM, COIL_FIT_MAXITER = 8, True, 3000
+    LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 3.5, 8.0, 10.0
+    COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
+    SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "eps_eff", (5.9, 6.1), 0.2
+    IOTA_FLOOR, EPS_EFF_REFERENCE = 0.42, 1e-3
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
     # half period (qh4-beta: the 3 QH coils).
@@ -258,10 +272,13 @@ def seed_input():
 
 
 def target_residual():
-    """Residual vector of the case's target: quasisymmetry of ``HELICITY``, or constructed QI."""
+    """Residual vector of the case's target: quasisymmetry of ``HELICITY``, constructed QI or effective ripple."""
     from vmex import optimize as opt
+    from vmex.core.neoclassical import EffectiveRippleResidual
     from vmex.core.qi import ConstructedQIResidual
 
+    if TARGET_NAME == "eps_eff":
+        return EffectiveRippleResidual(np.asarray(EPS_EFF_SURFACES), reference=EPS_EFF_REFERENCE)
     if HELICITY is None:
         return ConstructedQIResidual(np.asarray(QI_SURFACES), **QI_OPTIONS)
     return opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), *HELICITY)
@@ -1419,7 +1436,7 @@ def main(argv=None):
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
         coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
-        if args.beta > 0 and not args.no_coil_fit:
+        if (args.beta > 0 or COIL_FIT_VACUUM) and not args.no_coil_fit:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
@@ -1526,6 +1543,8 @@ def main(argv=None):
     last = dict(time=time.monotonic())
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
+    ripple = (jax.jit(lambda state, params: qs.compute_state(state, im.runtime_from_params(params, model.cfg))[
+        "epsilon_effective"]) if TARGET_NAME == "eps_eff" else None)
     extension_values = jax.jit(lambda state, params: (
         {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
         extension_cost(state, im.runtime_from_params(params, model.cfg))))
@@ -1572,6 +1591,7 @@ def main(argv=None):
         row = dict(step=problem.accepted_step,
                    qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
                    **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
+                   **({"epsilon_effective": np.asarray(ripple(state_x, params_x)).tolist()} if ripple else {}),
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),

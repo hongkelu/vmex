@@ -195,6 +195,38 @@ print(json.dumps([list(map(float, s)), list(map(float, values))]))
         values, [1.90173919e-8, 1.09848947e-8, 1.84568599e-8], rtol=5e-5)
 
 
+def test_effective_ripple_residual_is_the_wout_profile_and_differentiable():
+    """The traced state chain gives the wout adapter's profile, and a finite gradient.
+
+    Both run NEO on the same surfaces, spectrum and ``objective_neo_config``;
+    they differ only in the Boozer transform (live state against wout tables).
+    """
+    pytest.importorskip("neo_jax")
+    script = f"""
+import json
+import jax
+import jax.numpy as jnp
+import numpy as np
+import vmex as vj
+from vmex import optimize as opt
+from vmex.core import neoclassical
+equilibrium = opt.solve_equilibrium(vj.VmecInput.from_file({str(DATA_DIR / 'input.LandremanPaul2021_QA_lowres')!r}))
+residual = neoclassical.EffectiveRippleResidual([0.2, 0.5, 0.8])
+out = residual.compute_state(equilibrium.state, equilibrium.runtime)
+_, reference = neoclassical.epsilon_effective_from_wout(
+    equilibrium.wout, surfaces=[0.2, 0.5, 0.8], mboz=16, nboz=16, config=neoclassical.objective_neo_config())
+grad = jax.grad(lambda state: residual.total_state(state, equilibrium.runtime))(equilibrium.state)
+norm = sum(float(jnp.sum(leaf**2)) for leaf in jax.tree_util.tree_leaves(grad))
+print(json.dumps([list(map(float, out["epsilon_effective"])), list(map(float, reference)), norm]))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True,
+        text=True, timeout=600)
+    values, reference, norm = json.loads(completed.stdout.splitlines()[-1])
+    np.testing.assert_allclose(values, reference, rtol=2e-2)
+    assert np.isfinite(norm) and norm > 0
+
+
 def test_neo_summary_subset_keeps_all_sine_partners():
     from vmex.core.plotting import _neo_surface_subset
 

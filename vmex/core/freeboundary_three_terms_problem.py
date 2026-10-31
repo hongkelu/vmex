@@ -68,7 +68,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0):
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -84,8 +84,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
         is rejected.  With a gauge (labelling ``"minimal"`` or ``"flat_arc"``), set at the seed's fit,
-        ``gauge_refresh=K`` sets it again at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), so it
-        follows the design: its rows vanish there, so no value at the accepted point changes.
+        ``gauge_refresh=K`` sets it again at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and
+        ``gauge_max_share`` whenever the gauge rows' share of the accepted fit's cost exceeds it, so it follows the
+        design: its rows vanish there, so no value at the accepted point changes.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -99,13 +100,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
-                   boundary_start=boundary_start, gauge_refresh=gauge_refresh)
+                   boundary_start=boundary_start, gauge_refresh=gauge_refresh,
+                   gauge_max_share=gauge_max_share)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0):
+                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None):
         im = model._im
-        self.gauge_refresh = int(gauge_refresh)
+        self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
@@ -158,10 +160,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
-            lambda z: model.rows(state, params, field_from_parameters(z)), (x,), (dx,))[1])
+        self._field_derivatives()
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self._start, self._start_state = None, None
         if boundary_start is not None:
@@ -185,6 +184,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
 
+    def _field_derivatives(self):
+        """The model rows' derivatives along the coil parameters, traced with the model's current gauge rows."""
+        model, field = self.model, self.field
+        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
+            lambda z: model.rows(state, params, field(z)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
+            lambda z: model.rows(state, params, field(z)), (x,), (dx,))[1])
+
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
         model, key = self.model, np.asarray(x, dtype=float).tobytes()
@@ -192,6 +199,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         J = model.linearize(sol["x"], sol["aux"], self.field(jnp.asarray(x)))[0]
         self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
         self.stats["gauge_sets"] = self.stats.get("gauge_sets", 0) + 1
+        self._field_derivatives()  # a refresh may pin a different number of directions
         # from x's fit as it is (flat arc's rows vanish there, the minimal gauge's too), under the new rows
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], key
@@ -346,8 +354,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise ValueError("evaluate the candidate before accepting it")
         self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
-        if self.gauge_refresh and self.model._gauge is not None and self.accepted_step % self.gauge_refresh == 0:
+        if self.model._gauge is not None and (
+                (self.gauge_refresh and self.accepted_step % self.gauge_refresh == 0)
+                or (self.gauge_max_share is not None and self.gauge_share(x) > self.gauge_max_share)):
             self._set_gauge(np.asarray(self._x(x), dtype=float))
+
+    def gauge_share(self, x):
+        """The gauge rows' share of ``x``'s boundary-fit cost (0 without a gauge, and where it was set)."""
+        model = self.model
+        if model._gauge is None:
+            return 0.0
+        sol = self._record(x)
+        r = np.asarray(model._rows(sol["state"], sol["params"], self.field(jnp.asarray(self._x(x)))))
+        g = r[model._n_interface:model._n_interface + model._gauge[0].shape[0]]
+        return float(g @ g / (r @ r))
 
     def state(self, x):
         """``(state, params)`` of ``x``'s free boundary (``params`` the ``ImplicitParams`` it was solved at)."""

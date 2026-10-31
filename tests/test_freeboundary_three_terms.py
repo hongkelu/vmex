@@ -607,7 +607,7 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
     before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
     reference = np.asarray(problem.model._gauge[1])
     problem.accept_x(x1)
-    assert problem.stats["gauge_sets"] == 2
+    assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
     assert not np.allclose(np.asarray(problem.model._gauge[1]), reference)  # set again, at x1's fit
     np.testing.assert_allclose(np.r_[problem.fun(x1), problem.constraint_values(x1)], before, rtol=1e-8, atol=1e-12)
     _, grad = problem.value_and_grad(x1)
@@ -617,6 +617,35 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
         values = [np.r_[problem.fun(x1 + s * e), problem.constraint_values(x1 + s * e)] for s in (1, -1)]
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], (values[0] - values[1]) / (2 * h), rtol=2e-2,
                                    atol=1e-8 * max(1.0, abs(before[0])))
+
+
+@needs_vc
+@pytest.mark.full
+def test_flat_arc_gauge_refresh_on_its_share():
+    """``gauge_max_share``: the gauge is set again only at an accepted fit where its rows' share of the cost
+    exceeds the bound, and vanishes there."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_max_share=1.0)
+    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
+    share = problem.gauge_share(x1)
+    assert 0.0 < share < 1.0
+    problem.accept_x(x1)  # below the bound: kept
+    assert problem.stats["gauge_sets"] == 1
+    problem.gauge_max_share = 0.5 * share
+    problem.model.gauge_tau = 1e-2  # set again on fewer directions: the rows' derivatives follow the new gauge
+    problem.accept_x(x1)  # above it: set again at x1's fit
+    assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
+    state, params = problem.state(x1)
+    x = jnp.asarray(x1)
+    rows = problem.model.rows(state, params, problem.field(x))
+    assert problem._field_jvp(state, params, x, jnp.ones(2)).shape == rows.shape
+    problem.value_and_grad(x1 + 1e-3 * np.eye(2)[0])
 
 
 def _lp_beta0p5_profiles(inp):

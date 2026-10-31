@@ -1134,12 +1134,16 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--labelling", choices=("anchored", "equal_arc", "none"), default="anchored",
+    parser.add_argument("--labelling", choices=("anchored", "equal_arc", "minimal", "none"), default="anchored",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (anchored), "
-                        "equal arc length of the current surface (equal_arc), or none; see vmex.ThreeTermsConfig")
+                        "equal arc length of the current surface (equal_arc), the seed fit's flat tangential "
+                        "directions pinned (minimal), or none; see vmex.ThreeTermsConfig")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the labelling's, 1e-2 anchored, 1e-3 equal arc; "
                         "0 is the no-label model)")
+    parser.add_argument("--gauge-tau", type=float, default=vj.ThreeTermsConfig.gauge_tau,
+                        help="minimal labelling: pin the flat tangential directions with singular values below this "
+                        "fraction of the largest")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1474,13 +1478,15 @@ def main(argv=None):
                                    ntheta=args.vc_grid, chunk=args.chunk,
                                    quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                    trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                   bootstrap_helicity=REDL_HELICITY),
+                                   bootstrap_helicity=REDL_HELICITY, gauge_tau=args.gauge_tau),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
         # a restart resumes at the final WOUT (its equilibrium seeds the first solve), a resolved one at its deck
         boundary_start=None if args.restart is None else design if args.resolve_current else args.restart / "wout.nc")
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
-          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s", flush=True)
+          f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
+          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if args.labelling == "minimal"
+             else ""), flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN

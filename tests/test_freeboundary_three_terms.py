@@ -608,6 +608,13 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
     reference = np.asarray(problem.model._gauge[1])
     problem.accept_x(x1)
     assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
+    # the refresh keeps x1's linearization with its gauge rows swapped: a fresh one is the same
+    model, sol, xj = problem.model, problem._cache[x1.tobytes()], jnp.asarray(x1)
+    extra = problem._plasma_directions(sol["params"], xj)
+    kept = model.linearize(sol["x"], sol["aux"], problem.field(xj), extra=extra)[0]
+    model._last_linearize = None
+    fresh = model.linearize(sol["x"], sol["aux"], problem.field(xj), extra=extra)[0]
+    np.testing.assert_allclose(kept, fresh, rtol=1e-8, atol=1e-10 * np.abs(fresh).max())
     assert not np.allclose(np.asarray(problem.model._gauge[1]), reference)  # set again, at x1's fit
     np.testing.assert_allclose(np.r_[problem.fun(x1), problem.constraint_values(x1)], before, rtol=1e-8, atol=1e-12)
     _, grad = problem.value_and_grad(x1)

@@ -664,6 +664,12 @@ class ThreeTermsModel:
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
 
+    def _gauge_rows(self, params):
+        """The gauge's rows at ``params`` (they depend on the boundary alone)."""
+        Q, reference = self._gauge
+        return Q @ ((self._arc_label(params.rbc, params.zbs) if self.labelling == "flat_arc"
+                     else self._boundary_of(params)) - reference)
+
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
         im, cfg = self._im, self.cfg
@@ -673,9 +679,7 @@ class ThreeTermsModel:
             parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
             self._n_interface = sum(part.shape[0] for part in parts)  # static: where the gauge rows start
             if self._gauge is not None:
-                Q, reference = self._gauge
-                parts.append(Q @ ((self._arc_label(params.rbc, params.zbs) if self.labelling == "flat_arc"
-                                   else self._boundary_of(params)) - reference))
+                parts.append(self._gauge_rows(params))
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -826,7 +830,8 @@ class ThreeTermsModel:
         """
         if self.labelling not in ("minimal", "flat_arc"):
             raise ValueError("set_minimal_gauge needs labelling='minimal' or 'flat_arc'")
-        nb = self.n_boundary
+        nb, last = self.n_boundary, self._last_linearize
+        old = 0 if self._gauge is None else self._gauge[0].shape[0]
         xb = np.asarray(x, dtype=float)[:nb]
         J = np.asarray(jacobian)[:, :nb]
         if self._gauge is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian, without the old gauge's
@@ -850,6 +855,14 @@ class ThreeTermsModel:
                                                                 vary_major_radius=True)[:2])
             self._gauge = (jnp.asarray(self.label_weight * M.T), reference)
         self._implicit_setup()
+        if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
+            # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
+            key, extra_key, (columns, dz, batch, aux), linearization = last
+            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.vmap(
+                lambda t: jax.jvp(self._gauge_rows, (aux[2],), (t,))[1])(batch)).T
+            i = self._n_interface
+            columns = np.vstack([columns[:i], new, columns[i + old:]])
+            self._last_linearize, self._linearization = (key, extra_key, (columns, dz, batch, aux), linearization), linearization
         return len(pinned)
 
     def gauge_curvature(self, x, params):

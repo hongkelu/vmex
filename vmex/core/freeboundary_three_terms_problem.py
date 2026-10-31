@@ -194,17 +194,18 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
-        model, key = self.model, np.asarray(x, dtype=float).tobytes()
+        model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
         sol = self._cache[key]
-        J = model.linearize(sol["x"], sol["aux"], self.field(jnp.asarray(x)))[0]
+        # with the plasma columns: the gradient at x reuses this linearization, its gauge rows swapped
+        extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
+        J = model.linearize(sol["x"], sol["aux"], self.field(xj), extra=extra)[0]
         self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
         self.stats["gauge_sets"] = self.stats.get("gauge_sets", 0) + 1
         self._field_derivatives()  # a refresh may pin a different number of directions
-        # from x's fit as it is (flat arc's rows vanish there, the minimal gauge's too), under the new rows
-        self._cache, self._rejections, self._anchor = {}, {}, {}
+        # x's fit as it is (flat arc's rows vanish there, the minimal gauge's too), under the new rows
+        sol.pop("gradients", None)
+        self._cache, self._rejections, self._anchor = {key: sol}, {}, {}
         self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], key
-        if self._solve(x) is None:
-            raise VmecError(f"no fit under the {model.labelling} gauge set at this design point")
 
     def _solve(self, x):
         """The trial at ``x`` (cached): boundary fit, state and values, or ``None`` (the reason in

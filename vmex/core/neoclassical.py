@@ -176,7 +176,7 @@ class EffectiveRippleResidual:
             {"nfp_b": booz["nfp"], "ixm_b": booz["xm_b"], "ixn_b": booz["xn_b"], "s_b": booz["s_b"],
              "iota_b": booz["iota_b"], "buco_b": booz["I_b"], "bvco_b": booz["G_b"],
              **{name: booz[name] for name in names}},
-            mode_first=False, asym_override=lasym)
+            mode_first=False, asym_override=lasym, mode_indices=np.arange(booz["bmnc_b"].shape[1]))
         out = run_neo_from_boozer_jax(data, self.config.to_control(), skip_fourier_mask=True,
                                       max_rational_field_periods=0,
                                       rational_surface_policy=self.config.rational_surface_policy)

@@ -26,8 +26,8 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 (``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.  The interface conditions leave the boundary's poloidal labelling
-free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"`` or
-``"none"``).
+free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"``,
+``"minimal"`` or ``"none"``).
 
 This is an opt-in alternative to NESTOR (a VMEX extension, like position
 control); nothing changes unless it is requested.  Entry points, from the most
@@ -189,14 +189,60 @@ def _equal_arc_rows(gamma):
     return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
+def _relabelling_directions(inp, xb, max_mode, tol):
+    """Directions of the boundary coordinates ``xb`` (``pack_boundary(..., vary_major_radius=True)``) that move the
+    surface less than ``tol`` normal to itself: a relabelling of its points, to first order.
+
+    They are the generalized eigenvectors of the normal and the total displacement of the surface, area weighted over
+    one field period, whose normal share (RMS normal over RMS displacement) is below ``tol``.  Returns ``(V, B,
+    shares)``: the directions ``(xb.size, k)``, orthonormal in the displacement metric ``B``, and their shares.
+    """
+    import scipy.linalg
+
+    from .optimize import boundary_arrays_from_x
+
+    mpol, ntor, nfp = int(inp.mpol), int(inp.ntor), int(inp.nfp)
+    theta = 2.0 * np.pi * np.arange(4 * mpol + 4) / (4 * mpol + 4)
+    phi = 2.0 * np.pi * np.arange(4 * ntor + 4) / ((4 * ntor + 4) * nfp)
+    m, n = np.arange(mpol), np.arange(-ntor, ntor + 1) * nfp
+    angle = m * theta[:, None, None] - n[:, None] * phi[:, None, None, None]  # (phi, theta, n, m)
+    cos, sin = np.cos(angle), np.sin(angle)
+
+    def surface(z):  # R, Z and their theta and phi derivatives on the grid (VMEC's cos(m theta - n nfp phi))
+        rc, zs = boundary_arrays_from_x(inp, z, max_mode, vary_major_radius=True)[:2]
+        R, Z = jnp.sum(rc * cos, axis=(-2, -1)), jnp.sum(zs * sin, axis=(-2, -1))
+        dR, dZ = -rc * sin, zs * cos  # per unit angle
+        return (R, Z, jnp.sum(m * dR, axis=(-2, -1)), jnp.sum(m * dZ, axis=(-2, -1)),
+                jnp.sum(-n[:, None] * dR, axis=(-2, -1)), jnp.sum(-n[:, None] * dZ, axis=(-2, -1)))
+
+    xb = jnp.asarray(xb, dtype=float)
+    R, Z, R_t, Z_t, R_p, Z_p = (np.asarray(a).ravel() for a in surface(xb))
+    D_R, D_Z = (np.asarray(a).reshape(-1, xb.size) for a in jax.jacfwd(lambda z: surface(z)[:2])(xb))
+    # The normal e_theta x e_phi in (R, phi, Z): (-R Z_t, Z_t R_p - R_t Z_p, R R_t); dA ~ its length.
+    area = np.sqrt((R * Z_t) ** 2 + (Z_t * R_p - R_t * Z_p) ** 2 + (R * R_t) ** 2)
+    D_n = (-(R * Z_t)[:, None] * D_R + (R * R_t)[:, None] * D_Z) / area[:, None]
+    B = D_R.T @ (area[:, None] * D_R) + D_Z.T @ (area[:, None] * D_Z)
+    shares, V = scipy.linalg.eigh(D_n.T @ (area[:, None] * D_n), B)
+    keep = shares < tol**2
+    return V[:, keep], B, np.sqrt(np.maximum(shares[keep], 0.0))
+
+
+#: The minimal gauge (``labelling="minimal"``): the boundary directions it pins are those of the fit's Jacobian, in
+#: column-scaled coordinates, with a singular value below ``gauge_tau`` times the largest and a normal share (RMS
+#: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.
+GAUGE_TAU = 1e-2
+GAUGE_NORMAL_SHARE = 0.2
+
+
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
 #: against wrong stationary points, not an accuracy standard (about upstream #614's DEL-BSQ gate of 2e-2 on B^2).
 ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; ``"none"`` has no labelling rows, as either labelling at weight 0 (the same model).
-LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
+#: on the benchmark designs; for the minimal gauge the weight of its rows in column-scaled coordinates;
+#: ``"none"`` has no labelling rows, as any labelling at weight 0 (the same model).
+LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "minimal": 5e-2, "none": 0.0}
 
 
 @dataclass(frozen=True)
@@ -207,7 +253,9 @@ class ThreeTermsConfig:
     ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary (the
     initial one: each labelled point is held near its position there, the surface free to move), ``"equal_arc"``
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
-    part), and ``"none"`` adds no labelling rows (either labelling at ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
+    part), ``"minimal"`` pins only the fit's own flat, tangential directions at a reference fit (the minimal gauge,
+:meth:`ThreeTermsModel.set_minimal_gauge`: the no-label fit, made well determined; ``gauge_tau`` selects the
+directions), and ``"none"`` adds no labelling rows (any labelling at ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
     NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
     minima).
@@ -249,6 +297,7 @@ class ThreeTermsConfig:
     bootstrap: Any = field(default=None, repr=False)
     bootstrap_helicity: int = 0
     bootstrap_weight: float = 100.0
+    gauge_tau: float = GAUGE_TAU
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
@@ -281,7 +330,7 @@ class ThreeTermsConfig:
                     labelling=self.labelling if self.resolved_label_weight else "none",
                     quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
-                    bootstrap_weight=self.bootstrap_weight)
+                    bootstrap_weight=self.bootstrap_weight, gauge_tau=self.gauge_tau)
 
 
 def resolve_three_terms(requested: Any, inp: Any) -> "ThreeTermsConfig | None":
@@ -455,10 +504,10 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc"):
+                 fixed_boundary=False, labelling="equal_arc", gauge_tau=GAUGE_TAU):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
-        from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
+        from .optimize import _dof_modes, _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
         if labelling not in LABEL_WEIGHTS:
@@ -473,6 +522,8 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
+        self.labelling, self.label_weight, self.gauge_tau = labelling, float(label_weight), float(gauge_tau)
+        self._gauge = None  # the minimal gauge's (Q scaled to model coordinates, reference), once set
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
         if self.bootstrap is not None:
@@ -509,6 +560,11 @@ class ThreeTermsModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
+        modes = _dof_modes(fixed, self.max_mode)
+        rows_, cols_ = np.array([n + int(fixed.ntor) for _, n in modes]), np.array([m for m, _ in modes])
+        # the boundary coordinates of params (the inverse of with_boundary on them): the minimal gauge's argument
+        self._boundary_of = lambda params: jnp.concatenate(
+            [params.rbc[rows_, cols_], params.zbs[rows_, cols_], params.rbc[int(fixed.ntor), 0][None]])
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -584,6 +640,9 @@ class ThreeTermsModel:
         def rows(state, params, field):
             runtime = im.runtime_from_params(params, cfg)
             parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            if self._gauge is not None:
+                Q, reference = self._gauge
+                parts.append(Q @ (self._boundary_of(params) - reference))
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -713,6 +772,35 @@ class ThreeTermsModel:
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
+
+    def set_minimal_gauge(self, x, jacobian):
+        """Pin the fit's flat, tangential directions at boundary ``x`` (``labelling="minimal"``); returns their number.
+
+        The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
+        nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
+        ``x`` (:meth:`linearize`), the pinned directions are the right singular vectors of its boundary columns
+        (scaled to unit norm) with a singular value below ``gauge_tau`` times the largest and a surface displacement
+        of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows
+        ``label_weight * Q (u - u_x)`` (``u`` the scaled coordinates) then hold them at ``x``: zero there, linear,
+        and the same for every design, so the free boundary stays the interface fit's and the problem does not
+        change while it is optimized.  Recompiles the rows once.
+        """
+        if self.labelling != "minimal":
+            raise ValueError("set_minimal_gauge needs labelling='minimal'")
+        nb = self.n_boundary
+        xb = np.asarray(x, dtype=float)[:nb]
+        J = np.asarray(jacobian)[:, :nb]
+        norms = np.linalg.norm(J, axis=0)
+        norms[norms == 0.0] = 1.0
+        _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
+        V, B, shares = _relabelling_directions(self.fixed, xb, self.max_mode, np.inf)
+        A = B @ V @ np.diag(shares ** 2) @ V.T @ B  # the normal displacement's metric: A V = B V diag(share^2)
+        flat = [u for s, u in zip(sv, Vt) if s < self.gauge_tau * sv[0]]
+        pinned = [u for u in flat if (u / norms) @ A @ (u / norms) < GAUGE_NORMAL_SHARE ** 2 * ((u / norms) @ B @ (u / norms))]
+        Q = self.label_weight * np.array(pinned).reshape(-1, nb) * norms
+        self._gauge = (jnp.asarray(Q), jnp.asarray(xb)) if len(pinned) else None
+        self._implicit_setup()
+        return len(pinned)
 
     def linearize(self, x, aux, field, extra=None):
         """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).

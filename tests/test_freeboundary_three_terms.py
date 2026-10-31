@@ -126,6 +126,21 @@ def test_rows_are_the_three_interface_conditions():
     assert 0 < summary.normal < 0.05 and 0 < summary.sheet_current < 0.05
 
 
+def test_relabelling_directions_of_a_circle():
+    """On a circular cross section, theta -> theta + eps sin(theta) moves (R00, RBC(0,2), ZBS(0,2)) along
+    (-1, 1, 1) a eps / 2 and leaves the surface: a relabelling direction; a change of the minor radius is not."""
+    inp = vj.VmecInput.from_file(DATA / "input.circular_tokamak")
+    xb = opt.pack_boundary(inp, inp.mpol - 1, vary_major_radius=True)
+    nm = (xb.size - 1) // 2  # pack_boundary's order: RBC(m, 0), ZBS(m, 0) for m = 1.., then RBC(0, 0)
+    V, B, shares = fvc._relabelling_directions(inp, xb, inp.mpol - 1, 1e-2)
+    P = np.eye(xb.size) - V @ (V.T @ B)
+    relabel, minor = np.zeros(xb.size), np.zeros(xb.size)
+    relabel[[-1, 1, nm + 1]] = -1.0, 1.0, 1.0
+    minor[[0, nm]] = 1.0
+    assert V.shape[1] >= 1 and np.linalg.norm(P @ relabel) < 1e-8 * np.linalg.norm(relabel)
+    assert np.linalg.norm(P @ minor - minor) < 2e-2 * np.linalg.norm(minor)
+
+
 def test_levenberg_marquardt_finish():
     """The fixed-Jacobian finish: converges on a mildly nonlinear fit, backs off from a failed or worse step,
     and reports why it stopped."""
@@ -514,12 +529,13 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.parametrize("labelling, label_weight", [("anchored", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2)])
+@pytest.mark.parametrize("labelling, label_weight", [("anchored", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2),
+                                                     ("minimal", None)])
 def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
-    labelling and for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
-    pinned only to the fit's tolerance)."""
+    labelling, for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
+    pinned only to the fit's tolerance) and for the minimal gauge (pinned at the seed's fit, its rows zero there)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -533,6 +549,12 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
         boundary_ftol=1e-10, boundary_max_nfev=80)
     assert isinstance(problem, ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
+    if labelling == "minimal":
+        assert problem.stats["gauge_directions"] >= 0
+        if problem.model._gauge is not None:  # the gauge rows vanish at the seed's fit
+            sol = problem._cache[x0.tobytes()]
+            assert np.max(np.abs(np.asarray(problem.model._boundary_of(sol["params"]))
+                                 - np.asarray(problem.model._gauge[1]))) < 1e-12
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)
     assert problem.boundary_residual(x0).sheet_current < 1e-2

@@ -176,15 +176,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        if model.labelling == "minimal" and model._gauge is None:  # pin the seed fit's flat, tangential directions
+        if model.labelling in ("minimal", "flat_arc") and model._gauge is None:  # the seed fit's flat directions
             sol = self._cache[x0.tobytes()]
             J = model.linearize(sol["x"], sol["aux"], self.field(jnp.asarray(x0)))[0]
             self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
-            # the seed's fit as it is (the gauge rows vanish there), under the gauged rows
+            # from the seed's fit (the minimal gauge's rows vanish there), under the gauged rows
             self._cache, self._rejections = {}, {}
             self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], x0.tobytes()
             if self._solve(x0) is None:
-                raise VmecError("the seed design's fit does not hold under the minimal gauge")
+                raise VmecError(f"the seed design has no fit under the {model.labelling} gauge")
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
@@ -296,8 +296,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
-        Q, R = np.linalg.qr(J_b)
-        lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
+        S = model.gauge_curvature(sol["x"], params)
+        if S is None:
+            Q, R = np.linalg.qr(J_b)
+            lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
+        else:  # nonlinear gauge rows: the fit's exact stationarity Hessian J^T J + sum g Hess g
+            lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column))) for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p

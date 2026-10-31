@@ -68,7 +68,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None):
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -83,7 +83,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
         the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
-        is rejected.
+        is rejected.  With a gauge (labelling ``"minimal"`` or ``"flat_arc"``), set at the seed's fit,
+        ``gauge_refresh=K`` sets it again at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), so it
+        follows the design: its rows vanish there, so no value at the accepted point changes.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -97,12 +99,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
-                   boundary_start=boundary_start)
+                   boundary_start=boundary_start, gauge_refresh=gauge_refresh)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_max_residual=None, boundary_start=None):
+                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0):
         im = model._im
+        self.gauge_refresh = int(gauge_refresh)
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
@@ -177,17 +180,23 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
         if model.labelling in ("minimal", "flat_arc") and model._gauge is None:  # the seed fit's flat directions
-            sol = self._cache[x0.tobytes()]
-            J = model.linearize(sol["x"], sol["aux"], self.field(jnp.asarray(x0)))[0]
-            self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
-            # from the seed's fit (the minimal gauge's rows vanish there), under the gauged rows
-            self._cache, self._rejections = {}, {}
-            self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], x0.tobytes()
-            if self._solve(x0) is None:
-                raise VmecError(f"the seed design has no fit under the {model.labelling} gauge")
+            self._set_gauge(x0)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
+
+    def _set_gauge(self, x):
+        """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
+        model, key = self.model, np.asarray(x, dtype=float).tobytes()
+        sol = self._cache[key]
+        J = model.linearize(sol["x"], sol["aux"], self.field(jnp.asarray(x)))[0]
+        self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
+        self.stats["gauge_sets"] = self.stats.get("gauge_sets", 0) + 1
+        # from x's fit as it is (flat arc's rows vanish there, the minimal gauge's too), under the new rows
+        self._cache, self._rejections, self._anchor = {}, {}, {}
+        self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], key
+        if self._solve(x) is None:
+            raise VmecError(f"no fit under the {model.labelling} gauge set at this design point")
 
     def _solve(self, x):
         """The trial at ``x`` (cached): boundary fit, state and values, or ``None`` (the reason in
@@ -337,6 +346,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise ValueError("evaluate the candidate before accepting it")
         self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
+        if self.gauge_refresh and self.model._gauge is not None and self.accepted_step % self.gauge_refresh == 0:
+            self._set_gauge(np.asarray(self._x(x), dtype=float))
 
     def state(self, x):
         """``(state, params)`` of ``x``'s free boundary (``params`` the ``ImplicitParams`` it was solved at)."""

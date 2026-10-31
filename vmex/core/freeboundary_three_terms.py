@@ -254,6 +254,9 @@ def _arc_label(inp):
 #: column-scaled coordinates, with a singular value below ``gauge_tau`` times the largest and a normal share (RMS
 #: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.
 GAUGE_TAU = 1e-2
+#: Default ``gauge_tau`` per labelling: flat arc pins every tangential direction (its rows are soft and zero at the
+#: reference fit, so a direction the interface rows determine is theirs anyway; the weight decides, no cutoff).
+GAUGE_TAUS = {"minimal": GAUGE_TAU, "flat_arc": 1.0}
 GAUGE_NORMAL_SHARE = 0.2
 
 
@@ -322,7 +325,7 @@ on the current surface (:meth:`ThreeTermsModel.set_minimal_gauge`: no point posi
     bootstrap: Any = field(default=None, repr=False)
     bootstrap_helicity: int = 0
     bootstrap_weight: float = 100.0
-    gauge_tau: float = GAUGE_TAU
+    gauge_tau: float | None = None
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
@@ -529,7 +532,7 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc", gauge_tau=GAUGE_TAU):
+                 fixed_boundary=False, labelling="equal_arc", gauge_tau=None):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _dof_modes, _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -547,6 +550,8 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
+        if gauge_tau is None:
+            gauge_tau = GAUGE_TAUS.get(labelling, GAUGE_TAU)
         self.labelling, self.label_weight, self.gauge_tau = labelling, float(label_weight), float(gauge_tau)
         self._gauge = None  # the gauge's rows, once set: (Q, reference boundary) or flat arc's (M, reference L)
         self._arc_label = _arc_label(fixed)
@@ -666,6 +671,7 @@ class ThreeTermsModel:
         def rows(state, params, field):
             runtime = im.runtime_from_params(params, cfg)
             parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            self._n_interface = sum(part.shape[0] for part in parts)  # static: where the gauge rows start
             if self._gauge is not None:
                 Q, reference = self._gauge
                 parts.append(Q @ ((self._arc_label(params.rbc, params.zbs) if self.labelling == "flat_arc"
@@ -823,6 +829,8 @@ class ThreeTermsModel:
         nb = self.n_boundary
         xb = np.asarray(x, dtype=float)[:nb]
         J = np.asarray(jacobian)[:, :nb]
+        if self._gauge is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian, without the old gauge's
+            J = np.delete(J, np.s_[self._n_interface:self._n_interface + self._gauge[0].shape[0]], axis=0)
         norms = np.linalg.norm(J, axis=0)
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)

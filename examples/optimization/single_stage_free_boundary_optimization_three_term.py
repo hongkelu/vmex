@@ -1141,9 +1141,9 @@ def parse_args(argv=None):
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the labelling's, 1e-2 anchored, 1e-3 equal arc; "
                         "0 is the no-label model)")
-    parser.add_argument("--gauge-tau", type=float, default=vj.ThreeTermsConfig.gauge_tau,
+    parser.add_argument("--gauge-tau", type=float,
                         help="minimal labelling: pin the flat tangential directions with singular values below this "
-                        "fraction of the largest")
+                        "fraction of the largest (default: vmex.ThreeTermsConfig's)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
@@ -1478,7 +1478,8 @@ def main(argv=None):
                                    ntheta=args.vc_grid, chunk=args.chunk,
                                    quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
                                    trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                   bootstrap_helicity=REDL_HELICITY, gauge_tau=args.gauge_tau),
+                                   bootstrap_helicity=REDL_HELICITY,
+                                   **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
         # a restart resumes at the final WOUT (its equilibrium seeds the first solve), a resolved one at its deck
         boundary_start=None if args.restart is None else design if args.resolve_current else args.restart / "wout.nc")

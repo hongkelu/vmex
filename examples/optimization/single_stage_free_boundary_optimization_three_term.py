@@ -116,6 +116,10 @@ QI_OPTIONS = dict(mboz=12, nboz=12, nphi=61, nalpha=18, n_bounce=21)  # examples
 # TARGET_NAME "eps_eff": the target rows are sqrt(w_s) eps_eff^(3/2) / EPS_EFF_REFERENCE from NEO_JAX
 # (vmex.core.neoclassical.EffectiveRippleResidual), equal weights on EPS_EFF_SURFACES.
 EPS_EFF_SURFACES, EPS_EFF_REFERENCE = (0.25, 0.5, 0.75), 1.0
+# TARGET_NAME "pwO": the mapped pwO residual of uwplasma/vmex#596 (vmex.core.pwo.MappedPwOResidual, Boozer
+# mboz = nboz = 8) on PWO_SURFACES over sqrt(PWO_SCALE), the seed's value: the logged target is 1 there. The mirror row
+# is then the PR's, the largest mirror ratio of the full Boozer |B| on PWO_SURFACES; NEO's eps_eff^(3/2) is logged.
+PWO_SURFACES, PWO_SCALE = (0.25, 0.5, 0.75), 1.0
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
@@ -186,6 +190,16 @@ elif CASE == "pwo2":
     COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "eps_eff", (5.9, 6.1), 0.2
     IOTA_FLOOR, EPS_EFF_REFERENCE = 0.42, 1e-3
+elif CASE == "pwo2-mapped":
+    # uwplasma/vmex#596 in free-boundary single stage: pwo2's seed and plasma limits with the PR's mapped pwO target,
+    # and the coils of its single-stage example, 3 per half period of order 4 (run with --coils of circular ones,
+    # CreateEquallySpacedCurves(3, 4, 1.0, 2.7 a, nfp=2)), length <= 2 pi 7 a, curvature <= 1 / (0.7 a), coil-coil
+    # and coil-plasma distance >= 0.5 a, a = 1 / 6 m, and no mean-squared-curvature limit (1e3 / m^2).
+    COIL_ORDER, COIL_FIT_VACUUM, COIL_FIT_MAXITER = 4, True, 3000
+    LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2 * math.pi * 7 / 6, 6 / 0.7, 1e3
+    COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
+    SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
+    IOTA_FLOOR = 0.42
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
     # half period (qh4-beta: the 3 QH coils).
@@ -275,10 +289,13 @@ def target_residual():
     """Residual vector of the case's target: quasisymmetry of ``HELICITY``, constructed QI or effective ripple."""
     from vmex import optimize as opt
     from vmex.core.neoclassical import EffectiveRippleResidual
+    from vmex.core.pwo import MappedPwOResidual
     from vmex.core.qi import ConstructedQIResidual
 
     if TARGET_NAME == "eps_eff":
         return EffectiveRippleResidual(np.asarray(EPS_EFF_SURFACES), reference=EPS_EFF_REFERENCE)
+    if TARGET_NAME == "pwO":
+        return MappedPwOResidual(np.asarray(PWO_SURFACES), mboz=8, nboz=8, oversample=2)
     if HELICITY is None:
         return ConstructedQIResidual(np.asarray(QI_SURFACES), **QI_OPTIONS)
     return opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), *HELICITY)
@@ -1403,6 +1420,7 @@ def main(argv=None):
     import vmex as vj
     from vmex import optimize as opt
     from vmex.core import implicit as im
+    from vmex.core.neoclassical import EffectiveRippleResidual
 
     started = time.monotonic()
     inp, redl = seed_input(), None
@@ -1454,7 +1472,8 @@ def main(argv=None):
                       plasma_current=current, plasma_current_spline=True)
     kinetic = dkx_current_rows(inp, design, args, out) if args.in_loop_dkx else None
     qs = target_residual()
-    mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
+    mirror = (((lambda state, runtime: jnp.max(qs.diagnostics_state(state, runtime)[3])),) if TARGET_NAME == "pwO"
+              else (opt.mirror_ratio,) if MIRROR_LIMIT else ())
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
@@ -1471,7 +1490,7 @@ def main(argv=None):
         return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
 
     def loss(state, runtime, x):
-        residuals = qs.residuals_state(state, runtime)
+        residuals = qs.residuals_state(state, runtime) / (np.sqrt(PWO_SCALE) if TARGET_NAME == "pwO" else 1.0)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
@@ -1543,8 +1562,10 @@ def main(argv=None):
     last = dict(time=time.monotonic())
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
-    ripple = (jax.jit(lambda state, params: qs.compute_state(state, im.runtime_from_params(params, model.cfg))[
-        "epsilon_effective"]) if TARGET_NAME == "eps_eff" else None)
+    neo = (qs if TARGET_NAME == "eps_eff" else
+           EffectiveRippleResidual(np.asarray(PWO_SURFACES)) if TARGET_NAME == "pwO" else None)
+    ripple = (jax.jit(lambda state, params: neo.compute_state(state, im.runtime_from_params(params, model.cfg))[
+        "epsilon_effective"]) if neo is not None else None)
     extension_values = jax.jit(lambda state, params: (
         {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
         extension_cost(state, im.runtime_from_params(params, model.cfg))))
@@ -1592,6 +1613,7 @@ def main(argv=None):
                    qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
                    **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
                    **({"epsilon_effective": np.asarray(ripple(state_x, params_x)).tolist()} if ripple else {}),
+                   **({"mirror": float(h[3])} if mirror else {}),
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),

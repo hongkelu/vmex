@@ -199,7 +199,7 @@ elif CASE == "pwo2-mapped":
     LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2 * math.pi * 7 / 6, 6 / 0.7, 1e3
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
-    IOTA_FLOOR = 0.42
+    IOTA_FLOOR, PWO_SCALE = 0.42, 7.17e-3  # the seed's free boundary (circular coils fitted to it): 7.168e-3
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
     # half period (qh4-beta: the 3 QH coils).

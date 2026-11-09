@@ -178,7 +178,7 @@ elif CASE == "pwo2-mapped":
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
     IOTA_FLOOR, PWO_SCALE = 0.42, 7.17e-3  # the seed's free boundary (circular coils fitted to it): 7.168e-3
-elif CASE == "pwo3-tok":
+elif CASE == "pwo3-seed":
     # uwplasma/vmex pwO_optimization.py at NFP 3 in free-boundary single stage: its near-circular seed (R = 1, a = 0.2,
     # 0.05 m rotating ellipse, aspect 5.164), its 8 surfaces, Boozer 16 and mirror limit, the map held at that example's
     # converged vacuum values with limit_map, and the coils of single_stage_optimization_pwO.py as in pwo2-mapped
@@ -1046,7 +1046,7 @@ def main(argv=None):
     from essos.coil_design import coil_constraint
 
     coil_rows = coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
-                                   forward_chunk=32 if COIL_POINT_ROWS else None)
+                                forward_chunk=32 if COIL_POINT_ROWS else None)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
     def save(tag):

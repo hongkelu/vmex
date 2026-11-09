@@ -27,7 +27,7 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.  The interface conditions leave the boundary's poloidal labelling
 free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"``,
-``"minimal"`` or ``"none"``).
+``"flat_arc"`` or ``"none"``).
 
 This is an opt-in alternative to NESTOR (a VMEX extension, like position
 control); nothing changes unless it is requested.  Entry points, from the most
@@ -189,16 +189,10 @@ def _equal_arc_rows(gamma):
     return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
-def _relabelling_directions(inp, xb, max_mode, tol):
-    """Directions of the boundary coordinates ``xb`` (``pack_boundary(..., vary_major_radius=True)``) that move the
-    surface less than ``tol`` normal to itself: a relabelling of its points, to first order.
-
-    They are the generalized eigenvectors of the normal and the total displacement of the surface, area weighted over
-    one field period, whose normal share (RMS normal over RMS displacement) is below ``tol``.  Returns ``(V, B,
-    shares)``: the directions ``(xb.size, k)``, orthonormal in the displacement metric ``B``, and their shares.
-    """
-    import scipy.linalg
-
+def _displacement_metrics(inp, xb, max_mode):
+    """``(A, B)``: the quadratic forms of a change of the boundary coordinates ``xb``
+    (``pack_boundary(..., vary_major_radius=True)``) in the surface's normal and total displacement, area weighted over
+    one field period.  A direction's normal share (RMS normal over RMS displacement) is ``sqrt(u A u / u B u)``."""
     from .optimize import boundary_arrays_from_x
 
     mpol, ntor, nfp = int(inp.mpol), int(inp.ntor), int(inp.nfp)
@@ -222,9 +216,7 @@ def _relabelling_directions(inp, xb, max_mode, tol):
     area = np.sqrt((R * Z_t) ** 2 + (Z_t * R_p - R_t * Z_p) ** 2 + (R * R_t) ** 2)
     D_n = (-(R * Z_t)[:, None] * D_R + (R * R_t)[:, None] * D_Z) / area[:, None]
     B = D_R.T @ (area[:, None] * D_R) + D_Z.T @ (area[:, None] * D_Z)
-    shares, V = scipy.linalg.eigh(D_n.T @ (area[:, None] * D_n), B)
-    keep = shares < tol**2
-    return V[:, keep], B, np.sqrt(np.maximum(shares[keep], 0.0))
+    return D_n.T @ (area[:, None] * D_n), B
 
 
 def _arc_label(inp):
@@ -250,13 +242,12 @@ def _arc_label(inp):
     return label
 
 
-#: The minimal gauge (``labelling="minimal"``): the boundary directions it pins are those of the fit's Jacobian, in
+#: The flat-arc gauge (``labelling="flat_arc"``): the boundary directions it holds are those of the fit's Jacobian, in
 #: column-scaled coordinates, with a singular value below ``gauge_tau`` times the largest and a normal share (RMS
-#: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.
-GAUGE_TAU = 1e-2
-#: Default ``gauge_tau`` per labelling: flat arc pins every tangential direction (its rows are soft and zero at the
-#: reference fit, so a direction the interface rows determine is theirs anyway; the weight decides, no cutoff).
-GAUGE_TAUS = {"minimal": GAUGE_TAU, "flat_arc": 1.0}
+#: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.  The default holds every tangential
+#: direction (its rows are soft and zero at the reference fit, so a direction the interface rows determine is theirs
+#: anyway; the weight decides, no cutoff).
+GAUGE_TAU = 1.0
 GAUGE_NORMAL_SHARE = 0.2
 
 
@@ -266,10 +257,10 @@ ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; for the minimal gauge the weight of its rows in column-scaled coordinates, for flat
-#: arc that of its arc-distribution rows (zero at the reference fit, so they need not be weak);
+#: on the benchmark designs; for flat arc that of its arc-distribution rows (zero at the reference fit, so they need
+#: not be weak);
 #: ``"none"`` has no labelling rows, as any labelling at weight 0 (the same model).
-LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "minimal": 5e-2, "flat_arc": 1e-1, "none": 0.0}
+LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1, "none": 0.0}
 
 
 @dataclass(frozen=True)
@@ -280,10 +271,10 @@ class ThreeTermsConfig:
     ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary (the
     initial one: each labelled point is held near its position there, the surface free to move), ``"equal_arc"``
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
-    part), ``"minimal"`` pins only the fit's own flat, tangential directions at a reference fit (the minimal gauge,
-:meth:`ThreeTermsModel.set_minimal_gauge`: the no-label fit, made well determined; ``gauge_tau`` selects the
-directions), ``"flat_arc"`` the same directions held instead by the reference fit's arc-length distribution
-on the current surface (:meth:`ThreeTermsModel.set_minimal_gauge`: no point positions), and ``"none"`` adds no labelling rows (any labelling at ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
+    part), ``"flat_arc"`` holds the arc-length distribution of a reference fit along the fit's flat, tangential
+    directions on the current surface (:meth:`ThreeTermsModel.set_flat_arc_gauge`: the no-label fit, made well
+    determined; ``gauge_tau`` selects the directions), and ``"none"`` adds no labelling rows (any labelling at
+    ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
     NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
     minima).
@@ -325,7 +316,7 @@ on the current surface (:meth:`ThreeTermsModel.set_minimal_gauge`: no point posi
     bootstrap: Any = field(default=None, repr=False)
     bootstrap_helicity: int = 0
     bootstrap_weight: float = 100.0
-    gauge_tau: float | None = None
+    gauge_tau: float = GAUGE_TAU
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
@@ -532,10 +523,10 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc", gauge_tau=None):
+                 fixed_boundary=False, labelling="equal_arc", gauge_tau=GAUGE_TAU):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
-        from .optimize import _dof_modes, _ess_scale, boundary_arrays_from_x, pack_boundary
+        from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
         if labelling not in LABEL_WEIGHTS:
@@ -550,10 +541,8 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        if gauge_tau is None:
-            gauge_tau = GAUGE_TAUS.get(labelling, GAUGE_TAU)
         self.labelling, self.label_weight, self.gauge_tau = labelling, float(label_weight), float(gauge_tau)
-        self._gauge = None  # the gauge's rows, once set: (Q, reference boundary) or flat arc's (M, reference L)
+        self._gauge = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
         self._arc_label = _arc_label(fixed)
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
@@ -591,11 +580,6 @@ class ThreeTermsModel:
             return params if self.bootstrap is None else self.bootstrap.apply(params, x[nb:])
 
         self.with_boundary = with_boundary
-        modes = _dof_modes(fixed, self.max_mode)
-        rows_, cols_ = np.array([n + int(fixed.ntor) for _, n in modes]), np.array([m for m, _ in modes])
-        # the boundary coordinates of params (the inverse of with_boundary on them): the minimal gauge's argument
-        self._boundary_of = lambda params: jnp.concatenate(
-            [params.rbc[rows_, cols_], params.zbs[rows_, cols_], params.rbc[int(fixed.ntor), 0][None]])
         seed = self.solve(self.params0)
         if seed is None:
             from .errors import VmecConvergenceError
@@ -667,8 +651,7 @@ class ThreeTermsModel:
     def _gauge_rows(self, params):
         """The gauge's rows at ``params`` (they depend on the boundary alone)."""
         Q, reference = self._gauge
-        return Q @ ((self._arc_label(params.rbc, params.zbs) if self.labelling == "flat_arc"
-                     else self._boundary_of(params)) - reference)
+        return Q @ (self._arc_label(params.rbc, params.zbs) - reference)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -727,7 +710,7 @@ class ThreeTermsModel:
         self._predict = jax.jit(predict)
 
         def pullback(fun, state, mask, params, cotangents, *args):
-            """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium, per i.
+            """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
@@ -823,26 +806,23 @@ class ThreeTermsModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
-    def set_minimal_gauge(self, x, jacobian):
-        """Pin the fit's flat, tangential directions at boundary ``x`` (``labelling="minimal"``); returns their number.
+    def set_flat_arc_gauge(self, x, jacobian):
+        """Hold the fit's flat, tangential directions at boundary ``x``; returns their number.
 
         The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
         nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
-        ``x`` (:meth:`linearize`), the pinned directions are the right singular vectors of its boundary columns
+        ``x`` (:meth:`linearize`), the held directions are the right singular vectors of its boundary columns
         (scaled to unit norm) with a singular value below ``gauge_tau`` times the largest and a surface displacement
-        of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows
-        ``label_weight * Q (u - u_x)`` (``u`` the scaled coordinates) then hold them at ``x``: zero there, linear,
-        and the same for every design, so the free boundary stays the interface fit's and the problem does not
-        change while it is optimized.  For ``labelling="flat_arc"`` the rows are instead
+        of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
         ``label_weight * M^T (L - L_x)``, ``L`` the arc-length distribution of the current boundary
         (:func:`_arc_label`), ``L_x`` that of the fit at ``x`` and ``M`` an orthonormal basis of its change along the
-        pinned directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach -- no
+        held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach -- no
         point positions, so the surface moves freely and its labelling cannot degenerate.  Zero at ``x`` (an
         absolute equal-arc target costs the interface accuracy: the flat directions are weak, not free).
         Recompiles the rows once.
         """
-        if self.labelling not in ("minimal", "flat_arc"):
-            raise ValueError("set_minimal_gauge needs labelling='minimal' or 'flat_arc'")
+        if self.labelling != "flat_arc":
+            raise ValueError("set_flat_arc_gauge needs labelling='flat_arc'")
         nb, last = self.n_boundary, self._last_linearize
         old = 0 if self._gauge is None else self._gauge[0].shape[0]
         xb = np.asarray(x, dtype=float)[:nb]
@@ -852,21 +832,15 @@ class ThreeTermsModel:
         norms = np.linalg.norm(J, axis=0)
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
-        V, B, shares = _relabelling_directions(self.fixed, xb, self.max_mode, np.inf)
-        A = B @ V @ np.diag(shares ** 2) @ V.T @ B  # the normal displacement's metric: A V = B V diag(share^2)
+        A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
         flat = [u for s, u in zip(sv, Vt) if s < self.gauge_tau * sv[0]]
-        pinned = [u for u in flat if (u / norms) @ A @ (u / norms) < GAUGE_NORMAL_SHARE ** 2 * ((u / norms) @ B @ (u / norms))]
-        Q = self.label_weight * np.array(pinned).reshape(-1, nb) * norms
-        self._gauge = (jnp.asarray(Q), jnp.asarray(xb)) if len(pinned) else None
-        if self.labelling == "flat_arc" and pinned:
-            from .optimize import boundary_arrays_from_x
-
-            L = jax.jacfwd(lambda z: self._arc_label(*boundary_arrays_from_x(
-                self.fixed, z, self.max_mode, vary_major_radius=True)[:2]))(jnp.asarray(xb))
-            M = np.linalg.qr(np.asarray(L) @ (np.array(pinned).reshape(-1, nb) / norms).T)[0]
-            reference = self._arc_label(*boundary_arrays_from_x(self.fixed, jnp.asarray(xb), self.max_mode,
-                                                                vary_major_radius=True)[:2])
-            self._gauge = (jnp.asarray(self.label_weight * M.T), reference)
+        tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
+        held = [u for u in flat if tangential(u / norms)]
+        self._gauge = None
+        if held:
+            L = jax.jacfwd(self._boundary_arc)(jnp.asarray(xb))
+            M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
+            self._gauge = (jnp.asarray(self.label_weight * M.T), self._boundary_arc(jnp.asarray(xb)))
         self._implicit_setup()
         if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
@@ -875,25 +849,27 @@ class ThreeTermsModel:
                 lambda t: jax.jvp(self._gauge_rows, (aux[2],), (t,))[1])(batch)).T
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
-            self._last_linearize, self._linearization = (key, extra_key, (columns, dz, batch, aux), linearization), linearization
-        return len(pinned)
+            self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
+            self._linearization = linearization
+        return len(held)
+
+    def _boundary_arc(self, z):
+        """The arc-length distribution (:func:`_arc_label`) of the boundary coordinates ``z``."""
+        from .optimize import boundary_arrays_from_x
+
+        return self._arc_label(*boundary_arrays_from_x(self.fixed, z, self.max_mode, vary_major_radius=True)[:2])
 
     def gauge_curvature(self, x, params):
         """``sum_i g_i(x) Hess g_i(x)`` of the flat-arc gauge rows ``g`` (nonlinear in the boundary) at the fit
         ``x`` with parameters ``params``, over all fit coordinates: the second-order term of the fit's stationarity
-        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` for the other labellings, whose
-        rows' curvature does not enter (linear gauge rows, or no gauge)."""
-        if self._gauge is None or self.labelling != "flat_arc":
+        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` without a gauge."""
+        if self._gauge is None:
             return None
-        from .optimize import boundary_arrays_from_x
-
         (M, reference), nb = self._gauge, self.n_boundary
         xb = jnp.asarray(x, dtype=float)[:nb]
-        g = np.asarray(M @ (self._arc_label(params.rbc, params.zbs) - reference))
-        rows = lambda z: M @ self._arc_label(*boundary_arrays_from_x(  # noqa: E731
-            self.fixed, z, self.max_mode, vary_major_radius=True)[:2])
+        g = M @ (self._arc_label(params.rbc, params.zbs) - reference)
         S = np.zeros((np.size(x), np.size(x)))
-        S[:nb, :nb] = np.asarray(jax.hessian(lambda z: jnp.asarray(g) @ rows(z))(xb))
+        S[:nb, :nb] = np.asarray(jax.hessian(lambda z: g @ (M @ self._boundary_arc(z)))(xb))
         return S
 
     def linearize(self, x, aux, field, extra=None):

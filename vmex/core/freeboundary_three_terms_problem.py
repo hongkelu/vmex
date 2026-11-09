@@ -26,9 +26,9 @@ from .problem import FunctionProblem
 #: The gradient's polish of a trial: its own Jacobian, to this relative cost change in at most this many evaluations,
 #: kept when it cuts the cost below this fraction.
 GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP = 1e-4, 20, 0.9
-#: The Newton products' (``gradient_rounds``, ``gradient_fit_xtol``) difference step in the column-scaled model
-#: coordinates, one-sided (the fit's own cost gradient the other side) when ``NEWTON_SIDES`` is 1, central when 2.
-NEWTON_GRADIENT_EPS, NEWTON_SIDES = 1e-4, 1
+#: The Newton products' (``gradient_rounds``, ``gradient_fit_xtol``) one-sided difference step in the column-scaled
+#: model coordinates.
+NEWTON_GRADIENT_EPS = 1e-4
 #: ``gradient_fit_xtol``: the fit's Newton steps before its gradient: at most this many trial solves in all; a step
 #: of the curvature model that cuts the Gauss-Newton step by less than ``GRADIENT_FIT_CUT`` is followed by one of
 #: GMRES on the products, to this relative residual in at most this many products.  A step is halved at most
@@ -80,15 +80,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         dh/dx = dh/dx|_b - mu^T dF/dx,   mu = H^-1 dh/db,   H = dF/db,
 
-    every row's ``mu`` in one block Krylov space of the Gauss-Newton-preconditioned ``H`` (Galerkin), a
-    round adding a direction per row; ``H v`` and ``dF/dx^T v`` come together from central differences of the
-    fit cost's gradient (one tight solve and one reverse pass each side, no Jacobian), and the rounds stop at a
-    relative residual ``gradient_rtol``.  With ``gradient_fit_xtol`` the fit is first converged to its
-    stationarity, Newton steps (``H`` as above, Gauss-Newton-preconditioned GMRES) until the Gauss-Newton
-    step's column-scaled size is below it, since both forms assume ``F = 0``.  With ``gradient_certify`` a trial
-    other than the accepted point is linearized when first evaluated and rejected unless its fit ends below ``gradient_certify`` times
-    ``gradient_fit_xtol`` and its Newton rows below that times ``gradient_rtol``: the optimizer's line search then
-    shortens the step until its equilibrium is converged and its gradient exact.  Nothing recompiles when ``x`` changes.  ``model`` is the :class:`ThreeTermsModel`; :meth:`boundary_residual` and
+    every row's ``mu`` in one block Krylov space preconditioned by the Gauss-Newton matrix, a round adding a direction
+    per row still above the relative residual ``gradient_rtol``.  ``H v`` and ``dF/dx^T v`` come together from one-sided
+    differences of the fit cost's gradient (one tight solve and one reverse pass, no Jacobian).  With
+    ``gradient_fit_xtol`` the fit is first converged to its stationarity, by Newton steps until the column-scaled
+    Gauss-Newton step is below it, since both forms assume ``F = 0``.  With ``gradient_certify`` a trial other than the
+    accepted point is linearized when first evaluated and rejected unless its fit ends below ``gradient_certify`` times
+    ``gradient_fit_xtol`` and its Newton rows below that times ``gradient_rtol``: the line search then shortens the step
+    until the equilibrium is converged and the gradient exact.  Nothing recompiles when ``x`` changes.  ``model`` is the
+    :class:`ThreeTermsModel`; :meth:`boundary_residual` and
     ``stats`` (counts of trials, failures and their reasons, boundary evaluations and linearizations) report
     progress.
     """
@@ -96,8 +96,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
-                  gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None):
+                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
+                  gauge_max_share=None, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None,
+                  gradient_certify=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -108,17 +109,17 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
         quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
-        ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's boundary fit stops at a relative cost change of
-        ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
+        ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's
+        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
         the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
-        is rejected.  With a gauge (labelling ``"minimal"`` or ``"flat_arc"``), set at the seed's fit,
-        ``gauge_refresh=K`` sets it again at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and
-        ``gauge_max_share`` whenever the gauge rows' share of the accepted fit's cost exceeds it, so it follows the
-        design: its rows vanish there, so no value at the accepted point changes.  ``gradient_rounds`` (at most
-        that many block Krylov rounds, to the relative residual ``gradient_rtol``) gives the exact Newton gradient
-        instead of the Gauss-Newton one (0); ``gradient_certify`` (a factor, with both) rejects a trial whose fit or
-        Newton rows end above that factor times their tolerances.
+        is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, ``gauge_refresh=K`` sets it again
+        at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and ``gauge_max_share`` whenever the gauge
+        rows' share of the accepted fit's cost exceeds it, so it follows the design: its rows vanish there, so no value
+        at the accepted point changes.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
+        residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
+        ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
+        their tolerances.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -218,7 +219,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        if model.labelling in ("minimal", "flat_arc") and model._gauge is None:  # the seed fit's flat directions
+        if model.labelling == "flat_arc" and model._gauge is None:  # the seed fit's flat directions
             self._set_gauge(x0)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
@@ -232,6 +233,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
             lambda z: model.rows(state, params, field(z)), (x,), (dx,))[1])
 
+    def _count(self, name, amount=1):
+        self.stats[name] = self.stats.get(name, 0) + amount
+
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
@@ -239,10 +243,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # with the plasma columns: the gradient at x reuses this linearization, its gauge rows swapped
         extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
         J = model.linearize(sol["x"], sol["aux"], self.field(xj), extra=extra)[0]
-        self.stats["gauge_directions"] = model.set_minimal_gauge(sol["x"], J)
-        self.stats["gauge_sets"] = self.stats.get("gauge_sets", 0) + 1
-        self._field_derivatives()  # a refresh may pin a different number of directions
-        # x's fit as it is (flat arc's rows vanish there, the minimal gauge's too), under the new rows
+        self.stats["gauge_directions"] = model.set_flat_arc_gauge(sol["x"], J)
+        self._count("gauge_sets")
+        self._field_derivatives()  # a refresh may hold a different number of directions
+        # x's fit as it is (flat arc's rows vanish there), under the new rows
         sol.pop("gradients", None)
         self._cache, self._rejections, self._anchor = {key: sol}, {}, {}
         self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], key
@@ -334,7 +338,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             reason = str(error)
         else:
             fit, newton = self.stats.get("fit_step", np.inf), self.stats.get("newton_residual", np.inf)
-            if (fit <= self.gradient_certify * self.gradient_fit_xtol and newton <= self.gradient_certify * self.gradient_rtol
+            factor = self.gradient_certify
+            if (fit <= factor * self.gradient_fit_xtol and newton <= factor * self.gradient_rtol
                     and self.stats.get("newton_fallbacks", 0) == fallbacks):
                 return sol
             reason = f"uncertified gradient: fit step {fit:.1e}, Newton residual {newton:.1e}"
@@ -440,7 +445,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 return scipy.linalg.cho_factor(P + W)
             except np.linalg.LinAlgError:
                 self._curvature.clear()
-                self.stats["curvature_resets"] = self.stats.get("curvature_resets", 0) + 1
+                self._count("curvature_resets")
         return scipy.linalg.cho_factor(P)
 
     def _products(self, cost_gradient, b, base, block, norms, P):
@@ -448,14 +453,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         ``block``: differences of the fit cost's gradient at ``b`` (``base`` there), added to the curvature memory.
         ``None`` when a side has no tight solution."""
         eps, HB, FB = NEWTON_GRADIENT_EPS, [], []
-        near = None if base is None else (b, base)
         for v in block.T:
-            plus = cost_gradient(b + eps * v / norms, near=near)
-            minus = base if NEWTON_SIDES == 1 else cost_gradient(b - eps * v / norms, near=near)
-            if plus is None or minus is None:
+            plus = cost_gradient(b + eps * v / norms, near=(b, base))
+            if plus is None:
                 return None
-            HB.append((plus[0] - minus[0]) / (NEWTON_SIDES * eps) / norms)
-            FB.append(None if plus[1] is None else (plus[1] - minus[1]) / (NEWTON_SIDES * eps))
+            HB.append((plus[0] - base[0]) / eps / norms)
+            FB.append(None if plus[1] is None else (plus[1] - base[1]) / eps)
         HB = np.stack(HB, axis=1)
         self._curvature.add(block / norms[:, None], (HB - P @ block) * norms[:, None])
         return HB, None if FB[0] is None else np.stack(FB, axis=1)
@@ -501,32 +504,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             curvature = self._model_factor(P, norms)
             du = -scipy.linalg.cho_solve(curvature, F)
             if exact:
+                precondition = LinearOperator((n, n), matvec=lambda v: scipy.linalg.cho_solve(curvature, np.ravel(v)))
                 try:
                     du, _ = gmres(LinearOperator((n, n), matvec=hvp), -F, x0=du, rtol=GRADIENT_FIT_RTOL,
-                                  M=LinearOperator((n, n), matvec=lambda v: scipy.linalg.cho_solve(curvature, np.ravel(v))),
+                                  M=precondition,
                                   restart=GRADIENT_FIT_PRODUCTS, maxiter=1)
                 except RuntimeError:
                     pass
-            stale = False
-            for direction, halvings in (((gn, GRADIENT_FIT_GN_HALVINGS),) if np.array_equal(du, gn) else
-                                        ((du, GRADIENT_FIT_HALVINGS), (gn, GRADIENT_FIT_GN_HALVINGS))):
-                for t in 0.5 ** np.arange(halvings + 1):
-                    trial = cost_gradient(b + t * direction / norms, near=(b, base))
-                    steps += 1
-                    if trial is None:
-                        continue
-                    # a lower cost and no larger Gauss-Newton step, or (at the solves' noise) a halved one
-                    new = float(np.linalg.norm(scipy.linalg.cho_solve(factor, trial[0] / norms)))
-                    lower = trial[2] @ trial[2] <= r @ r * (1 + 1e-12)
-                    if new < 0.5 * size or (new <= size and lower):
-                        break
-                    stale = stale or (t == 1.0 and lower)
-                else:
-                    continue
+            directions = [(gn, GRADIENT_FIT_GN_HALVINGS)]
+            if not np.array_equal(du, gn):
+                directions.insert(0, (du, GRADIENT_FIT_HALVINGS))
+            s, trial, stale, tries = self._backtrack(cost_gradient, b, base, directions, factor, norms, size)
+            steps += tries
+            if s is None:
                 break
-            else:
-                break
-            s = t * direction
             if np.linalg.norm(s) >= NEWTON_GRADIENT_EPS:  # the step's secant pair: (H - P) s ~ F(b + s) - F - P s
                 self._curvature.add((s / norms)[:, None], ((trial[0] / norms - F - P @ s) * norms)[:, None])
             b, got, moved = b + s / norms, trial, True
@@ -541,13 +532,32 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 size = float(np.linalg.norm(scipy.linalg.cho_solve(factor, got[0] / norms)))
                 exact = True  # the next step is the model's (now plain Gauss-Newton), not GMRES
                 self._curvature.clear()
-        self.stats["fit_steps"] = self.stats.get("fit_steps", 0) + steps
-        self.stats["fit_products"] = self.stats.get("fit_products", 0) + products[0]
+        self._count("fit_steps", steps)
+        self._count("fit_products", products[0])
+        self._count("fit_linearizations", refreshes)
         self.stats["fit_step"] = size
-        self.stats["fit_linearizations"] = self.stats.get("fit_linearizations", 0) + refreshes
         if moved:
             sol.update(x=b, aux=got[3])
         return J_b if moved else None
+
+    def _backtrack(self, cost_gradient, b, base, directions, factor, norms, size):
+        """The first acceptable step of ``directions`` (``(step, halvings)`` pairs in order) from the fit ``b``: one
+        that lowers the cost without enlarging the Gauss-Newton step of size ``size``, or (at the solves' noise) halves that
+        step.  Returns ``(step, trial, stale, tries)``, ``step`` ``None`` when none is; ``stale``: a full step lowered
+        the cost but enlarged the Gauss-Newton step, so the Jacobian behind ``factor`` no longer describes the fit."""
+        cost, stale, tries = base[2] @ base[2], False, 0
+        for direction, halvings in directions:
+            for t in 0.5 ** np.arange(halvings + 1):
+                trial = cost_gradient(b + t * direction / norms, near=(b, base))
+                tries += 1
+                if trial is None:
+                    continue
+                new = float(np.linalg.norm(scipy.linalg.cho_solve(factor, trial[0] / norms)))
+                lower = trial[2] @ trial[2] <= cost * (1 + 1e-12)
+                if new < 0.5 * size or (new <= size and lower):
+                    return t * direction, trial, stale, tries
+                stale = stale or (t == 1.0 and lower)
+        return None, None, stale, tries
 
     def _newton_terms(self, sol, J_b, S, G_b, xj, field):
         """``mu^T dF/dx`` of every row (a row each) at the fit ``sol``, ``F = J_b^T r`` and ``mu = H^-1 dh/db``:
@@ -560,7 +570,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         g = (G_b / norms).T
         params0 = self._params_at(xj)
         cost_gradient = lambda z, near=None: self._cost_gradient(z, params0, field, xj, near=near)  # noqa: E731
-        base = cost_gradient(b) if NEWTON_SIDES == 1 else None
+        base = cost_gradient(b)
         curvature = self._model_factor(P, norms)
         V, HV, FX = np.zeros((nb, 0)), np.zeros((nb, 0)), np.zeros((xj.size, 0))
         size = np.maximum(np.linalg.norm(g, axis=0), 1e-300)
@@ -569,12 +579,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             block = block - V @ (V.T @ block)
             u, sv, _ = np.linalg.svd(block, full_matrices=False)
             block = u[:, sv > 1e-6 * sv[0]]
-            got = None if NEWTON_SIDES == 1 and base is None else self._products(cost_gradient, b, base, block,
-                                                                                    norms, P)
+            got = None if base is None else self._products(cost_gradient, b, base, block, norms, P)
             if got is None:
-                self.stats["newton_fallbacks"] = self.stats.get("newton_fallbacks", 0) + 1
+                self._count("newton_fallbacks")
                 return None
-            self.stats["newton_products"] = self.stats.get("newton_products", 0) + block.shape[1]
+            self._count("newton_products", block.shape[1])
             V, HV, FX = np.hstack([V, block]), np.hstack([HV, got[0]]), np.hstack([FX, got[1]])
             # least residual, never worse round to round; directions below the products' accuracy left out
             coefficients = np.linalg.lstsq(HV, g, rcond=1e-6)[0]
@@ -651,7 +660,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         sol = self._record(x)
         eq = solve_equilibrium(self.model._im.input_with_params(self.model.fixed, sol["params"]),
                                initial_state=sol["state"])
-        moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b))) / max(float(np.max(np.abs(np.asarray(b)))), 1e-300))
+        moved = max(float(np.max(np.abs(np.asarray(a) - np.asarray(b)))
+                          / max(float(np.max(np.abs(np.asarray(b)))), 1e-300))
                     for a, b in zip(jax.tree.leaves(eq.state), jax.tree.leaves(sol["state"])) if np.size(b))
         if not moved <= rtol:
             import warnings

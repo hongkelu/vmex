@@ -128,6 +128,8 @@ links to the module that documents it.
   (``three_terms=`` of :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`);
   :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
   — single-stage optimization at that free boundary
+- :class:`~vmex.core.coil_design.CoilDesign` — design vector -> ESSOS coils plus the
+  plasma's PHIEDGE and current profile, the field and plasma maps of that problem
 - :class:`~vmex.core.extender.MagneticField` — base JAX field with explicit
   and stored-point evaluation;
   :class:`~vmex.core.extender.VmecInteriorField` — field inside the plasma;

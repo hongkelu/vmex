@@ -50,6 +50,7 @@ remains available without it; virtual-casing solver paths raise a clear error.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import operator
 from typing import Any
@@ -710,6 +711,31 @@ def plasma_field_on_boundary(
     if hasattr(field, "B_plasma_on_surface"):
         return field.B_plasma_on_surface(**kwargs)
     return field._vc.compute_internal_B(field.B_total, **kwargs)
+
+
+@contextlib.contextmanager
+def rematerialized_scans():
+    """Trace the casing integrals with every ``lax.scan`` body checkpointed (recomputed in the reverse pass).
+
+    A reverse pass through the on-surface integral otherwise keeps every source-target chunk's intermediates
+    (tens of GiB at a production grid); checkpointed, it keeps a chunk's carry.  Forward values and derivatives
+    are unchanged.  Only programs traced inside the context are affected: call a jitted reverse pass inside it
+    every time, so a retrace is checkpointed too.
+    """
+    _require_vcj()
+    import types
+
+    from virtual_casing_jax import integrals
+
+    lax = types.SimpleNamespace(**{k: getattr(jax.lax, k) for k in dir(jax.lax) if not k.startswith("__")})
+    lax.scan = lambda f, *args, **kwargs: jax.lax.scan(jax.checkpoint(f), *args, **kwargs)
+    shim = {k: getattr(jax, k) for k in dir(jax) if not k.startswith("__")}
+    shim["lax"] = lax
+    saved, integrals.jax = integrals.jax, types.SimpleNamespace(**shim)
+    try:
+        yield
+    finally:
+        integrals.jax = saved
 
 
 def _internal_B_one_pass(vcj, B0, *, digits, chunk_size, quad_nt=None, quad_np=None, precision=None):

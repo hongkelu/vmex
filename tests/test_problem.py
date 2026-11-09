@@ -987,6 +987,43 @@ def test_shared_minimize_uses_physical_coordinates(bounded):
     np.testing.assert_array_equal(points[-1], result.x)
 
 
+def test_shared_minimize_max_step_boxes_each_accepted_step():
+    from vmex import optimize as opt
+    from scipy.optimize import NonlinearConstraint
+
+    target, scales = np.array([6., -40.]), np.array([.5, 4.])
+    problem = opt.FunctionProblem.from_functions(np.array([0., 0.]), scales=scales,
+        value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
+    # Two rows under scalar bounds: a rejected trial must return both.
+    constraint = NonlinearConstraint(lambda x: np.array([x[0], x[0]-1.]), -np.inf, 5.,
+                                     jac=lambda x: np.array([[1., 0.], [1., 0.]]))
+    points = [problem.x0.copy()]
+    result = opt.minimize(problem, method="SLSQP", constraints=constraint, callback=lambda x: points.append(x.copy()),
+                          options={"maxiter": 200, "ftol": 1e-12, "max_step": 1.0})
+    assert result.success
+    np.testing.assert_allclose(result.x, [5., -40.], atol=1e-5)
+    steps = np.abs(np.diff(points, axis=0)) / scales
+    assert len(points) > 10 and np.all(steps.max(axis=1) <= 1.0 + 1e-12)
+
+
+def test_shared_minimize_step_box_bounds_each_subproblem_step():
+    from vmex import optimize as opt
+    from scipy.optimize import NonlinearConstraint
+
+    target, scales = np.array([6., -40.]), np.array([.5, 4.])
+    problem = opt.FunctionProblem.from_functions(np.array([0., 0.]), scales=scales,
+        value_and_grad=lambda x: (float(np.sum((x-target)**2)), 2*(x-target)))
+    constraint = NonlinearConstraint(lambda x: np.array([x[0], x[0]-1.]), -np.inf, 5.,
+                                     jac=lambda x: np.array([[1., 0.], [1., 0.]]))
+    points = [problem.x0.copy()]
+    result = opt.minimize(problem, method="SLSQP", constraints=constraint, callback=lambda x: points.append(x.copy()),
+                          options={"maxiter": 200, "ftol": 1e-12, "step_box": 1.0})
+    np.testing.assert_allclose(result.x, [5., -40.], atol=1e-5)
+    steps = np.abs(np.diff(points, axis=0)) / scales
+    assert len(points) > 10 and np.all(steps.max(axis=1) <= 1.0 + 1e-9)
+    assert result.accepted_steps == len(points) - 1
+
+
 def test_shared_minimize_scales_physical_constraints_and_rejects_unsupported_method():
     from scipy.optimize import NonlinearConstraint
     from vmex import optimize as opt

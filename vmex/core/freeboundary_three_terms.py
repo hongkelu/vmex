@@ -750,9 +750,18 @@ class ThreeTermsModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
+        self._rows_pullback = jax.jit(lambda state, mask, params, cotangent, field: jax.tree.map(
+            lambda a: a[0], pullback(rows, state, mask, params, cotangent[None], field)))
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+
+    def rows_pullback(self, state, mask, params, field, cotangent):
+        """``ImplicitParams`` gradient of ``cotangent . rows`` through the equilibrium of a solved (tight) state: one
+        reverse pass, the casing rematerialized (:func:`~vmex.core.virtual_casing.rematerialized_scans`).  With the
+        rows themselves as ``cotangent``, the gradient of the fit's cost: no Jacobian."""
+        with vc.rematerialized_scans():
+            return self._rows_pullback(state, mask, params, jnp.asarray(cotangent), field)
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -791,12 +800,16 @@ class ThreeTermsModel:
             state, self._im.runtime_from_params(params, self.cfg), params))
         return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
 
-    def evaluate(self, x, params, field, seed=None, tight=False):
+    def evaluate(self, x, params, field, seed=None, tight=False, near=None):
         """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
-        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
+        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one.  ``near``
+        ``(x_near, state, mask)``, a solved state close to ``x``, replaces the last linearization's as the anchor of
+        the first-order seed (its responses kept)."""
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
+            if near is not None:
+                x_ref, state_ref, mask_ref = near
             seed = self._predict(state_ref, mask_ref, dz, jnp.asarray(np.asarray(x) - x_ref), params_x)
         tight = tight or self.cfg_trial is self.cfg
         solved = self.solve(params_x, seed, tight)

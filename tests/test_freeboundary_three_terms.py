@@ -210,6 +210,59 @@ def _small_vacuum():
 
 
 @needs_vc
+def test_certify_rejects_an_unconverged_fit_or_newton_gradient():
+    problem = ThreeTermsFreeBoundaryProblem.__new__(ThreeTermsFreeBoundaryProblem)
+    problem.gradient_certify, problem.gradient_fit_xtol, problem.gradient_rtol = 10.0, 1e-6, 1e-3
+    problem.stats, problem._cache, problem._rejections = dict(failed=0, rejection_reasons={}), {}, {}
+    problem._anchor = "last certified"
+    for fit, newton, certified in ((5e-6, 5e-3, True), (2e-2, 5e-3, False), (5e-6, 0.5, False)):
+        def linearize(x, sol, fit=fit, newton=newton):
+            problem.stats.update(fit_step=fit, newton_residual=newton)
+            problem._anchor = "this trial"
+            sol["gradients"] = np.zeros((1, 2))
+        problem._linearize = linearize
+        x, sol = np.array([fit, newton]), {}
+        got = problem._certify(x, sol)
+        assert (got is sol) == certified
+        assert problem._anchor == ("this trial" if certified else "last certified")
+        problem._anchor = "last certified"
+    assert problem.stats["failed"] == 2
+
+
+@needs_vc
+def test_converge_fit_converges_a_curved_fit_from_a_frozen_metric():
+    """A curved least-squares fit with a nonzero residual converges to ``gradient_fit_xtol`` from the start's
+    Jacobian, re-linearized where it went stale, and returns the latest one."""
+    from vmex.core import freeboundary_three_terms_problem as fbp
+
+    def residual(z):
+        return np.array([z[0] - 1.0 + 0.5 * z[1] ** 2, 2.0 * (z[1] - 0.5 + 0.3 * z[0] ** 2), 0.1 * z[0] * z[1]])
+
+    def jacobian(z):
+        return np.array([[1.0, z[1]], [1.2 * z[0], 2.0], [0.1 * z[1], 0.1 * z[0]]])
+
+    def cost_gradient(z, params0, field, xj, *, design=True, near=None):
+        r = residual(z)
+        return jacobian(z).T @ r, None, r, (None, None, None, True)
+
+    problem = ThreeTermsFreeBoundaryProblem.__new__(ThreeTermsFreeBoundaryProblem)
+    problem.gradient_fit_xtol, problem.stats = 1e-9, {}
+    problem._curvature = fbp._CurvatureMemory(fbp.CURVATURE_MEMORY)
+    problem.model = SimpleNamespace(gauge_curvature=lambda b, params: None,
+                                    linearize=lambda b, aux, field: (jacobian(b), None, None, aux))
+    problem._params_at = lambda xj: None
+    problem._cost_gradient = cost_gradient
+    z0 = np.array([0.0, 0.0])
+    J0 = jacobian(z0)
+    sol = dict(x=z0, params=None)
+    J_b = problem._converge_fit(sol, J0, None, None)
+    assert J_b is not None and problem.stats["fit_linearizations"] <= fbp.GRADIENT_FIT_REFRESHES
+    if problem.stats["fit_linearizations"]:
+        assert not np.allclose(J_b, J0)
+    assert problem.stats["fit_step"] < 1e-9 and problem.stats["fit_steps"] <= fbp.GRADIENT_FIT_STEPS + 9
+    assert np.linalg.norm(jacobian(sol["x"]).T @ residual(sol["x"])) < 1e-7
+
+
 @pytest.mark.full
 def test_three_term_option_fits_the_best_of_two_starts():
     """The solver option at low resolution: both starts (deck and NESTOR) reduce B.n and the sheet current of
@@ -544,14 +597,17 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 
 @needs_vc
 @pytest.mark.full
-@pytest.mark.parametrize("labelling, label_weight", [("anchored", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2),
-                                                     ("minimal", None), ("flat_arc", None)])
-def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
+@pytest.mark.parametrize("labelling, label_weight, rounds", [
+    ("anchored", None, 0), ("equal_arc", 1e-3, 0), ("equal_arc", 1e-2, 0), ("minimal", None, 0), ("flat_arc", None, 0),
+    ("flat_arc", None, 4)])
+def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight, rounds):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
     labelling, for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
     pinned only to the fit's tolerance), for the minimal gauge (pinned at the seed's fit, its rows zero there) and
-    for flat arc (the same directions held at the seed fit's arc distribution, its rows zero there)."""
+    for flat arc (the same directions held at the seed fit's arc distribution, its rows zero there), and for flat
+    arc with the Newton gradient (``gradient_rounds``: the residual's curvature kept, at fits converged by
+    ``gradient_fit_xtol``, against differences of converged fits)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -562,7 +618,8 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
         parameter_quantities=(lambda state, runtime, x: opt.aspect_ratio(state, runtime) * (1 + x[1]),),
         config=vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, nphi=24, ntheta=24,
                                    quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80)
+        boundary_ftol=1e-10, boundary_max_nfev=80, gradient_rounds=rounds,
+        gradient_fit_xtol=1e-6 if rounds else None)
     assert isinstance(problem, ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
     if labelling in ("minimal", "flat_arc"):
@@ -577,9 +634,13 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
     assert problem.boundary_residual(x0).sheet_current < 1e-2
     for k, h in ((0, 2e-3), (1, 2e-3)):
         e = h * np.eye(2)[k]
-        values = [np.r_[problem.fun(x0 + s * e), problem.constraint_values(x0 + s * e)] for s in (1, -1)]
+        # with the Newton gradient its converged fits (the values after a gradient), as the gradient assumes
+        values = [np.r_[problem.value_and_grad(x0 + s * e)[0] if rounds else problem.fun(x0 + s * e),
+                        problem.constraint_values(x0 + s * e)] for s in (1, -1)]
         fd = (values[0] - values[1]) / (2 * h)
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(value)))
+    if rounds:
+        assert problem.stats["newton_products"] > 0
     problem.accept_x(x0 + 2e-3 * np.eye(2)[1])
     assert problem.accepted_step == 1
     problem.boundary_max_residual = 1e-12  # no fit gets there: the trial is no solution

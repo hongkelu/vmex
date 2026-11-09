@@ -105,6 +105,7 @@ EPS_EFF_SURFACES, EPS_EFF_REFERENCE = (0.25, 0.5, 0.75), 1.0
 # mboz = nboz = 8) on PWO_SURFACES over sqrt(PWO_SCALE), the seed's value: the logged target is 1 there. The mirror row
 # is then the PR's, the largest mirror ratio of the full Boozer |B| on PWO_SURFACES; NEO's eps_eff^(3/2) is logged.
 PWO_SURFACES, PWO_SCALE = (0.25, 0.5, 0.75), 1.0
+PWO_MBOZ, PWO_OPTIONS = 8, {}  # Boozer resolution and map options (a, b, c, eta_min, limit_map) of the pwO kernel
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
@@ -177,6 +178,18 @@ elif CASE == "pwo2-mapped":
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
     IOTA_FLOOR, PWO_SCALE = 0.42, 7.17e-3  # the seed's free boundary (circular coils fitted to it): 7.168e-3
+elif CASE == "pwo3-tok":
+    # uwplasma/vmex pwO_optimization.py at NFP 3 in free-boundary single stage: its near-circular seed (R = 1, a = 0.2,
+    # 0.05 m rotating ellipse, aspect 5.164), its 8 surfaces, Boozer 16 and mirror limit, the map held at that example's
+    # converged vacuum values with limit_map, and the coils of single_stage_optimization_pwO.py as in pwo2-mapped
+    # (run with --coils of circular ones, CreateEquallySpacedCurves(3, 4, 1.0, 0.45, nfp=3)). PWO_SCALE: the example's seed.
+    COIL_ORDER, COIL_FIT_VACUUM, COIL_FIT_MAXITER = 4, True, 3000
+    LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2 * math.pi * 7 / 6, 6 / 0.7, 1e3
+    COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
+    SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (3, 5.1640, 0.2582), None, "pwO", (5.9, 6.1), 0.16
+    IOTA_FLOOR, IOTA_CEILING, PWO_SCALE, PWO_MBOZ = 0.42, 0.98, 1.04e-2, 16
+    PWO_SURFACES = tuple(np.linspace(0.1, 0.9, 8))
+    PWO_OPTIONS = dict(a=0.2762040, b=-0.3152474, c=-3.9965001, eta_min=2.2511724, limit_map=True)
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
     # half period (qh4-beta: the 3 QH coils).
@@ -272,7 +285,7 @@ def target_residual():
     if TARGET_NAME == "eps_eff":
         return EffectiveRippleResidual(np.asarray(EPS_EFF_SURFACES), reference=EPS_EFF_REFERENCE)
     if TARGET_NAME == "pwO":
-        return MappedPwOResidual(np.asarray(PWO_SURFACES), mboz=8, nboz=8, oversample=2)
+        return MappedPwOResidual(np.asarray(PWO_SURFACES), mboz=PWO_MBOZ, nboz=PWO_MBOZ, oversample=2, **PWO_OPTIONS)
     if HELICITY is None:
         return ConstructedQIResidual(np.asarray(QI_SURFACES), **QI_OPTIONS)
     return opt.QuasisymmetryRatioResidual(np.asarray(QA_SURFACES), *HELICITY)
@@ -1043,7 +1056,7 @@ def main(argv=None):
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     neo = (qs if TARGET_NAME == "eps_eff" else
-           EffectiveRippleResidual(np.asarray(PWO_SURFACES)) if TARGET_NAME == "pwO" else None)
+           EffectiveRippleResidual(np.asarray((0.25, 0.5, 0.75))) if TARGET_NAME == "pwO" else None)
     ripple = (jax.jit(lambda state, params: neo.compute_state(state, im.runtime_from_params(params, model.cfg))[
         "epsilon_effective"]) if neo is not None else None)
     extension_values = jax.jit(lambda state, params: (

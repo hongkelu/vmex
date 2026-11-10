@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from .omnigenity import boozer_spectrum_state
 
 __all__ = ["squeezed_pwo_coordinates", "mapped_pwo_residual_from_boozer", "MappedPwOResidual",
-           "FreeMapProblem", "one_field_period"]
+           "FreeMapProblem", "MapCoordinates", "one_field_period"]
 
 
 def _require(condition, message):
@@ -225,13 +225,17 @@ class MappedPwOResidual:
         self.mboz, self.nboz, self.oversample = mboz, nboz, oversample
         self.weights, self.options = weights, options
 
-    def compute_state(self, state, rt):
-        """Return one live Boozer transform, residual and construction diagnostics."""
+    def compute_state(self, state, rt, **options):
+        """Return one live Boozer transform, residual and construction diagnostics.
+
+        ``options`` override the kernel options, for example traced map parameters
+        (a, b, c, eta_min) that a design optimizes with the equilibrium.
+        """
         booz = boozer_spectrum_state(state, rt, surfaces=self.surfaces,
                                     mboz=self.mboz, nboz=self.nboz, oversample=self.oversample)
         out = self.kernel(bmnc_b=booz["bmnc_b"], bmns_b=booz.get("bmns_b"),
                           xm_b=booz["xm_b"], xn_b=booz["xn_b"], iota_b=booz["iota_b"],
-                          nfp=booz["nfp"], weights=self.weights, **self.options)
+                          nfp=booz["nfp"], weights=self.weights, **{**self.options, **options})
         out.update(booz)
         return out
 
@@ -241,9 +245,9 @@ class MappedPwOResidual:
                                      nboz=self.nboz, oversample=self.oversample)
         return jnp.concatenate((booz["bmnc_b"].ravel(), booz["iota_b"]))
 
-    def residuals_state(self, state, rt):
-        """Return the flat traceable least-squares residual."""
-        return self.compute_state(state, rt)["residuals1d"]
+    def residuals_state(self, state, rt, **options):
+        """Return the flat traceable least-squares residual (``options`` as in :meth:`compute_state`)."""
+        return self.compute_state(state, rt, **options)["residuals1d"]
 
     def diagnostics_state(self, state, rt, *, ntheta=64, nzeta=64):
         """Mapped residual and full-surface field extrema from one Boozer transform."""
@@ -372,6 +376,32 @@ class FreeMapProblem:
     def values(self, z):
         """Return the map parameters at ``z`` as a dictionary."""
         return dict(zip(self.names, map(float, self._parameters(jnp.asarray(z[self.nx:])))))
+
+
+class MapCoordinates:
+    """Unbounded design coordinates ``u`` of free map parameters, as :class:`FreeMapProblem` moves them.
+
+    ``values`` are the starting (a, b, c, eta_min) values (other keys are ignored); each name in ``free`` moves as
+    low + (high - low) * sigmoid(u) inside ``FreeMapProblem.MAP_BOUNDS``, the others stay at ``values``.  Calling
+    the coordinates gives the full parameter dictionary for :meth:`MappedPwOResidual.compute_state`; ``u0`` gives
+    the starting values (clipped 0.1 % inside the bounds).
+    """
+
+    def __init__(self, values, free):
+        self.values = {k: float(values[k]) for k in ("a", "b", "c", "eta_min") if k in values}
+        self.free = tuple(free)
+        if not self.free or any(k not in FreeMapProblem.MAP_BOUNDS or k not in self.values for k in self.free):
+            raise ValueError("free must name map parameters (a, b, c, eta_min) that have values")
+        self.low, self.high = (np.array([FreeMapProblem.MAP_BOUNDS[k][i] for k in self.free]) for i in (0, 1))
+        width = self.high - self.low
+        start = np.clip([self.values[k] for k in self.free], self.low + 1e-3 * width, self.high - 1e-3 * width)
+        fraction = (start - self.low) / width
+        self.u0 = np.log(fraction / (1 - fraction))
+
+    def __call__(self, u):
+        """The map parameters at ``u`` (one coordinate per free name)."""
+        moved = self.low + (self.high - self.low) * jax.nn.sigmoid(jnp.asarray(u))
+        return {**self.values, **{k: moved[i] for i, k in enumerate(self.free)}}
 
 
 def one_field_period(inp):

@@ -106,6 +106,10 @@ EPS_EFF_SURFACES, EPS_EFF_REFERENCE = (0.25, 0.5, 0.75), 1.0
 # is then the PR's, the largest mirror ratio of the full Boozer |B| on PWO_SURFACES; NEO's eps_eff^(3/2) is logged.
 PWO_SURFACES, PWO_SCALE = (0.25, 0.5, 0.75), 1.0
 PWO_MBOZ, PWO_OPTIONS = 8, {}  # Boozer resolution and map options (a, b, c, eta_min, limit_map) of the pwO kernel
+# PWO_FREE_MAP: map parameters SLSQP also moves (vmex.core.pwo.MapCoordinates, from PWO_OPTIONS inside
+# FreeMapProblem.MAP_BOUNDS), as pwO_optimization.py does; with them a hard row keeps the mapped area fraction of
+# every surface above MAP_AREA_FLOOR (that example's area floor), so the map cannot shrink onto the field's flat part.
+PWO_FREE_MAP, MAP_AREA_FLOOR = (), 0.6
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
@@ -178,7 +182,7 @@ elif CASE == "pwo2-mapped":
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
     IOTA_FLOOR, PWO_SCALE = 0.42, 7.17e-3  # the seed's free boundary (circular coils fitted to it): 7.168e-3
-elif CASE == "pwo3-seed":
+elif CASE in ("pwo3-seed", "pwo3-free"):
     # uwplasma/vmex pwO_optimization.py at NFP 3 in free-boundary single stage: its near-circular seed (R = 1, a = 0.2,
     # 0.05 m rotating ellipse, aspect 5.164), its 8 surfaces, Boozer 16 and mirror limit, the map held at that example's
     # converged vacuum values with limit_map, and the coils of single_stage_optimization_pwO.py as in pwo2-mapped
@@ -190,6 +194,8 @@ elif CASE == "pwo3-seed":
     IOTA_FLOOR, IOTA_CEILING, PWO_SCALE, PWO_MBOZ = 0.42, 0.98, 1.04e-2, 16
     PWO_SURFACES = tuple(np.linspace(0.1, 0.9, 8))
     PWO_OPTIONS = dict(a=0.2762040, b=-0.3152474, c=-3.9965001, eta_min=2.2511724, limit_map=True)
+    if CASE == "pwo3-free":  # the same, with the map free from those values
+        PWO_FREE_MAP = ("a", "b", "c", "eta_min")
 elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
     # Finite-beta, self-consistent bootstrap cases (Redl for the QA and QH, DKX for the QI), 4 order-12 coils per
     # half period (qh4-beta: the 3 QH coils).
@@ -623,6 +629,35 @@ def coil_field(coils):
     return lambda points: jax.vmap(biot_savart.B)(points.reshape(-1, 3)).reshape(points.shape)
 
 
+class FreeMapDesign:
+    """A coil design followed by free pwO map coordinates (``vmex.core.pwo.MapCoordinates``), which move no field."""
+
+    def __init__(self, chart, coordinates):
+        self.chart, self.coordinates, self.n = chart, coordinates, chart.size
+        self.x0 = np.r_[chart.x0, coordinates.u0]
+        self.scales = np.r_[chart.scales, np.ones(coordinates.u0.size)]  # pwO_optimization.py's map step
+        self.dof_names = (*chart.dof_names, *(f"map_{k}/logit" for k in coordinates.free))
+        self.size, self.phiedge = self.x0.size, chart.phiedge
+
+    def map_at(self, x):
+        return self.coordinates(x[self.n:])
+
+    def __call__(self, x):
+        return self.chart(x[:self.n])
+
+    def coils_from_x(self, x):
+        return self.chart.coils_from_x(x[:self.n])
+
+    def base_currents_at(self, x):
+        return self.chart.base_currents_at(x[:self.n])
+
+    def phiedge_at(self, x):
+        return self.chart.phiedge_at(x[:self.n])
+
+    def plasma_params_at(self, params, x):
+        return self.chart.plasma_params_at(params, x[:self.n])
+
+
 def weighted_rms(weights, values):
     """sqrt(sum weights values^2): the RMS for area weights that sum to one."""
     import jax.numpy as jnp
@@ -973,6 +1008,12 @@ def main(argv=None):
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
+    if PWO_FREE_MAP:
+        from vmex.core.pwo import MapCoordinates
+        chart = FreeMapDesign(chart, MapCoordinates(PWO_OPTIONS, PWO_FREE_MAP))
+    map_options = chart.map_at if PWO_FREE_MAP else (lambda x: {})
+    area = (((lambda state, runtime, x: jnp.min(qs.compute_state(state, runtime, **map_options(x))[
+        "mapped_area_fraction"])),) if PWO_FREE_MAP else ())
     mirror = (((lambda state, runtime: jnp.max(qs.diagnostics_state(state, runtime)[3])),) if TARGET_NAME == "pwO"
               else (opt.mirror_ratio,) if MIRROR_LIMIT else ())
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
@@ -991,7 +1032,7 @@ def main(argv=None):
         return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
 
     def loss(state, runtime, x):
-        residuals = qs.residuals_state(state, runtime) / (np.sqrt(PWO_SCALE) if TARGET_NAME == "pwO" else 1.0)
+        residuals = qs.residuals_state(state, runtime, **map_options(x)) / (np.sqrt(PWO_SCALE) if TARGET_NAME == "pwO" else 1.0)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
         return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
 
@@ -1005,7 +1046,7 @@ def main(argv=None):
                     *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
-        parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
+        parameter_quantities=(aspect, *area), boundary_quantities=(*vacuum_floor, clearance),
         config=vj.ThreeTermsConfig(labelling=args.labelling, label_weight=args.label_weight, nphi=args.vc_grid,
                                    ntheta=args.vc_grid, chunk=args.chunk,
                                    quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
@@ -1040,6 +1081,7 @@ def main(argv=None):
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
+        *([(MAP_AREA_FLOOR, np.inf, 0.1)] if area else []),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
     # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
@@ -1117,7 +1159,9 @@ def main(argv=None):
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
                    **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling)])} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
-                   coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
+                   coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor) - len(area)]),
+                   **({"pwo_map": {k: float(v) for k, v in map_options(x).items()},
+                       "map_area_min": float(h[-2 - len(vacuum_floor)])} if area else {}),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
@@ -1142,6 +1186,8 @@ def main(argv=None):
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
+              + ("map=" + ",".join(f"{v:.4f}" for v in row["pwo_map"].values())
+                 + f" area={row['map_area_min']:.3f} " if area else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
               + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")

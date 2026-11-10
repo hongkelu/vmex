@@ -200,6 +200,30 @@ def test_adapters_forward_one_live_transform_and_preserve_diagnostics(monkeypatc
     np.testing.assert_allclose(target.J(eq), report["residuals1d"])
 
 
+def test_compute_state_options_override_the_map_and_match_map_coordinates(monkeypatch):
+    from vmex.core import pwo
+    monkeypatch.setattr(pwo, "boozer_spectrum_state", lambda state, runtime, **kwargs: _spectrum())
+    target = pwo.MappedPwOResidual([.5], ngamma=8, neta=8, a=.3, b=.2, c=-2., eta_min=2.8, limit_map=True)
+    coordinates = pwo.MapCoordinates(dict(a=.3, b=.2, c=-2., eta_min=2.8, limit_map=True), ("a", "eta_min"))
+    start = coordinates(coordinates.u0)
+    assert set(start) == {"a", "b", "c", "eta_min"}
+    np.testing.assert_allclose([start[k] for k in ("a", "b", "c", "eta_min")], [.3, .2, -2., 2.8], rtol=1e-12)
+    np.testing.assert_allclose(target.residuals_state(None, None, **start), target.residuals_state(None, None))
+    moved = coordinates(coordinates.u0 + 1.)
+    other = pwo.MappedPwOResidual([.5], ngamma=8, neta=8, limit_map=True, **moved)
+    np.testing.assert_allclose(target.residuals_state(None, None, **moved), other.residuals_state(None, None))
+    assert not np.allclose(target.residuals_state(None, None, **moved), target.residuals_state(None, None))
+    low, high = pwo.FreeMapProblem.MAP_BOUNDS["eta_min"]
+    assert low < float(coordinates(np.array([-50., 50.]))["eta_min"]) <= high
+    grad = jax.grad(lambda u: jnp.sum(target.residuals_state(None, None, **coordinates(u))**2))(coordinates.u0)
+    step = 1e-6*np.eye(2)
+    fd = [(float(jnp.sum(target.residuals_state(None, None, **coordinates(coordinates.u0+e))**2))
+           - float(jnp.sum(target.residuals_state(None, None, **coordinates(coordinates.u0-e))**2)))/2e-6 for e in step]
+    np.testing.assert_allclose(grad, fd, rtol=1e-5, atol=1e-12)
+    with pytest.raises(ValueError):
+        pwo.MapCoordinates(dict(a=.3), ("b",))
+
+
 @pytest.mark.parametrize("kwargs", [dict(surfaces=[]), dict(surfaces=[[.5]]), dict(surfaces=[np.nan]),
     dict(surfaces=[0.]), dict(surfaces=[1.01]), dict(mboz=0), dict(nboz=-1), dict(oversample=0)])
 def test_invalid_adapter_configuration(kwargs):

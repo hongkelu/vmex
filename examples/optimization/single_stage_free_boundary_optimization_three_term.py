@@ -77,13 +77,28 @@ COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-curre
 # self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
-# DKX: the current is a line segment through a value on every half-mesh surface (those values,
-# the axis one and CURTOR are design variables), its seed DKX's on the same surfaces. With
-# --fixed-current it is no design variable and no row: the restart's current is held fixed.
+# DKX: the current is a CURRENT_KNOTS spline, its seed DKX's (dkx_current: each Picard target
+# least-squares fitted to the spline, as the ion root jitters from surface to surface). With
+# --fixed-current it is no design variable and no row: rounds of --restart --resolve-current
+# --fixed-current re-solve it between them.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
+# --profiles stellaris: Stellaris' design point A instead (Lion et al. 2025, Fusion Eng. Des., Eq. (2)-(3) and
+# Table 5): n = n0 (1 - s)^0.35 (flat), Te = Te0 (1 - s)^1.2 (peaked), Ti = 0.95 Te, n0 = 5.06e20 1/m^3 (peak
+# electron density), Te0 = 15.4 keV, R = 12.74 m, B = 9 T; ni = ne and Zeff = 1 (no helium ash or tungsten).
+PROFILES = "lbd"
+STELLARIS_R0, STELLARIS_B0, STELLARIS_N0, STELLARIS_T0 = 12.74, 9.0, 5.06e20, 15.4e3
+STELLARIS_ALPHA_N, STELLARIS_ALPHA_T, STELLARIS_TI_TE = 0.35, 1.2, 0.95
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
+# With the current as an input (Redl): one row per surface, <J.B>_vmec - <J.B>_Redl within this fraction of the rms
+# current, instead of the single sum of squares under REDL_TOLERANCE (whose allowance a many-knot current spends on
+# point-to-point wiggles); the current itself is a CURRENT_KNOTS spline (seed and restart decks are resampled).
+REDL_SURFACE_TOLERANCE = 1e-2
+# Rows only on s >= REDL_ROW_S_MIN: near the axis Redl's geometry extrapolates the s = 0.01 |B| variation linearly
+# (as simsopt's RedlGeomVmec), so its <J.B> stays finite where no smooth current follows it.
+REDL_ROW_S_MIN = 0.15
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
+PICARD_CURTOR_TOL = None  # --picard-curtor-tol: dkx_current also stops once a step changes CURTOR by less
 BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
@@ -113,6 +128,14 @@ PWO_FREE_MAP, MAP_AREA_FLOOR = (), 0.6
 MIRROR_LIMIT, MIRROR_MARGIN = None, 0.001  # upper limit on the edge mirror ratio (Bmax - Bmin) / (Bmax + Bmin)
 BOOTSTRAP_MODEL = "redl"          # "dkx": the DKX kinetic <j.B> replaces Redl in the self-consistency row
 DKX_SURFACES, DKX_COLLISION_OPERATOR = None, 0  # None: every half-mesh surface; 0: momentum-conserving Fokker-Planck
+DKX_AMBIPOLAR = False              # True: DKX's rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0
+DKX_RESOLUTION, DKX_MBOZ = None, None  # --dkx-grid: DKX's Ntheta, Nzeta, Nxi, NL, Nx and the Boozer mboz = nboz
+DKX_ROOT_GRID = None  # --dkx-root-grid: (resolution, mboz) of DkxPicardRows' E_r search; None: DKX_RESOLUTION's
+EDGE_WINDOW = 10.0  # kV/m: DkxPicardRows scans J_r over the guess +- this where a surface has no ambipolar root
+# --in-loop-dkx: DKX's ion-root <j.B> in the loop, one row (I' - I'_DKX) / I'_ref per DKX surface held within
+# DKX_ROW_TOLERANCE, the current's knots and CURTOR design variables (vmex.core.kinetic_bootstrap; --dkx-row-grid)
+DKX_ROW_GRID = (dict(Ntheta=15, Nzeta=25, Nxi=48, NL=4, Nx=5), 12)
+DKX_ROW_TOLERANCE = 0.05
 
 # Physical targets, imposed as hard inequalities.
 IOTA_FLOOR, IOTA_MARGIN = 0.41, 0.0005
@@ -192,6 +215,7 @@ elif CASE in ("pwo3-seed", "pwo3-free"):
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (3, 5.1640, 0.2582), None, "pwO", (5.9, 6.1), 0.16
     IOTA_FLOOR, IOTA_CEILING, PWO_SCALE, PWO_MBOZ = 0.42, 0.98, 1.04e-2, 16
+    BOOTSTRAP_MODEL = "dkx"  # only used by --bootstrap --resolve-current: the DKX check of the zero-current premise
     PWO_SURFACES = tuple(np.linspace(0.1, 0.9, 8))
     PWO_OPTIONS = dict(a=0.2762040, b=-0.3152474, c=-3.9965001, eta_min=2.2511724, limit_map=True)
     if CASE == "pwo3-free":  # the same, with the map free from those values
@@ -226,9 +250,9 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
 if CASE.endswith("-tok"):
-    # A circular tokamak with a 1% helical ripple b / a (TOK_RIPPLE), as vmex examples/data/input.minimal_seed_nfp*.
+    # A circular tokamak with a 1% helical ripple b / a, as vmex examples/data/input.minimal_seed_nfp*.
     # It has no vacuum transform: an Ohmic current of about the final bootstrap current carries the beta ramp.
-    SEED = (SEED[0], SEED[1], float(os.environ.get("TOK_RIPPLE", "0.01")))
+    SEED = (SEED[0], SEED[1], 0.01)
     # Same sign as the bootstrap current it hands over to (negative for the (1, -1) QH), so the blend
     # never passes through zero current, where the seed has no transform.
     OHMIC_CURRENT = 1.0e5 if CASE.startswith("qa4-beta") else -6.0e4 if CASE.startswith("qh4-beta") else 6.0e4
@@ -333,6 +357,35 @@ def finite_beta_input(inp, beta, device, am=(1.0, -1.0)):
     return inp, fixed
 
 
+def redl_surface_rows(redl):
+    """(state, runtime) -> (<J.B>_vmec - <J.B>_Redl) / rms <J.B> on ``redl``'s surfaces with s >= ``REDL_ROW_S_MIN``.
+
+    Redl's normalized residuals R_j = (Jv - Jr) / sqrt(sum_k (Jv + Jr)^2) times 2 sqrt(n): near
+    self-consistency the denominator is 2 sqrt(n) rms J."""
+    factor = 2.0 * np.sqrt(np.size(redl.surfaces))
+    kept = np.flatnonzero(np.asarray(redl.surfaces) >= REDL_ROW_S_MIN)
+    return lambda state, runtime: factor * redl.residuals_state(state, runtime)[kept]
+
+
+def smooth_redl_current(inp, device):
+    """``inp`` with Redl's self-consistent current at its fixed boundary on ``CURRENT_KNOTS`` spline knots.
+
+    The fresh seed's Picard loop and resampling (``bootstrap_input``), for a seed or restart deck whose current
+    has another representation (e.g. one value on every half-mesh surface): its knot values would be free
+    design variables, which the optimizer can make jagged."""
+    from vmex import optimize as opt
+    from vmex.core.bootstrap import self_consistent_bootstrap
+
+    picard = self_consistent_bootstrap(inp, redl_profiles(inp)[0], REDL_HELICITY, n_iter=PICARD_ITERATIONS,
+                                       tol=PICARD_TOLERANCE, relax=PICARD_RELAX, degree=CURRENT_KNOTS - 1,
+                                       s_eval=redl_surfaces()[redl_surfaces() >= REDL_ROW_S_MIN],
+                                       solve_kwargs=dict(device=device))
+    smooth = opt.resample_current_profile(picard.input, CURRENT_KNOTS)
+    print(f"Redl current on {CURRENT_KNOTS} spline knots: Picard {picard.iterations} iterations (converged "
+          f"{picard.converged}), CURTOR = {float(smooth.curtor):.1f} A", flush=True)
+    return smooth
+
+
 def redl_surfaces():
     """Surfaces of the Redl self-consistency check: ``REDL_SURFACES``, or by default every VMEC
     half-grid surface s = (j - 1/2) / (ns - 1) at the run's ns, as simsopt's ``RedlGeomVmec``."""
@@ -343,17 +396,51 @@ def redl_surfaces():
     return (np.arange(1, ns) - 0.5) / (ns - 1)
 
 
+def power_profile(alpha, degree=8, s_fit=0.85, slope_weight=0.3):
+    """Power-series coefficients in s of (1 - s)^alpha, 1 on axis and 0 at the edge.
+
+    Redl and DKX take polynomial profiles, and (1 - s)^alpha with alpha < 1 has an infinite edge slope: a
+    least-squares fit of its values and slopes relative to (1 - s)^alpha on s <= ``s_fit`` keeps the gradient
+    length a/L right in the core (alpha = 0.35: within 7% for s = 0.05-0.85, values within 1.4% for s <= 0.9;
+    alpha = 1.2: within 0.1%)."""
+    s = np.linspace(0.0, s_fit, 1000)
+    f, df = (1 - s) ** alpha, -alpha * (1 - s) ** (alpha - 1)
+    values = np.vander(s, degree + 1, increasing=True)
+    slopes = np.hstack([np.zeros((s.size, 1)), values[:, :-1] * np.arange(1, degree + 1)])
+    ends = 1e4 * np.vander([0.0, 1.0], degree + 1, increasing=True)
+    rows = np.vstack([values / f[:, None], slope_weight * slopes / f[:, None], ends])
+    return np.linalg.lstsq(rows, np.r_[np.ones(s.size), slope_weight * df / f, 1e4, 0.0], rcond=None)[0]
+
+
+def profile_shapes():
+    """(ne, Te shapes as power series in s, Ti / Te, reactor R0, B0, n0, T0) of ``PROFILES``."""
+    if PROFILES == "stellaris":
+        return (power_profile(STELLARIS_ALPHA_N), power_profile(STELLARIS_ALPHA_T), STELLARIS_TI_TE,
+                (STELLARIS_R0, STELLARIS_B0, STELLARIS_N0, STELLARIS_T0))
+    return (np.array([1.0, 0, 0, 0, 0, -1.0]), np.array([1.0, -1.0]), 1.0,
+            (REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0))
+
+
+def pressure_shape():
+    """The pressure p ~ ne (Te + Ti) of ``profile_shapes`` (ni = ne), as power-series coefficients in s."""
+    ne, te, _, _ = profile_shapes()
+    return tuple(np.polynomial.polynomial.polymul(ne, te))
+
+
 def redl_profiles(inp):
-    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch."""
+    """The kinetic profiles of ``bootstrap_input`` for a deck's calibrated pressure, and their Redl mismatch.
+
+    ``PROFILES``' reactor values scaled to the deck's major radius and ``B0`` at fixed beta and collisionality
+    (n T ~ B^2, n R / T^2), then to the deck's PRES_SCALE = e n0 (Te0 + Ti0)."""
     from vmex.core.bootstrap import ELEMENTARY_CHARGE, KineticProfiles, RedlBootstrapMismatch
 
+    ne, te, ti_te, (reactor_r0, reactor_b0, reactor_n0, reactor_t0) = profile_shapes()
     r0, b0 = float(inp.rbc[inp.ntor, 0]), B0
-    t0 = REACTOR_T0 * (b0 / REACTOR_B0) ** (2 / 3) * (r0 / REACTOR_R0) ** (1 / 3)
-    n0 = REACTOR_N0 * (b0 / REACTOR_B0) ** (4 / 3) * (REACTOR_R0 / r0) ** (1 / 3)
-    scale = float(inp.pres_scale) / (2 * ELEMENTARY_CHARGE * n0 * t0)
+    t0 = reactor_t0 * (b0 / reactor_b0) ** (2 / 3) * (r0 / reactor_r0) ** (1 / 3)
+    n0 = reactor_n0 * (b0 / reactor_b0) ** (4 / 3) * (reactor_r0 / r0) ** (1 / 3)
+    scale = float(inp.pres_scale) / ((1 + ti_te) * ELEMENTARY_CHARGE * n0 * t0)
     n0, t0 = n0 * scale ** (2 / 3), t0 * scale ** (1 / 3)
-    profiles = KineticProfiles(n0 * np.array([1.0, 0, 0, 0, 0, -1.0]), t0 * np.array([1.0, -1.0]),
-                               t0 * np.array([1.0, -1.0]))
+    profiles = KineticProfiles(n0 * ne, t0 * te, ti_te * t0 * te)
     return profiles, RedlBootstrapMismatch(profiles, REDL_HELICITY, redl_surfaces(), n_lambda=REDL_N_LAMBDA)
 
 
@@ -405,7 +492,7 @@ def bootstrap_input(inp, beta, device):
         ohmic[:2] = 2.0 * OHMIC_CURRENT * np.array([1.0, -1.0])
         inp = replace(inp, ac=ohmic, curtor=OHMIC_CURRENT)
         for stage_beta in betas:
-            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=pressure_shape())
         for weight in (0.25, 0.5, 0.75):
             boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
             ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
@@ -418,7 +505,7 @@ def bootstrap_input(inp, beta, device):
         profiles, redl = redl_profiles(inp)
         inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
-        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=pressure_shape())
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
         inp = picard.input
@@ -493,13 +580,15 @@ def current_iota(state, runtime):
 
 
 def bootstrap_mismatch(inp, redl, device):
-    """(state, runtime) -> the bootstrap self-consistency mismatch held under ``REDL_TOLERANCE``.
+    """(state, runtime) -> the bootstrap self-consistency rows.
 
-    Redl's, or with ``BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
-    drift-kinetic one on ``DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry).
+    Redl's per surface, (<J.B>_vmec - <J.B>_Redl) / rms <J.B> (``redl_surface_rows``) held within
+    ``REDL_SURFACE_TOLERANCE``; or with ``BOOTSTRAP_MODEL = "dkx"`` the equilibrium's <j.B> against DKX's
+    drift-kinetic one on ``DKX_SURFACES``, in Redl's normalized form (Redl assumes quasisymmetry), one
+    sum held under ``REDL_TOLERANCE``.
     """
     if BOOTSTRAP_MODEL == "redl":
-        return redl.total_state
+        return redl_surface_rows(redl)
     mismatch = dkx_mismatch(inp)
     # DKX builds its per-surface operators and Boozer plan on the host at the first
     # call and caches them; make that call on a concrete equilibrium, so the
@@ -516,13 +605,216 @@ def bootstrap_mismatch(inp, redl, device):
 def dkx_kinetic(inp):
     """DKX's bootstrap ``<j.B>`` for ``inp``'s kinetic profiles on the ``DKX_SURFACES`` rows (needs ``dkx``).
 
-    DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0.
+    DKX (>= 2.8, vmex's floor) compiles the rows as one batched program with a reverse-mode JVP; E_r = 0, or
+    with ``DKX_AMBIPOLAR`` (DKX >= 2.12) each surface's ambipolar root, found by DKX's warm-started Newton
+    iteration on its default ambipolar grid (spectral angles) and differentiated through the root. E_r is in kV/m
+    over the minor radius R0 / aspect at the middle of ``ASPECT_RANGE``.
     """
     from dkx.bootstrap import KineticBootstrapMismatch
 
-    surfaces = redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES
-    return KineticBootstrapMismatch(redl_profiles(inp)[0], surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR,
-                                    mboz=QI_OPTIONS["mboz"], nboz=QI_OPTIONS["nboz"])
+    kinetic = KineticBootstrapMismatch(redl_profiles(inp)[0], **dkx_options(dkx_surfaces()))
+    DKX_ROWS.append(kinetic)
+    return kinetic
+
+
+DKX_ROWS = []  # the DKX rows built, for the step log's ambipolar roots
+
+
+def dkx_surfaces():
+    return np.asarray(redl_surfaces() if DKX_SURFACES is None else DKX_SURFACES, dtype=float)
+
+
+def dkx_options(surfaces, ambipolar=None, grid=None):
+    """``KineticBootstrapMismatch`` keywords: ``surfaces``, the collision operator, ``DKX_RESOLUTION`` (None: DKX's
+    default for the row) and ``DKX_MBOZ`` (None: ``QI_OPTIONS``'), or ``grid = (resolution, mboz)``, ambipolar with
+    ``DKX_AMBIPOLAR``."""
+    resolution, mboz = (DKX_RESOLUTION, DKX_MBOZ) if grid is None else grid
+    mboz = QI_OPTIONS["mboz"] if mboz is None else mboz
+    ambipolar = DKX_AMBIPOLAR if ambipolar is None else ambipolar
+    return dict(surfaces=surfaces, collision_operator=DKX_COLLISION_OPERATOR, resolution=resolution, mboz=mboz,
+                nboz=mboz,
+                **(dict(ambipolar=True, spectral_angles=True, minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE))
+                   if ambipolar else {}))
+
+
+class DkxPicardRows:
+    """DKX's ``<j.B>`` on the ``DKX_SURFACES`` rows for ``dkx_current``'s Picard loop (``DKX_AMBIPOLAR``).
+
+    One DKX row per surface (a converged grid takes 5-15 GiB per surface, so the surfaces do not fit in one batch),
+    the surfaces shared out over every visible GPU, each GPU's in turn on a thread of its own. Each is at its ambipolar root, found by DKX's warm-started Newton search. Where the search finds
+    none (J_r(E_r) can come close to zero without crossing it, e.g. qi8gil-A at s >= 0.8), the surface is at the E_r
+    closest to ambipolar instead: the smallest |J_r| on a 1 kV/m grid within ``EDGE_WINDOW`` of the E_r extrapolated
+    from the two nearest roots, inside the stretch between sign changes (poles of the resonant E x B drift, or noise)
+    that holds that guess, refined by a parabola (or interpolated to the crossing, where that minimum sits against a
+    sign change with a small |J_r| across it: a root between grid points); later calls refine it over +-1 kV/m.
+    With ``DKX_ROOT_GRID`` the roots and scans use that grid and ``<j.B>`` is one solve per surface on
+    ``DKX_RESOLUTION`` at their E_r (E_r converges on a coarser grid than <j.B>, and <j.B> depends on it weakly)."""
+
+    def __init__(self, inp, ns):
+        import jax
+        from dkx.bootstrap import KineticBootstrapMismatch
+
+        class Ambipolar(KineticBootstrapMismatch):
+            """DKX 2.12's ``_find_roots``, also keeping which rows converged (``ok``)."""
+
+            def _find_roots(self, roots, stacked, spectra, psi):
+                n = np.asarray(spectra["iota"]).shape[0]
+                if self._er.size != n:
+                    self._er = np.full(n, self.er_initial)
+                with jax.default_device(self.device):  # the host callback runs off the caller's thread
+                    e, d_r, d_b, converged = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                self.ok = converged & np.isfinite(e)
+                self._er = np.where(self.ok, e, self._er)
+                self.unconverged = int(np.sum(~self.ok))
+                return e, d_r, d_b
+
+        class FixedField(KineticBootstrapMismatch):
+            """The ambipolar row with its search replaced by one solve at ``_er``: (J_r, <j.B>) in ``last``. With
+            ``radial = False`` that solve is skipped and the traced program's own solve at ``_er`` is the <j.B>
+            (the implicit-function correction is zeroed): one solve per call."""
+
+            radial = True
+
+            def _newton(self, evaluate, operator, er0):
+                import jax.numpy as jnp
+                from dkx.er import operator_at_er
+
+                if not self.radial:
+                    return er0, jnp.ones_like(er0), jnp.zeros_like(er0), jnp.ones_like(er0, dtype=bool)
+                j_r, j_b = evaluate(operator_at_er(operator, er0, dphi_per_er=operator.dphi_hat_dpsi_hat_kinetic))
+                return er0, j_r, j_b, jnp.ones_like(er0, dtype=bool)
+
+            def _find_roots(self, roots, stacked, spectra, psi):
+                with jax.default_device(self.device):
+                    e, j_r, j_b, _ = (np.asarray(v) for v in roots(stacked, spectra, psi, self._er.copy()))
+                self.last = (j_r, j_b)
+                return e, np.where(j_r == 0.0, 1.0, j_r), j_b
+
+        def row(cls, i, grid=DKX_ROOT_GRID, radial=True):
+            kinetic = cls(profiles, **dkx_options([self.rows[i]], ambipolar=True, grid=grid))
+            kinetic.device, kinetic.radial = self.device_of[i], radial
+            return kinetic, jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+
+        profiles = redl_profiles(inp)[0]
+        self.rows = KineticBootstrapMismatch(profiles, **dkx_options(dkx_surfaces(), ambipolar=True)).rows(ns)[1]
+        self.devices = jax.devices()  # every visible GPU takes its share of the surfaces, one thread each
+        self.device_of = {i: self.devices[i % len(self.devices)] for i in range(self.rows.size)}
+        self.row, self.fixed_class = row, FixedField
+        self.roots = {i: row(Ambipolar, i) for i in range(self.rows.size)}
+        self.edge = {}  # row index -> (FixedField row, its jitted call, E_r)
+        # <j.B> rows on DKX_RESOLUTION at the root grid's E_r (DKX_ROOT_GRID), built on first use
+        self.current = {} if DKX_ROOT_GRID is not None else None
+        self.unconverged = 0
+
+    def electric_field(self):
+        return np.array([self.edge[i][2] if i in self.edge else float(self.roots[i][0]._er[0])
+                         for i in range(self.rows.size)])
+
+    def _fixed(self, i, field):
+        """(J_r, <j.B>) of edge row ``i`` at ``field`` kV/m."""
+        kinetic, evaluate = self.edge[i][:2]
+        kinetic._er = np.array([field], dtype=float)
+        self.jax.block_until_ready(evaluate(*self.inputs[self.device_of[i]]))
+        return float(kinetic.last[0][0]), float(kinetic.last[1][0])
+
+    def _parallel(self, rows, work):
+        """``{i: work(i)}`` over ``rows``, each device's rows in turn on a thread of its own (under that device)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        groups = {}
+        for i in rows:
+            groups.setdefault(self.device_of[i], []).append(i)
+
+        def run(item):
+            device, group = item
+            with self.jax.default_device(device):
+                return {i: work(i) for i in group}
+
+        out = {}
+        with ThreadPoolExecutor(max(1, len(groups))) as pool:
+            for part in pool.map(run, groups.items()):
+                out.update(part)
+        return out
+
+    @staticmethod
+    def _closest(fields, j_r, k):
+        """Parabola vertex of |J_r| through the grid minimum ``k`` and its neighbours (the minimum at an end)."""
+        if 0 < k < len(fields) - 1:
+            y = np.abs(j_r[k - 1:k + 2])
+            curvature = y[0] - 2 * y[1] + y[2]
+            if curvature > 0:
+                return float(fields[k] + 0.5 * (fields[k + 1] - fields[k]) * (y[0] - y[2]) / curvature)
+        return float(fields[k])
+
+    def __call__(self, state, runtime):
+        import jax
+
+        self.jax = jax
+        on = lambda tree, device: jax.tree.map(  # noqa: E731
+            lambda a: jax.device_put(a, device) if isinstance(a, jax.Array) else a, tree)
+        self.inputs = {device: (on(state, device), on(runtime, device)) for device in self.devices}
+        jk = np.empty(self.rows.size)
+
+        def root(i):
+            kinetic, evaluate = self.roots[i]
+            return float(np.asarray(evaluate(*self.inputs[self.device_of[i]]))[0]), bool(kinetic.ok[0])
+
+        found = self._parallel(list(self.roots), root)
+        lost = sorted(i for i, (_, ok) in found.items() if not ok)
+        for i, (value, _) in found.items():
+            jk[i] = value
+        self.unconverged = len(lost)
+        good = sorted(set(self.roots) - set(lost))
+        if len(good) < 2:
+            raise RuntimeError("DKX: fewer than two surfaces with an ambipolar root")
+        guesses = {}
+        for i in lost:  # a surface without a root leaves the search for the |J_r| minimum
+            s, inner = self.rows[i], sorted(good, key=lambda g: abs(self.rows[g] - self.rows[i]))[:2]
+            (s1, s2), (e1, e2) = self.rows[inner], [float(self.roots[g][0]._er[0]) for g in inner]
+            guesses[i] = e1 + (s - s1) * (e2 - e1) / (s2 - s1)
+        for i in lost:
+            del self.roots[i]
+            self.edge[i] = (*self.row(self.fixed_class, i), None)
+
+        def edge(i):
+            kinetic, evaluate, field = self.edge[i]
+            if i in guesses:  # new: scan the window around the guess
+                guess = guesses[i]
+                fields = np.arange(np.floor(guess) - EDGE_WINDOW, min(np.floor(guess) + EDGE_WINDOW, 20.0) + 0.5, 1.0)
+                j_r = np.array([self._fixed(i, f)[0] for f in fields])
+                breaks = np.flatnonzero(np.sign(j_r[1:]) != np.sign(j_r[:-1])) + 1
+                home = np.searchsorted(breaks, np.argmin(np.abs(fields - guess)), side="right")
+                lo, hi = [0, *breaks][home], [*breaks, fields.size][home]
+                k = int(np.argmin(np.abs(j_r[lo:hi])))
+                field = self._closest(fields[lo:hi], j_r[lo:hi], k)
+                for end, across in ((0, lo - 1), (hi - lo - 1, hi)):  # the minimum against a sign change: a root
+                    if k == end and 0 <= across < fields.size and abs(j_r[across]) < 3 * abs(j_r[lo + k]):
+                        a, b = lo + k, across
+                        field = float(fields[a] - j_r[a] * (fields[b] - fields[a]) / (j_r[b] - j_r[a]))
+                print(f"DKX: no ambipolar root at s = {self.rows[i]:.3f}; E_r = {field:.2f} kV/m of smallest |J_r| "
+                      f"(guess {guess:.1f}, stretch [{fields[lo]:.0f}, {fields[hi - 1]:.0f}] kV/m)", flush=True)
+            else:  # refine around the previous E_r
+                offsets = np.array([-1.0, 0.0, 1.0])
+                j_r = np.array([self._fixed(i, field + o)[0] for o in offsets])
+                field = self._closest(field + offsets, j_r, int(np.argmin(np.abs(j_r))))
+            self.edge[i] = (kinetic, evaluate, field)
+            return self._fixed(i, field)[1]
+
+        for i, value in self._parallel(list(self.edge), edge).items():
+            jk[i] = value
+        if self.current is not None:  # <j.B> on DKX_RESOLUTION at these E_r, one solve per surface
+            fields = self.electric_field()
+
+            def current(i):
+                if i not in self.current:
+                    self.current[i] = self.row(self.fixed_class, i, grid=(DKX_RESOLUTION, DKX_MBOZ), radial=False)
+                kinetic, evaluate = self.current[i]
+                kinetic._er = np.array([fields[i]], dtype=float)
+                return float(np.asarray(evaluate(*self.inputs[self.device_of[i]]))[0])
+
+            for i, value in self._parallel(range(self.rows.size), current).items():
+                jk[i] = value
+        return jk
 
 
 def on_grid(runtime):
@@ -539,13 +831,15 @@ def dkx_mismatch(inp):
 
 
 def dkx_current(inp, fixed, device):
-    """``inp`` with DKX's self-consistent bootstrap current, a value on every half-mesh surface.
+    """``inp`` with DKX's self-consistent bootstrap current on ``CURRENT_KNOTS`` spline knots.
 
     Picard steps I' <- I'_DKX from the equilibrium ``fixed``: DKX's ``<j.B>`` on its rows,
     interpolated onto every half-mesh surface and inverted for dI/ds there
-    (``bootstrap.current_derivative``), under-relaxed by ``PICARD_RELAX``. The profile is
-    ``line_segment_ip`` through those values, the axis and edge ones extrapolated linearly,
-    and CURTOR its integral: no spline fit.
+    (``bootstrap.current_derivative``), least-squares fitted to the ``cubic_spline_ip`` profile
+    on uniform knots (the ambipolar root jitters from surface to surface), under-relaxed by
+    ``PICARD_RELAX``. CURTOR is the spline's integral. It stops at ``PICARD_TOLERANCE`` on I' or, with
+    ``PICARD_CURTOR_TOL``, once the step changes CURTOR by less than that fraction (DKX's root noise and the
+    spline misfit keep I' from reaching ``PICARD_TOLERANCE``).
     """
     import jax
     import jax.numpy as jnp
@@ -553,40 +847,167 @@ def dkx_current(inp, fixed, device):
     from vmex.core.bootstrap import current_derivative
     from vmex.core.profiles import current
 
-    kinetic, ns = dkx_kinetic(inp), int(np.asarray(inp.ns_array)[-1])
+    ns = int(np.asarray(inp.ns_array)[-1])
+    kinetic = DkxPicardRows(inp, ns) if DKX_AMBIPOLAR else dkx_kinetic(inp)
     s = (np.arange(1, ns) - 0.5) / (ns - 1)
-    rows = kinetic.rows(ns)[1]
-    knots = np.r_[0.0, s, 1.0]
+    rows = kinetic.rows if DKX_AMBIPOLAR else kinetic.rows(ns)[1]
     enclosed = lambda z: current(inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, z, bloat=inp.bloat)  # noqa: E731
-    v = float(inp.curtor) / float(enclosed(1.0)) * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s)))
-    kinetic.total(fixed.state, on_grid(fixed.runtime))  # DKX builds its operators on the host at a concrete call
-    kinetic_j = jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2])
+    total = float(enclosed(1.0))
+    v = (np.zeros(s.size) if total == 0.0  # a zero-current profile starts the Picard loop from I' = 0
+         else float(inp.curtor) / total * np.asarray(jax.vmap(jax.grad(enclosed))(jnp.asarray(s))))
+    knots = np.linspace(0.0, 1.0, CURRENT_KNOTS)
+    # I'(s) on the half mesh is linear in the knot values: one column per knot
+    basis = np.stack([np.asarray(jax.vmap(jax.grad(lambda z, e=e: current(
+        "cubic_spline_ip", inp.ac, knots, e, z, bloat=inp.bloat)))(jnp.asarray(s))) for e in np.eye(knots.size)], 1)
+    fit = lambda target: np.linalg.lstsq(basis, target, rcond=None)[0]  # noqa: E731
+    values = fit(v)
+    # jitted from the start: DKX builds its host operators at trace time, and an eager first call runs its
+    # Fokker-Planck solve op by op (over an hour on the qi8gil-A design; ~30 s compile + 1 s per surface jitted)
+    kinetic_j = (kinetic if DKX_AMBIPOLAR
+                 else jax.jit(lambda state, runtime: kinetic.current_profiles(state, on_grid(runtime))[2]))
     derivative = jax.jit(current_derivative)
     for iteration in range(PICARD_ITERATIONS):
-        values = np.r_[1.5 * v[0] - 0.5 * v[1], v, 1.5 * v[-1] - 0.5 * v[-2]]
-        inp = replace(inp, pcurr_type="line_segment_ip", ac_aux_s=knots, ac_aux_f=values,
-                      curtor=float(current("line_segment_ip", inp.ac, knots, values, 1.0)))
+        inp = replace(inp, pcurr_type="cubic_spline_ip", ac_aux_s=knots, ac_aux_f=values,
+                      curtor=float(current("cubic_spline_ip", inp.ac, knots, values, 1.0, bloat=inp.bloat)))
         fixed = opt.solve_equilibrium(inp, initial_state=fixed.state, device=device, raise_on_max_iterations=True,
                                       polish_force_balance=False)
         jk = np.interp(s, rows, np.asarray(kinetic_j(fixed.state, fixed.runtime)))
         target = np.asarray(derivative(jnp.asarray(jk), fixed.state, fixed.runtime)[1])
-        delta = float(np.max(np.abs(target - v)) / np.max(np.abs(target)))
+        smooth = fit(target)
+        scale = np.max(np.abs(basis @ smooth))
+        delta = float(np.max(np.abs(basis @ (smooth - values))) / scale)
         print(f"DKX Picard {iteration}: CURTOR = {float(inp.curtor):.1f} A, max|I' - I'_DKX| / max|I'_DKX| = "
-              f"{delta:.2e}", flush=True)
+              f"{delta:.2e} (spline fit off DKX's surfaces by max {np.max(np.abs(basis @ smooth - target)) / scale:.2e}"
+              + (f"; unconverged roots {kinetic.unconverged}, E_r = "
+                 f"{np.array2string(kinetic.electric_field(), precision=2)} kV/m" if DKX_AMBIPOLAR else "") + ")",
+              flush=True)
         if delta <= PICARD_TOLERANCE:
             break
-        v = (1.0 - PICARD_RELAX) * v + PICARD_RELAX * target
+        new = (1.0 - PICARD_RELAX) * values + PICARD_RELAX * smooth
+        if PICARD_CURTOR_TOL is not None:
+            curtor = float(current("cubic_spline_ip", inp.ac, knots, new, 1.0, bloat=inp.bloat))
+            if abs(curtor - float(inp.curtor)) <= PICARD_CURTOR_TOL * abs(curtor):
+                break
+        values = new
     return inp
 
 
-def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``)."""
+def dkx_current_rows(inp, design, args, out):
+    """--in-loop-dkx: ``KineticCurrentRows`` on the ``DKX_SURFACES`` half-mesh rows, each surface on a DKX worker.
+
+    Workers are processes (one per ``--dkx-row-gpus`` UUID, spawned here, or ``--dkx-row-workers`` started by srun);
+    without either, threads over this process's other GPUs. The round's state (E_r seeds and holds, I'_ref, delta)
+    comes from ``--dkx-row-state`` or the restart's ``dkx_rows.json``; every surface's E_r is then re-picked at the
+    design's fixed-boundary equilibrium (``refresh``), I'_ref set there on a fresh start, and with
+    ``--dkx-correction-grid`` the fine-grid delta measured there."""
+    import atexit
+    import subprocess
+    import sys
+
+    import jax
+    import jax.numpy as jnp
+    from dkx.bootstrap import KineticBootstrapMismatch
+    from vmex import optimize as opt
+    from vmex.core.kinetic_bootstrap import KineticCurrentRows, KineticSurfaces
+    from vmex.core.profiles import current
+
+    ns = int(np.asarray(inp.ns_array)[-1])
+    profiles = redl_profiles(inp)[0]
+    s = KineticBootstrapMismatch(profiles, dkx_surfaces()).rows(ns)[1]
+    path = args.dkx_row_state or (args.restart / "dkx_rows.json" if args.restart is not None else None)
+    record = json.loads(Path(path).read_text()) if path is not None and Path(path).exists() else None
+    if args.dkx_er:  # E_r at s = (k + 1/2) / N (e.g. a fixed-current pass's Picard log), interpolated
+        seeds = np.interp(s, (np.arange(len(args.dkx_er)) + 0.5) / len(args.dkx_er), args.dkx_er)
+    elif record:
+        seeds = np.interp(s, [r["s"] for r in record["surfaces"]], [r["er"] for r in record["surfaces"]])
+    else:
+        seeds = np.full(s.size, -2.0)
+    specs = [dict(s=float(v), er=float(e), hold=k < args.dkx_hold) for k, (v, e) in enumerate(zip(s, seeds))]
+    grid = DKX_ROW_GRID if args.dkx_row_grid is None else (
+        dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_row_grid[:5])), args.dkx_row_grid[5])
+    options = dict(profiles=profiles, ns=ns, surface=dict(
+        grid=grid, collision_operator=DKX_COLLISION_OPERATOR, minor_radius=RADIUS_TARGET / np.mean(ASPECT_RANGE),
+        er_tol=args.dkx_er_tol))
+    gpus = args.dkx_row_gpus.split(",") if args.dkx_row_gpus else []
+    if gpus or args.dkx_row_workers:
+        rendezvous = args.dkx_rendezvous or out / "dkx_rendezvous.json"
+        root = Path(__file__).resolve().parents[2]
+        for k, uuid in enumerate(gpus):
+            env = dict(os.environ, CUDA_VISIBLE_DEVICES=uuid,
+                       PYTHONPATH=os.pathsep.join([str(root), os.environ.get("PYTHONPATH", "")]))
+            subprocess.Popen([sys.executable, "-u", "-m", "vmex.core.kinetic_bootstrap", str(rendezvous)], env=env,
+                             stdout=open(out / f"dkx_worker{k}.log", "w"), stderr=subprocess.STDOUT)
+        surfaces = KineticSurfaces.remote(specs, options, rendezvous, workers=len(gpus) or args.dkx_row_workers)
+    else:
+        surfaces = KineticSurfaces.local(specs, options, devices=jax.devices()[1:] or None)
+    atexit.register(surfaces.stop)
+    basis = None
+    if args.dkx_row_project:  # I' at the surfaces per unit knot value (CURRENT_KNOTS spline)
+        knots = np.asarray(design.ac_aux_s, dtype=float)
+        basis = np.stack([np.asarray(jax.vmap(jax.grad(lambda z, e=e: current(
+            "cubic_spline_ip", design.ac, knots, e, z, bloat=design.bloat)))(jnp.asarray(s))) for e in np.eye(knots.size)], 1)
+    rows = KineticCurrentRows(surfaces, ns, reference=record["reference"] if record else 1.0,
+                              delta=record["delta"] if record else None, basis=basis)
+    started = time.monotonic()
+    fixed = opt.solve_equilibrium(replace(design, lfreeb=False), device="gpu", raise_on_max_iterations=True,
+                                  polish_force_balance=False)
+    records = rows.refresh(fixed.state, fixed.runtime)
+    target = np.asarray(rows.mismatch(fixed.state, fixed.runtime)[1])
+    if record is None:
+        rows.reference = float(np.max(np.abs(target)))
+    if args.dkx_correction_grid is not None:
+        fine = (dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_correction_grid[:5])),
+                args.dkx_correction_grid[5])
+        print(f"DKX rows: fine-grid delta {np.array2string(rows.correct(fixed.state, fixed.runtime, fine), precision=0)}"
+              f" A T/m^2", flush=True)
+    for r, t in zip(records, target):
+        print(f"DKX row s = {r['s']:.4f}: E_r = {r['er']:7.3f} kV/m{' (held)' if r['held'] else ''}, "
+              f"I'_DKX = {t:.1f} A", flush=True)
+    print(f"DKX rows: {len(records)} surfaces on {len(surfaces.workers)} workers, I'_ref = {rows.reference:.1f} A, "
+          f"set up in {time.monotonic() - started:.0f} s", flush=True)
+    return rows
+
+
+CURRENT_FIELDS = ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor")
+
+
+RESOLVED_FIELDS = ("phiedge", "am", "pres_scale", *CURRENT_FIELDS)
+
+
+def restart_input(run, resolved=None):
+    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
+
+    The restart's model keeps ``input.run`` itself (the anchored labelling's reference) and resumes at the final
+    WOUT (``boundary_start``): this is its design's PHIEDGE and current. ``resolved`` (a deck, ``--resolve-current``)
+    replaces its PHIEDGE, pressure and current."""
     import vmex as vj
 
     final = vj.VmecInput.from_wout(run / "wout.nc")
-    return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
-        name: getattr(final, name) for name in ("rbc", "zbs", "phiedge", "pcurr_type", "ac", "ac_aux_s", "ac_aux_f",
-                                                "curtor")})
+    design = replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False, **{
+        name: getattr(final, name) for name in ("rbc", "zbs", "phiedge", *CURRENT_FIELDS)})
+    return design if resolved is None else replace(design, **{name: getattr(resolved, name) for name in RESOLVED_FIELDS})
+
+
+def resolved_current(run, beta, device):
+    """``run``'s final design with ``PROFILES``' pressure at ``beta`` and a self-consistent bootstrap current.
+
+    The pressure becomes ``pressure_shape()`` (so the kinetic profiles and the equilibrium describe the same
+    plasma), rescaled with PHIEDGE to ``beta`` and the axis ``B0`` (``finite_beta_input``) at that design's fixed
+    boundary; then the Picard loop of ``dkx_current`` from the run's own current (I' = 0 if zero). A run can so continue
+    with a bootstrap current (and profiles) it did not carry, e.g. a zero-current run (``--resolve-current``); with
+    Redl, the current becomes Redl's on ``CURRENT_KNOTS`` spline knots (``smooth_redl_current``)."""
+    from vmex import optimize as opt
+
+    design = restart_input(run)
+    shape = np.zeros_like(np.asarray(design.am, dtype=float))
+    shape[: len(pressure_shape())] = pressure_shape()
+    if np.allclose(shape, design.am):  # already the profiles' pressure: keep the design's PRES_SCALE and PHIEDGE
+        fixed = opt.solve_equilibrium(design, device=device, raise_on_max_iterations=True, polish_force_balance=False)
+    else:
+        design, fixed = finite_beta_input(design, beta, device, am=pressure_shape())
+    if BOOTSTRAP_MODEL == "dkx":
+        return dkx_current(design, fixed, device)
+    return smooth_redl_current(design, device)
 
 
 # ---- coils and their field -------------------------------------------------------------------------------------------
@@ -699,8 +1120,13 @@ def parse_args(argv=None):
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
-    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
-                        help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
+    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("TOL", "ROUNDS"),
+                        help="with --check-gradient: converge each differenced fit with fresh Jacobians until the "
+                        "Gauss-Newton step's predicted relative gain is below TOL (e.g. 1e-12 8)")
+    parser.add_argument("--solve-only", type=float, nargs=2, metavar=("TOL", "ROUNDS"),
+                        help="converge the free boundary at the seed's coils and current with fresh Jacobians (as "
+                        "--check-gradient-fit), save it and stop; chained with --restart --resolve-current "
+                        "--fixed-current this alternates the free boundary and its bootstrap current")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -720,12 +1146,59 @@ def parse_args(argv=None):
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
     parser.add_argument("--beta", type=float, default=0.0)
     parser.add_argument("--bootstrap", action="store_true")
+    parser.add_argument("--resolve-current", action="store_true",
+                        help="with --restart and --bootstrap: first Picard the current to DKX's self-consistent one at "
+                        "the restart's final design (e.g. to continue a zero-current run with its bootstrap current)")
+    parser.add_argument("--fixed-current", action="store_true",
+                        help="with --bootstrap: the deck's current (e.g. --resolve-current's) is held fixed, no design "
+                        "variable and no bootstrap row; rounds of --restart --resolve-current --fixed-current re-solve "
+                        "it between them")
+    parser.add_argument("--dkx-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="DKX's grid (Ntheta, Nzeta, Nxi, NL, Nx) and the Boozer mboz = nboz of its rows "
+                        "(default: DKX's grid for the row, QI_OPTIONS' mboz)")
+    parser.add_argument("--dkx-root-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="with --dkx-ambipolar: the --resolve-current Picard finds E_r on this grid and solves <j.B> "
+                        "on --dkx-grid at it (default: both on --dkx-grid)")
+    parser.add_argument("--picard-relax", type=float, help="relaxation of the bootstrap Picard steps (default: "
+                        "PICARD_RELAX; > 1 over-relaxes a loop whose change shrinks by a steady factor c: 1 / (1 - c))")
+    parser.add_argument("--picard-curtor-tol", type=float, metavar="TOL",
+                        help="the DKX --resolve-current Picard also stops once a step changes CURTOR by less than TOL")
+    parser.add_argument("--dkx-surfaces", type=int, metavar="N",
+                        help="DKX rows on N evenly spaced surfaces s = (k - 1/2) / N (default: every half-mesh surface)")
+    parser.add_argument("--profiles", choices=("lbd", "stellaris"), default="lbd",
+                        help="--bootstrap kinetic profiles: Landreman-Buller-Drevlak at Helios-like values (lbd) or "
+                        "Stellaris' design point A (stellaris), scaled to this machine at fixed beta and collisionality")
+    parser.add_argument("--dkx-ambipolar", action="store_true",
+                        help="DKX's bootstrap rows at each surface's ambipolar (ion-root) E_r instead of E_r = 0")
+    parser.add_argument("--in-loop-dkx", action="store_true",
+                        help="with --bootstrap: DKX's ion-root bootstrap current in the loop, a row (I' - I'_DKX) / "
+                        "I'_ref per --dkx-surfaces surface, the current's knots and CURTOR design variables; each "
+                        "surface on a DKX worker of its own (--dkx-row-gpus or --dkx-row-workers)")
+    parser.add_argument("--dkx-row-grid", type=int, nargs=6, metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="the in-loop rows' DKX grid (default: DKX_ROW_GRID, g15)")
+    parser.add_argument("--dkx-correction-grid", type=int, nargs=6,
+                        metavar=("NTHETA", "NZETA", "NXI", "NL", "NX", "MBOZ"),
+                        help="freeze delta = <j.B> on this grid - <j.B> on the row grid per surface at the start "
+                        "(e.g. 25 37 96 4 6 16); without it a restart keeps its dkx_rows.json delta")
+    parser.add_argument("--dkx-row-tol", type=float, help="bound on |row| (default: DKX_ROW_TOLERANCE)")
+    parser.add_argument("--dkx-row-project", action="store_true",
+                        help="rows = the least-squares knot correction of the surface mismatches (one row per knot)")
+    parser.add_argument("--dkx-row-gpus", help="comma-separated GPU UUIDs: one DKX worker process on each")
+    parser.add_argument("--dkx-row-workers", type=int, default=0,
+                        help="wait for this many DKX workers started elsewhere (srun: python -m "
+                        "vmex.core.kinetic_bootstrap RENDEZVOUS) instead of spawning them")
+    parser.add_argument("--dkx-rendezvous", type=Path, help="the workers' rendezvous file (default: in --output)")
+    parser.add_argument("--dkx-row-state", type=Path, help="E_r, holds, I'_ref and delta of a previous round "
+                        "(default: the restart's dkx_rows.json)")
+    parser.add_argument("--dkx-er", type=float, nargs="+", help="E_r seeds [kV/m] at s = (k + 1/2) / N, interpolated "
+                        "onto the surfaces (default: the round state's, else -2)")
+    parser.add_argument("--dkx-hold", type=int, default=0, metavar="N",
+                        help="the innermost N surfaces always hold the E_r of smallest |J_r| (a flat-J_r axis)")
+    parser.add_argument("--dkx-er-tol", type=float, default=0.05, help="Newton tolerance of the roots [kV/m]")
     parser.add_argument("--current-constraint", action="store_true",
                         help="the current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design "
                         "variables) held Redl-self-consistent by a constraint row, instead of solved with every "
                         "equilibrium (BOOTSTRAP_IN_SOLVE, the qa4-beta and qh4-beta default)")
-    parser.add_argument("--fixed-current", action="store_true",
-                        help="hold the current (the restart's) fixed: no design variable and no bootstrap row")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
     parser.add_argument("--restart-beta", type=float,
                         help="with --restart: give its deck the pressure 1 - s at this <beta> on the restart's "
@@ -741,12 +1214,6 @@ def parse_args(argv=None):
     parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
     parser.add_argument("--design-step-scale", type=float, default=DESIGN_STEP_SCALE,
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
-    parser.add_argument("--max-step", type=float, metavar="U",
-                        help="trust box: a trial moving any scaled design coordinate more than U from the accepted "
-                             "point is rejected unsolved, so SLSQP's line search shortens the step")
-    parser.add_argument("--step-box", type=float, metavar="U",
-                        help="bound every step to U in each scaled design coordinate inside SLSQP's subproblem "
-                             "(SLSQP restarted at each accepted point, from an identity Hessian)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
@@ -754,39 +1221,27 @@ def parse_args(argv=None):
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
                         help="force residual of the trials' equilibria (each accepted point is re-solved to the "
                         "deck's tolerance before its gradient)")
-    parser.add_argument("--labelling", choices=("anchored", "equal_arc", "minimal", "flat_arc", "none"), default="anchored",
+    parser.add_argument("--labelling", choices=("anchored", "equal_arc", "minimal", "none"), default="anchored",
                         help="the boundary's poloidal labelling rows: anchored to the start boundary (anchored), "
                         "equal arc length of the current surface (equal_arc), the seed fit's flat tangential "
-                        "directions pinned (minimal) or held by equal arc (flat_arc), or none; see vmex.ThreeTermsConfig")
+                        "directions pinned (minimal), or none; see vmex.ThreeTermsConfig")
     parser.add_argument("--label-weight", type=float,
                         help="weight of the labelling rows (default: the labelling's, 1e-2 anchored, 1e-3 equal arc; "
                         "0 is the no-label model)")
     parser.add_argument("--gauge-tau", type=float,
-                        help="minimal and flat_arc labellings: pin the flat tangential directions with singular values below this "
+                        help="minimal labelling: pin the flat tangential directions with singular values below this "
                         "fraction of the largest (default: vmex.ThreeTermsConfig's)")
-    parser.add_argument("--gauge-refresh", type=int, default=0, metavar="K",
-                        help="minimal and flat_arc labellings: set the gauge again at the accepted fit every K accepted "
-                        "steps (default 0: once, at the start)")
-    parser.add_argument("--gauge-max-share", type=float, metavar="S",
-                        help="minimal and flat_arc labellings: set the gauge again at an accepted fit where its rows' "
-                        "share of the fit's cost exceeds S")
-    parser.add_argument("--gradient-rounds", type=int, default=0, metavar="N",
-                        help="the exact (Newton) design gradient: at most N block Krylov rounds, a direction per row "
-                        "each (default 0: the Gauss-Newton gradient)")
-    parser.add_argument("--gradient-rtol", type=float, default=1e-3, metavar="TOL",
-                        help="--gradient-rounds: stop at this relative residual of the rows' adjoint equations")
-    parser.add_argument("--gradient-fit-xtol", type=float, metavar="TOL",
-                        help="converge each gradient's fit (Gauss-Newton steps) until a step is below TOL")
-    parser.add_argument("--certify", type=float, metavar="F",
-                        help="reject a trial whose fit step or Newton row residual ends above F times "
-                             "--gradient-fit-xtol / --gradient-rtol (needs both and --gradient-rounds)")
     args = parser.parse_args(argv)
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
+    if args.resolve_current and (args.restart is None or not args.bootstrap):
+        parser.error("--resolve-current needs --restart and --bootstrap")
     if args.fixed_current and not args.bootstrap:
         parser.error("--fixed-current needs --bootstrap")
+    if args.in_loop_dkx and (not args.bootstrap or args.fixed_current):
+        parser.error("--in-loop-dkx needs --bootstrap without --fixed-current")
     return args
 
 
@@ -829,18 +1284,57 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
+def converged_fit(problem, x, start, tol, rounds):
+    """The free boundary of design ``x`` converged with fresh Jacobians on tight states, from boundary ``start``:
+    rounds of a tight linearization, then Levenberg-Marquardt with it, until the Gauss-Newton step's predicted relative
+    gain is below ``tol``, at most ``rounds``. Returns the boundary, its ``aux`` (state, mask, params, tight) and the
+    last gain."""
+    import jax.numpy as jnp
+    from vmex.core.freeboundary_three_terms import _levenberg_marquardt
+
+    model, tol, rounds = problem.model, float(tol), int(rounds)
+    params, field = problem._params_at(jnp.asarray(x)), problem.field(jnp.asarray(x))
+    evaluate = lambda z: model.evaluate(z, params, field, tight=True)  # noqa: E731
+    got = evaluate(start)
+    if got is None:
+        raise RuntimeError(f"no equilibrium at the start boundary for design {x}")
+    b, (r, aux) = np.asarray(start, dtype=float), got
+    for k in range(rounds + 1):
+        J, _, _, aux = model.linearize(b, aux, field)
+        r = np.asarray(model._rows(aux[0], aux[2], field))
+        norms = np.linalg.norm(J, axis=0)
+        U = np.linalg.svd(J / np.where(norms == 0.0, 1.0, norms), full_matrices=False)[0]
+        gain = float((U.T @ r) @ (U.T @ r) / max(r @ r, 1e-300))
+        if gain < tol or k == rounds:
+            break
+        step = _levenberg_marquardt(evaluate, b, r, aux, J, ftol=tol, max_nfev=40, verbose=0, radius=None)
+        if step["accepted"] == 0:
+            break
+        b, aux = step["x"], step["aux"]
+    return b, aux, gain
+
+
 def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None):
     """Implicit design gradients of the loss and every quantity at the seed against central differences of
     re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
     ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (ftol, max_nfev)``
-    the differenced trials' boundary fits run to that tolerance, so each lands on its design's free boundary
-    rather than near the first-order prediction it starts from."""
+    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (tol, rounds)``
+    each differenced fit is converged with fresh Jacobians instead (``converged_fit``): a trial's fit reuses
+    the accepted point's Jacobian and stalls near its first-order prediction, which reproduces the implicit
+    gradient rather than testing it."""
+    import jax.numpy as jnp
+
     x = np.asarray(problem.accepted.parameters, dtype=float)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
-    if fit is not None:
-        problem.boundary_ftol, problem.boundary_max_nfev = float(fit[0]), int(fit[1])
+    start = problem._cache[x.tobytes()]["x"]  # the gradient's tight, polished fit
+
+    def converged_values(xv):
+        b, aux, _ = converged_fit(problem, xv, start, *fit)
+        return np.asarray(problem._rows(aux[0], aux[2], jnp.asarray(xv)))
+
+    values_at = ((lambda xv: np.r_[problem.fun(xv), problem.constraint_values(xv)]) if fit is None
+                 else converged_values)
     rng = np.random.default_rng(0)
     records = []
     for k in range(directions):
@@ -848,7 +1342,7 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
         d /= np.linalg.norm(d)
         implicit = np.r_[grad @ d, jac @ d]
         for h in steps:
-            values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
+            values = [values_at(x + s * h * d) for s in (1, -1)]
             fd = (values[0] - values[1]) / (2 * h)
             loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
             rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)
@@ -937,8 +1431,21 @@ def write_run_record(out, args):
 
 def main(argv=None):
     global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT
+    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT, DKX_AMBIPOLAR, PROFILES
+    global DKX_RESOLUTION, DKX_MBOZ, DKX_SURFACES, DKX_ROOT_GRID, PICARD_RELAX, PICARD_CURTOR_TOL
     args = parse_args(argv)
+    if args.dkx_root_grid is not None:
+        DKX_ROOT_GRID = (dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_root_grid[:5])), args.dkx_root_grid[5])
+    if args.picard_relax is not None:
+        PICARD_RELAX = args.picard_relax
+    if args.picard_curtor_tol is not None:
+        PICARD_CURTOR_TOL = args.picard_curtor_tol
+    if args.dkx_grid is not None:
+        DKX_RESOLUTION = dict(zip(("Ntheta", "Nzeta", "Nxi", "NL", "Nx"), args.dkx_grid[:5]))
+        DKX_MBOZ = args.dkx_grid[5]
+    if args.dkx_surfaces is not None:
+        DKX_SURFACES = (np.arange(args.dkx_surfaces) + 0.5) / args.dkx_surfaces
+    DKX_AMBIPOLAR, PROFILES = bool(args.dkx_ambipolar), args.profiles
     if args.coil_limits is not None:
         LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
     if args.current_constraint or args.fixed_current:
@@ -964,6 +1471,7 @@ def main(argv=None):
 
     import jax
     import jax.numpy as jnp
+    from essos.coil_design import coil_constraint
     from essos.coils import Coils
     from essos.surfaces import surfacerzfourier_from_boundary
     import vmex as vj
@@ -979,17 +1487,22 @@ def main(argv=None):
         inp = restart_input(args.restart)
         if args.restart_beta is not None:
             inp, _ = finite_beta_input(inp, args.restart_beta, "gpu")
+        resolved = resolved_current(args.restart, args.beta, "gpu") if args.resolve_current else None
+        if resolved is not None:
+            inp = replace(inp, **{name: getattr(resolved, name) for name in RESOLVED_FIELDS if name != "phiedge"})
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
+        if args.bootstrap and not BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
+            inp = smooth_redl_current(inp, "gpu")
+        elif args.in_loop_dkx and inp.pcurr_type != "cubic_spline_ip":  # the rows' design variables: CURRENT_KNOTS
+            inp = opt.resample_current_profile(inp, CURRENT_KNOTS)
         redl = redl_profiles(inp)[1] if args.bootstrap else None
         args.coils = args.seed_run / "coils.initial.json"
     elif args.bootstrap:
         inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
     else:
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
-    if args.modes and (args.restart is not None or args.seed_run is not None):  # a saved run at another resolution
-        inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
     fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if fold else None
     redl = None if fold or args.fixed_current else redl
@@ -1004,15 +1517,19 @@ def main(argv=None):
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold and not args.fixed_current else None
+    design = (inp if args.restart is None  # PHIEDGE, current and boundary of x0
+              else restart_input(args.restart, resolved=resolved))
+    current = (np.r_[np.asarray(design.ac_aux_f)[:-1], design.curtor]
+               if args.bootstrap and not fold and not args.fixed_current else None)
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
     scales = args.design_step_scale * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
     chart = vj.CoilDesign(coils0, current_dofs=current_dofs, scales=scales,
-                      phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
+                      phiedge=float(design.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
+    kinetic = dkx_current_rows(inp, design, args, out) if args.in_loop_dkx else None
     qs = target_residual()
     if PWO_FREE_MAP:
         from vmex.core.pwo import MapCoordinates
@@ -1049,7 +1566,8 @@ def main(argv=None):
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
-                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
+                    *([kinetic] if kinetic is not None else
+                      [bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
                     *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(aspect, *area), boundary_quantities=(*vacuum_floor, clearance),
@@ -1060,18 +1578,26 @@ def main(argv=None):
                                    bootstrap_helicity=REDL_HELICITY,
                                    **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
-        gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share,
-        gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
-        gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify)
+        # a restart resumes at the final WOUT (its equilibrium seeds the first solve), a resolved one at its deck
+        boundary_start=None if args.restart is None else design if args.resolve_current else args.restart / "wout.nc")
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
-          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if args.labelling in ("minimal", "flat_arc")
+          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if args.labelling == "minimal"
              else ""), flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = int(redl is not None)
+    nredl = (0 if redl is None else int(np.sum(np.asarray(redl.surfaces) >= REDL_ROW_S_MIN))
+             if BOOTSTRAP_MODEL == "redl" else 1)
+    redl_bound = ((-REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE, REDL_SURFACE_TOLERANCE)
+                  if BOOTSTRAP_MODEL == "redl" else (-np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
+    if kinetic is not None:
+        tolerance = DKX_ROW_TOLERANCE if args.dkx_row_tol is None else args.dkx_row_tol
+        nredl = kinetic.index.size if kinetic.projection is None else kinetic.projection.shape[0]
+        redl_bound = (-tolerance, tolerance, tolerance)
+        first = 3 + len(mirror) + len(ceiling)
+        print(f"[dkx rows] quantity rows {first}..{first + nredl - 1}", flush=True)
     state0, params0 = problem.state(problem.x0)
     runtime0 = im.runtime_from_params(params0, model.cfg)
     extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
@@ -1082,7 +1608,7 @@ def main(argv=None):
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *[(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl,
+        *[redl_bound] * nredl,
         *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
@@ -1100,9 +1626,11 @@ def main(argv=None):
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
+        if kinetic is not None:
+            (out / f"dkx_rows{tag}.json").write_text(json.dumps(kinetic.record(), indent=1) + "\n")
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
-    last = dict(time=time.monotonic(), x=None)
+    last = dict(time=time.monotonic())
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     neo = (qs if TARGET_NAME == "eps_eff" else
@@ -1163,7 +1691,8 @@ def main(argv=None):
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
-                   **({"redl_mismatch": float(h[3 + len(mirror) + len(ceiling)])} if nredl else {}),
+                   **({"redl_mismatch": float(np.max(np.abs(h[3 + len(mirror) + len(ceiling):][:nredl])))}
+                      if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor) - len(area)]),
                    **({"pwo_map": {k: float(v) for k, v in map_options(x).items()},
@@ -1172,16 +1701,16 @@ def main(argv=None):
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
-                   step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
+                   **({"dkx_er_kv_per_m": [r["er"] for r in kinetic.surfaces.records()],
+                       "dkx_held": [r["held"] for r in kinetic.surfaces.records()],
+                       "dkx_unconverged": sum(r["unconverged"] for r in kinetic.surfaces.records()),
+                       "dkx_calls": dict(kinetic.calls)} if kinetic is not None else {}),
+                   **({"dkx_er_kv_per_m": DKX_ROWS[-1].electric_field().tolist(),
+                       "dkx_unconverged": int(DKX_ROWS[-1].unconverged)}
+                      if DKX_AMBIPOLAR and DKX_ROWS and nredl and kinetic is None else {}),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        if model._gauge is not None:  # the gauge rows' share of the accepted fit's cost (0 where it was set)
-            M, reference = model._gauge
-            g = np.asarray(M @ ((model._arc_label(params_x.rbc, params_x.zbs) if model.labelling == "flat_arc"
-                                 else model._boundary_of(params_x)) - reference))
-            r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
-            row["gauge_share"] = float(g @ g / (r @ r))
-        last.update(time=now, x=np.array(x, dtype=float))
+        last.update(time=now)
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
         print(f"[step {row['step']}] {TARGET_NAME}={row['qa']:.6e} iota={row['min_abs_iota']:.5f} "
@@ -1196,10 +1725,8 @@ def main(argv=None):
                  + f" area={row['map_area_min']:.3f} " if area else "")
               + f"B.n={res.normal:.1e} K={res.sheet_current:.1e} label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
-              + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")
-              + (f"newton={row['newton_products']}/{row['newton_residual']:.0e} " if "newton_residual" in row else "")
-              + (f"fit={row['fit_steps']}/{row['fit_step']:.0e} " if "fit_step" in row else "")
-              + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
+              + (f"E_r=[{min(row['dkx_er_kv_per_m']):.1f}, {max(row['dkx_er_kv_per_m']):.1f}] kV/m "
+                 f"unconverged={row['dkx_unconverged']} " if "dkx_unconverged" in row else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
@@ -1209,17 +1736,33 @@ def main(argv=None):
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out, fit=args.check_gradient_fit)
         return
+    if args.solve_only:  # the free boundary at the seed's coils and current, converged; no optimization
+        x = np.asarray(problem.accepted.parameters, dtype=float)
+        sol = problem._cache[x.tobytes()]
+        b, aux, gain = converged_fit(problem, x, sol["x"], *args.solve_only)
+        state, mask, params, _ = aux
+        moved = float(np.max(np.abs(np.asarray(b) - np.asarray(sol["x"]))))
+        sol.update(x=b, aux=aux, state=state, mask=mask, params=params,
+                   rows=np.asarray(model._rows(state, params, problem.field(jnp.asarray(x)))),
+                   values=np.asarray(problem._rows(state, params, jnp.asarray(x))))
+        sol.pop("gradients", None)
+        log_step()
+        save("")
+        summary = dict(solve_only=True, gauss_newton_gain=gain, boundary_change=moved, curtor_a=float(inp.curtor),
+                       boundary_residual={k: float(v) for k, v in vars(problem.boundary_residual(x)).items()},
+                       elapsed_seconds=time.monotonic() - started)
+        (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        print(json.dumps(summary))
+        return
     log_step()
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                           callback=lambda x: log_step(),
                           options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
-                                       restart_on_rejection=True, max_step=args.max_step,
-                                       step_box=args.step_box))
+                                       restart_on_rejection=True))
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),
                    failed_trials=problem.metadata["holder"]["failed_trials"],
-                   rejection_reasons=problem.stats["rejection_reasons"],
                    boundary_residual={k: float(v) for k, v in
                                       vars(problem.boundary_residual(problem.accepted.parameters)).items()},
                    elapsed_seconds=time.monotonic() - started)

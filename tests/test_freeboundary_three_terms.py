@@ -691,6 +691,34 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
 
 @needs_vc
 @pytest.mark.full
+def test_flat_arc_gauge_release_refits_without_the_gauge():
+    """``gauge_release``: a refresh first re-fits the accepted boundary without the gauge rows: the interface cost does
+    not rise, the gauge is set there (its rows vanish), and the gradient after it matches re-solved differences."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.mean_iota,),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1, gauge_release=True)
+    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
+    before = problem.fun(x1)
+    n, rows = problem.model._n_interface, problem._record(x1)["rows"]
+    problem.accept_x(x1)
+    assert problem.stats["gauge_sets"] == 2 and problem.stats["gauge_releases"] == 1
+    assert "gauge_release_failures" not in problem.stats and problem.gauge_share(x1) < 1e-8
+    after = problem._record(x1)["rows"]
+    assert after[:n] @ after[:n] <= (1 + 1e-6) * rows[:n] @ rows[:n]
+    np.testing.assert_allclose(problem.fun(x1), before, rtol=1e-3)
+    _, grad = problem.value_and_grad(x1)
+    h = 2e-3 * np.eye(2)[1]
+    np.testing.assert_allclose(grad[1], (problem.fun(x1 + h) - problem.fun(x1 - h)) / (2 * h[1]), rtol=2e-2, atol=1e-8)
+
+
+@needs_vc
+@pytest.mark.full
 def test_flat_arc_gauge_refresh_on_its_share():
     """``gauge_max_share``: the gauge is set again only at an accepted fit where its rows' share of the cost
     exceeds the bound, and vanishes there."""
@@ -714,7 +742,7 @@ def test_flat_arc_gauge_refresh_on_its_share():
     state, params = problem.state(x1)
     x = jnp.asarray(x1)
     rows = problem.model.rows(state, params, problem.field(x))
-    assert problem._field_jvp(state, params, x, jnp.ones(2)).shape == rows.shape
+    assert problem._field_jvp(state, params, x, jnp.ones(2), problem.model._gauge).shape == rows.shape
     problem.value_and_grad(x1 + 1e-3 * np.eye(2)[0])
 
 

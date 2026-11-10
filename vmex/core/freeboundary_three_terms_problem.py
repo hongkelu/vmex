@@ -29,6 +29,10 @@ GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP = 1e-4, 20, 0.9
 #: The Newton products' (``gradient_rounds``, ``gradient_fit_xtol``) one-sided difference step in the column-scaled
 #: model coordinates.
 NEWTON_GRADIENT_EPS = 1e-4
+#: The Newton gradient's soft directions: eigenvectors of the column-scaled Gauss-Newton matrix with an eigenvalue below
+#: this fraction of the largest.  A difference product cannot resolve them (a near-axisymmetric plasma's radial shift has
+#: 1e-7): they are solved by Gauss-Newton, whose residual curvature is negligible along them.
+SOFT_DIRECTION_TOL = 1e-5
 #: ``gradient_fit_xtol``: the fit's Newton steps before its gradient: at most this many trial solves in all; a step
 #: of the curvature model that cuts the Gauss-Newton step by less than ``GRADIENT_FIT_CUT`` is followed by one of
 #: GMRES on the products, to this relative residual in at most this many products.  A step is halved at most
@@ -97,8 +101,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
-                  gauge_max_share=None, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None,
-                  gradient_certify=None):
+                  gauge_max_share=None, gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3,
+                  gradient_fit_xtol=None, gradient_certify=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -116,7 +120,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, ``gauge_refresh=K`` sets it again
         at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and ``gauge_max_share`` whenever the gauge
         rows' share of the accepted fit's cost exceeds it, so it follows the design: its rows vanish there, so no value
-        at the accepted point changes.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
+        at the accepted point changes.  With ``gauge_release`` each of those refreshes first re-fits the accepted
+        boundary without the gauge rows (the no-label fit), so the labelling does not accumulate: the accepted point's
+        values then become the no-label fit's.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
         residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
         ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
         their tolerances.
@@ -134,21 +140,24 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
                    boundary_start=boundary_start, gauge_refresh=gauge_refresh,
-                   gauge_max_share=gauge_max_share, gradient_rounds=gradient_rounds, gradient_rtol=gradient_rtol,
+                   gauge_max_share=gauge_max_share, gauge_release=gauge_release, gradient_rounds=gradient_rounds,
+                   gradient_rtol=gradient_rtol,
                    gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
                  boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
-                 gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None):
+                 gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None):
         im = model._im
         self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
+        self.gauge_release = bool(gauge_release)
         self.gradient_rounds, self.gradient_rtol = int(gradient_rounds), float(gradient_rtol)
         self.gradient_fit_xtol = None if gradient_fit_xtol is None else float(gradient_fit_xtol)
         self.gradient_certify = None if gradient_certify is None else float(gradient_certify)
         if self.gradient_certify is not None and (self.gradient_fit_xtol is None or not self.gradient_rounds):
             raise ValueError("gradient_certify needs gradient_fit_xtol and gradient_rounds")
-        self.model, self.field = model, field_from_parameters
+        self.model = model
+        self.field = lambda x: model.gauged(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
@@ -200,9 +209,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_derivatives()
+        self._field_vjp = jax.jit(lambda state, params, x, lam, gauge: jax.vjp(
+            lambda z: model.rows(state, params, model.gauged(field_from_parameters(z), gauge)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx, gauge: jax.jvp(
+            lambda z: model.rows(state, params, model.gauged(field_from_parameters(z), gauge)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self._curvature = _CurvatureMemory(CURVATURE_MEMORY)
+        self._multipliers = None  # the last Newton gradient's mu (a column per row): the next solve's first directions
         self._start, self._start_state = None, None
         if boundary_start is not None:
             from .input import VmecInput
@@ -225,16 +238,30 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
 
-    def _field_derivatives(self):
-        """The model rows' derivatives along the coil parameters, traced with the model's current gauge rows."""
-        model, field = self.model, self.field
-        self._field_vjp = jax.jit(lambda state, params, x, lam: jax.vjp(
-            lambda z: model.rows(state, params, field(z)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx: jax.jvp(
-            lambda z: model.rows(state, params, field(z)), (x,), (dx,))[1])
-
     def _count(self, name, amount=1):
         self.stats[name] = self.stats.get(name, 0) + amount
+
+    def _release_gauge(self, x):
+        """Replace ``x``'s fit (cached) by the no-label fit from it, so that ``_set_gauge`` sets the gauge there.  If
+        that fit fails the old gauge and fit stand."""
+        model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
+        sol, gauge, field = self._cache[key], model._gauge, self.field(xj)
+        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, None
+        try:
+            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], ftol=self.boundary_ftol,
+                                       max_nfev=self.boundary_max_nfev)
+            fitted = self._fits(fit, field)
+            state, mask, params, _ = fit["aux"]
+            values = np.asarray(self._rows(state, params, xj)) if fitted else None
+        except (VmecError, RuntimeError):
+            fitted = False
+        if not fitted:
+            model._gauge = gauge
+            self._count("gauge_release_failures")
+            return
+        self.stats["boundary_evaluations"] += fit["nfev"]
+        self._count("gauge_releases")
+        self._cache[key] = dict(fit, state=state, mask=mask, params=params, values=values)
 
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
@@ -245,7 +272,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         J = model.linearize(sol["x"], sol["aux"], self.field(xj), extra=extra)[0]
         self.stats["gauge_directions"] = model.set_flat_arc_gauge(sol["x"], J)
         self._count("gauge_sets")
-        self._field_derivatives()  # a refresh may hold a different number of directions
         # x's fit as it is (flat arc's rows vanish there), under the new rows
         sol.pop("gradients", None)
         self._cache, self._rejections, self._anchor = {key: sol}, {}, {}
@@ -264,7 +290,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx)))
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._gauge))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
@@ -396,7 +422,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         S = model.gauge_curvature(sol["x"], params)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
-        newton = self._newton_terms(sol, J_b, S, G_b, xj, field) if self.gradient_rounds else None
+        newton = self._newton_terms(sol, J_b, J_p, S, G_b, xj, field) if self.gradient_rounds else None
         if newton is not None:
             gradients -= newton
         else:
@@ -405,7 +431,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
             else:  # nonlinear gauge rows: J^T J + sum g Hess g (their curvature; not the interface rows')
                 lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
-            gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column)))
+            gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._gauge))
                                    for column in lam.T])
             gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
@@ -426,7 +452,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         state, mask, params, _ = aux
         bar = jax.tree.map(lambda a: a[None], model.rows_pullback(state, mask, params, field, r))
         g_b, g_p = self._coordinates(params, jnp.asarray(z), xj, bar)
-        g_x = (np.asarray(self._field_vjp(state, params, xj, jnp.asarray(r))) + np.asarray(g_p[0])) if design else None
+        g_x = None
+        if design:
+            g_x = np.asarray(self._field_vjp(state, params, xj, jnp.asarray(r), model._gauge)) + np.asarray(g_p[0])
         return np.asarray(g_b[0]), g_x, np.asarray(r), aux
 
     def _fit_metric(self, J_b, S):
@@ -559,23 +587,31 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 stale = stale or (t == 1.0 and lower)
         return None, None, stale, tries
 
-    def _newton_terms(self, sol, J_b, S, G_b, xj, field):
+    def _newton_terms(self, sol, J_b, J_p, S, G_b, xj, field):
         """``mu^T dF/dx`` of every row (a row each) at the fit ``sol``, ``F = J_b^T r`` and ``mu = H^-1 dh/db``:
         block Krylov rounds (least residual) preconditioned by ``P = J_b^T J_b + S`` (column-scaled) plus the
-        curvature memory's model, until every row's relative residual is below ``gradient_rtol``, only the rows above
-        it adding directions; each new direction's ``H v`` and ``dF/dx^T v`` by differences of the fit cost's
-        gradient.  ``None`` (the Gauss-Newton gradient stands) when a perturbed fit has no tight solution."""
+        curvature memory's model and started from the last solve's ``mu``, until every row's relative residual is below
+        ``gradient_rtol``, only the rows above it adding directions; each new direction's ``H v`` and ``dF/dx^T v`` by differences of the fit cost's
+        gradient.  The soft directions (:data:`SOFT_DIRECTION_TOL`) are left out of that space and solved by
+        Gauss-Newton.  ``None`` (the Gauss-Newton gradient stands) when a perturbed fit has no tight solution."""
         b, nb = np.asarray(sol["x"], dtype=float), J_b.shape[1]
         norms, P = self._fit_metric(J_b, S)
         g = (G_b / norms).T
+        eigenvalues, eigenvectors = scipy.linalg.eigh(P)
+        soft = eigenvalues < SOFT_DIRECTION_TOL * eigenvalues[-1]
+        U = eigenvectors[:, soft]
+        self.stats["soft_directions"] = int(np.sum(soft))
+        size = np.maximum(np.linalg.norm(g, axis=0), 1e-300)
+        lam = (J_b / norms) @ U @ (U.T @ g / eigenvalues[soft][:, None])  # residual-space multipliers, a column per row
+        g = g - U @ (U.T @ g)
         params0 = self._params_at(xj)
         cost_gradient = lambda z, near=None: self._cost_gradient(z, params0, field, xj, near=near)  # noqa: E731
         base = cost_gradient(b)
         curvature = self._model_factor(P, norms)
         V, HV, FX = np.zeros((nb, 0)), np.zeros((nb, 0)), np.zeros((xj.size, 0))
-        size = np.maximum(np.linalg.norm(g, axis=0), 1e-300)
-        block = scipy.linalg.cho_solve(curvature, g)
+        block = scipy.linalg.cho_solve(curvature, g) if self._multipliers is None else self._multipliers * norms[:, None]
         for _ in range(self.gradient_rounds):
+            block = block - U @ (U.T @ block)
             block = block - V @ (V.T @ block)
             u, sv, _ = np.linalg.svd(block, full_matrices=False)
             block = u[:, sv > 1e-6 * sv[0]]
@@ -584,7 +620,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 self._count("newton_fallbacks")
                 return None
             self._count("newton_products", block.shape[1])
-            V, HV, FX = np.hstack([V, block]), np.hstack([HV, got[0]]), np.hstack([FX, got[1]])
+            V, HV, FX = np.hstack([V, block]), np.hstack([HV, got[0] - U @ (U.T @ got[0])]), np.hstack([FX, got[1]])
             # least residual, never worse round to round; directions below the products' accuracy left out
             coefficients = np.linalg.lstsq(HV, g, rcond=1e-6)[0]
             R = HV @ coefficients - g
@@ -594,7 +630,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             open_ = residuals > self.gradient_rtol  # rows still above it add the next directions
             block = scipy.linalg.cho_solve(curvature, R[:, open_])
         self.stats["newton_residual"] = float(residuals.max())
-        return (FX @ coefficients).T
+        self._multipliers = V @ coefficients / norms[:, None]
+        terms = (FX @ coefficients).T
+        if soft.any():
+            state, params = sol["state"], sol["params"]
+            terms = terms + np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), self.model._gauge))
+                                      for column in lam.T])
+            terms[:, self._plasma] += lam.T @ J_p
+        return terms
 
     def _value(self, x):
         return float(self._record(x)["values"][0])
@@ -626,7 +669,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if self.model._gauge is not None and (
                 (self.gauge_refresh and self.accepted_step % self.gauge_refresh == 0)
                 or (self.gauge_max_share is not None and self.gauge_share(x) > self.gauge_max_share)):
-            self._set_gauge(np.asarray(self._x(x), dtype=float))
+            x = np.asarray(self._x(x), dtype=float)
+            if self.gauge_release:
+                self._release_gauge(x)
+            self._set_gauge(x)
 
     def gauge_share(self, x):
         """The gauge rows' share of ``x``'s boundary-fit cost (0 without a gauge, and where it was set)."""

@@ -1541,8 +1541,9 @@ def resample_current_profile(
     n_spline: int,
     *,
     kind: str = "cubic_spline_ip",
+    knots: Any = None,
 ) -> VmecInput:
-    """Represent the current shape on ``n_spline`` uniform spline knots.
+    """Represent the current shape on ``n_spline`` spline knots (default: uniform in ``s``; ``knots`` to choose them).
 
     The existing enclosed-current profile is differentiated and sampled at
     the new knots, so continuation preserves ``I(s)`` before the new knot
@@ -1559,7 +1560,9 @@ def resample_current_profile(
         raise ValueError("kind must be 'cubic_spline_ip' or 'akima_spline_ip'")
     from .profiles import current
 
-    knots = jnp.linspace(0.0, 1.0, n_spline)
+    knots = jnp.linspace(0.0, 1.0, n_spline) if knots is None else jnp.asarray(knots, dtype=float)
+    if knots.size != n_spline or float(knots[0]) != 0.0 or float(knots[-1]) != 1.0:
+        raise ValueError("knots must be n_spline values from 0 to 1")
     # At exactly s=1, jnp.minimum's chosen generalized derivative averages
     # the profile derivative with the clamp's zero derivative. Sample the
     # physical one-sided edge derivative instead.

@@ -32,11 +32,12 @@ def parse_args(argv=None):
     parser.add_argument("--margin", type=float, default=0.25, help="box around the boundary's cross-section [m]")
     parser.add_argument("--gap", type=float, default=0.01, help="smallest distance of a start to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.04, help="smallest distance of a start to a coil [m]")
-    parser.add_argument("--steps", type=int, default=96, help="Runge-Kutta steps per field period")
+    parser.add_argument("--steps", type=int, default=96, help="Runge-Kutta steps per field period of the grid's map")
+    parser.add_argument("--newton-steps", type=int, default=384, help="the same, of the fixed-point solves")
     parser.add_argument("--nodes", type=int, default=65, help="collocation nodes per field period (odd)")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--digits", type=int, default=6)
-    parser.add_argument("--candidates", type=int, default=12, help="grid minima refined per field")
+    parser.add_argument("--candidates", type=int, default=24, help="grid minima refined per field")
     return parser.parse_args(argv)
 
 
@@ -102,18 +103,15 @@ def main(argv=None):
         minima = np.argwhere(np.isfinite(shift) & (np.where(np.isfinite(shift), shift, np.inf) <= neighbours))
         minima = minima[np.argsort(shift[tuple(minima.T)])][:args.candidates]
         points = []
-        for i, j in minima:
-            try:
-                r, z, M, step = pf.return_map_fixed_point(field, None, R[i, j], Z[i, j], nfp=nfp, periods=args.periods,
-                                                          steps=args.steps)
-            except Exception as error:  # a Newton iterate left the field's domain
-                print(f"[{name}] start ({R[i, j]:.3f}, {Z[i, j]:.3f}): {type(error).__name__}", flush=True)
-                continue
-            r, z = float(r), float(z)
-            if not (step < 1e-9 and low[0] <= r <= high[0] and low[1] <= z <= high[1]):
+        found = pf.return_map_fixed_point(field, None, R[tuple(minima.T)], Z[tuple(minima.T)], nfp=nfp,
+                                          periods=args.periods, steps=args.newton_steps)
+        for r, z, M, step in zip(*(np.asarray(v) for v in found)):
+            # converged, resolved (the map preserves flux: det M = 1), in the box, outside the plasma, and new
+            if not (step < 1e-9 and abs(np.linalg.det(M) - 1.0) < 1e-3 and low[0] <= r <= high[0] and low[1] <= z <= high[1]):
                 continue
             if Polygon(section).contains_point((r, z)) or any(np.hypot(r - p["R"], z - p["Z"]) < 1e-6 for p in points):
                 continue
+            r, z = float(r), float(z)
             nodes = pf.fieldline_nodes(args.nodes * args.periods, nfp, args.periods)
             guess = pf.trace_fieldline(field, None, r, z, nodes, substeps=8)
             line = pf.periodic_fieldline(field, None, *guess, nfp=nfp, periods=args.periods)

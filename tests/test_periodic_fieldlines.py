@@ -63,7 +63,7 @@ def test_collocation_agrees_with_shooting_on_a_three_dimensional_field():
     assert float(np.ptp(np.asarray(line.R))) > 1e-3  # the line is not a circle
     M = pf.tangent_map(field, eps, line)
     r, z, M_shot, step = pf.return_map_fixed_point(field, eps, RX, ZX, nfp=NFP, steps=400)
-    assert step < 1e-12
+    assert float(step) < 1e-12
     np.testing.assert_allclose([line.R[0], line.Z[0]], [r, z], atol=1e-9)
     assert float(jnp.trace(M)) == pytest.approx(float(jnp.trace(M_shot)), rel=1e-7)
     assert float(jnp.linalg.det(M)) == pytest.approx(1.0, abs=1e-7)

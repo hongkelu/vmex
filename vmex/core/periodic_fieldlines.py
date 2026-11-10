@@ -226,26 +226,33 @@ def return_map(field: Field, parameters: Any, R, Z, *, nfp: int, periods: int = 
 
 
 def return_map_fixed_point(field: Field, parameters: Any, R, Z, *, nfp: int, periods: int = 1, phi0: float = 0.0,
-                           steps: int = 256, iterations: int = 20, tolerance: float = 1e-12):
-    """A fixed point of the return map by Newton's method from ``(R, Z)``: ``(R, Z, M, step)``.
+                           steps: int = 256, iterations: int = 20):
+    """Fixed points of the return map by Newton's method from each ``(R, Z)``: ``(R, Z, M, step)``.
 
     A shooting solve, independent of the collocation of
-    :func:`periodic_fieldline`: ``M`` is the derivative of the integrated map,
-    ``step`` the last Newton step [m].  Host-side loop, not traceable.
+    :func:`periodic_fieldline`: ``M (..., 2, 2)`` is the derivative of the
+    integrated map and ``step`` the last of the ``iterations`` Newton steps
+    [m], large or not finite where a start did not converge.  ``det M = 1``
+    where the integration resolved the line.  Traceable; the starts are a batch
+    of any one shape.
     """
+    R, Z = jnp.asarray(R, dtype=float), jnp.asarray(Z, dtype=float)
+
     def image(x):
         r, z = return_map(field, parameters, x[:1], x[1:], nfp=nfp, periods=periods, phi0=phi0, steps=steps)
         return jnp.concatenate((r, z))
 
-    value_and_jacobian = jax.jit(lambda x: (image(x), jax.jacfwd(image)(x)))
-    x, step = jnp.asarray([R, Z], dtype=float), np.inf
-    for _ in range(iterations):
-        value, M = value_and_jacobian(x)
-        dx = jnp.linalg.solve(M - jnp.eye(2), value - x)
-        x, step = x - dx, float(jnp.max(jnp.abs(dx)))
-        if step < tolerance:
-            break
-    return x[0], x[1], value_and_jacobian(x)[1], step
+    def solve(x):
+        def newton(carry, _):
+            x, _ = carry
+            dx = jnp.linalg.solve(jax.jacfwd(image)(x) - jnp.eye(2), image(x) - x)
+            return (x - dx, jnp.max(jnp.abs(dx))), None
+
+        (x, step), _ = jax.lax.scan(newton, (x, jnp.asarray(jnp.inf, dtype=x.dtype)), None, length=iterations)
+        return x, jax.jacfwd(image)(x), step
+
+    x, M, step = jax.vmap(solve)(jnp.stack((R.ravel(), Z.ravel()), axis=-1))
+    return x[:, 0].reshape(R.shape), x[:, 1].reshape(R.shape), M.reshape(R.shape + (2, 2)), step.reshape(R.shape)
 
 
 def surface_distance(xyz, gamma, nfp: int) -> jax.Array:

@@ -727,6 +727,10 @@ def parse_args(argv=None):
     parser.add_argument("--fixed-current", action="store_true",
                         help="hold the current (the restart's) fixed: no design variable and no bootstrap row")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
+    parser.add_argument("--restart-beta", type=float,
+                        help="with --restart: give its deck the pressure 1 - s at this <beta> on the restart's "
+                             "boundary (finite_beta_input), taking a vacuum result to finite beta or raising beta; "
+                             "the coils and the current profile stay the restart's")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -973,6 +977,8 @@ def main(argv=None):
         inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
     if args.restart is not None:
         inp = restart_input(args.restart)
+        if args.restart_beta is not None:
+            inp, _ = finite_beta_input(inp, args.restart_beta, "gpu")
         redl = redl_profiles(inp)[1] if args.bootstrap else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)

@@ -1,8 +1,23 @@
 # Changelog
 
-Release notes are mirrored from the GitHub releases, which carry each release
-in full. A number appears here only where a committed artifact backs it; each
-record under `benchmarks/` names the revision it was measured at.
+Full release notes are on GitHub. Numerical results here have committed artifacts; `benchmarks/` records identify the measured revision.
+
+## Unreleased
+
+- **Callback-free ambipolar roots in the optimizer.** An objective term that exposes `roots(state, runtime)` (DKX's `KineticBootstrapMismatch(ambipolar=True)`, `dkx>=2.14.0`) now has its roots found on the host before the jitted residual and Jacobian and passed in as an argument, so those programs no longer hold the root-finder `io_callback`; the implicit-function gradient through the root is unchanged. Residual and Jacobian agree with the callback form to 1e-7 or better.
+
+## 0.14.0 - 2026-11-09
+
+- **pwO bootstrap control.** `pwO_optimization.py` gains `BOOTSTRAP_TERM = "band"`, which flattens |B| across the unmapped B_max band (DKX current -135 to -5 kA at NFP 3), and optional DKX stages at the end; `BootstrapFiniteNuResidual` reports the equivalent-ripple spread as a diagnostic.
+- **Solver speed.** Block factorizations are reused across solves, with cyclic reduction for GPU block factors; cached executables are shared across solver blocks and invalidated after dependency updates.
+- Fixes: native Boozer iota for multiple field periods, bounce-drift derivatives and arc-length weights, the interior lambda axis lift, held m=1 family in implicit solves and derivatives, `near_surface="auto"` eager versus traced.
+
+## 0.13.0 - 2026-11-03
+
+- **Self-consistent bootstrap at the ambipolar E_r.** `examples/optimization/QI_optimization_bootstrap_er.py` alternates a Picard update of the applied current profile to DKX's `<j.B>` at each surface's ambipolar `E_r` (`KineticBootstrapMismatch(ambipolar=True)`) with QI shape stages, and asserts that the final equilibrium current matches DKX within 5 % rms on the kinetic surfaces. `self_consistent_bootstrap` gains `current_model` and `initial_state`. Needs `dkx>=2.12.0`, now the floor of the `dkx` extra.
+- Add pwO vacuum, finite-beta and coil examples with independent transport checks.
+- Skip vacuum virtual casing; verify single-stage free-boundary convergence on the final grid; fix constructed-QI first-wall interpolation under a shifted toroidal origin.
+- `make_free_boundary_config` now defaults to `adjoint_solver="boundary_schur"`.
 
 ## 0.12.0 - 2026-10-21
 
@@ -125,8 +140,7 @@ record under `benchmarks/` names the revision it was measured at.
 - An outdated or missing optional dependency (ESSOS, virtual-casing-jax,
   neo-jax, GKX) now fails with the `pip install -U` command that fixes it,
   and the import guard also covers `booz_xform_jax` and `solvax` (#496).
-- No `RuntimeWarning` when no alpha is lost, and the terminal progress line
-  is cleared properly (#496).
+- No `RuntimeWarning` when no alpha is lost, and the terminal progress line is cleared properly (#496).
 
 ## 0.11.5 - 2026-09-28
 
@@ -179,18 +193,8 @@ record under `benchmarks/` names the revision it was measured at.
 
 A compilation-cache directory set through `JAX_COMPILATION_CACHE_DIR` or
 `VMEX_COMPILATION_CACHE_DIR` is now split by machine, like the default one
-(#449). On clusters, a shared cache path was read by nodes with different CPU
-features; XLA rejected the other node's executables ("Target machine feature
-... is not supported on the host machine") and recompiled on every run.
+(#449): nodes with different CPU features no longer recompile on every run.
 
-## 0.11.1 - 2026-09-23
-
-Free-boundary trials are anchored on the coupled root their gradients
-differentiate (#432), the exterior field is accurate next to the plasma
-surface, optimization results are the states the objective scored (#427), and
-the optimization examples were re-tuned against a five-minute budget. Full
-notes in the GitHub release.
-
-## 0.11.0 and earlier
+## 0.11.1 and earlier
 
 See the [GitHub releases](https://github.com/uwplasma/vmex/releases).

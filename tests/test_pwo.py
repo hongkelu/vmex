@@ -406,6 +406,145 @@ def test_one_period_representation_retains_physical_n4_and_axis():
         one_field_period(replace(inp, rbc=rbc))
 
 
+@pytest.mark.parametrize("nfp", [2, 3])
+def test_qa_precursor_retains_best_feasible_trial_and_native_weight(tmp_path, monkeypatch, nfp):
+    from types import SimpleNamespace
+    import scipy.optimize
+    import vmex as vj
+    from vmex import optimize as opt
+    from vmex.core.pwo import qa_precursor
+
+    monkeypatch.setattr(jax, "jit", lambda f: f)
+    monkeypatch.setattr(vj, "write_wout", lambda path, w: path.write_text(str(w)))
+    monkeypatch.setattr(opt, "QuasisymmetryRatioResidual", lambda *a, **k: SimpleNamespace(
+        residuals_state=lambda state, rt: jnp.array([2*state]),
+        total_state=lambda state, rt: 4*state**2))
+    def deck(x):
+        return SimpleNamespace(nfp=nfp, value=float(x),
+            to_indata=lambda path: path.write_text(str(x)))
+
+    def eq(x):
+        return SimpleNamespace(state=float(x[0]), runtime=None, wout=float(x[0]))
+    captured = {}
+
+    def problem_from_tuples(inp, terms, **kwargs):
+        residual = terms[0][0]
+        captured["initial"] = np.asarray(residual(1., None))
+        current = [None]
+
+        def evaluated_residual(x):
+            current[0] = float(x[0])
+            return residual(x[0], None)
+
+        def current_equilibrium(x):
+            assert float(x[0]) == current[0], "Cannot revisit an earlier optimizer equilibrium"
+            return eq(x)
+
+        problem = SimpleNamespace(x0=np.array([1.]), residual=evaluated_residual,
+            equilibrium_from_x=current_equilibrium, input_from_x=lambda x: deck(x[0]))
+        problem.subproblem = lambda max_mode, x: SimpleNamespace(
+            x0=x, scales=np.ones(1), embed=lambda y: y, residual_jac=None, mode=max_mode)
+        return problem
+
+    monkeypatch.setattr(opt.VmecProblem, "from_tuples", problem_from_tuples)
+    calls = []
+
+    def least_squares(fun, x0, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            fun(np.array([.2]))  # best feasible trial before the rejected terminal iterate
+        x = np.array([.6 if len(calls) == 1 else .1])
+        fun(x)
+        return SimpleNamespace(x=x, message="bounded fake optimizer")
+
+    monkeypatch.setattr(scipy.optimize, "least_squares", least_squares)
+    mapped = SimpleNamespace(surfaces=np.array([.25, .5, .75]),
+        diagnostics_state=lambda state, rt: (None, None, None, jnp.array([.19])),
+        physical_metrics=lambda eq, **kwargs: dict(raw=1., feasible=eq.state >= .2))
+    inp, selected = qa_precursor(deck(1.), eq([1.]), mapped,
+        lambda state, rt: jnp.zeros(1), tmp_path, maxiter=1, optimizer_ftol=.001,
+        mirror_limit=.2, mirror_weight=100.,
+        physical_options=dict(aspect_bounds=(5.9, 6.1), iota_floor=.41))
+    assert inp.value == selected.state == .2
+    import json
+    report = json.loads((tmp_path / "summary.json").read_text())
+    assert report["evaluations"][report["selected_evaluation"]]["raw"] == pytest.approx(4*.2**2)
+    assert (tmp_path / "input.mode2").read_text() == "0.1"
+    assert (tmp_path / "input.trial").read_text() == "0.2"
+    expected = np.sqrt(2)*(2 if nfp == 2 else 1)
+    assert captured["initial"][0] == pytest.approx(expected)
+    assert len(captured["initial"]) == (2 if nfp == 2 else 3)
+
+
+@pytest.mark.parametrize("rejection", [None, "physics", "variance", "unusable"])
+def test_transport_backtrack_requires_every_radius_physics_and_variance(tmp_path, monkeypatch, rejection):
+    from types import SimpleNamespace
+    import vmex as vj
+    from vmex import optimize as opt
+    from vmex.core import neoclassical, restart
+    from vmex.core.errors import VmecConvergenceError
+    from vmex.core.monitoring import FeasibleCandidateMonitor
+    from vmex.core.pwo import transport_backtrack
+
+    monkeypatch.setattr(vj, "write_wout", lambda path, w: path.write_text(str(w)))
+    # Half step improves the mean but worsens the outermost surface.
+    monkeypatch.setattr(neoclassical, "screen_transport", lambda w, surfaces:
+        np.array([.1, .1, 1.01]) if w == .5 else np.full(3, .5))
+    profiles, restarted, solved = object(), object(), []
+
+    def forward(inp, *, initial_state, raise_on_max_iterations):
+        assert inp.profiles is profiles  # boundary interpolation preserves physics inputs
+        assert initial_state is restarted and raise_on_max_iterations
+        solved.append(inp.x)
+        if rejection == "unusable" and inp.x == .5:
+            raise VmecConvergenceError("bounded candidate did not converge")
+        return SimpleNamespace(wout=inp.x)
+
+    def restart_seed(wout, inp):
+        assert wout == 0. and inp.profiles is profiles
+        return restarted
+
+    monkeypatch.setattr(opt, "solve_equilibrium", forward)
+    monkeypatch.setattr(restart, "restart_state", restart_seed)
+    problem = SimpleNamespace(residual=lambda x: np.array([1-x[0]]),
+        equilibrium_from_x=lambda x: SimpleNamespace(wout=x[0]),
+        input_from_x=lambda x: SimpleNamespace(x=float(x[0]), profiles=profiles,
+            to_indata=lambda path: path.write_text(str(x[0]))))
+
+    def inspect(eq):
+        raw = (1-eq.wout)**2 if rejection != "variance" else 1+eq.wout
+        return np.array([1-eq.wout]), dict(raw=raw, feasible=rejection != "physics",
+            force_errors=[1e-13, 1e-14, 1e-15], aspect=6.01, iota_min=.42)
+
+    monitor = FeasibleCandidateMonitor(problem, inspect, tmp_path, maxiter=1)
+    start, proposal = np.array([0.]), np.array([1.])
+    monitor(start)
+    monitor(proposal)
+
+    def unusable_optimizer_revisit(x):
+        pytest.fail("Backtracking must not revisit optimizer equilibria, including the start")
+
+    problem.equilibrium_from_x = unusable_optimizer_revisit
+    problem.residual = unusable_optimizer_revisit
+    accepted = transport_backtrack(monitor, start, proposal, np.ones(3), [.25, .5, .75],
+                                   seed=SimpleNamespace(wout=0.))
+    assert (tmp_path / "input.direction").read_text() == "1.0"
+    assert 0. not in solved and 1. not in solved
+    assert accepted == (rejection in (None, "unusable"))
+    if accepted:
+        assert solved == [.5, .25]
+        assert monitor.report["accepted_alpha"] == .25
+        assert (tmp_path / "input.trial").read_text() == "0.25"
+        assert monitor.best[1][0] == .25
+        assert not monitor.report["backtracking"][0]["accepted"]
+        row = monitor.report["evaluations"][monitor.report["selected_evaluation"]]
+        assert row["raw"] == .75**2 and row["force_errors"] == [1e-13, 1e-14, 1e-15]
+        assert row["aspect"] == 6.01 and row["iota_min"] == .42
+    else:
+        assert len(monitor.report["backtracking"]) == 6
+        assert not monitor.report["transport_screen_passed"]
+
+
 def test_limited_map_turns_any_parameters_into_a_valid_map():
     wild = dict(a=5., b=3., c=-.1, eta_min=.2)
     out = mapped_pwo_residual_from_boozer(**_spectrum(2), b_ref=1.5, limit_map=True, **wild)

@@ -182,7 +182,7 @@ elif CASE == "pwo2-mapped":
     COIL_DISTANCE_LIMIT = COIL_SURFACE_DISTANCE_LIMIT = 0.5 / 6
     SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (2, 6.0, 0.05), None, "pwO", (5.9, 6.1), 0.2
     IOTA_FLOOR, PWO_SCALE = 0.42, 7.17e-3  # the seed's free boundary (circular coils fitted to it): 7.168e-3
-elif CASE in ("pwo3-seed", "pwo3-free"):
+elif CASE.removesuffix("-tok") in ("pwo3-seed", "pwo3-free"):
     # uwplasma/vmex pwO_optimization.py at NFP 3 in free-boundary single stage: its near-circular seed (R = 1, a = 0.2,
     # 0.05 m rotating ellipse, aspect 5.164), its 8 surfaces, Boozer 16 and mirror limit, the map held at that example's
     # converged vacuum values with limit_map, and the coils of single_stage_optimization_pwO.py as in pwo2-mapped

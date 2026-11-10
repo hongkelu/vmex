@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -30,7 +31,7 @@ def parse_args(argv=None):
     parser.add_argument("--periods", type=int, default=1)
     parser.add_argument("--grid", type=int, default=48, help="grid points per direction")
     parser.add_argument("--margin", type=float, default=0.25, help="box around the boundary's cross-section [m]")
-    parser.add_argument("--gap", type=float, default=0.01, help="smallest distance of a start to the boundary [m]")
+    parser.add_argument("--gap", type=float, default=0.06, help="smallest distance of a start to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.04, help="smallest distance of a start to a coil [m]")
     parser.add_argument("--steps", type=int, default=96, help="Runge-Kutta steps per field period of the grid's map")
     parser.add_argument("--newton-steps", type=int, default=384, help="the same, of the fixed-point solves")
@@ -70,7 +71,12 @@ def main(argv=None):
     surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)
     exterior = VmecExtender.from_surface_data(surface, external_field=coil_field, digits=args.digits,
                                               accuracy_check="off")
-    fields = {"coils": lambda p, xyz: coil_field(xyz), "total": lambda p, xyz: exterior.B(xyz)}
+    # The grid's map uses the direct quadrature (accurate a few source spacings off the boundary, hence --gap);
+    # the fixed points are then solved with the near-surface rule where the direct one misses the digits.
+    direct = VmecExtender.from_surface_data(surface, external_field=coil_field, digits=args.digits,
+                                            accuracy_check="off", near_surface="direct")
+    fields = {"coils": (lambda p, xyz: coil_field(xyz),) * 2,
+              "total": (lambda p, xyz: direct.B(xyz), lambda p, xyz: exterior.B(xyz))}
 
     gamma = np.asarray(surface.gamma)                       # (3, nphi, ntheta), one field period
     section = np.stack((np.hypot(gamma[0, 0], gamma[1, 0]), gamma[2, 0]), axis=-1)   # phi = 0
@@ -90,9 +96,10 @@ def main(argv=None):
                 float(np.min(np.linalg.norm(points[:, None] - coil_points[None], axis=-1))))
 
     report, figure = {}, plt.subplots(1, 2, figsize=(12, 6), constrained_layout=True)
-    for axis, (name, field) in zip(figure[1], fields.items()):
-        image = jax.jit(lambda r, z, field=field: pf.return_map(field, None, r, z, nfp=nfp, periods=args.periods,
-                                                                steps=args.steps))
+    for axis, (name, (survey, field)) in zip(figure[1], fields.items()):
+        clock = time.monotonic()
+        image = jax.jit(lambda r, z, field=survey: pf.return_map(field, None, r, z, nfp=nfp, periods=args.periods,
+                                                                 steps=args.steps))
         r1, z1 = (np.asarray(v) for v in image(jnp.asarray(R.ravel()[start]), jnp.asarray(Z.ravel()[start])))
         shift = np.full(R.size, np.nan)
         shift[start] = np.hypot(r1 - R.ravel()[start], z1 - Z.ravel()[start])
@@ -102,6 +109,9 @@ def main(argv=None):
                              for i in (-1, 0, 1) for j in (-1, 0, 1) if (i, j) != (0, 0)], axis=0)
         minima = np.argwhere(np.isfinite(shift) & (np.where(np.isfinite(shift), shift, np.inf) <= neighbours))
         minima = minima[np.argsort(shift[tuple(minima.T)])][:args.candidates]
+        print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; smallest displacements "
+              + ", ".join(f"{shift[i, j]:.1e} at ({R[i, j]:.3f}, {Z[i, j]:.3f})" for i, j in minima[:6]), flush=True)
+        np.savez(out / f"return_map_{name}.npz", R=R, Z=Z, shift=shift, section=section)
         points = []
         found = pf.return_map_fixed_point(field, None, R[tuple(minima.T)], Z[tuple(minima.T)], nfp=nfp,
                                           periods=args.periods, steps=args.newton_steps)
@@ -128,6 +138,7 @@ def main(argv=None):
                   f"(shooting {points[-1]['trace_shooting']:.6f}) det={points[-1]['determinant']:.6f} "
                   f"boundary {boundary_distance:.4f} m coils {coil_distance:.4f} m", flush=True)
         report[name] = points
+        print(f"[{name}] {len(points)} fixed points; {time.monotonic() - clock:.0f} s", flush=True)
         mesh = axis.pcolormesh(R, Z, np.log10(shift), shading="nearest", cmap="viridis")
         figure[0].colorbar(mesh, ax=axis, label="log10 |P(x) - x| [m]")
         axis.plot(*np.r_[section, section[:1]].T, "w-", lw=1.5)

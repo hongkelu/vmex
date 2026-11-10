@@ -1,0 +1,295 @@
+"""Periodic field lines of a magnetic field and their return maps.
+
+A field line that closes after ``periods`` field periods is a fixed point of
+the Poincare return map; outside the last closed flux surface such lines are
+the X- and O-points of the edge (divertor X-points, island chains).  Following
+Giuliani et al., "Divertor topology and vacuum vessel design for stellarators"
+(arXiv:2607.27127), the line is a collocation solve and its type is read from
+the tangent map ``M`` of the return map (``det M = 1``):
+
+    ``|Tr M| > 2`` hyperbolic (X-point),  ``|Tr M| < 2`` elliptic (O-point),
+    ``Tr M = 2`` parabolic.
+
+The paper's field is the coils' vacuum field.  Here the field is any batched
+``field(parameters, xyz (n, 3)) -> B (n, 3)``, for example the coils plus the
+plasma's virtual-casing field (:func:`exterior_field`), so the same targets
+apply at finite beta and at a free boundary.
+
+The line is parameterized by the toroidal angle, ``R(phi), Z(phi)`` with
+
+    ``dR/dphi = R B_R / B_phi``,  ``dZ/dphi = R B_Z / B_phi``,
+
+on equispaced nodes over ``periods`` field periods (Fourier collocation), which
+needs ``B_phi != 0`` along the line.  :func:`periodic_fieldline` is traceable
+and differentiable in ``parameters`` by the implicit function theorem of the
+collocation residual; nothing differentiates through the Newton iterations.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, NamedTuple
+
+import numpy as np
+
+import jax
+import jax.numpy as jnp
+
+__all__ = [
+    "PeriodicFieldline",
+    "exterior_field",
+    "fieldline_nodes",
+    "periodic_fieldline",
+    "return_map",
+    "return_map_fixed_point",
+    "surface_distance",
+    "tangent_map",
+    "trace_fieldline",
+]
+
+Field = Callable[[Any, jax.Array], jax.Array]
+
+
+class PeriodicFieldline(NamedTuple):
+    """A closed field line on its collocation nodes.
+
+    ``R``, ``Z`` [m] at the toroidal angles ``phi``; ``residual`` is the largest
+    collocation residual [m/rad] and ``step`` the last Newton step [m].
+    """
+
+    R: jax.Array
+    Z: jax.Array
+    phi: jax.Array
+    residual: jax.Array
+    step: jax.Array
+
+    @property
+    def xyz(self) -> jax.Array:
+        """Cartesian node positions, shape ``(n, 3)``."""
+        return jnp.stack((self.R * jnp.cos(self.phi), self.R * jnp.sin(self.phi), self.Z), axis=-1)
+
+
+def fieldline_nodes(n: int, nfp: int, periods: int = 1, phi0: float = 0.0) -> np.ndarray:
+    """The ``n`` (odd) equispaced toroidal angles of a line closing after ``periods`` field periods."""
+    if n < 3 or n % 2 == 0:
+        raise ValueError("n must be odd and at least 3")
+    return phi0 + 2.0 * np.pi * periods / nfp * np.arange(n) / n
+
+
+def _derivative_matrix(n: int, length: float) -> np.ndarray:
+    """Fourier differentiation on ``n`` (odd) equispaced nodes of a period ``length``."""
+    k = 2.0 * np.pi / length * np.fft.fftfreq(n, 1.0 / n)
+    return np.real(np.fft.ifft(1j * k[:, None] * np.fft.fft(np.eye(n), axis=0), axis=0))
+
+
+def _rhs(field: Field, parameters: Any, R, Z, phi):
+    """``(dR/dphi, dZ/dphi)`` of the field line through each ``(R, phi, Z)``."""
+    cos, sin = jnp.cos(phi), jnp.sin(phi)
+    B = field(parameters, jnp.stack((R * cos, R * sin, Z), axis=-1))
+    B_phi = cos * B[:, 1] - sin * B[:, 0]
+    return R * (cos * B[:, 0] + sin * B[:, 1]) / B_phi, R * B[:, 2] / B_phi
+
+
+def _rhs_jacobian(field: Field, parameters: Any, R, Z, phi):
+    """The right-hand side and its 2 x 2 derivative in ``(R, Z)`` at each point.
+
+    The field acts point by point, so one tangent along every ``R`` and one
+    along every ``Z`` give all the entries.
+    """
+    f = lambda r, z: _rhs(field, parameters, r, z, phi)  # noqa: E731
+    one, zero = jnp.ones_like(R), jnp.zeros_like(R)
+    value, (a_rr, a_zr) = jax.jvp(f, (R, Z), (one, zero))
+    _, (a_rz, a_zz) = jax.jvp(f, (R, Z), (zero, one))
+    return value, (a_rr, a_rz, a_zr, a_zz)
+
+
+def _newton_matrix(D, a):
+    a_rr, a_rz, a_zr, a_zz = a
+    return jnp.block([[D - jnp.diag(a_rr), -jnp.diag(a_rz)], [-jnp.diag(a_zr), D - jnp.diag(a_zz)]])
+
+
+def periodic_fieldline(field: Field, parameters: Any, R, Z, *, nfp: int, periods: int = 1, phi0: float = 0.0,
+                       max_iterations: int = 20, tolerance: float = 1e-11) -> PeriodicFieldline:
+    """The closed field line near the guess ``R``, ``Z`` (node values, :func:`fieldline_nodes`).
+
+    Newton's method on the collocation residual ``D u - f(u)``, at most
+    ``max_iterations`` steps, until the step is below ``tolerance`` [m].  The
+    result is differentiable in ``parameters``: the iterations run on frozen
+    parameters and one more Newton step at the solution carries the implicit
+    derivative ``du = -J^-1 dr``.  ``step`` and ``residual`` say whether the
+    solve converged; the system is singular at a parabolic line (``Tr M = 2``).
+    """
+    R, Z = jnp.asarray(R, dtype=float), jnp.asarray(Z, dtype=float)
+    n = R.size
+    phi = jnp.asarray(fieldline_nodes(n, nfp, periods, phi0))
+    D = jnp.asarray(_derivative_matrix(n, 2.0 * np.pi * periods / nfp))
+    frozen = jax.tree.map(jax.lax.stop_gradient, parameters)
+
+    def correction(p, u):
+        (f_r, f_z), a = _rhs_jacobian(field, p, u[:n], u[n:], phi)
+        r = jnp.concatenate((D @ u[:n] - f_r, D @ u[n:] - f_z))
+        return r, jnp.linalg.solve(_newton_matrix(D, a), r)
+
+    def body(carry):
+        u, _, k = carry
+        _, du = correction(frozen, u)
+        return u - du, jnp.max(jnp.abs(du)), k + 1
+
+    u0 = jax.lax.stop_gradient(jnp.concatenate((R, Z)))
+    u, step, _ = jax.lax.while_loop(lambda c: (c[1] > tolerance) & (c[2] < max_iterations), body,
+                                    (u0, jnp.asarray(jnp.inf, dtype=u0.dtype), 0))
+    u = jax.lax.stop_gradient(u)
+    # at the solution: the residual depends on the parameters, the matrix is frozen
+    _, a = _rhs_jacobian(field, frozen, u[:n], u[n:], phi)
+    f_r, f_z = _rhs(field, parameters, u[:n], u[n:], phi)
+    r = jnp.concatenate((D @ u[:n] - f_r, D @ u[n:] - f_z))
+    u = u - jnp.linalg.solve(jax.lax.stop_gradient(_newton_matrix(D, a)), r)
+    return PeriodicFieldline(u[:n], u[n:], phi, jnp.max(jnp.abs(jax.lax.stop_gradient(r))), step)
+
+
+def tangent_map(field: Field, parameters: Any, line: PeriodicFieldline, *, refine: int = 16) -> jax.Array:
+    """The 2 x 2 tangent map ``M`` of the return map at ``line.phi[0]``, in ``(R, Z)``.
+
+    ``dM/dphi = A(phi) M`` with ``A`` the derivative of the field-line
+    right-hand side along the line.  ``A`` is evaluated on the nodes,
+    interpolated by its Fourier series to ``refine`` (even) times as many
+    points and integrated with fourth-order Runge-Kutta steps over them.
+    ``Tr M`` does not depend on the coordinates or on the starting angle;
+    ``det M = 1`` measures the accuracy.  Differentiable in ``parameters`` and
+    in the line.
+    """
+    if refine < 2 or refine % 2:
+        raise ValueError("refine must be even and at least 2")
+    n = line.R.size
+    _, a = _rhs_jacobian(field, parameters, line.R, line.Z, line.phi)
+    A = jnp.stack(a, axis=-1)
+    m = refine * n
+    spectrum = jnp.fft.fft(A, axis=0)
+    half = (n + 1) // 2
+    padded = jnp.zeros((m, 4), dtype=spectrum.dtype).at[:half].set(spectrum[:half]).at[m - (n - half):].set(
+        spectrum[half:])
+    fine = (jnp.real(jnp.fft.ifft(padded, axis=0)) * refine).reshape(m, 2, 2)
+    h = 2.0 * (line.phi[1] - line.phi[0]) * n / m
+    # one Runge-Kutta step spans two fine points: (start, middle, end)
+    stages = jnp.stack((fine[0::2], fine[1::2], jnp.roll(fine, -2, axis=0)[0::2]), axis=1)
+
+    def step(M, A3):
+        k1 = A3[0] @ M
+        k2 = A3[1] @ (M + 0.5 * h * k1)
+        k3 = A3[1] @ (M + 0.5 * h * k2)
+        k4 = A3[2] @ (M + h * k3)
+        return M + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4), None
+
+    M, _ = jax.lax.scan(step, jnp.eye(2, dtype=fine.dtype), stages)
+    return M
+
+
+def trace_fieldline(field: Field, parameters: Any, R, Z, phi, *, substeps: int = 8):
+    """Field lines from ``(R, Z)`` at ``phi[0]`` on the increasing angles ``phi``: arrays ``(len(phi), ...)``.
+
+    Fixed fourth-order Runge-Kutta steps, ``substeps`` between consecutive
+    angles; ``R`` and ``Z`` are batches of starting points (any one shape).
+    """
+    R, Z = jnp.asarray(R, dtype=float), jnp.asarray(Z, dtype=float)
+    shape = R.shape
+    phi = jnp.asarray(phi, dtype=float)
+
+    def f(y, angle):
+        d_r, d_z = _rhs(field, parameters, y[0], y[1], jnp.full(y[0].shape, angle))
+        return jnp.stack((d_r, d_z))
+
+    def interval(y, ends):
+        h = (ends[1] - ends[0]) / substeps
+
+        def rk4(y, i):
+            t = ends[0] + i * h
+            k1 = f(y, t)
+            k2 = f(y + 0.5 * h * k1, t + 0.5 * h)
+            k3 = f(y + 0.5 * h * k2, t + 0.5 * h)
+            k4 = f(y + h * k3, t + h)
+            return y + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4), None
+
+        y, _ = jax.lax.scan(rk4, y, jnp.arange(substeps))
+        return y, y
+
+    y0 = jnp.stack((R.ravel(), Z.ravel()))
+    _, path = jax.lax.scan(interval, y0, jnp.stack((phi[:-1], phi[1:]), axis=-1))
+    path = jnp.concatenate((y0[None], path))
+    return path[:, 0].reshape((phi.size,) + shape), path[:, 1].reshape((phi.size,) + shape)
+
+
+def return_map(field: Field, parameters: Any, R, Z, *, nfp: int, periods: int = 1, phi0: float = 0.0,
+               steps: int = 256):
+    """``(R, Z)`` after ``periods`` field periods along the field lines from ``(R, Z)`` at ``phi0``."""
+    ends = jnp.asarray([phi0, phi0 + 2.0 * np.pi * periods / nfp])
+    R1, Z1 = trace_fieldline(field, parameters, R, Z, ends, substeps=steps)
+    return R1[-1], Z1[-1]
+
+
+def return_map_fixed_point(field: Field, parameters: Any, R, Z, *, nfp: int, periods: int = 1, phi0: float = 0.0,
+                           steps: int = 256, iterations: int = 20, tolerance: float = 1e-12):
+    """A fixed point of the return map by Newton's method from ``(R, Z)``: ``(R, Z, M, step)``.
+
+    A shooting solve, independent of the collocation of
+    :func:`periodic_fieldline`: ``M`` is the derivative of the integrated map,
+    ``step`` the last Newton step [m].  Host-side loop, not traceable.
+    """
+    def image(x):
+        r, z = return_map(field, parameters, x[:1], x[1:], nfp=nfp, periods=periods, phi0=phi0, steps=steps)
+        return jnp.concatenate((r, z))
+
+    value_and_jacobian = jax.jit(lambda x: (image(x), jax.jacfwd(image)(x)))
+    x, step = jnp.asarray([R, Z], dtype=float), np.inf
+    for _ in range(iterations):
+        value, M = value_and_jacobian(x)
+        dx = jnp.linalg.solve(M - jnp.eye(2), value - x)
+        x, step = x - dx, float(jnp.max(jnp.abs(dx)))
+        if step < tolerance:
+            break
+    return x[0], x[1], value_and_jacobian(x)[1], step
+
+
+def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
+    """Smallest distance [m] from the points ``xyz (n, 3)`` to a toroidal surface.
+
+    ``gamma (3, nphi, ntheta)`` samples one field period of the surface (the
+    layout of ``VmecSurfaceFieldData.gamma``); the points are compared with all
+    ``nfp`` rotations of it.
+    """
+    surface = jnp.moveaxis(jnp.asarray(gamma), 0, -1).reshape(-1, 3)
+    angles = 2.0 * np.pi * np.arange(nfp) / nfp
+    cos, sin = jnp.cos(angles)[:, None], jnp.sin(angles)[:, None]
+    # rotating the points backwards is the same as rotating the surface forwards
+    x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    rotated = jnp.stack((cos * x + sin * y, -sin * x + cos * y, jnp.broadcast_to(z, (nfp, z.size))), axis=-1)
+    squared = jnp.sum((rotated.reshape(-1, 1, 3) - surface[None]) ** 2, axis=-1)
+    return jnp.sqrt(jnp.min(squared))
+
+
+def exterior_field(surface_data, external_field_from_parameters: Callable[[Any], Any], **options):
+    """The total field outside a plasma boundary as ``field(parameters, xyz)``, and its parameter map.
+
+    Returns ``(parameters_of, field)``: ``parameters_of(surface_data, x)`` packs
+    the arrays of a (traced) ``VmecSurfaceFieldData`` with the external-field
+    parameters ``x`` into a pytree, and ``field(parameters, xyz)`` is
+    ``external_field_from_parameters(x)`` plus the plasma's virtual-casing field
+    (:class:`~vmex.core.extender.VmecExtender`, built with ``options``:
+    ``digits``, ``near_surface``, ``graded_nodes``, ...).  ``surface_data`` is a
+    template: it fixes the grid, field periods and symmetry.
+    """
+    from dataclasses import replace
+
+    from .extender import VmecExtender
+
+    names = ("gamma", "B_total", "normal", "area_vector")
+    options = {"accuracy_check": "off", **options}
+
+    def parameters_of(data, x):
+        return tuple(getattr(data, name) for name in names), x
+
+    def field(parameters, xyz):
+        arrays, x = parameters
+        data = replace(surface_data, **dict(zip(names, arrays)))
+        return VmecExtender.from_surface_data(
+            data, external_field=external_field_from_parameters(x), **options).B(xyz)
+
+    return parameters_of, field

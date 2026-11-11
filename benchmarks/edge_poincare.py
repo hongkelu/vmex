@@ -6,9 +6,9 @@
 ``--run`` holds ``coils.json``, ``wout.nc`` and optionally ``pf.json`` (the layout of
 ``benchmarks/edge_fixed_points.py``).  Inside the boundary the flux surfaces are the WOUT's; outside, field lines of
 the coils' plus the plasma's virtual-casing field (:class:`vmex.core.extender.VmecExtender`) are traced from seeds on
-the plane ``phi = 0`` (:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
-spaced planes of one field period.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
-it is coloured by the field periods it lasted.  With ``--xpoint`` the closed line through that point is refined by
+the plane ``phi = 0`` (ESSOS ``trace_field_lines``, adaptive, as in ``examples/vmex_fieldline_tracing_finite_beta.py``) and marked on ``--planes`` equally
+spaced planes of one field period.  A line ends ``--stop`` metres outside the boundary
+and is coloured by the arclength it lasted.  With ``--xpoint`` the closed line through that point is refined by
 shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``.
 """
 
@@ -26,13 +26,15 @@ def parse_args(argv=None):
     parser.add_argument("--run", type=Path, required=True, help="run directory with coils.json and wout.nc")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--xpoint", type=float, nargs=2, metavar=("R", "Z"), help="a closed line's point at phi = 0")
-    parser.add_argument("--periods", type=int, default=150, help="field periods traced")
-    parser.add_argument("--steps", type=int, default=64, help="Runge-Kutta steps per field period")
+    parser.add_argument("--length", type=float, default=300.0, help="arclength traced along each line [m]")
+    parser.add_argument("--samples", type=int, default=12000, help="saved points per line (the marks interpolate them)")
+    parser.add_argument("--tolerance", type=float, default=1e-6, help="adaptive integration tolerance")
+    parser.add_argument("--stop", type=float, default=0.3, help="a line ends this far outside the boundary [m]")
+    parser.add_argument("--steps", type=int, default=64, help="Runge-Kutta steps per field period (closed line, manifolds)")
     parser.add_argument("--planes", type=int, default=4, help="planes per field period (even)")
     parser.add_argument("--seeds", type=int, default=40, help="seeds per ray")
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
     parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
-    parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--near-surface", default="direct", choices=("direct", "routed"),
@@ -116,10 +118,6 @@ def main(argv=None):
     print(f"[seeds] {len(seeds)} on {len(directions)} rays; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
           flush=True)
 
-    chunk = 5  # field periods per compiled call
-    angles = jnp.arange(chunk * args.planes + 1) * period / args.planes
-    advance = jax.jit(lambda r, z: pf.trace_fieldline(field, None, r, z, angles, substeps=substeps))
-
     def alive(r, z, plane):
         ok = np.isfinite(r) & np.isfinite(z)
         r, z = np.where(ok, r, 0.0), np.where(ok, z, 0.0)
@@ -131,33 +129,43 @@ def main(argv=None):
             d_phi = np.angle(np.exp(1j * nfp * (near_phi - planes[plane]))) / nfp
             near = np.stack((near_r * np.cos(d_phi), near_r * np.sin(d_phi), near[:, 2]), -1)
             xyz = np.stack((r, np.zeros_like(r), z), -1)
-            ok &= np.min(np.linalg.norm(xyz[:, None] - near[None], axis=-1), axis=1) > args.coil_gap
+            ok &= np.min(np.linalg.norm(xyz[:, None] - near[None], axis=-1), axis=1) > 0.03
         return ok
 
-    r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
-    living = np.ones(len(seeds), dtype=bool)
-    life = np.zeros(len(seeds))                      # field periods each line lasted
-    marks = {k: [] for k in range(args.planes)}      # (R, Z, seed index) per plane
+    # ESSOS's adaptive tracer, as in examples/vmex_fieldline_tracing_finite_beta.py: arclength steps, ended
+    # ``--stop`` metres outside the boundary.
+    from essos.dynamics import LevelsetStoppingCriterion, trace_field_lines
+    from essos.surfaces import SurfaceClassifier, surfacerzfourier_from_boundary
+    import vmex as vj
+
+    boundary = vj.VmecInput.from_wout(str(args.run / "wout.nc"))
+    classifier = SurfaceClassifier(surfacerzfourier_from_boundary(boundary.rbc, boundary.zbs, nfp, nphi=32, ntheta=32),
+                                   h=0.08, padding=args.stop + 0.05)
     clock = time.monotonic()
-    for start in range(0, args.periods, chunk):
-        # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
-        active = np.flatnonzero(living)
-        size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
-        padded = np.r_[active, np.full(size - len(active), active[0])]
-        path_r, path_z = (np.tile(seeds[:, i], (chunk * args.planes + 1, 1)) for i in (0, 1))
-        traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
-        path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
-        for k in range(1, chunk * args.planes + 1):
-            plane = k % args.planes
-            living &= alive(path_r[k], path_z[k], plane)
-            marks[plane].append(np.stack((path_r[k][living], path_z[k][living], np.flatnonzero(living)), -1))
-            life[living] = start + k / args.planes
-        r, z = np.where(living, path_r[-1], seeds[:, 0]), np.where(living, path_z[-1], seeds[:, 1])
-        print(f"[trace] {start + chunk} periods, {int(living.sum())} of {len(seeds)} lines left, "
-              f"{time.monotonic() - clock:.0f} s", flush=True)
-        if not living.any():
-            break
-    marks = {k: np.concatenate(v) for k, v in marks.items()}
+    trace = trace_field_lines(total, jnp.asarray(np.stack((seeds[:, 0], np.zeros(len(seeds)), seeds[:, 1]), -1)),
+                              length=args.length, samples=args.samples, tolerance=args.tolerance,
+                              stopping_criteria=LevelsetStoppingCriterion(classifier, maximum_distance=args.stop),
+                              progress=False, label="coil + virtual-casing field outside")
+    lost = np.asarray(trace.boundary_hits).astype(bool)
+    life = np.zeros(len(seeds))                      # arclength of each line's last mark [m]
+    marks = {}                                       # (R, Z, seed index) per plane
+    scratch = plt.figure()
+    for plane in range(args.planes):
+        rows = []
+        for copy in range(nfp):  # the same plane on every field period
+            sections = trace.poincare_plot(shifts=[float(planes[plane] + copy * period)], ax=scratch.add_subplot(),
+                                           show=False)
+            for index, (radius, height, when) in enumerate(sections):
+                radius, height, when = (np.asarray(v, dtype=float).ravel() for v in (radius, height, when))
+                ok = np.isfinite(radius) & np.isfinite(height)
+                ok[ok] &= ~Polygon(edges[plane]).contains_points(np.stack((radius[ok], height[ok]), -1))
+                rows.append(np.stack((radius[ok], height[ok], np.full(int(ok.sum()), index)), -1))
+                if ok.any():
+                    life[index] = max(life[index], float(np.max(when[ok])))
+        marks[plane] = np.concatenate(rows)
+    plt.close(scratch)
+    print(f"[trace] {len(seeds)} lines, {args.length:.0f} m each, {int(lost.sum())} ended {args.stop} m outside the boundary; "
+          f"{sum(len(v) for v in marks.values())} marks; {time.monotonic() - clock:.0f} s", flush=True)
 
     # The closed line through --xpoint and its manifolds.  On plane k: the unstable manifold is the one on phi = 0 traced
     # forwards to the plane, the stable one traced backwards to it.
@@ -206,8 +214,7 @@ def main(argv=None):
     rows = int(np.ceil(args.planes / columns))
     figure, axes = plt.subplots(rows, columns, figsize=(5.2 * columns + 1.5, 5.6 * rows), constrained_layout=True,
                                 squeeze=False)
-    lost = life < args.periods
-    norm = LogNorm(vmin=1.0, vmax=max(args.periods, 2))
+    norm = LogNorm(vmin=1.0, vmax=args.length)
     other = {"unstable": "stable", "stable": "unstable"}
     for plane, axis in enumerate(axes.ravel()[:args.planes]):
         mirror = (-plane) % args.planes  # stellarator symmetry: (R, Z) at phi is a point of the reversed line at -phi
@@ -245,8 +252,8 @@ def main(argv=None):
                  title=f"phi = {fraction}")
     for axis in axes.ravel()[args.planes:]:
         axis.set_visible(False)
-    figure.colorbar(mesh, ax=axes, label="field periods before a line is lost (grey: kept all "
-                    f"{args.periods})", shrink=0.7)
+    figure.colorbar(mesh, ax=axes, label="arclength at a line's last mark [m] (grey: kept all "
+                    f"{args.length:.0f} m)", shrink=0.7)
     figure.suptitle(args.title or str(args.run))
     figure.savefig(out / "poincare.png", dpi=170)
     print(f"[done] {int(lost.sum())} of {len(seeds)} lines lost; {out / 'poincare.png'}", flush=True)

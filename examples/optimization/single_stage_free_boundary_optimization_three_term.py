@@ -786,6 +786,8 @@ def parse_args(argv=None):
                              "(repeatable); the currents are design variables (vmex.core.coil_design.PoloidalCoilDesign). "
                              "Default with --restart: the run's pf.json")
     parser.add_argument("--pf-fixed", action="store_true", help="hold the --pf-coils currents (no design variables)")
+    parser.add_argument("--pf-coil-distance", type=float, metavar="MIN",
+                        help="keep the --pf-coils at least MIN [m] from the other coils (one more coil-limit row)")
     parser.add_argument("--edge-line", type=Path, metavar="JSON",
                         help="a closed field line outside the plasma (benchmarks/edge_fixed_points.py's fixed_points.json, "
                              "entry --edge-line-index of its total field; default with --restart: the run's edge_line.json): its trace, gap to the boundary and distance "
@@ -809,6 +811,8 @@ def parse_args(argv=None):
         args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
     if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace) and args.edge_line is None:
         parser.error("the edge constraints need --edge-line")
+    if args.pf_coil_distance is not None and not args.pf_coils:
+        parser.error("--pf-coil-distance needs --pf-coils")
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     if args.fixed_current and not args.bootstrap:
@@ -1160,7 +1164,17 @@ def main(argv=None):
     # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
     from essos.coil_design import coil_constraint
 
-    coil_rows = coil_constraint(lambda x: limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS),
+    def pf_distance(x):  # smallest distance between the circular pairs and the other coils [m]
+        pairs, others = (c.gamma.reshape(-1, 3) for c in (chart.poloidal_coils_from_x(x), chart.coils_from_x(x)))
+        return jnp.sqrt(jnp.min(jnp.sum((pairs[:, None] - others[None]) ** 2, axis=-1)))
+
+    def all_coil_rows(x):
+        rows = limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS)
+        if args.pf_coil_distance is None:
+            return rows
+        return jnp.concatenate((jnp.ravel(rows), (pf_distance(x) / args.pf_coil_distance - 1.0)[None]))
+
+    coil_rows = coil_constraint(all_coil_rows,
                                 forward_chunk=32 if COIL_POINT_ROWS else None)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
@@ -1263,6 +1277,7 @@ def main(argv=None):
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    **edge_row,
+                   **({"pf_coil_distance_m": float(pf_distance(jnp.asarray(x)))} if args.pf_coils else {}),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if model._gauge is not None:  # the gauge rows' share of the accepted fit's cost (0 where it was set)

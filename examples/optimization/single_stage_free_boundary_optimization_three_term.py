@@ -1053,6 +1053,8 @@ def main(argv=None):
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
+    if VACUUM_IOTA_FLOOR:  # a concrete solve before the jitted rows trace it: its host solve compiles off the GPU's back
+        vacuum(jnp.asarray(inp.rbc), jnp.asarray(inp.zbs))
     vacuum_floor = ((lambda rbc, zbs, x: jnp.min(vacuum(rbc, zbs))),) if VACUUM_IOTA_FLOOR else ()
     limits = coil_limits()
 

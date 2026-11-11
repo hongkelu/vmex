@@ -158,7 +158,7 @@ def main(argv=None):
                   flush=True)
         report[name] = points
         print(f"[{name}] {len(points)} fixed points; {time.monotonic() - clock:.0f} s", flush=True)
-        mesh = axis.pcolormesh(R, Z, np.log10(shift), shading="nearest", cmap="viridis")
+        mesh = axis.pcolormesh(R, Z, np.clip(np.log10(shift), -3.0, 0.0), shading="nearest", cmap="viridis")
         figure[0].colorbar(mesh, ax=axis, label="log10 |P(x) - x| [m]")
         axis.plot(*np.r_[section, section[:1]].T, "w-", lw=1.5)
         near = np.abs(np.arctan2(coil_points[:, 1], coil_points[:, 0])) < 0.03

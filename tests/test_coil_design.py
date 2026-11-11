@@ -68,7 +68,7 @@ def test_plasma_coordinates_move_phiedge_and_the_current_profile(coils):
 
 def test_circular_pairs_are_the_loop_formula_and_join_a_design(coils):
     """On the Z axis a pair's field is the two loops' closed form; the joined design adds it to the coils' field."""
-    from vmex.core.coil_design import PoloidalCoilDesign, circular_coil_pairs
+    from vmex.core.coil_design import PoloidalCoilDesign, circular_coil_pairs, coil_pairs_from_dict
 
     radius, height, current = 1.2, 0.8, 2.0e5
     z = np.array([-0.3, 0.0, 0.5])
@@ -99,3 +99,24 @@ def test_circular_pairs_are_the_loop_formula_and_join_a_design(coils):
     np.testing.assert_allclose(jax.jit(lambda x: inner(design(x)))(x), inner(design(x)), rtol=1e-13)
     gradient = jax.grad(lambda x: jnp.sum(design(x).b_cyl(r, phi, zz)[2]))(jnp.asarray(x))
     assert np.all(np.asarray(gradient[base.size:]) != 0)
+    # bent with the field period: R = radius + a cos(2 phi), Z = +-height + b sin(2 phi), still stellarator symmetric
+    bent = circular_coil_pairs(radius, height, current, shape=[[[0.05], [0.08]]], nfp=2, n_segments=64)
+    angle = 2.0 * np.pi * np.arange(64) / 64
+    upper, lower = np.asarray(bent.gamma)
+    np.testing.assert_allclose(np.hypot(upper[:, 0], upper[:, 1]), radius + 0.05 * np.cos(2 * angle), atol=1e-13)
+    np.testing.assert_allclose(np.arctan2(upper[:, 1], upper[:, 0]), np.angle(np.exp(1j * angle)), atol=1e-13)
+    np.testing.assert_allclose(upper[:, 2], height + 0.08 * np.sin(2 * angle), atol=1e-13)
+    np.testing.assert_allclose(lower[:, 2], -height + 0.08 * np.sin(2 * angle), atol=1e-13)
+    b_r, b_phi, b_z = BiotSavart(bent).b_cyl(r, phi, zz)
+    m_r, m_phi, m_z = BiotSavart(bent).b_cyl(r, -phi, -zz)
+    np.testing.assert_allclose([m_r, m_phi, m_z], [-b_r, b_phi, b_z], atol=1e-13)
+    shaped = PoloidalCoilDesign(base, radius, height, current, geometry_scale=0.01, shape=np.zeros((1, 2, 2)),
+                                shape_scale=0.01, nfp=2)
+    assert shaped.size == base.size + 7 == len(shaped.dof_names)
+    x = shaped.x0.copy()
+    x[base.size:] = 0.5, 0.01, -0.02, 0.05, 0.0, 0.08, 0.0
+    saved = shaped.pairs_dict(x)
+    assert saved["shape_m"] == [[[0.05, 0.0], [0.08, 0.0]]] and saved["nfp"] == 2
+    expected = circular_coil_pairs(radius + 0.01, height - 0.02, current + 0.5e5, shape=[[[0.05], [0.08]]], nfp=2)
+    np.testing.assert_allclose(coil_pairs_from_dict(saved).gamma, expected.gamma, atol=1e-13)
+    np.testing.assert_allclose(shaped.poloidal_coils_from_x(x).gamma, expected.gamma, atol=1e-13)

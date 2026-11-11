@@ -70,13 +70,14 @@ def main(argv=None):
     coils = Coils.from_json(str(args.coils or args.run / "coils.json"))
     nfp = int(wout.nfp)
     biot_savart = BiotSavart(coils)
-    if not args.pf and (args.run / "pf.json").exists():  # the driver's circular coil pairs
-        saved = json.loads((args.run / "pf.json").read_text())
-        args.pf = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
     if args.pf:
         from vmex.core.coil_design import SummedField, circular_coil_pairs
 
         biot_savart = SummedField(biot_savart, BiotSavart(circular_coil_pairs(*np.asarray(args.pf).T)))
+    elif (args.run / "pf.json").exists():  # the driver's coil pairs
+        from vmex.core.coil_design import SummedField, coil_pairs_from_dict
+
+        biot_savart = SummedField(biot_savart, BiotSavart(coil_pairs_from_dict(json.loads((args.run / "pf.json").read_text()))))
     coil_field = lambda xyz: jax.vmap(biot_savart.B)(xyz)  # noqa: E731
     surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)
     exterior = VmecExtender.from_surface_data(surface, external_field=coil_field, digits=args.digits,

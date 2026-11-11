@@ -21,7 +21,7 @@ from essos.coils import Coils  # noqa: E402
 from essos.fields import BiotSavart  # noqa: E402
 from vmex.core import periodic_fieldlines as pf  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
-from vmex.core.coil_design import SummedField, circular_coil_pairs  # noqa: E402
+from vmex.core.coil_design import SummedField, coil_pairs_from_dict  # noqa: E402
 from vmex.core.extender import VmecExtender  # noqa: E402
 from vmex.core.wout import read_wout  # noqa: E402
 
@@ -38,9 +38,7 @@ wout = read_wout(str(args.run / "wout.nc"))
 nfp = int(wout.nfp)
 coil_field = BiotSavart(Coils.from_json(str(args.run / "coils.json")))
 if (args.run / "pf.json").exists():
-    saved = json.loads((args.run / "pf.json").read_text())
-    coil_field = SummedField(coil_field, BiotSavart(circular_coil_pairs(
-        *(np.asarray(saved[k]) for k in ("radius_m", "height_m", "current_a")))))
+    coil_field = SummedField(coil_field, BiotSavart(coil_pairs_from_dict(json.loads((args.run / "pf.json").read_text()))))
 
 for grid in args.vc_grid:
     surface = vc.surface_field_data_from_wout(wout, nphi=grid, ntheta=grid)

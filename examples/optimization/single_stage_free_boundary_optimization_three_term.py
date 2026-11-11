@@ -72,6 +72,7 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 FREE_COIL_CURRENTS = True          # every base-coil current is a design variable, with no bounds
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 PF_CURRENT_STEP = 0.2              # coordinate scale of a circular coil pair's current change, in 100 kA (--pf-coils)
+PF_SHAPE_STEP = 0.02               # coordinate scale of a pair's shape amplitude changes [m] (--pf-shape)
 PF_GEOMETRY_STEP = 0.05            # coordinate scale of a pair's radius and height changes [m] (--pf-geometry)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
@@ -789,6 +790,13 @@ def parse_args(argv=None):
     parser.add_argument("--pf-fixed", action="store_true", help="hold the --pf-coils currents (no design variables)")
     parser.add_argument("--pf-geometry", action="store_true",
                         help="the --pf-coils radii and heights are design variables too")
+    parser.add_argument("--pf-shape", type=int, metavar="K",
+                        help="bend the --pf-coils with the field period: K cosine amplitudes of each pair's radius and "
+                             "K sine amplitudes of its height are design variables (stellarator symmetric)")
+    parser.add_argument("--pf-curvature", type=float, default=2.0, metavar="MAX",
+                        help="with --pf-shape: the pairs' largest curvature [1/m] (one more coil-limit row)")
+    parser.add_argument("--pf-current-max", type=float, metavar="A",
+                        help="keep each pair's |current| below A (one more coil-limit row)")
     parser.add_argument("--pf-coil-distance", type=float, metavar="MIN",
                         help="keep the --pf-coils at least MIN [m] from the other coils (one more coil-limit row)")
     parser.add_argument("--edge-line", type=Path, metavar="JSON",
@@ -822,6 +830,7 @@ def parse_args(argv=None):
         if args.pf_coils is None and (args.restart / "pf.json").exists():
             saved = json.loads((args.restart / "pf.json").read_text())
             args.pf_coils = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
+            args.pf_saved_shape = saved.get("shape_m")
     if args.restart is not None and args.edge_line is None and (args.restart / "edge_line.json").exists():
         args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
     if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace or args.edge_wall
@@ -829,8 +838,8 @@ def parse_args(argv=None):
         parser.error("the edge constraints need --edge-line")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
-    if args.pf_geometry and not args.pf_coils:
-        parser.error("--pf-geometry needs --pf-coils")
+    if (args.pf_geometry or args.pf_shape or args.pf_current_max is not None) and not args.pf_coils:
+        parser.error("--pf-geometry, --pf-shape and --pf-current-max need --pf-coils")
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     if args.fixed_current and not args.bootstrap:
@@ -1064,7 +1073,14 @@ def main(argv=None):
     if args.pf_coils:
         from vmex.core.coil_design import PoloidalCoilDesign
 
-        chart = PoloidalCoilDesign(chart, *np.asarray(args.pf_coils, dtype=float).T,
+        # the restarted run's shape, padded with zeros to --pf-shape modes
+        saved_shape = getattr(args, "pf_saved_shape", None)
+        modes = max(args.pf_shape or 0, 0 if saved_shape is None else np.shape(saved_shape)[-1])
+        pf_shape = np.zeros((len(args.pf_coils), 2, modes)) if modes else None
+        if saved_shape is not None:
+            pf_shape[:, :, :np.shape(saved_shape)[-1]] = saved_shape
+        chart = PoloidalCoilDesign(chart, *np.asarray(args.pf_coils, dtype=float).T, shape=pf_shape, nfp=int(inp.nfp),
+                                   shape_scale=args.design_step_scale * PF_SHAPE_STEP if args.pf_shape else None,
                                    current_scale=None if args.pf_fixed else args.design_step_scale * PF_CURRENT_STEP,
                                    geometry_scale=args.design_step_scale * PF_GEOMETRY_STEP if args.pf_geometry else None)
     qs = target_residual()
@@ -1203,9 +1219,14 @@ def main(argv=None):
 
     def all_coil_rows(x):
         rows = limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS)
-        if args.pf_coil_distance is None:
-            return rows
-        return jnp.concatenate((jnp.ravel(rows), (pf_distance(x) / args.pf_coil_distance - 1.0)[None]))
+        more = []  # the pairs' own limits, each feasible at >= 0
+        if args.pf_coil_distance is not None:
+            more.append(pf_distance(x) / args.pf_coil_distance - 1.0)
+        if args.pf_shape:
+            more.append(1.0 - jnp.max(chart.poloidal_coils_from_x(x).curvature) / args.pf_curvature)
+        if args.pf_current_max is not None:
+            more.append(1.0 - jnp.max(jnp.abs(chart.pairs_at(x)[2])) / args.pf_current_max)
+        return jnp.concatenate((jnp.ravel(rows), jnp.stack(more))) if more else rows
 
     coil_rows = coil_constraint(all_coil_rows,
                                 forward_chunk=32 if COIL_POINT_ROWS else None)
@@ -1217,8 +1238,7 @@ def main(argv=None):
         if edge_latest:  # the accepted design's line, in the layout of benchmarks/edge_fixed_points.py
             (out / f"edge_line{tag}.json").write_text(json.dumps(dict(periods=edge_guess["periods"], total=[edge_latest])))
         if args.pf_coils:
-            radius, height, current = (np.asarray(v).tolist() for v in chart.pairs_at(jnp.asarray(x)))
-            (out / f"pf{tag}.json").write_text(json.dumps(dict(radius_m=radius, height_m=height, current_a=current)))
+            (out / f"pf{tag}.json").write_text(json.dumps(chart.pairs_dict(jnp.asarray(x))))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
     last, edge_latest = dict(time=time.monotonic(), x=None), {}
@@ -1281,8 +1301,7 @@ def main(argv=None):
                 edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
                                    R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist())
             if args.pf_coils:
-                radius, height, current = (np.asarray(v).tolist() for v in chart.pairs_at(jnp.asarray(x)))
-                edge_row.update(pf_radius_m=radius, pf_height_m=height, pf_current_a=current)
+                edge_row.update({f"pf_{k}": v for k, v in chart.pairs_dict(jnp.asarray(x)).items() if k != "nfp"})
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
             vac = np.asarray(vacuum(params_x.rbc, params_x.zbs))
         except RuntimeError as error:

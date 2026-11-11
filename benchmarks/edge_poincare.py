@@ -75,10 +75,9 @@ def main(argv=None):
     biot_savart = BiotSavart(coils)
     coil_points = np.asarray(coils.gamma).reshape(-1, 3)
     if (args.run / "pf.json").exists():  # the driver's circular coil pairs
-        from vmex.core.coil_design import SummedField, circular_coil_pairs
+        from vmex.core.coil_design import SummedField, coil_pairs_from_dict
 
-        saved = json.loads((args.run / "pf.json").read_text())
-        pairs = circular_coil_pairs(*(np.asarray(saved[k]) for k in ("radius_m", "height_m", "current_a")))
+        pairs = coil_pairs_from_dict(json.loads((args.run / "pf.json").read_text()))
         biot_savart = SummedField(biot_savart, BiotSavart(pairs))
         coil_points = np.concatenate((coil_points, np.asarray(pairs.gamma).reshape(-1, 3)))
     surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)

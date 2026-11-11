@@ -122,8 +122,15 @@ def main(argv=None):
         cells = np.argwhere(crossing)
         cells = cells[np.argsort(shift[tuple(cells.T)])][:args.candidates]
         minima = np.argwhere(shift == np.nanmin(shift))
-        starts = (np.r_[[s[0] for s in args.start], R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0])],
-                  np.r_[[s[1] for s in args.start], Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0])])
+        given = np.asarray(args.start, dtype=float).reshape(-1, 2)
+        if len(given):  # a strongly hyperbolic line needs its point first: Newton on the integrated map
+            r0, z0, _, steps = pf.return_map_fixed_point(survey, None, given[:, 0], given[:, 1], nfp=nfp,
+                                                         periods=args.periods, steps=4 * args.steps, iterations=8)
+            print(f"[{name}] --start points by shooting: " + ", ".join(
+                f"({a:.5f}, {b:.5f}) step {c:.1e}" for a, b, c in zip(*map(np.asarray, (r0, z0, steps)))), flush=True)
+            given = np.where(np.asarray(steps)[:, None] < 1e-6, np.stack((np.asarray(r0), np.asarray(z0)), axis=-1), given)
+        starts = (np.r_[given[:, 0], R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0])],
+                  np.r_[given[:, 1], Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0])])
         print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; {len(cells)} cells with a sign change in both "
               f"components; smallest displacement {np.nanmin(shift):.1e} m at "
               f"({R[tuple(minima[0])]:.3f}, {Z[tuple(minima[0])]:.3f})", flush=True)
@@ -134,7 +141,7 @@ def main(argv=None):
         nodes = pf.fieldline_nodes(n, nfp, args.periods)
         if len(starts[0]):
             traced = jax.jit(lambda r, z, field=survey: pf.trace_fieldline(
-                field, None, r, z, jnp.asarray(np.r_[nodes, nodes[0] + 2 * np.pi * args.periods / nfp]), substeps=4))
+                field, None, r, z, jnp.asarray(np.r_[nodes, nodes[0] + 2 * np.pi * args.periods / nfp]), substeps=8))
             paths = [np.asarray(v) for v in traced(jnp.asarray(starts[0]), jnp.asarray(starts[1]))]
             ramp = (np.arange(n) / n)[:, None]
             guesses = [v[:-1] - ramp * (v[-1] - v[0]) for v in paths]

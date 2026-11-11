@@ -788,7 +788,7 @@ def parse_args(argv=None):
     parser.add_argument("--pf-fixed", action="store_true", help="hold the --pf-coils currents (no design variables)")
     parser.add_argument("--edge-line", type=Path, metavar="JSON",
                         help="a closed field line outside the plasma (benchmarks/edge_fixed_points.py's fixed_points.json, "
-                             "entry --edge-line-index of its total field): its trace, gap to the boundary and distance "
+                             "entry --edge-line-index of its total field; default with --restart: the run's edge_line.json): its trace, gap to the boundary and distance "
                              "to the coils are logged every step (vmex.core.periodic_fieldlines)")
     parser.add_argument("--edge-line-index", type=int, default=0)
     parser.add_argument("--edge-gap", type=float, nargs=2, metavar=("LOW", "HIGH"),
@@ -805,6 +805,8 @@ def parse_args(argv=None):
         if args.pf_coils is None and (args.restart / "pf.json").exists():
             saved = json.loads((args.restart / "pf.json").read_text())
             args.pf_coils = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
+    if args.restart is not None and args.edge_line is None and (args.restart / "edge_line.json").exists():
+        args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
     if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace) and args.edge_line is None:
         parser.error("the edge constraints need --edge-line")
     if args.bootstrap and not args.beta > 0:
@@ -1165,12 +1167,14 @@ def main(argv=None):
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
+        if edge_latest:  # the accepted design's line, in the layout of benchmarks/edge_fixed_points.py
+            (out / f"edge_line{tag}.json").write_text(json.dumps(dict(periods=edge_guess["periods"], total=[edge_latest])))
         if args.pf_coils:
             radius, height, current = (np.asarray(v).tolist() for v in chart.pairs_at(jnp.asarray(x)))
             (out / f"pf{tag}.json").write_text(json.dumps(dict(radius_m=radius, height_m=height, current_a=current)))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
 
-    last = dict(time=time.monotonic(), x=None)
+    last, edge_latest = dict(time=time.monotonic(), x=None), {}
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
     neo = (qs if TARGET_NAME == "eps_eff" else
@@ -1224,6 +1228,9 @@ def main(argv=None):
                 edge_guess.update(R=np.asarray(line.R), Z=np.asarray(line.Z))
             edge_row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
                             edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
+            if np.all(np.isfinite(values)):
+                edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
+                                   R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist())
             if args.pf_coils:
                 edge_row["pf_current_a"] = np.asarray(chart.pairs_at(jnp.asarray(x))[2]).tolist()
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine

@@ -6,10 +6,10 @@
 ``--run`` holds ``coils.json``, ``wout.nc`` and optionally ``pf.json`` (the layout of
 ``benchmarks/edge_fixed_points.py``).  Inside the boundary the flux surfaces are the WOUT's; outside, field lines of
 the coils' plus the plasma's virtual-casing field (:class:`vmex.core.extender.VmecExtender`) are traced from seeds on
-the plane ``phi = 0`` (:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``phi = 0`` and on the
-half-period plane.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
+the plane ``phi = 0`` (:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
+spaced planes of one field period.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
 it is coloured by the field periods it lasted.  With ``--xpoint`` the closed line through that point is refined by
-shooting and its unstable and stable manifolds are drawn.  Writes ``poincare.png`` and ``poincare.npz``.
+shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``.
 """
 
 import argparse
@@ -27,7 +27,8 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--xpoint", type=float, nargs=2, metavar=("R", "Z"), help="a closed line's point at phi = 0")
     parser.add_argument("--periods", type=int, default=150, help="field periods traced")
-    parser.add_argument("--steps", type=int, default=32, help="Runge-Kutta steps per half field period")
+    parser.add_argument("--steps", type=int, default=64, help="Runge-Kutta steps per field period")
+    parser.add_argument("--planes", type=int, default=4, help="planes per field period (even)")
     parser.add_argument("--seeds", type=int, default=40, help="seeds per ray")
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
     parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
@@ -67,7 +68,7 @@ def main(argv=None):
     wout = read_wout(str(args.run / "wout.nc"))
     coils = Coils.from_json(str(args.run / "coils.json"))
     nfp = int(wout.nfp)
-    half = np.pi / nfp
+    period = 2.0 * np.pi / nfp
     biot_savart = BiotSavart(coils)
     coil_points = np.asarray(coils.gamma).reshape(-1, 3)
     if (args.run / "pf.json").exists():  # the driver's circular coil pairs
@@ -89,14 +90,18 @@ def main(argv=None):
         return np.stack((np.cos(angle) @ np.asarray(wout.rmnc)[s_index], np.sin(angle) @ np.asarray(wout.zmns)[s_index]), -1)
 
     ns = np.asarray(wout.rmnc).shape[0]
-    planes = (0.0, half)
+    planes = np.arange(args.planes) * period / args.planes
+    substeps = max(4, args.steps // args.planes)
     edges = [section(phi, ns - 1) for phi in planes]
     axis0 = section(0.0, 0)[0]
-    low, high = edges[0].min(axis=0) - args.margin, edges[0].max(axis=0) + args.margin
-    for e in edges[1:]:
-        low, high = np.minimum(low, e.min(axis=0) - args.margin), np.maximum(high, e.max(axis=0) + args.margin)
+    low = np.min([e.min(axis=0) for e in edges], axis=0) - args.margin
+    high = np.max([e.max(axis=0) for e in edges], axis=0) + args.margin
+    coil_angle = np.arctan2(coil_points[:, 1], coil_points[:, 0])
 
-    # seeds on phi = 0: rays from the magnetic axis through the boundary, towards the X-point and along the midplane
+    def coils_near(plane, width):  # coil points within ``width`` [rad] of a plane, on any field period
+        return coil_points[np.abs(np.angle(np.exp(1j * nfp * (coil_angle - planes[plane])))) < nfp * width]
+
+    # seeds on phi = 0: rays from the magnetic axis through the boundary (the lower half is the mirror image)
     def ray(direction):
         direction = np.asarray(direction) / np.linalg.norm(direction)
         t = np.linspace(0.0, 3.0, 3001)
@@ -104,7 +109,7 @@ def main(argv=None):
         t_edge = t[np.argmin(inside)]
         return axis0 + (t_edge + np.linspace(args.gap, args.reach, args.seeds))[:, None] * direction
 
-    directions = [(np.cos(a), np.sin(a)) for a in np.linspace(0.0, np.pi, 5)]  # the lower half is the mirror image
+    directions = [(np.cos(a), np.sin(a)) for a in np.linspace(0.0, np.pi, 5)]
     if args.xpoint:
         directions.append(np.asarray(args.xpoint) - axis0)
     seeds = np.concatenate([ray(d) for d in directions])
@@ -112,39 +117,41 @@ def main(argv=None):
           flush=True)
 
     chunk = 5  # field periods per compiled call
-    angles = jnp.arange(2 * chunk + 1) * half
-    advance = jax.jit(lambda r, z: pf.trace_fieldline(field, None, r, z, angles, substeps=args.steps))
+    angles = jnp.arange(chunk * args.planes + 1) * period / args.planes
+    advance = jax.jit(lambda r, z: pf.trace_fieldline(field, None, r, z, angles, substeps=substeps))
 
     def alive(r, z, plane):
         ok = np.isfinite(r) & np.isfinite(z)
         r, z = np.where(ok, r, 0.0), np.where(ok, z, 0.0)
         ok &= (r > low[0]) & (r < high[0]) & (z > low[1]) & (z < high[1])
         ok &= ~Polygon(edges[plane]).contains_points(np.stack((r, z), -1))
-        phi = planes[plane]
-        xyz = np.stack((r * np.cos(phi), r * np.sin(phi), z), -1)
-        near = np.abs(np.angle(np.exp(1j * (np.arctan2(coil_points[:, 1], coil_points[:, 0]) - phi)))) < 0.2
-        if near.any():
-            ok &= np.min(np.linalg.norm(xyz[:, None] - coil_points[near][None], axis=-1), axis=1) > args.coil_gap
+        near = coils_near(plane, 0.2)  # rotated to the plane's own field period: only the distance matters
+        if len(near):
+            near_r, near_phi = np.hypot(near[:, 0], near[:, 1]), np.arctan2(near[:, 1], near[:, 0])
+            d_phi = np.angle(np.exp(1j * nfp * (near_phi - planes[plane]))) / nfp
+            near = np.stack((near_r * np.cos(d_phi), near_r * np.sin(d_phi), near[:, 2]), -1)
+            xyz = np.stack((r, np.zeros_like(r), z), -1)
+            ok &= np.min(np.linalg.norm(xyz[:, None] - near[None], axis=-1), axis=1) > args.coil_gap
         return ok
 
     r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
     living = np.ones(len(seeds), dtype=bool)
     life = np.zeros(len(seeds))                      # field periods each line lasted
-    marks = {0: [], 1: []}                           # (R, Z, seed index) per plane
+    marks = {k: [] for k in range(args.planes)}      # (R, Z, seed index) per plane
     clock = time.monotonic()
     for start in range(0, args.periods, chunk):
         # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
         active = np.flatnonzero(living)
         size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
         padded = np.r_[active, np.full(size - len(active), active[0])]
-        path_r, path_z = (np.tile(seeds[:, i], (2 * chunk + 1, 1)) for i in (0, 1))
+        path_r, path_z = (np.tile(seeds[:, i], (chunk * args.planes + 1, 1)) for i in (0, 1))
         traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
         path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
-        for k in range(1, 2 * chunk + 1):
-            plane = k % 2
+        for k in range(1, chunk * args.planes + 1):
+            plane = k % args.planes
             living &= alive(path_r[k], path_z[k], plane)
             marks[plane].append(np.stack((path_r[k][living], path_z[k][living], np.flatnonzero(living)), -1))
-            life[living] = start + 0.5 * k
+            life[living] = start + k / args.planes
         r, z = np.where(living, path_r[-1], seeds[:, 0]), np.where(living, path_z[-1], seeds[:, 1])
         print(f"[trace] {start + chunk} periods, {int(living.sum())} of {len(seeds)} lines left, "
               f"{time.monotonic() - clock:.0f} s", flush=True)
@@ -152,22 +159,29 @@ def main(argv=None):
             break
     marks = {k: np.concatenate(v) for k, v in marks.items()}
 
-    manifolds, x_point = {}, None
+    # The closed line through --xpoint and its manifolds.  On plane k: the unstable manifold is the one on phi = 0 traced
+    # forwards to the plane, the stable one traced backwards to it.
+    manifolds, x_line = {}, None
+    forward = jnp.asarray(planes)
+    to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, forward, substeps=4 * substeps)),
+                 -1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, -forward, substeps=4 * substeps))}
     if args.xpoint:
         r0, z0, M, step = pf.return_map_fixed_point(field, None, np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]]),
                                                     nfp=nfp, steps=8 * args.steps, iterations=10)
-        M, x_point = np.asarray(M)[0], np.asarray([float(r0[0]), float(z0[0])])
+        M = np.asarray(M)[0]
+        x_line = np.stack([np.asarray(v)[:, 0] for v in to_planes[1.0](r0, z0)], -1)      # (planes, 2)
         values, vectors = np.linalg.eig(M)
-        print(f"[x-point] ({x_point[0]:.5f}, {x_point[1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
-              f"det {np.linalg.det(M):.6f} eigenvalues {values}", flush=True)
+        print(f"[x-point] ({x_line[0, 0]:.5f}, {x_line[0, 1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
+              f"det {np.linalg.det(M):.6f} eigenvalues {values}; on the planes: "
+              + ", ".join(f"({a:.4f}, {b:.4f})" for a, b in x_line), flush=True)
         if float(step[0]) < 1e-6 and abs(np.trace(M)) > 2:
             values, vectors = values.real, vectors.real
             for name, k, sign in (("unstable", int(np.argmax(np.abs(values))), 1.0),
                                   ("stable", int(np.argmin(np.abs(values))), -1.0)):
                 growth = abs(values[k]) ** sign
                 offsets = 1e-4 * growth ** np.linspace(0.0, 1.0, 400)
-                start = x_point + np.concatenate((offsets, -offsets))[:, None] * vectors[:, k]
-                ends = jnp.asarray([0.0, sign * 2.0 * half])
+                start = x_line[0] + np.concatenate((offsets, -offsets))[:, None] * vectors[:, k]
+                ends = jnp.asarray([0.0, sign * period])
                 step_map = jax.jit(lambda a, b, ends=ends: tuple(
                     v[-1] for v in pf.trace_fieldline(field, None, a, b, ends, substeps=4 * args.steps)))
                 pieces, a, b = [start], start[:, 0], start[:, 1]
@@ -176,46 +190,61 @@ def main(argv=None):
                     ok = alive(a, b, 0)
                     pieces.append(np.where(ok[:, None], np.stack((a, b), -1), np.nan))
                     a, b = np.where(ok, a, np.nan), np.where(ok, b, np.nan)
-                manifolds[name] = np.stack(pieces)       # (iterations + 1, 2 * 400, 2)
+                pieces = np.stack(pieces)                 # (iterations + 1, 2 * 400, 2) on phi = 0
+                flat = np.nan_to_num(pieces.reshape(-1, 2), nan=float(x_line[0, 0]))
+                moved = np.stack([np.asarray(v) for v in to_planes[sign](jnp.asarray(flat[:, 0]), jnp.asarray(flat[:, 1]))], -1)
+                moved = np.where(np.isfinite(pieces.reshape(-1, 2)).all(axis=-1)[None, :, None], moved, np.nan)
+                order = np.arange(args.planes) if sign > 0 else (-np.arange(args.planes)) % args.planes
+                on_planes = np.empty((args.planes,) + pieces.shape)
+                on_planes[order] = moved.reshape((args.planes,) + pieces.shape)
+                manifolds[name] = on_planes               # (planes, iterations + 1, 2 * 400, 2)
 
-    np.savez(out / "poincare.npz", seeds=seeds, life=life, marks0=marks[0], marks1=marks[1],
-             **{f"manifold_{k}": v for k, v in manifolds.items()}, **({} if x_point is None else {"x_point": x_point}))
+    np.savez(out / "poincare.npz", seeds=seeds, life=life, planes=planes, **{f"marks{k}": v for k, v in marks.items()},
+             **{f"manifold_{k}": v for k, v in manifolds.items()}, **({} if x_line is None else {"x_line": x_line}))
 
-    figure, axes = plt.subplots(1, 2, figsize=(13, 8), constrained_layout=True)
+    columns = int(np.ceil(args.planes / 2)) if args.planes > 2 else args.planes
+    rows = int(np.ceil(args.planes / columns))
+    figure, axes = plt.subplots(rows, columns, figsize=(5.2 * columns + 1.5, 5.6 * rows), constrained_layout=True,
+                                squeeze=False)
     lost = life < args.periods
     norm = LogNorm(vmin=1.0, vmax=max(args.periods, 2))
-    for plane, axis in enumerate(axes):
-        phi = planes[plane]
+    other = {"unstable": "stable", "stable": "unstable"}
+    for plane, axis in enumerate(axes.ravel()[:args.planes]):
+        mirror = (-plane) % args.planes  # stellarator symmetry: (R, Z) at phi is a point of the reversed line at -phi
         for s_index in np.unique(np.round(np.linspace(0.0, 1.0, args.surfaces + 1)[1:] ** 0.5 * (ns - 1)).astype(int)):
-            axis.plot(*section(phi, s_index).T, color="tab:blue", lw=1.6 if s_index == ns - 1 else 0.6)
-        points = marks[plane]
-        index = points[:, 2].astype(int)
-        for mirror in (1.0, -1.0):  # stellarator symmetry: the mirrored marks are those of the lines traced backwards
+            axis.plot(*section(planes[plane], s_index).T, color="tab:blue", lw=1.6 if s_index == ns - 1 else 0.6)
+        for points, flip in ((marks[plane], 1.0), (marks[mirror], -1.0)):
+            index = points[:, 2].astype(int)
             kept = ~lost[index]
-            axis.plot(points[kept, 0], mirror * points[kept, 1], ",", color="0.25")
-            mesh = axis.scatter(points[~kept, 0], mirror * points[~kept, 1], s=1.5, c=life[index][~kept], cmap="autumn_r",
+            axis.plot(points[kept, 0], flip * points[kept, 1], ",", color="0.25")
+            mesh = axis.scatter(points[~kept, 0], flip * points[~kept, 1], s=1.5, c=life[index][~kept], cmap="autumn_r",
                                 norm=norm, linewidths=0)
-        near = np.abs(np.angle(np.exp(1j * (np.arctan2(coil_points[:, 1], coil_points[:, 0]) - phi)))) < 0.03
-        axis.plot(np.hypot(coil_points[near, 0], coil_points[near, 1]), coil_points[near, 2], "k.", ms=4)
+        near = coils_near(plane, 0.03)
+        axis.plot(np.hypot(near[:, 0], near[:, 1]), near[:, 2], "k.", ms=4)
+        for name, color in (("unstable", "tab:green"), ("stable", "tab:purple")):
+            if name not in manifolds:
+                continue
+            # the lower line's manifolds are the mirrored ones of the other kind
+            for source, flip in ((manifolds[name][plane], 1.0), (manifolds[other[name]][mirror], -1.0)):
+                for branch in np.split(source, 2, axis=1):  # drawn while it is a resolved curve
+                    curve = branch.reshape(-1, 2)
+                    jump = np.linalg.norm(np.diff(curve, axis=0), axis=1)
+                    end = int(np.argmax(~(jump < 0.03))) if np.any(~(jump < 0.03)) else len(curve)
+                    axis.plot(curve[:end, 0], flip * curve[:end, 1], "-", lw=1.4, color=color,
+                              label=f"{name} manifold" if flip > 0 else None)
+        if x_line is not None:
+            axis.plot([x_line[plane, 0], x_line[mirror, 0]], [x_line[plane, 1], -x_line[mirror, 1]], "kx", ms=11, mew=2.5,
+                      label="closed line (X-point)", zorder=5)
         if plane == 0:
-            for name, color in (("unstable", "tab:green"), ("stable", "tab:purple")):
-                if name in manifolds:
-                    for sign in (1.0, -1.0):  # the lower X-point's manifolds are the mirrored ones of the other kind
-                        other = {"unstable": "stable", "stable": "unstable"}[name] if sign < 0 else name
-                        for branch in np.split(manifolds[other], 2, axis=1):  # drawn while it is a resolved curve
-                            curve = branch.reshape(-1, 2)
-                            jump = np.linalg.norm(np.diff(curve, axis=0), axis=1)
-                            end = int(np.argmax(~(jump < 0.02))) if np.any(~(jump < 0.02)) else len(curve)
-                            axis.plot(curve[:end, 0], sign * curve[:end, 1], "-", lw=1.4, color=color,
-                                      label=f"{name} manifold" if sign > 0 else None)
-            if x_point is not None:
-                axis.plot([x_point[0]] * 2, [x_point[1], -x_point[1]], "kx", ms=10, mew=2)
             handles, labels = axis.get_legend_handles_labels()
             unique = dict(zip(labels, handles))
             if unique:
                 axis.legend(unique.values(), unique.keys(), loc="lower right", fontsize=8)
+        fraction = f"{plane}/{args.planes} field period" if plane else "0"
         axis.set(xlabel="R [m]", ylabel="Z [m]", aspect="equal", xlim=(low[0], high[0]), ylim=(low[1], high[1]),
-                 title=f"phi = {'0' if plane == 0 else 'half field period'}")
+                 title=f"phi = {fraction}")
+    for axis in axes.ravel()[args.planes:]:
+        axis.set_visible(False)
     figure.colorbar(mesh, ax=axes, label="field periods before a line is lost (grey: kept all "
                     f"{args.periods})", shrink=0.7)
     figure.suptitle(args.title or str(args.run))

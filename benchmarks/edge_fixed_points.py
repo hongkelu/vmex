@@ -39,6 +39,8 @@ def parse_args(argv=None):
     parser.add_argument("--pf", type=float, nargs=3, action="append", metavar=("R", "Z", "I"), default=[],
                         help="add a pair of circular coils of radius R [m] at +-Z [m] with current I [A] (repeatable); "
                              "the plasma field stays the WOUT's.  Default: the run's pf.json")
+    parser.add_argument("--start", type=float, nargs=2, action="append", metavar=("R", "Z"), default=[],
+                        help="also refine a closed line from this point at phi = 0 (repeatable)")
     parser.add_argument("--candidates", type=int, default=16, help="grid cells refined per field")
     return parser.parse_args(argv)
 
@@ -120,7 +122,8 @@ def main(argv=None):
         cells = np.argwhere(crossing)
         cells = cells[np.argsort(shift[tuple(cells.T)])][:args.candidates]
         minima = np.argwhere(shift == np.nanmin(shift))
-        starts = (R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0]), Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0]))
+        starts = (np.r_[[s[0] for s in args.start], R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0])],
+                  np.r_[[s[1] for s in args.start], Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0])])
         print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; {len(cells)} cells with a sign change in both "
               f"components; smallest displacement {np.nanmin(shift):.1e} m at "
               f"({R[tuple(minima[0])]:.3f}, {Z[tuple(minima[0])]:.3f})", flush=True)
@@ -129,7 +132,7 @@ def main(argv=None):
         # on the collocated line.  A solve that stalls, leaves the box or ends in the plasma is no fixed point.
         points, n = [], args.nodes * args.periods
         nodes = pf.fieldline_nodes(n, nfp, args.periods)
-        if len(cells):
+        if len(starts[0]):
             traced = jax.jit(lambda r, z, field=survey: pf.trace_fieldline(
                 field, None, r, z, jnp.asarray(np.r_[nodes, nodes[0] + 2 * np.pi * args.periods / nfp]), substeps=4))
             paths = [np.asarray(v) for v in traced(jnp.asarray(starts[0]), jnp.asarray(starts[1]))]
@@ -138,7 +141,7 @@ def main(argv=None):
             solve = jax.jit(lambda r, z, field=field: pf.periodic_fieldline(field, None, r, z, nfp=nfp,
                                                                             periods=args.periods, max_iterations=30))
             tangent_of = jax.jit(lambda line, field=field: pf.tangent_map(field, None, line))
-        for k in range(len(cells)):
+        for k in range(len(starts[0])):
             if not np.all(np.isfinite(guesses[0][:, k]) & np.isfinite(guesses[1][:, k])):
                 continue
             line = solve(jnp.asarray(guesses[0][:, k]), jnp.asarray(guesses[1][:, k]))

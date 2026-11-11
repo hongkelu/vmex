@@ -118,7 +118,7 @@ def main(argv=None):
             (corners.min(axis=0) < 0) & (corners.max(axis=0) > 0), axis=0)
         cells = np.argwhere(crossing)
         cells = cells[np.argsort(shift[tuple(cells.T)])][:args.candidates]
-        minima = np.argwhere(shift == np.nanmin(shift)) if not len(cells) else cells
+        minima = np.argwhere(shift == np.nanmin(shift))
         starts = (R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0]), Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0]))
         print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; {len(cells)} cells with a sign change in both "
               f"components; smallest displacement {np.nanmin(shift):.1e} m at "

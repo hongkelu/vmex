@@ -33,6 +33,9 @@ def parse_args(argv=None):
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
     parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
+    parser.add_argument("--wall", type=float, metavar="D",
+                        help="a line ends on a wall D [m] off the plasma boundary (the driver's --edge-wall): its strike "
+                             "points are drawn and the lengths to the wall printed")
     parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--near-surface", default="direct", choices=("direct", "routed"),
@@ -132,12 +135,19 @@ def main(argv=None):
             near = np.stack((near_r * np.cos(d_phi), near_r * np.sin(d_phi), near[:, 2]), -1)
             xyz = np.stack((r, np.zeros_like(r), z), -1)
             ok &= np.min(np.linalg.norm(xyz[:, None] - near[None], axis=-1), axis=1) > args.coil_gap
+        if args.wall is not None:
+            ok &= to_plasma(r, z, plane) < args.wall
         return ok
+
+    def to_plasma(r, z, plane):  # distance [m] to the plasma boundary
+        xyz = np.stack((r * np.cos(planes[plane]), r * np.sin(planes[plane]), z), -1)
+        return np.asarray(pf.surface_distances(jnp.asarray(xyz), surface.gamma, nfp))
 
     r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
     living = np.ones(len(seeds), dtype=bool)
     life = np.zeros(len(seeds))                      # field periods each line lasted
     marks = {k: [] for k in range(args.planes)}      # (R, Z, seed index) per plane
+    strikes = {k: [] for k in range(args.planes)}    # with --wall: (R, Z, seed index) of the first point beyond it
     clock = time.monotonic()
     for start in range(0, args.periods, chunk):
         # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
@@ -149,7 +159,12 @@ def main(argv=None):
         path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
         for k in range(1, chunk * args.planes + 1):
             plane = k % args.planes
+            before = living.copy()
             living &= alive(path_r[k], path_z[k], plane)
+            if args.wall is not None:
+                ended = before & ~living & np.isfinite(path_r[k]) & np.isfinite(path_z[k])
+                ended[ended] = to_plasma(path_r[k][ended], path_z[k][ended], plane) >= args.wall
+                strikes[plane].append(np.stack((path_r[k][ended], path_z[k][ended], np.flatnonzero(ended)), -1))
             marks[plane].append(np.stack((path_r[k][living], path_z[k][living], np.flatnonzero(living)), -1))
             life[living] = start + k / args.planes
         r, z = np.where(living, path_r[-1], seeds[:, 0]), np.where(living, path_z[-1], seeds[:, 1])
@@ -158,6 +173,22 @@ def main(argv=None):
         if not living.any():
             break
     marks = {k: np.concatenate(v) for k, v in marks.items()}
+    strikes = {k: np.concatenate(v) if v else np.zeros((0, 3)) for k, v in strikes.items()}
+    if args.wall is not None:
+        # length along the torus to the wall, one way (the lines are followed in +phi only), by starting distance
+        start = to_plasma(seeds[:, 0], seeds[:, 1], 0)
+        hit = np.zeros(len(seeds), dtype=bool)
+        hit[np.concatenate([v[:, 2] for v in strikes.values()]).astype(int)] = True
+        length = life * period * float(np.asarray(wout.rmnc)[0, 0])
+        print(f"[wall] {args.wall:.3f} m off the boundary: {int(hit.sum())} of {len(seeds)} lines end on it, "
+              f"{int((~hit & (life < args.periods)).sum())} elsewhere, {int((life >= args.periods).sum())} kept", flush=True)
+        bins = np.linspace(args.gap, min(args.reach, args.wall), 5)
+        for a, b in zip(bins[:-1], bins[1:]):
+            inside = hit & (start >= a) & (start < b)
+            if inside.any():
+                print(f"[wall] seeds {100 * a:.1f}-{100 * b:.1f} cm off the boundary: {int(inside.sum())} lines, "
+                      f"length to the wall median {np.median(length[inside]):.1f} m, longest {length[inside].max():.1f} m "
+                      f"({np.median(life[inside]):.1f} field periods)", flush=True)
 
     # The closed line through --xpoint and its manifolds.  On plane k: the unstable manifold is the one on phi = 0 traced
     # forwards to the plane, the stable one traced backwards to it.
@@ -200,6 +231,7 @@ def main(argv=None):
                 manifolds[name] = on_planes               # (planes, iterations + 1, 2 * 400, 2)
 
     np.savez(out / "poincare.npz", seeds=seeds, life=life, planes=planes, **{f"marks{k}": v for k, v in marks.items()},
+             **{f"strikes{k}": v for k, v in strikes.items()},
              **{f"manifold_{k}": v for k, v in manifolds.items()}, **({} if x_line is None else {"x_line": x_line}))
 
     columns = int(np.ceil(args.planes / 2)) if args.planes > 2 else args.planes
@@ -221,6 +253,14 @@ def main(argv=None):
                                 norm=norm, linewidths=0)
         near = coils_near(plane, 0.03)
         axis.plot(np.hypot(near[:, 0], near[:, 1]), near[:, 2], "k.", ms=4)
+        if args.wall is not None:
+            grid_r, grid_z = np.meshgrid(np.linspace(low[0], high[0], 90), np.linspace(low[1], high[1], 110))
+            distance = to_plasma(grid_r.ravel(), grid_z.ravel(), plane).reshape(grid_r.shape)
+            distance[Polygon(edges[plane]).contains_points(np.stack((grid_r.ravel(), grid_z.ravel()), -1)).reshape(grid_r.shape)] = 0.0
+            axis.contour(grid_r, grid_z, distance, levels=[args.wall], colors="0.4", linestyles="--", linewidths=1.0)
+            for points, flip in ((strikes[plane], 1.0), (strikes[mirror], -1.0)):
+                axis.plot(points[:, 0], flip * points[:, 1], "*", color="tab:red", ms=5, mew=0,
+                          label="ends on the wall (dashed)" if flip > 0 else None)
         for name, color in (("unstable", "tab:green"), ("stable", "tab:purple")):
             if name not in manifolds:
                 continue

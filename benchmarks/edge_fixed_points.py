@@ -6,7 +6,7 @@
 ``--run`` holds ``coils.json`` and ``wout.nc`` (the free-boundary solve of those coils).  On the plane
 ``phi = 0`` a grid outside the boundary is mapped once around ``--periods`` field periods
 (:func:`vmex.core.periodic_fieldlines.return_map`) in the coils' field and in the coils' plus the plasma's
-virtual-casing field; the grid minima of the displacement are refined to fixed points
+virtual-casing field; the grid cells where both components of the displacement change sign are refined to fixed points
 (:func:`~vmex.core.periodic_fieldlines.return_map_fixed_point`) and each is solved again as a collocated line
 (:func:`~vmex.core.periodic_fieldlines.periodic_fieldline`) with its tangent map.  Writes
 ``fixed_points.json`` (position, ``Tr M``, distances to the boundary and to the coils) and
@@ -34,14 +34,14 @@ def parse_args(argv=None):
     parser.add_argument("--gap", type=float, default=0.06, help="smallest distance of a start to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.04, help="smallest distance of a start to a coil [m]")
     parser.add_argument("--steps", type=int, default=96, help="Runge-Kutta steps per field period of the grid's map")
-    parser.add_argument("--newton-steps", type=int, default=384, help="the same, of the fixed-point solves")
+    parser.add_argument("--newton-steps", type=int, default=256, help="the same, of the fixed-point solves")
     parser.add_argument("--nodes", type=int, default=65, help="collocation nodes per field period (odd)")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--digits", type=int, default=6)
     parser.add_argument("--pf", type=float, nargs=3, action="append", metavar=("R", "Z", "I"), default=[],
                         help="add a pair of circular coils of radius R [m] at +-Z [m] with current I [A] (repeatable); "
                              "the plasma field stays the WOUT's")
-    parser.add_argument("--candidates", type=int, default=24, help="grid minima refined per field")
+    parser.add_argument("--candidates", type=int, default=16, help="grid cells refined per field")
     return parser.parse_args(argv)
 
 
@@ -108,20 +108,25 @@ def main(argv=None):
         image = jax.jit(lambda r, z, field=survey: pf.return_map(field, None, r, z, nfp=nfp, periods=args.periods,
                                                                  steps=args.steps))
         r1, z1 = (np.asarray(v) for v in image(jnp.asarray(R.ravel()[start]), jnp.asarray(Z.ravel()[start])))
-        shift = np.full(R.size, np.nan)
-        shift[start] = np.hypot(r1 - R.ravel()[start], z1 - Z.ravel()[start])
-        shift = shift.reshape(R.shape)
-        padded = np.pad(np.where(np.isfinite(shift), shift, np.inf), 1, constant_values=np.inf)
-        neighbours = np.min([padded[1 + i:padded.shape[0] - 1 + i, 1 + j:padded.shape[1] - 1 + j]
-                             for i in (-1, 0, 1) for j in (-1, 0, 1) if (i, j) != (0, 0)], axis=0)
-        minima = np.argwhere(np.isfinite(shift) & (np.where(np.isfinite(shift), shift, np.inf) <= neighbours))
-        minima = minima[np.argsort(shift[tuple(minima.T)])][:args.candidates]
-        print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; smallest displacements "
-              + ", ".join(f"{shift[i, j]:.1e} at ({R[i, j]:.3f}, {Z[i, j]:.3f})" for i, j in minima[:6]), flush=True)
+        moved = np.full((2, R.size), np.nan)
+        moved[:, start] = r1 - R.ravel()[start], z1 - Z.ravel()[start]
+        moved = moved.reshape((2,) + R.shape)
+        shift = np.hypot(*moved)
+        # a fixed point lies in a grid cell where both components of P(x) - x change sign
+        corners = np.stack([moved[:, i:moved.shape[1] - 1 + i, j:moved.shape[2] - 1 + j] for i in (0, 1) for j in (0, 1)])
+        crossing = np.all(np.isfinite(corners), axis=(0, 1)) & np.all(
+            (corners.min(axis=0) < 0) & (corners.max(axis=0) > 0), axis=0)
+        cells = np.argwhere(crossing)
+        cells = cells[np.argsort(shift[tuple(cells.T)])][:args.candidates]
+        minima = np.argwhere(shift == np.nanmin(shift)) if not len(cells) else cells
+        starts = (R[tuple(cells.T)] + 0.5 * (R[1, 0] - R[0, 0]), Z[tuple(cells.T)] + 0.5 * (Z[0, 1] - Z[0, 0]))
+        print(f"[{name}] grid mapped in {time.monotonic() - clock:.0f} s; {len(cells)} cells with a sign change in both "
+              f"components; smallest displacement {np.nanmin(shift):.1e} m at "
+              f"({R[tuple(minima[0])]:.3f}, {Z[tuple(minima[0])]:.3f})", flush=True)
         np.savez(out / f"return_map_{name}.npz", R=R, Z=Z, shift=shift, section=section)
         points = []
-        found = pf.return_map_fixed_point(survey, None, R[tuple(minima.T)], Z[tuple(minima.T)], nfp=nfp,
-                                          periods=args.periods, steps=args.newton_steps)
+        found = pf.return_map_fixed_point(survey, None, *starts, nfp=nfp, periods=args.periods, steps=args.newton_steps,
+                                          iterations=10) if len(cells) else ((),) * 4
         for r, z, M, step in zip(*(np.asarray(v) for v in found)):
             # converged, resolved (the map preserves flux: det M = 1), in the box, outside the plasma, and new
             if not (step < 1e-9 and abs(np.linalg.det(M) - 1.0) < 1e-3 and low[0] <= r <= high[0] and low[1] <= z <= high[1]):

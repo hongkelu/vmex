@@ -141,7 +141,9 @@ def circular_coil_pairs(radius, height, current, *, n_segments: int = 128):
     radius, height = jnp.tile(radius, 2), jnp.concatenate((height, -height))
     # ESSOS' Fourier order 1: [constant, sin, cos]; x = radius cos t, y = radius sin t, z = height
     dofs = jnp.zeros((radius.size, 3, 3)).at[:, 0, 2].set(radius).at[:, 1, 1].set(radius).at[:, 2, 0].set(height)
-    return Coils(Curves(dofs, n_segments=int(n_segments), nfp=1, stellsym=False), jnp.tile(current, 2))
+    # a fixed current scale: ESSOS would otherwise store one computed from the (traced) currents as pytree metadata
+    return Coils(Curves(dofs, n_segments=int(n_segments), nfp=1, stellsym=False), jnp.tile(current, 2),
+                 currents_scale=1.0)
 
 
 class PoloidalCoilDesign:

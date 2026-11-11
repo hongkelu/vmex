@@ -87,6 +87,9 @@ def test_circular_pairs_are_the_loop_formula_and_join_a_design(coils):
     moved = BiotSavart(circular_coil_pairs(radius + 0.01, height - 0.02, current + 0.5e5, n_segments=128))
     expected = [a + b for a, b in zip(BiotSavart(coils).b_cyl(r, phi, zz), moved.b_cyl(r, phi, zz))]
     np.testing.assert_allclose(design(x).b_cyl(r, phi, zz), expected, rtol=1e-12)
+    fixed = PoloidalCoilDesign(base, radius, height, current, current_scale=None)
+    assert fixed.size == base.size
+    np.testing.assert_allclose(fixed.pairs_at(fixed.x0)[2], current)
     # stellarator symmetric: B_R odd, B_phi and B_Z even under (phi, Z) -> (-phi, -Z)
     b_r, b_phi, b_z = moved.b_cyl(r, phi, zz)
     m_r, m_phi, m_z = moved.b_cyl(r, -phi, -zz)

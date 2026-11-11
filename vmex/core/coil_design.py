@@ -149,10 +149,11 @@ def circular_coil_pairs(radius, height, current, *, n_segments: int = 128):
 class PoloidalCoilDesign:
     """A design followed by up-down pairs of circular poloidal-field coils (:func:`circular_coil_pairs`).
 
-    ``x`` is the design's vector, then each pair's current change in units of ``current_unit`` [A] and, with
-    ``geometry_scale``, each pair's radius and height changes [m].  Calling it gives the sum of the design's field
-    and the pairs'; the plasma coordinates and the coils of the design are the design's own (``design.<name>(x)``
-    through the matching method here), so the pairs carry no coil-limit rows.
+    ``x`` is the design's vector, then, with ``current_scale``, each pair's current change in units of
+    ``current_unit`` [A] and, with ``geometry_scale``, each pair's radius and height changes [m]; without a scale
+    those stay at their nominal values.  Calling it gives the sum of the design's field and the pairs'; the plasma
+    coordinates and the coils of the design are the design's own (``design.<name>(x)`` through the matching method
+    here), so the pairs carry no coil-limit rows.
     """
 
     def __init__(self, design, radius, height, current, *, current_unit=1.0e5, current_scale=0.05,
@@ -160,28 +161,31 @@ class PoloidalCoilDesign:
         require_optional("essos", "circular coils")
         self.design, self.n = design, int(design.size)
         self.nominal = tuple(np.atleast_1d(np.asarray(v, dtype=float)) for v in (radius, height, current))
-        self.npairs = self.nominal[0].size
-        if any(v.shape != (self.npairs,) for v in self.nominal):
+        self.npairs = k = self.nominal[0].size
+        if any(v.shape != (k,) for v in self.nominal):
             raise ValueError("radius, height and current need one value per pair")
-        self.current_unit, self.free_geometry, self.n_segments = float(current_unit), geometry_scale is not None, int(n_segments)
-        added = self.npairs * (3 if self.free_geometry else 1)
-        self.x0 = np.r_[design.x0, np.zeros(added)]
-        self.scales = np.r_[design.scales, np.full(self.npairs, current_scale),
-                            np.full(added - self.npairs, geometry_scale if self.free_geometry else 0.0)]
-        self.dof_names = (*design.dof_names, *(f"pf_current[{i}]/{self.current_unit:g}A" for i in range(self.npairs)),
-                          *(f"pf_{name}[{i}]/m" for name in ("radius", "height") for i in range(self.npairs)
+        self.current_unit, self.n_segments = float(current_unit), int(n_segments)
+        self.free_current, self.free_geometry = current_scale is not None, geometry_scale is not None
+        scales = np.r_[np.full(k * self.free_current, current_scale), np.full(2 * k * self.free_geometry, geometry_scale)]
+        self.x0 = np.r_[design.x0, np.zeros(scales.size)]
+        self.scales = np.r_[design.scales, scales.astype(float)]
+        self.dof_names = (*design.dof_names,
+                          *(f"pf_current[{i}]/{self.current_unit:g}A" for i in range(k) if self.free_current),
+                          *(f"pf_{name}[{i}]/m" for name in ("radius", "height") for i in range(k)
                             if self.free_geometry))
         self.size = self.x0.size
         self.phiedge = getattr(design, "phiedge", None)
-        self.plasma_from_parameters = None if getattr(design, "plasma_from_parameters", None) is None else self.plasma_params_at
+        self.plasma_from_parameters = (None if getattr(design, "plasma_from_parameters", None) is None
+                                       else self.plasma_params_at)
 
     def pairs_at(self, x):
         """``(radius, height, current)`` of the pairs at ``x``."""
         radius, height, current = (jnp.asarray(v) for v in self.nominal)
         extra, k = jnp.asarray(x)[self.n:], self.npairs
-        current = current + self.current_unit * extra[:k]
+        if self.free_current:
+            current, extra = current + self.current_unit * extra[:k], extra[k:]
         if self.free_geometry:
-            radius, height = radius + extra[k:2 * k], height + extra[2 * k:]
+            radius, height = radius + extra[:k], height + extra[k:]
         return radius, height, current
 
     def poloidal_coils_from_x(self, x):

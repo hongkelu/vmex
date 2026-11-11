@@ -785,6 +785,7 @@ def parse_args(argv=None):
                         help="add a pair of circular coils of radius R [m] at +-Z [m], each with current I [A] "
                              "(repeatable); the currents are design variables (vmex.core.coil_design.PoloidalCoilDesign). "
                              "Default with --restart: the run's pf.json")
+    parser.add_argument("--pf-fixed", action="store_true", help="hold the --pf-coils currents (no design variables)")
     parser.add_argument("--edge-line", type=Path, metavar="JSON",
                         help="a closed field line outside the plasma (benchmarks/edge_fixed_points.py's fixed_points.json, "
                              "entry --edge-line-index of its total field): its trace, gap to the boundary and distance "
@@ -1040,7 +1041,7 @@ def main(argv=None):
         from vmex.core.coil_design import PoloidalCoilDesign
 
         chart = PoloidalCoilDesign(chart, *np.asarray(args.pf_coils, dtype=float).T,
-                                   current_scale=args.design_step_scale * PF_CURRENT_STEP)
+                                   current_scale=None if args.pf_fixed else args.design_step_scale * PF_CURRENT_STEP)
     qs = target_residual()
     if PWO_FREE_MAP:
         from vmex.core.pwo import MapCoordinates

@@ -42,6 +42,7 @@ __all__ = [
     "return_map",
     "return_map_fixed_point",
     "surface_distance",
+    "surface_distances",
     "tangent_map",
     "trace_fieldline",
 ]
@@ -255,8 +256,8 @@ def return_map_fixed_point(field: Field, parameters: Any, R, Z, *, nfp: int, per
     return x[:, 0].reshape(R.shape), x[:, 1].reshape(R.shape), M.reshape(R.shape + (2, 2)), step.reshape(R.shape)
 
 
-def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
-    """Smallest distance [m] from the points ``xyz (n, 3)`` to a toroidal surface.
+def surface_distances(xyz, gamma, nfp: int) -> jax.Array:
+    """Distance [m] from each of the points ``xyz (n, 3)`` to a toroidal surface.
 
     ``gamma (3, nphi, ntheta)`` samples one field period of the surface (the
     layout of ``VmecSurfaceFieldData.gamma``); the points are compared with all
@@ -268,8 +269,13 @@ def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
     # rotating the points backwards is the same as rotating the surface forwards
     x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
     rotated = jnp.stack((cos * x + sin * y, -sin * x + cos * y, jnp.broadcast_to(z, (nfp, z.size))), axis=-1)
-    squared = jnp.sum((rotated.reshape(-1, 1, 3) - surface[None]) ** 2, axis=-1)
-    return jnp.sqrt(jnp.min(squared))
+    squared = jnp.sum((rotated[:, :, None] - surface[None, None]) ** 2, axis=-1)   # (nfp, n, surface points)
+    return jnp.sqrt(jnp.min(squared, axis=(0, 2)))
+
+
+def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
+    """Smallest distance [m] from the points ``xyz (n, 3)`` to a toroidal surface (:func:`surface_distances`)."""
+    return jnp.min(surface_distances(xyz, gamma, nfp))
 
 
 def exterior_field(surface_data, external_field_from_parameters: Callable[[Any], Any], **options):

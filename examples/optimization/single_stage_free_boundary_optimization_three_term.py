@@ -800,6 +800,10 @@ def parse_args(argv=None):
                         help="constrain the line's smallest distance to the plasma boundary [m]")
     parser.add_argument("--edge-coil-distance", type=float, metavar="MIN",
                         help="constrain the line's smallest distance to any coil [m]")
+    parser.add_argument("--edge-wall", type=float, nargs=2, metavar=("D", "CLEARANCE"),
+                        help="a wall D [m] off the plasma boundary between the line and the coils: the line's largest "
+                             "distance to the boundary stays below D - CLEARANCE and the coils' smallest above "
+                             "D + CLEARANCE, so the line's legs end on the wall before they reach a coil")
     parser.add_argument("--edge-trace", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="constrain the trace of the line's tangent map (|Tr M| > 2: X-point)")
     parser.add_argument("--edge-vc-grid", type=int, default=64, help="virtual-casing grid per field period of the "
@@ -812,7 +816,7 @@ def parse_args(argv=None):
             args.pf_coils = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
     if args.restart is not None and args.edge_line is None and (args.restart / "edge_line.json").exists():
         args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
-    if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace) and args.edge_line is None:
+    if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace or args.edge_wall) and args.edge_line is None:
         parser.error("the edge constraints need --edge-line")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
@@ -1078,11 +1082,14 @@ def main(argv=None):
     ext_rows, ext_terms = load_extension(args.extension)
 
     # A closed field line outside the plasma, in the coils' plus the plasma's virtual-casing field: (trace of its
-    # tangent map, gap to the boundary, distance to the coils), NaN where Newton from the line's last accepted nodes
+    # tangent map, gap to the boundary, distance to the coils, largest distance to the boundary), NaN where Newton from the line's last accepted nodes
     # does not converge.
     edge_bounds = [] if args.edge_line is None else [
         tuple(args.edge_trace or (-np.inf, np.inf)) + (1.0,), tuple(args.edge_gap or (-np.inf, np.inf)) + (0.01,),
-        (-np.inf if args.edge_coil_distance is None else args.edge_coil_distance, np.inf, 0.01)]
+        (-np.inf if args.edge_coil_distance is None else args.edge_coil_distance, np.inf, 0.01),
+        (-np.inf, np.inf if args.edge_wall is None else args.edge_wall[0] - args.edge_wall[1], 0.01)]
+    # with a wall, the coils stay outside it
+    coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, sum(args.edge_wall or (0.0,)))
     edge_constrained = any(np.isfinite(b[:2]).any() for b in edge_bounds)
     if args.edge_line is not None:
         from vmex.core import periodic_fieldlines as pf
@@ -1103,7 +1110,8 @@ def main(argv=None):
             wires = [chart.coils_from_x(x).gamma.reshape(-1, 3)] + (
                 [chart.poloidal_coils_from_x(x).gamma.reshape(-1, 3)] if args.pf_coils else [])
             to_coils = jnp.sqrt(jnp.min(jnp.sum((line.xyz[:, None] - jnp.concatenate(wires)[None]) ** 2, axis=-1)))
-            values = jnp.stack((trace, pf.surface_distance(line.xyz, data.gamma, int(inp.nfp)), to_coils))
+            to_plasma = pf.surface_distances(line.xyz, data.gamma, int(inp.nfp))
+            values = jnp.stack((trace, jnp.min(to_plasma), to_coils, jnp.max(to_plasma)))
             return jnp.where(line.step < 1e-8, values, jnp.nan), line
 
         def edge(state, runtime, x):
@@ -1166,7 +1174,7 @@ def main(argv=None):
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
         *([(MAP_AREA_FLOOR, np.inf, 0.1)] if area else []),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
-        (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
+        (coil_clearance + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
     # thousands of point rows: their Jacobian in forward mode, 32 directions at a time
     from essos.coil_design import coil_constraint
 
@@ -1247,6 +1255,7 @@ def main(argv=None):
             if np.all(np.isfinite(values)) and not edge_constrained:
                 edge_guess.update(R=np.asarray(line.R), Z=np.asarray(line.Z))
             edge_row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
+                            edge_reach_m=float(values[3]),
                             edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
             if np.all(np.isfinite(values)):
                 edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
@@ -1311,7 +1320,7 @@ def main(argv=None):
               + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")
               + (f"newton={row['newton_products']}/{row['newton_residual']:.0e} " if "newton_residual" in row else "")
               + (f"fit={row['fit_steps']}/{row['fit_step']:.0e} " if "fit_step" in row else "")
-              + (f"edge: Tr M={row['edge_trace']:.3f} gap={row['edge_gap_m']:.4f} coils={row['edge_coil_distance_m']:.4f} "
+              + (f"edge: Tr M={row['edge_trace']:.3f} gap={row['edge_gap_m']:.4f} reach={row['edge_reach_m']:.4f} coils={row['edge_coil_distance_m']:.4f} "
                  f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if edge_row else "")
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
               + f"{row['step_seconds']:.1f}s "

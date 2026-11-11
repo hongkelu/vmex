@@ -104,5 +104,6 @@ def test_surface_distance_to_a_torus_uses_every_field_period():
     angle = 0.5 * PERIOD + PERIOD  # in the second field period
     points = jnp.asarray([[1.5 * np.cos(angle), 1.5 * np.sin(angle), 0.0], [3.0, 0.0, 0.0]])
     assert float(pf.surface_distance(points, gamma, NFP)) == pytest.approx(0.3, abs=2e-3)
+    np.testing.assert_allclose(pf.surface_distances(points, gamma, NFP), [0.3, 1.8], atol=2e-3)
     gradient = jax.grad(lambda p: pf.surface_distance(p, gamma, NFP))(points)
     np.testing.assert_allclose(gradient[0], [np.cos(angle), np.sin(angle), 0.0], atol=0.05)

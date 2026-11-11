@@ -26,14 +26,14 @@ def parse_args(argv=None):
     parser.add_argument("--run", type=Path, required=True, help="run directory with coils.json and wout.nc")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--xpoint", type=float, nargs=2, metavar=("R", "Z"), help="a closed line's point at phi = 0")
-    parser.add_argument("--periods", type=int, default=200, help="field periods traced")
-    parser.add_argument("--steps", type=int, default=48, help="Runge-Kutta steps per half field period")
-    parser.add_argument("--seeds", type=int, default=24, help="seeds per ray")
+    parser.add_argument("--periods", type=int, default=150, help="field periods traced")
+    parser.add_argument("--steps", type=int, default=32, help="Runge-Kutta steps per half field period")
+    parser.add_argument("--seeds", type=int, default=40, help="seeds per ray")
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
     parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
-    parser.add_argument("--vc-grid", type=int, default=96, help="virtual-casing grid per field period")
+    parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--surfaces", type=int, default=12, help="flux surfaces drawn")
     parser.add_argument("--title", default="")
     return parser.parse_args(argv)
@@ -100,14 +100,14 @@ def main(argv=None):
         t_edge = t[np.argmin(inside)]
         return axis0 + (t_edge + np.linspace(args.gap, args.reach, args.seeds))[:, None] * direction
 
-    directions = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0)]
+    directions = [(np.cos(a), np.sin(a)) for a in np.linspace(0.0, np.pi, 5)]  # the lower half is the mirror image
     if args.xpoint:
         directions.append(np.asarray(args.xpoint) - axis0)
     seeds = np.concatenate([ray(d) for d in directions])
     print(f"[seeds] {len(seeds)} on {len(directions)} rays; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
           flush=True)
 
-    chunk = 10  # field periods per compiled call
+    chunk = 5  # field periods per compiled call
     angles = jnp.arange(2 * chunk + 1) * half
     advance = jax.jit(lambda r, z: pf.trace_fieldline(field, None, r, z, angles, substeps=args.steps))
 
@@ -129,7 +129,13 @@ def main(argv=None):
     marks = {0: [], 1: []}                           # (R, Z, seed index) per plane
     clock = time.monotonic()
     for start in range(0, args.periods, chunk):
-        path_r, path_z = (np.asarray(v) for v in advance(jnp.asarray(r), jnp.asarray(z)))
+        # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
+        active = np.flatnonzero(living)
+        size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
+        padded = np.r_[active, np.full(size - len(active), active[0])]
+        path_r, path_z = (np.tile(seeds[:, i], (2 * chunk + 1, 1)) for i in (0, 1))
+        traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
+        path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
         for k in range(1, 2 * chunk + 1):
             plane = k % 2
             living &= alive(path_r[k], path_z[k], plane)

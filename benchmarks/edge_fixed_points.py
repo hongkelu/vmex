@@ -6,9 +6,8 @@
 ``--run`` holds ``coils.json`` and ``wout.nc`` (the free-boundary solve of those coils).  On the plane
 ``phi = 0`` a grid outside the boundary is mapped once around ``--periods`` field periods
 (:func:`vmex.core.periodic_fieldlines.return_map`) in the coils' field and in the coils' plus the plasma's
-virtual-casing field; the grid cells where both components of the displacement change sign are refined to fixed points
-(:func:`~vmex.core.periodic_fieldlines.return_map_fixed_point`) and each is solved again as a collocated line
-(:func:`~vmex.core.periodic_fieldlines.periodic_fieldline`) with its tangent map.  Writes
+virtual-casing field; the grid cells where both components of the displacement change sign are refined to closed lines
+(:func:`~vmex.core.periodic_fieldlines.periodic_fieldline`) with their tangent maps.  Writes
 ``fixed_points.json`` (position, ``Tr M``, distances to the boundary and to the coils) and
 ``return_map.png``.
 """
@@ -34,7 +33,6 @@ def parse_args(argv=None):
     parser.add_argument("--gap", type=float, default=0.06, help="smallest distance of a start to the boundary [m]")
     parser.add_argument("--coil-gap", type=float, default=0.04, help="smallest distance of a start to a coil [m]")
     parser.add_argument("--steps", type=int, default=96, help="Runge-Kutta steps per field period of the grid's map")
-    parser.add_argument("--newton-steps", type=int, default=256, help="the same, of the fixed-point solves")
     parser.add_argument("--nodes", type=int, default=65, help="collocation nodes per field period (odd)")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--digits", type=int, default=6)
@@ -124,31 +122,40 @@ def main(argv=None):
               f"components; smallest displacement {np.nanmin(shift):.1e} m at "
               f"({R[tuple(minima[0])]:.3f}, {Z[tuple(minima[0])]:.3f})", flush=True)
         np.savez(out / f"return_map_{name}.npz", R=R, Z=Z, shift=shift, section=section)
-        points = []
-        found = pf.return_map_fixed_point(survey, None, *starts, nfp=nfp, periods=args.periods, steps=args.newton_steps,
-                                          iterations=10) if len(cells) else ((),) * 4
-        for r, z, M, step in zip(*(np.asarray(v) for v in found)):
-            # converged, resolved (the map preserves flux: det M = 1), in the box, outside the plasma, and new
-            if not (step < 1e-9 and abs(np.linalg.det(M) - 1.0) < 1e-3 and low[0] <= r <= high[0] and low[1] <= z <= high[1]):
+        # Each candidate: its field line over the nodes, made periodic by removing the mismatch linearly, then Newton
+        # on the collocated line.  A solve that stalls, leaves the box or ends in the plasma is no fixed point.
+        points, n = [], args.nodes * args.periods
+        nodes = pf.fieldline_nodes(n, nfp, args.periods)
+        if len(cells):
+            traced = jax.jit(lambda r, z, field=survey: pf.trace_fieldline(
+                field, None, r, z, jnp.asarray(np.r_[nodes, nodes[0] + 2 * np.pi * args.periods / nfp]), substeps=4))
+            paths = [np.asarray(v) for v in traced(jnp.asarray(starts[0]), jnp.asarray(starts[1]))]
+            ramp = (np.arange(n) / n)[:, None]
+            guesses = [v[:-1] - ramp * (v[-1] - v[0]) for v in paths]
+            solve = jax.jit(lambda r, z, field=field: pf.periodic_fieldline(field, None, r, z, nfp=nfp,
+                                                                            periods=args.periods, max_iterations=30))
+            tangent_of = jax.jit(lambda line, field=field: pf.tangent_map(field, None, line))
+        for k in range(len(cells)):
+            if not np.all(np.isfinite(guesses[0][:, k]) & np.isfinite(guesses[1][:, k])):
+                continue
+            line = solve(jnp.asarray(guesses[0][:, k]), jnp.asarray(guesses[1][:, k]))
+            r, z = float(line.R[0]), float(line.Z[0])
+            if not (float(line.step) < 1e-9 and low[0] <= r <= high[0] and low[1] <= z <= high[1]):
                 continue
             if Polygon(section).contains_point((r, z)) or any(np.hypot(r - p["R"], z - p["Z"]) < 1e-6 for p in points):
                 continue
-            r, z = float(r), float(z)
-            nodes = pf.fieldline_nodes(args.nodes * args.periods, nfp, args.periods)
-            guess = pf.trace_fieldline(field, None, r, z, nodes, substeps=8)
-            line = pf.periodic_fieldline(field, None, *guess, nfp=nfp, periods=args.periods)
-            tangent = np.asarray(pf.tangent_map(field, None, line))
+            tangent = np.asarray(tangent_of(line))
             trace = float(np.trace(tangent))
             boundary_distance, coil_distance = distances(line)
             points.append(dict(
-                R=r, Z=z, trace_shooting=float(np.trace(np.asarray(M))), trace=trace, determinant=float(np.linalg.det(tangent)),
+                R=r, Z=z, trace=trace, determinant=float(np.linalg.det(tangent)),
                 kind="X" if abs(trace) > 2 else "O", residue=(2.0 - trace) / 4.0,
                 collocation_step=float(line.step), collocation_residual=float(line.residual),
                 boundary_distance_m=boundary_distance, coil_distance_m=coil_distance,
                 R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist()))
             print(f"[{name}] {points[-1]['kind']}-point R={r:.5f} Z={z:.5f} Tr M={trace:.6f} "
-                  f"(shooting {points[-1]['trace_shooting']:.6f}) det={points[-1]['determinant']:.6f} "
-                  f"boundary {boundary_distance:.4f} m coils {coil_distance:.4f} m", flush=True)
+                  f"det={points[-1]['determinant']:.8f} boundary {boundary_distance:.4f} m coils {coil_distance:.4f} m",
+                  flush=True)
         report[name] = points
         print(f"[{name}] {len(points)} fixed points; {time.monotonic() - clock:.0f} s", flush=True)
         mesh = axis.pcolormesh(R, Z, np.log10(shift), shading="nearest", cmap="viridis")

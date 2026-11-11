@@ -72,6 +72,7 @@ FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (Fal
 FREE_COIL_CURRENTS = True          # every base-coil current is a design variable, with no bounds
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 PF_CURRENT_STEP = 0.2              # coordinate scale of a circular coil pair's current change, in 100 kA (--pf-coils)
+PF_GEOMETRY_STEP = 0.05            # coordinate scale of a pair's radius and height changes [m] (--pf-geometry)
 
 # --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -786,6 +787,8 @@ def parse_args(argv=None):
                              "(repeatable); the currents are design variables (vmex.core.coil_design.PoloidalCoilDesign). "
                              "Default with --restart: the run's pf.json")
     parser.add_argument("--pf-fixed", action="store_true", help="hold the --pf-coils currents (no design variables)")
+    parser.add_argument("--pf-geometry", action="store_true",
+                        help="the --pf-coils radii and heights are design variables too")
     parser.add_argument("--pf-coil-distance", type=float, metavar="MIN",
                         help="keep the --pf-coils at least MIN [m] from the other coils (one more coil-limit row)")
     parser.add_argument("--edge-line", type=Path, metavar="JSON",
@@ -813,6 +816,8 @@ def parse_args(argv=None):
         parser.error("the edge constraints need --edge-line")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
+    if args.pf_geometry and not args.pf_coils:
+        parser.error("--pf-geometry needs --pf-coils")
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     if args.fixed_current and not args.bootstrap:
@@ -1047,7 +1052,8 @@ def main(argv=None):
         from vmex.core.coil_design import PoloidalCoilDesign
 
         chart = PoloidalCoilDesign(chart, *np.asarray(args.pf_coils, dtype=float).T,
-                                   current_scale=None if args.pf_fixed else args.design_step_scale * PF_CURRENT_STEP)
+                                   current_scale=None if args.pf_fixed else args.design_step_scale * PF_CURRENT_STEP,
+                                   geometry_scale=args.design_step_scale * PF_GEOMETRY_STEP if args.pf_geometry else None)
     qs = target_residual()
     if PWO_FREE_MAP:
         from vmex.core.pwo import MapCoordinates
@@ -1246,7 +1252,8 @@ def main(argv=None):
                 edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
                                    R_nodes=np.asarray(line.R).tolist(), Z_nodes=np.asarray(line.Z).tolist())
             if args.pf_coils:
-                edge_row["pf_current_a"] = np.asarray(chart.pairs_at(jnp.asarray(x))[2]).tolist()
+                radius, height, current = (np.asarray(v).tolist() for v in chart.pairs_at(jnp.asarray(x)))
+                edge_row.update(pf_radius_m=radius, pf_height_m=height, pf_current_a=current)
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
             vac = np.asarray(vacuum(params_x.rbc, params_x.zbs))
         except RuntimeError as error:

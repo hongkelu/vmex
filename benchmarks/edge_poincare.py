@@ -34,6 +34,9 @@ def parse_args(argv=None):
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
+    parser.add_argument("--near-surface", default="direct", choices=("direct", "routed"),
+                        help="plasma field: the direct quadrature (accurate a few grid spacings off the boundary) or "
+                             "the extender's near-surface rule where a point is close (slower)")
     parser.add_argument("--surfaces", type=int, default=12, help="flux surfaces drawn")
     parser.add_argument("--title", default="")
     return parser.parse_args(argv)
@@ -76,7 +79,8 @@ def main(argv=None):
         coil_points = np.concatenate((coil_points, np.asarray(pairs.gamma).reshape(-1, 3)))
     surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)
     total = VmecExtender.from_surface_data(surface, external_field=lambda xyz: jax.vmap(biot_savart.B)(xyz),
-                                           accuracy_check="off", near_surface="direct")
+                                           accuracy_check="off",
+                                           **({"near_surface": "direct"} if args.near_surface == "direct" else {}))
     field = lambda p, xyz: total.B(xyz)  # noqa: E731
 
     def section(phi, s_index):  # the WOUT's surface s_index on the plane phi
@@ -198,15 +202,18 @@ def main(argv=None):
                 if name in manifolds:
                     for sign in (1.0, -1.0):  # the lower X-point's manifolds are the mirrored ones of the other kind
                         other = {"unstable": "stable", "stable": "unstable"}[name] if sign < 0 else name
-                        for branch in np.split(manifolds[other], 2, axis=1):
-                            axis.plot(branch[..., 0].ravel(), sign * branch[..., 1].ravel(), ".", ms=1.2, color=color,
-                                      label=f"{name} manifold" if sign > 0 and branch is not None else None)
+                        for branch in np.split(manifolds[other], 2, axis=1):  # drawn while it is a resolved curve
+                            curve = branch.reshape(-1, 2)
+                            jump = np.linalg.norm(np.diff(curve, axis=0), axis=1)
+                            end = int(np.argmax(~(jump < 0.02))) if np.any(~(jump < 0.02)) else len(curve)
+                            axis.plot(curve[:end, 0], sign * curve[:end, 1], "-", lw=1.4, color=color,
+                                      label=f"{name} manifold" if sign > 0 else None)
             if x_point is not None:
                 axis.plot([x_point[0]] * 2, [x_point[1], -x_point[1]], "kx", ms=10, mew=2)
             handles, labels = axis.get_legend_handles_labels()
             unique = dict(zip(labels, handles))
             if unique:
-                axis.legend(unique.values(), unique.keys(), loc="lower right", markerscale=8, fontsize=8)
+                axis.legend(unique.values(), unique.keys(), loc="lower right", fontsize=8)
         axis.set(xlabel="R [m]", ylabel="Z [m]", aspect="equal", xlim=(low[0], high[0]), ylim=(low[1], high[1]),
                  title=f"phi = {'0' if plane == 0 else 'half field period'}")
     figure.colorbar(mesh, ax=axes, label="field periods before a line is lost (grey: kept all "

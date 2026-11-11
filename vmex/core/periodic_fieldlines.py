@@ -38,6 +38,7 @@ __all__ = [
     "PeriodicFieldline",
     "exterior_field",
     "fieldline_nodes",
+    "manifold_crossing",
     "periodic_fieldline",
     "return_map",
     "return_map_fixed_point",
@@ -254,6 +255,65 @@ def return_map_fixed_point(field: Field, parameters: Any, R, Z, *, nfp: int, per
 
     x, M, step = jax.vmap(solve)(jnp.stack((R.ravel(), Z.ravel()), axis=-1))
     return x[:, 0].reshape(R.shape), x[:, 1].reshape(R.shape), M.reshape(R.shape + (2, 2)), step.reshape(R.shape)
+
+
+def manifold_crossing(field: Field, parameters: Any, line: PeriodicFieldline, M, *, nfp: int, periods: int = 1,
+                      iterations: int = 2, stable: bool = False, offset: float = 1e-4, steps: int = 128,
+                      samples: int = 32, newton: int = 4):
+    """Where a leg of an X-line crosses ``Z = 0`` on the line's first plane: ``(R, sine, miss)``.
+
+    The leg is the branch towards ``Z = 0`` of the unstable manifold of the
+    line's first node (``stable``: of the stable one, followed backwards).  It
+    is the image under ``iterations`` return maps of the points
+    ``x0 + s v``, ``s`` in ``[offset, lambda^2 offset]`` [m], with ``v`` the
+    eigenvector of the tangent map ``M`` (``Tr M > 2``) and ``lambda`` its
+    unstable multiplier; ``s`` is solved for the crossing (the first sign change
+    among ``samples`` starts, then ``newton`` steps).  ``sine`` is the ``R``
+    component of the leg's unit tangent there and ``miss`` the remaining
+    ``|Z|`` [m]: not zero where ``iterations`` maps do not bring that range to
+    the plane.  The range holds two images of every point of the leg, so a
+    crossing found with ``iterations`` maps stays in range while the design
+    moves it by less than a factor ``lambda`` in ``s``.
+
+    In a stellarator-symmetric field on a symmetry plane (``line.phi[0] = 0``)
+    the mirror line's stable manifold is this leg's mirror image, and the two
+    meet at the crossing at the angle ``2 asin(sine)``: ``sine = 0`` joins the
+    legs of the upper and lower X-lines into one separatrix, as in an
+    axisymmetric double null, and its size sets the width of the stochastic
+    layer around them.  Differentiable in ``parameters``, the line and ``M``;
+    ``steps`` Runge-Kutta steps per field period.
+    """
+    x0, phi0 = jnp.stack((line.R[0], line.Z[0])), line.phi[0]
+    trace = jnp.trace(M)
+    unstable = 0.5 * (trace + jnp.sqrt(trace**2 - 4.0))
+    multiplier = 1.0 / unstable if stable else unstable
+    a, b = jnp.stack((M[0, 1], multiplier - M[0, 0])), jnp.stack((multiplier - M[1, 1], M[1, 0]))
+    v = jnp.where(jnp.sum(a * a) > jnp.sum(b * b), a, b)
+    v = -v / jnp.linalg.norm(v) * jnp.sign(v[1]) * jnp.sign(x0[1])  # towards Z = 0
+    ends = jnp.stack((phi0, phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * iterations))
+
+    def image(p, x0, v, s):
+        R, Z = trace_fieldline(field, p, x0[0] + s * v[0], x0[1] + s * v[1], ends, substeps=steps * iterations)
+        return R[-1], Z[-1]
+
+    frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, x0, v))
+    height = lambda s: image(*frozen, s)[1]  # noqa: E731
+    starts = offset * jax.lax.stop_gradient(unstable) ** (2.0 * jnp.arange(samples + 1) / samples)
+    z = height(starts)
+    change = z[:-1] * z[1:] <= 0.0
+    k = jnp.where(jnp.any(change), jnp.argmax(change), jnp.argmin(jnp.abs(z[:-1])))
+    s = starts[k] - z[k] * (starts[k + 1] - starts[k]) / (z[k + 1] - z[k])
+
+    def correct(s, _):
+        value, slope = jax.jvp(height, (s,), (jnp.ones_like(s),))
+        return jnp.clip(s - value / slope, starts[0], starts[-1]), None   # outside: the leg is not on x0 + s v
+
+    s, _ = jax.lax.scan(correct, s, None, length=newton)
+    value, slope = jax.jvp(height, (s,), (jnp.ones_like(s),))
+    # the crossing moves with the parameters: one more step on the traced height, with the frozen slope
+    s = jax.lax.stop_gradient(s) - image(parameters, x0, v, jax.lax.stop_gradient(s))[1] / jax.lax.stop_gradient(slope)
+    (R, _), (t_r, t_z) = jax.jvp(lambda s: image(parameters, x0, v, s), (s,), (jnp.ones_like(s),))
+    return R, t_r / jnp.hypot(t_r, t_z), jnp.abs(jax.lax.stop_gradient(value))
 
 
 def surface_distances(xyz, gamma, nfp: int) -> jax.Array:

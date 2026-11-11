@@ -294,6 +294,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
         except (VmecError, RuntimeError) as error:
             return self._reject(key, str(error))
+        if not np.all(np.isfinite(values)):  # a row whose own solve did not converge reports NaN
+            return self._reject(key, "a row is not finite at this design point")
         self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
         return self._cache[key]
 

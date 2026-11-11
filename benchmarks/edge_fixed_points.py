@@ -38,6 +38,9 @@ def parse_args(argv=None):
     parser.add_argument("--nodes", type=int, default=65, help="collocation nodes per field period (odd)")
     parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
     parser.add_argument("--digits", type=int, default=6)
+    parser.add_argument("--pf", type=float, nargs=3, action="append", metavar=("R", "Z", "I"), default=[],
+                        help="add a pair of circular coils of radius R [m] at +-Z [m] with current I [A] (repeatable); "
+                             "the plasma field stays the WOUT's")
     parser.add_argument("--candidates", type=int, default=24, help="grid minima refined per field")
     return parser.parse_args(argv)
 
@@ -67,6 +70,10 @@ def main(argv=None):
     coils = Coils.from_json(str(args.coils or args.run / "coils.json"))
     nfp = int(wout.nfp)
     biot_savart = BiotSavart(coils)
+    if args.pf:
+        from vmex.core.coil_design import SummedField, circular_coil_pairs
+
+        biot_savart = SummedField(biot_savart, BiotSavart(circular_coil_pairs(*np.asarray(args.pf).T)))
     coil_field = lambda xyz: jax.vmap(biot_savart.B)(xyz)  # noqa: E731
     surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)
     exterior = VmecExtender.from_surface_data(surface, external_field=coil_field, digits=args.digits,
@@ -113,7 +120,7 @@ def main(argv=None):
               + ", ".join(f"{shift[i, j]:.1e} at ({R[i, j]:.3f}, {Z[i, j]:.3f})" for i, j in minima[:6]), flush=True)
         np.savez(out / f"return_map_{name}.npz", R=R, Z=Z, shift=shift, section=section)
         points = []
-        found = pf.return_map_fixed_point(field, None, R[tuple(minima.T)], Z[tuple(minima.T)], nfp=nfp,
+        found = pf.return_map_fixed_point(survey, None, R[tuple(minima.T)], Z[tuple(minima.T)], nfp=nfp,
                                           periods=args.periods, steps=args.newton_steps)
         for r, z, M, step in zip(*(np.asarray(v) for v in found)):
             # converged, resolved (the map preserves flux: det M = 1), in the box, outside the plasma, and new
@@ -150,7 +157,7 @@ def main(argv=None):
                  aspect="equal")
     figure[0].savefig(out / "return_map.png", dpi=150)
     (out / "fixed_points.json").write_text(json.dumps(dict(
-        run=str(args.run), nfp=nfp, periods=args.periods, grid=args.grid, steps=args.steps, **report), indent=1))
+        run=str(args.run), pf=args.pf, nfp=nfp, periods=args.periods, grid=args.grid, steps=args.steps, **report), indent=1))
     print(f"[done] {', '.join(f'{len(v)} in the {k} field' for k, v in report.items())}; {out}", flush=True)
 
 

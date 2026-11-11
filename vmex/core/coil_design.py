@@ -15,6 +15,7 @@ import dataclasses
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 
 from .._compat import require_optional
@@ -104,3 +105,101 @@ class CoilDesign:
     def __call__(self, x):
         """The differentiable filament field (``essos.fields.BiotSavart``) of :meth:`coils_from_x`."""
         return self.coils(jnp.asarray(x)[self._coil0:])
+
+
+@jax.tree_util.register_pytree_node_class
+class SummedField:
+    """The sum of fields with ``B(point)`` and ``b_cyl(R, phi, Z)``, itself such a field and a pytree of them."""
+
+    def __init__(self, *fields):
+        self.fields = fields
+
+    def B(self, point):
+        return sum(field.B(point) for field in self.fields)
+
+    def b_cyl(self, R, phi, Z):
+        return tuple(sum(parts) for parts in zip(*(field.b_cyl(R, phi, Z) for field in self.fields)))
+
+    def tree_flatten(self):
+        return (self.fields,), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(*children[0])
+
+
+def circular_coil_pairs(radius, height, current, *, n_segments: int = 128):
+    """ESSOS coils: for each entry, circles of ``radius`` about the Z axis at ``+height`` and ``-height`` [m].
+
+    Both circles of a pair carry ``current`` [A] in the +phi direction, which keeps stellarator symmetry.
+    Differentiable in all three arrays.
+    """
+    require_optional("essos", "circular coils")
+    from essos.coils import Coils, Curves
+
+    radius, height, current = (jnp.atleast_1d(jnp.asarray(v, dtype=float)) for v in (radius, height, current))
+    radius, height = jnp.tile(radius, 2), jnp.concatenate((height, -height))
+    # ESSOS' Fourier order 1: [constant, sin, cos]; x = radius cos t, y = radius sin t, z = height
+    dofs = jnp.zeros((radius.size, 3, 3)).at[:, 0, 2].set(radius).at[:, 1, 1].set(radius).at[:, 2, 0].set(height)
+    return Coils(Curves(dofs, n_segments=int(n_segments), nfp=1, stellsym=False), jnp.tile(current, 2))
+
+
+class PoloidalCoilDesign:
+    """A design followed by up-down pairs of circular poloidal-field coils (:func:`circular_coil_pairs`).
+
+    ``x`` is the design's vector, then each pair's current change in units of ``current_unit`` [A] and, with
+    ``geometry_scale``, each pair's radius and height changes [m].  Calling it gives the sum of the design's field
+    and the pairs'; the plasma coordinates and the coils of the design are the design's own (``design.<name>(x)``
+    through the matching method here), so the pairs carry no coil-limit rows.
+    """
+
+    def __init__(self, design, radius, height, current, *, current_unit=1.0e5, current_scale=0.05,
+                 geometry_scale=None, n_segments=128):
+        require_optional("essos", "circular coils")
+        self.design, self.n = design, int(design.size)
+        self.nominal = tuple(np.atleast_1d(np.asarray(v, dtype=float)) for v in (radius, height, current))
+        self.npairs = self.nominal[0].size
+        if any(v.shape != (self.npairs,) for v in self.nominal):
+            raise ValueError("radius, height and current need one value per pair")
+        self.current_unit, self.free_geometry, self.n_segments = float(current_unit), geometry_scale is not None, int(n_segments)
+        added = self.npairs * (3 if self.free_geometry else 1)
+        self.x0 = np.r_[design.x0, np.zeros(added)]
+        self.scales = np.r_[design.scales, np.full(self.npairs, current_scale),
+                            np.full(added - self.npairs, geometry_scale if self.free_geometry else 0.0)]
+        self.dof_names = (*design.dof_names, *(f"pf_current[{i}]/{self.current_unit:g}A" for i in range(self.npairs)),
+                          *(f"pf_{name}[{i}]/m" for name in ("radius", "height") for i in range(self.npairs)
+                            if self.free_geometry))
+        self.size = self.x0.size
+        self.phiedge = getattr(design, "phiedge", None)
+        self.plasma_from_parameters = None if getattr(design, "plasma_from_parameters", None) is None else self.plasma_params_at
+
+    def pairs_at(self, x):
+        """``(radius, height, current)`` of the pairs at ``x``."""
+        radius, height, current = (jnp.asarray(v) for v in self.nominal)
+        extra, k = jnp.asarray(x)[self.n:], self.npairs
+        current = current + self.current_unit * extra[:k]
+        if self.free_geometry:
+            radius, height = radius + extra[k:2 * k], height + extra[2 * k:]
+        return radius, height, current
+
+    def poloidal_coils_from_x(self, x):
+        """The pairs' ESSOS coils at ``x``."""
+        return circular_coil_pairs(*self.pairs_at(x), n_segments=self.n_segments)
+
+    def __call__(self, x):
+        from essos.fields import BiotSavart
+
+        return SummedField(self.design(jnp.asarray(x)[:self.n]), BiotSavart(self.poloidal_coils_from_x(x)))
+
+    def coils_from_x(self, x):
+        return self.design.coils_from_x(jnp.asarray(x)[:self.n])
+
+    def base_currents_at(self, x):
+        return self.design.base_currents_at(jnp.asarray(x)[:self.n])
+
+    def phiedge_at(self, x):
+        return self.design.phiedge_at(jnp.asarray(x)[:self.n])
+
+    def plasma_params_at(self, params, x):
+        return self.design.plasma_params_at(params, jnp.asarray(x)[:self.n])
+

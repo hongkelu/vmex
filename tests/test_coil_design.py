@@ -64,3 +64,35 @@ def test_plasma_coordinates_move_phiedge_and_the_current_profile(coils):
     np.testing.assert_allclose(moved.phiedge, 1.1 * inp.phiedge, rtol=1e-14)
     np.testing.assert_allclose(moved.ac[:2], [1.5, -1.0], rtol=1e-14)
     np.testing.assert_allclose(moved.curtor, 0.8e4, rtol=1e-14)
+
+
+def test_circular_pairs_are_the_loop_formula_and_join_a_design(coils):
+    """On the Z axis a pair's field is the two loops' closed form; the joined design adds it to the coils' field."""
+    from vmex.core.coil_design import PoloidalCoilDesign, circular_coil_pairs
+
+    radius, height, current = 1.2, 0.8, 2.0e5
+    z = np.array([-0.3, 0.0, 0.5])
+    loops = BiotSavart(circular_coil_pairs(radius, height, current, n_segments=64))
+    exact = sum(2e-7 * np.pi * current * radius**2 / (radius**2 + (z - h) ** 2) ** 1.5 for h in (height, -height))
+    B = np.asarray(jax.vmap(loops.B)(jnp.asarray(np.stack((0 * z, 0 * z, z), axis=-1))))
+    np.testing.assert_allclose(B[:, 2], exact, rtol=1e-12)
+    np.testing.assert_allclose(B[:, :2], 0.0, atol=1e-14)
+
+    base = vj.CoilDesign(coils, current_dofs=(0,))
+    design = PoloidalCoilDesign(base, radius, height, current, geometry_scale=0.01)
+    assert design.size == base.size + 3 == len(design.dof_names) == design.scales.size
+    r, phi, zz = jnp.asarray([1.0, 1.1]), jnp.asarray([0.0, 0.3]), jnp.asarray([0.0, 0.05])
+    x = design.x0.copy()
+    x[base.size:] = 0.5, 0.01, -0.02   # +50 kA, radius +1 cm, height -2 cm
+    moved = BiotSavart(circular_coil_pairs(radius + 0.01, height - 0.02, current + 0.5e5, n_segments=128))
+    expected = [a + b for a, b in zip(BiotSavart(coils).b_cyl(r, phi, zz), moved.b_cyl(r, phi, zz))]
+    np.testing.assert_allclose(design(x).b_cyl(r, phi, zz), expected, rtol=1e-12)
+    # stellarator symmetric: B_R odd, B_phi and B_Z even under (phi, Z) -> (-phi, -Z)
+    b_r, b_phi, b_z = moved.b_cyl(r, phi, zz)
+    m_r, m_phi, m_z = moved.b_cyl(r, -phi, -zz)
+    np.testing.assert_allclose([m_r, m_phi, m_z], [-b_r, b_phi, b_z], atol=1e-13)
+    # a traced design's field is a pytree: it passes into a jitted function and differentiates
+    inner = jax.jit(lambda field: field.b_cyl(r, phi, zz)[2])
+    np.testing.assert_allclose(jax.jit(lambda x: inner(design(x)))(x), inner(design(x)), rtol=1e-13)
+    gradient = jax.grad(lambda x: jnp.sum(design(x).b_cyl(r, phi, zz)[2]))(jnp.asarray(x))
+    assert np.all(np.asarray(gradient[base.size:]) != 0)

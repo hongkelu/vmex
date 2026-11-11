@@ -38,7 +38,7 @@ def parse_args(argv=None):
     parser.add_argument("--digits", type=int, default=6)
     parser.add_argument("--pf", type=float, nargs=3, action="append", metavar=("R", "Z", "I"), default=[],
                         help="add a pair of circular coils of radius R [m] at +-Z [m] with current I [A] (repeatable); "
-                             "the plasma field stays the WOUT's")
+                             "the plasma field stays the WOUT's.  Default: the run's pf.json")
     parser.add_argument("--candidates", type=int, default=16, help="grid cells refined per field")
     return parser.parse_args(argv)
 
@@ -68,6 +68,9 @@ def main(argv=None):
     coils = Coils.from_json(str(args.coils or args.run / "coils.json"))
     nfp = int(wout.nfp)
     biot_savart = BiotSavart(coils)
+    if not args.pf and (args.run / "pf.json").exists():  # the driver's circular coil pairs
+        saved = json.loads((args.run / "pf.json").read_text())
+        args.pf = [list(v) for v in zip(saved["radius_m"], saved["height_m"], saved["current_a"])]
     if args.pf:
         from vmex.core.coil_design import SummedField, circular_coil_pairs
 

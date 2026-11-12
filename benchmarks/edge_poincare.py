@@ -9,7 +9,8 @@ the coils' plus the plasma's virtual-casing field (:class:`vmex.core.extender.Vm
 the plane ``phi = 0`` (:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
 spaced planes of one field period.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
 it is coloured by the field periods it lasted.  With ``--xpoint`` the closed line through that point is refined by
-shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``.
+shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``;
+``--replot`` draws the figure again from that file without tracing.
 """
 
 import argparse
@@ -43,6 +44,8 @@ def parse_args(argv=None):
                              "the extender's near-surface rule where a point is close (slower)")
     parser.add_argument("--surfaces", type=int, default=12, help="flux surfaces drawn")
     parser.add_argument("--title", default="")
+    parser.add_argument("--replot", action="store_true",
+                        help="draw the figure from the poincare.npz of an earlier call with the same options")
     return parser.parse_args(argv)
 
 
@@ -142,96 +145,102 @@ def main(argv=None):
         xyz = np.stack((r * np.cos(planes[plane]), r * np.sin(planes[plane]), z), -1)
         return np.asarray(pf.surface_distances(jnp.asarray(xyz), surface.gamma, nfp))
 
-    r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
-    living = np.ones(len(seeds), dtype=bool)
-    life = np.zeros(len(seeds))                      # field periods each line lasted
-    marks = {k: [] for k in range(args.planes)}      # (R, Z, seed index) per plane
-    strikes = {k: [] for k in range(args.planes)}    # with --wall: (R, Z, seed index) of the first point beyond it
-    clock = time.monotonic()
-    for start in range(0, args.periods, chunk):
-        # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
-        active = np.flatnonzero(living)
-        size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
-        padded = np.r_[active, np.full(size - len(active), active[0])]
-        path_r, path_z = (np.tile(seeds[:, i], (chunk * args.planes + 1, 1)) for i in (0, 1))
-        traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
-        path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
-        for k in range(1, chunk * args.planes + 1):
-            plane = k % args.planes
-            before = living.copy()
-            living &= alive(path_r[k], path_z[k], plane)
-            if args.wall is not None:
-                ended = before & ~living & np.isfinite(path_r[k]) & np.isfinite(path_z[k])
-                ended[ended] = to_plasma(path_r[k][ended], path_z[k][ended], plane) >= args.wall
-                strikes[plane].append(np.stack((path_r[k][ended], path_z[k][ended], np.flatnonzero(ended)), -1))
-            marks[plane].append(np.stack((path_r[k][living], path_z[k][living], np.flatnonzero(living)), -1))
-            life[living] = start + k / args.planes
-        r, z = np.where(living, path_r[-1], seeds[:, 0]), np.where(living, path_z[-1], seeds[:, 1])
-        print(f"[trace] {start + chunk} periods, {int(living.sum())} of {len(seeds)} lines left, "
-              f"{time.monotonic() - clock:.0f} s", flush=True)
-        if not living.any():
-            break
-    marks = {k: np.concatenate(v) for k, v in marks.items()}
-    strikes = {k: np.concatenate(v) if v else np.zeros((0, 3)) for k, v in strikes.items()}
-    if args.wall is not None:
-        # length along the torus to the wall, one way (the lines are followed in +phi only), by starting distance
-        start = to_plasma(seeds[:, 0], seeds[:, 1], 0)
-        hit = np.zeros(len(seeds), dtype=bool)
-        hit[np.concatenate([v[:, 2] for v in strikes.values()]).astype(int)] = True
-        length = life * period * float(np.asarray(wout.rmnc)[0, 0])
-        print(f"[wall] {args.wall:.3f} m off the boundary: {int(hit.sum())} of {len(seeds)} lines end on it, "
-              f"{int((~hit & (life < args.periods)).sum())} elsewhere, {int((life >= args.periods).sum())} kept", flush=True)
-        bins = np.linspace(args.gap, min(args.reach, args.wall), 5)
-        for a, b in zip(bins[:-1], bins[1:]):
-            inside = hit & (start >= a) & (start < b)
-            if inside.any():
-                print(f"[wall] seeds {100 * a:.1f}-{100 * b:.1f} cm off the boundary: {int(inside.sum())} lines, "
-                      f"length to the wall median {np.median(length[inside]):.1f} m, longest {length[inside].max():.1f} m "
-                      f"({np.median(life[inside]):.1f} field periods)", flush=True)
+    if not args.replot:
+        r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
+        living = np.ones(len(seeds), dtype=bool)
+        life = np.zeros(len(seeds))                      # field periods each line lasted
+        marks = {k: [] for k in range(args.planes)}      # (R, Z, seed index) per plane
+        strikes = {k: [] for k in range(args.planes)}    # with --wall: (R, Z, seed index) of the first point beyond it
+        clock = time.monotonic()
+        for start in range(0, args.periods, chunk):
+            # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
+            active = np.flatnonzero(living)
+            size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
+            padded = np.r_[active, np.full(size - len(active), active[0])]
+            path_r, path_z = (np.tile(seeds[:, i], (chunk * args.planes + 1, 1)) for i in (0, 1))
+            traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
+            path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
+            for k in range(1, chunk * args.planes + 1):
+                plane = k % args.planes
+                before = living.copy()
+                living &= alive(path_r[k], path_z[k], plane)
+                if args.wall is not None:
+                    ended = before & ~living & np.isfinite(path_r[k]) & np.isfinite(path_z[k])
+                    ended[ended] = to_plasma(path_r[k][ended], path_z[k][ended], plane) >= args.wall
+                    strikes[plane].append(np.stack((path_r[k][ended], path_z[k][ended], np.flatnonzero(ended)), -1))
+                marks[plane].append(np.stack((path_r[k][living], path_z[k][living], np.flatnonzero(living)), -1))
+                life[living] = start + k / args.planes
+            r, z = np.where(living, path_r[-1], seeds[:, 0]), np.where(living, path_z[-1], seeds[:, 1])
+            print(f"[trace] {start + chunk} periods, {int(living.sum())} of {len(seeds)} lines left, "
+                  f"{time.monotonic() - clock:.0f} s", flush=True)
+            if not living.any():
+                break
+        marks = {k: np.concatenate(v) for k, v in marks.items()}
+        strikes = {k: np.concatenate(v) if v else np.zeros((0, 3)) for k, v in strikes.items()}
+        if args.wall is not None:
+            # length along the torus to the wall, one way (the lines are followed in +phi only), by starting distance
+            start = to_plasma(seeds[:, 0], seeds[:, 1], 0)
+            hit = np.zeros(len(seeds), dtype=bool)
+            hit[np.concatenate([v[:, 2] for v in strikes.values()]).astype(int)] = True
+            length = life * period * float(np.asarray(wout.rmnc)[0, 0])
+            print(f"[wall] {args.wall:.3f} m off the boundary: {int(hit.sum())} of {len(seeds)} lines end on it, "
+                  f"{int((~hit & (life < args.periods)).sum())} elsewhere, {int((life >= args.periods).sum())} kept", flush=True)
+            bins = np.linspace(args.gap, min(args.reach, args.wall), 5)
+            for a, b in zip(bins[:-1], bins[1:]):
+                inside = hit & (start >= a) & (start < b)
+                if inside.any():
+                    print(f"[wall] seeds {100 * a:.1f}-{100 * b:.1f} cm off the boundary: {int(inside.sum())} lines, "
+                          f"length to the wall median {np.median(length[inside]):.1f} m, longest {length[inside].max():.1f} m "
+                          f"({np.median(life[inside]):.1f} field periods)", flush=True)
 
-    # The closed line through --xpoint and its manifolds.  On plane k: the unstable manifold is the one on phi = 0 traced
-    # forwards to the plane, the stable one traced backwards to it.
-    manifolds, x_line = {}, None
-    forward = jnp.asarray(planes)
-    to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, forward, substeps=4 * substeps)),
-                 -1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, -forward, substeps=4 * substeps))}
-    if args.xpoint:
-        r0, z0, M, step = pf.return_map_fixed_point(field, None, np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]]),
-                                                    nfp=nfp, steps=8 * args.steps, iterations=10)
-        M = np.asarray(M)[0]
-        x_line = np.stack([np.asarray(v)[:, 0] for v in to_planes[1.0](r0, z0)], -1)      # (planes, 2)
-        values, vectors = np.linalg.eig(M)
-        print(f"[x-point] ({x_line[0, 0]:.5f}, {x_line[0, 1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
-              f"det {np.linalg.det(M):.6f} eigenvalues {values}; on the planes: "
-              + ", ".join(f"({a:.4f}, {b:.4f})" for a, b in x_line), flush=True)
-        if float(step[0]) < 1e-6 and abs(np.trace(M)) > 2:
-            values, vectors = values.real, vectors.real
-            for name, k, sign in (("unstable", int(np.argmax(np.abs(values))), 1.0),
-                                  ("stable", int(np.argmin(np.abs(values))), -1.0)):
-                growth = abs(values[k]) ** sign
-                offsets = 1e-4 * growth ** np.linspace(0.0, 1.0, 400)
-                start = x_line[0] + np.concatenate((offsets, -offsets))[:, None] * vectors[:, k]
-                ends = jnp.asarray([0.0, sign * period])
-                step_map = jax.jit(lambda a, b, ends=ends: tuple(
-                    v[-1] for v in pf.trace_fieldline(field, None, a, b, ends, substeps=4 * args.steps)))
-                pieces, a, b = [start], start[:, 0], start[:, 1]
-                for _ in range(int(np.ceil(np.log(0.5 / 1e-4) / np.log(growth)))):
-                    a, b = (np.asarray(v) for v in step_map(jnp.asarray(a), jnp.asarray(b)))
-                    ok = alive(a, b, 0)
-                    pieces.append(np.where(ok[:, None], np.stack((a, b), -1), np.nan))
-                    a, b = np.where(ok, a, np.nan), np.where(ok, b, np.nan)
-                pieces = np.stack(pieces)                 # (iterations + 1, 2 * 400, 2) on phi = 0
-                flat = np.nan_to_num(pieces.reshape(-1, 2), nan=float(x_line[0, 0]))
-                moved = np.stack([np.asarray(v) for v in to_planes[sign](jnp.asarray(flat[:, 0]), jnp.asarray(flat[:, 1]))], -1)
-                moved = np.where(np.isfinite(pieces.reshape(-1, 2)).all(axis=-1)[None, :, None], moved, np.nan)
-                order = np.arange(args.planes) if sign > 0 else (-np.arange(args.planes)) % args.planes
-                on_planes = np.empty((args.planes,) + pieces.shape)
-                on_planes[order] = moved.reshape((args.planes,) + pieces.shape)
-                manifolds[name] = on_planes               # (planes, iterations + 1, 2 * 400, 2)
+        # The closed line through --xpoint and its manifolds.  On plane k: the unstable manifold is the one on phi = 0 traced
+        # forwards to the plane, the stable one traced backwards to it.
+        manifolds, x_line = {}, None
+        forward = jnp.asarray(planes)
+        to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, forward, substeps=4 * substeps)),
+                     -1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, -forward, substeps=4 * substeps))}
+        if args.xpoint:
+            r0, z0, M, step = pf.return_map_fixed_point(field, None, np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]]),
+                                                        nfp=nfp, steps=8 * args.steps, iterations=10)
+            M = np.asarray(M)[0]
+            x_line = np.stack([np.asarray(v)[:, 0] for v in to_planes[1.0](r0, z0)], -1)      # (planes, 2)
+            values, vectors = np.linalg.eig(M)
+            print(f"[x-point] ({x_line[0, 0]:.5f}, {x_line[0, 1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
+                  f"det {np.linalg.det(M):.6f} eigenvalues {values}; on the planes: "
+                  + ", ".join(f"({a:.4f}, {b:.4f})" for a, b in x_line), flush=True)
+            if float(step[0]) < 1e-6 and abs(np.trace(M)) > 2:
+                values, vectors = values.real, vectors.real
+                for name, k, sign in (("unstable", int(np.argmax(np.abs(values))), 1.0),
+                                      ("stable", int(np.argmin(np.abs(values))), -1.0)):
+                    growth = abs(values[k]) ** sign
+                    offsets = 1e-4 * growth ** np.linspace(0.0, 1.0, 400)
+                    start = x_line[0] + np.concatenate((offsets, -offsets))[:, None] * vectors[:, k]
+                    ends = jnp.asarray([0.0, sign * period])
+                    step_map = jax.jit(lambda a, b, ends=ends: tuple(
+                        v[-1] for v in pf.trace_fieldline(field, None, a, b, ends, substeps=4 * args.steps)))
+                    pieces, a, b = [start], start[:, 0], start[:, 1]
+                    for _ in range(int(np.ceil(np.log(0.5 / 1e-4) / np.log(growth)))):
+                        a, b = (np.asarray(v) for v in step_map(jnp.asarray(a), jnp.asarray(b)))
+                        ok = alive(a, b, 0)
+                        pieces.append(np.where(ok[:, None], np.stack((a, b), -1), np.nan))
+                        a, b = np.where(ok, a, np.nan), np.where(ok, b, np.nan)
+                    pieces = np.stack(pieces)                 # (iterations + 1, 2 * 400, 2) on phi = 0
+                    flat = np.nan_to_num(pieces.reshape(-1, 2), nan=float(x_line[0, 0]))
+                    moved = np.stack([np.asarray(v) for v in to_planes[sign](jnp.asarray(flat[:, 0]), jnp.asarray(flat[:, 1]))], -1)
+                    moved = np.where(np.isfinite(pieces.reshape(-1, 2)).all(axis=-1)[None, :, None], moved, np.nan)
+                    order = np.arange(args.planes) if sign > 0 else (-np.arange(args.planes)) % args.planes
+                    on_planes = np.empty((args.planes,) + pieces.shape)
+                    on_planes[order] = moved.reshape((args.planes,) + pieces.shape)
+                    manifolds[name] = on_planes               # (planes, iterations + 1, 2 * 400, 2)
 
-    np.savez(out / "poincare.npz", seeds=seeds, life=life, planes=planes, **{f"marks{k}": v for k, v in marks.items()},
-             **{f"strikes{k}": v for k, v in strikes.items()},
-             **{f"manifold_{k}": v for k, v in manifolds.items()}, **({} if x_line is None else {"x_line": x_line}))
+        np.savez(out / "poincare.npz", seeds=seeds, life=life, planes=planes, **{f"marks{k}": v for k, v in marks.items()},
+                 **{f"strikes{k}": v for k, v in strikes.items()},
+                 **{f"manifold_{k}": v for k, v in manifolds.items()}, **({} if x_line is None else {"x_line": x_line}))
+    else:
+        saved = np.load(out / "poincare.npz")
+        life, x_line = saved["life"], saved["x_line"] if "x_line" in saved else None
+        marks, strikes = ({k: saved[f"{name}{k}"] for k in range(args.planes)} for name in ("marks", "strikes"))
+        manifolds = {k: saved[f"manifold_{k}"] for k in ("unstable", "stable") if f"manifold_{k}" in saved}
 
     columns = int(np.ceil(args.planes / 2)) if args.planes > 2 else args.planes
     rows = int(np.ceil(args.planes / columns))

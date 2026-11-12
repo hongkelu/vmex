@@ -6,7 +6,8 @@
 ``--run`` holds ``coils.json``, ``wout.nc`` and optionally ``pf.json`` (the layout of
 ``benchmarks/edge_fixed_points.py``).  Inside the boundary the flux surfaces are the WOUT's; outside, field lines of
 the coils' plus the plasma's virtual-casing field (:class:`vmex.core.extender.VmecExtender`) are traced from seeds on
-the plane ``phi = 0`` (:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
+the plane ``phi = 0`` (rays from the axis, or ``--layers`` off the boundary and ``--xpoint-seeds`` around the X-point;
+:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
 spaced planes of one field period.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
 it is coloured by the field periods it lasted.  With ``--xpoint`` the closed line through that point is refined by
 shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``;
@@ -33,6 +34,11 @@ def parse_args(argv=None):
     parser.add_argument("--seeds", type=int, default=40, help="seeds per ray")
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
     parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
+    parser.add_argument("--layers", type=float, nargs="+", metavar="D",
+                        help="seeds on curves D [m] off the boundary (--seeds on each, upper half) instead of on rays")
+    parser.add_argument("--xpoint-seeds", type=int, default=0, metavar="N",
+                        help="N x N more seeds in the square of half width --xpoint-box around --xpoint")
+    parser.add_argument("--xpoint-box", type=float, default=0.03, help="[m]")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--wall", type=float, metavar="D",
                         help="a line ends on a wall D [m] off the plasma boundary (the driver's --edge-wall): its strike "
@@ -118,7 +124,18 @@ def main(argv=None):
     if args.xpoint:
         directions.append(np.asarray(args.xpoint) - axis0)
     seeds = np.concatenate([ray(d) for d in directions])
-    print(f"[seeds] {len(seeds)} on {len(directions)} rays; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
+    if args.layers:  # the upper half of the boundary's section moved along its normal in the plane
+        edge = edges[0][:181]
+        tangent = np.gradient(edge, axis=0)
+        normal = np.stack((tangent[:, 1], -tangent[:, 0]), -1) / np.linalg.norm(tangent, axis=1)[:, None]
+        normal *= np.sign(np.sum(normal * (edge - axis0)))
+        pick = np.round(np.linspace(0, 180, args.seeds)).astype(int)
+        seeds = np.concatenate([edge[pick] + d * normal[pick] for d in args.layers])
+    if args.xpoint and args.xpoint_seeds:
+        side = np.linspace(-args.xpoint_box, args.xpoint_box, args.xpoint_seeds)
+        box = np.asarray(args.xpoint) + np.stack(np.meshgrid(side, side), -1).reshape(-1, 2)
+        seeds = np.concatenate((seeds, box[~Polygon(edges[0]).contains_points(box)]))
+    print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
           flush=True)
 
     chunk = 5  # field periods per compiled call
@@ -185,7 +202,7 @@ def main(argv=None):
             length = life * period * float(np.asarray(wout.rmnc)[0, 0])
             print(f"[wall] {args.wall:.3f} m off the boundary: {int(hit.sum())} of {len(seeds)} lines end on it, "
                   f"{int((~hit & (life < args.periods)).sum())} elsewhere, {int((life >= args.periods).sum())} kept", flush=True)
-            bins = np.linspace(args.gap, min(args.reach, args.wall), 5)
+            bins = np.linspace(start.min(), min(start.max(), args.wall) + 1e-9, 5)
             for a, b in zip(bins[:-1], bins[1:]):
                 inside = hit & (start >= a) & (start < b)
                 if inside.any():

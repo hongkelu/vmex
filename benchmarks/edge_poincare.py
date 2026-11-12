@@ -244,8 +244,11 @@ def main(argv=None):
         to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(fast, None, a, b, forward, substeps=4 * substeps)),
                      -1.0: jax.jit(lambda a, b: pf.trace_fieldline(fast, None, a, b, -forward, substeps=4 * substeps))}
         if args.xpoint:
-            r0, z0, M, step = pf.return_map_fixed_point(field, None, np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]]),
-                                                        nfp=nfp, steps=8 * args.steps, iterations=10)
+            r0, z0 = np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]])
+            if args.table:  # Newton in the table, then one step in the field itself: its size is the table's error
+                r0, z0, _, _ = pf.return_map_fixed_point(fast, None, r0, z0, nfp=nfp, steps=8 * args.steps, iterations=10)
+            r0, z0, M, step = pf.return_map_fixed_point(field, None, r0, z0, nfp=nfp, steps=8 * args.steps,
+                                                        iterations=1 if args.table else 10)
             M = np.asarray(M)[0]
             x_line = np.stack([np.asarray(v)[:, 0] for v in pf.trace_fieldline(field, None, r0, z0, forward,
                                                                                substeps=4 * substeps)], -1)  # (planes, 2)
@@ -253,7 +256,7 @@ def main(argv=None):
             print(f"[x-point] ({x_line[0, 0]:.5f}, {x_line[0, 1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
                   f"det {np.linalg.det(M):.6f} eigenvalues {values}; on the planes: "
                   + ", ".join(f"({a:.4f}, {b:.4f})" for a, b in x_line), flush=True)
-            if float(step[0]) < 1e-6 and abs(np.trace(M)) > 2:
+            if float(step[0]) < (1e-3 if args.table else 1e-6) and abs(np.trace(M)) > 2:
                 values, vectors = values.real, vectors.real
                 for name, k, sign in (("unstable", int(np.argmax(np.abs(values))), 1.0),
                                       ("stable", int(np.argmin(np.abs(values))), -1.0)):

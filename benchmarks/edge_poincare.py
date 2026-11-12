@@ -39,6 +39,15 @@ def parse_args(argv=None):
     parser.add_argument("--xpoint-seeds", type=int, default=0, metavar="N",
                         help="N x N more seeds in the square of half width --xpoint-box around --xpoint")
     parser.add_argument("--xpoint-box", type=float, default=0.03, help="[m]")
+    parser.add_argument("--max-length", type=float, metavar="L",
+                        help="stop following a line after this length along the torus [m] (fewer --periods)")
+    parser.add_argument("--table", type=int, nargs=3, metavar=("NR", "NPHI", "NZ"),
+                        help="trace in the field sampled once on this grid of the box and one field period "
+                             "(vmex.core.periodic_fieldlines.tabulated_field) instead of evaluating it at every step; "
+                             "the closed line and its tangent map still use the field itself")
+    parser.add_argument("--table-check", type=int, default=16, metavar="N",
+                        help="with --table: N seeds are also traced one field period in the field itself and the "
+                             "largest difference printed")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--wall", type=float, metavar="D",
                         help="a line ends on a wall D [m] off the plasma boundary (the driver's --edge-wall): its strike "
@@ -105,6 +114,8 @@ def main(argv=None):
     substeps = max(4, args.steps // args.planes)
     edges = [section(phi, ns - 1) for phi in planes]
     axis0 = section(0.0, 0)[0]
+    if args.max_length:
+        args.periods = min(args.periods, int(np.ceil(args.max_length / (period * float(np.asarray(wout.rmnc)[0, 0])))))
     low = np.min([e.min(axis=0) for e in edges], axis=0) - args.margin
     high = np.max([e.max(axis=0) for e in edges], axis=0) + args.margin
     coil_angle = np.arctan2(coil_points[:, 1], coil_points[:, 0])
@@ -138,9 +149,25 @@ def main(argv=None):
     print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
           flush=True)
 
+    fast = field  # the field the many lines are traced in
+    if args.table:
+        clock = time.monotonic()
+        fast = pf.tabulated_field(field, None, nfp=nfp, r_range=(low[0], high[0]), z_max=max(-low[1], high[1]),
+                                  shape=tuple(args.table))
+        print(f"[table] {args.table} nodes in {time.monotonic() - clock:.0f} s", flush=True)
+        if args.table_check and not args.replot:
+            pick = np.round(np.linspace(0, len(seeds) - 1, args.table_check)).astype(int)
+            ends = jnp.asarray([0.0, period])
+            a, b = (np.stack([np.asarray(v)[-1] for v in pf.trace_fieldline(f, None, seeds[pick, 0], seeds[pick, 1], ends,
+                                                                            substeps=args.steps)]) for f in (field, fast))
+            miss = np.linalg.norm(a - b, axis=0)
+            print(f"[table] {len(pick)} seeds after one field period, table against the field: median "
+                  f"{np.nanmedian(miss):.1e} m, largest {np.nanmax(miss):.1e} m; per seed [mm] "
+                  + " ".join(f"{1e3 * v:.2f}" for v in miss), flush=True)
+
     chunk = 5  # field periods per compiled call
     angles = jnp.arange(chunk * args.planes + 1) * period / args.planes
-    advance = jax.jit(lambda r, z: pf.trace_fieldline(field, None, r, z, angles, substeps=substeps))
+    advance = jax.jit(lambda r, z: pf.trace_fieldline(fast, None, r, z, angles, substeps=substeps))
 
     def alive(r, z, plane):
         ok = np.isfinite(r) & np.isfinite(z)
@@ -214,13 +241,14 @@ def main(argv=None):
         # forwards to the plane, the stable one traced backwards to it.
         manifolds, x_line = {}, None
         forward = jnp.asarray(planes)
-        to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, forward, substeps=4 * substeps)),
-                     -1.0: jax.jit(lambda a, b: pf.trace_fieldline(field, None, a, b, -forward, substeps=4 * substeps))}
+        to_planes = {1.0: jax.jit(lambda a, b: pf.trace_fieldline(fast, None, a, b, forward, substeps=4 * substeps)),
+                     -1.0: jax.jit(lambda a, b: pf.trace_fieldline(fast, None, a, b, -forward, substeps=4 * substeps))}
         if args.xpoint:
             r0, z0, M, step = pf.return_map_fixed_point(field, None, np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]]),
                                                         nfp=nfp, steps=8 * args.steps, iterations=10)
             M = np.asarray(M)[0]
-            x_line = np.stack([np.asarray(v)[:, 0] for v in to_planes[1.0](r0, z0)], -1)      # (planes, 2)
+            x_line = np.stack([np.asarray(v)[:, 0] for v in pf.trace_fieldline(field, None, r0, z0, forward,
+                                                                               substeps=4 * substeps)], -1)  # (planes, 2)
             values, vectors = np.linalg.eig(M)
             print(f"[x-point] ({x_line[0, 0]:.5f}, {x_line[0, 1]:.5f}) Newton step {float(step[0]):.1e} Tr M {np.trace(M):.4f} "
                   f"det {np.linalg.det(M):.6f} eigenvalues {values}; on the planes: "
@@ -234,7 +262,7 @@ def main(argv=None):
                     start = x_line[0] + np.concatenate((offsets, -offsets))[:, None] * vectors[:, k]
                     ends = jnp.asarray([0.0, sign * period])
                     step_map = jax.jit(lambda a, b, ends=ends: tuple(
-                        v[-1] for v in pf.trace_fieldline(field, None, a, b, ends, substeps=4 * args.steps)))
+                        v[-1] for v in pf.trace_fieldline(fast, None, a, b, ends, substeps=4 * args.steps)))
                     pieces, a, b = [start], start[:, 0], start[:, 1]
                     for _ in range(int(np.ceil(np.log(0.5 / 1e-4) / np.log(growth)))):
                         a, b = (np.asarray(v) for v in step_map(jnp.asarray(a), jnp.asarray(b)))

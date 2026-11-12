@@ -145,3 +145,21 @@ def test_legs_of_a_double_null_join_only_without_the_three_dimensional_field():
     fd = (legs(eps + h) - legs(eps - h))[:, :2] / (2.0 * h)
     np.testing.assert_allclose(jax.jacfwd(legs)(eps)[:, :2], fd, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(jax.jit(jax.jacrev(legs))(eps)[:, :2], fd, rtol=1e-5, atol=1e-6)
+
+
+def test_tabulated_field_reproduces_the_field_and_its_x_line():
+    eps, options = 0.01, dict(nfp=NFP, r_range=(0.7, 1.7), z_max=1.1, shape=(64, 32, 72))
+    table = pf.tabulated_field(_double_null, eps, **options)
+    full = pf.tabulated_field(_double_null, eps, symmetric=False, **options)   # the field is stellarator symmetric
+    rng = np.random.default_rng(0)
+    R, phi, Z = rng.uniform(0.8, 1.6, 200), rng.uniform(-3.0, 3.0, 200), rng.uniform(-1.0, 1.0, 200)
+    xyz = jnp.asarray(np.stack((R * np.cos(phi), R * np.sin(phi), Z), -1))
+    exact = np.asarray(_double_null(eps, xyz))
+    np.testing.assert_allclose(table(None, xyz), full(None, xyz), atol=1e-12)
+    np.testing.assert_allclose(table(None, xyz), exact, atol=2e-4 * np.abs(exact).max())
+    start = RX, np.sqrt(0.5)
+    r, z, M, step = pf.return_map_fixed_point(_double_null, eps, *start, nfp=NFP)
+    r_t, z_t, M_t, step_t = pf.return_map_fixed_point(table, None, *start, nfp=NFP)
+    assert float(step) < 1e-10 and float(step_t) < 1e-10
+    np.testing.assert_allclose([r_t, z_t], [r, z], atol=2e-4)
+    assert float(jnp.trace(M_t)) == pytest.approx(float(jnp.trace(M)), rel=5e-3)

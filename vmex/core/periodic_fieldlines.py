@@ -44,6 +44,7 @@ __all__ = [
     "return_map_fixed_point",
     "surface_distance",
     "surface_distances",
+    "tabulated_field",
     "tangent_map",
     "trace_fieldline",
 ]
@@ -336,6 +337,61 @@ def surface_distances(xyz, gamma, nfp: int) -> jax.Array:
 def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
     """Smallest distance [m] from the points ``xyz (n, 3)`` to a toroidal surface (:func:`surface_distances`)."""
     return jnp.min(surface_distances(xyz, gamma, nfp))
+
+
+def tabulated_field(field: Field, parameters: Any, *, nfp: int, r_range, z_max: float, shape=(128, 64, 160),
+                    symmetric: bool = True, batch: int = 8192) -> Field:
+    """``field`` sampled once on a grid of one field period, as a field that interpolates in it.
+
+    For tracing many lines for many turns (Poincare plots), where evaluating
+    ``field`` at every step is the cost: the cylindrical components are stored on
+    ``shape = (nR, nphi, nZ)`` equispaced nodes of ``r_range`` x one field period
+    x ``[-z_max, z_max]`` and interpolated by tensor-product Catmull-Rom cubics
+    (continuous first derivatives, periodic in ``phi``, the edge value outside the
+    box).  ``symmetric``: the field is stellarator symmetric, so only half the
+    period is sampled (``nphi`` even).  ``field`` is called on ``batch`` points at
+    a time.  The interpolated field is not exactly divergence free and is wrong
+    within a few nodes of a jump of ``field`` (a plasma boundary carrying a sheet
+    current, a coil): compare some lines with ``field`` itself.
+    """
+    nr, nphi, nz = shape
+    period = 2.0 * np.pi / nfp
+    r, z = np.linspace(r_range[0], r_range[1], nr), np.linspace(-z_max, z_max, nz)
+    phi = np.arange(nphi) * period / nphi
+    half = nphi // 2 + 1 if symmetric else nphi
+    R, P, Z = np.meshgrid(r, phi[:half], z, indexing="ij")
+    xyz = np.stack((R * np.cos(P), R * np.sin(P), Z), axis=-1).reshape(-1, 3)
+    evaluate = jax.jit(lambda points: field(parameters, points))
+    padded = np.concatenate((xyz, np.tile(xyz[-1:], ((-len(xyz)) % batch, 1))))
+    B = np.concatenate([np.asarray(evaluate(jnp.asarray(chunk))) for chunk in padded.reshape(-1, batch, 3)])[:len(xyz)]
+    B = B.reshape(R.shape + (3,))
+    cos, sin = np.cos(P), np.sin(P)
+    table = np.empty((3, nr, nphi, nz))
+    table[:, :, :half] = np.stack((cos * B[..., 0] + sin * B[..., 1], cos * B[..., 1] - sin * B[..., 0], B[..., 2]))
+    if symmetric:  # (B_R, B_phi, B_Z)(R, -phi, -Z) = (-B_R, B_phi, B_Z)(R, phi, Z)
+        mirror = table[:, :, nphi - np.arange(half, nphi), ::-1]
+        table[:, :, half:] = np.array([-1.0, 1.0, 1.0])[:, None, None, None] * mirror
+    table = jnp.asarray(table)
+    origin = jnp.asarray([r[0], 0.0, -z_max])
+    spacing = jnp.asarray([r[1] - r[0], period / nphi, z[1] - z[0]])
+
+    def weights(t):  # Catmull-Rom: the cubic through nodes 0 and 1 with centred slopes there
+        return jnp.stack((-0.5 * t + t**2 - 0.5 * t**3, 1.0 - 2.5 * t**2 + 1.5 * t**3,
+                          0.5 * t + 2.0 * t**2 - 1.5 * t**3, -0.5 * t**2 + 0.5 * t**3), axis=-1)
+
+    def interpolated(_, xyz):
+        R, angle = jnp.hypot(xyz[:, 0], xyz[:, 1]), jnp.arctan2(xyz[:, 1], xyz[:, 0])
+        u = (jnp.stack((R, jnp.mod(angle, period), xyz[:, 2]), axis=-1) - origin) / spacing
+        cell = jnp.floor(jax.lax.stop_gradient(u))
+        w = weights(u - cell)                                           # (n, 3, 4)
+        index = cell.astype(int)[:, :, None] + jnp.arange(-1, 3)        # (n, 3, 4)
+        i_r, i_phi, i_z = jnp.clip(index[:, 0], 0, nr - 1), jnp.mod(index[:, 1], nphi), jnp.clip(index[:, 2], 0, nz - 1)
+        nodes = table[:, i_r[:, :, None, None], i_phi[:, None, :, None], i_z[:, None, None, :]]   # (3, n, 4, 4, 4)
+        b_r, b_phi, b_z = jnp.einsum("knabc,na,nb,nc->kn", nodes, w[:, 0], w[:, 1], w[:, 2])
+        cos, sin = jnp.cos(angle), jnp.sin(angle)
+        return jnp.stack((cos * b_r - sin * b_phi, sin * b_r + cos * b_phi, b_z), axis=-1)
+
+    return interpolated
 
 
 def exterior_field(surface_data, external_field_from_parameters: Callable[[Any], Any], **options):

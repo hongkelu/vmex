@@ -808,10 +808,10 @@ def parse_args(argv=None):
                         help="constrain the line's smallest distance to the plasma boundary [m]")
     parser.add_argument("--edge-coil-distance", type=float, metavar="MIN",
                         help="constrain the line's smallest distance to any coil [m]")
-    parser.add_argument("--edge-wall", type=float, nargs=2, metavar=("D", "CLEARANCE"),
+    parser.add_argument("--edge-wall", type=float, nargs="+", metavar="D CLEARANCE [COILS]",
                         help="a wall D [m] off the plasma boundary between the line and the coils: the line's largest "
                              "distance to the boundary stays below D - CLEARANCE and the coils' smallest above "
-                             "D + CLEARANCE, so the line's legs end on the wall before they reach a coil")
+                             "D + COILS (default CLEARANCE), so the line's legs end on the wall before they reach a coil")
     parser.add_argument("--edge-height-spread", type=float, metavar="MAX",
                         help="constrain the standard deviation of the line's height Z around the torus [m]")
     parser.add_argument("--edge-legs", type=float, metavar="MAX",
@@ -825,6 +825,8 @@ def parse_args(argv=None):
     parser.add_argument("--edge-vc-grid", type=int, default=64, help="virtual-casing grid per field period of the "
                         "field outside the plasma (direct quadrature: the line stays a few grid spacings off the boundary)")
     args = parser.parse_args(argv)
+    if args.edge_wall and len(args.edge_wall) not in (2, 3):
+        parser.error("--edge-wall takes D CLEARANCE [COILS]")
     if args.restart is not None:
         args.coils = args.restart / "coils.json"
         if args.pf_coils is None and (args.restart / "pf.json").exists():
@@ -1116,7 +1118,7 @@ def main(argv=None):
         (-np.inf, np.inf if args.edge_height_spread is None else args.edge_height_spread, 0.01),
         *([(-args.edge_legs, args.edge_legs, 0.1)] * 2 if args.edge_legs is not None else [])]
     # with a wall, the coils stay outside it
-    coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, sum(args.edge_wall or (0.0,)))
+    coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, args.edge_wall[0] + args.edge_wall[-1] if args.edge_wall else 0.0)
     edge_constrained = any(np.isfinite(b[:2]).any() for b in edge_bounds)
     if args.edge_line is not None:
         from vmex.core import periodic_fieldlines as pf

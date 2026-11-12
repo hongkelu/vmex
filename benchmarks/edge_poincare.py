@@ -254,7 +254,7 @@ def main(argv=None):
         axis.plot(np.hypot(near[:, 0], near[:, 1]), near[:, 2], "k.", ms=4)
         if args.wall is not None:
             grid_r, grid_z = np.meshgrid(np.linspace(low[0], high[0], 90), np.linspace(low[1], high[1], 110))
-            distance = to_plasma(grid_r.ravel(), grid_z.ravel(), plane).reshape(grid_r.shape)
+            distance = np.array(to_plasma(grid_r.ravel(), grid_z.ravel(), plane)).reshape(grid_r.shape)
             distance[Polygon(edges[plane]).contains_points(np.stack((grid_r.ravel(), grid_z.ravel()), -1)).reshape(grid_r.shape)] = 0.0
             axis.contour(grid_r, grid_z, distance, levels=[args.wall], colors="0.4", linestyles="--", linewidths=1.0)
             for points, flip in ((strikes[plane], 1.0), (strikes[mirror], -1.0)):

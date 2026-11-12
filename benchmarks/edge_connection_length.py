@@ -66,8 +66,18 @@ planes = np.arange(args.planes) * period / args.planes
 edges = [section(phi) for phi in planes]
 low = np.min([e.min(axis=0) for e in edges], axis=0) - args.margin
 high = np.max([e.max(axis=0) for e in edges], axis=0) + args.margin
+def in_plasma(xyz):  # the table's nodes inside the boundary: the virtual-casing field vanishes there
+    xyz = np.asarray(xyz)
+    radius, angle = np.hypot(xyz[:, 0], xyz[:, 1]), np.round(np.arctan2(xyz[:, 1], xyz[:, 0]), 12)
+    inside = np.zeros(len(xyz), dtype=bool)
+    for phi in np.unique(angle):
+        pick = angle == phi
+        inside[pick] = Polygon(section(phi)).contains_points(np.stack((radius[pick], xyz[pick, 2]), -1))
+    return inside
+
+
 fast = pf.tabulated_field(field, None, nfp=nfp, r_range=(low[0], high[0]), z_max=max(-low[1], high[1]),
-                          shape=tuple(args.table))
+                          shape=tuple(args.table), mask=in_plasma)
 
 r, z = np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]])
 r, z, M, _ = pf.return_map_fixed_point(fast, None, r, z, nfp=nfp, steps=8 * args.steps, iterations=10)

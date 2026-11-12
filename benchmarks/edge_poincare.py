@@ -149,11 +149,21 @@ def main(argv=None):
     print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
           flush=True)
 
+
+    def in_plasma(xyz):  # the table's nodes inside the boundary: the virtual-casing field vanishes there
+        xyz = np.asarray(xyz)
+        radius, angle = np.hypot(xyz[:, 0], xyz[:, 1]), np.round(np.arctan2(xyz[:, 1], xyz[:, 0]), 12)
+        inside = np.zeros(len(xyz), dtype=bool)
+        for phi in np.unique(angle):
+            pick = angle == phi
+            inside[pick] = Polygon(section(phi, ns - 1)).contains_points(np.stack((radius[pick], xyz[pick, 2]), -1))
+        return inside
+
     fast = field  # the field the many lines are traced in
     if args.table:
         clock = time.monotonic()
         fast = pf.tabulated_field(field, None, nfp=nfp, r_range=(low[0], high[0]), z_max=max(-low[1], high[1]),
-                                  shape=tuple(args.table))
+                                  shape=tuple(args.table), mask=in_plasma)
         print(f"[table] {args.table} nodes in {time.monotonic() - clock:.0f} s", flush=True)
         if args.table_check and not args.replot:
             pick = np.round(np.linspace(0, len(seeds) - 1, args.table_check)).astype(int)

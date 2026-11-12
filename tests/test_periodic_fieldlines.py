@@ -163,3 +163,16 @@ def test_tabulated_field_reproduces_the_field_and_its_x_line():
     assert float(step) < 1e-10 and float(step_t) < 1e-10
     np.testing.assert_allclose([r_t, z_t], [r, z], atol=2e-4)
     assert float(jnp.trace(M_t)) == pytest.approx(float(jnp.trace(M)), rel=5e-3)
+
+
+def test_tabulated_field_with_a_mask_has_no_jump_at_the_mask():
+    options = dict(nfp=NFP, r_range=(0.7, 1.7), z_max=1.1, shape=(64, 16, 72), symmetric=False)
+    inside = lambda xyz: (jnp.hypot(xyz[:, 0], xyz[:, 1]) - 1.2) ** 2 + xyz[:, 2] ** 2 < 0.2**2  # noqa: E731
+    jump = lambda eps, xyz: jnp.where(inside(xyz)[:, None], 0.0, _double_null(eps, xyz))  # noqa: E731
+    angle = np.linspace(0.0, 2.0 * np.pi, 50)
+    R, Z, phi = 1.2 + 0.203 * np.cos(angle), 0.203 * np.sin(angle), 0.3 + 0.0 * angle     # 3 mm outside the mask
+    xyz = jnp.asarray(np.stack((R * np.cos(phi), R * np.sin(phi), Z), -1))
+    exact = np.asarray(_double_null(0.01, xyz))
+    error = [np.abs(np.asarray(pf.tabulated_field(jump, 0.01, mask=mask, **options)(None, xyz)) - exact).max()
+             for mask in (None, inside)]
+    assert error[0] > 0.2 * np.abs(exact).max() and error[1] < 0.02 * np.abs(exact).max()

@@ -340,7 +340,7 @@ def surface_distance(xyz, gamma, nfp: int) -> jax.Array:
 
 
 def tabulated_field(field: Field, parameters: Any, *, nfp: int, r_range, z_max: float, shape=(128, 64, 160),
-                    symmetric: bool = True, batch: int = 8192) -> Field:
+                    symmetric: bool = True, batch: int = 8192, mask=None) -> Field:
     """``field`` sampled once on a grid of one field period, as a field that interpolates in it.
 
     For tracing many lines for many turns (Poincare plots), where evaluating
@@ -350,9 +350,12 @@ def tabulated_field(field: Field, parameters: Any, *, nfp: int, r_range, z_max: 
     (continuous first derivatives, periodic in ``phi``, the edge value outside the
     box).  ``symmetric``: the field is stellarator symmetric, so only half the
     period is sampled (``nphi`` even).  ``field`` is called on ``batch`` points at
-    a time.  The interpolated field is not exactly divergence free and is wrong
-    within a few nodes of a jump of ``field`` (a plasma boundary carrying a sheet
-    current, a coil): compare some lines with ``field`` itself.
+    a time.  ``mask(xyz (n, 3)) -> bool (n,)`` marks nodes where ``field`` is not
+    the field wanted (inside a plasma boundary, where a virtual-casing field
+    vanishes): they take the value of the nearest other node of their plane, so
+    the interpolation next to the boundary sees no jump.  The interpolated field
+    is not exactly divergence free and is first-order accurate within a node of
+    the mask: compare some lines with ``field`` itself.
     """
     nr, nphi, nz = shape
     period = 2.0 * np.pi / nfp
@@ -368,6 +371,13 @@ def tabulated_field(field: Field, parameters: Any, *, nfp: int, r_range, z_max: 
     cos, sin = np.cos(P), np.sin(P)
     table = np.empty((3, nr, nphi, nz))
     table[:, :, :half] = np.stack((cos * B[..., 0] + sin * B[..., 1], cos * B[..., 1] - sin * B[..., 0], B[..., 2]))
+    if mask is not None:
+        from scipy.ndimage import distance_transform_edt
+
+        masked = np.asarray(mask(xyz)).reshape(R.shape)
+        for j in np.flatnonzero(masked.any(axis=(0, 2))):
+            i_r, i_z = distance_transform_edt(masked[:, j], return_indices=True)[1]
+            table[:, :, j] = table[:, i_r, j, i_z]
     if symmetric:  # (B_R, B_phi, B_Z)(R, -phi, -Z) = (-B_R, B_phi, B_Z)(R, phi, Z)
         mirror = table[:, :, nphi - np.arange(half, nphi), ::-1]
         table[:, :, half:] = np.array([-1.0, 1.0, 1.0])[:, None, None, None] * mirror

@@ -124,19 +124,22 @@ def test_iota_edge_gradient_vs_frozen_path_fd():
 def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
     """Mean iota: the implicit derivative against an independent re-solve FD.
 
-    The two differ, and by more than solver accuracy (1.0% on ``RBC(1,1)``,
-    2.8% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
+    The two differ, and by more than solver accuracy (0.14% on ``RBC(1,1)``,
+    0.08% on ``ZBS(-1,1)`` at ftol 1e-13).  The whole gap is the released
     m=1 ``Z_sin`` pair combination (``residue.f90`` zeroes its force once
-    ``fsqz < 1e-6``).  The linearization holds it at its converged value,
-    while each cold re-solve freezes it wherever its own path left it, at a
-    rate of about 0.5 per unit boundary change.  Iota depends on that
-    angle-gauge coordinate only through truncation error, so neither answer
-    is wrong.  The implicit value is the exact derivative with the gauge held
-    fixed, and the re-solve adds the gauge drift of the solver's path.
+    ``fsqz < 1e-6``).  The linearization moves it with its edge value on the
+    ``sqrt(s)`` profile, while each cold re-solve freezes it wherever its own
+    path left it, about 0.1 per unit boundary change away from there (held
+    at its converged value it was 0.5 away, and the gaps 1.0% and 2.8%).
+    Iota depends on that angle-gauge coordinate only through truncation
+    error, so neither answer is wrong.  The implicit value is the exact
+    derivative on that profile, and the re-solve adds the gauge drift of the
+    solver's path.
 
     Checked here as a closure: the re-solve FD must equal the implicit
     derivative plus the iota response to moving only that family by the
-    re-solves' own drift.  Measured closures: 2.3e-6 and 1.6e-5.
+    re-solves' own drift from the profile.  Measured closures: 2.4e-6 and
+    1.6e-5.
     """
     name = "li383_low_res"
     inp = VmecInput.from_file(str(DATA_DIR / f"input.{name}"))
@@ -184,17 +187,19 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
         tangent = dataclasses.replace(zero, **{field: column})
         implicit = float(sum(jnp.vdot(a, b) for a, b in zip(
             jax.tree.leaves(grad), jax.tree.leaves(tangent))))
-        states, values = [], []
+        left, values = [], []
         for sign in (1.0, -1.0):
             p = jax.tree.map(lambda a, d, s=sign: a + s * h * d, p0, tangent)
             x, _ = im.solve_implicit_with_aux(p, cfg)
-            states.append(x)
-            values.append(float(metric(x, im.runtime_from_params(p, cfg))))
+            runtime = im.runtime_from_params(p, cfg)
+            # The family where the re-solve left it, from where the linearization moves it.
+            left.append(jax.tree.map(jnp.subtract, constrained(x), constrained(
+                im._assemble(project(x0), runtime, x0, project, edge))))
+            values.append(float(metric(x, runtime)))
         resolve = (values[0] - values[1]) / (2 * h)
-        drift = jax.tree.map(lambda a, b: (a - b) / (2 * h),
-                             constrained(states[0]), constrained(states[1]))
-        # The re-solves move the constrained family and nothing else frozen.
-        assert norm(drift) > 0.1
+        drift = jax.tree.map(lambda a, b: (a - b) / (2 * h), *left)
+        # The re-solves leave the constrained family elsewhere, and nothing else frozen.
+        assert norm(drift) > 0.01
         assert norm(drift) == pytest.approx(float(jnp.linalg.norm(drift.Z_sin)))
         gauge = (root_with(jax.tree.map(lambda a, d: a + h * d, x0, drift))
                  - root_with(jax.tree.map(lambda a, d: a - h * d, x0, drift))) / (2 * h)
@@ -202,7 +207,7 @@ def test_li383_mean_iota_resolve_fd_gap_is_the_m1_constrained_family():
         closure = abs((implicit + gauge) / resolve - 1.0)
         print(f"\n[{name}] d(mean iota)/d({field.upper()}(n={n:+d},m=1)): "
               f"implicit {implicit:+.6e} re-solve {resolve:+.6e} (gap {gap:.1e}), "
-              f"m=1 family term {gauge:+.6e}, closure {closure:.1e}")
+              f"m=1 family term {gauge:+.6e} (drift {norm(drift):.2e}), closure {closure:.1e}")
         assert closure < 1e-4
 
 

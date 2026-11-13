@@ -1165,6 +1165,7 @@ def main(argv=None):
                                    **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
         boundary_ftol=args.trial_ftol, boundary_target_cost=args.trial_target_cost,
         boundary_max_residual=args.max_boundary_residual,
+        boundary_start=None if args.restart is None else args.restart / "wout.nc",  # its interior state too
         gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share, gauge_release=args.gauge_release,
         gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
         gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify,

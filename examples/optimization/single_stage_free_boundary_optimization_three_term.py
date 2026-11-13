@@ -736,6 +736,9 @@ def parse_args(argv=None):
                              "K sine amplitudes of its height are design variables (stellarator symmetric)")
     parser.add_argument("--pf-curvature", type=float, default=2.0, metavar="MAX",
                         help="with --pf-shape: the pairs' largest curvature [1/m] (one more coil-limit row)")
+    parser.add_argument("--pf-length-max", type=float, metavar="L",
+                        help="largest length of a circular pair coil [m] (one more coil-limit row; with "
+                             "--pf-geometry it pulls a longer pair inwards)")
     parser.add_argument("--pf-current-max", type=float, metavar="A",
                         help="keep each pair's |current| below A (one more coil-limit row)")
     parser.add_argument("--pf-coil-distance", type=float, metavar="MIN",
@@ -781,8 +784,9 @@ def parse_args(argv=None):
         parser.error("the edge constraints need --edge-line")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
-    if (args.pf_geometry or args.pf_shape or args.pf_current_max is not None) and not args.pf_coils:
-        parser.error("--pf-geometry, --pf-shape and --pf-current-max need --pf-coils")
+    if (args.pf_geometry or args.pf_shape or args.pf_current_max is not None
+            or args.pf_length_max is not None) and not args.pf_coils:
+        parser.error("--pf-geometry, --pf-shape, --pf-current-max and --pf-length-max need --pf-coils")
     if args.bootstrap and not args.beta > 0:
         parser.error("--bootstrap needs --beta > 0")
     if args.fixed_current and not args.bootstrap:
@@ -1210,6 +1214,10 @@ def main(argv=None):
             more.append(pf_distance(x) / args.pf_coil_distance - 1.0)
         if args.pf_shape:
             more.append(1.0 - jnp.max(chart.poloidal_coils_from_x(x).curvature) / args.pf_curvature)
+        if args.pf_length_max is not None:
+            gamma = chart.poloidal_coils_from_x(x).gamma
+            lengths = jnp.sum(jnp.linalg.norm(jnp.roll(gamma, -1, axis=1) - gamma, axis=-1), axis=1)
+            more.append(1.0 - jnp.max(lengths) / args.pf_length_max)
         if args.pf_current_max is not None:
             more.append(1.0 - jnp.max(jnp.abs(chart.pairs_at(x)[2])) / args.pf_current_max)
         return jnp.concatenate((jnp.ravel(rows), jnp.stack(more))) if more else rows

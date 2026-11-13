@@ -911,6 +911,11 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
         d = rng.standard_normal(x.size)
         d /= np.linalg.norm(d)
         implicit = np.r_[grad @ d, jac @ d]
+        # the loss of trials next to the accepted point: a trial is solved from the accepted point's fit, so these
+        # differ from the accepted loss by the trials' own scatter, with no design change to speak of
+        near = [problem.fun(x + s * 1e-9 * d) for s in (1, -1, 2, -2)]
+        print(f"[gradient check] direction {k}: accepted loss {problem.fun(x):.9e}, trials at +-1e-9 and +-2e-9 "
+              + " ".join(f"{v:.9e}" for v in near), flush=True)
         for h in steps:
             values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
             fd = (values[0] - values[1]) / (2 * h)

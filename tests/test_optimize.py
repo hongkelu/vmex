@@ -153,6 +153,12 @@ def test_scalar_targets_match_own_wout(solovev_eq):
                                (v0 - v1) / v0, rtol=1e-8)
     mirror = float(opt.mirror_ratio(eq.state, eq.runtime))
     assert 0.0 < mirror < 1.0
+    # the single-stage targets: the |iota| profile (with the edge) and the major radius
+    iotas = np.abs(np.r_[np.asarray(w.iotas)[1:], np.asarray(w.iotaf)[-1]])
+    np.testing.assert_allclose(np.asarray(opt.abs_iota_profile(eq.state, eq.runtime)), iotas[:-1], rtol=1e-8)
+    np.testing.assert_allclose(np.asarray(opt.abs_iota_profile(eq.state, eq.runtime, include_edge=True)), iotas,
+                               rtol=1e-8)
+    np.testing.assert_allclose(float(opt.major_radius(eq.state, eq.runtime)), float(w.Rmajor_p), rtol=1e-8)
 
 
 def test_boundary_elongation_is_traceable_and_grid_converged(solovev_eq):
@@ -251,6 +257,33 @@ def test_min_abs_iota_floors_the_profile_not_its_average(solovev_eq):
     # tau carries the units of iota; a non-positive width has no softmin.
     with pytest.raises(ValueError, match="tau must be positive"):
         opt.soft_min_abs_iota(eq.state, eq.runtime, tau=0.0)
+
+
+@pytest.mark.full
+def test_vacuum_iota_of_a_vacuum_equilibrium_is_its_own_iota():
+    """``vacuum_iota`` re-solves a boundary without pressure or current: for a vacuum deck's boundary that is
+    the deck's own implicit solve, so it returns that equilibrium's axis, half-mesh and edge |iota|, with a
+    finite reverse-mode derivative in the boundary.  (The implicit solve and ``solve_equilibrium`` of this
+    deck differ by 1.5e-4 in iota, both converged to ftol 1e-13.)"""
+    from vmex.core import implicit as imp
+    from vmex.core.statephysics import _iotas_half
+
+    inp = VmecInput.from_file(DATA_DIR / "input.LandremanPaul2021_QA_lowres")
+    eq = opt.solve_equilibrium(inp)
+    iota = opt.vacuum_iota(eq.inp)
+    device = jax.devices()[0]
+    params = imp.params_from_input(inp, device=device)
+    values = np.asarray(iota(params.rbc, params.zbs))
+    cfg = imp.make_config(inp, multigrid=True, device=device)
+    state = imp.solve_implicit(params, cfg)
+    runtime = imp.runtime_from_params(params, cfg)
+    half = np.abs(np.asarray(_iotas_half(state, runtime))[1:])
+    np.testing.assert_allclose(values[1:-1], half, rtol=1e-8)
+    np.testing.assert_allclose(values[-1], 1.5 * half[-1] - 0.5 * half[-2], rtol=1e-8)
+    np.testing.assert_allclose(values[0], abs(float(opt.axis_iota(state, runtime))), rtol=1e-8)
+    np.testing.assert_allclose(values[1:-1], np.abs(np.asarray(eq.wout.iotas)[1:]), rtol=1e-3)
+    gradient = jax.grad(lambda rbc: iota(rbc, params.zbs)[1])(params.rbc)  # reverse mode: the implicit adjoint
+    assert np.all(np.isfinite(np.asarray(gradient))) and np.any(np.asarray(gradient) != 0)
 
 
 def test_min_abs_iota_gradient_is_finite_and_matches_fd(solovev_eq):

@@ -1027,22 +1027,30 @@ def _dof_projector(cfg: ImplicitConfig, dof_mask: SpectralState) -> Callable:
 
 def _assemble(z: SpectralState, rt_p: SolverRuntime, frozen: SpectralState,
               P: Callable, edge_mask: SpectralState) -> SpectralState:
-    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen)``.
+    """``x = frozen + P(z - frozen) + edge_mask*(boundary(p) - frozen) + (1 - P)(rho*edge change)``.
 
     At ``z = P(x*)`` and the solved parameters this reproduces ``x*``
     exactly; the edge term carries the differentiable boundary dependence
-    (``edge_mask`` and the dof subspace are disjoint).
+    (``edge_mask`` and the dof subspace are disjoint).  The last term moves
+    the interior entries no equation evolves (the constrained m=1 pair) with
+    their edge value, on the ``sqrt(s)`` profile of
+    :func:`~vmex.core.solver.hot_restart_state`: held at the old value they
+    would leave a jump between the last two surfaces.
     """
     setup = rt_p.setup
     boundary = dict(R_cos=setup.boundary_R_cos, R_sin=setup.boundary_R_sin,
                     Z_cos=setup.boundary_Z_cos, Z_sin=setup.boundary_Z_sin)
     dz = P(jax.tree.map(lambda a, b: a - b, z, frozen))
+    rho = jnp.sqrt(jnp.asarray(setup.s_full)).at[-1].set(0.0)[:, None]
+    follow = {name: rho * getattr(edge_mask, name)[-1] * (value - getattr(frozen, name)[-1])
+              for name, value in boundary.items()}
+    kept = P(SpectralState(**follow, L_cos=jnp.zeros_like(frozen.L_cos), L_sin=jnp.zeros_like(frozen.L_sin)))
     out = {}
     for name in _STATE_FIELDS:
         x = getattr(frozen, name) + getattr(dz, name)
         if name in boundary:
             e = getattr(edge_mask, name)
-            x = x + e * (boundary[name][None, :] - getattr(frozen, name))
+            x = x + e * (boundary[name][None, :] - getattr(frozen, name)) + follow[name] - getattr(kept, name)
         out[name] = x
     return SpectralState(**out)
 
@@ -1908,7 +1916,10 @@ def _refined_state(cfg: ImplicitConfig, params: ImplicitParams,
         return best_z, best
 
     if initial_correction is not None:
-        candidate = jax.tree.map(jnp.add, z0, P(initial_correction))
+        # The memo outlives the problem that stored it: another problem on
+        # the same canonical config may run on a different device.
+        home = jax.tree.leaves(z0)[0].sharding
+        candidate = jax.tree.map(jnp.add, z0, P(jax.device_put(initial_correction, home)))
         candidate_f = F(candidate, params)
         candidate_residual = float(_tree_norm(candidate_f))
         if np.isfinite(candidate_residual) and candidate_residual < base:
@@ -3111,7 +3122,9 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda prm: raw_residual(z_star, prm), (params,), (tangent,))[1]
         return jax.tree.map(jnp.negative, value)
 
-    rhs_batch = jax.vmap(raw_rhs)(tangent_batch)
+    # The right-hand sides in chunks too: one batch of every direction holds a
+    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
+    rhs_batch = chunk_map(raw_rhs, tangent_batch, chunk_size=max(1, int(response_chunk_size)))
     initial, _ = _raw_block_solve(system, rhs_batch, cfg)
 
     # Supplied bands may be a nearby point's (see _BANDS_REUSE_TOL): their

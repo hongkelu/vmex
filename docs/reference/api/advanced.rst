@@ -145,6 +145,16 @@ Free boundary
 .. automodule:: vmex.core.position_control
    :members:
 
+.. automodule:: vmex.core.freeboundary_three_terms
+   :members: ThreeTermsConfig, ThreeTermsResult, solve_free_boundary_three_terms, resolve_three_terms,
+      ThreeTermsModel, BoundaryResidual, boundary_residual, summarize_boundary_residual
+
+.. automodule:: vmex.core.freeboundary_three_terms_problem
+   :members: ThreeTermsFreeBoundaryProblem
+
+.. automodule:: vmex.core.coil_design
+   :members: CoilDesign
+
 .. automodule:: vmex.core.extender
    :members:
 

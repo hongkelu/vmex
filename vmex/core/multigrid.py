@@ -616,6 +616,49 @@ def solve_multigrid(
     )
 
 
+def _nestor_boundary(inp: VmecInput, **kwargs) -> VmecInput:
+    """``inp``'s NESTOR free boundary (and axis) as a fixed-boundary deck: a three-term fit's start."""
+    from .wout import wout_from_state
+
+    free = solve_free_boundary_multigrid(inp, raise_on_max_iterations=False, three_terms=False, **kwargs)
+    wout = wout_from_state(inp=inp, state=free.state, fsqr=float(free.fsqr), fsqz=float(free.fsqz),
+                           fsql=float(free.fsql), converged=bool(free.converged), vacuum_output=free.vacuum)
+    rbc, zbs = np.zeros_like(np.asarray(inp.rbc)), np.zeros_like(np.asarray(inp.zbs))
+    for m, n, r, z in zip(np.asarray(wout.xm, int), np.asarray(wout.xn, int) // int(wout.nfp),
+                          np.asarray(wout.rmnc)[-1], np.asarray(wout.zmns)[-1]):
+        rbc[n + inp.ntor, m], zbs[n + inp.ntor, m] = r, z
+    return replace(inp, rbc=rbc, zbs=zbs, raxis_c=np.asarray(wout.raxis_cc)[:inp.ntor + 1],
+                   zaxis_s=np.asarray(wout.zaxis_cs)[:inp.ntor + 1])
+
+
+def _solve_three_terms(inp: VmecInput, config, *, ns_array, ftol_array, niter_array, mgrid_path, external_field,
+                       verbose, emit, device) -> SolveResult:
+    """:func:`solve_free_boundary_multigrid` with ``three_terms``: the fit from the configured start(s), then the
+    fixed-boundary ladder's final stage on the free boundary."""
+    from .freeboundary_three_terms import solve_free_boundary_three_terms
+
+    ladder = replace(inp, ns_array=np.asarray(inp.ns_array if ns_array is None else ns_array),
+                     ftol_array=np.asarray(inp.ftol_array if ftol_array is None else ftol_array),
+                     niter_array=np.asarray(inp.niter_array if niter_array is None else niter_array))
+    fits = []
+    if config.start in ("best", "deck"):
+        fits.append(solve_free_boundary_three_terms(ladder, config, external_field=external_field,
+                                                    mgrid_path=mgrid_path))
+    if config.start in ("best", "nestor"):  # the interface least squares has several minima: NESTOR's basin too
+        start = _nestor_boundary(ladder, mgrid_path=mgrid_path, external_field=external_field, verbose=verbose,
+                                 emit=emit, device=device)
+        fits.append(solve_free_boundary_three_terms(ladder, config, external_field=external_field,
+                                                    mgrid_path=mgrid_path, initial_boundary=start))
+    fit = min(fits, key=lambda f: f.cost)
+    ns_final = int(np.asarray(fit.equilibrium.solution.R_cos).shape[0])
+    result = solve_multigrid(
+        fit.input, ns_array=[ns_final], ftol_array=[float(np.atleast_1d(fit.input.ftol_array)[-1])],
+        niter_array=[int(np.atleast_1d(fit.input.niter_array)[-1])],
+        initial_state=fit.equilibrium.solution, verbose=verbose, emit=emit, device=device)
+    # Converged only if the interface conditions hold too: the ladder converges on any boundary.
+    return replace(result, converged=bool(result.converged) and bool(fit.success), three_terms=fit)
+
+
 def solve_free_boundary_multigrid(
     inp: VmecInput,
     ns_array=None,
@@ -644,6 +687,7 @@ def solve_free_boundary_multigrid(
     release_stage_cache: bool = False,
     prefetch_compile: bool = False,
     position_control: Any = None,
+    three_terms: Any = None,
 ) -> SolveResult:
     """Free-boundary solve over the VMEC2000 ``NS_ARRAY`` ladder.
 
@@ -695,6 +739,24 @@ def solve_free_boundary_multigrid(
     that holds the plasma at a target radius; the control state carries across
     rungs and the final correction is ``result.position_control``.
 
+    ``three_terms`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`
+    or ``True`` for its defaults; ``None`` follows the deck's ``LTHREE_TERMS``,
+    ``False`` forces it off) replaces NESTOR by all three plasma-vacuum
+    interface conditions (``B . n = 0``, pressure balance and no sheet current,
+    with the plasma field from virtual casing): the boundary is solved for by
+    :func:`~vmex.core.freeboundary_three_terms.solve_free_boundary_three_terms`.
+    The interface least squares has several minima, so by default
+    (``start="best"``) it is fitted from the deck boundary and from this
+    ladder's NESTOR free boundary, keeping the lower cost: on the CTH-like
+    vacuum deck the deck start ends ~4 cm from NESTOR/VMEC2000, while at finite
+    beta NESTOR's boundary carries an edge sheet current and the deck (the
+    design) is the better start.  The result is the fixed-boundary ladder's
+    final stage on that boundary, with ``result.three_terms`` set,
+    ``result.vacuum = None`` and ``result.converged`` False when the boundary
+    fit did not succeed.  Only the ladder and external-field arguments apply to
+    the fit (on JAX's default device); ``verbose``/``emit`` and ``device`` apply
+    to the NESTOR start and the final stage.
+
     ``prefetch_compile=True`` (False by default, exactly like
     :func:`solve_multigrid`: a library call must not spawn background
     compile threads implicitly) overlaps compilation with iteration on cold
@@ -713,6 +775,15 @@ def solve_free_boundary_multigrid(
     """
     if not bool(inp.lfreeb):
         raise ValueError("solve_free_boundary_multigrid requires an LFREEB=T input")
+    from .freeboundary_three_terms import resolve_three_terms
+    three_terms = resolve_three_terms(three_terms, inp)
+    if three_terms is not None:
+        if initial_state is not None or restart_from is not None:
+            raise NotImplementedError("three_terms starts from the deck boundary; set it on inp instead of "
+                                      "passing initial_state/restart_from")
+        return _solve_three_terms(inp, three_terms, ns_array=ns_array, ftol_array=ftol_array,
+                                  niter_array=niter_array, mgrid_path=mgrid_path, external_field=external_field,
+                                  verbose=verbose, emit=emit, device=device)
     from .position_control import resolve_position_control
     position_control = resolve_position_control(position_control, inp)
 

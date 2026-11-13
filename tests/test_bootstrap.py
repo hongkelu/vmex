@@ -758,6 +758,11 @@ def test_current_dof_packing_and_validation():
     resampled = current(spline.pcurr_type, spline.ac, spline.ac_aux_s,
                         spline.ac_aux_f, radial_grid)
     np.testing.assert_allclose(resampled, original, rtol=2e-13, atol=2e-13)
+    # resampling on the same knots leaves the profile unchanged, end knots included
+    for kind in ("cubic_spline_ip", "akima_spline_ip"):
+        same = opt.resample_current_profile(spline, 6, kind=kind)
+        again = opt.resample_current_profile(same, 6, kind=kind)
+        np.testing.assert_allclose(again.ac_aux_f, same.ac_aux_f, rtol=1e-12, atol=1e-12)
 
 
 def test_least_squares_current_dofs_implicit():

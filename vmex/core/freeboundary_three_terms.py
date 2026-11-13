@@ -54,7 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import hashlib
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -261,6 +261,20 @@ ACCEPTED_RESIDUAL = 1e-2
 #: not be weak);
 #: ``"none"`` has no labelling rows, as any labelling at weight 0 (the same model).
 LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1, "none": 0.0}
+
+
+class _GaugedField(NamedTuple):
+    """An external field with the flat-arc gauge rows' arrays: arguments of the compiled rows, so a new gauge of the
+    same shape does not recompile them."""
+
+    field: Any
+    weights: Any
+    reference: Any
+
+
+def _external_field(field):
+    """The external field of ``field``, gauged or not."""
+    return field.field if isinstance(field, _GaugedField) else field
 
 
 @dataclass(frozen=True)
@@ -648,10 +662,14 @@ class ThreeTermsModel:
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
 
-    def _gauge_rows(self, params):
+    def _gauge_rows(self, params, weights, reference):
         """The gauge's rows at ``params`` (they depend on the boundary alone)."""
-        Q, reference = self._gauge
-        return Q @ (self._arc_label(params.rbc, params.zbs) - reference)
+        return weights @ (self._arc_label(params.rbc, params.zbs) - reference)
+
+    def gauged(self, field, gauge=None):
+        """``field`` with the ``gauge`` (default: the model's current one) as the rows expect it."""
+        gauge = self._gauge if gauge is None else gauge
+        return field if gauge is None else _GaugedField(field, *gauge)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -659,10 +677,11 @@ class ThreeTermsModel:
 
         def rows(state, params, field):
             runtime = im.runtime_from_params(params, cfg)
-            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, field)]
+            gauge = field if isinstance(field, _GaugedField) else None
+            parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, _external_field(field))]
             self._n_interface = sum(part.shape[0] for part in parts)  # static: where the gauge rows start
-            if self._gauge is not None:
-                parts.append(self._gauge_rows(params))
+            if gauge is not None:
+                parts.append(self._gauge_rows(params, gauge.weights, gauge.reference))
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -775,7 +794,7 @@ class ThreeTermsModel:
 
     def boundary_residual(self, state, params, field) -> BoundaryResidual:
         """:class:`BoundaryResidual` of a solved state."""
-        return summarize_boundary_residual(*map(np.asarray, self._terms(state, params, field)))
+        return summarize_boundary_residual(*map(np.asarray, self._terms(state, params, _external_field(field))))
 
     def bootstrap_residual(self, state, params) -> float:
         """``max_j |I'(s_j) - I'_Redl(s_j)| / max_j |I'_Redl(s_j)|`` of a solved state (with ``bootstrap``)."""
@@ -819,11 +838,12 @@ class ThreeTermsModel:
         held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach -- no
         point positions, so the surface moves freely and its labelling cannot degenerate.  Zero at ``x`` (an
         absolute equal-arc target costs the interface accuracy: the flat directions are weak, not free).
-        Recompiles the rows once.
+        The rows keep their number when fewer directions are held (zero rows), so a refresh recompiles nothing.
         """
         if self.labelling != "flat_arc":
             raise ValueError("set_flat_arc_gauge needs labelling='flat_arc'")
         nb, last = self.n_boundary, self._last_linearize
+        self._radius = None  # the next fit is of a new problem
         old = 0 if self._gauge is None else self._gauge[0].shape[0]
         xb = np.asarray(x, dtype=float)[:nb]
         J = np.asarray(jacobian)[:, :nb]
@@ -836,17 +856,20 @@ class ThreeTermsModel:
         flat = [u for s, u in zip(sv, Vt) if s < self.gauge_tau * sv[0]]
         tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in flat if tangential(u / norms)]
-        self._gauge = None
         if held:
             L = jax.jacfwd(self._boundary_arc)(jnp.asarray(xb))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
-            self._gauge = (jnp.asarray(self.label_weight * M.T), self._boundary_arc(jnp.asarray(xb)))
-        self._implicit_setup()
+            weights = self.label_weight * M.T
+            weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
+            self._gauge = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
+        elif self._gauge is not None:
+            self._gauge = (jnp.zeros_like(self._gauge[0]), self._boundary_arc(jnp.asarray(xb)))
         if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
             new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.vmap(
-                lambda t: jax.jvp(self._gauge_rows, (aux[2],), (t,))[1])(batch)).T
+                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1]
+            )(batch)).T
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
@@ -882,7 +905,8 @@ class ThreeTermsModel:
         when not asked for): a polish that stalls asks again for the Jacobian it was given.
         """
         state, mask, params_x, tight = aux
-        key, extra_key = _fingerprint(x, params_x, field), None if extra is None else _fingerprint(extra)
+        key = _fingerprint(x, params_x, _external_field(field))
+        extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
         if last is not None and last[0] == key and extra_key in (None, last[1]):
             J, dz, batch, aux = last[2]

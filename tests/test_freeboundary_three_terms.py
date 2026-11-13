@@ -375,7 +375,8 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     """A restart: the first run's deck (the anchored labelling's reference) with ``boundary_start`` at a later
     design's fitted boundary takes that boundary as it is (a re-fit moves along the fit's flat directions, 0.15% in
     mean iota here); from a deck it re-solves the equilibrium (equal to the force tolerance), from the design's WOUT
-    it resumes that equilibrium.  The deck's own coordinates are the model's."""
+    it resumes that equilibrium, also when the deck is that boundary itself (the model's own cold solve of it is
+    another converged state, and must not answer).  The deck's own coordinates are the model's."""
     inp, field = _small_vacuum()
     options = dict(field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]), quantities=(opt.mean_iota,),
                    config=SMALL_ANCHORED, boundary_ftol=1e-8, boundary_max_nfev=80)
@@ -388,6 +389,17 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     x = np.array([0.1])
     _, params = first.state(x)
     values = np.r_[first.fun(x), first.constraint_values(x)]
+    from vmex.core.restart import state_from_wout
+
+    # first, while no solve of this boundary is memoized
+    wout = first.equilibrium_from_x(x).wout
+    final = vj.VmecInput.from_wout(wout)
+    saved = replace(inp, rbc=final.rbc, zbs=final.zbs, phiedge=final.phiedge)
+    restart = ThreeTermsFreeBoundaryProblem.from_loss(saved, loss, x, boundary_start=wout, **options)
+    np.testing.assert_allclose(np.r_[restart.fun(x), restart.constraint_values(x)], values, rtol=1e-8)
+    resumed = state_from_wout(wout, inp=restart.model.fixed)
+    for got, kept in zip(jax.tree.leaves(restart.state(x)[0]), jax.tree.leaves(resumed)):
+        np.testing.assert_allclose(got, kept, atol=1e-12)
     for start, rtol in ((first.model._im.input_with_params(first.model.fixed, params), 1e-5),
                         (first.equilibrium_from_x(x).wout, 1e-8)):
         restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=start, **options)
@@ -691,6 +703,90 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
 
 @needs_vc
 @pytest.mark.full
+def test_flat_arc_gauge_release_refits_without_the_gauge():
+    """``gauge_release``: a refresh first re-fits the accepted boundary without the gauge rows: the interface cost does
+    not rise, the gauge is set there (its rows vanish), and the gradient after it matches re-solved differences."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.mean_iota,),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1, gauge_release=True)
+    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
+    before = problem.fun(x1)
+    n, rows = problem.model._n_interface, problem._record(x1)["rows"]
+    problem.accept_x(x1)
+    assert problem.stats["gauge_sets"] == 2 and problem.stats["gauge_releases"] == 1
+    assert "gauge_release_failures" not in problem.stats and problem.gauge_share(x1) < 1e-8
+    after = problem._record(x1)["rows"]
+    assert after[:n] @ after[:n] <= (1 + 1e-6) * rows[:n] @ rows[:n]
+    np.testing.assert_allclose(problem.fun(x1), before, rtol=1e-3)
+    _, grad = problem.value_and_grad(x1)
+    h = 2e-3 * np.eye(2)[1]
+    np.testing.assert_allclose(grad[1], (problem.fun(x1 + h) - problem.fun(x1 - h)) / (2 * h[1]), rtol=2e-2, atol=1e-8)
+
+
+@needs_vc
+@pytest.mark.full
+def test_promote_trials_evaluates_a_trial_as_accepting_it_leaves_it():
+    """``promote_trials``: a trial's values are those after its promotion (here a gauge release), accepting it changes
+    none of them, and a trial that is not taken leaves the accepted point's gauge and values as they were."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        quantities=(opt.mean_iota,),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1, gauge_release=True, promote_trials=True)
+    x0, gauge = problem.x0.copy(), problem.model._gauge
+    at_x0 = np.r_[problem.fun(x0), problem.constraint_values(x0)]
+    x1, x2 = x0 + 2e-3 * np.eye(2)[1], x0 + 1e-3 * np.eye(2)[1]
+    first = np.r_[problem.fun(x1), problem.constraint_values(x1)]
+    assert problem.stats["gauge_releases"] == 1 and problem.model._gauge is not gauge
+    assert problem.accepted_step == 0 and np.array_equal(problem.accepted.parameters, x0)
+    np.testing.assert_array_equal(np.r_[problem.fun(x0), problem.constraint_values(x0)], at_x0)  # x1 is not taken
+    assert problem.model._gauge is gauge and problem.stats["trials"] == 2
+    values = np.r_[problem.fun(x2), problem.constraint_values(x2)]
+    assert problem.stats["gauge_releases"] == 2
+    problem.accept_x(x2)
+    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 2 and problem.gauge_share(x2) < 1e-8
+    value, grad = problem.value_and_grad(x2)
+    np.testing.assert_array_equal(np.r_[value, problem.constraint_values(x2)], values)
+    assert problem.stats["linearizations"] and np.all(np.isfinite(grad))
+    np.testing.assert_allclose(first, values, rtol=1e-2)
+    result = opt.minimize(problem, method="SLSQP", x0=x2, bounds=[(-5e-3, 5e-3)] * 2, options=dict(maxiter=2))
+    assert result.accepted_steps and problem.accepted_step == 1 + result.accepted_steps
+    np.testing.assert_array_equal(problem.fun(result.x), result.fun)
+
+
+@needs_vc
+@pytest.mark.full
+def test_promote_trials_certifies_a_trial_whose_gauge_is_kept():
+    """``promote_trials`` with ``gradient_certify`` and no gauge change: the promoted trial is certified on the step
+    its fit converged to."""
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
+    coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
+    problem = ThreeTermsFreeBoundaryProblem.from_loss(
+        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+        boundary_ftol=1e-10, boundary_max_nfev=80, gradient_rounds=4, gradient_fit_xtol=1e-6, gradient_certify=10.0,
+        promote_trials=True)
+    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
+    value = problem.fun(x1)
+    assert problem.stats["failed"] == 0 and problem.stats["fit_step"] <= 1e-5
+    problem.accept_x(x1)
+    assert problem.accepted_step == 1 and problem.value_and_grad(x1)[0] == value
+
+
+@needs_vc
+@pytest.mark.full
 def test_flat_arc_gauge_refresh_on_its_share():
     """``gauge_max_share``: the gauge is set again only at an accepted fit where its rows' share of the cost
     exceeds the bound, and vanishes there."""
@@ -714,7 +810,7 @@ def test_flat_arc_gauge_refresh_on_its_share():
     state, params = problem.state(x1)
     x = jnp.asarray(x1)
     rows = problem.model.rows(state, params, problem.field(x))
-    assert problem._field_jvp(state, params, x, jnp.ones(2)).shape == rows.shape
+    assert problem._field_jvp(state, params, x, jnp.ones(2), problem.model._gauge).shape == rows.shape
     problem.value_and_grad(x1 + 1e-3 * np.eye(2)[0])
 
 

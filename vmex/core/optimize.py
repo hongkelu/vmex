@@ -1541,8 +1541,9 @@ def resample_current_profile(
     n_spline: int,
     *,
     kind: str = "cubic_spline_ip",
+    knots: Any = None,
 ) -> VmecInput:
-    """Represent the current shape on ``n_spline`` uniform spline knots.
+    """Represent the current shape on ``n_spline`` spline knots (default: uniform in ``s``; ``knots`` to choose them).
 
     The existing enclosed-current profile is differentiated and sampled at
     the new knots, so continuation preserves ``I(s)`` before the new knot
@@ -1559,11 +1560,16 @@ def resample_current_profile(
         raise ValueError("kind must be 'cubic_spline_ip' or 'akima_spline_ip'")
     from .profiles import current
 
-    knots = jnp.linspace(0.0, 1.0, n_spline)
-    # At exactly s=1, jnp.minimum's chosen generalized derivative averages
-    # the profile derivative with the clamp's zero derivative. Sample the
-    # physical one-sided edge derivative instead.
-    sample_knots = knots.at[-1].set(jnp.nextafter(knots[-1], knots[-2]))
+    knots = jnp.linspace(0.0, 1.0, n_spline) if knots is None else jnp.asarray(knots, dtype=float)
+    if knots.size != n_spline or float(knots[0]) != 0.0 or float(knots[-1]) != 1.0:
+        raise ValueError("knots must be n_spline values from 0 to 1")
+    # At exactly s=0 and s=1, the generalized derivative of the clamp
+    # x = min(|s*bloat|, 1) is not the profile's. Sample the physical
+    # one-sided derivatives instead, so resampling at the same knots
+    # leaves the profile unchanged.
+    # (the smallest normal float: XLA flushes subnormals to zero)
+    sample_knots = knots.at[0].set(jnp.finfo(knots.dtype).tiny)
+    sample_knots = sample_knots.at[-1].set(jnp.nextafter(knots[-1], knots[-2]))
     enclosed = lambda s: current(  # noqa: E731
         inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, s,
         bloat=inp.bloat)
@@ -2619,12 +2625,17 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
-        current_value, current_gradient = problem.value_and_grad(x)
-        if promote is not None:
+        if promote is not None:  # before the gradient: promotion may change what the problem linearizes
+            accepted_value = problem.fun(x)
             promote(x)
-        accepted, accepted_value = x.copy(), current_value
+            # the problem's point from here on, even if its gradient is rejected
+            accepted, accepted_gradient = x.copy(), np.full(x.size, np.nan)
+            accepted_steps += 1
+            accepted_value, current_gradient = problem.value_and_grad(x)
+        else:
+            accepted_value, current_gradient = problem.value_and_grad(x)
+            accepted, accepted_steps = x.copy(), accepted_steps + 1
         accepted_gradient = np.asarray(current_gradient).copy()
-        accepted_steps += 1
         if callback is not None:
             try:
                 if set(inspect.signature(callback).parameters) == {"intermediate_result"}:
@@ -2651,12 +2662,10 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev, njev
         nfev += 1
         njev += 1
-        _, gradient = problem.value_and_grad(start+scales*u)
-        gradient = np.asarray(gradient)*scales
         # SLSQP's major-iteration callback can precede backtracking. The next
         # Jacobian request identifies its accepted line-search point instead.
         accept(u)
-        return gradient
+        return accepted_gradient*scales
 
     try:
         result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP",

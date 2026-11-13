@@ -701,6 +701,7 @@ def parse_args(argv=None):
                         "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
+    parser.add_argument("--iota-floor", type=float, help="floor on min |iota| (default: IOTA_FLOOR)")
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
                         help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
@@ -995,7 +996,7 @@ def write_run_record(out, args):
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
+    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
     global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT
     args = parse_args(argv)
     if args.coil_limits is not None:
@@ -1006,6 +1007,8 @@ def main(argv=None):
         CURRENT_IOTA_WEIGHT = args.current_iota_weight
     if args.vacuum_iota_floor is not None:
         VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
+    if args.iota_floor is not None:
+        IOTA_FLOOR = args.iota_floor
     if args.iota_ceiling is not None:
         IOTA_CEILING = args.iota_ceiling
     if args.aspect_range is not None:

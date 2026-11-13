@@ -753,6 +753,10 @@ def parse_args(argv=None):
                              "(SLSQP restarted at each accepted point, from an identity Hessian)")
     parser.add_argument("--trial-ftol", type=float, default=1e-3,
                         help="relative cost change at which a trial's boundary steps stop")
+    parser.add_argument("--trial-target-cost", type=float, default=4.0, metavar="F",
+                        help="a trial's boundary fit on the accepted point's Jacobian is kept if its cost ends below F "
+                             "times the accepted point's, and refitted with fresh Jacobians otherwise (0: every trial "
+                             "is refitted, so neighbouring trials compare smoothly; slower)")
     parser.add_argument("--max-boundary-residual", type=float, default=0.05,
                         help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
     parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
@@ -1183,7 +1187,8 @@ def main(argv=None):
                                    trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
                                    bootstrap_helicity=REDL_HELICITY,
                                    **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
-        boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
+        boundary_ftol=args.trial_ftol, boundary_target_cost=args.trial_target_cost,
+        boundary_max_residual=args.max_boundary_residual,
         gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share,
         gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
         gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify)

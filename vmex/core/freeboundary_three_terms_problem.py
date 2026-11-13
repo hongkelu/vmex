@@ -96,7 +96,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     @classmethod
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
-                  boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
+                  boundary_max_nfev=40, boundary_target_cost=4.0, boundary_max_residual=None, boundary_start=None,
+                  gauge_refresh=0,
                   gauge_max_share=None, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None,
                   gradient_certify=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
@@ -110,7 +111,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
         quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
         ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's
-        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
+        boundary fit reuses the accepted point's Jacobian, stopping at a relative cost change of ``boundary_ftol`` or
+        after ``boundary_max_nfev`` evaluations, and is taken as it ends if its cost is below ``boundary_target_cost``
+        times the accepted point's (``None``: always); otherwise it is refitted with fresh Jacobians.  Fits on a
+        reused Jacobian end off the trial's own free boundary by an amount that varies from trial to trial, a noise
+        of the order of the interface residual on every value a line search compares; ``boundary_target_cost=0``
+        refits every trial with its own Jacobians.  Each gradient first re-solves its trial to
         the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
         is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, ``gauge_refresh=K`` sets it again
@@ -132,14 +138,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    plasma_from_parameters=plasma_from_parameters, scales=scales, names=names,
                    quantities=tuple(quantities), parameter_quantities=tuple(parameter_quantities),
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
-                   boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
-                   boundary_start=boundary_start, gauge_refresh=gauge_refresh,
+                   boundary_max_nfev=boundary_max_nfev, boundary_target_cost=boundary_target_cost,
+                   boundary_max_residual=boundary_max_residual, boundary_start=boundary_start, gauge_refresh=gauge_refresh,
                    gauge_max_share=gauge_max_share, gradient_rounds=gradient_rounds, gradient_rtol=gradient_rtol,
                    gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
+                 boundary_target_cost=4.0, boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
                  gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None):
         im = model._im
         self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
@@ -150,6 +156,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise ValueError("gradient_certify needs gradient_fit_xtol and gradient_rounds")
         self.model, self.field = model, field_from_parameters
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
+        self.boundary_target_cost = None if boundary_target_cost is None else float(boundary_target_cost)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
         params_at = (lambda params, x: params) if plasma_from_parameters is None else plasma_from_parameters
@@ -278,7 +285,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             try:
                 fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                 max_nfev=self.boundary_max_nfev,
-                                                target_cost=4 * anchor["cost"] if anchor else None)
+                                                target_cost=self.boundary_target_cost * anchor["cost"]
+                                                if anchor and self.boundary_target_cost is not None else None)
             except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
                 continue
             if not self._fits(fit, field):

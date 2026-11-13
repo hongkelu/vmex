@@ -16,14 +16,13 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
 try:
-    import essos.coil_design  # noqa: F401
     from essos.coils import Coils
     from essos.fields import BiotSavart
 except ImportError:
     Coils = BiotSavart = None
 
 # A marker rather than importorskip, so the module still collects (as skips) without ESSOS.
-pytestmark = pytest.mark.skipif(Coils is None, reason="needs ESSOS' coil designs (essos.coil_design)")
+pytestmark = pytest.mark.skipif(Coils is None, reason="needs ESSOS")
 
 import vmex as vj  # noqa: E402
 from vmex.core import implicit as im  # noqa: E402

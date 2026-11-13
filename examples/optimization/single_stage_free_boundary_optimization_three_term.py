@@ -629,6 +629,9 @@ def parse_args(argv=None):
     parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
     parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
                         help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
+    parser.add_argument("--gradient-report", action="store_true",
+                        help="print the gradient of the loss and of every constraint row by group of design "
+                             "coordinates (plasma, coils, circular pairs) at the start point, and stop")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -860,6 +863,35 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
             print(f"[gradient check] direction {k} h={h:.0e}: loss {implicit[0]:.6e} vs {fd[0]:.6e} "
                   f"(relative {loss:.1e}), quantities relative {rows:.1e}", flush=True)
     (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
+
+
+def gradient_report(problem, names, lower, upper, row_scales, out):
+    """Where the design gradient sits: the norm, over each group of design coordinates, of the gradient of the loss
+    and of every constraint row (in the row's unit), in the optimizer's scaled coordinates (the first-order change
+    for a unit step of the group).  Printed and written to ``gradient_report.json``, with the rows' values and bounds
+    and the gradient's entries on the circular pairs' coordinates."""
+    x = np.asarray(problem.accepted.parameters, dtype=float)
+    scales = np.asarray(problem.scales, dtype=float)
+    loss, grad = problem.value_and_grad(x)
+    values = np.asarray(problem.constraint_values(x))
+    rows = np.vstack((grad, problem.constraint_jac(x) / np.asarray(row_scales)[:, None])) * scales
+    labels = ["loss"] + [f"row {i}" for i in range(len(values))]
+    kinds = dict(plasma=("phiedge", "plasma_current", "curtor"), coil_currents=("current[",), coil_shapes=("coil[",),
+                 pair_currents=("pf_current",), pair_geometry=("pf_radius[", "pf_height["),
+                 pair_shapes=("pf_radius_cos", "pf_height_sin"))
+    groups = {kind: np.array([n.startswith(prefixes) for n in names]) for kind, prefixes in kinds.items()}
+    groups = {kind: mask for kind, mask in groups.items() if mask.any()}
+    print("[gradient report] " + " ".join(f"{k}={int(m.sum())}" for k, m in groups.items()) + " coordinates", flush=True)
+    record = dict(loss=float(loss), rows=[])
+    pairs = [i for i, n in enumerate(names) if n.startswith("pf_")]
+    for i, (label, row) in enumerate(zip(labels, rows)):
+        norms = {kind: float(np.linalg.norm(row[mask])) for kind, mask in groups.items()}
+        bound = "" if i == 0 else f" value {values[i - 1]:+.4e} in [{lower[i - 1]:.4g}, {upper[i - 1]:.4g}]"
+        print(f"[gradient report] {label}{bound}: " + " ".join(f"{k}={v:.2e}" for k, v in norms.items()), flush=True)
+        record["rows"].append(dict(label=label, norms=norms, pairs={names[j]: float(row[j]) for j in pairs},
+                                   **({} if i == 0 else dict(value=float(values[i - 1]), lower=float(lower[i - 1]),
+                                                             upper=float(upper[i - 1]), unit=float(row_scales[i - 1])))))
+    (out / "gradient_report.json").write_text(json.dumps(record, indent=1) + "\n")
 
 
 def load_extension(path):
@@ -1314,6 +1346,9 @@ def main(argv=None):
         if row["step"] % args.save_every == 0:
             save(f".step{row['step']}")
 
+    if args.gradient_report:
+        gradient_report(problem, chart.dof_names, lower, upper, row_scales, out)
+        return
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out, fit=args.check_gradient_fit)
         return

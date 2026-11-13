@@ -197,6 +197,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
+            # the model's own cold solve of this boundary must not answer for the saved state (a converged
+            # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
+            for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
+                memo.pop(self.model.cfg, None)
             evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state, tight=True)
             if evaluated is not None:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)

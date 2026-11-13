@@ -289,7 +289,8 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     """A restart: the first run's deck (the anchored labelling's reference) with ``boundary_start`` at a later
     design's fitted boundary takes that boundary as it is (a re-fit moves along the fit's flat directions, 0.15% in
     mean iota here); from a deck it re-solves the equilibrium (equal to the force tolerance), from the design's WOUT
-    it resumes that equilibrium.  The deck's own coordinates are the model's."""
+    it resumes that equilibrium, also when the deck is that boundary itself (the model's own cold solve of it is
+    another converged state, and must not answer).  The deck's own coordinates are the model's."""
     inp, field = _small_vacuum()
     options = dict(field_from_parameters=lambda x: _scaled(field, 1 + 0.05 * x[0]), quantities=(opt.mean_iota,),
                    config=SMALL_ANCHORED, boundary_ftol=1e-8, boundary_max_nfev=80)
@@ -302,6 +303,17 @@ def test_restart_from_a_final_boundary_keeps_the_values():
     x = np.array([0.1])
     _, params = first.state(x)
     values = np.r_[first.fun(x), first.constraint_values(x)]
+    from vmex.core.restart import state_from_wout
+
+    # first, while no solve of this boundary is memoized
+    wout = first.equilibrium_from_x(x).wout
+    final = vj.VmecInput.from_wout(wout)
+    saved = replace(inp, rbc=final.rbc, zbs=final.zbs, phiedge=final.phiedge)
+    restart = ThreeTermsFreeBoundaryProblem.from_loss(saved, loss, x, boundary_start=wout, **options)
+    np.testing.assert_allclose(np.r_[restart.fun(x), restart.constraint_values(x)], values, rtol=1e-8)
+    resumed = state_from_wout(wout, inp=restart.model.fixed)
+    for got, kept in zip(jax.tree.leaves(restart.state(x)[0]), jax.tree.leaves(resumed)):
+        np.testing.assert_allclose(got, kept, atol=1e-12)
     for start, rtol in ((first.model._im.input_with_params(first.model.fixed, params), 1e-5),
                         (first.equilibrium_from_x(x).wout, 1e-8)):
         restart = ThreeTermsFreeBoundaryProblem.from_loss(inp, loss, x, boundary_start=start, **options)

@@ -1097,7 +1097,12 @@ def main(argv=None):
             return jnp.where(found, values, jnp.nan), line
 
         def edge(state, runtime, x):
-            return edge_values(state, runtime, x, jnp.asarray(edge_guess["R"]), jnp.asarray(edge_guess["Z"]))[0]
+            # The guess is read when the row runs, not when it is compiled: it follows the accepted designs (log_step),
+            # so Newton's method starts next to the line however far the line has moved since the start.
+            node = jax.ShapeDtypeStruct(edge_guess["R"].shape, jnp.float64)
+            R, Z = jax.pure_callback(lambda _: (np.asarray(edge_guess["R"], dtype=float), np.asarray(edge_guess["Z"], dtype=float)),
+                                     (node, node), jax.lax.stop_gradient(x[0]), vmap_method="sequential")
+            return edge_values(state, runtime, x, R, Z)[0]
 
     def extension_cost(state, runtime):
         return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
@@ -1235,7 +1240,7 @@ def main(argv=None):
             values, line = edge_at(state_x, params_x, jnp.asarray(x), jnp.asarray(edge_guess["R"]),
                                    jnp.asarray(edge_guess["Z"]))
             values = np.asarray(values)
-            if np.all(np.isfinite(values)) and not edge_constrained:
+            if np.all(np.isfinite(values)):
                 edge_guess.update(R=np.asarray(line.R), Z=np.asarray(line.Z))
             edge_row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
                             edge_reach_m=float(values[3]), edge_height_spread_m=float(values[4]),

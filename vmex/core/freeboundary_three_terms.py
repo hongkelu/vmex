@@ -417,6 +417,7 @@ def solve_free_boundary_three_terms(
     mgrid_path=None,
     initial_boundary: VmecInput | None = None,
     previous: ThreeTermsResult | None = None,
+    fresh_jacobian: bool = False,
     verbose: int = 0,
 ) -> ThreeTermsResult:
     """Free-boundary equilibrium of ``inp`` from the three interface conditions, from one initial boundary.
@@ -430,7 +431,8 @@ def solve_free_boundary_three_terms(
     field with ``b_cyl``).  ``config`` is a :class:`ThreeTermsConfig` (its ``start`` is
     :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`'s).  ``previous``, an earlier result for the same
     deck (typically before a coil change), starts from its boundary, Jacobian and model: neither new coils nor a
-    repeat solve compile anything.
+    repeat solve compile anything.  ``fresh_jacobian`` starts from ``previous``'s boundary and model but recomputes
+    the Jacobian, for a field far from the previous one (a continuation step).
     """
     from .freeboundary import _resolve_mgrid
     from .mgrid import MgridField
@@ -445,7 +447,7 @@ def solve_free_boundary_three_terms(
         # interpolant has kinks that NESTOR (on the planes) never sees; on the CTH-like deck they cost 0.4 mm
         external_field = MgridField.from_input(inp, _resolve_mgrid(inp, mgrid_path), order=3)
     if previous is not None:
-        model, x0, jacobian = previous.model, previous.x, previous.jacobian
+        model, x0, jacobian = previous.model, previous.x, None if fresh_jacobian else previous.jacobian
     else:
         start = inp if initial_boundary is None else replace(
             inp, rbc=initial_boundary.rbc, zbs=initial_boundary.zbs,

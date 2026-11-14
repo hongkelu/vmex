@@ -20,7 +20,9 @@ DKX_FINAL_STAGES > 0 also drives the DKX bootstrap <J.B> to zero in the last
 stages, for any target; the final design always reports it. START_FILE
 continues a saved finite-beta design (for example the "QA" result) at the
 target beta instead of climbing the ladder from the seed. GAMMA_C_WEIGHT adds
-the fast-ion proxy GammaC at finite beta.
+the fast-ion proxy GammaC at finite beta. MERCIER_FLOORS raises a floor on
+DMerc in small steps, one continued stage per value: asking for stability in
+one step lands in a shape that loses its alphas.
 Requires vmex[neoclassical] and dkx.
 """
 
@@ -104,8 +106,12 @@ NS_ARRAY = np.array([35])
 NITER_ARRAY = np.array([20000])
 FTOL_ARRAY = np.array([1e-12])
 MINIMUM_MPOL = 7
+# Floors on DMerc for 0.2 <= s < 1, one continued stage each (None = no Mercier row):
+MERCIER_FLOORS = [float(v) for v in filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))] or [None, None]
+MERCIER_WEIGHT = 100.0
 if START_FILE:
-    MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3, 3], [1.0, 1.0], [30, 30]
+    n_continued = len(MERCIER_FLOORS)
+    MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3] * n_continued, [1.0] * n_continued, [30] * n_continued
 
 # Limits, the same for every target:
 IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
@@ -207,7 +213,7 @@ def boozer_spectrum(equilibrium_state, solver_context):
     return mapped.spectrum_state(equilibrium_state, solver_context)
 
 
-def stage_terms(beta, with_dkx):
+def stage_terms(beta, with_dkx, mercier_floor=None):
     """The objective rows of one stage; only the confinement rows depend on TARGET."""
     scale = BETA_TARGET_FACTOR if beta > 0 else 1.0
     terms = [] if mapped is None else [(boozer_spectrum, 0.0, 1.0)]  # must stay first: FreeMapProblem reads these rows
@@ -223,6 +229,9 @@ def stage_terms(beta, with_dkx):
     ]
     if beta > 0:
         terms.append((opt.volume_average_beta, beta, BETA_WEIGHT / beta**2))
+    if mercier_floor is not None:
+        # Log-bounded: DMerc diverges at zero shear and would swamp every other row.
+        terms.append((lambda state, rt: jnp.log1p(opt.at_least(mercier_floor)(dmerc(state, rt))), 0.0, scale * MERCIER_WEIGHT))
     if GAMMA_C_WEIGHT and beta > 0:
         terms.append((opt.GammaCSmooth(GAMMA_C_SURFACES), 0.0, scale * GAMMA_C_WEIGHT))
     if with_dkx:
@@ -257,11 +266,13 @@ report("seed", equilibrium)
 # every jitted graph is compiled once for the whole group.
 n_stage = len(MAX_MODES)
 dkx_stage = [i >= n_stage - DKX_FINAL_STAGES for i in range(n_stage)]
-group_of = [(max(MAX_MODES[i] + 2, inp.mpol), BETA_FRACTIONS[i], dkx_stage[i]) for i in range(n_stage)]
+floor_of = MERCIER_FLOORS if START_FILE else [None] * n_stage
+group_of = [(max(MAX_MODES[i] + 2, inp.mpol), BETA_FRACTIONS[i], dkx_stage[i], floor_of[i]) for i in range(n_stage)]
 problem, group = None, None
 for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
     beta = BETA_FRACTIONS[i] * TARGET_BETA
-    print(f"\n===== {TARGET} stage {i}, max_mode = {max_mode}, beta = {beta:.2%}, DKX row {dkx_stage[i]} =====")
+    print(f"\n===== {TARGET} stage {i}, max_mode = {max_mode}, beta = {beta:.2%}, DKX row {dkx_stage[i]}, "
+          f"DMerc floor {floor_of[i]} =====")
     if group_of[i] != group:
         group = group_of[i]
         mpol = group[0]
@@ -271,7 +282,7 @@ for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
             inp = replace(inp, pres_scale=beta / float(unit.wout.betatotal))
         last = max(j for j in range(n_stage) if group_of[j] == group)
         problem = opt.VmecProblem.from_tuples(
-            inp, stage_terms(beta, dkx_stage[i]), max_mode=max(MAX_MODES[i:last + 1]),
+            inp, stage_terms(beta, dkx_stage[i], floor_of[i]), max_mode=max(MAX_MODES[i:last + 1]),
             use_ess=True, ess_alpha=ESS_ALPHA, restart_from=equilibrium, progress=True)
         x = problem.x0
         monitor.problem = problem

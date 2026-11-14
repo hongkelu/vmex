@@ -44,7 +44,7 @@ from vmex.core.restart import restart_state
 
 # Confinement target (see above), field periods and aspect ratio:
 TARGET = os.environ.get("QA_PWO_TARGET", "QA-pwO")
-NFP = 2
+NFP = int(os.environ.get("QA_PWO_NFP", 2))
 ASPECT_TARGET = float(os.environ.get("QA_PWO_ASPECT", 4.0))
 ASPECT_WEIGHT = 10.0
 print(f"{TARGET} optimization, NFP = {NFP}, aspect {ASPECT_TARGET}")

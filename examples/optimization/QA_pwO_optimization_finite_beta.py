@@ -19,7 +19,8 @@ to 1-s and no net current); TARGET alone changes the confinement rows:
 DKX_FINAL_STAGES > 0 also drives the DKX bootstrap <J.B> to zero in the last
 stages, for any target; the final design always reports it. START_FILE
 continues a saved finite-beta design (for example the "QA" result) at the
-target beta instead of climbing the ladder from the seed.
+target beta instead of climbing the ladder from the seed. GAMMA_C_WEIGHT adds
+the fast-ion proxy GammaC at finite beta.
 Requires vmex[neoclassical] and dkx.
 """
 
@@ -70,6 +71,9 @@ MAP_PARAMETERS = dict(a=0.3, b=0.0, c=-2.0, eta_min=2.8)
 if TARGET == "QA-pwO":
     MAP_PARAMETERS.update(a=0.0, tilt=2.0)
 BAND_HARMONICS = 3
+# A continued design brings its own map, as "a=0.28,b=-0.23,...":
+MAP_PARAMETERS.update({k: float(v) for k, v in (item.split("=") for item in
+                                                filter(None, os.environ.get("QA_PWO_MAP", "").split(",")))})
 FREE_MAP = tuple(filter(None, os.environ.get("QA_PWO_FREE_MAP", "a,b,c,eta_min").split(",")))
 PWO_WEIGHT = 1.0e3                # the seed's mapped variance is of order 0.01
 BAND_WEIGHT = 1.0e4               # flat B_max band of the poloidal map
@@ -86,6 +90,10 @@ DKX_WEIGHT = float(os.environ.get("QA_PWO_DKX_WEIGHT", 30.0))
 DKX_RESOLUTION = dict(Ntheta=15, Nzeta=21, Nxi=48, NL=4, Nx=5)
 ARIES_MINOR_RADIUS = 1.7044       # metres
 ARIES_DENSITY, ARIES_TEMPERATURE = 2.38e20, 9.45e3  # ne (1 - s^5) in m^-3, Te = Ti (1 - s) in eV
+
+# The smooth fast-ion proxy GammaC on GAMMA_C_SURFACES, in every finite-beta stage (0 = off):
+GAMMA_C_WEIGHT = float(os.environ.get("QA_PWO_GAMMA_C", 0.0))
+GAMMA_C_SURFACES = tuple(SURFACES[1:])
 
 # Stage ladder: highest boundary mode number varied in each stage, its beta as a
 # fraction of TARGET_BETA, and the residual evaluations it may spend:
@@ -120,7 +128,7 @@ FINAL_NITER = 30000
 
 # Every output file name contains this:
 OUTPUT_NAME = (f"{TARGET}_nfp{NFP}_A{ASPECT_TARGET:g}" + ("_dkx" if DKX_FINAL_STAGES else "")
-               + ("_continued" if START_FILE else ""))
+               + ("_gc" if GAMMA_C_WEIGHT else "") + ("_continued" if START_FILE else ""))
 
 # VMEX_EXAMPLES_CI=1 is the short smoke pass:
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
@@ -215,6 +223,8 @@ def stage_terms(beta, with_dkx):
     ]
     if beta > 0:
         terms.append((opt.volume_average_beta, beta, BETA_WEIGHT / beta**2))
+    if GAMMA_C_WEIGHT and beta > 0:
+        terms.append((opt.GammaCSmooth(GAMMA_C_SURFACES), 0.0, scale * GAMMA_C_WEIGHT))
     if with_dkx:
         terms.append((dkx_j_dot_B, 0.0, scale * DKX_WEIGHT))
     return terms

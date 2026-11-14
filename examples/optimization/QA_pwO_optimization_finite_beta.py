@@ -167,6 +167,10 @@ qs_all = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
 pwo_all = MappedPwOResidual(SURFACES, limit_map=True, **BOOZER, **MAP_GRID, a=0.3, b=0.0, c=-2.0, eta_min=2.8)
 qa_pwo_all = MappedPwOResidual(SURFACES, limit_map=True, helicity="toroidal", **BOOZER, **MAP_GRID,
                                a=0.0, b=0.0, c=-2.0, eta_min=2.8)
+# The strip band of the toroidal map on all surfaces, at the current map when TARGET has one.
+strips = MappedPwOResidual(SURFACES, limit_map=True, helicity="toroidal", **BOOZER, **MAP_GRID, nband=16,
+                           band_harmonics=BAND_HARMONICS, **(dict(a=0.0, b=0.0, c=-2.0, eta_min=2.8, tilt=2.0)
+                                                             | (MAP_PARAMETERS if TARGET == "QA-pwO" else {})))
 mapped = None if map_surfaces is None else MappedPwOResidual(
     map_surfaces, limit_map=True, helicity=helicity, **BOOZER, **MAP_GRID, **MAP_PARAMETERS,
     band_harmonics=BAND_HARMONICS if helicity == "toroidal" else 0)
@@ -226,6 +230,7 @@ def dmerc(equilibrium_state, solver_context):
 report = opt.EquilibriumReporter(
     ("QA total", qs_all.total, ".4e"), ("pwO total", pwo_all.total, ".4e"),
     ("QA-pwO total", qa_pwo_all.total, ".4e"),
+    ("strip band total", lambda state, rt: strips.compute_state(state, rt)["band_total"], ".4e"),
     ("aspect", opt.aspect_ratio, ".4f"), ("beta", opt.volume_average_beta, ".3%"),
     ("min |iota|", opt.min_abs_iota, ".4f"), ("max |iota|", opt.max_abs_iota, ".4f"),
     ("magnetic well", opt.magnetic_well, ".4f"),
@@ -281,6 +286,8 @@ for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
     if mapped is not None:
         MAP_PARAMETERS = joint.values(result.x)
         mapped.options.update(MAP_PARAMETERS)
+        if TARGET == "QA-pwO":
+            strips.options.update(MAP_PARAMETERS)
         print(f"map = {MAP_PARAMETERS}")
     inp = problem.input_from_x(x)
     equilibrium = problem.equilibrium_from_x(x)

@@ -761,13 +761,14 @@ def test_band_rows_derivatives_match_finite_differences():
 def test_toroidal_map_exchanges_the_angles_of_the_poloidal_map():
     spectrum = dict(bmnc_b=np.array([[1.5, .08, -.06, .03]]), bmns_b=np.array([[0., -.04, .025, .01]]),
                     xm_b=np.array([0, 1, 2, 1]), xn_b=np.array([0, 2, -4, 0]), iota_b=np.array([-.45]), nfp=2)
-    result = mapped_pwo_residual_from_boozer(**spectrum, a=.2, b=.2, eta_min=2.9, ngamma=12, neta=10,
+    result = mapped_pwo_residual_from_boozer(**spectrum, a=.03, b=.2, eta_min=2.9, ngamma=12, neta=10,
                                              nband=5, helicity="toroidal")
     assert bool(result["valid"][0])
     gamma = np.linspace(0, 2*np.pi, 12, endpoint=False)[:, None]
     eta = (2.9+(np.arange(10)+.5)*(2*np.pi-5.8)/10)[None, :]
-    # One period in the map frame, where a field line advances gamma by nfp/|iota| per unit theta.
-    _, well = _map(gamma, eta, iota=2/.45, nfp=1, a=.2)
+    # One period in the map frame, where a field line advances gamma by nfp/|iota| per unit theta:
+    # the shape amplitude a that keeps the map one-to-one is smaller by about that factor.
+    _, well = _map(gamma, eta, iota=2/.45, nfp=1, a=.03)
     theta, zeta = well-np.pi, -gamma/2  # negative iota: mirror
     modes = [(1.5, 0., 0, 0), (.08, -.04, 1, 2), (-.06, .025, 2, -4), (.03, .01, 1, 0)]
     field = sum(c*np.cos(m*theta-n*zeta)+s*np.sin(m*theta-n*zeta) for c, s, m, n in modes)
@@ -775,7 +776,7 @@ def test_toroidal_map_exchanges_the_angles_of_the_poloidal_map():
     assert float(result["total"]) == pytest.approx(np.mean(((field-field.mean(axis=0))/1.5)**2), rel=1e-11)
     # The band joins the two cuts across theta = pi.
     band = np.asarray(result["B_band"][0])
-    left, right = _map(gamma, np.array([[2.9, 2*np.pi-2.9]]), iota=2/.45, nfp=1, a=.2)[1].T
+    left, right = _map(gamma, np.array([[2.9, 2*np.pi-2.9]]), iota=2/.45, nfp=1, a=.03)[1].T
     theta = (right[:, None]+(left+2*np.pi-right)[:, None]*(np.arange(5)+.5)/5)-np.pi
     zeta = -gamma/2
     np.testing.assert_allclose(band, sum(c*np.cos(m*theta-n*zeta)+s*np.sin(m*theta-n*zeta)
@@ -815,7 +816,7 @@ def test_toroidal_map_derivatives_and_invalid_helicity():
         return mapped_pwo_residual_from_boozer(
             bmnc_b=x[:3][None], xm_b=np.array([0, 1, 1]), xn_b=np.array([0, 0, 2]), iota_b=x[3:4],
             nfp=2, a=x[4], eta_min=x[5], b=.2, ngamma=8, neta=6, limit_map=True, helicity="toroidal")["total"]
-    x = jnp.array([1.4, -.15, .04, .47, .1, 2.8])
+    x = jnp.array([1.4, -.15, .04, .47, .02, 2.8])
     direction = jnp.array([.1, -.2, .3, .05, .2, -.1])
     step = 1e-6
     finite = (total(x+step*direction)-total(x-step*direction))/(2*step)

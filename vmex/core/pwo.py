@@ -54,6 +54,29 @@ def squeezed_pwo_coordinates(gamma, eta, *, iota, nfp, a=0.3, b=0.0, c=-2.0):
             "jacobian": -(shape_derivative+derivative)/nfp}
 
 
+def _map_frame(helicity, iota, nfp):
+    """Return (|iota|, periods) of the frame the LC map is written in.
+
+    The toroidal map is the poloidal one with the two angles exchanged: gamma
+    runs toroidally over one field period, the wells lie along theta, and a
+    field line advances gamma by nfp/iota per unit theta.
+    """
+    if helicity not in ("poloidal", "toroidal"):
+        raise ValueError("helicity must be 'poloidal' or 'toroidal'")
+    return (jnp.abs(iota), nfp) if helicity == "poloidal" else (nfp/jnp.abs(iota), 1)
+
+
+def _boozer_angles(helicity, gamma, well, sign, nfp):
+    """Boozer (theta, zeta) of the map's closing angle ``gamma`` and well angle ``well``.
+
+    The toroidal map puts the well centre (eta = pi) at theta = 0, the outboard
+    side, so the unmapped band surrounds theta = pi.
+    """
+    if helicity == "poloidal":
+        return gamma, sign*well
+    return well-jnp.pi, sign*gamma/nfp
+
+
 def _spectrum(bmnc_b, bmns_b, xm_b, xn_b, iota_b, nfp, weights):
     _integer(nfp, 1, "nfp")
     cosine = jnp.asarray(bmnc_b, dtype=jnp.float64)
@@ -126,7 +149,7 @@ def _limited_map(a, b, c, eta_min, gamma, iota, nfp, neta, span_margin=.95, jaco
 
 def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
         b_ref=None, bmns_b=None, a=0.3, b=0.0, c=-2.0, eta_min=2.8,
-        ngamma=32, neta=32, weights=None, limit_map=False, nband=0):
+        ngamma=32, neta=32, weights=None, limit_map=False, nband=0, helicity="poloidal"):
     """Mapped-gamma variance divided by the live Boozer mean field squared.
 
     Eta midpoint quadrature covers [eta_min,2*pi-eta_min]. Gamma is uniform
@@ -146,6 +169,14 @@ def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
     f_s + <u B^2>; two-level limit: Delta = sum_i <chi_i>/(iota - a_i) = 0)
     vanishes for every (a, b, c, eta_min, iota). The current therefore comes
     from the band, and a flat band is the sufficient zero-bootstrap condition.
+
+    ``helicity="toroidal"`` exchanges the angles: the mapped contours close
+    toroidally, around the outboard side, and the band surrounds theta = pi.
+    With ``a = 0`` the mapped part is quasi-axisymmetric, and ``a != 0`` makes
+    it toroidally omnigenous. This is a quasi-axisymmetric field with a free
+    inboard band (Velasco et al., arXiv:2603.20125). The mapped part then
+    carries the quasi-axisymmetric bootstrap current, so a flat band is not a
+    zero-current condition here: the band has to cancel it.
     """
     _integer(ngamma, 4, "ngamma"); _integer(neta, 4, "neta")
     _require(jnp.isfinite(eta_min) & (eta_min > 0) & (eta_min < jnp.pi),
@@ -162,35 +193,37 @@ def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
                            (("a", a), ("b", b), ("c", c), ("b_ref", b_ref)))
     gamma = 2*jnp.pi*jnp.arange(ngamma)[None, :, None]/ngamma
     eta_min = _surface(eta_min, ns, "eta_min")
+    iota_map, nfp_map = _map_frame(helicity, iota[:, None, None], nfp)
+    sign = jnp.where(iota[:, None, None] < 0, -1.0, 1.0)
     if limit_map:
-        a, b, c, eta_min = _limited_map(a, b, c, eta_min, gamma, jnp.abs(iota[:, None, None]), nfp, neta)
+        a, b, c, eta_min = _limited_map(a, b, c, eta_min, gamma, iota_map, nfp_map, neta)
     eta = eta_min+(2*jnp.pi-2*eta_min)*(jnp.arange(neta)[None, None, :]+0.5)/neta
     # The map is built for positive iota. A mirror image (zeta -> -zeta, iota -> -iota)
     # is the same device, so negative iota reads the same map at -zeta.
-    coordinates = squeezed_pwo_coordinates(gamma, eta, iota=jnp.abs(iota[:, None, None]), nfp=nfp, a=a, b=b, c=c)
-    B = _evaluate(cosine, sine, m, n, coordinates["theta"],
-                  jnp.where(iota[:, None, None] < 0, -1.0, 1.0)*coordinates["zeta"])
+    coordinates = squeezed_pwo_coordinates(gamma, eta, iota=iota_map, nfp=nfp_map, a=a, b=b, c=c)
+    B = _evaluate(cosine, sine, m, n, *_boozer_angles(
+        helicity, coordinates["theta"], coordinates["zeta"], sign, nfp))
     # Theta equals gamma, so each line of constant gamma maps to one line of constant
     # theta. The map is one-to-one on the torus exactly when zeta increases along each
     # line and the line spans less than one field period; both are checked here on the nodes.
     ends = squeezed_pwo_coordinates(gamma, jnp.concatenate((eta_min, 2*jnp.pi-eta_min), axis=2),
-                                    iota=jnp.abs(iota[:, None, None]), nfp=nfp, a=a, b=b, c=c)["zeta"]
+                                    iota=iota_map, nfp=nfp_map, a=a, b=b, c=c)["zeta"]
     span = jnp.max(ends[:, :, 1]-ends[:, :, 0], axis=1)
     eta_cut = eta_min[:, 0, 0]
     jacobian_min = jnp.min(coordinates["jacobian"], axis=(1, 2))
     distance_at_cut = c*eta_min**2-(1+c*jnp.pi)*eta_min+jnp.pi
     valid_map = (jnp.isfinite(a) & jnp.isfinite(b) & jnp.isfinite(c)
                  & (c < -1/jnp.pi) & jnp.isfinite(reference) & (reference > 0)
-                 & (distance_at_cut > 0) & (span[:, None, None] < 2*jnp.pi/nfp))
+                 & (distance_at_cut > 0) & (span[:, None, None] < 2*jnp.pi/nfp_map))
     valid = valid & valid_map[:, 0, 0] & (jacobian_min > 0)
     mean = jnp.mean(B, axis=1, keepdims=True)
     out = _finish((B-mean)/reference, B, valid, weight)
     if nband:
         _integer(nband, 2, "nband")
         # Midpoints from this period's right cut to the next period's left cut.
-        band = ends[:, :, 1:]+(ends[:, :, :1]+2*jnp.pi/nfp-ends[:, :, 1:])*(jnp.arange(nband)+.5)/nband
-        B_band = _evaluate(cosine, sine, m, n, jnp.broadcast_to(gamma, band.shape),
-                           jnp.where(iota[:, None, None] < 0, -1.0, 1.0)*band)
+        band = ends[:, :, 1:]+(ends[:, :, :1]+2*jnp.pi/nfp_map-ends[:, :, 1:])*(jnp.arange(nband)+.5)/nband
+        B_band = _evaluate(cosine, sine, m, n, *_boozer_angles(
+            helicity, jnp.broadcast_to(gamma, band.shape), band, sign, nfp))
         spread = (B_band-jnp.mean(B_band, axis=(1, 2), keepdims=True))/reference
         out["band_residuals1d"] = (spread*jnp.sqrt(weight[:, None, None]/ngamma/nband)).ravel()
         out.update(B_band=B_band, band_total=jnp.sum(out["band_residuals1d"]**2))
@@ -200,7 +233,7 @@ def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
                 "eta": eta[0, 0, :], "jacobian": coordinates["jacobian"],
                 "jacobian_min": jacobian_min, "toroidal_span": span,
                 "eta_fraction": 1-eta_cut/jnp.pi,
-                "mapped_area_fraction": jnp.mean(coordinates["jacobian"], axis=(1, 2))*(2*jnp.pi-2*eta_cut)*nfp/(2*jnp.pi)})
+                "mapped_area_fraction": jnp.mean(coordinates["jacobian"], axis=(1, 2))*(2*jnp.pi-2*eta_cut)*nfp_map/(2*jnp.pi)})
     return out
 
 

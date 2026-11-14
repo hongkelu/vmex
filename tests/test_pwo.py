@@ -755,3 +755,70 @@ def test_band_rows_derivatives_match_finite_differences():
     for step in (1e-4, 1e-5):
         finite = (rows(x+step*direction)-rows(x-step*direction))/(2*step)
         np.testing.assert_allclose(tangent, finite, rtol=1e-6, atol=1e-10)
+
+
+# Toroidal helicity: a quasi-axisymmetric (or toroidally omnigenous) field with a free inboard band.
+def test_toroidal_map_exchanges_the_angles_of_the_poloidal_map():
+    spectrum = dict(bmnc_b=np.array([[1.5, .08, -.06, .03]]), bmns_b=np.array([[0., -.04, .025, .01]]),
+                    xm_b=np.array([0, 1, 2, 1]), xn_b=np.array([0, 2, -4, 0]), iota_b=np.array([-.45]), nfp=2)
+    result = mapped_pwo_residual_from_boozer(**spectrum, a=.2, b=.2, eta_min=2.9, ngamma=12, neta=10,
+                                             nband=5, helicity="toroidal")
+    assert bool(result["valid"][0])
+    gamma = np.linspace(0, 2*np.pi, 12, endpoint=False)[:, None]
+    eta = (2.9+(np.arange(10)+.5)*(2*np.pi-5.8)/10)[None, :]
+    # One period in the map frame, where a field line advances gamma by nfp/|iota| per unit theta.
+    _, well = _map(gamma, eta, iota=2/.45, nfp=1, a=.2)
+    theta, zeta = well-np.pi, -gamma/2  # negative iota: mirror
+    modes = [(1.5, 0., 0, 0), (.08, -.04, 1, 2), (-.06, .025, 2, -4), (.03, .01, 1, 0)]
+    field = sum(c*np.cos(m*theta-n*zeta)+s*np.sin(m*theta-n*zeta) for c, s, m, n in modes)
+    np.testing.assert_allclose(result["B_mapped"][0], field, atol=1e-13)
+    assert float(result["total"]) == pytest.approx(np.mean(((field-field.mean(axis=0))/1.5)**2), rel=1e-11)
+    # The band joins the two cuts across theta = pi.
+    band = np.asarray(result["B_band"][0])
+    left, right = _map(gamma, np.array([[2.9, 2*np.pi-2.9]]), iota=2/.45, nfp=1, a=.2)[1].T
+    theta = (right[:, None]+(left+2*np.pi-right)[:, None]*(np.arange(5)+.5)/5)-np.pi
+    zeta = -gamma/2
+    np.testing.assert_allclose(band, sum(c*np.cos(m*theta-n*zeta)+s*np.sin(m*theta-n*zeta)
+                                         for c, s, m, n in modes), atol=1e-13)
+    assert np.mean(np.cos(theta)) < 0
+    assert 0 < float(result["mapped_area_fraction"][0]) < 1
+
+
+def test_toroidal_map_vanishes_on_quasi_axisymmetry_and_ignores_the_band():
+    qa = dict(bmnc_b=np.array([[1.5, -.2, .03]]), xm_b=np.array([0, 1, 2]), xn_b=np.array([0, 0, 0]),
+              iota_b=np.array([.45]), nfp=2)
+    assert float(mapped_pwo_residual_from_boozer(**qa, a=0., helicity="toroidal")["total"]) < 1e-28
+    assert float(mapped_pwo_residual_from_boozer(**qa, a=0.)["total"]) > 1e-4
+    qi = dict(bmnc_b=np.array([[1.5, .2]]), xm_b=np.array([0, 0]), xn_b=np.array([0, 2]),
+              iota_b=np.array([.45]), nfp=2)
+    assert float(mapped_pwo_residual_from_boozer(**qi, a=0., helicity="toroidal")["total"]) > 1e-4
+    # A ripple confined to the inboard side: (1 + cos(theta - pi))^8 is 2e-6 of its peak at |theta| = 0.9.
+    theta = 2*np.pi*np.arange(64)/64
+    zeta = np.pi*np.arange(32)/32
+    bump = ((1+np.cos(theta-np.pi))/2)[:, None]**8*np.cos(2*zeta)[None, :]
+    coefficient = np.fft.fft2(bump)/bump.size
+    m, k = np.meshgrid(np.fft.fftfreq(64)*64, np.fft.fftfreq(32)*32, indexing="ij")
+    keep = np.abs(coefficient) > 1e-14
+    # Every exp(i(m theta + 2 k zeta)) is kept, conjugates included: phase m theta - n zeta with n = -2 k.
+    rippled = dict(bmnc_b=np.concatenate(([1.5, -.2], .05*coefficient.real[keep]))[None],
+                   bmns_b=np.concatenate(([0., 0.], -.05*coefficient.imag[keep]))[None],
+                   xm_b=np.concatenate(([0, 1], m[keep])), xn_b=np.concatenate(([0, 0], -2*k[keep])),
+                   iota_b=np.array([.45]), nfp=2)
+    inside = mapped_pwo_residual_from_boozer(**rippled, b_ref=1.5, a=0., eta_min=3.0, helicity="toroidal")
+    assert float(inside["total"]) < 1e-9
+    assert float(mapped_pwo_residual_from_boozer(**rippled, b_ref=1.5, a=0., eta_min=2.75,
+                                                 helicity="toroidal")["total"]) > 1e-6
+
+
+def test_toroidal_map_derivatives_and_invalid_helicity():
+    def total(x):
+        return mapped_pwo_residual_from_boozer(
+            bmnc_b=x[:3][None], xm_b=np.array([0, 1, 1]), xn_b=np.array([0, 0, 2]), iota_b=x[3:4],
+            nfp=2, a=x[4], eta_min=x[5], b=.2, ngamma=8, neta=6, limit_map=True, helicity="toroidal")["total"]
+    x = jnp.array([1.4, -.15, .04, .47, .1, 2.8])
+    direction = jnp.array([.1, -.2, .3, .05, .2, -.1])
+    step = 1e-6
+    finite = (total(x+step*direction)-total(x-step*direction))/(2*step)
+    assert float(jnp.vdot(jax.grad(total)(x), direction)) == pytest.approx(float(finite), rel=1e-6)
+    with pytest.raises(ValueError, match="helicity"):
+        mapped_pwo_residual_from_boozer(**_spectrum(), helicity="helical")

@@ -107,8 +107,13 @@ NITER_ARRAY = np.array([20000])
 FTOL_ARRAY = np.array([1e-12])
 MINIMUM_MPOL = 7
 # Floors on DMerc for 0.2 <= s < 1, one continued stage each (None = no Mercier row):
-MERCIER_FLOORS = [float(v) for v in filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))] or [None, None]
+MERCIER_FLOORS = [None if v == "none" else float(v) for v in
+                  filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))] or [None, None]
 MERCIER_WEIGHT = 100.0
+# Floor on the radial rise of B_min, (B_min(outermost) - B_min(innermost)) / mean B_min over SURFACES, in the
+# continued stages: B_min rising outward (maximum-J side) is what kept the alphas when DMerc was raised. None = off:
+BMIN_SLOPE_FLOOR = float(os.environ["QA_PWO_BMIN_SLOPE"]) if "QA_PWO_BMIN_SLOPE" in os.environ else None
+BMIN_SLOPE_WEIGHT = 1.0e3
 if START_FILE:
     n_continued = len(MERCIER_FLOORS)
     MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3] * n_continued, [1.0] * n_continued, [30] * n_continued
@@ -208,6 +213,12 @@ def max_mirror(equilibrium_state, solver_context):
     return pwo_all.diagnostics_state(equilibrium_state, solver_context)[3]
 
 
+def bmin_slope(equilibrium_state, solver_context):
+    """Radial rise of the surface minimum of B over SURFACES, relative to its mean."""
+    low = pwo_all.diagnostics_state(equilibrium_state, solver_context)[1]
+    return (low[-1] - low[0]) / jnp.mean(low)
+
+
 def boozer_spectrum(equilibrium_state, solver_context):
     """The field and iota the map reads; FreeMapProblem turns these rows into the mapped residual."""
     return mapped.spectrum_state(equilibrium_state, solver_context)
@@ -232,6 +243,8 @@ def stage_terms(beta, with_dkx, mercier_floor=None):
     if mercier_floor is not None:
         # Log-bounded: DMerc diverges at zero shear and would swamp every other row.
         terms.append((lambda state, rt: jnp.log1p(opt.at_least(mercier_floor)(dmerc(state, rt))), 0.0, scale * MERCIER_WEIGHT))
+    if BMIN_SLOPE_FLOOR is not None and START_FILE:
+        terms.append((bmin_slope, opt.at_least(BMIN_SLOPE_FLOOR), scale * BMIN_SLOPE_WEIGHT))
     if GAMMA_C_WEIGHT and beta > 0:
         terms.append((opt.GammaCSmooth(GAMMA_C_SURFACES), 0.0, scale * GAMMA_C_WEIGHT))
     if with_dkx:
@@ -252,7 +265,7 @@ report = opt.EquilibriumReporter(
     ("strip band total", lambda state, rt: strips.compute_state(state, rt)["band_total"], ".4e"),
     ("aspect", opt.aspect_ratio, ".4f"), ("beta", opt.volume_average_beta, ".3%"),
     ("min |iota|", opt.min_abs_iota, ".4f"), ("max |iota|", opt.max_abs_iota, ".4f"),
-    ("magnetic well", opt.magnetic_well, ".4f"),
+    ("magnetic well", opt.magnetic_well, ".4f"), ("Bmin slope", bmin_slope, ".4f"),
     ("min DMerc", lambda state, rt: jnp.min(dmerc(state, rt)), ".3e"),
     ("elongation", opt.max_elongation, ".3f"),
     ("max mirror", lambda state, rt: jnp.max(max_mirror(state, rt)), ".3f"))

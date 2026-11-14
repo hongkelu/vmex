@@ -374,7 +374,8 @@ class FreeMapProblem:
     ``REJECTED`` in every row (and a zero Jacobian), so the optimizer rejects the step.
     """
 
-    MAP_BOUNDS = dict(a=(0., .8), b=(-1., 1.), c=(-4., -.5), eta_min=(2.2, 3.1), tilt=(0., 4.))
+    MAP_BOUNDS = dict(a=(0., .8), b=(-1., 1.), c=(-4., -.5), eta_min=(2.2, 3.1))
+    BAND_BOUNDS = dict(tilt=(0., 4.))  # joins the map parameters when ``values`` has it
     REJECTED = 1e6
 
     def __init__(self, stage, mapped, equilibrium, values, free, *, weight=1e3, area_floor=.6,
@@ -383,8 +384,9 @@ class FreeMapProblem:
                                      mboz=mapped.mboz, nboz=mapped.nboz, oversample=mapped.oversample)
         ns, nm = booz["bmnc_b"].shape
         self.stage, self.nx, self.nspec = stage, stage.x0.size, ns*nm+ns
-        names = tuple(k for k in self.MAP_BOUNDS if k in values)  # the band tilt only when given
-        low, high = (np.array([self.MAP_BOUNDS[k][i] for k in names]) for i in (0, 1))
+        bounds = self.MAP_BOUNDS | {k: v for k, v in self.BAND_BOUNDS.items() if k in values}
+        names = tuple(bounds)
+        low, high = (np.array([bounds[k][i] for k in names]) for i in (0, 1))
         fixed = np.array([values[k] for k in names], dtype=float)
         index = np.array([i for i, k in enumerate(names) if k in free], dtype=int)
         self.names, self.index = names, index

@@ -9,9 +9,11 @@ to 1-s and no net current); TARGET alone changes the confinement rows:
   "pwO"     the mapped piecewise-omnigenous field (poloidally closed contours,
             B_max in a band at the period boundary, flattened: zero bootstrap).
   "QA-pwO"  the same map with toroidal helicity: quasi-axisymmetric (toroidally
-            omnigenous for a != 0) around the outboard side, with a free band
-            around theta = pi (Velasco et al., arXiv:2603.20125). The band is
-            the freedom that can cancel the quasi-axisymmetric bootstrap current.
+            omnigenous for a != 0) around the outboard side, and around
+            theta = pi a band of straight tilted strips, flat between them
+            (Velasco et al., arXiv:2603.20125). The strips can cancel the
+            quasi-axisymmetric bootstrap current; their tilt is a free map
+            parameter and their amplitude is left to the DKX row.
   "zoned"   quasisymmetry on the surfaces inside ZONE_BOUNDARY, "pwO" outside.
 
 DKX_FINAL_STAGES > 0 also drives the DKX bootstrap <J.B> to zero in the last
@@ -62,11 +64,16 @@ BOOZER = dict(mboz=8, nboz=8, oversample=1)
 MAP_GRID = dict(ngamma=16, neta=16)
 
 # Initial values of the map (a, b, c, eta_min) and the ones the optimizer may
-# change. The toroidal map starts quasi-axisymmetric (a = 0):
-MAP_PARAMETERS = dict(a=0.0 if TARGET == "QA-pwO" else 0.3, b=0.0, c=-2.0, eta_min=2.8)
+# change. The toroidal map starts quasi-axisymmetric (a = 0) and also carries
+# the tilt of its band strips, fitted with BAND_HARMONICS harmonics:
+MAP_PARAMETERS = dict(a=0.3, b=0.0, c=-2.0, eta_min=2.8)
+if TARGET == "QA-pwO":
+    MAP_PARAMETERS.update(a=0.0, tilt=2.0)
+BAND_HARMONICS = 3
 FREE_MAP = tuple(filter(None, os.environ.get("QA_PWO_FREE_MAP", "a,b,c,eta_min").split(",")))
 PWO_WEIGHT = 1.0e3                # the seed's mapped variance is of order 0.01
 BAND_WEIGHT = 1.0e4               # flat B_max band of the poloidal map
+STRIP_WEIGHT = float(os.environ.get("QA_PWO_STRIP_WEIGHT", 1.0e3))  # strips of the toroidal band; gains the finite-beta factor
 QS_WEIGHT = 10.0                  # the seed's quasisymmetry error is of order 1
 BETA_TARGET_FACTOR = 1.0e3        # at finite beta the confinement and limit rows gain this factor
 
@@ -161,7 +168,8 @@ pwo_all = MappedPwOResidual(SURFACES, limit_map=True, **BOOZER, **MAP_GRID, a=0.
 qa_pwo_all = MappedPwOResidual(SURFACES, limit_map=True, helicity="toroidal", **BOOZER, **MAP_GRID,
                                a=0.0, b=0.0, c=-2.0, eta_min=2.8)
 mapped = None if map_surfaces is None else MappedPwOResidual(
-    map_surfaces, limit_map=True, helicity=helicity, **BOOZER, **MAP_GRID, **MAP_PARAMETERS)
+    map_surfaces, limit_map=True, helicity=helicity, **BOOZER, **MAP_GRID, **MAP_PARAMETERS,
+    band_harmonics=BAND_HARMONICS if helicity == "toroidal" else 0)
 
 size = minor_radius / ARIES_MINOR_RADIUS  # seed minor radius / ARIES-CS
 kinetic = KineticBootstrapMismatch(
@@ -260,9 +268,9 @@ for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
     change = MAX_PARAMETER_CHANGE * step
     joint, n_boundary = stage, stage.x0.size
     if mapped is not None:  # the map parameters join the boundary; sigmoid-scaled, a unit step spans their bounds
-        joint = FreeMapProblem(stage, mapped, equilibrium, MAP_PARAMETERS, FREE_MAP,
-                               weight=PWO_WEIGHT * (BETA_TARGET_FACTOR if beta > 0 else 1.0),
-                               band_weight=BAND_WEIGHT if helicity == "poloidal" else 0.)
+        factor = BETA_TARGET_FACTOR if beta > 0 else 1.0
+        joint = FreeMapProblem(stage, mapped, equilibrium, MAP_PARAMETERS, FREE_MAP, weight=PWO_WEIGHT * factor,
+                               band_weight=BAND_WEIGHT if helicity == "poloidal" else STRIP_WEIGHT * factor)
         step = np.concatenate((step, np.ones(len(FREE_MAP))))
         change = np.concatenate((change, np.full(len(FREE_MAP), np.inf)))
     result = least_squares(

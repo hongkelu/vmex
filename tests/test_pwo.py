@@ -823,3 +823,29 @@ def test_toroidal_map_derivatives_and_invalid_helicity():
     assert float(jnp.vdot(jax.grad(total)(x), direction)) == pytest.approx(float(finite), rel=1e-6)
     with pytest.raises(ValueError, match="helicity"):
         mapped_pwo_residual_from_boozer(**_spectrum(), helicity="helical")
+
+
+def test_band_strips_of_one_tilt_give_zero_rows_only_at_that_tilt():
+    # 1.5 + 0.05 cos(u) + 0.02 cos(2u) with u = 2 zeta - 2 (theta - pi): straight strips of tilt 2.
+    strips = dict(bmnc_b=np.array([[1.5, .05, .02, -.2]]), xm_b=np.array([0, 2, 4, 1]), xn_b=np.array([0, 2, 4, 0]),
+                  iota_b=np.array([.45]), nfp=2)
+    options = dict(a=0., eta_min=2.9, ngamma=12, nband=10, helicity="toroidal")
+
+    def total(tilt, harmonics, spectrum=strips):
+        return float(mapped_pwo_residual_from_boozer(**spectrum, **options, tilt=tilt,
+                                                     band_harmonics=harmonics)["band_total"])
+    no_tokamak_term = dict(strips, bmnc_b=np.array([[1.5, .05, .02, 0.]]))
+    assert total(2., 2, no_tokamak_term) < 1e-16
+    assert total(1., 2, no_tokamak_term) > 1e-5
+    assert total(2., 1, no_tokamak_term) > 1e-6          # the second harmonic is outside the fit
+    assert total(2., 0, no_tokamak_term) > total(2., 1, no_tokamak_term)
+    assert total(2., 2) > 1e-5                           # the 1/R variation is not a strip: the band must be flat between them
+
+    def rows(x):
+        return mapped_pwo_residual_from_boozer(**dict(strips, bmnc_b=x[:4][None]), **options, tilt=x[4],
+                                               band_harmonics=2)["band_residuals1d"]
+    x = jnp.array([1.5, .05, .02, -.2, 1.7])
+    direction = jnp.array([.1, -.2, .3, .1, .2])
+    step = 1e-6
+    finite = (rows(x+step*direction)-rows(x-step*direction))/(2*step)
+    np.testing.assert_allclose(jax.jvp(rows, (x,), (direction,))[1], finite, rtol=1e-5, atol=1e-8)

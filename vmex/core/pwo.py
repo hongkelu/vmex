@@ -149,7 +149,8 @@ def _limited_map(a, b, c, eta_min, gamma, iota, nfp, neta, span_margin=.95, jaco
 
 def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
         b_ref=None, bmns_b=None, a=0.3, b=0.0, c=-2.0, eta_min=2.8,
-        ngamma=32, neta=32, weights=None, limit_map=False, nband=0, helicity="poloidal"):
+        ngamma=32, neta=32, weights=None, limit_map=False, nband=0, helicity="poloidal",
+        tilt=0.0, band_harmonics=0):
     """Mapped-gamma variance divided by the live Boozer mean field squared.
 
     Eta midpoint quadrature covers [eta_min,2*pi-eta_min]. Gamma is uniform
@@ -177,6 +178,14 @@ def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
     inboard band (Velasco et al., arXiv:2603.20125). The mapped part then
     carries the quasi-axisymmetric bootstrap current, so a flat band is not a
     zero-current condition here: the band has to cancel it.
+
+    ``band_harmonics > 0`` lets B in the band be any function of
+    u = gamma - tilt * nfp_map * (well angle - band centre): the rows are B
+    minus its least-squares fit by that many Fourier harmonics of u. The band
+    then holds straight, tilted strips with no closed contours, flat between
+    them; two flat levels are the B_mid and B_max parallelograms of the
+    quasi-axisymmetric piecewise-omnigenous field, and ``tilt`` sets the slope
+    of their sides. Zero harmonics is the flat band.
     """
     _integer(ngamma, 4, "ngamma"); _integer(neta, 4, "neta")
     _require(jnp.isfinite(eta_min) & (eta_min > 0) & (eta_min < jnp.pi),
@@ -224,7 +233,18 @@ def mapped_pwo_residual_from_boozer(*, bmnc_b, xm_b, xn_b, iota_b, nfp,
         band = ends[:, :, 1:]+(ends[:, :, :1]+2*jnp.pi/nfp_map-ends[:, :, 1:])*(jnp.arange(nband)+.5)/nband
         B_band = _evaluate(cosine, sine, m, n, *_boozer_angles(
             helicity, jnp.broadcast_to(gamma, band.shape), band, sign, nfp))
-        spread = (B_band-jnp.mean(B_band, axis=(1, 2), keepdims=True))/reference
+        fit = jnp.mean(B_band, axis=(1, 2), keepdims=True)
+        if band_harmonics:
+            _integer(band_harmonics, 1, "band_harmonics")
+            u = gamma-_surface(tilt, ns, "tilt")*nfp_map*(band-2*jnp.pi/nfp_map)
+            order = jnp.arange(1, band_harmonics+1)
+            basis = jnp.concatenate((jnp.ones_like(u)[..., None], jnp.cos(u[..., None]*order),
+                                     jnp.sin(u[..., None]*order)), axis=-1).reshape(ns, ngamma*nband, -1)
+            # A small ridge keeps the fit defined when the band is too narrow to tell harmonics apart.
+            gram = jnp.einsum("spi,spj->sij", basis, basis)+1e-10*ngamma*nband*jnp.eye(basis.shape[-1])
+            moment = jnp.einsum("spi,sp->si", basis, B_band.reshape(ns, -1))
+            fit = jnp.einsum("spi,si->sp", basis, jnp.linalg.solve(gram, moment[..., None])[..., 0]).reshape(B_band.shape)
+        spread = (B_band-fit)/reference
         out["band_residuals1d"] = (spread*jnp.sqrt(weight[:, None, None]/ngamma/nband)).ravel()
         out.update(B_band=B_band, band_total=jnp.sum(out["band_residuals1d"]**2))
     out.update({"B_mapped": B, "B_mean_gamma": mean, "gamma": gamma[0, :, 0],
@@ -346,14 +366,15 @@ class FreeMapProblem:
     does not change the equilibrium, so its Jacobian columns come directly from
     the kernel. Parameters move through a sigmoid inside ``MAP_BOUNDS``, and
     ``limit_map`` keeps every value valid on every surface. ``band_weight > 0``
-    appends the unmapped-band flatness rows (``nband`` nodes per gamma line), the
-    sufficient zero-bootstrap condition of the mapped field; see
+    appends the unmapped-band rows (``nband`` nodes per gamma line): flatness, the
+    sufficient zero-bootstrap condition of the poloidal mapped field, or with
+    ``band_harmonics`` the tilted strips whose slope ``tilt`` may be free; see
     :func:`mapped_pwo_residual_from_boozer`. The kernel options of ``mapped`` apply
     to every evaluation. A trial with a non-finite or invalid mapped field returns
     ``REJECTED`` in every row (and a zero Jacobian), so the optimizer rejects the step.
     """
 
-    MAP_BOUNDS = dict(a=(0., .8), b=(-1., 1.), c=(-4., -.5), eta_min=(2.2, 3.1))
+    MAP_BOUNDS = dict(a=(0., .8), b=(-1., 1.), c=(-4., -.5), eta_min=(2.2, 3.1), tilt=(0., 4.))
     REJECTED = 1e6
 
     def __init__(self, stage, mapped, equilibrium, values, free, *, weight=1e3, area_floor=.6,
@@ -362,7 +383,7 @@ class FreeMapProblem:
                                      mboz=mapped.mboz, nboz=mapped.nboz, oversample=mapped.oversample)
         ns, nm = booz["bmnc_b"].shape
         self.stage, self.nx, self.nspec = stage, stage.x0.size, ns*nm+ns
-        names = tuple(self.MAP_BOUNDS)
+        names = tuple(k for k in self.MAP_BOUNDS if k in values)  # the band tilt only when given
         low, high = (np.array([self.MAP_BOUNDS[k][i] for k in names]) for i in (0, 1))
         fixed = np.array([values[k] for k in names], dtype=float)
         index = np.array([i for i, k in enumerate(names) if k in free], dtype=int)

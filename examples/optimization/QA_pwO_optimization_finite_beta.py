@@ -15,7 +15,9 @@ to 1-s and no net current); TARGET alone changes the confinement rows:
   "zoned"   quasisymmetry on the surfaces inside ZONE_BOUNDARY, "pwO" outside.
 
 DKX_FINAL_STAGES > 0 also drives the DKX bootstrap <J.B> to zero in the last
-stages, for any target; the final design always reports it.
+stages, for any target; the final design always reports it. START_FILE
+continues a saved finite-beta design (for example the "QA" result) at the
+target beta instead of climbing the ladder from the seed.
 Requires vmex[neoclassical] and dkx.
 """
 
@@ -47,6 +49,7 @@ INPUT_FILE = Path(__file__).resolve().parents[1] / "data" / f"input.minimal_seed
 # given a rotating-ellipse perturbation, RBC(n, m) = -a and ZBS(n, m) = +a,
 # a being this fraction of the minor radius:
 SEED_MODES = {(-1, 1): 0.5}
+START_FILE = os.environ.get("QA_PWO_START")  # an input file of this script; None starts from the seed
 
 # Volume-averaged beta of the last stage:
 TARGET_BETA = 0.025
@@ -61,7 +64,7 @@ MAP_GRID = dict(ngamma=16, neta=16)
 # Initial values of the map (a, b, c, eta_min) and the ones the optimizer may
 # change. The toroidal map starts quasi-axisymmetric (a = 0):
 MAP_PARAMETERS = dict(a=0.0 if TARGET == "QA-pwO" else 0.3, b=0.0, c=-2.0, eta_min=2.8)
-FREE_MAP = ("a", "b", "c", "eta_min")
+FREE_MAP = tuple(filter(None, os.environ.get("QA_PWO_FREE_MAP", "a,b,c,eta_min").split(",")))
 PWO_WEIGHT = 1.0e3                # the seed's mapped variance is of order 0.01
 BAND_WEIGHT = 1.0e4               # flat B_max band of the poloidal map
 QS_WEIGHT = 10.0                  # the seed's quasisymmetry error is of order 1
@@ -72,7 +75,7 @@ BETA_TARGET_FACTOR = 1.0e3        # at finite beta the confinement and limit row
 # row is in MA T/m^2 at that size (see pwO_optimization.py):
 DKX_FINAL_STAGES = int(os.environ.get("QA_PWO_DKX_STAGES", 0))
 DKX_SURFACES = (0.25, 0.55, 0.85)
-DKX_WEIGHT = 30.0
+DKX_WEIGHT = float(os.environ.get("QA_PWO_DKX_WEIGHT", 30.0))
 DKX_RESOLUTION = dict(Ntheta=15, Nzeta=21, Nxi=48, NL=4, Nx=5)
 ARIES_MINOR_RADIUS = 1.7044       # metres
 ARIES_DENSITY, ARIES_TEMPERATURE = 2.38e20, 9.45e3  # ne (1 - s^5) in m^-3, Te = Ti (1 - s) in eV
@@ -86,6 +89,8 @@ NS_ARRAY = np.array([35])
 NITER_ARRAY = np.array([20000])
 FTOL_ARRAY = np.array([1e-12])
 MINIMUM_MPOL = 7
+if START_FILE:
+    MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3, 3], [1.0, 1.0], [30, 30]
 
 # Limits, the same for every target:
 IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
@@ -107,7 +112,8 @@ FINAL_FTOL = 1.0e-13
 FINAL_NITER = 30000
 
 # Every output file name contains this:
-OUTPUT_NAME = f"{TARGET}_nfp{NFP}_A{ASPECT_TARGET:g}" + ("_dkx" if DKX_FINAL_STAGES else "")
+OUTPUT_NAME = (f"{TARGET}_nfp{NFP}_A{ASPECT_TARGET:g}" + ("_dkx" if DKX_FINAL_STAGES else "")
+               + ("_continued" if START_FILE else ""))
 
 # VMEX_EXAMPLES_CI=1 is the short smoke pass:
 ci_smoke = os.environ.get("VMEX_EXAMPLES_CI") == "1"
@@ -125,21 +131,22 @@ if TARGET not in ("QA", "pwO", "QA-pwO", "zoned"):
 
 ### Set up the equilibrium ####################################################
 
-# VmecInput is frozen, so copy its arrays before shaping the seed boundary.
-inp = vj.VmecInput.from_file(INPUT_FILE)
-mpol = max(inp.mpol, MINIMUM_MPOL)
+inp = vj.VmecInput.from_file(START_FILE or INPUT_FILE)
 major_radius = float(inp.rbc[inp.ntor, 0])
 minor_radius = major_radius / ASPECT_TARGET
-rbc, zbs = inp.rbc.copy(), inp.zbs.copy()
-rbc[:, 1:], zbs[:, 1:] = 0.0, 0.0
-rbc[inp.ntor, 1] = zbs[inp.ntor, 1] = minor_radius
-for (n, m), fraction in SEED_MODES.items():
-    rbc[inp.ntor + n, m], zbs[inp.ntor + n, m] = -fraction * minor_radius, fraction * minor_radius
-# The toroidal flux follows the cross-section, so the field stays near 1 T.
-phiedge = inp.phiedge * (minor_radius / float(inp.rbc[inp.ntor, 1])) ** 2
-inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=phiedge, am=np.array([1.0, -1.0]), pres_scale=0.0,
-              ns_array=NS_ARRAY, ftol_array=FTOL_ARRAY, niter_array=NITER_ARRAY,
-              delt=0.5).change_resolution(mpol=mpol, ntor=mpol, ntheta=2 * mpol + 6, nzeta=2 * mpol + 4)
+if not START_FILE:
+    # VmecInput is frozen, so copy its arrays before shaping the seed boundary.
+    mpol = max(inp.mpol, MINIMUM_MPOL)
+    rbc, zbs = inp.rbc.copy(), inp.zbs.copy()
+    rbc[:, 1:], zbs[:, 1:] = 0.0, 0.0
+    rbc[inp.ntor, 1] = zbs[inp.ntor, 1] = minor_radius
+    for (n, m), fraction in SEED_MODES.items():
+        rbc[inp.ntor + n, m], zbs[inp.ntor + n, m] = -fraction * minor_radius, fraction * minor_radius
+    # The toroidal flux follows the cross-section, so the field stays near 1 T.
+    phiedge = inp.phiedge * (minor_radius / float(inp.rbc[inp.ntor, 1])) ** 2
+    inp = replace(inp, rbc=rbc, zbs=zbs, phiedge=phiedge, am=np.array([1.0, -1.0]), pres_scale=0.0,
+                  ns_array=NS_ARRAY, ftol_array=FTOL_ARRAY, niter_array=NITER_ARRAY,
+                  delt=0.5).change_resolution(mpol=mpol, ntor=mpol, ntheta=2 * mpol + 6, nzeta=2 * mpol + 4)
 
 ### Set up the objective ######################################################
 

@@ -41,6 +41,7 @@ from vmex.core.bootstrap import KineticProfiles
 from vmex.core.neoclassical import screen_transport
 from vmex.core.pwo import FreeMapProblem, MappedPwOResidual
 from vmex.core.restart import restart_state
+from vmex.core.statephysics import _iotas_half
 
 # Confinement target (see above), field periods and aspect ratio:
 TARGET = os.environ.get("QA_PWO_TARGET", "QA-pwO")
@@ -110,12 +111,19 @@ MINIMUM_MPOL = 7
 # "x0.5" is half the continued design's own minimum DMerc, so one ladder serves designs of any DMerc scale:
 MERCIER_FLOORS = list(filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))) or ["none", "none"]
 MERCIER_WEIGHT = 100.0
+# Aspect-ratio targets of the continued stages, one each, to walk a design to another aspect ratio in small
+# steps (empty = ASPECT_TARGET throughout). The shorter of this list and MERCIER_FLOORS repeats its last entry:
+ASPECT_LADDER = [float(v) for v in filter(None, os.environ.get("QA_PWO_ASPECT_LADDER", "").split(","))]
+# Floor on the outward rise of |iota| (edge minus innermost half-mesh surface) in the continued stages; None = off:
+IOTA_RISE_FLOOR = float(os.environ["QA_PWO_IOTA_RISE"]) if "QA_PWO_IOTA_RISE" in os.environ else None
 # Floor on the radial rise of B_min, (B_min(outermost) - B_min(innermost)) / mean B_min over SURFACES, in the
 # continued stages: B_min rising outward (maximum-J side) is what kept the alphas when DMerc was raised. None = off:
 BMIN_SLOPE_FLOOR = float(os.environ["QA_PWO_BMIN_SLOPE"]) if "QA_PWO_BMIN_SLOPE" in os.environ else None
 BMIN_SLOPE_WEIGHT = 1.0e3
 if START_FILE:
-    n_continued = len(MERCIER_FLOORS)
+    n_continued = max(len(MERCIER_FLOORS), len(ASPECT_LADDER))
+    MERCIER_FLOORS += MERCIER_FLOORS[-1:] * (n_continued - len(MERCIER_FLOORS))
+    ASPECT_LADDER += (ASPECT_LADDER[-1:] or [ASPECT_TARGET]) * (n_continued - len(ASPECT_LADDER))
     MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3] * n_continued, [1.0] * n_continued, [30] * n_continued
 
 # Limits, the same for every target:
@@ -224,14 +232,20 @@ def boozer_spectrum(equilibrium_state, solver_context):
     return mapped.spectrum_state(equilibrium_state, solver_context)
 
 
-def stage_terms(beta, with_dkx, mercier_floor=None):
+def iota_rise(equilibrium_state, solver_context):
+    """|iota| at the edge minus |iota| on the innermost half-mesh surface."""
+    iota = jnp.abs(_iotas_half(equilibrium_state, solver_context))
+    return iota[-1] - iota[1]
+
+
+def stage_terms(beta, with_dkx, mercier_floor=None, aspect=ASPECT_TARGET):
     """The objective rows of one stage; only the confinement rows depend on TARGET."""
     scale = BETA_TARGET_FACTOR if beta > 0 else 1.0
     terms = [] if mapped is None else [(boozer_spectrum, 0.0, 1.0)]  # must stay first: FreeMapProblem reads these rows
     if qs_surfaces is not None:
         terms.append((opt.QuasisymmetryRatioResidual(qs_surfaces, helicity_m=1, helicity_n=0), 0.0, scale * QS_WEIGHT))
     terms += [
-        (opt.aspect_ratio, ASPECT_TARGET, scale * ASPECT_WEIGHT),
+        (opt.aspect_ratio, aspect, scale * ASPECT_WEIGHT),
         (opt.min_abs_iota, opt.at_least(IOTA_FLOOR), scale * IOTA_WEIGHT),
         (max_mirror, opt.at_most(MIRROR_LIMIT), scale * MIRROR_WEIGHT),
         (opt.axis_excursion, opt.at_most(AXIS_LIMIT), scale * 100.0),
@@ -243,6 +257,8 @@ def stage_terms(beta, with_dkx, mercier_floor=None):
     if mercier_floor is not None:
         # Log-bounded: DMerc diverges at zero shear and would swamp every other row.
         terms.append((lambda state, rt: jnp.log1p(opt.at_least(mercier_floor)(dmerc(state, rt))), 0.0, scale * MERCIER_WEIGHT))
+    if IOTA_RISE_FLOOR is not None and START_FILE:
+        terms.append((iota_rise, opt.at_least(IOTA_RISE_FLOOR), scale * BMIN_SLOPE_WEIGHT))
     if BMIN_SLOPE_FLOOR is not None and START_FILE:
         terms.append((bmin_slope, opt.at_least(BMIN_SLOPE_FLOOR), scale * BMIN_SLOPE_WEIGHT))
     if GAMMA_C_WEIGHT and beta > 0:
@@ -264,7 +280,7 @@ report = opt.EquilibriumReporter(
     ("QA-pwO total", qa_pwo_all.total, ".4e"),
     ("strip band total", lambda state, rt: strips.compute_state(state, rt)["band_total"], ".4e"),
     ("aspect", opt.aspect_ratio, ".4f"), ("beta", opt.volume_average_beta, ".3%"),
-    ("min |iota|", opt.min_abs_iota, ".4f"), ("max |iota|", opt.max_abs_iota, ".4f"),
+    ("min |iota|", opt.min_abs_iota, ".4f"), ("max |iota|", opt.max_abs_iota, ".4f"), ("iota rise", iota_rise, ".4f"),
     ("magnetic well", opt.magnetic_well, ".4f"), ("Bmin slope", bmin_slope, ".4f"),
     ("min DMerc", lambda state, rt: jnp.min(dmerc(state, rt)), ".3e"),
     ("elongation", opt.max_elongation, ".3f"),
@@ -282,12 +298,13 @@ dkx_stage = [i >= n_stage - DKX_FINAL_STAGES for i in range(n_stage)]
 start_dmerc = float(jnp.min(dmerc(equilibrium.state, equilibrium.runtime)))
 floors = [None if v == "none" else float(v[1:]) * start_dmerc if v.startswith("x") else float(v) for v in MERCIER_FLOORS]
 floor_of = floors if START_FILE else [None] * n_stage
-group_of = [(max(MAX_MODES[i] + 2, inp.mpol), BETA_FRACTIONS[i], dkx_stage[i], floor_of[i]) for i in range(n_stage)]
+aspect_of = ASPECT_LADDER if START_FILE else [ASPECT_TARGET] * n_stage
+group_of = [(max(MAX_MODES[i] + 2, inp.mpol), BETA_FRACTIONS[i], dkx_stage[i], floor_of[i], aspect_of[i]) for i in range(n_stage)]
 problem, group = None, None
 for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
     beta = BETA_FRACTIONS[i] * TARGET_BETA
     print(f"\n===== {TARGET} stage {i}, max_mode = {max_mode}, beta = {beta:.2%}, DKX row {dkx_stage[i]}, "
-          f"DMerc floor {floor_of[i]} =====")
+          f"DMerc floor {floor_of[i]}, aspect {aspect_of[i]} =====")
     if group_of[i] != group:
         group = group_of[i]
         mpol = group[0]
@@ -297,7 +314,7 @@ for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):
             inp = replace(inp, pres_scale=beta / float(unit.wout.betatotal))
         last = max(j for j in range(n_stage) if group_of[j] == group)
         problem = opt.VmecProblem.from_tuples(
-            inp, stage_terms(beta, dkx_stage[i], floor_of[i]), max_mode=max(MAX_MODES[i:last + 1]),
+            inp, stage_terms(beta, dkx_stage[i], floor_of[i], aspect_of[i]), max_mode=max(MAX_MODES[i:last + 1]),
             use_ess=True, ess_alpha=ESS_ALPHA, restart_from=equilibrium, progress=True)
         x = problem.x0
         monitor.problem = problem

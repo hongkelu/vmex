@@ -17,10 +17,9 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import least_squares
 
 import vmex as vj
 from essos.planar_coils import planar_coil_set_cost
@@ -37,8 +36,8 @@ MAP_PARAMETERS.update({k: float(v) for k, v in (item.split("=") for item in filt
 # Coil-set cost: encircling coils per half period, distances in minor radii (Helios: 0.67, 0.34, 0.376), the
 # weight of the sheet strength inside the cost, and the weight of the cost in the objective:
 N_ENCIRCLING = int(os.environ.get("QSS_N_ENCIRCLING", 2))
-SHEET_DISTANCE = 0.67
-ENCIRCLING_CLEARANCE = 0.67 + 0.34 + 0.376
+SHEET_DISTANCE = float(os.environ.get("QSS_SHEET_DISTANCE", 0.67))       # coil-plasma distance (blanket)
+ENCIRCLING_CLEARANCE = SHEET_DISTANCE + 0.34 + 0.376
 SHEET_REGULARIZATION = float(os.environ.get("QSS_REGULARIZATION", 2.5e-3))
 COIL_WEIGHT = float(os.environ.get("QSS_COIL_WEIGHT", 1.0e7))
 COIL_GRID = dict(nphi=32, ntheta=32)
@@ -59,6 +58,7 @@ SCALE = 1.0e3                                                    # common factor
 
 MAX_MODE = 4
 PARAMETER_STEP = 0.02
+MAX_PARAMETER_CHANGE = 5.0
 MAX_ITERATIONS = int(os.environ.get("QSS_ITERATIONS", 60))
 OUTPUT_NAME = os.environ.get("QSS_NAME", "pwO_planar_coils")
 
@@ -113,19 +113,10 @@ terms = [
     (lambda state, rt: jnp.log1p(opt.at_least(MERCIER_FLOOR)(dmerc(state, rt))), 0.0, SCALE * 100.0),
     (opt.GammaCSmooth(tuple(SURFACES[1:])), 0.0, SCALE * GAMMA_C_WEIGHT),
 ]
+terms.append((lambda state, rt: coil_set(state, rt)["residuals"], 0.0, COIL_WEIGHT))   # sum of squares = the coil-set cost
 problem = opt.VmecProblem.from_tuples(inp, terms, max_mode=MAX_MODE, use_ess=True, ess_alpha=1.2,
                                       restart_from=equilibrium, progress=True)
-x0, scales = jnp.asarray(problem.x0), jnp.asarray(PARAMETER_STEP * problem.scales)
-
-
-def objective(u):
-    """Plasma least-squares cost plus the weighted coil-set cost; auxiliary: rows, coil cost, status."""
-    return problem.jax_objective_from_state(
-        x0 + scales * u, lambda state, rt: jnp.stack([COIL_WEIGHT * coil_set(state, rt)["cost"]]),
-        n_extra_terms=1, return_status=True)
-
-
-value_and_grad = jax.jit(jax.value_and_grad(objective, has_aux=True))
+problem.compile_residual_and_jacobian()
 
 
 def describe(label, eq):
@@ -143,26 +134,17 @@ def describe(label, eq):
 
 
 results = dict(start=describe("start", equilibrium), coil_weight=COIL_WEIGHT, n_encircling=N_ENCIRCLING)
-history = []
-
-
-def evaluate(u):
-    (value, (rows, extra, status)), gradient = value_and_grad(jnp.asarray(u))
-    history.append((float(value), float(np.asarray(extra)[0]), int(np.asarray(status))))
-    print(f"  trial {len(history)}: objective {float(value):.6e}, weighted coil cost {float(np.asarray(extra)[0]):.4e}, "
-          f"status {int(np.asarray(status))}", flush=True)
-    return float(value), np.asarray(gradient, dtype=float)
-
-
-result = minimize(evaluate, np.zeros(x0.size), jac=True, method="L-BFGS-B",
-                  options=dict(maxiter=MAX_ITERATIONS, maxcor=20, ftol=1e-12, gtol=1e-10))
-print(f"L-BFGS-B: {result.nit} iterations, {result.message}")
-x = np.asarray(x0 + scales * result.x)
+step = PARAMETER_STEP * problem.scales
+change = MAX_PARAMETER_CHANGE * step
+result = least_squares(problem.residual, problem.x0, jac=problem.residual_jac, x_scale=step, max_nfev=MAX_ITERATIONS,
+                       bounds=(problem.x0 - change, problem.x0 + change), ftol=1e-6, xtol=1e-10, verbose=2)
+print(f"least squares: {result.nfev} evaluations, cost {result.cost:.6e}, {result.message}")
+x = np.asarray(result.x)
 final_input = problem.input_from_x(x)
 final = problem.equilibrium_from_x(x)
 results["final"] = describe("final", final)
 final_input.to_indata(f"input.{OUTPUT_NAME}")
 vj.write_wout(f"wout_{OUTPUT_NAME}.nc", final.wout)
 with open(f"{OUTPUT_NAME}.json", "w") as stream:
-    json.dump(results | dict(history=history), stream, indent=1)
+    json.dump(results, stream, indent=1)
 print(f"Wrote input.{OUTPUT_NAME}, wout_{OUTPUT_NAME}.nc and {OUTPUT_NAME}.json")

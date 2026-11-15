@@ -623,6 +623,9 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
     parser.add_argument("--current-iota-weight", type=float, help="w of the loss term w/2 iota_I^2 "
                         "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
+    parser.add_argument("--conductor-weight", type=float, default=0.0, metavar="W",
+                        help="the loss adds W x the coils' total |current| x length in MA m (base coils with their "
+                             "symmetric copies and the --pf-coils): the tape a wound coil set needs")
     parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
                         "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
     parser.add_argument("--iota-floor", type=float, help="floor on min |iota| (default: IOTA_FLOOR)")
@@ -1143,10 +1146,17 @@ def main(argv=None):
     def extension_cost(state, runtime):
         return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
 
+    def conductor(x):  # the coils' total |current| x length [MA m]
+        from vmex.core.coil_design import ampere_metres
+
+        sets = [chart.coils_from_x(x)] + ([chart.poloidal_coils_from_x(x)] if args.pf_coils else [])
+        return 1e-6 * ampere_metres(*sets)
+
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
-        return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
+        tape = args.conductor_weight * conductor(x) if args.conductor_weight else 0.0
+        return 0.5 * jnp.vdot(residuals, residuals) + current + tape + extension_cost(state, runtime)
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -1300,8 +1310,10 @@ def main(argv=None):
                   flush=True)
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
         ext_values, ext_cost = extension_values(state_x, params_x)
+        tape = float(conductor(jnp.asarray(x)))
         row = dict(step=problem.accepted_step,
-                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
+                   qa=2 * (problem.fun(x) - args.conductor_weight * tape) - CURRENT_IOTA_WEIGHT * iota_i**2
+                   - 2 * float(ext_cost), conductor_ma_m=tape,
                    **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
@@ -1348,6 +1360,7 @@ def main(argv=None):
                  + (f"legs={row['edge_leg_sines'][0]:+.4f},{row['edge_leg_sines'][1]:+.4f} " if "edge_leg_sines" in row else "")
                  + f"coils={row['edge_coil_distance_m']:.4f} "
                  f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if edge_row else "")
+              + f"conductor={tape:.3f} "
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "

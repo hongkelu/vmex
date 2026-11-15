@@ -119,3 +119,19 @@ def test_circular_pairs_are_the_loop_formula_and_join_a_design(coils):
     expected = circular_coil_pairs(radius + 0.01, height - 0.02, current + 0.5e5, shape=[[[0.05], [0.08]]], nfp=2)
     np.testing.assert_allclose(coil_pairs_from_dict(saved).gamma, expected.gamma, atol=1e-13)
     np.testing.assert_allclose(shaped.poloidal_coils_from_x(x).gamma, expected.gamma, atol=1e-13)
+
+
+
+def test_ampere_metres_is_current_times_length_over_all_coils(coils):
+    """Circles: 2 pi R |I| each, whatever the current's sign; a coil set counts its symmetric copies."""
+    from vmex.core.coil_design import ampere_metres, circular_coil_pairs
+
+    pairs = circular_coil_pairs([1.2, 2.0], [0.8, 1.0], [2.0e5, -1.0e5], n_segments=512)
+    exact = 2 * 2 * np.pi * (1.2 * 2.0e5 + 2.0 * 1.0e5)
+    np.testing.assert_allclose(ampere_metres(pairs), exact, rtol=1e-4)
+    every = np.sum(np.abs(np.asarray(coils.currents)) * np.asarray(coils.length))
+    assert coils.gamma.shape[0] == coils.currents.shape[0] > len(coils.dofs_currents_raw)
+    np.testing.assert_allclose(ampere_metres(coils), every, rtol=1e-3)
+    np.testing.assert_allclose(ampere_metres(coils, pairs), every + exact, rtol=1e-3)
+    slope = jax.grad(lambda r: ampere_metres(circular_coil_pairs(r, 0.8, 2.0e5, n_segments=512)))(1.2)
+    np.testing.assert_allclose(slope, 2 * 2 * np.pi * 2.0e5, rtol=1e-4)

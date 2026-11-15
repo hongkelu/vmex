@@ -287,6 +287,20 @@ def coil_pairs_from_dict(saved, *, n_segments: int = 128):
                                shape=saved.get("shape_m"), nfp=int(saved.get("nfp", 1)), n_segments=n_segments)
 
 
+def ampere_metres(*coil_sets):
+    """Sum of ``|current| x length`` [A m] over every coil of the ESSOS ``coil_sets`` (all symmetric copies).
+
+    The conductor a wound coil needs: its turns scale with its current, so its tape length scales with this product.
+    Differentiable; lengths are those of the coils' polygons.
+    """
+    total = 0.0
+    for coils in coil_sets:
+        gamma = coils.gamma
+        lengths = jnp.sum(jnp.linalg.norm(jnp.roll(gamma, -1, axis=1) - gamma, axis=-1), axis=1)
+        total = total + jnp.sum(jnp.abs(coils.currents) * lengths)
+    return total
+
+
 class PoloidalCoilDesign:
     """A design followed by up-down pairs of circular poloidal-field coils (:func:`circular_coil_pairs`).
 

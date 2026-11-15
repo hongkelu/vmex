@@ -71,6 +71,8 @@ OUTPUT_NAME = os.environ.get("QSS_NAME", "pwO_planar_coils")
 ###############################################################################
 
 inp = vj.VmecInput.from_file(START_FILE)
+if os.environ.get("QSS_FTOL"):  # DMerc of this design is not settled at the deck's force tolerance
+    inp = replace(inp, ftol_array=np.full(len(inp.ftol_array), float(os.environ["QSS_FTOL"])))
 equilibrium = opt.solve_equilibrium(inp)
 minor = float(equilibrium.wout.Aminor_p)
 pwo = MappedPwOResidual(SURFACES, limit_map=True, **BOOZER, **MAP_PARAMETERS)

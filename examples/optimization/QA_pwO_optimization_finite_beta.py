@@ -58,7 +58,7 @@ SEED_MODES = {(-1, 1): 0.5}
 START_FILE = os.environ.get("QA_PWO_START")  # an input file of this script; None starts from the seed
 
 # Volume-averaged beta of the last stage:
-TARGET_BETA = 0.025
+TARGET_BETA = float(os.environ.get("QA_PWO_BETA", 0.025))
 BETA_WEIGHT = 1.0e4               # on the relative beta error
 
 # Flux surfaces of the confinement rows, and the Boozer resolution in the loop:
@@ -124,15 +124,16 @@ if START_FILE:
     n_continued = max(len(MERCIER_FLOORS), len(ASPECT_LADDER))
     MERCIER_FLOORS += MERCIER_FLOORS[-1:] * (n_continued - len(MERCIER_FLOORS))
     ASPECT_LADDER += (ASPECT_LADDER[-1:] or [ASPECT_TARGET]) * (n_continued - len(ASPECT_LADDER))
-    MAX_MODES, BETA_FRACTIONS, MAX_NFEV = [3] * n_continued, [1.0] * n_continued, [30] * n_continued
+    MAX_MODES, BETA_FRACTIONS = [3] * n_continued, [1.0] * n_continued
+    MAX_NFEV = [int(os.environ.get("QA_PWO_NFEV", 30))] * n_continued  # evaluations per continued stage
 
 # Limits, the same for every target:
 IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
 IOTA_WEIGHT = 1.0e4
-MIRROR_LIMIT = 0.30               # maximum (Bmax-Bmin)/(Bmax+Bmin); 1/R alone gives 0.24 at s = 0.9
+MIRROR_LIMIT = float(os.environ.get("QA_PWO_MIRROR", 0.30))               # maximum (Bmax-Bmin)/(Bmax+Bmin); 1/R alone gives 0.24 at s = 0.9
 MIRROR_WEIGHT = 1.0e3
 AXIS_LIMIT = 0.25                 # maximum RMS helical excursion of the magnetic axis, metres
-ELONGATION_LIMIT = 6.0
+ELONGATION_LIMIT = float(os.environ.get("QA_PWO_ELONGATION", 6.0))
 EDGE_JACOBIAN_FLOOR = 0.25        # minimum min/max Jacobian ratio in each of the three outer cells
 
 # Step control, as in pwO_optimization_finite_beta.py:

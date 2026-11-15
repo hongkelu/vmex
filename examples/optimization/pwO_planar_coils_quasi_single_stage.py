@@ -134,6 +134,24 @@ def describe(label, eq):
 
 
 results = dict(start=describe("start", equilibrium), coil_weight=COIL_WEIGHT, n_encircling=N_ENCIRCLING)
+if os.environ.get("QSS_CHECK"):  # every term's Jacobian against central differences, along random directions
+    rng = np.random.default_rng(0)
+    r0, jacobian = problem.residual(problem.x0), problem.residual_jac(problem.x0)
+    slices = problem.metadata.get("term_slices") or [("all", 0, r0.size)]
+    for trial in range(2):
+        direction = rng.standard_normal(problem.x0.size)
+        direction /= np.linalg.norm(direction)
+        for eps in (1e-2, 1e-3, 1e-4):
+            dx = eps * PARAMETER_STEP * problem.scales * direction
+            plus, minus = problem.residual(problem.x0 + dx), problem.residual(problem.x0 - dx)
+            central, linear, curved = (plus - minus) / 2, jacobian @ dx, (plus + minus) / 2 - r0
+            print(f"[check] direction {trial}, step {eps:g} of the parameter step")
+            for label, start, stop in slices:
+                k = slice(start, stop)
+                print(f"[check]   {str(label)[:28]:28s} rows {stop - start:5d} |r| {np.linalg.norm(r0[k]):9.3e} |J dx| {np.linalg.norm(linear[k]):9.3e} "
+                      f"|central| {np.linalg.norm(central[k]):9.3e} |central - J dx| {np.linalg.norm(central[k] - linear[k]):9.3e} "
+                      f"|even part| {np.linalg.norm(curved[k]):9.3e}", flush=True)
+    raise SystemExit
 step = PARAMETER_STEP * problem.scales
 change = MAX_PARAMETER_CHANGE * step
 result = least_squares(problem.residual, problem.x0, jac=problem.residual_jac, x_scale=step, max_nfev=MAX_ITERATIONS,

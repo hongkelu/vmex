@@ -124,7 +124,8 @@ if START_FILE:
     n_continued = max(len(MERCIER_FLOORS), len(ASPECT_LADDER))
     MERCIER_FLOORS += MERCIER_FLOORS[-1:] * (n_continued - len(MERCIER_FLOORS))
     ASPECT_LADDER += (ASPECT_LADDER[-1:] or [ASPECT_TARGET]) * (n_continued - len(ASPECT_LADDER))
-    MAX_MODES, BETA_FRACTIONS = [3] * n_continued, [1.0] * n_continued
+    # Highest boundary mode number of the continued stages: more modes give a polish more freedom.
+    MAX_MODES, BETA_FRACTIONS = [int(os.environ.get("QA_PWO_MAX_MODE", 3))] * n_continued, [1.0] * n_continued
     MAX_NFEV = [int(os.environ.get("QA_PWO_NFEV", 30))] * n_continued  # evaluations per continued stage
 
 # Limits, the same for every target:

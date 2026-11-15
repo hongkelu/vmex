@@ -107,8 +107,8 @@ NITER_ARRAY = np.array([20000])
 FTOL_ARRAY = np.array([1e-12])
 MINIMUM_MPOL = 7
 # Floors on DMerc for 0.2 <= s < 1, one continued stage each (None = no Mercier row):
-MERCIER_FLOORS = [None if v == "none" else float(v) for v in
-                  filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))] or [None, None]
+# "x0.5" is half the continued design's own minimum DMerc, so one ladder serves designs of any DMerc scale:
+MERCIER_FLOORS = list(filter(None, os.environ.get("QA_PWO_MERCIER_FLOORS", "").split(","))) or ["none", "none"]
 MERCIER_WEIGHT = 100.0
 # Floor on the radial rise of B_min, (B_min(outermost) - B_min(innermost)) / mean B_min over SURFACES, in the
 # continued stages: B_min rising outward (maximum-J side) is what kept the alphas when DMerc was raised. None = off:
@@ -279,7 +279,9 @@ report("seed", equilibrium)
 # every jitted graph is compiled once for the whole group.
 n_stage = len(MAX_MODES)
 dkx_stage = [i >= n_stage - DKX_FINAL_STAGES for i in range(n_stage)]
-floor_of = MERCIER_FLOORS if START_FILE else [None] * n_stage
+start_dmerc = float(jnp.min(dmerc(equilibrium.state, equilibrium.runtime)))
+floors = [None if v == "none" else float(v[1:]) * start_dmerc if v.startswith("x") else float(v) for v in MERCIER_FLOORS]
+floor_of = floors if START_FILE else [None] * n_stage
 group_of = [(max(MAX_MODES[i] + 2, inp.mpol), BETA_FRACTIONS[i], dkx_stage[i], floor_of[i]) for i in range(n_stage)]
 problem, group = None, None
 for i, (max_mode, max_nfev) in enumerate(zip(MAX_MODES, MAX_NFEV)):

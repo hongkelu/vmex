@@ -47,7 +47,7 @@ from vmex.core.statephysics import _iotas_half
 TARGET = os.environ.get("QA_PWO_TARGET", "QA-pwO")
 NFP = int(os.environ.get("QA_PWO_NFP", 2))
 ASPECT_TARGET = float(os.environ.get("QA_PWO_ASPECT", 4.0))
-ASPECT_WEIGHT = 10.0
+ASPECT_WEIGHT = float(os.environ.get("QA_PWO_ASPECT_WEIGHT", 10.0))  # raise it to walk the aspect ratio of a continued design
 print(f"{TARGET} optimization, NFP = {NFP}, aspect {ASPECT_TARGET}")
 INPUT_FILE = Path(__file__).resolve().parents[1] / "data" / f"input.minimal_seed_nfp{NFP}"
 
@@ -208,7 +208,7 @@ kinetic = KineticBootstrapMismatch(
                     ARIES_TEMPERATURE * np.array([1, -1.]), ARIES_TEMPERATURE * np.array([1, -1.])),
     DKX_SURFACES, mismatch=False, collision_model="pas+momentum_correction",
     resolution=DKX_RESOLUTION, spectral_angles=True)
-kinetic._setup(int(NS_ARRAY[-1]), int(inp.nfp))  # DKX builds its host-side operators eagerly, not under a trace
+kinetic._setup(int(inp.ns_array[-1]), int(inp.nfp))  # DKX builds its host-side operators eagerly, not under a trace
 
 
 def dkx_j_dot_B(equilibrium_state, solver_context):

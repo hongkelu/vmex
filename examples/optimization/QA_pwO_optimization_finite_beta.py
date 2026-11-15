@@ -129,7 +129,7 @@ if START_FILE:
     MAX_NFEV = [int(os.environ.get("QA_PWO_NFEV", 30))] * n_continued  # evaluations per continued stage
 
 # Limits, the same for every target:
-IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
+IOTA_FLOOR = float(os.environ.get("QA_PWO_IOTA_FLOOR", 0.42))                 # minimum |iota| over the profile
 IOTA_WEIGHT = 1.0e4
 MIRROR_LIMIT = float(os.environ.get("QA_PWO_MIRROR", 0.30))               # maximum (Bmax-Bmin)/(Bmax+Bmin); 1/R alone gives 0.24 at s = 0.9
 MIRROR_WEIGHT = 1.0e3

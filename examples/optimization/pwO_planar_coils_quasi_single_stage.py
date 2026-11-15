@@ -17,6 +17,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import least_squares
@@ -47,11 +48,15 @@ ASPECT_TARGET = float(os.environ.get("QSS_ASPECT", 7.0))
 TARGET_BETA = float(os.environ.get("QSS_BETA", 0.052))
 IOTA_FLOOR = float(os.environ.get("QSS_IOTA_FLOOR", 0.42))
 IOTA_RISE = float(os.environ.get("QSS_IOTA_RISE", 0.15))        # |iota| at the edge minus the innermost surface: positive shear
-# Floor on DMerc for 0.2 <= s < 1, or "none". The starting design sits on its own floor (+8 at this resolution), where the
-# hinge is a kink with a very large one-sided slope that stalls the optimizer: give it a margin or leave it out and check
-# Mercier afterwards at converged resolution.
-MERCIER_FLOOR = os.environ.get("QSS_MERCIER_FLOOR", "4")
+# Floor on DMerc for 0.2 <= s < 1 ("none" leaves the row out), as a smooth one-sided row
+# softplus((floor - DMerc) / width). DMerc of this design moves by ~150 per parameter step and the design sits on the
+# +8 floor it was optimized with, so a hard hinge there is a kink the optimizer cannot slide along (it stalls at the
+# first step), and without the row Mercier is lost on every surface (-300). The smooth row lets the surfaces near the
+# floor steer the step before they cross it.
+MERCIER_FLOOR = os.environ.get("QSS_MERCIER_FLOOR", "6")
 MERCIER_FLOOR = None if MERCIER_FLOOR == "none" else float(MERCIER_FLOOR)
+MERCIER_WIDTH = float(os.environ.get("QSS_MERCIER_WIDTH", 1.0))
+MERCIER_WEIGHT = float(os.environ.get("QSS_MERCIER_WEIGHT", 1.0e3))
 BMIN_SLOPE_FLOOR = 0.01
 MIRROR_LIMIT = float(os.environ.get("QSS_MIRROR", 0.40))
 ELONGATION_LIMIT = float(os.environ.get("QSS_ELONGATION", 6.0))
@@ -119,7 +124,7 @@ terms = [
     (opt.GammaCSmooth(tuple(SURFACES[1:])), 0.0, SCALE * GAMMA_C_WEIGHT),
 ]
 if MERCIER_FLOOR is not None:
-    terms.append((lambda state, rt: jnp.log1p(opt.at_least(MERCIER_FLOOR)(dmerc(state, rt))), 0.0, SCALE * 100.0))
+    terms.append((lambda state, rt: jax.nn.softplus((MERCIER_FLOOR - dmerc(state, rt)) / MERCIER_WIDTH), 0.0, MERCIER_WEIGHT))
 terms.append((lambda state, rt: coil_set(state, rt)["residuals"], 0.0, COIL_WEIGHT))   # sum of squares = the coil-set cost
 problem = opt.VmecProblem.from_tuples(inp, terms, max_mode=MAX_MODE, use_ess=True, ess_alpha=1.2,
                                       restart_from=equilibrium, progress=True)

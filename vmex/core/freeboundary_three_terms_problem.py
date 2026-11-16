@@ -251,8 +251,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         """Replace ``x``'s fit (cached) by the no-label fit from it, so that ``_set_gauge`` sets the gauge there.  If
         that fit fails the old gauge and fit stand."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
-        sol, gauge, field = self._cache[key], model._gauge, self.field(xj)
+        sol, gauge = self._cache[key], model._gauge
         model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, None
+        field = self.field(xj)  # after the weights are zeroed: the field carries the gauge it is wrapped with
         try:
             fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)

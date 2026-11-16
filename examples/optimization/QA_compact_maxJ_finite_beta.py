@@ -21,6 +21,8 @@ and keeping every row added so far. STAGES is a comma-separated list:
               (needs the turbulence extra)
     shear=D   |iota| rises by at least D from s = 0.1 to 0.9, monotonically
               (negative shear in the tokamak convention)
+    vaciota=V floor V on the current-free transform (the shaping part of iota,
+              the stand-in for the vacuum transform) at every radius
     lgb=L     floor on the edge magnetic-gradient scale length [m], the
               proxy for how far the coils can sit (blanket space)
 
@@ -52,7 +54,7 @@ from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles,
                                  RedlBootstrapMismatch, self_consistent_bootstrap)
 from vmex.core.maxj import MaximumJResidual, common_trapped_pitches_state, maximum_j_profile
 from vmex.core.stability import ballooning_lambda
-from vmex.core.statephysics import iota_profile
+from vmex.core.statephysics import current_free_iota, iota_profile
 from vmex.core.turbulence import flux_compression, quasilinear_flux_proxy
 
 faulthandler.register(signal.SIGUSR1)   # kill -USR1 <pid> prints every thread's stack
@@ -239,6 +241,13 @@ def iota_samples(equilibrium_state, solver_context):
     return jnp.interp(SHEAR_S, s_half, iota)
 
 
+def shaping_iota(equilibrium_state, solver_context):
+    """|current-free iota| at SHEAR_S."""
+    iota = jnp.abs(current_free_iota(equilibrium_state, solver_context))
+    s_half = (jnp.arange(iota.shape[0]) + 0.5) / iota.shape[0]
+    return jnp.interp(SHEAR_S, s_half, iota)
+
+
 def iota_rise(equilibrium_state, solver_context):
     return jnp.diff(iota_samples(equilibrium_state, solver_context))
 
@@ -298,6 +307,7 @@ def metrics(equilibrium):
         "beta": float(opt.volume_average_beta(state, context)),
         "min_iota": float(opt.min_abs_iota(state, context)),
         "iota_profile": [round(float(v), 4) for v in iota_samples(state, context)],
+        "shaping_iota": [round(float(v), 4) for v in shaping_iota(state, context)],
         "mirror": float(opt.mirror_ratio(state, context)),
         "elongation": float(opt.max_elongation(state, context)),
         "min_dmerc": float(minimum_dmerc(state, context)),
@@ -369,6 +379,8 @@ for number, token in enumerate(STAGES.split(","), start=1):
             print(f"quasilinear heat flux reference = {ql_reference:.4f}")
         terms["quasilinear"] = (quasilinear_flux, opt.at_most(float(value) * ql_reference),
                                 QL_WEIGHT / ql_reference)
+    elif name == "vaciota":
+        terms["shaping_iota"] = (shaping_iota, opt.at_least(float(value)), IOTA_WEIGHT)
     elif name == "shear":
         terms["shear"] = (iota_rise, opt.at_least(float(value) / (SHEAR_S.size - 1)), SHEAR_WEIGHT)
     elif name == "lgb":

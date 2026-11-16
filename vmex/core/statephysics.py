@@ -437,6 +437,34 @@ def iota_profile(state: SpectralState, rt: SolverRuntime) -> Array:
     return _iotas_half(state, rt)[1:]
 
 
+def current_free_iota(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Transform the flux-surface geometry carries without its toroidal current.
+
+    ``add_fluxes.f`` solves ``<B_u> = I(s)`` for the poloidal flux; this
+    evaluates the same expression with ``I = 0`` on the converged geometry and
+    stream function, half mesh with the axis slot dropped as
+    :func:`iota_profile`. It is the part of the transform that comes from
+    the three-dimensional shaping, a traceable stand-in for the vacuum
+    transform of the same boundary (which also loses the pressure-driven
+    shift, so verify a design with a vacuum solve). ``ncurr = 1`` only.
+    """
+    from .fields import magnetic_fields, metric_elements
+    from .geometry import half_mesh_jacobian
+    from .solver import _geometry
+
+    setup = rt.setup
+    if int(setup.ncurr) != 1:
+        raise ValueError("current_free_iota needs a current-constrained equilibrium (ncurr = 1)")
+    s = setup.s_full
+    _, geometry = _geometry(state, rt)
+    fields = magnetic_fields(
+        geometry=geometry, jacobian=half_mesh_jacobian(geometry, s=s),
+        metrics=metric_elements(geometry, s=s), trig=rt.trig, s=s, phips=setup.phips,
+        phipf=setup.phipf, chips=setup.chips, signgs=setup.signgs, gamma=rt.gamma,
+        mass=setup.mass, ncurr=1, enclosed_current=jnp.zeros_like(jnp.asarray(setup.icurv)))
+    return _iotas_half_from_fields(setup, fields)[1:]
+
+
 def mean_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     """Mean rotational transform over the half-mesh surfaces (axis excluded).
 

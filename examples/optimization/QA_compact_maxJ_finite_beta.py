@@ -33,8 +33,10 @@ COMPACT_QA_NFEV, COMPACT_QA_IOTA, COMPACT_QA_START (input deck of an earlier sta
 profiles file beside it) and COMPACT_QA_OUTPUT override the values below.
 """
 
+import faulthandler
 import json
 import os
+import signal
 from dataclasses import replace
 from pathlib import Path
 
@@ -49,6 +51,8 @@ from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles,
 from vmex.core.maxj import MaximumJResidual, common_trapped_pitches_state, maximum_j_profile
 from vmex.core.stability import ballooning_lambda
 from vmex.core.turbulence import flux_compression, quasilinear_flux_proxy
+
+faulthandler.register(signal.SIGUSR1)   # kill -USR1 <pid> prints every thread's stack
 
 # Number of field periods, and the seed deck the boundary is shaped from:
 NFP = 2

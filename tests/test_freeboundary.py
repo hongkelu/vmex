@@ -451,6 +451,23 @@ CONV_MGRID = REPO / "examples" / "data" / "mgrid_cth_like.nc"
 CONV_CASE = "cth_like_free_bdy"
 
 
+def test_free_boundary_turn_on_keeps_time_step():
+    """The vacuum turn-on soft restart leaves ``delt`` alone, as VMEC2000 does.
+
+    ``funct3d.f`` hands ``restart_iter`` a local copy of ``delt``, so the real
+    time step stays 0.7.  Reducing it by 0.9 cost the CTH-like deck 754
+    iterations against VMEC2000's 585 (ftol 1e-11).  Residuals 17 iterations
+    after the turn-on (53) match the VMEC2000 ``threed1`` trace (2.38e-4,
+    1.23e-4, 3.02e-5); the converged run takes 476 iterations (below).
+    """
+    if not CONV_MGRID.exists():
+        pytest.skip("real mgrid_cth_like.nc unavailable (run tools/fetch_assets.py)")
+    r = FB.solve_free_boundary(
+        VmecInput.from_file(CONV_DECK), mgrid_path=CONV_MGRID,
+        max_iterations=70, error_on_no_convergence=False)
+    np.testing.assert_allclose([r.fsqr, r.fsqz, r.fsql], [2.38e-4, 1.23e-4, 3.02e-5], rtol=0.02)
+
+
 @pytest.mark.full
 def test_free_boundary_converged_golden(golden_dir):
     """Free boundary converges to VMEC2000's fsq level with wout parity.
@@ -488,6 +505,9 @@ def test_free_boundary_converged_golden(golden_dir):
     stdout_g = (golden_dir / CONV_CASE / "stdout.txt").read_text()
     mg = re.search(r"VACUUM PRESSURE TURNED ON AT\s+(\d+)\s+ITERATIONS", stdout_g)
     assert mg and abs(int(m.group(1)) - int(mg.group(1))) <= 3
+
+    # 2b. VMEC2000 converges this deck in 476 iterations.
+    assert abs(result.iterations - 476) <= 2
 
     # 3. Per-variable wout parity vs the VMEC2000 golden (measured rmnc
     #    1.8e-5, zmns 1.2e-4, wb 2e-7, ctor 1e-15; gates leave headroom for
@@ -807,22 +827,21 @@ def test_first_vacuum_update_warns_when_the_mgrid_circulation_disagrees_with_cto
     assert len(doubled) == 1 and "I_TOR MISMATCH" in doubled[0] and "TOROIDAL CURRENT" in doubled[0]
 
 
-def test_cli_missing_mgrid_fallback_warns(tmp_path):
-    """CLI policy: missing mgrid -> fixed-boundary fallback warning (VMEC2000)."""
+def test_cli_missing_mgrid_raises(tmp_path):
+    """CLI policy: missing mgrid is an input error, never a silent fixed-boundary run."""
     import types
 
+    import pytest
+
     from vmex.core.cli import _free_boundary_plan
+    from vmex.core.errors import VmecInputError
 
     deck = tmp_path / "input.cth_like_free_bdy_lasym_small"
     deck.write_text(DECK.read_text())  # mgrid deliberately NOT copied
     inp = VmecInput.from_file(deck)
-    messages: list[str] = []
-    args = types.SimpleNamespace(coils=None)
-    plan = _free_boundary_plan(args, inp, deck,
-                               emit=lambda s, **k: messages.append(str(s)))
-    assert plan is None  # fixed-boundary fallback
-    assert any("FIXED-BOUNDARY" in msg for msg in messages)
-    assert any("mgrid file not found" in msg for msg in messages)
+    with pytest.raises(VmecInputError) as caught:
+        _free_boundary_plan(types.SimpleNamespace(coils=None), inp, deck, emit=print)
+    assert "mgrid file not found" in caught.value.hint
 
 
 def test_boundary_outside_the_mgrid_box_warns_as_becoil_does():

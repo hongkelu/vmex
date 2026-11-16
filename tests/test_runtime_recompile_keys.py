@@ -18,6 +18,7 @@ import dataclasses
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from vmex.core import solver
 from vmex.core.input import VmecInput
@@ -164,9 +165,11 @@ def test_failed_prefetched_executable_falls_back_to_the_lane(monkeypatch):
     def rejecting(carry, runtime):
         raise TypeError("argument drift")
 
+    compiled = rejecting
+
     class Prefetched(dict):
         def get(self, key, default=None):
-            return rejecting
+            return compiled
 
     with jax.disable_jit(False):
         rt = _small_runtime(1.0)
@@ -174,6 +177,15 @@ def test_failed_prefetched_executable_falls_back_to_the_lane(monkeypatch):
         expected = run()
         monkeypatch.setattr(solver, "_LANE_EXECUTABLES", Prefetched())
         fallback = run()
+
+        def donated(carry, runtime):
+            jax.tree.leaves(carry)[0].delete()
+            raise RuntimeError("backend execution failed")
+
+        import pytest
+        compiled = donated
+        with pytest.raises(RuntimeError, match="backend execution failed"):
+            run()
     for x, y in zip(jax.tree.leaves(expected), jax.tree.leaves(fallback)):
         np.testing.assert_array_equal(x, y)
 
@@ -190,18 +202,51 @@ def test_mixed_named_sharding_is_not_normalized(monkeypatch):
         jax.sharding.PartitionSpec(),
     )
     rt = dataclasses.replace(rt, rcon0=jax.device_put(rt.rcon0, named))
-    seen = []
+    seen, lookups = [], []
 
     def lane(carry, runtime):
         seen.append(runtime.rcon0.sharding)
-        return dataclasses.replace(carry, done=True, iteration=0, ier=11)
+        return dataclasses.replace(
+            carry, done=len(seen) == 3, iteration=len(seen), ier=11)
+
+    def executable(*args):
+        lookups.append(1)
+        return lane
 
     monkeypatch.setattr(solver, "_block_lane", lane)
-    solver._run_loop(
-        state, rt, mode="cli", ijacob=0, verbose=False, emit=None,
-        time_step0=0.9, nstep=200,
-    )
-    assert seen == [named]
+    monkeypatch.setattr(solver, "_LANE_EXECUTABLES", {})
+    for cached in (True, False):
+        seen.clear()
+        lookups.clear()
+        if cached:
+            monkeypatch.setattr(lane, "executable", executable, raising=False)
+        else:
+            monkeypatch.delattr(lane, "executable")
+        solver._run_loop(
+            state, rt, mode="cli", ijacob=0, verbose=False, emit=None,
+            time_step0=0.9, nstep=200,
+        )
+        assert seen == [named] * 3
+        assert lookups == ([1] if cached else [])
+
+
+def test_lane_lowering_out_of_memory_is_raised(monkeypatch) -> None:
+    """Out of memory while lowering the lane is raised, not retried on demand."""
+    def lane(carry, runtime):
+        raise AssertionError("the on-demand lane must not run")
+
+    def executable(*args):
+        raise RuntimeError("RESOURCE_EXHAUSTED: out of memory")
+
+    lane.executable = executable
+    monkeypatch.setattr(solver, "_block_lane", lane)
+    monkeypatch.setattr(solver, "_LANE_EXECUTABLES", {})
+    rt = _small_runtime(1.0)
+    with pytest.raises(RuntimeError, match="RESOURCE_EXHAUSTED"):
+        solver._run_loop(
+            solver._initial_state(rt.setup), rt, mode="cli", ijacob=0,
+            verbose=False, emit=None, time_step0=0.9, nstep=200,
+        )
 
 
 def test_silent_cpu_solve_keeps_block_lane(monkeypatch) -> None:

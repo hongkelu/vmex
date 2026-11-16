@@ -38,6 +38,7 @@ import dataclasses
 import json
 import time
 import warnings
+from collections.abc import Mapping
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -221,23 +222,60 @@ def essos_tracing_fields(wout: Any, coils: Any = None, *, wall: float | None = 0
     return {"field": field, "wall": surface, "exterior_field": exterior}
 
 
-def boozer_field(wout, *, mboz: int = 32, nboz: int = 32, mode_tolerance: float = MODE_TOLERANCE):
+def boundary_geometry(wout, *, mboz: int = 32, nboz: int = 32) -> dict:
+    """R, Z and nu Boozer spectra (``rmnc_b``, ``zmns_b``, ``numns_b`` and, if asymmetric, their sine
+    partners) of the outermost half-mesh surface, from the host transform."""
+    from booz_xform_jax import Booz_xform
+
+    bx = Booz_xform(verbose=0, mboz=int(mboz), nboz=int(nboz))
+    bx.read_wout_data(wout, flux=False)
+    bx.compute_surfs = [int(bx.ns_in) - 1]
+    bx.run()
+    keys = ("rmnc_b", "zmns_b", "numns_b") + (("rmns_b", "zmnc_b", "numnc_b") if bx.asym else ())
+    return {key: np.asarray(getattr(bx, key))[:, -1] for key in keys}
+
+
+class _BoozerBoundary(Mapping):
+    """Boozer metadata whose outermost-surface geometry is computed on first access (trajectory plots)."""
+
+    def __init__(self, base: dict, geometry_keys: tuple, loader):
+        self._data, self._keys, self._loader = dict(base), tuple(geometry_keys), loader
+
+    def __getitem__(self, key):
+        if key in self._keys and key not in self._data:
+            self._data.update(self._loader())
+        return self._data[key]
+
+    def __iter__(self):
+        return iter((*self._data, *(k for k in self._keys if k not in self._data)))
+
+    def __len__(self):
+        return len(self._data) + sum(k not in self._data for k in self._keys)
+
+
+def boozer_field(wout, *, mboz: int = 32, nboz: int = 32, mode_tolerance: float = MODE_TOLERANCE,
+                 angle_grid: int | None = 6):
     """Run ``booz_xform_jax`` on every surface of ``wout`` and return
-    ``(essos.boozer.BoozerField, Booz_xform)``."""
+    ``(essos.boozer.BoozerField, Booz_xform)``; ``bx`` holds the ``|B|`` spectra, G and I, not the R, Z and nu
+    spectra (see :func:`boundary_geometry`)."""
+    from inspect import signature
+
     from booz_xform_jax import Booz_xform
     from essos.boozer import BoozerField
 
     if bool(wout.lasym):
-        from inspect import signature
-
         if "bmns" not in signature(BoozerField.from_booz).parameters:
             raise ImportError("Non-symmetric tracing requires ESSOS sine-spectrum support; upgrade ESSOS")
     bx = Booz_xform(verbose=0, mboz=int(mboz), nboz=int(nboz))
     bx.read_wout_data(wout, flux=False)
-    bx.run()
+    # The orbits need only |B|, G and I on every surface: one jitted magnetic-only batched pass.
+    out = bx.run_jax(magnetic_only=True)
+    for name in ("bmnc_b", "bmns_b") if bx.asym else ("bmnc_b",):
+        setattr(bx, name, np.asarray(out[name]).T)
+    bx.Boozer_G, bx.Boozer_I, bx.s_b = np.asarray(out["bvco_b"]), np.asarray(out["buco_b"]), np.asarray(bx.s_in)
     # Boozer guiding-centre equations use psi = -Phi_tor/(2 pi) for VMEC's phi.
     psi0 = -float(np.asarray(wout.phi)[-1]) / (2 * np.pi)
-    return BoozerField.from_booz_xform(bx, psi0, mode_tolerance), bx
+    return BoozerField.from_booz_xform(bx, psi0, mode_tolerance, angle_grid=angle_grid), bx
 
 
 def truncation_message(truncation: float, silence: str) -> str:
@@ -525,6 +563,7 @@ def trace_alphas(
     mboz: int = 32,
     nboz: int = 32,
     mode_tolerance: float = MODE_TOLERANCE,
+    angle_grid: int | None = 6,
     energy_eV: float | None = None,
     mass: float | None = None,
     charge: float | None = None,
@@ -554,6 +593,9 @@ def trace_alphas(
         birth profile).
     mboz, nboz, mode_tolerance:
         Boozer resolution and the relative amplitude of dropped modes.
+    angle_grid:
+        ESSOS angular table points per shortest wavelength (default 6);
+        ``None`` evaluates the retained Fourier spectrum directly.
     method, tolerance:
         ``"adaptive8"`` (default) and ``"adaptive"`` control each particle's
         Dopri8 or Dopri5 step to the embedded-error ``tolerance``, so
@@ -605,6 +647,9 @@ def trace_alphas(
         raise ValueError(f"method must be one of {', '.join(METHODS)}")
     if not (np.isfinite(tolerance) and tolerance > 0):
         raise ValueError("tolerance must be positive and finite")
+    if angle_grid is not None and (isinstance(angle_grid, bool) or not isinstance(angle_grid, (int, np.integer))
+                                   or angle_grid < 1):
+        raise ValueError("angle_grid must be a positive integer or None")
     compact = compact is None or bool(compact)
     if devices is None:
         devices = jax.devices()
@@ -632,7 +677,8 @@ def trace_alphas(
         jax.monitoring.register_event_duration_secs_listener(_compile_listener)
         _COMPILE_S[1] = 1.0
     compile_start = _COMPILE_S[0]
-    field, bx = boozer_field(wout, mboz=mboz, nboz=nboz, mode_tolerance=mode_tolerance)
+    field, bx = boozer_field(wout, mboz=mboz, nboz=nboz, mode_tolerance=mode_tolerance,
+                             angle_grid=angle_grid)
     births = sample_births(field, nparticles, s=s, birth=birth, seed=seed, ne0=ne0, T0_keV=T0_keV)
     start = time.perf_counter()
     trace_compile_start = _COMPILE_S[0]
@@ -652,11 +698,10 @@ def trace_alphas(
         raise ValueError(f"{failed.sum()} alpha trajectories failed; loss fraction is undefined. "
                          "Reduce the timestep or inspect the field")
     loss_fractions = np.array([(trace.loss_times[lost] <= t).sum() for t in times]) / nparticles
-    last = -1
-    keys = ("rmnc_b", "zmns_b", "numns_b")
-    if bool(bx.asym):
-        keys += ("rmns_b", "zmnc_b", "numnc_b")
-    boundary = {key: np.asarray(getattr(bx, key))[:, last] for key in keys}
+    keys = ("rmnc_b", "zmns_b", "numns_b") + (("rmns_b", "zmnc_b", "numnc_b") if bx.asym else ())
+    boundary = _BoozerBoundary(dict(xm_b=np.asarray(bx.xm_b), xn_b=np.asarray(bx.xn_b), nfp=int(bx.nfp),
+                                    asym=bool(bx.asym), s=np.asarray(bx.s_b), iota=np.asarray(bx.iota)),
+                               keys, lambda: boundary_geometry(wout, mboz=mboz, nboz=nboz))
     result = AlphaTracingResult(
         nparticles=int(nparticles), loss_fraction=float(lost.mean()),
         particles_lost=int(lost.sum()),
@@ -666,8 +711,7 @@ def trace_alphas(
         lost_times=trace.loss_times, thermalized_times=trace.thermalized_times,
         initial_conditions=births, final_states=trace.states[:, -1],
         energy_error=trace.energy_error, trajectories=trace.states,
-        boozer=dict(boundary, xm_b=np.asarray(bx.xm_b), xn_b=np.asarray(bx.xn_b),
-                    nfp=int(bx.nfp), asym=bool(bx.asym), s=np.asarray(bx.s_b), iota=np.asarray(bx.iota)),
+        boozer=boundary,
     )
     result.metadata.update(
         tmax=float(tmax), timestep=float(timestep), s=float(s), seed=int(seed),
@@ -677,6 +721,8 @@ def trace_alphas(
                     if method.startswith("adaptive") else f"{method.upper()}") + " (Boozer guiding centre)",
         compact=bool(compact), boozer_modes=int(field.xm.size), spectral_truncation=truncation,
         mode_tolerance=float(mode_tolerance), mboz=int(mboz), nboz=int(nboz),
+        angle_grid=None if angle_grid is None else int(angle_grid),
+        angle_table=field.table is not None,
         scale_target=scale, b_scale=b_scale, r_scale=r_scale,
         volavgB=float(wout.volavgB), Aminor_p=float(wout.Aminor_p),
         compile_time_s=_COMPILE_S[0] - compile_start,

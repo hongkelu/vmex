@@ -64,6 +64,47 @@ use :func:`~vmex.core.optimize.mercier_stability_residual` for Mercier and
         (opt.mean_iota, 0.42, 1.0)],
        inp, max_mode=5, jac="implicit", use_ess=True)
 
+.. _objective-limits:
+
+Limits: ``at_least``, ``at_most``, ``between``
+----------------------------------------------
+
+A target ``(fun, 0.42, w)`` pulls ``fun`` to 0.42 from both sides.  Many
+requirements are not targets but limits: the smallest ``|iota|`` should stay
+above 0.42, the mirror ratio below 0.2, the aspect ratio below 8.  A two-sided
+residual would push a metric that already satisfies its limit back toward it,
+and that push competes with the main objective.  A limit is therefore
+written in the ``target`` slot as
+
+- ``opt.at_least(x)``: the row is ``max(x - fun, 0)``,
+- ``opt.at_most(x)``: the row is ``max(fun - x, 0)``,
+- ``opt.between(a, b)``: zero inside ``[a, b]``, the distance outside.
+
+The row is exactly zero, with zero gradient, while the limit holds, so the
+optimizer spends nothing on it; once the limit is violated the row is
+``sqrt(weight)`` times the distance, a smooth restoring force of size
+proportional to the violation.  ``fun`` may be a scalar or per-surface metric, and the
+bounds may be arrays of the same shape::
+
+    terms = [
+        (opt.aspect_ratio, 6.0, 0.01),              # target: pulled from both sides
+        (opt.min_abs_iota, opt.at_least(0.42), 100.0),   # limit: only below
+        (opt.mirror_ratio, opt.at_most(0.2), 100.0),     # limit: only above
+    ]
+
+Choose a weight large enough that a violation costs more than the gain in the
+main objective, and set the bound slightly inside the real requirement so
+the optimum does not rest exactly on it.
+
+Stability limits are the same construction applied to the Mercier and
+resistive-interchange profiles.  :func:`~vmex.core.optimize.stability_terms`
+returns both tuples, acting on ``PHIEDGE**2 * DMerc >= margin`` and
+``PHIEDGE**2 * D_R <= -margin`` (the criteria scale as ``PHIEDGE**-2``) with a
+radial weight that is zero inward of ``from_s`` and rises toward the edge::
+
+    stability = opt.stability_terms(inp, margin=1e-3, weight=1e4, from_s=0.5, edge_factor=4.0)
+    terms = qs_terms + [(f, band, stage_scale * w) for f, band, w in stability]
+
 Quasisymmetry
 -------------
 
@@ -112,6 +153,8 @@ and composable with both gradient modes:
   :func:`~vmex.core.optimize.soft_min_abs_iota` is the smooth variant
   (``softmax``-weighted, so it stays within ``[min, max]``) for optimizers
   that stall on the ties of a hard minimum;
+- :func:`~vmex.core.optimize.max_abs_iota` — the largest ``|iota|`` over the
+  same surfaces, for capping the transform with ``opt.at_most(...)``;
 - :func:`~vmex.core.optimize.mean_iota` /
   :func:`~vmex.core.optimize.edge_iota` — profile-average and boundary
   transform, for decks that genuinely want a target rather than a floor;
@@ -124,31 +167,24 @@ and composable with both gradient modes:
   :func:`~vmex.core.optimize.max_elongation` — equivalent-ellipse boundary
   elongation from Fourier-exact area and perimeter line integrals over one
   field period;
+- :func:`~vmex.core.optimize.min_boundary_curvature_radius` — the smallest
+  poloidal radius of curvature of the boundary cross-sections, in metres; a
+  floor keeps out tips sharper than coils can hold;
 - :func:`~vmex.core.optimize.magnetic_well` — the standard vacuum-well
   measure (positive = well, stabilizing).
 
-For an upper elongation bound, use a zero-target hinge rather than targeting
-the threshold itself.  This reproduces the usual SIMSOPT QI constraint while
-remaining a pure traceable tuple term:
+For an upper elongation bound, use ``opt.at_most`` rather than targeting
+the threshold itself (see :ref:`objective-limits`).  This reproduces the usual
+SIMSOPT QI constraint while remaining a pure traceable tuple term:
 
 .. code-block:: python
 
-   import jax.numpy as jnp
-
-   maximum_elongation = 8.0
-
-   def elongation_excess(equilibrium_state, solver_context):
-       return jnp.maximum(
-           opt.max_elongation(equilibrium_state, solver_context)
-           - maximum_elongation, 0.0
-       )
-
-   terms = [(elongation_excess, 0.0, 1.0)]
+   terms = [(opt.max_elongation, opt.at_most(8.0), 1.0)]
 
 The default Fourier quadrature is resolved for optimization modes through
 ``max_mode=5``.  ``ntheta`` and ``nphi`` can be passed explicitly to
 ``elongation_profile`` or ``max_elongation`` for convergence studies.  The
-hard maximum and hinge are nonsmooth only at exact ties or at the threshold;
+hard maximum and the limit are nonsmooth only at exact ties or at the threshold;
 away from those points their implicit derivatives are exact.
 
 The surface convention matters when reproducing another workflow.  Goodman's
@@ -188,7 +224,7 @@ The convenience
 ``DMerc[2:-1]`` and returns
 ``smoothing * softplus((margin - DMerc) / smoothing)``.  Positive ``DMerc``
 is stable, so target this residual to zero; the default ``margin=0`` and
-``smoothing=1e-6`` give a smooth approximation to the instability hinge
+``smoothing=1e-6`` give a smooth approximation to the instability limit
 ``max(-DMerc, 0)``.  Softplus is strictly positive at finite arguments, so a
 stable surface approaches rather than reaches zero; its residual decreases
 exponentially as ``DMerc - margin`` grows.
@@ -266,23 +302,24 @@ Sanity anchors, asserted for :class:`~vmex.core.omnigenity.QIResidual` in
 ``tests/test_omnigenity.py``: an analytically QI field scores ``< 1e-24``;
 the bundled ``nfp1_QI`` deck scores at least 20x below a circular tokamak,
 and lowest of the three when the (QA, deliberately non-QI) Landreman–Paul
-configuration is added.  ``examples/optimization/QI_optimization.py`` starts
-from the near-QI ``input.QI_nfp2_initial`` seed and runs one ``max_mode = 2``
-stage of 20 evaluations: on a 36-core workstation at four threads it reaches
-constructed QI 3.0e-3 (fine-grid validation 2.8e-3) with the ι, mirror and
-elongation limits met in 612 s, where the previous circular-seed example ran
-1,456 s and ended in a final solve that did not converge
-(``benchmarks/qi_optimization_profile_cpu.json``);
+configuration is added.  ``examples/optimization/QI_optimization.py``
+starts from the circular ``input.minimal_seed_nfp2`` torus with a 0.05
+rotating ellipse, spends one 15-evaluation stage with the shape terms
+multiplied by 30 and then three 30-evaluation stages at ``max_mode`` 1, 2
+and 3, and reaches constructed QI 1.4e-3 with the aspect, ι, mirror and
+elongation limits met.  Stages of 15 evaluations stall near 5e-3: with the
+grid argmin the constructed-QI rows are discontinuous in the boundary and
+trust-region steps stay near 1e-4;
 :doc:`/howto/optimize-a-boundary` describes the workflow.  The
 earlier Goodman-style *wout-lane* residual
-(:func:`~vmex.core.optimize.quasi_isodynamic_residual`, host NumPy,
+(:func:`~vmex.core.qi.quasi_isodynamic_residual`, host NumPy,
 ``jac=None``) remains available for diagnostics and cross-checks.
 
 The sampled value is part of the objective definition: always report the
 surface set and discretization with a QI total.  For example, an outer-surface
 diagnostic is not numerically interchangeable with a six-surface core-to-edge
 objective.  The independent wout/Boozer implementation
-(:func:`~vmex.core.optimize.quasi_isodynamic_residual_from_wout`) remains the
+(:func:`~vmex.core.qi.quasi_isodynamic_residual_from_wout`) remains the
 cross-check for a finished configuration.
 
 The branch matching, running extrema, and interpolation in the constructed
@@ -348,6 +385,72 @@ the reported certificate.
 When both terms use the same surfaces and pitch,
 :class:`~vmex.core.maxj.JInvariantQIAndMaximumJResidual` concatenates their
 cost-weighted rows after one shared Boozer transform.
+
+The constructed-QI interpolation fixes the first well wall at its prescribed
+maximum field. This removes roundoff amplification at nearly coincident nodes
+and preserves its derivative. Existing ``ConstructedQIResidual`` optimizers
+use the correction without script changes; it does not change the QI target.
+
+.. _objectives-mapped-pwo:
+
+Mapped-field contour variance
+-----------------------------
+
+:class:`~vmex.core.pwo.MappedPwOResidual` evaluates a live Boozer spectrum on
+fixed mapped coordinates and returns flattened least-squares rows. Its default
+normalization uses the live Boozer mean field on each surface::
+
+   from vmex.core.pwo import MappedPwOResidual
+
+   mapped = MappedPwOResidual(
+       [0.25, 0.5, 0.75],
+       a=0.3, b=0.0, c=-2.0, eta_min=2.8, ngamma=32, neta=32)
+
+``total`` is the sum of squared rows: the surface-weighted gamma variance
+divided by live ``B00**2``, averaged over eta. This is invariant under field
+rescaling and includes derivatives of the normalization. Supplying ``b_ref``
+selects an explicit fixed positive field reference in tesla instead. Surface weights are normalized to sum to one; this is a coordinate
+average, without a physical-area Jacobian factor.
+
+``compute_state`` also returns the mapped field, branch means, Jacobian,
+conservative Jacobian lower bound, toroidal-span upper bound and sampled
+area fraction. The map rejects uncertified nonfolding domains, nonpositive
+reference fields and nonpositive mapped fields. Full-surface field bounds,
+geometry and transport remain separate checks. ``diagnostics_state`` reuses
+the transform for sampled full-surface extrema; ``physical_metrics`` checks
+these limits, signed iota, aspect ratio, oriented Jacobian and solver residuals.
+The signed transform is live;
+freeze the map parameters, cut and quadrature, not iota or the default field scale.
+See :ref:`confinement-mapped-pwo` for the formula and its relation to bounce
+action.
+
+**Map validity.** ``limit_map=True`` clips ``(a, b, c, eta_min)`` on each surface
+to the closest one-to-one map for the live ``iota``, so every parameter value
+gives a valid residual. Without it, an invalid map makes the rows non-finite.
+
+**Free map.** :class:`~vmex.core.pwo.FreeMapProblem` wraps a boundary stage whose
+first residual rows are ``mapped.spectrum_state`` and adds the map parameters
+to the least-squares variables. The map does not change the equilibrium, so its
+Jacobian columns come from the kernel alone. Parameters move through a sigmoid
+inside ``FreeMapProblem.MAP_BOUNDS``, and a penalty keeps the mapped area
+fraction above ``area_floor``, so the fit cannot shrink the map to nothing.
+``values(x)`` returns the optimized parameters.
+
+**Constraints that the variance does not see.** Each is a function of the state used
+as a limit, as in ``(opt.edge_jacobian_ratio, opt.at_least(0.25), 100.0)``
+(see :ref:`objective-limits`).
+
+- ``opt.edge_jacobian_ratio`` returns the min/max Jacobian ratio in each of
+  the outermost three radial cells. A pinched outer cell passes on the
+  optimizer's grid but flips the Jacobian sign when the boundary is re-solved on
+  a finer ``ns``, so the final solve fails. A floor of 0.25 prevents this.
+- ``opt.axis_excursion`` returns the RMS size of the magnetic axis' helical
+  harmonics in metres. A ceiling keeps the axis from winding away from a circle
+  as the boundary gains helicity.
+
+``examples/optimization/pwO_optimization.py`` combines these with the aspect
+ratio, an ``|iota|`` floor, a mirror-ratio ceiling and an optional magnetic well; see
+:ref:`optimization-low-transport`.
 
 Fast-ion confinement (Gamma_c)
 ------------------------------
@@ -441,11 +544,16 @@ equilibrium's current profile self-consistent with it (reproducing the workflow 
 
 The complete runnable workflows are
 ``examples/optimization/QA_optimization_bootstrap.py``,
-``QH_optimization_bootstrap.py`` and ``QI_optimization_bootstrap.py``;
+``QH_optimization_bootstrap.py`` and ``QI_optimization_bootstrap.py``
+(the last continues the vacuum design of ``QI_optimization.py`` up a beta ladder,
+with ``BOOTSTRAP``, ``MAGNETIC_WELL_FLOOR``, ``MERCIER`` and ``GAMMA_C_STAGES``
+switching the current, magnetic-well, Mercier and Gamma_c rows independently);
 ``QA_optimization_low_bootstrap.py`` and ``optimize_bootstrap_current.py`` add a
 row on the Redl ``<J.B>`` itself (target 0), and
 ``QI_optimization_bootstrap_dkx.py`` replaces the Redl mismatch row with DKX's
-kinetic one (``dkx.bootstrap.KineticBootstrapMismatch``).  Their
+kinetic one (``dkx.bootstrap.KineticBootstrapMismatch``);
+``QI_optimization_bootstrap_er.py`` evaluates it at the ambipolar ``E_r``
+(``ambipolar=True``).  Their
 setup has two distinct steps:
 
 1. ``KineticProfiles`` describes the density and temperature seen by the
@@ -531,7 +639,7 @@ banded symmetric-tridiagonal solve (bisection for the top root, Hellmann--Feynma
 - :func:`~vmex.core.stability.ballooning_lambda` — the most-unstable
   eigenvalue per (surface, field line, ballooning parameter); ``λ > 0`` is
   unstable, with ``λ = (γ a_N/v_A)²``;
-- :func:`~vmex.core.stability.ballooning_residual` — one hinge row
+- :func:`~vmex.core.stability.ballooning_residual` — one limit row
   ``max(λ - threshold, 0)`` per line, the least-squares form of Gaur
   *et al.* (2025) and DESC's ``BallooningStability``;
 - :func:`~vmex.core.stability.ballooning_growth_rate` — the largest ``λ``
@@ -649,6 +757,10 @@ Which objectives differentiate how
      - yes
      - yes
      - signed radial action slope with matched well identity
+   * - :class:`~vmex.core.maxj.DriftConfinementResidual`
+     - yes
+     - yes
+     - limit on the smooth maximum radius of bounce-averaged drift orbits
    * - :class:`~vmex.core.maxj.JInvariantQIAndMaximumJResidual`
      - yes
      - yes
@@ -668,7 +780,7 @@ Which objectives differentiate how
    * - :func:`~vmex.core.stability.ballooning_residual`
      - yes
      - yes
-     - all-JAX eigenproblem, one hinge row per field line
+     - all-JAX eigenproblem, one limit row per field line
    * - :func:`~vmex.core.turbulence.turbulent_growth_rate`
      - yes
      - yes
@@ -677,11 +789,19 @@ Which objectives differentiate how
      - yes
      - yes
      - traceable ``L_grad_B`` lane (soft-min via ``softmin_k``)
+   * - :func:`~vmex.core.optimize.l_grad_b_excess_state`
+     - yes
+     - yes
+     - one-sided pointwise rows for a minimum gradient scale length
+   * - :func:`~vmex.core.optimize.weighted_magnetic_well`
+     - yes
+     - yes
+     - volume-derivative well between two user-chosen radial regions
    * - :func:`~vmex.core.optimize.d_merc_state`,
        :func:`~vmex.core.optimize.mercier_stability_residual`
      - yes
      - yes
-     - traceable Mercier profile / smooth interior instability hinge
+     - traceable Mercier profile / smooth interior instability limit
    * - :func:`~vmex.core.optimize.jdotb_state`,
        :func:`~vmex.core.optimize.jdotb_residual`,
        :func:`~vmex.core.optimize.mercier_shear_state`,
@@ -697,7 +817,7 @@ Which objectives differentiate how
      - no
      - host-NumPy wout engine (``l_grad_b``: use
        :func:`~vmex.core.optimize.l_grad_b_state` instead)
-   * - :func:`~vmex.core.optimize.quasi_isodynamic_residual` (wout lane)
+   * - :func:`~vmex.core.qi.quasi_isodynamic_residual` (wout lane)
      - yes
      - no
      - host-NumPy Boozer tables (use

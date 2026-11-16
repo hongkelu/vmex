@@ -433,6 +433,8 @@ def solve_multigrid(
     time_step0, nstep_cadence = _loop_driver_config(
         inp, time_step=time_step, nstep=nstep
     )
+    if lambda_m0_floor is None:
+        lambda_m0_floor = inp.lambda_m0_floor
     for igrid in range(n_stages):
         nsval = int(ns_arr[igrid])
         resolution = resolution_from_input(inp, ns=nsval)
@@ -567,10 +569,18 @@ def solve_multigrid(
                 lambda_m0_floor=lambda_m0_floor,
             )
         last_stage = not np.any(ns_arr[igrid + 1:] >= nsval)
+        # runvmec.f (lgiveup): end the ladder, and so report non-convergence,
+        # when a stage leaves any residual above fgiveup * ftol.
+        gave_up = bool(inp.lgiveup) and not last_stage and max(
+            float(carry.fsqr), float(carry.fsqz), float(carry.fsql)
+        ) > float(ftol_arr[igrid]) * float(inp.fgiveup)
+        last_stage = last_stage or gave_up
         if ier not in (SUCCESSFUL_TERM_FLAG, MORE_ITER_FLAG) or (
                 last_stage and ier != SUCCESSFUL_TERM_FLAG
                 and not (ier == MORE_ITER_FLAG and not raise_on_max_iterations)):
             _finalize(carry, rt)  # raises the typed error for this stage
+        if gave_up:
+            break
         # allocate_ns.f saves old xc and copies it into the newly allocated
         # xstore before initialize_radial.f scales/interpolates that array.
         state = carry.state
@@ -1061,24 +1071,16 @@ def solve_file(
 
     # Free-boundary routing exactly as ``vmex <input>`` does it: MGRID_FILE is
     # resolved against the deck's directory, the coil metadata reaches the
-    # wout, and an unreadable mgrid falls back to a fixed-boundary solve
-    # (VMEC2000 policy).  Explicit mgrid_path/external_field keywords win.
+    # wout, and a missing mgrid raises.  Explicit mgrid_path/external_field keywords win.
     freeb_plan = None
     if bool(inp.lfreeb) and not ({"mgrid_path", "external_field"} & solve_kwargs.keys()):
-        import dataclasses
         import types
-        import warnings
 
         from .cli import _free_boundary_plan
 
-        def _warn(message):
-            warnings.warn(" ".join(message.split()), RuntimeWarning, stacklevel=3)
-
         freeb_plan = _free_boundary_plan(
-            types.SimpleNamespace(coils=None), inp, _Path(path), emit=_warn
+            types.SimpleNamespace(coils=None), inp, _Path(path), emit=print
         )
-        if freeb_plan is None:
-            inp = dataclasses.replace(inp, lfreeb=False)
 
     if bool(inp.lfreeb):
         if options.polish is not False:

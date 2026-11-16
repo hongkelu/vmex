@@ -13,7 +13,7 @@ and keeping every row added so far. STAGES is a comma-separated list:
     merc=M    add or move the Mercier and resistive-interchange limits to the
               margin M on PHIEDGE**2 DMerc (raise M in small held steps)
     ball      add one row per ideal-ballooning field line
-    maxj=S    add or move the maximum-J rows to the surfaces S ... 0.9
+    maxj=S    add or move the maximum-J rows to the surfaces S ... 0.8
     chi=F     cap the flux compression in bad curvature at F times its value
               when the first chi stage starts
     lgb=L     floor on the edge magnetic-gradient scale length [m], the
@@ -92,7 +92,7 @@ BALLOONING_THRESHOLD = -5.0e-4
 # Maximum-J: upper bound on (1/J) dJ/ds, the trapped-well depths the common
 # pitches are drawn from, and the bounce-action quadrature:
 MAXJ_TARGET = -0.01
-MAXJ_OUTER_S = 0.9
+MAXJ_OUTER_S = 0.8                # wells of the 0.8-0.9 pair could not be matched in the QA tried
 MAXJ_SPACING = 0.1
 TRAPPING_DEPTHS = (0.2, 0.4, 0.6, 0.8)
 ACTION = dict(nalpha=9, points_per_period=64, num_periods=8)
@@ -213,18 +213,20 @@ def chi(equilibrium_state, solver_context):
     return flux_compression(equilibrium_state, solver_context, **CHI)
 
 
-def maximum_j_rows(inner_s):
-    """Maximum-J residual on inner_s ... MAXJ_OUTER_S at pitches common to those surfaces.
+def maximum_j_rows(inner_s, outer_s=MAXJ_OUTER_S, usable_only=True):
+    """Maximum-J residual on inner_s ... outer_s at pitches common to those surfaces.
 
     A pitch whose wells cannot be matched between two surfaces of the current
     field gives NaN rows, so only the pitches that are valid now are kept.
     """
-    surfaces = np.arange(inner_s, MAXJ_OUTER_S + 1e-9, MAXJ_SPACING)
+    surfaces = np.arange(inner_s, outer_s + 1e-9, MAXJ_SPACING)
     state, context = equilibrium.solution, equilibrium.solver_context
     options = dict(mboz=ACTION_MBOZ, nboz=ACTION_MBOZ, max_wells=ACTION_MAX_WELLS,
                    quadrature_order=ACTION_QUADRATURE, target=MAXJ_TARGET, **ACTION)
     pitch = np.asarray(common_trapped_pitches_state(
         state, context, surfaces, TRAPPING_DEPTHS, **ACTION))
+    if not usable_only:
+        return MaximumJResidual(surfaces, pitch, **options)
     valid = np.all(np.asarray(MaximumJResidual(surfaces, pitch, **options).compute_state(
         state, context)["valid_pitch_pair"]), axis=0)
     print(f"maximum-J surfaces {surfaces.round(2)}: {int(valid.sum())} of {valid.size} pitches usable")
@@ -250,9 +252,9 @@ chi_reference = mercier_margin = None
 def metrics(equilibrium):
     """Scalars of one equilibrium, for the stage log."""
     state, context = equilibrium.solution, equilibrium.solver_context
-    report = maximum_j_rows(0.1)   # whole volume, pitches of this field
-    maxj = report.compute_state(state, context) if report else None
-    profile = maximum_j_profile(maxj) if report else {"s_max_j": np.nan, "fraction": []}
+    # Whole volume at the pitches of this field; pairs without matched wells read None.
+    maxj = maximum_j_rows(0.1, 0.9, usable_only=False).compute_state(state, context)
+    profile = maximum_j_profile(maxj)
     return {
         "qa": float(qs.total_state(state, context)),
         "bootstrap_mismatch": float(terms["bootstrap"][0].total_state(state, context)),
@@ -265,7 +267,8 @@ def metrics(equilibrium):
         "max_ballooning": float(worst_ballooning(state, context)),
         "chi": float(chi(state, context)),
         "l_grad_b": float(opt.l_grad_b_state(state, context)),
-        "maxj_fraction": float(maxj["maximum_j_fraction"]) if report else None,
+        "maxj_fraction": float(maxj["maximum_j_fraction"]),
+        "maxj_excluded_pitch": float(maxj["excluded_pitch_fraction"]),
         "maxj_s": float(profile["s_max_j"]),
         "maxj_profile": [None if np.isnan(f) else round(float(f), 3) for f in profile["fraction"]],
     }

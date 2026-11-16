@@ -39,6 +39,7 @@ def test_ky_scan_points_sit_on_the_gkx_grid(tmp_path):
     assert deck["grid"]["y0"] == pytest.approx(10.0)
     assert (deck["grid"]["Ny"] - 1) // 3 >= 10  # highest scan ky is a resolved mode
     assert deck["geometry"]["torflux"] == 0.5 and deck["physics"]["adiabatic_electrons"] is True
+    assert deck["geometry"]["npol"] == 1.0
     kinetic = dataclasses.replace(cfg, kinetic_electrons=True)
     deck = tomllib.loads(gk_run.write_deck(tmp_path / "k.toml", tmp_path / "wout_x.nc", kinetic,
                                            nonlinear=True).read_text())

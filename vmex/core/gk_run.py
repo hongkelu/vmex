@@ -42,6 +42,7 @@ class TurbulenceSettings:
 
     s: float = 0.5  # normalized toroidal flux of the flux tube
     alpha: float = 0.0  # field-line label
+    npol: float = 1.0  # poloidal turns covered by the flux tube
     tprim: float = 3.0  # a/L_Ti (ITG drive; Cyclone-like, GX stellarator papers)
     fprim: float = 1.0  # a/L_n
     ky_min: float = 0.1
@@ -86,7 +87,7 @@ model = "vmec"
 vmec_file = "{wout}"
 torflux = {s:.6g}
 alpha = {alpha:.6g}
-npol = 1.0
+npol = {npol:.6g}
 
 [init]
 # Seed every (kx, ky) mode: a single seeded mode never couples nonlinearly.
@@ -143,7 +144,7 @@ def write_deck(path: Path, wout: Path, cfg: TurbulenceSettings, *, nonlinear: bo
                                    tprim=cfg.tprim, fprim=cfg.fprim, nu=0.0)
     y0 = 1.0 / cfg.ky_min
     path.write_text(_DECK.format(
-        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, t_max=cfg.t_max if nonlinear else min(_T_LINEAR, cfg.t_max),
+        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, npol=cfg.npol, t_max=cfg.t_max if nonlinear else min(_T_LINEAR, cfg.t_max),
         nx=cfg.nx if nonlinear else 1, ny=cfg.ny if nonlinear else 3 * int(ky_grid(cfg)[-1] * y0 + 0.5) + 1, nz=cfg.nz,
         lx=2 * np.pi * y0, ly=2 * np.pi * y0, y0=y0, boundary="fix aspect" if nonlinear else "linked",
         linear=str(not nonlinear).lower(), nonlinear=str(nonlinear).lower(),
@@ -240,10 +241,10 @@ def run_turbulence(wout_path: Path, outdir: Path, cfg: TurbulenceSettings = Turb
     label = wout_path.stem.removeprefix("wout_")
     electrons = "kinetic" if cfg.kinetic_electrons else "adiabatic"
     emit(f" Gyrokinetic turbulence (GKX {gkx.__version__}, {jax.default_backend()} backend): "
-         f"s={cfg.s:g}, alpha={cfg.alpha:g}, a/LTi={cfg.tprim:g}, a/Ln={cfg.fprim:g}, {electrons} electrons")
+         f"s={cfg.s:g}, alpha={cfg.alpha:g}, npol={cfg.npol:g}, a/LTi={cfg.tprim:g}, a/Ln={cfg.fprim:g}, {electrons} electrons")
     emit(f"   linear: {cfg.nky} ky in [{cfg.ky_min:g}, {cfg.ky_max:g}]; nonlinear: "
          f"{cfg.nx}x{cfg.ny}x{cfg.nz} (Nx,Ny,Nz), (Nl,Nm)=({cfg.nl},{cfg.nm}), t_max={cfg.t_max:g} a/v_ti")
-    emit("   Change with --turbulence-s, --turbulence-alpha, --turbulence-ky MIN MAX N, "
+    emit("   Change with --turbulence-s, --turbulence-alpha, --turbulence-npol, --turbulence-ky MIN MAX N, "
          "--turbulence-grid NX NY NZ, --turbulence-moments NL NM, --turbulence-tmax, "
          "--turbulence-gradients TPRIM FPRIM, --turbulence-kinetic-electrons")
     stages = _Stages(emit, {"geom": 1.0, "scan": 3.0, "mode": 1.0, "nl": 6.0})

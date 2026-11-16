@@ -102,7 +102,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
                   gauge_max_share=None, gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3,
-                  gradient_fit_xtol=None, gradient_certify=None):
+                  gradient_fit_xtol=None, gradient_certify=None, promote_trials=False):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -125,7 +125,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         values then become the no-label fit's.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
         residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
         ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
-        their tolerances.
+        their tolerances.  With ``promote_trials`` every trial is evaluated as :meth:`accept_x` would leave it (its
+        gauge refresh and converged gradient included, undone if another point is asked for next), so the values
+        an optimizer compares are those it continues from.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -142,12 +144,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_start=boundary_start, gauge_refresh=gauge_refresh,
                    gauge_max_share=gauge_max_share, gauge_release=gauge_release, gradient_rounds=gradient_rounds,
                    gradient_rtol=gradient_rtol,
-                   gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify)
+                   gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify,
+                   promote_trials=promote_trials)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
                  boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
-                 gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None):
+                 gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None,
+                 promote_trials=False):
         im = model._im
         self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
         self.gauge_release = bool(gauge_release)
@@ -156,6 +160,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.gradient_certify = None if gradient_certify is None else float(gradient_certify)
         if self.gradient_certify is not None and (self.gradient_fit_xtol is None or not self.gradient_rounds):
             raise ValueError("gradient_certify needs gradient_fit_xtol and gradient_rounds")
+        self.promote_trials, self._provisional = bool(promote_trials), None  # (key, the state before it)
         self.model = model
         self.field = lambda x: model.gauged(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -274,6 +279,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._count("gauge_sets")
         # x's fit as it is (flat arc's rows vanish there), under the new rows
         sol.pop("gradients", None)
+        sol.pop("J", None)
         self._cache, self._rejections, self._anchor = {key: sol}, {}, {}
         self._start, self._start_state, self._start_key = np.asarray(sol["x"]), sol["state"], key
 
@@ -294,6 +300,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
+            # the model's own cold solve of this boundary must not answer for the saved state (a converged
+            # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
+            for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
+                memo.pop(self.model.cfg, None)
             evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state, tight=True)
             if evaluated is not None:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
@@ -340,19 +350,56 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _record(self, x):
         x = np.asarray(self._x(x), dtype=float)
+        if self._provisional is not None and x.tobytes() != self._provisional[0]:
+            self._restore()  # the optimizer did not take the promoted trial
         sol = self._solve(x)
         accepted = getattr(self, "accepted", None)
-        if sol is not None and self.gradient_certify is not None and not (
-                accepted is not None and np.array_equal(x, accepted.parameters)):  # the accepted point stands
-            sol = self._certify(x, sol)
+        if sol is not None and not (accepted is not None and np.array_equal(x, accepted.parameters)):
+            if self.promote_trials and accepted is not None:
+                sol = self._promote_trial(x)
+            elif self.gradient_certify is not None:  # the accepted point stands
+                sol = self._certify(x, sol)
         if sol is None:
             self.metadata["holder"]["failed_trials"] += 1
             raise TrialRejected(self._rejections[x.tobytes()])
         return sol
 
+    _SAVED = ("_cache", "_rejections", "_anchor", "_start", "_start_state", "_start_key", "_multipliers")
+    _SAVED_MODEL = ("_gauge", "_last_linearize", "_linearization", "_radius")
+
+    def _promote_trial(self, x):
+        """The trial ``x`` as :meth:`accept_x` leaves it, with its gradient (``None``: rejected); the state before it
+        is kept until the trial is accepted or another point is asked for."""
+        key = x.tobytes()
+        if self._provisional is not None:
+            return self._cache[key]
+        curvature = self._curvature
+        self._provisional = (key, [getattr(self, name) for name in self._SAVED],
+                             [getattr(self.model, name) for name in self._SAVED_MODEL], (curvature.D, curvature.ED))
+        try:
+            self._promote(x)
+            sol = self._certify(x, self._cache[key])
+            reason = None if sol is not None else self._rejections[key]
+        except TrialRejected as error:  # its fit does not tighten
+            sol, reason = None, str(error)
+        if sol is None:
+            self._restore()
+            self._cache[key], self._rejections[key] = None, reason
+        return sol
+
+    def _restore(self):
+        """Undo :meth:`_promote_trial`; its trial is solved again if asked for."""
+        key, saved, model, (self._curvature.D, self._curvature.ED) = self._provisional
+        for name, value in zip(self._SAVED, saved):
+            setattr(self, name, value)
+        for name, value in zip(self._SAVED_MODEL, model):
+            setattr(self.model, name, value)
+        self._cache.pop(key, None)
+        self._provisional = None
+
     def _certify(self, x, sol):
         """``sol`` with its gradient, or ``None`` (rejected) where its fit step or a Newton row's relative residual ends
-        above ``gradient_certify`` times its tolerance, or the Newton terms fall back to Gauss-Newton."""
+        above ``gradient_certify`` (when set) times its tolerance, or the Newton terms fall back to Gauss-Newton."""
         if "gradients" in sol:
             return sol
         anchor, fallbacks = self._anchor, self.stats.get("newton_fallbacks", 0)
@@ -365,20 +412,23 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         else:
             fit, newton = self.stats.get("fit_step", np.inf), self.stats.get("newton_residual", np.inf)
             factor = self.gradient_certify
-            if (fit <= factor * self.gradient_fit_xtol and newton <= factor * self.gradient_rtol
-                    and self.stats.get("newton_fallbacks", 0) == fallbacks):
+            if factor is None or (fit <= factor * self.gradient_fit_xtol and newton <= factor * self.gradient_rtol
+                                  and self.stats.get("newton_fallbacks", 0) == fallbacks):
                 return sol
             reason = f"uncertified gradient: fit step {fit:.1e}, Newton residual {newton:.1e}"
         self._anchor = anchor  # the next trials start from the last certified linearization
         return self._reject(x.tobytes(), reason)
 
-    def _linearize(self, x, sol):
-        """Every row's design gradient at ``sol`` (cached), re-solved tight and polished with its own Jacobian.
+    def _fit_jacobian(self, x, sol):
+        """``sol``'s Jacobian (cached until its gradients are) once it is re-solved tight and its fit polished or
+        converged.
 
-        The record's values become those of the tight (or polished) state it differentiates, so a value asked for
-        after its gradient is that state's."""
-        if "gradients" in sol:
-            return sol["gradients"]
+        The record's values become those of the tight (or polished) state, so a value asked for after its gradient is
+        that state's."""
+        if "J" in sol:
+            if "fit_step" in sol:  # the step its fit converged to, for a certification that follows
+                self.stats["fit_step"] = sol["fit_step"]
+            return sol["J"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
 
@@ -416,6 +466,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                            values=np.asarray(self._rows(state, params, xj)))
             else:
                 J = tight()
+        sol["J"] = J
+        return J
+
+    def _linearize(self, x, sol):
+        """Every row's design gradient at ``sol`` (cached), at its tight, converged fit (``_fit_jacobian``)."""
+        if "gradients" in sol:
+            return sol["gradients"]
+        model, xj = self.model, jnp.asarray(x)
+        field, nb = self.field(xj), model.x0.size
+        J = self._fit_jacobian(x, sol)
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj)
@@ -437,6 +497,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
                             params=params, cost=0.5 * sol["rows"] @ sol["rows"])
         sol["gradients"] = gradients
+        sol.pop("J", None)
         return gradients
 
     def _cost_gradient(self, z, params0, field, xj, *, design=True, near=None):
@@ -563,7 +624,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._count("fit_steps", steps)
         self._count("fit_products", products[0])
         self._count("fit_linearizations", refreshes)
-        self.stats["fit_step"] = size
+        self.stats["fit_step"] = sol["fit_step"] = size
         if moved:
             sol.update(x=b, aux=got[3])
         return J_b if moved else None
@@ -661,15 +722,28 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def accept_x(self, x):
         """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
-        key = np.asarray(self._x(x), dtype=float).tobytes()
-        if self._cache.get(key) is None:
-            raise ValueError("evaluate the candidate before accepting it")
-        self.accepted, self.accepted_step = _AcceptedPoint(np.asarray(x, dtype=float).copy()), self.accepted_step + 1
+        x = np.asarray(self._x(x), dtype=float)
+        key = x.tobytes()
+        if self._provisional is None or self._provisional[0] != key:
+            if self._provisional is not None:
+                self._restore()
+            if self._cache.get(key) is None:
+                raise ValueError("evaluate the candidate before accepting it")
+            self._promote(x)
+        self._provisional = None
+        self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
-        if self.model._gauge is not None and (
-                (self.gauge_refresh and self.accepted_step % self.gauge_refresh == 0)
-                or (self.gauge_max_share is not None and self.gauge_share(x) > self.gauge_max_share)):
-            x = np.asarray(self._x(x), dtype=float)
+
+    def _promote(self, x):
+        """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one."""
+        sol = self._cache[x.tobytes()]
+        reset = self.model._gauge is not None and bool(
+            self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0)
+        if self.model._gauge is not None and not reset and self.gauge_max_share is not None:
+            if "gradients" not in sol:  # the share is the converged fit's; the gradient follows the gauge decision
+                self._fit_jacobian(x, sol)
+            reset = self.gauge_share(x) > self.gauge_max_share
+        if reset:
             if self.gauge_release:
                 self._release_gauge(x)
             self._set_gauge(x)
@@ -718,6 +792,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def close(self):
         """Drop the cached trials but the accepted one."""
+        if self._provisional is not None:
+            self._restore()
         key = self.accepted.parameters.tobytes()
         self._cache = {k: v for k, v in self._cache.items() if k == key}
 

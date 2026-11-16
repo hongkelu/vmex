@@ -128,8 +128,6 @@ links to the module that documents it.
   (``three_terms=`` of :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`);
   :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`
   — single-stage optimization at that free boundary
-- :class:`~vmex.core.coil_design.CoilDesign` — design vector -> ESSOS coils plus the
-  plasma's PHIEDGE and current profile, the field and plasma maps of that problem
 - :class:`~vmex.core.extender.MagneticField` — base JAX field with explicit
   and stored-point evaluation;
   :class:`~vmex.core.extender.VmecInteriorField` — field inside the plasma;
@@ -327,6 +325,8 @@ _LAZY_ATTRS: dict[str, tuple[str, str | None]] = {
     "solve_free_boundary_three_terms": (".core.freeboundary_three_terms", "solve_free_boundary_three_terms"),
     "ThreeTermsFreeBoundaryProblem": (".core.freeboundary_three_terms_problem", "ThreeTermsFreeBoundaryProblem"),
     "CoilDesign": (".core.coil_design", "CoilDesign"),
+    "CoilLimits": (".core.coil_design", "CoilLimits"),
+    "coil_constraint": (".core.coil_design", "coil_constraint"),
     "read_mgrid": (".core.mgrid", "read_mgrid"),
     "tabulate_cartesian_field": (".core.mgrid", "tabulate_cartesian_field"),
     "write_mgrid": (".core.mgrid", "write_mgrid"),

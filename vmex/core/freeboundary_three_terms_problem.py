@@ -126,8 +126,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
         ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
         their tolerances.  With ``promote_trials`` every trial is evaluated as :meth:`accept_x` would leave it (its
-        gauge refresh and converged gradient included, undone if another point is asked for next), so the values
-        an optimizer compares are those it continues from.
+        ``gauge_max_share`` refresh and converged gradient included, undone if another point is asked for next), so
+        the values an optimizer compares are those it continues from.  The scheduled refresh waits for
+        :meth:`accept_x`: its release, which moves the values, runs once a step, not once a trial.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -377,7 +378,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._provisional = (key, [getattr(self, name) for name in self._SAVED],
                              [getattr(self.model, name) for name in self._SAVED_MODEL], (curvature.D, curvature.ED))
         try:
-            self._promote(x)
+            self._promote(x, scheduled=False)
             sol = self._certify(x, self._cache[key])
             reason = None if sol is not None else self._rejections[key]
         except TrialRejected as error:  # its fit does not tighten
@@ -721,25 +722,30 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
     def accept_x(self, x):
-        """Promote an evaluated point after the optimizer accepts it; drop the other trials."""
+        """Promote an evaluated point after the optimizer accepts it; drop the other trials.  Returns whether the
+        promotion re-fitted the point (a gauge release), so that its values moved."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
-        if self._provisional is None or self._provisional[0] != key:
+        promoted = self._provisional is not None and self._provisional[0] == key
+        if not promoted:
             if self._provisional is not None:
                 self._restore()
             if self._cache.get(key) is None:
                 raise ValueError("evaluate the candidate before accepting it")
-            self._promote(x)
+        releases = self.stats.get("gauge_releases", 0)
+        self._promote(x, share=not promoted)
         self._provisional = None
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
+        return self.stats.get("gauge_releases", 0) > releases
 
-    def _promote(self, x):
-        """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one."""
+    def _promote(self, x, *, scheduled=True, share=True):
+        """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one (``scheduled``) or the
+        gauge rows' share of its cost is above ``gauge_max_share`` (``share``)."""
         sol = self._cache[x.tobytes()]
-        reset = self.model._gauge is not None and bool(
+        reset = scheduled and self.model._gauge is not None and bool(
             self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0)
-        if self.model._gauge is not None and not reset and self.gauge_max_share is not None:
+        if share and self.model._gauge is not None and not reset and self.gauge_max_share is not None:
             if "gradients" not in sol:  # the share is the converged fit's; the gradient follows the gauge decision
                 self._fit_jacobian(x, sol)
             reset = self.gauge_share(x) > self.gauge_max_share

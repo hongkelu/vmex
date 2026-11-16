@@ -527,16 +527,18 @@ def dkx_current(inp, fixed, device):
 
 
 def restart_input(run):
-    """A finished run's ``input.run`` with its final WOUT's boundary, PHIEDGE and current profile (``--restart``).
+    """A finished run's ``input.run`` with its final boundary, PHIEDGE and current profile (``--restart``).
 
-    A run that held its current fixed (``--fixed-current`` in its ``run.json``) keeps the current of its
-    ``input.run``: the WOUT stores the computed current, which is not exactly the held one.
+    These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  An older
+    run has only the WOUT, which stores the computed current, not exactly the deck's: a run that held its current
+    fixed (``--fixed-current`` in its ``run.json``) then keeps the current of its ``input.run``.
     """
     import vmex as vj
 
-    final = vj.VmecInput.from_wout(run / "wout.nc")
-    record = run / "run.json"
-    held = record.exists() and "--fixed-current" in json.loads(record.read_text())["argv"]
+    saved, record = run / "input.final", run / "run.json"
+    final = vj.VmecInput.from_file(saved) if saved.exists() else vj.VmecInput.from_wout(run / "wout.nc")
+    held = (not saved.exists() and record.exists()
+            and "--fixed-current" in json.loads(record.read_text())["argv"])
     names = ("rbc", "zbs", "phiedge") + (() if held else ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor"))
     return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False,
                    **{name: getattr(final, name) for name in names})
@@ -650,7 +652,8 @@ def parse_args(argv=None):
                         "equilibrium (BOOTSTRAP_IN_SOLVE, the qa4-beta and qh4-beta default)")
     parser.add_argument("--fixed-current", action="store_true",
                         help="hold the current (the restart's) fixed: no design variable and no bootstrap row")
-    parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json and wout.nc")
+    parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json, wout.nc (the "
+                        "boundary and state it resumes at) and input.final")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
@@ -994,6 +997,7 @@ def main(argv=None):
                                    bootstrap_helicity=REDL_HELICITY,
                                    **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
+        boundary_start=None if args.restart is None else args.restart / "wout.nc",  # resume at the saved state
         gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share, gauge_release=args.gauge_release,
         gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
         gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify,
@@ -1034,6 +1038,7 @@ def main(argv=None):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
         vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
+        im.input_with_params(model.fixed, problem.state(x)[1]).to_indata(out / f"input.final{tag}")  # that solve's deck
 
     last = dict(time=time.monotonic(), x=None)
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),

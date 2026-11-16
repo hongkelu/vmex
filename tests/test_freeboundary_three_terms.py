@@ -731,9 +731,9 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
 
 @needs_vc
 @pytest.mark.full
-def test_promote_trials_evaluates_a_trial_as_accepting_it_leaves_it():
-    """``promote_trials``: a trial's values are those after its promotion (here a gauge release), accepting it changes
-    none of them, and a trial that is not taken leaves the accepted point's gauge and values as they were."""
+def test_promote_trials_releases_once_at_the_accepted_point():
+    """``promote_trials``: a trial is evaluated without the scheduled refresh (its release moves the values); accepting
+    it releases the gauge once, :meth:`accept_x` says so, and the optimizer's result is the problem's value there."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -744,23 +744,19 @@ def test_promote_trials_evaluates_a_trial_as_accepting_it_leaves_it():
         config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80, gauge_refresh=1, gauge_release=True, promote_trials=True)
     x0, gauge = problem.x0.copy(), problem.model._gauge
-    at_x0 = np.r_[problem.fun(x0), problem.constraint_values(x0)]
     x1, x2 = x0 + 2e-3 * np.eye(2)[1], x0 + 1e-3 * np.eye(2)[1]
     first = np.r_[problem.fun(x1), problem.constraint_values(x1)]
-    assert problem.stats["gauge_releases"] == 1 and problem.model._gauge is not gauge
-    assert problem.accepted_step == 0 and np.array_equal(problem.accepted.parameters, x0)
-    np.testing.assert_array_equal(np.r_[problem.fun(x0), problem.constraint_values(x0)], at_x0)  # x1 is not taken
-    assert problem.model._gauge is gauge and problem.stats["trials"] == 2
-    values = np.r_[problem.fun(x2), problem.constraint_values(x2)]
-    assert problem.stats["gauge_releases"] == 2
-    problem.accept_x(x2)
-    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 2 and problem.gauge_share(x2) < 1e-8
+    values = np.r_[problem.fun(x2), problem.constraint_values(x2)]  # x1 is not taken
+    assert "gauge_releases" not in problem.stats and problem.model._gauge is gauge and problem.accepted_step == 0
+    assert problem.accept_x(x2)
+    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 1 and problem.gauge_share(x2) < 1e-8
     value, grad = problem.value_and_grad(x2)
-    np.testing.assert_array_equal(np.r_[value, problem.constraint_values(x2)], values)
+    np.testing.assert_allclose(np.r_[value, problem.constraint_values(x2)], values, rtol=1e-3)
     assert problem.stats["linearizations"] and np.all(np.isfinite(grad))
     np.testing.assert_allclose(first, values, rtol=1e-2)
     result = opt.minimize(problem, method="SLSQP", x0=x2, bounds=[(-5e-3, 5e-3)] * 2, options=dict(maxiter=2))
     assert result.accepted_steps and problem.accepted_step == 1 + result.accepted_steps
+    assert problem.stats["gauge_releases"] == 1 + result.accepted_steps  # one a step, however many trials
     np.testing.assert_array_equal(problem.fun(result.x), result.fun)
 
 

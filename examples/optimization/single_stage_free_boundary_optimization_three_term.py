@@ -1142,11 +1142,17 @@ def main(argv=None):
                 found = found & (jnp.max(jnp.stack([leg[2] for leg in legs])) < 1e-6)
             if args.edge_outer_legs is not None:  # the farthest each outer leg gets from the plasma
                 cos, sin = jnp.cos(line.phi[0]), jnp.sin(line.phi[0])
-                for stable in (False, True):
-                    leg_r, leg_z = pf.manifold_outer_leg(field, parameters, line, M, nfp=int(inp.nfp), stable=stable,
-                                                         periods=edge_guess["periods"], iterations=args.edge_outer_leg_maps)
-                    reach = pf.surface_distances(jnp.stack((leg_r * cos, leg_r * sin, leg_z), axis=-1), data.gamma, int(inp.nfp))
-                    values = jnp.concatenate((values, jnp.max(reach)[None]))
+                frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, line, M))
+                options = dict(nfp=int(inp.nfp), periods=edge_guess["periods"], iterations=args.edge_outer_leg_maps)
+
+                def off_plasma(leg_r, leg_z):
+                    points = jnp.stack((leg_r * cos, leg_r * sin, leg_z), axis=-1).reshape(-1, 3)
+                    return pf.surface_distances(points, data.gamma, int(inp.nfp))
+
+                for stable in (False, True):  # the farthest point is found without gradients, then traced with them
+                    far = jnp.argmax(off_plasma(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options)))
+                    reach = off_plasma(*pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=far, **options))
+                    values = jnp.concatenate((values, reach))
             return jnp.where(found, values, jnp.nan), line
 
         def edge(state, runtime, x):

@@ -160,6 +160,10 @@ def test_outer_legs_of_a_double_null_run_away_from_the_midplane_on_the_separatri
     assert np.all(np.diff(Z, axis=1) > 0.0) and np.all(Z > np.sqrt(0.5))        # monotonically away from Z = 0
     np.testing.assert_allclose(0.25 * (R - RX) ** 2 + 0.15 * Z**2 - 0.15 * Z**4, 0.0375, atol=1e-7)  # psi = psi_X
     assert np.all((R[0] - RX) * (R[1] - RX) < 0.0)                               # one leg on each side
+    line = pf.periodic_fieldline(_double_null, 0.0, *guess, nfp=NFP)
+    one = pf.manifold_outer_leg(_double_null, 0.0, line, pf.tangent_map(_double_null, 0.0, line), nfp=NFP, iterations=2,
+                                samples=8, index=5)
+    np.testing.assert_allclose(one, (R[0, 5], Z[0, 5]), rtol=1e-12)              # index: that one point
     eps, h = 0.01, 1e-5
     fd = (legs(eps + h) - legs(eps - h)) / (2.0 * h)
     np.testing.assert_allclose(jax.jacfwd(legs)(eps), fd, rtol=1e-5, atol=1e-6)

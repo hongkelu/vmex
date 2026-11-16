@@ -271,7 +271,7 @@ def _manifold_direction(M, x0, stable: bool):
 
 def manifold_outer_leg(field: Field, parameters: Any, line: PeriodicFieldline, M, *, nfp: int, periods: int = 1,
                        iterations: int = 4, stable: bool = False, offset: float = 1e-4, steps: int = 128,
-                       samples: int = 32):
+                       samples: int = 32, index=None):
     """Points ``(R, Z)``, each ``(samples + 1,)``, along a leg of an X-line that leaves it away from ``Z = 0``.
 
     The other branch of the manifold of :func:`manifold_crossing`: on the
@@ -280,12 +280,14 @@ def manifold_outer_leg(field: Field, parameters: Any, line: PeriodicFieldline, M
     ``lambda^2 offset``, two images of every point of the leg.  A divertor leg
     runs on from the X-line to the wall; where the points turn back towards the
     plasma, the field outside the X-line folds the leg.  Differentiable in
-    ``parameters``, the line and ``M``.
+    ``parameters``, the line and ``M``; ``index`` traces that one point only
+    (a scalar pair), e.g. the one picked from a first call without gradients.
     """
     x0, phi0 = jnp.stack((line.R[0], line.Z[0])), line.phi[0]
     unstable, v = _manifold_direction(M, x0, stable)
     ends = jnp.stack((phi0, phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * iterations))
     s = offset * unstable ** (2.0 * jnp.arange(samples + 1) / samples)
+    s = s if index is None else s[index]
     R, Z = trace_fieldline(field, parameters, x0[0] - s * v[0], x0[1] - s * v[1], ends, substeps=steps * iterations)
     return R[-1], Z[-1]
 

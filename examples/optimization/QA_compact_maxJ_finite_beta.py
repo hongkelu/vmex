@@ -152,10 +152,15 @@ OUTPUT_NAME = os.environ.get("COMPACT_QA_OUTPUT", "QA_compact_maxJ")
 
 ### Set up the equilibrium ####################################################
 
+# Profile shapes of ne and of Te = Ti, polynomials in s (lowest order first):
+# Landreman-Buller-Drevlak 1 - s^5 and 1 - s, unless the start deck's profiles
+# file gives its own ("ne_shape", "T_shape").
+NE_SHAPE, T_SHAPE = np.array([1.0, 0, 0, 0, 0, -1]), np.array([1.0, -1])
+
+
 def kinetic_profiles(n0, T0):
-    """Landreman-Buller-Drevlak ne = n0 (1 - s^5), Te = Ti = T0 (1 - s)."""
-    return KineticProfiles(n0 * np.array([1, 0, 0, 0, 0, -1]),
-                           T0 * np.array([1, -1]), T0 * np.array([1, -1]))
+    """ne = n0 NE_SHAPE(s), Te = Ti = T0 T_SHAPE(s) for the Redl formula."""
+    return KineticProfiles(n0 * NE_SHAPE, T0 * T_SHAPE, T0 * T_SHAPE)
 
 
 def picard(inp, profiles, initial_state=None):
@@ -170,6 +175,8 @@ if START:
     inp = vj.VmecInput.from_file(START)
     saved = json.loads(Path(START + ".profiles.json").read_text())
     n0, T0, max_mode = saved["n0"], saved["T0"], saved["max_mode"]
+    NE_SHAPE = np.asarray(saved.get("ne_shape", NE_SHAPE), dtype=float)
+    T_SHAPE = np.asarray(saved.get("T_shape", T_SHAPE), dtype=float)
     equilibrium = opt.solve_equilibrium(inp)
 else:
     # VmecInput is frozen, so copy its arrays before shaping the seed boundary.
@@ -325,7 +332,8 @@ def save(label, equilibrium):
     """Write the deck, its profiles, the wout and the metrics of one stage."""
     deck = inp.to_indata(f"input.{OUTPUT_NAME}_{label}")
     Path(f"{deck}.profiles.json").write_text(
-        json.dumps({"n0": n0, "T0": T0, "max_mode": max_mode}))
+        json.dumps({"n0": n0, "T0": T0, "max_mode": max_mode,
+                    "ne_shape": NE_SHAPE.tolist(), "T_shape": T_SHAPE.tolist()}))
     vj.write_wout(f"wout_{OUTPUT_NAME}_{label}.nc", equilibrium.wout)
     row = {"stage": label, **metrics(equilibrium)}
     print("[stage] " + json.dumps(row), flush=True)

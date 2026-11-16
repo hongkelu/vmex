@@ -3,7 +3,8 @@
 
 ``QA_optimization_bootstrap.py`` (quasisymmetry with a self-consistent Redl
 current) run as a list of stages, each continuing from the previous optimum
-and keeping every row added so far. STAGES is a comma-separated list:
+and keeping every row added so far. STAGES is a comma-separated list; tokens
+joined by + (merc=0.002+ball) share one stage:
 
     mode=N    highest boundary mode number varied from here on (no stage)
     beta=B    rescale the pressure to this beta and redo the Picard loop (no stage)
@@ -361,56 +362,61 @@ def save(label, equilibrium):
 
 save("start", equilibrium)
 for number, token in enumerate(STAGES.split(","), start=1):
-    name, _, value = token.strip().partition("=")
-    if name == "mode":
-        max_mode = int(value)
-        continue
-    if name == "beta":
-        scale = float(value) / float(equilibrium.wout.betatotal)
-        n0, T0 = n0 * scale ** (1 / 3), T0 * scale ** (2 / 3)
-        inp, equilibrium = picard(replace(inp, pres_scale=inp.pres_scale * scale),
-                                  kinetic_profiles(n0, T0), equilibrium.solution)
-        terms["bootstrap"] = (bootstrap_row(), 0.0, BOOTSTRAP_WEIGHT)
-        terms["beta"] = (opt.volume_average_beta, float(value), 1.0 / float(value) ** 2)
-        continue
-    if name == "aspect":
-        now = float(opt.aspect_ratio(equilibrium.solution, equilibrium.solver_context))
-        inp = replace(inp, phiedge=inp.phiedge * (now / float(value)) ** 2)
-        PHIEDGE = float(inp.phiedge)
-        terms["aspect"] = (opt.aspect_ratio, float(value), ASPECT_WEIGHT)
-        if mercier_margin is not None:
+    optimize = False
+    for part in token.strip().split("+"):
+        name, _, value = part.partition("=")
+        if name == "mode":
+            max_mode = int(value)
+            continue
+        if name == "beta":
+            scale = float(value) / float(equilibrium.wout.betatotal)
+            n0, T0 = n0 * scale ** (1 / 3), T0 * scale ** (2 / 3)
+            inp, equilibrium = picard(replace(inp, pres_scale=inp.pres_scale * scale),
+                                      kinetic_profiles(n0, T0), equilibrium.solution)
+            terms["bootstrap"] = (bootstrap_row(), 0.0, BOOTSTRAP_WEIGHT)
+            terms["beta"] = (opt.volume_average_beta, float(value), 1.0 / float(value) ** 2)
+            continue
+        if name == "aspect":
+            now = float(opt.aspect_ratio(equilibrium.solution, equilibrium.solver_context))
+            inp = replace(inp, phiedge=inp.phiedge * (now / float(value)) ** 2)
+            PHIEDGE = float(inp.phiedge)
+            terms["aspect"] = (opt.aspect_ratio, float(value), ASPECT_WEIGHT)
+            if mercier_margin is not None:
+                terms["mercier"], terms["resistive"] = opt.stability_terms(
+                    inp, margin=mercier_margin, weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
+            continue
+        if name == "merc":
+            mercier_margin = float(value)
             terms["mercier"], terms["resistive"] = opt.stability_terms(
                 inp, margin=mercier_margin, weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
+        elif name == "ball":
+            terms["ballooning"] = (ballooning_rows, 0.0, BALLOONING_WEIGHT)
+        elif name == "maxj":
+            rows = maximum_j_rows(float(value))
+            if rows is None:
+                raise RuntimeError(f"no matched trapped well for {token}: improve quasisymmetry first")
+            terms["maximum_j"] = (rows, 0.0, MAXJ_WEIGHT)
+        elif name == "chi":
+            if chi_reference is None:
+                chi_reference = float(chi(equilibrium.solution, equilibrium.solver_context))
+            terms["chi"] = (chi, opt.at_most(float(value) * chi_reference), CHI_WEIGHT)
+        elif name == "ql":
+            if ql_reference is None:
+                ql_reference = float(quasilinear_flux(equilibrium.solution, equilibrium.solver_context))
+                print(f"quasilinear heat flux reference = {ql_reference:.4f}")
+            terms["quasilinear"] = (quasilinear_flux, opt.at_most(float(value) * ql_reference),
+                                    QL_WEIGHT / ql_reference)
+        elif name == "vaciota":
+            terms["shaping_iota"] = (shaping_iota, opt.at_least(float(value)), IOTA_WEIGHT)
+        elif name == "shear":
+            terms["shear"] = (iota_rise, opt.at_least(float(value) / (SHEAR_S.size - 1)), SHEAR_WEIGHT)
+        elif name == "lgb":
+            terms["l_grad_b"] = (opt.l_grad_b_state, opt.at_least(float(value)), LGRADB_WEIGHT)
+        elif name != "qa":
+            raise ValueError(f"unknown stage {part!r}")
+        optimize = True
+    if not optimize:
         continue
-    if name == "merc":
-        mercier_margin = float(value)
-        terms["mercier"], terms["resistive"] = opt.stability_terms(
-            inp, margin=mercier_margin, weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
-    elif name == "ball":
-        terms["ballooning"] = (ballooning_rows, 0.0, BALLOONING_WEIGHT)
-    elif name == "maxj":
-        rows = maximum_j_rows(float(value))
-        if rows is None:
-            raise RuntimeError(f"no matched trapped well for {token}: improve quasisymmetry first")
-        terms["maximum_j"] = (rows, 0.0, MAXJ_WEIGHT)
-    elif name == "chi":
-        if chi_reference is None:
-            chi_reference = float(chi(equilibrium.solution, equilibrium.solver_context))
-        terms["chi"] = (chi, opt.at_most(float(value) * chi_reference), CHI_WEIGHT)
-    elif name == "ql":
-        if ql_reference is None:
-            ql_reference = float(quasilinear_flux(equilibrium.solution, equilibrium.solver_context))
-            print(f"quasilinear heat flux reference = {ql_reference:.4f}")
-        terms["quasilinear"] = (quasilinear_flux, opt.at_most(float(value) * ql_reference),
-                                QL_WEIGHT / ql_reference)
-    elif name == "vaciota":
-        terms["shaping_iota"] = (shaping_iota, opt.at_least(float(value)), IOTA_WEIGHT)
-    elif name == "shear":
-        terms["shear"] = (iota_rise, opt.at_least(float(value) / (SHEAR_S.size - 1)), SHEAR_WEIGHT)
-    elif name == "lgb":
-        terms["l_grad_b"] = (opt.l_grad_b_state, opt.at_least(float(value)), LGRADB_WEIGHT)
-    elif name != "qa":
-        raise ValueError(f"unknown stage {token!r}")
 
     print(f"\n===== stage {number}: {token}, max_mode = {max_mode}, rows = {list(terms)} =====")
     mpol = max(inp.mpol, max_mode + 2, MINIMUM_MPOL)
@@ -430,4 +436,4 @@ for number, token in enumerate(STAGES.split(","), start=1):
         max_nfev=MAX_NFEV, ftol=1e-6, xtol=1e-10, verbose=2)
     inp = problem.input_from_x(result.x)
     equilibrium = problem.equilibrium_from_x(result.x)
-    save(f"s{number:02d}_{token.strip().replace('=', '')}", equilibrium)
+    save(f"s{number:02d}_{token.strip().replace('=', '').replace('+', '_')}", equilibrium)

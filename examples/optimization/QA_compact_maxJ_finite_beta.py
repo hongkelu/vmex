@@ -175,6 +175,10 @@ def picard(inp, profiles, initial_state=None):
 
 if START:
     inp = vj.VmecInput.from_file(START)
+    if os.environ.get("COMPACT_QA_NS"):  # radial grid of the restart (ballooning needs ns >= 151)
+        inp = replace(inp, ns_array=np.array([33, int(os.environ["COMPACT_QA_NS"])]),
+                      ftol_array=np.array([1.0e-10, STAGE_FTOL]),
+                      niter_array=np.array([4000, STAGE_NITER]))
     saved = json.loads(Path(START + ".profiles.json").read_text())
     n0, T0, max_mode = saved["n0"], saved["T0"], saved["max_mode"]
     NE_SHAPE = np.asarray(saved.get("ne_shape", NE_SHAPE), dtype=float)

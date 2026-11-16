@@ -215,7 +215,8 @@ def trace_fieldline(field: Field, parameters: Any, R, Z, phi, *, substeps: int =
         return y, y
 
     y0 = jnp.stack((R.ravel(), Z.ravel()))
-    _, path = jax.lax.scan(interval, y0, jnp.stack((phi[:-1], phi[1:]), axis=-1))
+    # checkpointed: a reverse pass keeps the points at the angles only and retraces each interval
+    _, path = jax.lax.scan(jax.checkpoint(interval), y0, jnp.stack((phi[:-1], phi[1:]), axis=-1))
     path = jnp.concatenate((y0[None], path))
     return path[:, 0].reshape((phi.size,) + shape), path[:, 1].reshape((phi.size,) + shape)
 
@@ -285,10 +286,11 @@ def manifold_outer_leg(field: Field, parameters: Any, line: PeriodicFieldline, M
     """
     x0, phi0 = jnp.stack((line.R[0], line.Z[0])), line.phi[0]
     unstable, v = _manifold_direction(M, x0, stable)
-    ends = jnp.stack((phi0, phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * iterations))
+    # 16 angles per map with steps / 16 Runge-Kutta steps between them: a reverse pass stores that much of the trace
+    angles = phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * jnp.arange(16 * iterations + 1) / 16.0
     s = offset * unstable ** (2.0 * jnp.arange(samples + 1) / samples)
     s = s if index is None else s[index]
-    R, Z = trace_fieldline(field, parameters, x0[0] - s * v[0], x0[1] - s * v[1], ends, substeps=steps * iterations)
+    R, Z = trace_fieldline(field, parameters, x0[0] - s * v[0], x0[1] - s * v[1], angles, substeps=max(1, steps // 16))
     return R[-1], Z[-1]
 
 

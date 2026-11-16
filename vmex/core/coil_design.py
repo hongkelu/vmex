@@ -237,16 +237,20 @@ class SummedField:
         self.fields = fields
 
     def B(self, point):
+        """Cartesian field [T] at ``point``."""
         return sum(field.B(point) for field in self.fields)
 
     def b_cyl(self, R, phi, Z):
+        """Cylindrical components ``(B_R, B_phi, B_Z)`` [T]."""
         return tuple(sum(parts) for parts in zip(*(field.b_cyl(R, phi, Z) for field in self.fields)))
 
     def tree_flatten(self):
+        """Pytree children: the fields."""
         return (self.fields,), None
 
     @classmethod
     def tree_unflatten(cls, aux, children):
+        """Rebuild from :meth:`tree_flatten`."""
         return cls(*children[0])
 
 
@@ -375,14 +379,18 @@ class PoloidalCoilDesign:
         return SummedField(self.design(jnp.asarray(x)[:self.n]), BiotSavart(self.poloidal_coils_from_x(x)))
 
     def coils_from_x(self, x):
+        """The design's coils at ``x`` (without the pairs)."""
         return self.design.coils_from_x(jnp.asarray(x)[:self.n])
 
     def base_currents_at(self, x):
+        """The design's base coil currents [A] at ``x``."""
         return self.design.base_currents_at(jnp.asarray(x)[:self.n])
 
     def phiedge_at(self, x):
+        """The design's PHIEDGE [Wb] at ``x``."""
         return self.design.phiedge_at(jnp.asarray(x)[:self.n])
 
     def plasma_params_at(self, params, x):
+        """The design's plasma parameters at ``x``."""
         return self.design.plasma_params_at(params, jnp.asarray(x)[:self.n])
 

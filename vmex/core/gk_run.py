@@ -43,6 +43,7 @@ class TurbulenceSettings:
     s: float = 0.5  # normalized toroidal flux of the flux tube
     alpha: float = 0.0  # field-line label
     npol: float = 1.0  # poloidal turns covered by the flux tube
+    dt: float | None = None  # fixed time step, a / v_ti (default: GKX's CFL controller)
     tprim: float = 3.0  # a/L_Ti (ITG drive; Cyclone-like, GX stellarator papers)
     fprim: float = 1.0  # a/L_n
     ky_min: float = 0.1
@@ -79,7 +80,7 @@ nperiod = 1
 
 [time]
 t_max = {t_max:.6g}
-sample_stride = 5
+{dt}sample_stride = 5
 diagnostics_stride = 5
 
 [geometry]
@@ -144,7 +145,7 @@ def write_deck(path: Path, wout: Path, cfg: TurbulenceSettings, *, nonlinear: bo
                                    tprim=cfg.tprim, fprim=cfg.fprim, nu=0.0)
     y0 = 1.0 / cfg.ky_min
     path.write_text(_DECK.format(
-        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, npol=cfg.npol, t_max=cfg.t_max if nonlinear else min(_T_LINEAR, cfg.t_max),
+        name=path.name, species=species, wout=wout.resolve(), s=cfg.s, alpha=cfg.alpha, npol=cfg.npol, dt="" if cfg.dt is None else f"dt = {cfg.dt:.6g}\n", t_max=cfg.t_max if nonlinear else min(_T_LINEAR, cfg.t_max),
         nx=cfg.nx if nonlinear else 1, ny=cfg.ny if nonlinear else 3 * int(ky_grid(cfg)[-1] * y0 + 0.5) + 1, nz=cfg.nz,
         lx=2 * np.pi * y0, ly=2 * np.pi * y0, y0=y0, boundary="fix aspect" if nonlinear else "linked",
         linear=str(not nonlinear).lower(), nonlinear=str(nonlinear).lower(),

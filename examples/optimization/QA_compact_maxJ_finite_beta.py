@@ -185,6 +185,9 @@ if START:
     NE_SHAPE = np.asarray(saved.get("ne_shape", NE_SHAPE), dtype=float)
     T_SHAPE = np.asarray(saved.get("T_shape", T_SHAPE), dtype=float)
     equilibrium = opt.solve_equilibrium(inp)
+    if os.environ.get("COMPACT_QA_NS"):  # stages hot-start on the final grid alone
+        inp = replace(inp, ns_array=inp.ns_array[-1:], ftol_array=inp.ftol_array[-1:],
+                      niter_array=inp.niter_array[-1:])
 else:
     # VmecInput is frozen, so copy its arrays before shaping the seed boundary.
     inp = vj.VmecInput.from_file(INPUT_FILE)

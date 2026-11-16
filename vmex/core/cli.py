@@ -345,6 +345,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--turbulence-s", type=float, default=0.5,
                    help="Flux-tube surface, normalized toroidal flux (default: 0.5).")
     p.add_argument("--turbulence-alpha", type=float, default=0.0, help="Field-line label alpha (default: 0).")
+    p.add_argument("--turbulence-dt", type=float, default=None,
+                   help="Fixed time step in a/v_ti (default: GKX's CFL controller); kinetic electrons need about 0.002.")
     p.add_argument("--turbulence-npol", type=float, default=1.0,
                    help="Poloidal turns covered by the flux tube (default: 1); scale NZ with it.")
     p.add_argument("--turbulence-ky", type=float, nargs=3, default=(0.1, 1.0, 8),
@@ -1284,7 +1286,7 @@ def _run_turbulence(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -
 
     ky_min, ky_max, nky = args.turbulence_ky
     cfg = TurbulenceSettings(
-        s=float(args.turbulence_s), alpha=float(args.turbulence_alpha), npol=float(args.turbulence_npol),
+        s=float(args.turbulence_s), alpha=float(args.turbulence_alpha), npol=float(args.turbulence_npol), dt=args.turbulence_dt,
         tprim=float(args.turbulence_gradients[0]), fprim=float(args.turbulence_gradients[1]),
         ky_min=float(ky_min), ky_max=float(ky_max), nky=int(nky),
         nx=int(args.turbulence_grid[0]), ny=int(args.turbulence_grid[1]), nz=int(args.turbulence_grid[2]),

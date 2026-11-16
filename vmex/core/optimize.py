@@ -838,7 +838,8 @@ def report_targets(
     return not unmet
 
 
-def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1) -> Array:
+def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1,
+                 smooth: float | None = None) -> Array:
     """Mirror ratio ``(Bmax - Bmin) / (Bmax + Bmin)`` on one half-mesh surface.
 
     Note the convention: this is the ``|B|`` *modulation depth* on a surface, the
@@ -852,12 +853,20 @@ def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1) 
     selects the half-mesh surface (default: outermost).  Hard max/min — smooth
     almost everywhere, adequate for finite-difference least squares (the
     legacy ``VMECMirrorRatio`` softmax knobs were an optimizer nicety only).
+
+    With ``smooth`` (a field strength [T]) ``Bmax`` and ``Bmin`` are the grid's ``|B|`` averaged with weights
+    ``exp(+-|B| / smooth)`` instead: a few ``smooth`` inside the extremes (the ratio reads that much low), and
+    differentiable where the extreme switches grid points, for a constraint row a gradient-based optimizer holds.
     """
     _, _, _, fields, _ = _field_chain(state, rt)
     bsq = jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None]
     bmag = jnp.sqrt(jnp.maximum(2.0 * bsq[s_index],
                                 jnp.asarray(jnp.finfo(bsq.dtype).tiny, dtype=bsq.dtype)))
-    bmax, bmin = jnp.max(bmag), jnp.min(bmag)
+    if smooth is None:
+        bmax, bmin = jnp.max(bmag), jnp.min(bmag)
+    else:
+        b = jnp.ravel(bmag)
+        bmax, bmin = jnp.vdot(jax.nn.softmax(b / smooth), b), jnp.vdot(jax.nn.softmax(-b / smooth), b)
     return (bmax - bmin) / (bmax + bmin)
 
 

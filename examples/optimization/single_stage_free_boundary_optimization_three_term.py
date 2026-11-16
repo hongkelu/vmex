@@ -703,6 +703,12 @@ def parse_args(argv=None):
     parser.add_argument("--redl-rows", action="store_true",
                         help="--current-constraint with a row per Redl surface, |R_j| <= sqrt(REDL_TOLERANCE / n), "
                         "instead of the one row sum_j R_j^2 <= REDL_TOLERANCE (which the rows imply)")
+    parser.add_argument("--clearance-smooth", type=float, metavar="L",
+                        help="coil-plasma clearance row: the distances' mean weighted by exp(-d / L) [m] instead of "
+                        "their smallest, whose gradient is the nearest pair of points' alone")
+    parser.add_argument("--mirror-smooth", type=float, metavar="B",
+                        help="mirror-ratio row: Bmax and Bmin as |B| averaged with weights exp(+-|B| / B) [T] instead "
+                        "of the grid's extremes, whose gradients are one grid point's each")
     parser.add_argument("--mercier-rows", action="store_true",
                         help="Mercier floor with a row per surface instead of the one row of their smallest DMerc, "
                         "whose gradient is the smallest surface's alone: a step that holds it can sink another")
@@ -970,7 +976,8 @@ def main(argv=None):
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
-    mirror = (opt.mirror_ratio,) if MIRROR_LIMIT else ()
+    mirror = ((lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=args.mirror_smooth)),
+              ) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
@@ -979,7 +986,7 @@ def main(argv=None):
 
     def clearance(rbc, zbs, x):
         surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
-        return limits.surface_clearance(chart.coils_from_x(x), surface)
+        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=args.clearance_smooth)
 
     ext_rows, ext_terms = load_extension(args.extension)
 

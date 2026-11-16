@@ -193,12 +193,21 @@ class CoilLimits:
             jnp.ravel(own - self.self_clearance) / self.coil_distance,
             (jnp.min(speed, axis=1) - self.min_speed) / self.length))
 
-    def surface_clearance(self, coils, surface):
-        """Smallest distance [m] from the coils (every symmetry copy) to ``surface.gamma``."""
+    def surface_clearance(self, coils, surface, *, smooth=None):
+        """Smallest distance [m] from the coils (every symmetry copy) to ``surface.gamma``.
+
+        With ``smooth`` (a length [m]) it is the distances' mean weighted by ``exp(-d / smooth)`` instead: a few
+        ``smooth`` above the smallest, and differentiable where the nearest pair of points switches, with a
+        gradient that weighs every pair within about ``smooth`` of the nearest.
+        """
         require_optional("essos", "coil clearances")
         from essos.objective_functions import coil_surface_distances
 
-        return jnp.min(coil_surface_distances(resampled(coils, self.distance_points), surface))
+        distances = coil_surface_distances(resampled(coils, self.distance_points), surface)
+        if smooth is None:
+            return jnp.min(distances)
+        distances = jnp.ravel(distances)
+        return jnp.vdot(jax.nn.softmax(-distances / smooth), distances)
 
 
 def chunked_jacfwd(fun, chunk: int = 32):

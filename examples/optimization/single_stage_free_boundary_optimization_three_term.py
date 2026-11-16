@@ -424,6 +424,15 @@ def min_d_merc(state, runtime):
                              opt.d_merc_state(state, runtime), jnp.inf))
 
 
+def d_merc_rows(state, runtime):
+    """Mercier floor rows (``--mercier-rows``): ``DMerc`` on each surface ``min_d_merc`` takes the smallest of."""
+    from vmex import optimize as opt
+
+    d_merc = opt.d_merc_state(state, runtime)
+    index = np.arange(d_merc.shape[0])  # VMEC's full mesh: s = index / (ns - 1)
+    return d_merc[(index >= 2) & (index < index.size - 1) & (index / (index.size - 1) >= MERCIER_S_MIN)]
+
+
 def current_iota(state, runtime):
     """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
     plasma's major radius, minor radius ``R0 / aspect`` and axis field -- the current's share of iota."""
@@ -694,6 +703,9 @@ def parse_args(argv=None):
     parser.add_argument("--redl-rows", action="store_true",
                         help="--current-constraint with a row per Redl surface, |R_j| <= sqrt(REDL_TOLERANCE / n), "
                         "instead of the one row sum_j R_j^2 <= REDL_TOLERANCE (which the rows imply)")
+    parser.add_argument("--mercier-rows", action="store_true",
+                        help="Mercier floor with a row per surface instead of the one row of their smallest DMerc, "
+                        "whose gradient is the smallest surface's alone: a step that holds it can sink another")
     parser.add_argument("--current-knots", type=int, default=CURRENT_KNOTS, metavar="N",
                         help="number of spline knots of the current with --current-knots-at-ends")
     parser.add_argument("--current-knots-at-ends", action="store_true",
@@ -988,7 +1000,8 @@ def main(argv=None):
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
                     *([redl.residuals_state if args.redl_rows else bootstrap_mismatch(inp, redl, "gpu")]
                       if redl is not None else []),
-                    *([min_d_merc] if MERCIER_FLOOR is not None else []), *([current_iota] if CURRENT_IOTA_WEIGHT else []),
+                    *([d_merc_rows if args.mercier_rows else min_d_merc] if MERCIER_FLOOR is not None else []),
+                    *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
         config=vj.ThreeTermsConfig(labelling=args.labelling, label_weight=args.label_weight, nphi=args.vc_grid,
@@ -1015,6 +1028,7 @@ def main(argv=None):
     redl_row = np.sqrt(REDL_TOLERANCE / nredl) if args.redl_rows else None  # all rows met: f_boot <= REDL_TOLERANCE
     state0, params0 = problem.state(problem.x0)
     runtime0 = im.runtime_from_params(params0, model.cfg)
+    nmerc = int(np.size(d_merc_rows(state0, runtime0))) if args.mercier_rows else 1
     extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
                         for _ in range(int(np.size(f(state0, runtime0))))]
     lower, upper, row_scales = zip(
@@ -1024,7 +1038,7 @@ def main(argv=None):
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
         *([(-redl_row, redl_row, redl_row)] * nredl if args.redl_rows else [(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl),
-        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] if MERCIER_FLOOR is not None else []),
+        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),

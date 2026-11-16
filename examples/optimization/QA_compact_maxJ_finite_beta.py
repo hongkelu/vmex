@@ -102,8 +102,10 @@ SHEAR_S = np.linspace(0.1, 0.9, 9)
 
 # Ballooning field lines: a line contributes max(lambda - threshold, 0):
 BALLOONING_S = np.linspace(0.1, 0.9, 9)
-BALLOONING_LINES = dict(npoints=97, nturns=3.0, zeta0s=np.linspace(-0.5 * np.pi, 0.5 * np.pi, 5))
-BALLOONING_THRESHOLD = -5.0e-4
+BALLOONING_LINES = dict(npoints=int(os.environ.get("COMPACT_QA_BALL_POINTS", 97)),
+                        nturns=float(os.environ.get("COMPACT_QA_BALL_TURNS", 3.0)),
+                        zeta0s=np.linspace(-0.5 * np.pi, 0.5 * np.pi, 5))
+BALLOONING_THRESHOLD = float(os.environ.get("COMPACT_QA_BALL_THRESHOLD", -5.0e-4))
 
 # Maximum-J: upper bound on (1/J) dJ/ds, the trapped-well depths the common
 # pitches are drawn from, and the bounce-action quadrature:
@@ -264,24 +266,34 @@ def quasilinear_flux(equilibrium_state, solver_context):
                                for s in QL_S]))
 
 
-def maximum_j_rows(inner_s, outer_s=MAXJ_OUTER_S, usable_only=True):
-    """Maximum-J residual on inner_s ... outer_s at pitches common to those surfaces.
-
-    A pitch whose wells cannot be matched between two surfaces of the current
-    field gives NaN rows, so only the pitches that are valid now are kept.
-    """
+def maximum_j_term(inner_s, outer_s):
+    """Maximum-J residual on inner_s ... outer_s at the pitches trapped on those surfaces."""
     surfaces = np.arange(inner_s, outer_s + 1e-9, MAXJ_SPACING)
-    state, context = equilibrium.solution, equilibrium.solver_context
-    options = dict(mboz=ACTION_MBOZ, nboz=ACTION_MBOZ, max_wells=ACTION_MAX_WELLS,
-                   quadrature_order=ACTION_QUADRATURE, target=MAXJ_TARGET, **ACTION)
     pitch = np.asarray(common_trapped_pitches_state(
-        state, context, surfaces, TRAPPING_DEPTHS, **ACTION))
-    if not usable_only:
-        return MaximumJResidual(surfaces, pitch, **options)
-    valid = np.all(np.asarray(MaximumJResidual(surfaces, pitch, **options).compute_state(
-        state, context)["valid_pitch_pair"]), axis=0)
-    print(f"maximum-J surfaces {surfaces.round(2)}: {int(valid.sum())} of {valid.size} pitches usable")
-    return MaximumJResidual(surfaces, pitch[valid], **options) if valid.any() else None
+        equilibrium.solution, equilibrium.solver_context, surfaces, TRAPPING_DEPTHS, **ACTION))
+    return MaximumJResidual(surfaces, pitch, mboz=ACTION_MBOZ, nboz=ACTION_MBOZ,
+                            max_wells=ACTION_MAX_WELLS, quadrature_order=ACTION_QUADRATURE,
+                            target=MAXJ_TARGET, **ACTION)
+
+
+def maximum_j_rows(inner_s, outer_s=MAXJ_OUTER_S):
+    """Maximum-J rows that stay finite when trapped wells stop matching.
+
+    The residual is NaN for a pitch whose wells cannot be matched between two
+    surfaces. Such a row is held at its value in the current equilibrium (zero
+    if it has none), so the optimizer gains nothing by breaking a match.
+    """
+    term = maximum_j_term(inner_s, outer_s)
+    start = np.asarray(term.residuals_state(equilibrium.solution, equilibrium.solver_context))
+    print(f"maximum-J surfaces {term.surfaces.round(2)}: {int(np.isfinite(start).sum())} of "
+          f"{start.size} rows matched, {int((np.nan_to_num(start) > 0).sum())} violated")
+    held = jnp.asarray(np.nan_to_num(start))
+
+    def rows(equilibrium_state, solver_context):
+        value = term.residuals_state(equilibrium_state, solver_context)
+        return jnp.where(jnp.isfinite(value), value, held)
+
+    return rows if np.isfinite(start).any() else None
 
 
 PHIEDGE = float(inp.phiedge)
@@ -305,7 +317,7 @@ def metrics(equilibrium):
     """Scalars of one equilibrium, for the stage log."""
     state, context = equilibrium.solution, equilibrium.solver_context
     # Whole volume at the pitches of this field; pairs without matched wells read None.
-    maxj = maximum_j_rows(0.1, 0.9, usable_only=False).compute_state(state, context)
+    maxj = maximum_j_term(0.1, 0.9).compute_state(state, context)
     profile = maximum_j_profile(maxj)
     return {
         "qa": float(qs.total_state(state, context)),
@@ -375,7 +387,7 @@ for number, token in enumerate(STAGES.split(","), start=1):
     elif name == "maxj":
         rows = maximum_j_rows(float(value))
         if rows is None:
-            raise RuntimeError(f"no usable trapped pitch for {token}: improve quasisymmetry first")
+            raise RuntimeError(f"no matched trapped well for {token}: improve quasisymmetry first")
         terms["maximum_j"] = (rows, 0.0, MAXJ_WEIGHT)
     elif name == "chi":
         if chi_reference is None:

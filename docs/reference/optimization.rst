@@ -227,7 +227,18 @@ the Jacobian. Set
 ``jacobian_batch_size=1`` for the serial pass when peak memory, not
 throughput, is the binding constraint; ``None`` is the widest and the most
 memory-hungry. ``adjoint_tol`` and ``adjoint_maxiter`` control the certified
-Krylov solves.
+Krylov solves.  The block adjoint is accepted when its residual is below
+``10 * adjoint_tol * ||rhs||`` or at the round-off level of the residual
+(10 eps ``|| |J|^T |mu| ||``), whichever is larger, so a right-hand side that
+is small against the multiplier, such as the energy ``wb``, does not fall
+through to the Krylov solve.
+``adjoint_restart`` (default 30) is the restart length of that GMRES solve.
+``adjoint_gcrot_m`` (default 100) and ``adjoint_gcrot_k`` (default 20) are the
+inner cycle size and the number of deflation directions of the GCROT(m, k)
+recycling solve used for the reverse adjoint at high mode number, where plain
+restarted GMRES stalls. ``lconm1`` (default true) keeps VMEC2000's m=1 R/Z
+constraint pair in the forward solve, and ``max_iterations`` caps its
+iterations (default: the last ``NITER_ARRAY`` entry).
 
 ``derivative_method="finite_difference"`` accepts opaque host objectives. It
 uses independent equilibrium probes and ``workers=None`` automatically uses
@@ -316,6 +327,11 @@ driver inputs and validate it for a new normalization.
    monitor.save("objectives.csv")
    monitor.plot("objectives.png")
 
+``opt.StallStop(callback, patience=3, threshold=0.02, min_iterations=0)`` wraps
+a callback and ends a stage whose cost falls by less than ``threshold`` (a
+fraction) over ``patience`` accepted iterations, so ``max_nfev`` is a ceiling
+that a stage still descending can use in full. Create one per stage.
+
 Continuation stages may restart the optimizer iteration counter; the monitor
 keeps the combined saved history strictly increasing. Exact-zero terms are
 drawn at a relative numerical display floor instead of forcing a meaningless
@@ -374,6 +390,49 @@ distance implementation.
    0.17 or newer: ``pip install "vmex[coils]"``. Earlier releases lack the
    ``Coils.from_json``/``Coils.with_dofs`` API these examples use.
 
+For a fixed-flux joint search, :class:`vmex.core.single_stage.SingleStageProblem`
+combines any existing ``VmecProblem`` objective with coil geometry costs and
+transform, aspect, and total normal-field limits. The plasma objective remains
+explicit in the example; the helper does not select quasisymmetry or another
+field target::
+
+   from vmex.core.single_stage import CoilPenalty, SingleStageProblem
+
+   penalties = CoilPenalty(length_target=5.5, curvature_limit=6.9,
+                           coil_distance=0.19, surface_distance=0.16)
+   joint = SingleStageProblem(
+       problem, coils, penalties, nphi=37, ntheta=32,
+       iota_floor=0.43, aspect_limit=5.97, normal_field_limit=0.008)
+   result = scipy.optimize.minimize(
+       joint.value_and_grad, np.zeros_like(joint.x0), jac=True,
+       method="L-BFGS-B", callback=joint.monitor,
+       bounds=[(-3, 3)] * joint.x0.size)
+
+The optimizer varies ``u`` with ``x = joint.x0 + joint.scales*u``. Currents
+stay fixed while coil shapes and boundary modes vary. The limits are penalties
+with multipliers: after each bounded solve, ``joint.update_multipliers(u)``
+takes one Powell-Hestenes-Rockafellar step, so the weights need no tuning per
+seed. ``jump_limit`` adds the field-strength match ``|B_coil|^2/|B|^2 = 1`` on
+the boundary, which stops a weak coil field from lowering ``B.n/|B|``. For a
+vacuum boundary, ``coils_around_boundary`` places planar coils around the
+boundary cross-sections and ``fit_vacuum_coils`` fits their shapes and a common
+current to the frozen boundary without an equilibrium solve. Virtual-casing precision
+is planned once on the seed and frozen throughout the search; uncertified
+equilibrium trials receive a finite rejection cost above the normalized seed.
+``toroidal_flux(inp, coils)`` measures the physical positive-phi flux for seed
+calibration, independently of the poloidal traversal direction.
+
+``verify_design(joint, result.x, prefix=...)`` saves the design, re-solves on a
+finer fixed-boundary grid, and cold-solves NESTOR with unchanged flux, pressure,
+and current profiles; ``free_mpol`` raises the mode numbers of that check
+alone, because the coil field excites harmonics the optimized deck truncates.
+It returns the equilibrium, surface, fixed-boundary
+metrics, and free-boundary report. ``design_target_report`` checks those metrics
+against explicit limits; failed solves and nonfinite values cannot pass.
+``save_outputs`` writes the equilibrium, geometry, objective history, and plots.
+See ``examples/optimization/single_stage_optimization_finite_beta.py`` for the
+complete setup and reporting calls.
+
 For a finite-beta prescribed boundary, virtual casing gives the field of the
 enclosed plasma currents. The physical exterior field is that contribution
 plus the actual ESSOS coil field. The two interface residuals used by the
@@ -389,8 +448,9 @@ example are
 The second is a normalized total-pressure jump, not a pressure-profile error.
 It supplies the tangential-field magnitude condition that ``B.n/B`` alone
 does not constrain, even when the input pressure vanishes at the LCFS. The
-fixed-boundary examples vary boundary and coil variables together; they do
-not call NESTOR. A coil-only free-boundary optimization must instead
+fixed-boundary searches vary boundary and coil variables together without
+calling NESTOR on optimization trials; NESTOR can independently verify the
+returned design. A coil-only free-boundary optimization must instead
 differentiate the fully reconverged NESTOR root. The experimental public path
 keeps the construction visible in the driver::
 
@@ -427,14 +487,15 @@ plasma--vacuum root. Every status-0 state is anchored there (to
 ``refine_tol``, 1e-10 by default), so its value and its adjoint refer to the
 same point; VMEC's ``ftol`` alone leaves the state off that root along weakly
 damped directions.
-The certified whole-state GCROT transpose remains the default.
-``adjoint_solver="boundary_schur"`` selects the advanced boundary-Schur lane, which
+The default ``adjoint_solver="boundary_schur"`` needs no tuning: it
 eliminates the block-tridiagonal radial bulk and solves only the evolved-edge
-correction before checking the full coupled residual. Local three-surface
-rows and a pivoted sparse band solve reduce its cold cost substantially, but
-local-row compilation still keeps it opt-in. It is a host lane: under an
-outer ``jax.jit`` the pullback warns and uses the staged coupled GCROT solve
-instead, so call the objective eagerly to keep it. ``device="auto"`` uses the CPU
+correction before checking the full coupled residual. Set
+``"coupled_gcrot"`` only to cross-check a suspect gradient, or when the
+default's banded factor of ``ns`` dense per-surface blocks does not fit host
+memory: GCROT is matrix-free but may not converge on 3-D decks. The default is a
+host lane: under an outer ``jax.jit`` the pullback runs it behind a
+``jax.pure_callback`` on the saved root, so jit and eager calls take the same
+solver and gradient. ``device="auto"`` uses the CPU
 for this response on accelerator hosts; an explicit ``device="gpu"`` or
 process-wide JAX placement overrides that measured lower-memory default.
 
@@ -613,6 +674,81 @@ spatial derivative. Third spatial derivatives and their parameter VJPs remain
 expensive; the examples print progress before each order and use compact grids
 for a bounded cold run.
 
+.. _optimization-low-transport:
+
+Low-transport optimization
+--------------------------
+
+Install ``vmex[neoclassical]`` and run the vacuum example::
+
+   python examples/optimization/pwO_optimization.py
+
+The script has the form of ``QA_optimization.py``: set ``NFP`` (default 3) and the
+mode ladder (``MAX_MODES = [1, 2, 3]``) at the top, and the objective is a list of
+``(function, target, weight)`` terms: the mapped pwO variance, the aspect ratio
+(7), limits on ``|iota|`` (at least 0.42, at most 0.9), the mirror ratio (at most
+0.16), the axis excursion, the edge-Jacobian ratio and the elongation (at most 5). The map parameters
+``a, b, c, eta_min`` are optimized together with the boundary
+(:class:`~vmex.core.pwo.FreeMapProblem`; see :ref:`objectives-mapped-pwo`).
+The magnetic well is off by default; uncomment ``MAGNETIC_WELL_TARGET = 0.01`` to
+add it. The verified boundary is re-solved on a finer radial grid and compared
+with the seed by a matched NEO calculation of :math:`\epsilon_{\rm eff}^{3/2}`.
+The pwO variance does not establish confinement; trace particles to qualify a
+boundary. Two limits matter for the alpha losses: an elongation ceiling of 9
+loses 5 % of the alphas born at ``s = 0.3`` and 5 loses under 1 %, and a profile
+that crosses ``iota = 1`` at ``NFP = 3`` loses 2-5 % whatever its pwO residual,
+so ``IOTA_CEILING = 0.9`` keeps it below.
+
+Optimize at finite pressure from the plain seed with::
+
+   python examples/optimization/pwO_optimization_finite_beta.py
+
+The script needs no saved vacuum result: ``SEED_MODES`` perturbs one or two boundary
+modes of the circular seed by a fraction of its minor radius (``{(-1, 1): 0.5}``, a
+rotating ellipse; at a fraction of 0.25 the NFP 3 ladder sticks at its iota floor).
+Each stage of the ladder names a boundary mode number and a volume-average beta
+(``MAX_MODES``, ``BETA_FRACTIONS``, ``TARGET_BETA``): the first three run in vacuum,
+as the vacuum example does, and the last three bring the zero-current pressure ``p``
+proportional to ``1-s`` to the target. The pwO residual uses 8 x 8 Boozer modes, no
+oversampling and a 16 x 16 quadrature in the loop and 16 x 16 modes, oversample 2 and
+32 x 32 for the final design; the final solves reach ns 71 at ftol 1e-13.
+
+The magnetic well and Mercier stability are limits that act at finite beta only;
+``MAGNETIC_WELL_FLOOR = None`` or ``MERCIER_MARGIN = None`` removes one.
+``BOOTSTRAP_TERM = "band"`` and ``DKX_FINAL_STAGES`` control the bootstrap current as
+in the vacuum example, and ``GAMMA_C_FINAL_STAGES`` adds the GammaC proxy to the last
+stages. The pwO rows weigh 1e3 in vacuum and ``BETA_PWO_WEIGHT`` at finite beta, and the
+shape limits scale with it. The limits and the transport compete: at NFP 4 and 3 %
+beta, a design with the well and Mercier limits off has pwO 6e-6 and loses 1.8 % of its
+alphas, one with Mercier stability alone loses 24 % and one with both limits 37 %, so the
+switches expose the trade rather than hide it. Holding the plasma volume
+(``HOLD_VOLUME = True``) stalls the NFP 4 ladder. Each stage writes
+``input.<name>_stage<k>``; set ``INPUT_FILE`` to one, ``SEED_MODES = None``,
+``MAP_PARAMETERS`` to its printed map and trim the ladder lists to resume after an
+interruption. The NEO baseline is the plain seed in vacuum, which cannot hold the
+target pressure.
+
+``single_stage_optimization_pwO.py`` reads the vacuum result, calibrates the
+pressure, and runs one finite-beta plasma stage with the pwO map free and
+limits on the boundary elongation and its smallest poloidal radius of curvature
+(:func:`~vmex.core.optimize.min_boundary_curvature_radius`), which keep out the
+sharp tips that coils cannot hold. The pressure is then rescaled to the target
+beta. The coils (``12 // NFP`` shapes) are fitted to the fixed plasma with a
+normal-field tolerance that tightens in two steps, and the pwO residual, with the
+map held, joins the joint boundary/coil objective. Coil
+length, curvature and distances are normalized by the seed minor radius and
+enter as smooth worst-case (power-mean) measures, so L-BFGS keeps a gradient; dense geometry sampling checks
+constraints between field quadrature nodes. The run ends with a cold
+free-boundary solve of the held design and a NEO screen of both the fixed- and
+the free-boundary equilibrium: the second is the transport the coils produce.
+Run the vacuum example first (same ``NFP``; its plasma stage uses the same ``MAX_MODES`` ladder). Set ``COILS_INPUT`` to an ESSOS stage-2 coil file; ``COIL_FIT_MAXITER=0``
+keeps an accepted fit. ``TARGET_BETA=0`` selects vacuum. The field checks
+still apply to supplied coils. The script requires
+``vmex[coils,freeb,neoclassical]``. At finite pressure,
+coil flux need not equal total
+``PHIEDGE``: common current is fitted to the external boundary vector
+``B_VMEC - B_plasma`` and pressure balance is verified separately.
+
 Resources and reproducibility
 -----------------------------
 
@@ -637,3 +773,13 @@ The main entry points are :func:`vmex.core.optimize.make_problem`,
 :class:`vmex.core.problem.Evaluation`, and
 :class:`vmex.core.monitoring.OptimizationMonitor`, and
 :class:`vmex.core.monitoring.EquilibriumReporter`.
+
+ESSOS supplies coil curves, Biot–Savart fields and integrated distance penalties.
+``vmex.core.single_stage`` shares the VMEX adjoint and verification workflow
+between the QA and pwO examples. Its normalized geometry option
+penalizes the worst sampled gap and curvature through the p = 8 power mean of the
+sampled violations (the maximum, but differentiable); ESSOS's integrated losses use
+a different measure. Length is an upper bound here; ESSOS's length loss instead
+penalizes deviations on both sides of its target. The flux quadrature retains VMEC's
+positive-phi sign convention. Zero pressure and zero prescribed current use
+the exact zero plasma field, avoiding virtual casing in the vacuum objective.

@@ -175,6 +175,20 @@ def test_vacuum_limit_cvdrift_equals_gbdrift(vacuum_eq):
                                np.asarray(mapping["gbdrift"]), rtol=0.0, atol=1e-11)
 
 
+def test_bad_curvature_compression_is_the_weighted_mean(shaped_eq):
+    """Jacobian-weighted mean of max(cvdrift, 0) grho^2 over the lines, with a finite state derivative."""
+    state, rt = shaped_eq.state, shaped_eq.runtime
+    alphas = (0.0, 1.0)
+    value = turb.bad_curvature_compression(state, rt, s=0.5, alphas=alphas, ntheta=32)
+    maps = [turb.gk_fieldline_geometry(state, rt, s=0.5, alpha=a, ntheta=32) for a in alphas]
+    weight = np.concatenate([np.abs(np.asarray(m["jacobian"])) for m in maps])
+    drive = np.concatenate([np.maximum(np.asarray(m["cvdrift"]), 0.0) * np.asarray(m["grho"]) ** 2 for m in maps])
+    np.testing.assert_allclose(float(value), np.sum(weight * drive) / np.sum(weight), rtol=1e-12)
+    assert float(value) > 0.0   # the outboard side of a tokamak has bad curvature
+    gradient = jax.grad(lambda st: turb.bad_curvature_compression(st, rt, s=0.5, ntheta=32))(state)
+    assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in jax.tree_util.tree_leaves(gradient))
+
+
 def test_equal_arc_gradpar_constant_and_values_consistent(shaped_eq):
     """Equal-arc lane: exactly uniform gradpar, same geometry values."""
     state, rt = shaped_eq.state, shaped_eq.runtime

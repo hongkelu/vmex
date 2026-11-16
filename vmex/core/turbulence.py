@@ -105,6 +105,7 @@ __all__ = [
     "gk_fieldline_geometry",
     "gk_fieldline_geometry_from_wout",
     "flux_tube_geometry",
+    "bad_curvature_compression",
     "b_modulation_depth",
     "turbulence_objective_vector",
     "turbulent_growth_rate",
@@ -461,6 +462,25 @@ def gk_fieldline_geometry(
         equal_arc=equal_arc,
         arc_oversample=arc_oversample,
     )
+
+
+def bad_curvature_compression(state: SpectralState, rt: SolverRuntime, *, s: float = 0.5,
+                              alphas=(0.0,), ntheta: int = 64) -> jnp.ndarray:
+    """Flux-surface compression weighted by the bad curvature (traceable).
+
+    ``<max(cvdrift, 0) |grad rho|^2>`` over the field lines ``alphas`` of the
+    surface ``s``, each one poloidal turn, weighted by the flux-tube Jacobian.
+    Geometry only (no gyrokinetic solve): the ITG drive is strongest where the
+    curvature drift is destabilizing and the surfaces are compressed
+    (Landreman et al., J. Plasma Phys. 91, 2025).
+    """
+    numerator = denominator = 0.0
+    for alpha in alphas:
+        g = gk_fieldline_geometry(state, rt, s=s, alpha=float(alpha), ntheta=ntheta)
+        weight = jnp.abs(g["jacobian"])
+        numerator += jnp.sum(weight * jnp.maximum(g["cvdrift"], 0.0) * g["grho"] ** 2)
+        denominator += jnp.sum(weight)
+    return numerator / denominator
 
 
 def _wout_ballooning_context(wout: Any) -> dict:

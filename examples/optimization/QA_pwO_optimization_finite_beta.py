@@ -42,6 +42,7 @@ from vmex.core.neoclassical import screen_transport
 from vmex.core.pwo import FreeMapProblem, MappedPwOResidual
 from vmex.core.restart import restart_state
 from vmex.core.statephysics import _iotas_half
+from vmex.core.turbulence import bad_curvature_compression
 
 # Confinement target (see above), field periods and aspect ratio:
 TARGET = os.environ.get("QA_PWO_TARGET", "QA-pwO")
@@ -97,6 +98,13 @@ ARIES_DENSITY, ARIES_TEMPERATURE = 2.38e20, 9.45e3  # ne (1 - s^5) in m^-3, Te =
 # The smooth fast-ion proxy GammaC on GAMMA_C_SURFACES, in every finite-beta stage (0 = off):
 GAMMA_C_WEIGHT = float(os.environ.get("QA_PWO_GAMMA_C", 0.0))
 GAMMA_C_SURFACES = tuple(SURFACES[1:])
+
+# Turbulence proxy of continued stages: a ceiling on the flux-surface compression in bad curvature,
+# <max(cvdrift, 0) |grad rho|^2> over COMPRESSION_LINES field lines of each surface in COMPRESSION_SURFACES (unset = off):
+COMPRESSION_LIMIT = float(os.environ["QA_PWO_COMPRESSION"]) if "QA_PWO_COMPRESSION" in os.environ else None
+COMPRESSION_WEIGHT = float(os.environ.get("QA_PWO_COMPRESSION_WEIGHT", 1.0e4))
+COMPRESSION_SURFACES = [float(v) for v in os.environ.get("QA_PWO_COMPRESSION_SURFACES", "0.5").split(",")]
+COMPRESSION_LINES = np.linspace(0.0, 2.0 * np.pi, 4, endpoint=False)
 
 # Stage ladder: highest boundary mode number varied in each stage, its beta as a
 # fraction of TARGET_BETA, and the residual evaluations it may spend:
@@ -240,6 +248,12 @@ def iota_rise(equilibrium_state, solver_context):
     return iota[-1] - iota[1]
 
 
+def compression(equilibrium_state, solver_context):
+    """Flux-surface compression in bad curvature on COMPRESSION_SURFACES."""
+    return jnp.stack([bad_curvature_compression(equilibrium_state, solver_context, s=s, alphas=COMPRESSION_LINES)
+                      for s in COMPRESSION_SURFACES])
+
+
 def stage_terms(beta, with_dkx, mercier_floor=None, aspect=ASPECT_TARGET):
     """The objective rows of one stage; only the confinement rows depend on TARGET."""
     scale = BETA_TARGET_FACTOR if beta > 0 else 1.0
@@ -263,6 +277,8 @@ def stage_terms(beta, with_dkx, mercier_floor=None, aspect=ASPECT_TARGET):
         terms.append((iota_rise, opt.at_least(IOTA_RISE_FLOOR), scale * BMIN_SLOPE_WEIGHT))
     if BMIN_SLOPE_FLOOR is not None and START_FILE:
         terms.append((bmin_slope, opt.at_least(BMIN_SLOPE_FLOOR), scale * BMIN_SLOPE_WEIGHT))
+    if COMPRESSION_LIMIT is not None and START_FILE:
+        terms.append((compression, opt.at_most(COMPRESSION_LIMIT), scale * COMPRESSION_WEIGHT))
     if GAMMA_C_WEIGHT and beta > 0:
         terms.append((opt.GammaCSmooth(GAMMA_C_SURFACES), 0.0, scale * GAMMA_C_WEIGHT))
     if with_dkx:
@@ -286,6 +302,7 @@ report = opt.EquilibriumReporter(
     ("magnetic well", opt.magnetic_well, ".4f"), ("Bmin slope", bmin_slope, ".4f"),
     ("min DMerc", lambda state, rt: jnp.min(dmerc(state, rt)), ".3e"),
     ("elongation", opt.max_elongation, ".3f"),
+    ("compression", lambda state, rt: jnp.max(compression(state, rt)), ".4f"),
     ("max mirror", lambda state, rt: jnp.max(max_mirror(state, rt)), ".3f"))
 monitor = opt.OptimizationMonitor()
 

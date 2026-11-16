@@ -7,6 +7,8 @@ and keeping every row added so far. STAGES is a comma-separated list:
 
     mode=N    highest boundary mode number varied from here on (no stage)
     beta=B    rescale the pressure to this beta and redo the Picard loop (no stage)
+    aspect=A  move the aspect-ratio target, rescaling the toroidal flux so the
+              field strength stays as the minor radius changes (no stage)
     qa        quasisymmetry, Redl mismatch, aspect ratio, iota floor, beta
     merc=M    add or move the Mercier and resistive-interchange limits to the
               margin M on PHIEDGE**2 DMerc (raise M in small held steps)
@@ -69,9 +71,9 @@ START = os.environ.get("COMPACT_QA_START", "")
 SURFACES = np.linspace(0.1, 0.9, 8)
 
 # Term weights. The beta residual is relative because its target is small:
-QA_WEIGHT = 1.0
+QA_WEIGHT = 10.0
 BOOTSTRAP_WEIGHT = 1.0
-ASPECT_WEIGHT = 10.0
+ASPECT_WEIGHT = 1.0
 IOTA_WEIGHT = 10.0
 BETA_WEIGHT = 1.0 / TARGET_BETA**2
 LIMIT_WEIGHT = 10.0
@@ -93,10 +95,10 @@ MAXJ_TARGET = -0.01
 MAXJ_OUTER_S = 0.9
 MAXJ_SPACING = 0.1
 TRAPPING_DEPTHS = (0.2, 0.4, 0.6, 0.8)
-ACTION = dict(nalpha=7, points_per_period=32, num_periods=8)
+ACTION = dict(nalpha=9, points_per_period=64, num_periods=8)
 ACTION_MAX_WELLS = 20
-ACTION_QUADRATURE = 24
-ACTION_MBOZ = 10
+ACTION_QUADRATURE = 32
+ACTION_MBOZ = 16
 
 # Flux compression: surface and field lines of the proxy:
 CHI = dict(s=0.5, nalpha=8, ntheta=96)
@@ -242,7 +244,7 @@ terms = {
     "mirror": (opt.mirror_ratio, opt.at_most(MIRROR_LIMIT), LIMIT_WEIGHT),
     "elongation": (opt.max_elongation, opt.at_most(ELONGATION_LIMIT), LIMIT_WEIGHT),
 }
-chi_reference = None
+chi_reference = mercier_margin = None
 
 
 def metrics(equilibrium):
@@ -297,9 +299,19 @@ for number, token in enumerate(STAGES.split(","), start=1):
         terms["bootstrap"] = (bootstrap_row(), 0.0, BOOTSTRAP_WEIGHT)
         terms["beta"] = (opt.volume_average_beta, float(value), 1.0 / float(value) ** 2)
         continue
+    if name == "aspect":
+        now = float(opt.aspect_ratio(equilibrium.solution, equilibrium.solver_context))
+        inp = replace(inp, phiedge=inp.phiedge * (now / float(value)) ** 2)
+        PHIEDGE = float(inp.phiedge)
+        terms["aspect"] = (opt.aspect_ratio, float(value), ASPECT_WEIGHT)
+        if mercier_margin is not None:
+            terms["mercier"], terms["resistive"] = opt.stability_terms(
+                inp, margin=mercier_margin, weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
+        continue
     if name == "merc":
+        mercier_margin = float(value)
         terms["mercier"], terms["resistive"] = opt.stability_terms(
-            inp, margin=float(value), weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
+            inp, margin=mercier_margin, weight=STABILITY_WEIGHT, from_s=STABILITY_MIN_S)
     elif name == "ball":
         terms["ballooning"] = (ballooning_rows, 0.0, BALLOONING_WEIGHT)
     elif name == "maxj":

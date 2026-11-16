@@ -108,7 +108,7 @@ BALLOONING_THRESHOLD = -5.0e-4
 # Maximum-J: upper bound on (1/J) dJ/ds, the trapped-well depths the common
 # pitches are drawn from, and the bounce-action quadrature:
 MAXJ_TARGET = -0.01
-MAXJ_OUTER_S = 0.8                # wells of the 0.8-0.9 pair could not be matched in the QA tried
+MAXJ_OUTER_S = float(os.environ.get("COMPACT_QA_MAXJ_OUTER", 0.8))  # outermost surface with matchable wells
 MAXJ_SPACING = 0.1
 TRAPPING_DEPTHS = (0.2, 0.4, 0.6, 0.8)
 ACTION = dict(nalpha=9, points_per_period=64, num_periods=8)

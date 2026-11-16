@@ -202,6 +202,7 @@ if COIL_LIMIT_FACTORS is not None:
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
 
 OPTIMIZER_FTOL = 1e-10
+KKT_ACTIVE = 1e-3                 # step log: a scaled constraint row this close to its bound counts as active
 PHIEDGE_STEP = 0.05  # coordinate scale of the relative PHIEDGE change
 # Finite-beta seed coil refit: B.n/|B| unit and penalty weight of the scaled coil rows.
 COIL_FIT_NORMAL_SCALE, COIL_FIT_WEIGHT = 1.0e-3, 1.0e3
@@ -1034,6 +1035,40 @@ def main(argv=None):
                                    forward_chunk=32 if COIL_POINT_ROWS else None)
     constraints = [problem.nonlinear_constraint(list(lower), list(upper), scales=list(row_scales)), coil_rows]
 
+    def remembered(jac, memo={}):  # the step log's and SLSQP's coil Jacobian at an accepted point are one evaluation
+        def at(x):
+            key = np.asarray(x, dtype=float).tobytes()
+            if memo.get("key") != key:
+                memo.update(key=key, jac=jac(x))
+            return memo["jac"]
+        return at
+
+    coil_rows.jac = remembered(coil_rows.jac)
+
+    def stationarity(x):
+        """``(residual, rows)`` of the first-order condition at ``x``, in the optimizer's scaled variables.
+
+        ``residual = |g - A^T lambda| / |g|`` with ``g`` the loss gradient, ``A`` the unit gradients of the constraint
+        rows within ``KKT_ACTIVE`` of a bound (signed into the feasible side) and ``lambda >= 0`` their least-squares
+        multipliers; ``rows`` counts the nonzero ones.  0 at a constrained minimum, 1 where no active row opposes
+        the gradient: a stalled run with a large residual is not at a minimum.
+        """
+        from scipy.optimize import nnls
+
+        g, active = problem.value_and_grad(x)[1] * problem.scales, []
+        for c in constraints:
+            value, lower, upper = np.broadcast_arrays(np.asarray(c.fun(x), dtype=float), c.lb, c.ub)
+            for bound, sign in ((lower, 1.0), (upper, -1.0)):
+                near = np.flatnonzero(np.isfinite(bound) & (sign * (value - bound) <= KKT_ACTIVE))
+                if near.size:
+                    active.append(sign * np.atleast_2d(c.jac(x))[near] * problem.scales)
+        if not active:
+            return 1.0, 0
+        A = np.concatenate(active)
+        norms = np.linalg.norm(A, axis=1)
+        lam, residual = nnls((A[norms > 0] / norms[norms > 0, None]).T, g)
+        return float(residual / np.linalg.norm(g)), int(np.count_nonzero(lam))
+
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
@@ -1113,6 +1148,11 @@ def main(argv=None):
                                  else model._boundary_of(params_x)) - reference))
             r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
             row["gauge_share"] = float(g @ g / (r @ r))
+        if args.steps > problem.accepted_step or problem.accepted_step:  # an optimization, not a re-solve alone
+            try:  # a diagnostic
+                row["kkt_residual"], row["kkt_rows"] = stationarity(x)
+            except Exception as error:
+                print(f"[step {problem.accepted_step}] stationarity not available: {str(error)[:200]}", flush=True)
         last.update(time=now, x=np.array(x, dtype=float))
         with open(out / "metrics.jsonl", "a") as stream:
             stream.write(json.dumps(row) + "\n")
@@ -1130,6 +1170,7 @@ def main(argv=None):
               + (f"newton={row['newton_products']}/{row['newton_residual']:.0e} " if "newton_residual" in row else "")
               + (f"fit={row['fit_steps']}/{row['fit_step']:.0e} " if "fit_step" in row else "")
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
+              + (f"kkt={row['kkt_residual']:.2f}/{row['kkt_rows']} " if "kkt_residual" in row else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)

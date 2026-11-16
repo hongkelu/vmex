@@ -749,6 +749,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             if "gradients" not in sol:  # the share is the converged fit's; the gradient follows the gauge decision
                 self._fit_jacobian(x, sol)
             reset = self.gauge_share(x) > self.gauge_max_share
+            self._count("gauge_share_refreshes", int(reset))
         if reset:
             if self.gauge_release:
                 self._release_gauge(x)

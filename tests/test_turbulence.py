@@ -427,6 +427,27 @@ def test_grad_wrt_state_is_finite(shaped_eq):
     assert any(np.any(np.asarray(leaf) != 0.0) for leaf in leaves)
 
 
+def test_flux_compression_counts_the_outboard_half_of_a_circular_tokamak(vacuum_eq):
+    """Bad curvature is the outboard half, where ``L_ref |grad rho|`` is near 1."""
+    eq = vacuum_eq
+    value = turb.flux_compression(eq.state, eq.runtime, s=0.5, nalpha=2, ntheta=64)
+    assert 0.35 < float(value) < 0.65
+    line = turb.gk_fieldline_geometry(eq.state, eq.runtime, s=0.5, alpha=0.0, ntheta=64)
+    outboard = np.cos(np.asarray(line["theta"])) > 0.2
+    assert np.all(np.asarray(line["cvdrift"])[outboard] > 0.0)
+    from_wout = turb.flux_compression_from_wout(eq.wout, s=0.5, nalpha=2, ntheta=64)
+    assert float(from_wout) == pytest.approx(float(value), rel=1e-9)
+
+
+def test_flux_compression_state_gradient_is_finite(shaped_eq):
+    rt = shaped_eq.runtime
+    grad = jax.grad(lambda st: turb.flux_compression(st, rt, nalpha=2, ntheta=32))(shaped_eq.state)
+    leaves = jax.tree.leaves(grad)
+    assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves)
+    assert any(np.any(np.asarray(leaf) != 0.0) for leaf in leaves)
+    assert opt._traceable_term(turb.flux_compression) is turb.flux_compression
+
+
 def test_wrappers_satisfy_least_squares_term_contract():
     """Two-positional (state, runtime) callables: accepted by jac='implicit'."""
     for fun in (turb.turbulent_growth_rate, turb.quasilinear_flux_proxy,

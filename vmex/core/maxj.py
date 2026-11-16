@@ -23,6 +23,7 @@ __all__ = [
     "ConstructedMaximumJResidual",
     "JInvariantQIAndMaximumJResidual",
     "MaximumJResidual",
+    "maximum_j_profile",
     "constructed_maximum_j_residual_from_boozer",
     "DriftConfinementResidual",
     "drift_orbits",
@@ -400,6 +401,33 @@ def qi_and_maximum_j_from_boozer(
         **common, psi_b=booz["psi_b"], psi_edge=booz["psi_edge"],
         **(maxj_options or {}))
     return {"boozer": booz, "qi": qi_out, "maximum_j": maxj_out}
+
+
+def maximum_j_profile(out, *, threshold: float = 0.9) -> dict[str, np.ndarray]:
+    """Radial profile of the maximum-J fraction of a maximum-J evaluation.
+
+    ``out`` is the mapping of :func:`maximum_j_residual_from_boozer` (or of
+    ``MaximumJResidual.compute_state``). Returns, per adjacent surface pair,
+    the midpoint ``s``, the fraction of matched wells with ``dJ/ds < 0`` over
+    every field line and valid pitch (NaN when none is valid), the same
+    fraction per pitch, and ``s_max_j``: the innermost midpoint from which
+    every pair outward has a fraction of at least ``threshold`` (NaN if the
+    outermost pair misses it). Orbit counts with uniform weights, as the
+    fractions of the residual.
+    """
+    slope = np.asarray(out["dJ_ds"])
+    use = np.asarray(out["matched_well_mask"]) & np.asarray(out["valid_pitch_pair"])[:, None, :, None]
+    favorable = use & (slope < 0.0)
+    with np.errstate(invalid="ignore"):
+        fraction = favorable.sum(axis=(1, 2, 3)) / use.sum(axis=(1, 2, 3))
+        by_pitch = favorable.sum(axis=(1, 3)) / use.sum(axis=(1, 3))
+    psi = np.asarray(out["psi_b"]) / float(out["psi_edge"])
+    s_mid = 0.5 * (psi[:-1] + psi[1:])
+    passing = np.nan_to_num(fraction, nan=0.0) >= threshold
+    inner = len(passing) - np.argmin(np.append(passing[::-1], False))
+    s_max_j = s_mid[inner] if inner < len(passing) else np.nan
+    return {"s": s_mid, "fraction": fraction, "fraction_by_pitch": by_pitch,
+            "s_max_j": np.asarray(s_max_j)}
 
 
 class JInvariantQIAndMaximumJResidual(_ResidualTerm):

@@ -86,6 +86,28 @@ def test_maximum_j_sign_and_signed_flux_convention():
     assert float(depths["deep_maximum_j_fraction"]) == pytest.approx(1.0)
 
 
+def test_maximum_j_profile_reports_the_favorable_outer_region():
+    favorable = _residual(1.02)
+    profile = maxj.maximum_j_profile(favorable)
+    np.testing.assert_allclose(profile["s"], [0.5])
+    assert profile["fraction"][0] == pytest.approx(float(favorable["maximum_j_fraction"]))
+    assert float(profile["s_max_j"]) == pytest.approx(0.5)
+    assert np.isnan(maxj.maximum_j_profile(_residual(0.98))["s_max_j"])
+
+    # Four pairs, one line, two pitches, one well: adverse inside, favorable outside.
+    slope = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0]).reshape(4, 1, 2, 1)
+    valid = np.ones((4, 2), dtype=bool)
+    valid[3, 1] = False
+    out = {"dJ_ds": slope, "matched_well_mask": np.ones_like(slope, dtype=bool),
+           "valid_pitch_pair": valid, "psi_b": -np.linspace(0.1, 0.9, 5), "psi_edge": -1.0}
+    profile = maxj.maximum_j_profile(out)
+    np.testing.assert_allclose(profile["s"], [0.2, 0.4, 0.6, 0.8])
+    np.testing.assert_allclose(profile["fraction"], [0.0, 0.5, 1.0, 1.0])
+    np.testing.assert_allclose(profile["fraction_by_pitch"][1], [0.0, 1.0])
+    assert float(profile["s_max_j"]) == pytest.approx(0.6)
+    assert float(maxj.maximum_j_profile(out, threshold=0.5)["s_max_j"]) == pytest.approx(0.4)
+
+
 def test_constructed_maximum_j_sign_and_ad_match_finite_difference():
     """Goodman's smoother continuation target keeps the physical J sign."""
     favorable = _constructed_residual(1.02)

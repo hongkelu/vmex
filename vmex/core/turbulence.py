@@ -109,6 +109,8 @@ __all__ = [
     "turbulence_objective_vector",
     "turbulent_growth_rate",
     "quasilinear_flux_proxy",
+    "flux_compression",
+    "flux_compression_from_wout",
 ]
 
 Array = Any
@@ -644,6 +646,46 @@ def _linear_params(params_linear, r_over_lt, r_over_ln, aspect,
     if r_over_ln is not None:
         updates["fprim"] = r_over_ln / aspect
     return dataclasses.replace(params, **updates) if updates else params
+
+
+def _flux_compression(geometry, s, nalpha, ntheta):
+    num = den = 0.0
+    for alpha in np.linspace(0.0, 2.0 * np.pi, int(nalpha), endpoint=False):
+        g = geometry(s=float(s), alpha=float(alpha), ntheta=int(ntheta))
+        weight = jnp.abs(g["jacobian"])
+        num = num + jnp.sum(jnp.where(g["cvdrift"] > 0.0, g["grho"] ** 2, 0.0) * weight)
+        den = den + jnp.sum(weight)
+    return num / den
+
+
+def flux_compression(state: SpectralState, rt: SolverRuntime, *, s: float = 0.5,
+                     nalpha: int = 8, ntheta: int = 96) -> jnp.ndarray:
+    """Flux-surface compression in bad curvature (traceable, no GKX).
+
+    ``<H(cvdrift) (L_ref |grad rho|)^2>``: the squared flux-surface spacing
+    gradient where the curvature drift is destabilizing (``cvdrift > 0``, the
+    outboard side of a tokamak), averaged over ``nalpha`` field lines of the
+    surface ``s`` with the flux-tube Jacobian as weight. It is the leading
+    geometric lever of the ion-temperature-gradient heat flux found by
+    Landreman et al., J. Plasma Phys. 91 (2025), arXiv:2502.11657, and costs
+    one geometry evaluation, so it can be a row of every optimization; rank
+    final designs with the nonlinear heat flux (``vmex --turbulence``).
+    """
+    return _flux_compression(
+        lambda **line: gk_fieldline_geometry(state, rt, **line), s, nalpha, ntheta)
+
+
+def flux_compression_from_wout(wout: Any, *, s: float = 0.5, nalpha: int = 8,
+                               ntheta: int = 96) -> jnp.ndarray:
+    """:func:`flux_compression` of a VMEC-compatible WOUT, without a solve."""
+    from pathlib import Path
+
+    from .wout import read_wout
+
+    if isinstance(wout, (str, Path)):
+        wout = read_wout(wout)
+    return _flux_compression(
+        lambda **line: gk_fieldline_geometry_from_wout(wout, **line), s, nalpha, ntheta)
 
 
 def turbulence_objective_vector(

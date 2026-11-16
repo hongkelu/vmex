@@ -16,6 +16,9 @@ and keeping every row added so far. STAGES is a comma-separated list:
     maxj=S    add or move the maximum-J rows to the surfaces S ... 0.8
     chi=F     cap the flux compression in bad curvature at F times its value
               when the first chi stage starts
+    ql=F      cap GKX's quasilinear ion heat flux (mean over the flux tubes
+              QL_S) at F times its value when the first ql stage starts
+              (needs the turbulence extra)
     lgb=L     floor on the edge magnetic-gradient scale length [m], the
               proxy for how far the coils can sit (blanket space)
 
@@ -45,7 +48,7 @@ from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles,
                                  RedlBootstrapMismatch, self_consistent_bootstrap)
 from vmex.core.maxj import MaximumJResidual, common_trapped_pitches_state, maximum_j_profile
 from vmex.core.stability import ballooning_lambda
-from vmex.core.turbulence import flux_compression
+from vmex.core.turbulence import flux_compression, quasilinear_flux_proxy
 
 # Number of field periods, and the seed deck the boundary is shaped from:
 NFP = 2
@@ -83,6 +86,7 @@ BALLOONING_WEIGHT = 30.0
 MAXJ_WEIGHT = 100.0
 CHI_WEIGHT = 30.0
 LGRADB_WEIGHT = 30.0
+QL_WEIGHT = 30.0
 
 # Ballooning field lines: a line contributes max(lambda - threshold, 0):
 BALLOONING_S = np.linspace(0.1, 0.9, 9)
@@ -102,6 +106,11 @@ ACTION_MBOZ = 16
 
 # Flux compression: surface and field lines of the proxy:
 CHI = dict(s=0.5, nalpha=8, ntheta=96)
+
+# Quasilinear heat flux: flux tubes (alpha = 0) and the gyrokinetic model, as
+# QA_optimization_turbulence_quasilinear.py with the drive of the nonlinear check:
+QL_S = (0.5, 0.09)
+QL = dict(alpha=0.0, ntheta=32, a_over_lt=3.0, a_over_ln=0.0, ly=12.0, n_laguerre=4, n_hermite=8)
 
 # Picard loop that makes the current self-consistent, and the I'(s) spline:
 PICARD_ITERATIONS = 8
@@ -213,6 +222,11 @@ def chi(equilibrium_state, solver_context):
     return flux_compression(equilibrium_state, solver_context, **CHI)
 
 
+def quasilinear_flux(equilibrium_state, solver_context):
+    return jnp.mean(jnp.stack([quasilinear_flux_proxy(equilibrium_state, solver_context, s=s, **QL)
+                               for s in QL_S]))
+
+
 def maximum_j_rows(inner_s, outer_s=MAXJ_OUTER_S, usable_only=True):
     """Maximum-J residual on inner_s ... outer_s at pitches common to those surfaces.
 
@@ -246,7 +260,7 @@ terms = {
     "mirror": (opt.mirror_ratio, opt.at_most(MIRROR_LIMIT), LIMIT_WEIGHT),
     "elongation": (opt.max_elongation, opt.at_most(ELONGATION_LIMIT), LIMIT_WEIGHT),
 }
-chi_reference = mercier_margin = None
+chi_reference = ql_reference = mercier_margin = None
 
 
 def metrics(equilibrium):
@@ -326,6 +340,12 @@ for number, token in enumerate(STAGES.split(","), start=1):
         if chi_reference is None:
             chi_reference = float(chi(equilibrium.solution, equilibrium.solver_context))
         terms["chi"] = (chi, opt.at_most(float(value) * chi_reference), CHI_WEIGHT)
+    elif name == "ql":
+        if ql_reference is None:
+            ql_reference = float(quasilinear_flux(equilibrium.solution, equilibrium.solver_context))
+            print(f"quasilinear heat flux reference = {ql_reference:.4f}")
+        terms["quasilinear"] = (quasilinear_flux, opt.at_most(float(value) * ql_reference),
+                                QL_WEIGHT / ql_reference)
     elif name == "lgb":
         terms["l_grad_b"] = (opt.l_grad_b_state, opt.at_least(float(value)), LGRADB_WEIGHT)
     elif name != "qa":

@@ -147,6 +147,25 @@ def test_legs_of_a_double_null_join_only_without_the_three_dimensional_field():
     np.testing.assert_allclose(jax.jit(jax.jacrev(legs))(eps)[:, :2], fd, rtol=1e-5, atol=1e-6)
 
 
+def test_outer_legs_of_a_double_null_run_away_from_the_midplane_on_the_separatrix():
+    guess = np.full(21, RX), np.full(21, np.sqrt(0.5))
+
+    def legs(eps):
+        line = pf.periodic_fieldline(_double_null, eps, *guess, nfp=NFP)
+        M = pf.tangent_map(_double_null, eps, line)
+        return jnp.stack([jnp.stack(pf.manifold_outer_leg(_double_null, eps, line, M, nfp=NFP, stable=stable,
+                                                          iterations=2, samples=8)) for stable in (False, True)])
+
+    R, Z = np.moveaxis(np.asarray(legs(0.0)), 1, 0)
+    assert np.all(np.diff(Z, axis=1) > 0.0) and np.all(Z > np.sqrt(0.5))        # monotonically away from Z = 0
+    np.testing.assert_allclose(0.25 * (R - RX) ** 2 + 0.15 * Z**2 - 0.15 * Z**4, 0.0375, atol=1e-7)  # psi = psi_X
+    assert np.all((R[0] - RX) * (R[1] - RX) < 0.0)                               # one leg on each side
+    eps, h = 0.01, 1e-5
+    fd = (legs(eps + h) - legs(eps - h)) / (2.0 * h)
+    np.testing.assert_allclose(jax.jacfwd(legs)(eps), fd, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(jax.jit(jax.jacrev(legs))(eps), fd, rtol=1e-5, atol=1e-6)
+
+
 def test_tabulated_field_reproduces_the_field_and_its_x_line():
     eps, options = 0.01, dict(nfp=NFP, r_range=(0.7, 1.7), z_max=1.1, shape=(64, 32, 72))
     table = pf.tabulated_field(_double_null, eps, **options)

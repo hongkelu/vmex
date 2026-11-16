@@ -258,6 +258,38 @@ def return_map_fixed_point(field: Field, parameters: Any, R, Z, *, nfp: int, per
     return x[:, 0].reshape(R.shape), x[:, 1].reshape(R.shape), M.reshape(R.shape + (2, 2)), step.reshape(R.shape)
 
 
+def _manifold_direction(M, x0, stable: bool):
+    """Unstable multiplier of the tangent map ``M`` (``Tr M > 2``) and the unit eigenvector, towards ``Z = 0``, of
+    its unstable (``stable``: stable) direction at ``x0``."""
+    trace = jnp.trace(M)
+    unstable = 0.5 * (trace + jnp.sqrt(trace**2 - 4.0))
+    multiplier = 1.0 / unstable if stable else unstable
+    a, b = jnp.stack((M[0, 1], multiplier - M[0, 0])), jnp.stack((multiplier - M[1, 1], M[1, 0]))
+    v = jnp.where(jnp.sum(a * a) > jnp.sum(b * b), a, b)
+    return unstable, -v / jnp.linalg.norm(v) * jnp.sign(v[1]) * jnp.sign(x0[1])
+
+
+def manifold_outer_leg(field: Field, parameters: Any, line: PeriodicFieldline, M, *, nfp: int, periods: int = 1,
+                       iterations: int = 4, stable: bool = False, offset: float = 1e-4, steps: int = 128,
+                       samples: int = 32):
+    """Points ``(R, Z)``, each ``(samples + 1,)``, along a leg of an X-line that leaves it away from ``Z = 0``.
+
+    The other branch of the manifold of :func:`manifold_crossing`: on the
+    line's first plane, the images under ``iterations`` return maps
+    (``stable``: backwards) of ``x0 - s v`` with ``s`` from ``offset`` to
+    ``lambda^2 offset``, two images of every point of the leg.  A divertor leg
+    runs on from the X-line to the wall; where the points turn back towards the
+    plasma, the field outside the X-line folds the leg.  Differentiable in
+    ``parameters``, the line and ``M``.
+    """
+    x0, phi0 = jnp.stack((line.R[0], line.Z[0])), line.phi[0]
+    unstable, v = _manifold_direction(M, x0, stable)
+    ends = jnp.stack((phi0, phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * iterations))
+    s = offset * unstable ** (2.0 * jnp.arange(samples + 1) / samples)
+    R, Z = trace_fieldline(field, parameters, x0[0] - s * v[0], x0[1] - s * v[1], ends, substeps=steps * iterations)
+    return R[-1], Z[-1]
+
+
 def manifold_crossing(field: Field, parameters: Any, line: PeriodicFieldline, M, *, nfp: int, periods: int = 1,
                       iterations: int = 2, stable: bool = False, offset: float = 1e-4, steps: int = 128,
                       samples: int = 32, newton: int = 4):
@@ -285,12 +317,7 @@ def manifold_crossing(field: Field, parameters: Any, line: PeriodicFieldline, M,
     ``steps`` Runge-Kutta steps per field period.
     """
     x0, phi0 = jnp.stack((line.R[0], line.Z[0])), line.phi[0]
-    trace = jnp.trace(M)
-    unstable = 0.5 * (trace + jnp.sqrt(trace**2 - 4.0))
-    multiplier = 1.0 / unstable if stable else unstable
-    a, b = jnp.stack((M[0, 1], multiplier - M[0, 0])), jnp.stack((multiplier - M[1, 1], M[1, 0]))
-    v = jnp.where(jnp.sum(a * a) > jnp.sum(b * b), a, b)
-    v = -v / jnp.linalg.norm(v) * jnp.sign(v[1]) * jnp.sign(x0[1])  # towards Z = 0
+    unstable, v = _manifold_direction(M, x0, stable)
     ends = jnp.stack((phi0, phi0 + (-1.0 if stable else 1.0) * 2.0 * np.pi * periods / nfp * iterations))
 
     def image(p, x0, v, s):

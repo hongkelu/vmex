@@ -103,7 +103,7 @@ def test_maximum_j_profile_reports_the_favorable_outer_region():
     profile = maxj.maximum_j_profile(out)
     np.testing.assert_allclose(profile["s"], [0.2, 0.4, 0.6, 0.8])
     np.testing.assert_allclose(profile["fraction"], [0.0, 0.5, 1.0, 1.0])
-    np.testing.assert_allclose(profile["fraction_by_pitch"][1], [0.0, 1.0])
+    np.testing.assert_allclose(profile["fraction_by_pitch"][1], [1.0, 0.0])
     assert float(profile["s_max_j"]) == pytest.approx(0.6)
     assert float(maxj.maximum_j_profile(out, threshold=0.5)["s_max_j"]) == pytest.approx(0.4)
 

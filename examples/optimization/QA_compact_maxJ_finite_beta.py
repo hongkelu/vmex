@@ -14,6 +14,8 @@ and keeping every row added so far. STAGES is a comma-separated list:
     maxj=S    add or move the maximum-J rows to the surfaces S ... 0.9
     chi=F     cap the flux compression in bad curvature at F times its value
               when the first chi stage starts
+    lgb=L     floor on the edge magnetic-gradient scale length [m], the
+              proxy for how far the coils can sit (blanket space)
 
 Rows are added one at a time because a design pushed to several new limits at
 once loses the quasisymmetry that confines its alphas. Exact maximum-J is
@@ -78,6 +80,7 @@ STABILITY_MIN_S = 0.2
 BALLOONING_WEIGHT = 30.0
 MAXJ_WEIGHT = 100.0
 CHI_WEIGHT = 30.0
+LGRADB_WEIGHT = 30.0
 
 # Ballooning field lines: a line contributes max(lambda - threshold, 0):
 BALLOONING_S = np.linspace(0.1, 0.9, 9)
@@ -252,6 +255,7 @@ def metrics(equilibrium):
         "min_dmerc": float(minimum_dmerc(state, context)),
         "max_ballooning": float(worst_ballooning(state, context)),
         "chi": float(chi(state, context)),
+        "l_grad_b": float(opt.l_grad_b_state(state, context)),
         "maxj_fraction": float(maxj["maximum_j_fraction"]),
         "maxj_s": float(profile["s_max_j"]),
         "maxj_profile": [None if np.isnan(f) else round(float(f), 3) for f in profile["fraction"]],
@@ -297,6 +301,8 @@ for number, token in enumerate(STAGES.split(","), start=1):
         if chi_reference is None:
             chi_reference = float(chi(equilibrium.solution, equilibrium.solver_context))
         terms["chi"] = (chi, opt.at_most(float(value) * chi_reference), CHI_WEIGHT)
+    elif name == "lgb":
+        terms["l_grad_b"] = (opt.l_grad_b_state, opt.at_least(float(value)), LGRADB_WEIGHT)
     elif name != "qa":
         raise ValueError(f"unknown stage {token!r}")
 

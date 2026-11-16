@@ -86,14 +86,14 @@ SURFACES = np.linspace(0.1, 0.9, 8)
 
 # Term weights. The beta residual is relative because its target is small:
 QA_WEIGHT = 10.0
-BOOTSTRAP_WEIGHT = 1.0
+BOOTSTRAP_WEIGHT = float(os.environ.get("COMPACT_QA_BOOTSTRAP_WEIGHT", 1.0))
 ASPECT_WEIGHT = 1.0
 IOTA_WEIGHT = 100.0               # a floor: the maximum-J rows (weight 100) overran weight 10
 BETA_WEIGHT = 1.0 / TARGET_BETA**2
 LIMIT_WEIGHT = 10.0
 STABILITY_WEIGHT = 30.0
 STABILITY_MIN_S = 0.2
-BALLOONING_WEIGHT = 30.0
+BALLOONING_WEIGHT = float(os.environ.get("COMPACT_QA_BALL_WEIGHT", 30.0))
 MAXJ_WEIGHT = float(os.environ.get("COMPACT_QA_MAXJ_WEIGHT", 100.0))
 CHI_WEIGHT = 30.0
 LGRADB_WEIGHT = 30.0

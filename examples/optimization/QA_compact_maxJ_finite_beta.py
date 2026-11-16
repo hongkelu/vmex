@@ -24,7 +24,7 @@ surfaces and S is walked inward. Each stage writes its input deck, wout and
 one line of metrics; gates are read on a finer re-solve, not here.
 
 Environment: COMPACT_QA_STAGES, COMPACT_QA_ASPECT, COMPACT_QA_BETA,
-COMPACT_QA_NFEV, COMPACT_QA_START (input deck of an earlier stage, with its
+COMPACT_QA_NFEV, COMPACT_QA_IOTA, COMPACT_QA_START (input deck of an earlier stage, with its
 profiles file beside it) and COMPACT_QA_OUTPUT override the values below.
 """
 
@@ -58,7 +58,7 @@ MAX_NFEV = int(os.environ.get("COMPACT_QA_NFEV", 30))
 ASPECT_TARGET = float(os.environ.get("COMPACT_QA_ASPECT", 4.5))
 TARGET_BETA = float(os.environ.get("COMPACT_QA_BETA", 0.025))
 SEED_PERTURBATION = 0.10
-IOTA_FLOOR = 0.42                 # minimum |iota| over the profile
+IOTA_FLOOR = float(os.environ.get("COMPACT_QA_IOTA", 0.42))  # minimum |iota| over the profile
 MIRROR_LIMIT = 0.30
 ELONGATION_LIMIT = 6.0
 

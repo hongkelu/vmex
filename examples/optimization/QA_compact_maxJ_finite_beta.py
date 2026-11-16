@@ -19,6 +19,8 @@ and keeping every row added so far. STAGES is a comma-separated list:
     ql=F      cap GKX's quasilinear ion heat flux (mean over the flux tubes
               QL_S) at F times its value when the first ql stage starts
               (needs the turbulence extra)
+    shear=D   |iota| rises by at least D from s = 0.1 to 0.9, monotonically
+              (negative shear in the tokamak convention)
     lgb=L     floor on the edge magnetic-gradient scale length [m], the
               proxy for how far the coils can sit (blanket space)
 
@@ -50,6 +52,7 @@ from vmex.core.bootstrap import (ELEMENTARY_CHARGE, KineticProfiles,
                                  RedlBootstrapMismatch, self_consistent_bootstrap)
 from vmex.core.maxj import MaximumJResidual, common_trapped_pitches_state, maximum_j_profile
 from vmex.core.stability import ballooning_lambda
+from vmex.core.statephysics import iota_profile
 from vmex.core.turbulence import flux_compression, quasilinear_flux_proxy
 
 faulthandler.register(signal.SIGUSR1)   # kill -USR1 <pid> prints every thread's stack
@@ -70,6 +73,7 @@ SEED_PERTURBATION = 0.10
 IOTA_FLOOR = float(os.environ.get("COMPACT_QA_IOTA", 0.42))  # minimum |iota| over the profile
 MIRROR_LIMIT = 0.30
 ELONGATION_LIMIT = float(os.environ.get("COMPACT_QA_ELONGATION", 6.0))
+IOTA_CEILING = float(os.environ.get("COMPACT_QA_IOTA_MAX", 10.0))  # e.g. 0.48 keeps the profile below 1/2
 
 # Continue from the input deck of an earlier stage instead of the seed:
 START = os.environ.get("COMPACT_QA_START", "")
@@ -91,6 +95,8 @@ MAXJ_WEIGHT = 100.0
 CHI_WEIGHT = 30.0
 LGRADB_WEIGHT = 30.0
 QL_WEIGHT = 30.0
+SHEAR_WEIGHT = 100.0
+SHEAR_S = np.linspace(0.1, 0.9, 9)
 
 # Ballooning field lines: a line contributes max(lambda - threshold, 0):
 BALLOONING_S = np.linspace(0.1, 0.9, 9)
@@ -226,6 +232,17 @@ def chi(equilibrium_state, solver_context):
     return flux_compression(equilibrium_state, solver_context, **CHI)
 
 
+def iota_samples(equilibrium_state, solver_context):
+    """|iota| at SHEAR_S, interpolated on the half mesh."""
+    iota = jnp.abs(iota_profile(equilibrium_state, solver_context))
+    s_half = (jnp.arange(iota.shape[0]) + 0.5) / iota.shape[0]
+    return jnp.interp(SHEAR_S, s_half, iota)
+
+
+def iota_rise(equilibrium_state, solver_context):
+    return jnp.diff(iota_samples(equilibrium_state, solver_context))
+
+
 def quasilinear_flux(equilibrium_state, solver_context):
     return jnp.mean(jnp.stack([quasilinear_flux_proxy(equilibrium_state, solver_context, s=s, **QL)
                                for s in QL_S]))
@@ -263,6 +280,7 @@ terms = {
     "beta": (opt.volume_average_beta, TARGET_BETA, BETA_WEIGHT),
     "mirror": (opt.mirror_ratio, opt.at_most(MIRROR_LIMIT), LIMIT_WEIGHT),
     "elongation": (opt.max_elongation, opt.at_most(ELONGATION_LIMIT), LIMIT_WEIGHT),
+    "iota_ceiling": (opt.max_abs_iota, opt.at_most(IOTA_CEILING), IOTA_WEIGHT),
 }
 chi_reference = ql_reference = mercier_margin = None
 
@@ -279,6 +297,7 @@ def metrics(equilibrium):
         "aspect": float(opt.aspect_ratio(state, context)),
         "beta": float(opt.volume_average_beta(state, context)),
         "min_iota": float(opt.min_abs_iota(state, context)),
+        "iota_profile": [round(float(v), 4) for v in iota_samples(state, context)],
         "mirror": float(opt.mirror_ratio(state, context)),
         "elongation": float(opt.max_elongation(state, context)),
         "min_dmerc": float(minimum_dmerc(state, context)),
@@ -350,6 +369,8 @@ for number, token in enumerate(STAGES.split(","), start=1):
             print(f"quasilinear heat flux reference = {ql_reference:.4f}")
         terms["quasilinear"] = (quasilinear_flux, opt.at_most(float(value) * ql_reference),
                                 QL_WEIGHT / ql_reference)
+    elif name == "shear":
+        terms["shear"] = (iota_rise, opt.at_least(float(value) / (SHEAR_S.size - 1)), SHEAR_WEIGHT)
     elif name == "lgb":
         terms["l_grad_b"] = (opt.l_grad_b_state, opt.at_least(float(value)), LGRADB_WEIGHT)
     elif name != "qa":

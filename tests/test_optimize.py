@@ -240,6 +240,14 @@ def test_solve_equilibrium_forwards_verbose(monkeypatch, solovev_eq):
         )
 
 
+def test_iota_profile_is_the_wout_half_mesh_profile(solovev_eq):
+    from vmex.core.statephysics import iota_profile
+
+    eq = solovev_eq
+    np.testing.assert_allclose(np.asarray(iota_profile(eq.state, eq.runtime)),
+                               np.asarray(eq.wout.iotas)[1:], rtol=1e-12)
+
+
 def test_min_abs_iota_floors_the_profile_not_its_average(solovev_eq):
     """The floor metric reads the profile minimum and ignores the iota sign.
 

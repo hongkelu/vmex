@@ -427,6 +427,16 @@ def min_boundary_curvature_radius(state: SpectralState, rt: SolverRuntime) -> Ar
     return jnp.min(jnp.where(flat, jnp.inf, (dR**2 + dZ**2) ** 1.5 / jnp.where(flat, 1.0, cross)))
 
 
+def iota_profile(state: SpectralState, rt: SolverRuntime) -> Array:
+    """Rotational transform on the half-mesh surfaces, axis slot dropped (wout ``iotas[1:]``).
+
+    Surface ``j`` of the result sits at ``s = (j + 0.5) / (ns - 1)``. Rows on
+    its differences set the magnetic shear; rows on its values keep the
+    profile away from a low-order rational.
+    """
+    return _iotas_half(state, rt)[1:]
+
+
 def mean_iota(state: SpectralState, rt: SolverRuntime) -> Array:
     """Mean rotational transform over the half-mesh surfaces (axis excluded).
 

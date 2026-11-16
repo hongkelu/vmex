@@ -212,19 +212,25 @@ def chi(equilibrium_state, solver_context):
 
 
 def maximum_j_rows(inner_s):
-    """Maximum-J residual on inner_s ... MAXJ_OUTER_S at pitches common to those surfaces."""
+    """Maximum-J residual on inner_s ... MAXJ_OUTER_S at pitches common to those surfaces.
+
+    A pitch whose wells cannot be matched between two surfaces of the current
+    field gives NaN rows, so only the pitches that are valid now are kept.
+    """
     surfaces = np.arange(inner_s, MAXJ_OUTER_S + 1e-9, MAXJ_SPACING)
+    state, context = equilibrium.solution, equilibrium.solver_context
+    options = dict(mboz=ACTION_MBOZ, nboz=ACTION_MBOZ, max_wells=ACTION_MAX_WELLS,
+                   quadrature_order=ACTION_QUADRATURE, target=MAXJ_TARGET, **ACTION)
     pitch = np.asarray(common_trapped_pitches_state(
-        equilibrium.solution, equilibrium.solver_context, surfaces, TRAPPING_DEPTHS, **ACTION))
-    return MaximumJResidual(surfaces, pitch, mboz=ACTION_MBOZ, nboz=ACTION_MBOZ,
-                            max_wells=ACTION_MAX_WELLS, quadrature_order=ACTION_QUADRATURE,
-                            target=MAXJ_TARGET, **ACTION)
+        state, context, surfaces, TRAPPING_DEPTHS, **ACTION))
+    valid = np.all(np.asarray(MaximumJResidual(surfaces, pitch, **options).compute_state(
+        state, context)["valid_pitch_pair"]), axis=0)
+    print(f"maximum-J surfaces {surfaces.round(2)}: {int(valid.sum())} of {valid.size} pitches usable")
+    return MaximumJResidual(surfaces, pitch[valid], **options) if valid.any() else None
 
 
 PHIEDGE = float(inp.phiedge)
 qs = opt.QuasisymmetryRatioResidual(SURFACES, helicity_m=1, helicity_n=0)
-# The whole-volume maximum-J report, on fixed surfaces so stages compare:
-maxj_report = maximum_j_rows(0.1)
 
 # Each term is (function, target, weight); stages add to this mapping.
 terms = {
@@ -242,8 +248,9 @@ chi_reference = None
 def metrics(equilibrium):
     """Scalars of one equilibrium, for the stage log."""
     state, context = equilibrium.solution, equilibrium.solver_context
-    maxj = maxj_report.compute_state(state, context)
-    profile = maximum_j_profile(maxj)
+    report = maximum_j_rows(0.1)   # whole volume, pitches of this field
+    maxj = report.compute_state(state, context) if report else None
+    profile = maximum_j_profile(maxj) if report else {"s_max_j": np.nan, "fraction": []}
     return {
         "qa": float(qs.total_state(state, context)),
         "bootstrap_mismatch": float(terms["bootstrap"][0].total_state(state, context)),
@@ -256,7 +263,7 @@ def metrics(equilibrium):
         "max_ballooning": float(worst_ballooning(state, context)),
         "chi": float(chi(state, context)),
         "l_grad_b": float(opt.l_grad_b_state(state, context)),
-        "maxj_fraction": float(maxj["maximum_j_fraction"]),
+        "maxj_fraction": float(maxj["maximum_j_fraction"]) if report else None,
         "maxj_s": float(profile["s_max_j"]),
         "maxj_profile": [None if np.isnan(f) else round(float(f), 3) for f in profile["fraction"]],
     }
@@ -296,7 +303,10 @@ for number, token in enumerate(STAGES.split(","), start=1):
     elif name == "ball":
         terms["ballooning"] = (ballooning_rows, 0.0, BALLOONING_WEIGHT)
     elif name == "maxj":
-        terms["maximum_j"] = (maximum_j_rows(float(value)), 0.0, MAXJ_WEIGHT)
+        rows = maximum_j_rows(float(value))
+        if rows is None:
+            raise RuntimeError(f"no usable trapped pitch for {token}: improve quasisymmetry first")
+        terms["maximum_j"] = (rows, 0.0, MAXJ_WEIGHT)
     elif name == "chi":
         if chi_reference is None:
             chi_reference = float(chi(equilibrium.solution, equilibrium.solver_context))

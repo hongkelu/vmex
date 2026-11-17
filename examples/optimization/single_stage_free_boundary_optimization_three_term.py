@@ -673,7 +673,8 @@ def parse_args(argv=None):
                         help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
     parser.add_argument("--max-step", type=float, metavar="U",
                         help="trust box: a trial moving any scaled design coordinate more than U from the accepted "
-                             "point is rejected unsolved, so SLSQP's line search shortens the step")
+                             "point is rejected unsolved, so SLSQP's line search shortens the step, a tenth at a time: "
+                             "a cap below the usual step slows the run tenfold")
     parser.add_argument("--step-box", type=float, metavar="U",
                         help="bound every step to U in each scaled design coordinate inside SLSQP's subproblem "
                              "(SLSQP restarted at each accepted point, from an identity Hessian)")

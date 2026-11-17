@@ -1264,6 +1264,7 @@ def vacuum_iota(inp: VmecInput, *, device=None) -> Callable[[Array, Array], Arra
         return jnp.concatenate([jnp.abs(axis_iota(vstate, vrt))[None],
                                 abs_iota_profile(vstate, vrt, include_edge=True)])
 
+    iota(base.rbc, base.zbs)  # the deck's own boundary, concretely: a jit over the first solve of a GPU config is refused
     return iota
 
 

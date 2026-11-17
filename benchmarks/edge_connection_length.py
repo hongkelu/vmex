@@ -8,9 +8,8 @@ Field lines are started on Z = 0 at each of ``--distances`` [m] beyond both cros
 followed both ways until they are ``--wall`` [m] off the plasma boundary, enter the plasma or have run
 ``--max-length`` [m]; the lengths along the torus are printed, with ``|B|`` on the X-line over ``|B|`` where the
 line meets the wall (total flux expansion: above 1 the field falls towards the wall).  This is the tokamak's connection length against the
-distance from the separatrix at the midplane, so two runs compare at the same distances.  The lines are traced in the
-field sampled on ``--table`` (vmex.core.periodic_fieldlines.tabulated_field); the X-line is one Newton step of the
-field itself away from the table's, and that step is printed.
+distance from the separatrix at the midplane, so two runs compare at the same distances.  The field is the coils'
+plus the plasma's virtual-casing field (vmex.core.periodic_fieldlines.exterior_field).
 """
 import argparse
 import json
@@ -27,7 +26,6 @@ from essos.fields import BiotSavart  # noqa: E402
 from vmex.core import periodic_fieldlines as pf  # noqa: E402
 from vmex.core import virtual_casing as vc  # noqa: E402
 from vmex.core.coil_design import SummedField, coil_pairs_from_dict  # noqa: E402
-from vmex.core.extender import VmecExtender  # noqa: E402
 from vmex.core.wout import read_wout  # noqa: E402
 
 parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -39,10 +37,8 @@ parser.add_argument("--maps", type=int, nargs="+", default=[2, 3, 4, 5, 6], help
 parser.add_argument("--max-length", type=float, default=600.0)
 parser.add_argument("--planes", type=int, default=8, help="planes per field period where a line is tested")
 parser.add_argument("--steps", type=int, default=64, help="Runge-Kutta steps per field period")
-parser.add_argument("--table", type=int, nargs=3, default=[192, 64, 256], metavar=("NR", "NPHI", "NZ"))
-parser.add_argument("--margin", type=float, default=0.26, help="the table's box around the boundary [m]")
+parser.add_argument("--margin", type=float, default=0.26, help="box around the boundary [m]")
 parser.add_argument("--vc-grid", type=int, default=64)
-parser.add_argument("--near-surface", default="routed", choices=("direct", "routed"))
 args = parser.parse_args()
 
 wout = read_wout(str(args.run / "wout.nc"))
@@ -52,9 +48,9 @@ coil_field = BiotSavart(Coils.from_json(str(args.run / "coils.json")))
 if (args.run / "pf.json").exists():
     coil_field = SummedField(coil_field, BiotSavart(coil_pairs_from_dict(json.loads((args.run / "pf.json").read_text()))))
 surface = vc.surface_field_data_from_wout(wout, nphi=args.vc_grid, ntheta=args.vc_grid)
-total = VmecExtender.from_surface_data(surface, external_field=lambda xyz: jax.vmap(coil_field.B)(xyz), accuracy_check="off",
-                                       **({"near_surface": "direct"} if args.near_surface == "direct" else {}))
-field = lambda p, xyz: total.B(xyz)  # noqa: E731
+parameters_of, total = pf.exterior_field(lambda x: lambda xyz: jax.vmap(coil_field.B)(xyz))
+sources = parameters_of(surface, None)  # built once: a field evaluation is the sum over them
+field = lambda p, xyz: total(sources, xyz)  # noqa: E731
 
 
 def section(phi):  # the plasma boundary on the plane phi
@@ -67,32 +63,19 @@ planes = np.arange(args.planes) * period / args.planes
 edges = [section(phi) for phi in planes]
 low = np.min([e.min(axis=0) for e in edges], axis=0) - args.margin
 high = np.max([e.max(axis=0) for e in edges], axis=0) + args.margin
-def in_plasma(xyz):  # the table's nodes inside the boundary: the virtual-casing field vanishes there
-    xyz = np.asarray(xyz)
-    radius, angle = np.hypot(xyz[:, 0], xyz[:, 1]), np.round(np.arctan2(xyz[:, 1], xyz[:, 0]), 12)
-    inside = np.zeros(len(xyz), dtype=bool)
-    for phi in np.unique(angle):
-        pick = angle == phi
-        inside[pick] = Polygon(section(phi)).contains_points(np.stack((radius[pick], xyz[pick, 2]), -1))
-    return inside
-
-
-fast = pf.tabulated_field(field, None, nfp=nfp, r_range=(low[0], high[0]), z_max=max(-low[1], high[1]),
-                          shape=tuple(args.table), mask=in_plasma)
 
 r, z = np.asarray([args.xpoint[0]]), np.asarray([args.xpoint[1]])
-r, z, M, _ = pf.return_map_fixed_point(fast, None, r, z, nfp=nfp, steps=8 * args.steps, iterations=10)
-_, _, _, step = pf.return_map_fixed_point(field, None, r, z, nfp=nfp, steps=8 * args.steps, iterations=1)
+r, z, M, step = pf.return_map_fixed_point(field, None, r, z, nfp=nfp, steps=8 * args.steps, iterations=10)
 line = pf.PeriodicFieldline(r, z, jnp.zeros(1), jnp.zeros(()), jnp.zeros(()))
-print(f"X-point ({float(r[0]):.5f}, {float(z[0]):.5f}) Tr M {float(jnp.trace(M[0])):.4f} in the table, "
-      f"{float(step[0]):.1e} m from the field's", flush=True)
+print(f"X-point ({float(r[0]):.5f}, {float(z[0]):.5f}) Tr M {float(jnp.trace(M[0])):.4f}, Newton step "
+      f"{float(step[0]):.1e} m", flush=True)
 
 inside = Polygon(edges[0])
 centre = edges[0][:, 0].mean()
 seeds, names = [], []
 for stable in (False, True):
     for maps in args.maps:
-        R, sine, miss = (float(v) for v in pf.manifold_crossing(fast, None, line, M[0], nfp=nfp, iterations=maps,
+        R, sine, miss = (float(v) for v in pf.manifold_crossing(field, None, line, M[0], nfp=nfp, iterations=maps,
                                                                 stable=stable, steps=2 * args.steps))
         if miss < 1e-6:
             break
@@ -116,16 +99,16 @@ length_of_period = period * float(np.asarray(wout.rmnc)[0, 0])
 lengths, ends, ratios = {}, {}, {}
 
 
-def strength(R, Z, phi):  # |B| in the table
+def strength(R, Z, phi):  # |B|
     xyz = jnp.asarray(np.stack((R * np.cos(phi), R * np.sin(phi), Z), -1))
-    return np.linalg.norm(np.asarray(fast(None, xyz)), axis=-1)
+    return np.linalg.norm(np.asarray(field(None, xyz)), axis=-1)
 
 
-x_r, x_z = (np.asarray(v)[:, 0] for v in pf.trace_fieldline(fast, None, r, z, jnp.asarray(planes), substeps=4 * args.steps))
+x_r, x_z = (np.asarray(v)[:, 0] for v in pf.trace_fieldline(field, None, r, z, jnp.asarray(planes), substeps=4 * args.steps))
 b_x = strength(x_r, x_z, planes)   # along the X-line, on the planes
 print(f"|B| on the X-line: {b_x.min():.4f} to {b_x.max():.4f} T", flush=True)
 for sign in (1.0, -1.0):
-    advance = jax.jit(lambda a, b, sign=sign: pf.trace_fieldline(fast, None, a, b, sign * angles, substeps=substeps))
+    advance = jax.jit(lambda a, b, sign=sign: pf.trace_fieldline(field, None, a, b, sign * angles, substeps=substeps))
     a, b = seeds[:, 0].copy(), seeds[:, 1].copy()
     living, life, end = np.ones(len(seeds), dtype=bool), np.zeros(len(seeds)), np.full(len(seeds), "kept", dtype=object)
     ratio = np.full(len(seeds), np.nan)   # |B| on the X-line over |B| where the line meets the wall, same plane

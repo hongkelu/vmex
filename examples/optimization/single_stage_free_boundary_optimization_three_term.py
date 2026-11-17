@@ -1122,7 +1122,7 @@ def main(argv=None):
         def edge_values(state, runtime, x, R, Z):
             data = vc.surface_field_data_from_state(inp, state, runtime=runtime, nphi=args.edge_vc_grid,
                                                     ntheta=args.edge_vc_grid)
-            parameters_of, field = pf.exterior_field(data, chart, near_surface="direct")
+            parameters_of, field = pf.exterior_field(chart)
             parameters = parameters_of(data, x)
             line = pf.periodic_fieldline(field, parameters, R, Z, nfp=int(inp.nfp), periods=edge_guess["periods"],
                                          max_iterations=30)

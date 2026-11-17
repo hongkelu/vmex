@@ -435,31 +435,30 @@ def tabulated_field(field: Field, parameters: Any, *, nfp: int, r_range, z_max: 
     return interpolated
 
 
-def exterior_field(surface_data, external_field_from_parameters: Callable[[Any], Any], **options):
+def exterior_field(external_field_from_parameters: Callable[[Any], Any], **options):
     """The total field outside a plasma boundary as ``field(parameters, xyz)``, and its parameter map.
 
-    Returns ``(parameters_of, field)``: ``parameters_of(surface_data, x)`` packs
-    the arrays of a (traced) ``VmecSurfaceFieldData`` with the external-field
-    parameters ``x`` into a pytree, and ``field(parameters, xyz)`` is
-    ``external_field_from_parameters(x)`` plus the plasma's virtual-casing field
-    (:class:`~vmex.core.extender.VmecExtender`, built with ``options``:
-    ``digits``, ``near_surface``, ``graded_nodes``, ...).  ``surface_data`` is a
-    template: it fixes the grid, field periods and symmetry.
+    Returns ``(parameters_of, field)``.  ``parameters_of(surface_data, x)`` packs
+    the virtual-casing sources of a (traced) ``VmecSurfaceFieldData`` -- the nodes
+    of the finest quadrature level of :class:`~vmex.core.extender.VmecExtender`
+    (built with ``options``: ``digits``, ``levels``) with their weighted sheet
+    current and charge -- together with the external-field parameters ``x``.
+    ``field(parameters, xyz)`` is ``external_field_from_parameters(x)`` plus the
+    sum over those sources, the extender's ``near_surface="direct"`` field.
+
+    The sources are built once per equilibrium, not once per field evaluation:
+    building them costs as much as hundreds of evaluations at a few points, and
+    a field-line trace evaluates the field thousands of times.
     """
-    from dataclasses import replace
+    from virtual_casing_jax.derivative_kernels import layer_derivatives
 
-    from .extender import VmecExtender
-
-    names = ("gamma", "B_total", "normal", "area_vector")
-    options = {"accuracy_check": "off", **options}
+    from .extender import VmecExtender, _field_cartesian
 
     def parameters_of(data, x):
-        return tuple(getattr(data, name) for name in names), x
+        return VmecExtender.from_surface_data(data, **options)._direct_sources(), x
 
     def field(parameters, xyz):
-        arrays, x = parameters
-        data = replace(surface_data, **dict(zip(names, arrays)))
-        return VmecExtender.from_surface_data(
-            data, external_field=external_field_from_parameters(x), **options).B(xyz)
+        sources, x = parameters
+        return _field_cartesian(external_field_from_parameters(x), xyz) + layer_derivatives(xyz, *sources)[0]
 
     return parameters_of, field

@@ -8,6 +8,8 @@ import numpy as np
 
 __all__ = [
     "diagnostic_neo_config",
+    "screen_transport",
+    "transport_improves",
     "epsilon_effective_from_boozer",
     "epsilon_effective_from_wout",
 ]
@@ -27,12 +29,17 @@ def _neo_imports():
 
 
 def diagnostic_neo_config():
-    """Return the bounded NEO resolution used by VMEX summary figures.
+    """Return the bounded NEO resolution used by VMEX summary figures and examples.
 
-    On the bundled NFP=2 QA and NFP=4 QI finite-beta decks this stays within
-    4% of NEO_JAX's default ``NeoConfig``.  A 16 x 16 spline grid aliases the
-    summary Boozer spectrum (``mboz=16``) and fewer than 20 steps per field
-    period or 200 field periods leave 7-30% errors.  Pass a
+    A 32 x 32 spline grid, 24 particles and 20 steps per field period.
+    Against a 96 x 96, 60-particle, 40-steps-per-period reference, the largest
+    error over ``s = 0.25, 0.5, 0.75`` on 39 optimized QI and pwO equilibria is
+    2.5% median and 10% at the 90th percentile, and the Spearman rank
+    correlation with the reference is 0.995; on ten nearby QI candidates it is
+    1.00. A 16 x 16 grid aliases the ``mboz=16`` Boozer spectrum, and fewer
+    than 20 steps per period leave 7-30% errors. Below ``epsilon_eff^(3/2)`` of
+    about 1e-5 (near-perfect quasi-symmetry) 20 steps per period do not
+    resolve the value; use 40 steps with 400-1000 steps. Pass a
     ``neo_jax.NeoConfig`` to :func:`epsilon_effective_from_wout` for
     publication calculations.
     """
@@ -117,3 +124,38 @@ def epsilon_effective_from_wout(
     bx.run()
     booz = _neo_boozer_data(bx, indices)
     return epsilon_effective_from_boozer(booz, config=config)
+
+
+def screen_transport(wout, surfaces, *, mboz=24, nboz=24, config=None):
+    """Matched forward NEO screen; not a converged transport calculation."""
+    from booz_xform_jax import Booz_xform
+    NeoConfig, run_neo = _neo_imports()
+
+    bx = Booz_xform(verbose=0, mboz=mboz, nboz=nboz)
+    bx.read_wout_data(wout)
+    indices = [int(np.argmin(abs(np.asarray(bx.s_in)-s))) for s in surfaces]
+    if not np.allclose(np.asarray(bx.s_in)[indices], surfaces, rtol=0, atol=1e-12):
+        raise ValueError("The NEO screen requires the requested half-mesh radii")
+    bx.compute_surfs = indices
+    bx.run()
+    config = config if config is not None else NeoConfig(theta_n=192, phi_n=192, npart=80, multra=2, nstep_per=80,
+                       nstep_min=800, nstep_max=2000, acc_req=.005, ref_swi=2,
+                       max_rational_field_periods=100000, rational_surface_policy="error")
+    results = run_neo(_neo_boozer_data(bx, indices), config=config, use_jax=True,
+                      progress=False, jax_surface_scan=False)
+    values = []
+    for result in results:
+        diag, value = result.diagnostics, float(result.epsilon_effective)
+        if (not np.isfinite(value) or value <= 0 or not diag.get("rational_correction_valid")
+                or diag.get("approximation_used") or diag.get("rational_work_limit_exceeded")):
+            raise ValueError(f"Invalid NEO screen at s={float(result.s):.6g}, Q={value}; keep the incumbent")
+        values.append(value)
+    return np.asarray(values)
+
+
+def transport_improves(baseline, trial):
+    """Require a resolved mean gain and no radial tradeoff in the coarse screen."""
+    a, b = np.asarray(baseline), np.asarray(trial)
+    return bool(a.ndim == b.ndim == 1 and a.shape == b.shape and a.size > 0 and np.isfinite(a).all()
+                and np.isfinite(b).all() and np.all(a > 0) and np.all(b > 0)
+                and np.all(b <= a) and b.mean() < .99*a.mean())

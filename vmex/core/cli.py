@@ -25,8 +25,8 @@ Free-boundary routing (``LFREEB = T``):
   console output (``In VACUUM`` block, ``VACUUM PRESSURE TURNED ON`` banner)
   and free-boundary wout metadata (``nextcur``/``extcur``/``curlabel``/
   ``mgrid_mode``);
-- a missing mgrid file falls back to a fixed-boundary solve with a warning
-  (retained VMEC2000 behavior);
+- a missing mgrid file is an input error (exit code 5), as in STELLOPT's VMEC:
+  a free-boundary deck never silently runs as a fixed-boundary one;
 - ``MGRID_FILE = 'DIRECT_COILS'`` (or the ``--coils`` flag) builds the external
   field from an ESSOS coils file (``essos.coils.Coils``): the Biot-Savart field
   is tabulated directly into an in-memory
@@ -313,6 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drop Boozer |B| modes below this fraction of the largest amplitude (default: 2e-4; "
              "1e-3 misses losses in precise quasisymmetry).",
     )
+    p.add_argument("--trace-angle-grid", type=int, default=None,
+                   help="ESSOS angular table points per wavelength (default: 6); 0 uses the direct spectrum.")
     p.add_argument(
         "--collisional", action="store_true",
         help=(
@@ -429,10 +431,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--prefetch-compile",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help=(
-            "Overlap compilation of the next multigrid rung (default: off "
-            "to bound peak memory)."
+            "Overlap compilation of the next multigrid rung (default: on; "
+            "--no-prefetch-compile lowers peak memory)."
         ),
     )
     p.add_argument(
@@ -706,12 +708,12 @@ def _coils_mgrid_field(path: Path, *, nr: int = 96, nphi: int = 32,
 
 
 def _free_boundary_plan(args, inp, input_path: Path, *, emit):
-    """Free-boundary routing policy (``None`` -> fixed-boundary solve).
+    """Free-boundary routing policy (``None`` -> fixed-boundary solve, for LFREEB = F).
 
     - readable mgrid -> :class:`_FreeBoundaryPlan` with ``mgrid_path`` and
       the wout coil metadata (``nextcur``/``extcur``/``curlabel``/
       ``mgrid_mode``) read from the file;
-    - missing mgrid -> warning + fixed-boundary fallback (VMEC2000 policy);
+    - missing mgrid -> :class:`VmecInputError`;
     - ``--coils`` / ``MGRID_FILE = 'DIRECT_COILS'`` -> plan with
       ``external_field`` from :func:`_coils_mgrid_field` (``nextcur = 0``: the
       coil currents live in the coils file, not in EXTCUR).
@@ -751,11 +753,10 @@ def _free_boundary_plan(args, inp, input_path: Path, *, emit):
     if not mgrid.is_absolute():
         mgrid = (input_path.parent / mgrid).resolve()
     if not mgrid.exists():
-        emit(
-            f" WARNING: mgrid file not found: {mgrid}\n"
-            "          proceeding with a FIXED-BOUNDARY solve (VMEC2000 fallback)."
+        raise VmecInputError(
+            WERROR_MESSAGES[INPUT_ERROR_FLAG],
+            hint=f"mgrid file not found: {mgrid}",
         )
-        return None
 
     from .mgrid import deck_extcur, read_mgrid
 
@@ -925,7 +926,7 @@ def _solve_input_file(args, input_path: Path, outdir: Path | None, *, emit) -> i
             raise_on_max_iterations=False,
             device=None if args.device == "none" else args.device,
             release_stage_cache=True,
-            # Opt-in cold-run overlap; the library default is also False.
+            # Cold-run overlap; the library default stays False.
             prefetch_compile=bool(args.prefetch_compile),
             jacobian_retries=int(args.jacobian_retries),
             **freeb_plan.solver_kwargs,
@@ -1097,8 +1098,8 @@ def _run_neoclassical(wout_path: Path, args, outdir: Path, *, emit, quiet: bool)
 
     With ``--nc-profiles`` DKX solves with those n and T profiles instead of its
     own split of the pressure, and VMEX's Redl ``<j.B>`` on the same profiles
-    is drawn beside DKX's.  A DKX older than ``OPTIONAL_MINIMUMS['dkx']`` runs
-    without them and says so.
+    is drawn beside DKX's. If the installed DKX lacks the profile interface,
+    the command omits those arguments and prints the upgrade command.
     """
     import inspect
 
@@ -1225,6 +1226,7 @@ def _run_trace(wout_path: Path, args, outdir: Path, *, emit, quiet: bool) -> Non
             T0_keV=float(args.trace_te0),
             mboz=int(args.mbooz),
             mode_tolerance=mode_cut,
+            angle_grid=6 if args.trace_angle_grid is None else (args.trace_angle_grid or None),
             nboz=int(args.nbooz),
             progress=None if quiet else _TraceProgress(),
             energy_eV=args.trace_energy_eV, mass=args.trace_mass_kg, charge=args.trace_charge_coulomb,
@@ -1677,8 +1679,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.collisional or args.trace_birth != "surface"
             or args.trace_mode_cut is not None or args.trace_tolerance is not None
+            or args.trace_angle_grid is not None
             or any(v is not None for v in (args.trace_energy_eV, args.trace_mass_kg, args.trace_charge_coulomb))) and not args.trace:
-        parser.error("collision, birth, mode-cut, tolerance and particle-parameter options require --trace")
+        parser.error("these tracing options require --trace")
     if bool(args.trace):
         _split_host_devices()
     # Flushing sink: with stdout redirected to a file (cluster batch logs),

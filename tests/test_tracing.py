@@ -63,6 +63,23 @@ def test_counts_are_consistent(traced):
     assert np.all(np.diff(traced.loss_fractions) >= 0.0)  # cumulative
 
 
+def test_boozer_field_matches_the_host_transform(solovev_wout):
+    """The magnetic-only batched transform stores the |B| spectra the surface-by-surface host loop does."""
+    from booz_xform_jax import Booz_xform
+    from vmex.core import tracing
+
+    wout = read_wout(solovev_wout)
+    _, bx = tracing.boozer_field(wout, mboz=8, nboz=8)
+    host = Booz_xform(verbose=0, mboz=8, nboz=8)
+    host.read_wout_data(wout, flux=False)
+    host.run()
+    for name in ("bmnc_b", "Boozer_G", "Boozer_I", "s_b", "xm_b", "xn_b"):
+        np.testing.assert_allclose(getattr(bx, name), getattr(host, name), rtol=0, atol=1e-12, err_msg=name)
+    assert bx.rmnc_b is None  # R, Z and nu are not computed for the orbits
+    for name, value in tracing.boundary_geometry(wout, mboz=8, nboz=8).items():
+        np.testing.assert_allclose(value, getattr(host, name)[:, -1], rtol=0, atol=1e-12, err_msg=name)
+
+
 def test_trace_timing_separates_setup_from_orbits(solovev_wout, traced, monkeypatch):
     from types import SimpleNamespace
     import essos.boozer
@@ -815,14 +832,29 @@ def test_trace_boundary_handoff_keeps_sine_partners(solovev_wout, monkeypatch):
     field, bx = tracing.boozer_field(wout, mboz=8, nboz=8)
     bx.asym = True
     names = ("rmns_b", "zmnc_b", "numnc_b")
-    for name in names:
-        setattr(bx, name, np.full_like(bx.rmnc_b, 0.125))
+    geometry = {name: np.full(3, 0.125) for name in ("rmnc_b", "zmns_b", "numns_b", *names)}
     monkeypatch.setattr(tracing, "boozer_field", lambda *a, **k: (field, bx))
+    monkeypatch.setattr(tracing, "boundary_geometry", lambda *a, **k: geometry)
     result = trace_alphas(wout, scale=None, **{
         **TRACE_KWARGS, "tmax": 1e-7, "timestep": 1e-7, "times_to_trace": 2})
     assert result.boozer["asym"] is True
     for name in names:
-        np.testing.assert_array_equal(result.boozer[name], getattr(bx, name)[:, -1])
+        np.testing.assert_array_equal(result.boozer[name], geometry[name])
+
+
+def test_trace_runs_the_host_transform_only_for_the_boundary_geometry(solovev_wout, monkeypatch):
+    from booz_xform_jax import Booz_xform
+
+    calls = []
+    run = Booz_xform.run
+    monkeypatch.setattr(Booz_xform, "run", lambda self, *a, **k: calls.append(list(self.compute_surfs)) or run(self, *a, **k))
+    result = trace_alphas(read_wout(solovev_wout), scale=None, **{
+        **TRACE_KWARGS, "tmax": 1e-7, "timestep": 1e-7, "times_to_trace": 2})
+    assert calls == [] and len(result.boozer) == 9  # keys are listed without computing anything
+    assert result.boozer["nfp"] and calls == []
+    assert result.boozer["rmnc_b"].ndim == 1 and len(calls) == 1 and len(calls[0]) == 1
+    result.boozer["zmns_b"], result.boozer["numns_b"]
+    assert len(calls) == 1  # one transform serves every geometry key
 
 
 def test_asymmetric_trace_preserves_sine_boundary(tmp_path):
@@ -1020,3 +1052,72 @@ def test_cli_trace_prints_the_truncation_warning_once(solovev_wout, tmp_path, mo
     assert rc == 0
     assert buffer.getvalue().count("Equilibrium spectrum truncated") == (0 if silenced else 1)
     assert silenced or "pass --trace-no-resolution-check to silence." in buffer.getvalue()
+
+
+@pytest.mark.parametrize("angle_grid", [None, 6, 9])
+def test_angular_table_control_is_forwarded_and_saved(monkeypatch, angle_grid, tmp_path):
+    """Acquisition metadata records the requested representation, including direct sums."""
+    from types import SimpleNamespace
+    from vmex.core import tracing
+    import essos.boozer
+    import booz_xform_jax
+
+    calls = {}
+    bx = SimpleNamespace(asym=False, xm_b=np.array([0]), xn_b=np.array([0]),
+                         nfp=1, s_in=np.array([0.25]), iota=np.array([0.6]))
+    class Transform:
+        def __new__(cls, **kwargs):
+            return bx
+    bx.read_wout_data = lambda *args, **kwargs: None
+    bx.run_jax = lambda magnetic_only: {"bmnc_b": np.ones((1, 1)), "bvco_b": np.ones(1), "buco_b": np.ones(1)}
+    monkeypatch.setattr(booz_xform_jax, "Booz_xform", Transform)
+    def construct(booz, psi0, mode_tolerance, *, angle_grid):
+        calls["angle_grid"] = angle_grid
+        return SimpleNamespace(xm=np.array([0]), table=None if angle_grid is None else np.zeros(1))
+    monkeypatch.setattr(essos.boozer.BoozerField, "from_booz_xform", construct)
+    def trace(field, *args, **kwargs):
+        return SimpleNamespace(states=np.zeros((2, 2, 5)), energy_error=np.zeros(2),
+                               loss_times=np.full(2, -1), thermalized_times=np.full(2, -1),
+                               failed=np.zeros(2, dtype=bool))
+    monkeypatch.setattr(essos.boozer, "trace_boozer", trace)
+    monkeypatch.setattr(tracing, "sample_births", lambda *args, **kwargs: np.zeros((2, 4)))
+    monkeypatch.setattr(tracing, "spectral_truncation", lambda wout: 0.0)
+    wout = SimpleNamespace(rmnc=np.ones(1), lasym=False, phi=np.array([0, 1]), Aminor_p=1.7, volavgB=5.7)
+    result = tracing.trace_alphas(wout, scale=None, nparticles=2, angle_grid=angle_grid, times_to_trace=2)
+    assert calls["angle_grid"] == angle_grid
+    assert result.metadata["angle_grid"] == angle_grid
+    assert result.metadata["angle_table"] is (angle_grid is not None)
+    summary, _ = result.save(tmp_path / "representation")
+    import json
+    assert json.loads(summary.read_text())["angle_grid"] == angle_grid
+
+
+@pytest.mark.parametrize("angle_grid", [0, -1, True, 1.5, np.nan, (32, 32)])
+def test_invalid_angular_table_control_rejected_before_io(angle_grid):
+    with pytest.raises(ValueError, match="angle_grid"):
+        trace_alphas("missing_wout.nc", angle_grid=angle_grid)
+
+
+def test_cli_direct_spectrum_control_requires_trace():
+    parser = cli.build_parser()
+    assert parser.parse_args([str(SOLOVEV_DECK)]).trace_angle_grid is None
+    assert parser.parse_args([str(SOLOVEV_DECK), "--trace-angle-grid", "0"]).trace_angle_grid == 0
+    with pytest.raises(SystemExit):
+        cli.main([str(SOLOVEV_DECK), "--trace-angle-grid", "0", "--quiet"])
+
+
+@pytest.mark.parametrize("flag,expected", [(None, 6), ("0", None), ("9", 9)])
+def test_cli_angular_table_control_forwarded(monkeypatch, tmp_path, flag, expected):
+    from types import SimpleNamespace
+    from vmex.core import plotting, tracing
+
+    seen = {}
+    def trace(*args, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(metadata={"spectral_truncation": 0}, save=lambda path: (path, path))
+    monkeypatch.setattr(tracing, "trace_alphas", trace)
+    monkeypatch.setattr(plotting, "plot_tracing", lambda *args, **kwargs: {})
+    args = cli.build_parser().parse_args(["wout_fake.nc", "--trace"] +
+                                         ([] if flag is None else ["--trace-angle-grid", flag]))
+    cli._run_trace(Path("wout_fake.nc"), args, tmp_path, emit=lambda message: None, quiet=True)
+    assert seen["angle_grid"] == expected

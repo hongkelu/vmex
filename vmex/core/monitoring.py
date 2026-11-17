@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import inspect
+import json
 from pathlib import Path
 import sys
+import time
 from typing import Any, Callable, cast, Mapping, Sequence, TextIO
 
 import numpy as np
@@ -14,6 +16,100 @@ from .problem import FunctionProblem
 
 
 _DEFAULT_STREAM = object()
+
+
+class FeasibleCandidateMonitor:
+    """Checkpoint the lowest-scoring feasible trial of a least-squares problem.
+
+    ``inspect(eq)`` returns the independently recomputed residual and a metrics
+    dictionary containing ``feasible`` and ``score`` (default ``"raw"``).
+    Every evaluated trial is recorded; an infeasible terminal iterate cannot
+    overwrite the best candidate. ``callback(mode)`` caps accepted iterations.
+    """
+
+    def __init__(self, problem, inspect, outdir, *, maxiter, score="raw", **metadata):
+        if not isinstance(maxiter, int) or maxiter < 1:
+            raise ValueError("maxiter must be a positive integer")
+        self.problem, self.inspect, self.score = problem, inspect, score
+        self.outdir = Path(outdir)
+        if (self.outdir / "summary.json").exists():
+            raise ValueError("Use a new output directory for each optimization")
+        self.outdir.mkdir(parents=True, exist_ok=True)
+        self.maxiter, self.best, self.cache = maxiter, None, {}
+        self.started = time.monotonic()
+        self.report = dict(metadata, status="running", evaluations=[], iterations=[],
+                           maxiter_per_stage=maxiter)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, traceback):
+        if kind is not None:
+            self.save(status="failed", error=str(error), decision="Keep the incumbent")
+        return False
+
+    def save(self, **updates):
+        """Atomically write metrics and elapsed time, including unfinished runs."""
+        self.report.update(updates, seconds=time.monotonic()-self.started)
+        path = self.outdir / "summary.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.report, indent=2, allow_nan=False)+"\n")
+        temporary.replace(path)
+
+    def __call__(self, x):
+        from .. import write_wout
+
+        key = np.asarray(x).tobytes()
+        if key in self.cache:
+            return self.cache[key]
+        residual = np.asarray(self.problem.residual(x))
+        if not np.isfinite(residual).all() or not np.isfinite(residual@residual):
+            raise ValueError("Candidate residual and cost must be finite")
+        history = self.report["evaluations"]
+        row = dict(evaluation=len(history), cost=.5*float(residual@residual), feasible=False)
+        try:
+            eq = self.problem.equilibrium_from_x(x)
+        except RuntimeError as error:
+            if (str(error) != "decision vector did not produce a usable VMEC equilibrium"
+                    or not np.isfinite(residual).all()):
+                raise
+            row["error"] = str(error)
+        else:
+            recomputed, metrics = self.inspect(eq)
+            if (not np.isfinite(recomputed).all()
+                    or not np.allclose(residual, recomputed, rtol=1e-8, atol=1e-10)):
+                raise RuntimeError("Exported equilibrium does not reproduce the optimized residual")
+            row.update(metrics)
+            row["feasible"], row[self.score] = bool(row["feasible"]), float(row[self.score])
+            if not np.isfinite(row[self.score]):
+                raise ValueError("Candidate score must be finite")
+            if row["feasible"] and (self.best is None or row[self.score] < self.best[0]):
+                self.best = (row[self.score], np.asarray(x).copy())
+                self.problem.input_from_x(x).to_indata(self.outdir / "input.trial")
+                write_wout(self.outdir / "wout_trial.nc", eq.wout)
+                self.report["selected_evaluation"] = row["evaluation"]
+        history.append(row)
+        self.cache[key] = residual
+        self.save()
+        print(f"evaluation {row['evaluation']}: cost={row['cost']:.6g}, "
+              f"{self.score}={row.get(self.score, float('nan')):.6g}, "
+              f"feasible={row['feasible']}", flush=True)
+        return residual
+
+    def callback(self, mode):
+        """Return a SciPy callback with a separate iteration budget for this mode."""
+        iteration = 0
+
+        def record(intermediate_result):
+            nonlocal iteration
+            iteration += 1
+            self.report["iterations"].append(dict(mode=mode, iteration=iteration,
+                nfev=int(intermediate_result.nfev), cost=float(intermediate_result.fun@intermediate_result.fun/2)))
+            self.save()
+            if iteration >= self.maxiter:
+                raise StopIteration
+
+        return record
 
 
 class EquilibriumReporter:
@@ -648,4 +744,48 @@ class OptimizationMonitor:
         )
 
 
-__all__ = ["EquilibriumReporter", "OptimizationMonitor", "OptimizationRecord"]
+class StallStop:
+    """SciPy callback that ends a stage whose cost has stopped falling.
+
+    After every accepted iteration the cost is compared with the cost
+    ``patience`` iterations earlier; if it fell by less than the fraction
+    ``threshold`` of that earlier cost, the callback raises ``StopIteration``,
+    which ``scipy.optimize.least_squares`` and ``minimize`` treat as a normal
+    termination. A stage that is still descending keeps its full ``max_nfev``.
+    Create one instance per stage; the cost history is not shared.
+
+    Parameters
+    ----------
+    callback:
+        Optional callback (for example an :class:`OptimizationMonitor`) called
+        first with every ``intermediate_result``.
+    patience:
+        Number of accepted iterations over which progress is measured.
+    threshold:
+        Smallest relative cost decrease over ``patience`` iterations that
+        counts as progress; 0.02 is two per cent.
+    min_iterations:
+        No stop before this many accepted iterations (never fewer than
+        ``patience + 1``).
+    """
+
+    def __init__(self, callback: Callable | None = None, *, patience: int = 3,
+                 threshold: float = 0.02, min_iterations: int = 0) -> None:
+        if patience < 1 or threshold < 0:
+            raise ValueError("patience must be at least 1 and threshold non-negative")
+        self.callback, self.patience, self.threshold = callback, int(patience), float(threshold)
+        self.min_iterations = max(int(min_iterations), self.patience + 1)
+        self.costs: list[float] = []
+
+    def __call__(self, intermediate_result: Any) -> None:
+        """Record the accepted cost and stop when it has stalled."""
+        if self.callback is not None:
+            self.callback(intermediate_result)
+        self.costs.append(float(intermediate_result.cost))
+        if len(self.costs) >= self.min_iterations:
+            earlier = self.costs[-1 - self.patience]
+            if earlier - self.costs[-1] < self.threshold * earlier:
+                raise StopIteration
+
+
+__all__ = ["EquilibriumReporter", "OptimizationMonitor", "OptimizationRecord", "StallStop"]

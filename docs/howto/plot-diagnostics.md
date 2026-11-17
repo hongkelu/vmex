@@ -59,8 +59,10 @@ $\langle|\mathbf J\times\mathbf B-\nabla p|\rangle_s/\langle|\nabla(B^2/2\mu_0)|
 Mercier `DMerc` and the Glasser
 resistive-interchange $D_R$ with $V''(s)$ on a color-matched right axis,
 a 3-D LCFS, and the second adiabatic invariant in the polar disk
-$x=s\cos\alpha$, $y=s\sin\alpha$. Concentric $J$ contours diagnose
-alpha-independence. `|B|` in Boozer coordinates appears at mid radius and on
+$x=s\cos\alpha$, $y=s\sin\alpha$ as filled contours (color limits at the
+2nd and 98th percentiles, 33 surfaces resampled from the Boozer transform).
+Concentric $J$ contours diagnose alpha-independence; gray marks surfaces
+without a trapped well and branch jumps where the selected well changes. `|B|` in Boozer coordinates appears at mid radius and on
 the LCFS as unfilled jet contours with a field line of slope iota. The Boozer
 transform runs in-process, so `--plot` needs no separate `--booz` pass;
 `--booz` is for writing a reusable `boozmn_*.nc`. The plotted $D_R$ comes from
@@ -95,6 +97,8 @@ itself after all requested diagnostics.
 The two stability indices and $V''(s)$ use separate scales whose zero levels
 are aligned; $V''(s)<0$ denotes a magnetic well. Their legend sits below the
 panel so it cannot hide a curve.
+
+The $J$ panel draws unfilled $J$ contours with a colorbar. Dashed curves are bounce-averaged drift surfaces of the same pitch, launched at several radii and integrated by {func}`~vmex.core.maxj.drift_orbits`: they follow the $J$ contours, so circles mean the particles stay on flux surfaces, and a dashed curve reaching $s=1$ is a lost orbit (Sengupta, Bhattacharjee and Buller, arXiv:2608.20042 (2026), Eq. (4)). `examples/drift_surfaces.py` computes the same orbits from Python with {func}`~vmex.core.maxj.drift_surfaces_from_boozer`.
 
 `*_stability.png` first separates `DMerc` into shear, well, current, and
 geodesic terms. Its second panel rescales the WOUT pressure profile and plots

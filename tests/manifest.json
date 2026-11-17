@@ -31,6 +31,7 @@
     ["tests/test_coverage_margin.py", "infrastructure", "unit", "fast", "cpu", "none", "none", ["pr-parity-c1", "full-core-a-c"]],
     ["tests/test_device.py", "infrastructure", "unit", "fast", "cpu-gpu", "none", "none", ["pr-parity-c1", "pr-fast", "gpu-smoke", "full-core-d-f0"]],
     ["tests/test_doctor.py", "interface", "unit", "fast", "cpu-gpu", "none", "none", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
+    ["tests/test_example_contracts.py", "interface", "unit", "fast", "cpu", "none", "none", ["pr-fast", "pr-parity-c1", "full-core-d-f0"]],
     ["tests/test_examples.py", "interface", "campaign", "campaign", "cpu-gpu", "reference-nc", "external", ["pr-examples", "full-examples"]],
     ["tests/test_fetch_assets.py", "infrastructure", "unit", "fast", "cpu", "none", "none", ["pr-parity-c1", "pr-fast", "full-core-d-f0"]],
     ["tests/test_first_divergence.py", "infrastructure", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c1", "full-core-d-f0"]],
@@ -91,8 +92,10 @@
     ["tests/test_preconditioner_2d.py", "equilibrium", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
     ["tests/test_printing.py", "interface", "unit", "fast", "cpu", "none", "golden", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
     ["tests/test_profiles.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
+    ["tests/test_pwo.py", "diagnostics", "ad", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
     ["tests/test_qi_maxj_composition.py", "diagnostics", "unit", "fast", "cpu-gpu", "none", "none", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
     ["tests/test_qi_reference_oracle.py", "diagnostics", "oracle", "fast", "cpu-gpu", "none", "external", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
+    ["tests/test_exact_vacuum.py", "equilibrium", "oracle", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
     ["tests/test_qi_residuals.py", "diagnostics", "ad", "slow", "cpu-gpu", "none", "fd", ["pr-parity-c4", "full-core-n-s"]],
     ["tests/test_qi_free_boundary_stress.py", "free-boundary", "integration", "medium", "cpu-gpu", "generated", "analytic", ["pr-parity-a1", "full-core-n-s"]],
     ["tests/test_qi_sheet_gate.py", "free-boundary", "campaign", "campaign", "cpu-gpu", "generated", "vmec2000", ["pr-parity-a1"]],
@@ -104,6 +107,7 @@
     ["tests/test_scaling.py", "equilibrium", "oracle", "slow", "cpu-gpu", "reference-nc", "analytic", ["pr-parity-c5", "full-core-n-s"]],
     ["tests/test_setup.py", "equilibrium", "unit", "fast", "cpu-gpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
     ["tests/test_setup_extras.py", "equilibrium", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c2", "full-core-n-s"]],
+    ["tests/test_single_stage.py", "optimization", "unit", "fast", "cpu", "none", "analytic", ["pr-parity-c2", "pr-fast", "full-core-n-s"]],
     ["tests/test_single_stage_simultaneous.py", "optimization", "ad", "slow", "cpu-gpu", "reference-nc", "fd", ["pr-parity-c2", "optional", "full-core-n-s"]],
     ["tests/test_single_stage_free_boundary.py", "optimization", "ad", "slow", "cpu-gpu", "none", "fd", ["pr-parity-c2", "optional", "full-core-n-s"]],
     ["tests/test_solver_axis_initialization.py", "equilibrium", "integration", "medium", "cpu-gpu", "none", "analytic", ["pr-parity-c5", "full-core-n-s"]],
@@ -131,11 +135,18 @@
   },
   "local_only": {
     "gpu-smoke": {
-      "reason": "needs an NVIDIA GPU; hosted CI has none and no self-hosted runner is registered, so the former manual GPU workflow was retired",
+      "reason": "the full GPU suite needs an NVIDIA GPU and minutes of compilation; CI runs only the short pr-gpu-ci subset on the self-hosted GPU runners",
       "command": "pytest -q $(python tools/test_manifest.py select gpu-smoke)"
     }
   },
   "selectors": {
+    "pr-gpu-ci": [
+      "tests/test_gpu_ci.py::test_gpu_is_default_without_platform_environment_pins",
+      "tests/test_gpu_ci.py::test_bounce_action_cpu_gpu_parity",
+      "tests/test_gpu_ci.py::test_j_invariant_qi_cpu_gpu_parity",
+      "tests/test_gpu_ci.py::test_maximum_j_cpu_gpu_parity",
+      "tests/test_gpu_ci.py::test_trapped_fraction_value_and_gradient_cpu_gpu_parity"
+    ],
     "pr-device": [
       "tests/test_device.py::test_fixed_boundary_builds_runtime_in_device_context",
       "tests/test_device.py::test_multigrid_moves_residual_continuation_with_the_state",

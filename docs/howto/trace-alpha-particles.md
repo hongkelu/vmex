@@ -38,6 +38,7 @@ A WOUT whose spectrum looks truncated (`spectral_truncation > 3e-3`) triggers a 
 | `--collisional` | off | Monte Carlo collisions on electrons, D and T | about none |
 | `--trace-ne0 N0`, `--trace-te0 T0` | `4e20`, `12` | on-axis electron density [m^-3] and temperature [keV] | none |
 | `--trace-no-scale` | off | trace the equilibrium at its own size and field | none |
+| `--trace-angle-grid N` | 6 | angular table points per shortest wavelength; 0 evaluates the retained Fourier spectrum directly | table interpolation accuracy |
 | `--trace-energy-eV E`, `--trace-mass-kg M`, `--trace-charge-coulomb Q` | alpha | kinetic energy [eV], mass [kg] and signed charge [C] of another species; with `--collisional`, a particle below 1.5 T is thermalised, so low-energy ions stop at once | through speed and drifts |
 | `--trace-no-resolution-check` | off | skip the truncated-spectrum warning ({doc}`trace-resolution`) | none |
 | `--scale-target axis` | `volavgB` | ARIES-CS convention of the in-memory scaling | none |
@@ -120,7 +121,7 @@ device per usable core (on Linux, the cores the process may run on). On Apple
 silicon it uses only the performance cores unless there are at least as many
 efficiency cores. On an M4 (4 + 6) all 10 cores trace 1.7x faster than the 4
 performance cores. A device count in `XLA_FLAGS` or `JAX_NUM_CPU_DEVICES`
-wins. The Boozer transform takes about 2 s.
+wins. The Boozer transform is one jitted pass over all surfaces: about 1.5 s for the default ARIES-CS run (100 surfaces, 32 x 32 modes) on four CPU threads, after the first compilation.
 
 **CPU or GPU.** Since ESSOS 0.19.3 (parallel spline lookup and compaction of
 lost alphas) a GPU is the faster choice for large ensembles: 1,024 alphas over
@@ -243,8 +244,7 @@ print(result.loss_fraction, result.loss_fraction_sigma)
 vj.plot_tracing(result, "figs", name="case")
 ```
 
-`trace_alphas` accepts a path or an in-memory
-{class}`~vmex.core.wout.WoutData` and returns an
+`trace_alphas` accepts a path or {class}`~vmex.core.wout.WoutData` and returns
 {class}`~vmex.core.tracing.AlphaTracingResult`. The exact loss fraction is
 piecewise constant in the boundary, so use it to certify a design, not as an
 optimization objective.

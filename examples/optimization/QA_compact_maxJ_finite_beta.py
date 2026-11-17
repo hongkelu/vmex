@@ -321,8 +321,8 @@ terms = {
     "iota_ceiling": (opt.max_abs_iota, opt.at_most(IOTA_CEILING), IOTA_WEIGHT),
 }
 # Diagnostic: base terms left out of the objective, e.g. COMPACT_QA_DROP=qa,bootstrap.
-for dropped in filter(None, os.environ.get("COMPACT_QA_DROP", "").split(",")):
-    terms.pop(dropped)
+# They stay available to the stage log.
+dropped_terms = {name: terms.pop(name) for name in filter(None, os.environ.get("COMPACT_QA_DROP", "").split(","))}
 chi_reference = ql_reference = mercier_margin = None
 
 
@@ -334,7 +334,7 @@ def metrics(equilibrium):
     profile = maximum_j_profile(maxj)
     return {
         "qa": float(qs.total_state(state, context)),
-        "bootstrap_mismatch": float(terms["bootstrap"][0].total_state(state, context)),
+        "bootstrap_mismatch": float((terms.get("bootstrap") or dropped_terms["bootstrap"])[0].total_state(state, context)),
         "aspect": float(opt.aspect_ratio(state, context)),
         "beta": float(opt.volume_average_beta(state, context)),
         "min_iota": float(opt.min_abs_iota(state, context)),

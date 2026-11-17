@@ -363,6 +363,17 @@ def test_resolve_implicit_device_defaults_to_cpu(monkeypatch):
         assert resolved is not None and resolved.platform == "cpu"
 
 
+def test_resolve_implicit_device_keeps_block_jacobian_on_accelerator(monkeypatch):
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
+    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
+    large, small = _res(ns=101, mpol=7, ntor=7, nfp=2), _res(ns=5, mpol=2, ntor=2, nfp=2)
+    assert dev.recommended_device(large) == "gpu" and dev.recommended_device(small) == "cpu"
+    assert dev.resolve_implicit_device(dev.AUTO, large, block_jacobian=True) is None
+    assert dev.resolve_implicit_device(dev.AUTO, small, block_jacobian=True).platform == "cpu"
+    assert dev.resolve_implicit_device(dev.AUTO, large).platform == "cpu"
+
+
 def test_resolve_implicit_device_honors_explicit_and_pin():
     res = _res(ns=35, mpol=6, ntor=6, nfp=4)
     # explicit device is honored (delegated to resolve_device).

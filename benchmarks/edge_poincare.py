@@ -46,7 +46,7 @@ def parse_args(argv=None):
                         help="a line ends on a wall D [m] off the plasma boundary (the driver's --edge-wall): its strike "
                              "points are drawn and the lengths to the wall printed")
     parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
-    parser.add_argument("--vc-grid", type=int, default=64, help="virtual-casing grid per field period")
+    parser.add_argument("--vc-grid", type=int, default=128, help="virtual-casing grid per field period")
     parser.add_argument("--surfaces", type=int, default=12, help="flux surfaces drawn")
     parser.add_argument("--title", default="")
     parser.add_argument("--replot", action="store_true",

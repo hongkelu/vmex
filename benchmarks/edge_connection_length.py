@@ -38,7 +38,7 @@ parser.add_argument("--max-length", type=float, default=600.0)
 parser.add_argument("--planes", type=int, default=8, help="planes per field period where a line is tested")
 parser.add_argument("--steps", type=int, default=64, help="Runge-Kutta steps per field period")
 parser.add_argument("--margin", type=float, default=0.26, help="box around the boundary [m]")
-parser.add_argument("--vc-grid", type=int, default=64)
+parser.add_argument("--vc-grid", type=int, default=128)
 args = parser.parse_args()
 
 wout = read_wout(str(args.run / "wout.nc"))

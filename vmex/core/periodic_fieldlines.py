@@ -383,6 +383,23 @@ def exterior_field(external_field_from_parameters: Callable[[Any], Any], **optio
     The sources are built once per equilibrium, not once per field evaluation:
     building them costs as much as hundreds of evaluations at a few points, and
     a field-line trace evaluates the field thousands of times.
+
+    The sum is the trapezoid rule on twice the grid of ``surface_data``, so it
+    is accurate only away from the boundary.  Measured on a compact QA with
+    minor radius 0.22 m against the extender's graded rule (relative error,
+    median / largest of 64 points):
+
+    ============  ===============  ===============  ===============
+    distance      grid 64          grid 128         grid 256
+    ============  ===============  ===============  ===============
+    10 mm         1e-1 / 5e-1      8e-3 / 5e-2      6e-5 / 9e-4
+    20 mm         8e-3 / 5e-2      6e-5 / 9e-4      4e-9 / 4e-7
+    30 mm         7e-4 / 7e-3      5e-7 / 2e-5      2e-13 / 2e-10
+    50 mm         5e-6 / 2e-4      3e-11 / 1e-8     round-off
+    100 mm        2e-11 / 2e-8     round-off        round-off
+    ============  ===============  ===============  ===============
+
+    Closer than that, use the extender's ``near_surface="graded"`` field.
     """
     from virtual_casing_jax.derivative_kernels import layer_derivatives
 

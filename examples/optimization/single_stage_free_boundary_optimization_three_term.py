@@ -433,6 +433,19 @@ def d_merc_rows(state, runtime):
     return d_merc[(index >= 2) & (index < index.size - 1) & (index / (index.size - 1) >= MERCIER_S_MIN)]
 
 
+def smooth_d_merc(state, runtime, smooth, bands=1):
+    """Mercier floor rows (``--mercier-smooth``): in each of ``bands`` radial bands of ``d_merc_rows``' surfaces, their
+    ``DMerc`` averaged with weights ``exp(-DMerc / smooth)``.  It reads at most about ``smooth`` above the band's
+    smallest value, and its gradient covers every surface within a few ``smooth`` of it, where the smallest value's
+    is one surface's alone.  The step log keeps the true smallest ``DMerc`` (``min_d_merc``)."""
+    import jax
+    import jax.numpy as jnp
+
+    d_merc = d_merc_rows(state, runtime)
+    groups = np.array_split(np.arange(d_merc.shape[0]), bands)
+    return jnp.stack([jnp.vdot(jax.nn.softmax(-d_merc[g] / smooth), d_merc[g]) for g in groups])
+
+
 def current_iota(state, runtime):
     """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
     plasma's major radius, minor radius ``R0 / aspect`` and axis field -- the current's share of iota."""
@@ -712,6 +725,11 @@ def parse_args(argv=None):
     parser.add_argument("--mercier-rows", action="store_true",
                         help="Mercier floor with a row per surface instead of the one row of their smallest DMerc, "
                         "whose gradient is the smallest surface's alone: a step that holds it can sink another")
+    parser.add_argument("--mercier-smooth", type=float, metavar="D",
+                        help="Mercier floor as the surfaces' DMerc averaged with weights exp(-DMerc / D) instead of "
+                        "their smallest (reads at most about D above it; the log keeps the true smallest)")
+    parser.add_argument("--mercier-bands", type=int, default=1, metavar="N",
+                        help="with --mercier-smooth: a row for each of N radial bands of the surfaces")
     parser.add_argument("--current-knots", type=int, default=CURRENT_KNOTS, metavar="N",
                         help="number of spline knots of the current with --current-knots-at-ends")
     parser.add_argument("--current-knots-at-ends", action="store_true",
@@ -976,6 +994,8 @@ def main(argv=None):
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
+    mercier_row = (min_d_merc if not args.mercier_smooth else
+                   lambda state, runtime: smooth_d_merc(state, runtime, args.mercier_smooth, args.mercier_bands))
     mirror = ((lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=args.mirror_smooth)),
               ) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
@@ -1007,7 +1027,7 @@ def main(argv=None):
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
                     *([redl.residuals_state if args.redl_rows else bootstrap_mismatch(inp, redl, "gpu")]
                       if redl is not None else []),
-                    *([d_merc_rows if args.mercier_rows else min_d_merc] if MERCIER_FLOOR is not None else []),
+                    *([d_merc_rows if args.mercier_rows else mercier_row] if MERCIER_FLOOR is not None else []),
                     *([current_iota] if CURRENT_IOTA_WEIGHT else []),
                     *(f for f, *_ in ext_rows.values())),
         parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
@@ -1035,7 +1055,8 @@ def main(argv=None):
     redl_row = np.sqrt(REDL_TOLERANCE / nredl) if args.redl_rows else None  # all rows met: f_boot <= REDL_TOLERANCE
     state0, params0 = problem.state(problem.x0)
     runtime0 = im.runtime_from_params(params0, model.cfg)
-    nmerc = int(np.size(d_merc_rows(state0, runtime0))) if args.mercier_rows else 1
+    nmerc = (int(np.size(d_merc_rows(state0, runtime0))) if args.mercier_rows
+             else args.mercier_bands if args.mercier_smooth else 1)
     extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
                         for _ in range(int(np.size(f(state0, runtime0))))]
     lower, upper, row_scales = zip(

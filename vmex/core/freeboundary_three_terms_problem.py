@@ -249,13 +249,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
     def _release_gauge(self, x):
         """Replace ``x``'s fit (cached) by the no-label fit from it, so that ``_set_gauge`` sets the gauge there.  If
-        that fit fails the old gauge and fit stand."""
+        that fit fails the old gauge and fit stand.  Where ``x`` has its Jacobian the fit reuses it (steps of one
+        evaluation, at most one fresh Jacobian), instead of a trust region with a Jacobian per iteration."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
         sol, gauge = self._cache[key], model._gauge
+        if "J" not in sol:  # the warm start below needs it; the gradient at x reuses the same linearization
+            self._fit_jacobian(x, sol)
         model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, None
         field = self.field(xj)  # after the weights are zeroed: the field carries the gauge it is wrapped with
+        J = sol.get("J")  # warm start: the accepted fit's Jacobian, its gauge rows zero like the weights
+        if J is not None:
+            J = np.array(J)[:, :model.x0.size]
+            J[model._n_interface:model._n_interface + gauge[0].shape[0]] = 0.0
         try:
-            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], ftol=self.boundary_ftol,
+            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
             fitted = self._fits(fit, field)
             state, mask, params, _ = fit["aux"]
@@ -268,6 +275,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count("gauge_releases")
+        self._count("gauge_release_warm", int(J is not None))  # how the releases went: evaluations and Jacobians
+        self._count("gauge_release_nfev", int(fit["nfev"]))
+        self._count("gauge_release_njev", int(fit["njev"]))
         self._cache[key] = dict(fit, state=state, mask=mask, params=params, values=values)
 
     def _set_gauge(self, x):

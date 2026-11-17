@@ -6,10 +6,11 @@
 ``--run`` holds ``coils.json``, ``wout.nc`` and optionally ``pf.json`` (the layout of
 ``benchmarks/edge_fixed_points.py``).  Inside the boundary the flux surfaces are the WOUT's; outside, field lines of
 the coils' plus the plasma's virtual-casing field (:func:`vmex.core.periodic_fieldlines.exterior_field`) are traced from seeds on
-the plane ``phi = 0`` (rays from the axis, or ``--layers`` off the boundary and ``--xpoint-seeds`` around the X-point;
-:func:`vmex.core.periodic_fieldlines.trace_fieldline`) and marked on ``--planes`` equally
+the plane ``phi = 0`` and marked on ``--planes`` equally
 spaced planes of one field period.  A line ends where it leaves the box, enters the plasma or comes within ``--coil-gap`` of a coil;
-it is coloured by the field periods it lasted.  With ``--xpoint`` the closed line through that point is refined by
+it is coloured by the field periods it lasted.  With ``--xpoint`` the seeds are a small block around the X-point, so the marks stay close to the separatrix (as in
+arXiv:2501.18293; open lines far from it last a few field periods and only scatter); without, they are on five rays
+from the axis.  ``--layers`` adds curves of seeds off the boundary.  With ``--xpoint`` the closed line through that point is refined by
 shooting; the line's point and its unstable and stable manifolds are drawn on every plane.  Writes ``poincare.png`` and ``poincare.npz``;
 ``--replot`` draws the figure again from that file without tracing.
 """
@@ -33,19 +34,21 @@ def parse_args(argv=None):
     parser.add_argument("--planes", type=int, default=4, help="planes per field period (even)")
     parser.add_argument("--seeds", type=int, default=40, help="seeds per ray")
     parser.add_argument("--reach", type=float, default=0.22, help="length of the seed rays outside the boundary [m]")
-    parser.add_argument("--gap", type=float, default=0.03, help="smallest distance of a seed to the boundary [m]")
+    parser.add_argument("--gap", type=float, default=0.02,
+                        help="smallest distance of a seed to the boundary [m]; the direct field at --vc-grid 128 is good "
+                             "to 1e-3 from 0.02")
     parser.add_argument("--layers", type=float, nargs="+", metavar="D",
-                        help="seeds on curves D [m] off the boundary (--seeds on each, upper half) instead of on rays")
-    parser.add_argument("--xpoint-seeds", type=int, default=0, metavar="N",
-                        help="N x N more seeds in the square of half width --xpoint-box around --xpoint")
-    parser.add_argument("--xpoint-box", type=float, default=0.03, help="[m]")
+                        help="more seeds on curves D [m] off the boundary (--seeds on each, upper half)")
+    parser.add_argument("--xpoint-seeds", type=int, default=16, metavar="N",
+                        help="N x N seeds in the square of half width --xpoint-box around --xpoint")
+    parser.add_argument("--xpoint-box", type=float, default=0.01, help="[m]")
     parser.add_argument("--max-length", type=float, metavar="L",
                         help="stop following a line after this length along the torus [m] (fewer --periods)")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
     parser.add_argument("--wall", type=float, metavar="D",
                         help="a line ends on a wall D [m] off the plasma boundary (the driver's --edge-wall): its strike "
                              "points are drawn and the lengths to the wall printed")
-    parser.add_argument("--margin", type=float, default=0.4, help="box around the boundary [m]")
+    parser.add_argument("--margin", type=float, help="box around the boundary [m] (default 0.4, or --wall + 0.08)")
     parser.add_argument("--vc-grid", type=int, default=128, help="virtual-casing grid per field period")
     parser.add_argument("--surfaces", type=int, default=12, help="flux surfaces drawn")
     parser.add_argument("--title", default="")
@@ -104,6 +107,8 @@ def main(argv=None):
     axis0 = section(0.0, 0)[0]
     if args.max_length:
         args.periods = min(args.periods, int(np.ceil(args.max_length / (period * float(np.asarray(wout.rmnc)[0, 0])))))
+    if args.margin is None:
+        args.margin = 0.4 if args.wall is None else args.wall + 0.08
     low = np.min([e.min(axis=0) for e in edges], axis=0) - args.margin
     high = np.max([e.max(axis=0) for e in edges], axis=0) + args.margin
     coil_angle = np.arctan2(coil_points[:, 1], coil_points[:, 0])
@@ -119,23 +124,19 @@ def main(argv=None):
         t_edge = t[np.argmin(inside)]
         return axis0 + (t_edge + np.linspace(args.gap, args.reach, args.seeds))[:, None] * direction
 
-    directions = [(np.cos(a), np.sin(a)) for a in np.linspace(0.0, np.pi, 5)]
-    if args.xpoint:
-        directions.append(np.asarray(args.xpoint) - axis0)
-    seeds = np.concatenate([ray(d) for d in directions])
+    seeds = np.zeros((0, 2)) if args.xpoint else np.concatenate(
+        [ray((np.cos(a), np.sin(a))) for a in np.linspace(0.0, np.pi, 5)])
     if args.layers:  # the upper half of the boundary's section moved along its normal in the plane
         edge = edges[0][:181]
         tangent = np.gradient(edge, axis=0)
         normal = np.stack((tangent[:, 1], -tangent[:, 0]), -1) / np.linalg.norm(tangent, axis=1)[:, None]
         normal *= np.sign(np.sum(normal * (edge - axis0)))
         pick = np.round(np.linspace(0, 180, args.seeds)).astype(int)
-        seeds = np.concatenate([edge[pick] + d * normal[pick] for d in args.layers])
+        seeds = np.concatenate([seeds] + [edge[pick] + d * normal[pick] for d in args.layers])
     if args.xpoint and args.xpoint_seeds:
         side = np.linspace(-args.xpoint_box, args.xpoint_box, args.xpoint_seeds)
         box = np.asarray(args.xpoint) + np.stack(np.meshgrid(side, side), -1).reshape(-1, 2)
         seeds = np.concatenate((seeds, box[~Polygon(edges[0]).contains_points(box)]))
-    print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}",
-          flush=True)
 
     chunk = 5  # field periods per compiled call
     angles = jnp.arange(chunk * args.planes + 1) * period / args.planes
@@ -161,6 +162,9 @@ def main(argv=None):
         xyz = np.stack((r * np.cos(planes[plane]), r * np.sin(planes[plane]), z), -1)
         return np.asarray(pf.surface_distances(jnp.asarray(xyz), surface.gamma, nfp))
 
+    seeds = seeds[to_plasma(seeds[:, 0], seeds[:, 1], 0) >= args.gap]  # the gap in space, not along a grazing ray
+
+    print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}", flush=True)
     if not args.replot:
         r, z = seeds[:, 0].copy(), seeds[:, 1].copy()
         living = np.ones(len(seeds), dtype=bool)
@@ -274,8 +278,8 @@ def main(argv=None):
         for points, flip in ((marks[plane], 1.0), (marks[mirror], -1.0)):
             index = points[:, 2].astype(int)
             kept = ~lost[index]
-            axis.plot(points[kept, 0], flip * points[kept, 1], ",", color="0.25")
-            mesh = axis.scatter(points[~kept, 0], flip * points[~kept, 1], s=1.5, c=life[index][~kept], cmap="autumn_r",
+            axis.plot(points[kept, 0], flip * points[kept, 1], ".", ms=1.5, mew=0, color="0.2")
+            mesh = axis.scatter(points[~kept, 0], flip * points[~kept, 1], s=3, c=life[index][~kept], cmap="autumn_r",
                                 norm=norm, linewidths=0)
         near = coils_near(plane, 0.03)
         axis.plot(np.hypot(near[:, 0], near[:, 1]), near[:, 2], "k.", ms=4)

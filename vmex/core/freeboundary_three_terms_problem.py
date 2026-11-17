@@ -58,6 +58,13 @@ def _nonlinear_constraint(values, jacobian, lower, upper, scales):
                                jac=lambda x: np.asarray(jacobian(x)) / scale[..., None])
 
 
+#: A gauge release continues from a fresh Jacobian at most this many times, while each round still lowers the fit's
+#: cost by more than GAUGE_RELEASE_GAIN: the reused Jacobian is only good near the accepted fit, and the flat
+#: directions it releases curve away from it.
+GAUGE_RELEASE_ROUNDS = 6
+GAUGE_RELEASE_GAIN = 0.02
+
+
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
 
@@ -264,6 +271,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         try:
             fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
+            for _ in range(GAUGE_RELEASE_ROUNDS if J is not None else 0):  # a fresh Jacobian where the reused one ended
+                J = np.array(model.linearize(fit["x"], fit["aux"], field)[0])[:, :model.x0.size]
+                more = model.solve_boundary(self._params_at(xj), field, x0=fit["x"], jacobian=J, ftol=self.boundary_ftol,
+                                            max_nfev=self.boundary_max_nfev)
+                gained = more["rows"] @ more["rows"] < (1.0 - GAUGE_RELEASE_GAIN) * (fit["rows"] @ fit["rows"])
+                fit = dict(more, nfev=fit["nfev"] + more["nfev"], njev=fit["njev"] + 1 + more["njev"])
+                if not gained:
+                    break
             fitted = self._fits(fit, field)
             state, mask, params, _ = fit["aux"]
             values = np.asarray(self._rows(state, params, xj)) if fitted else None

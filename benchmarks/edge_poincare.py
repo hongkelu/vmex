@@ -42,6 +42,10 @@ def parse_args(argv=None):
     parser.add_argument("--xpoint-seeds", type=int, default=16, metavar="N",
                         help="N x N seeds in the square of half width --xpoint-box around --xpoint")
     parser.add_argument("--xpoint-box", type=float, default=0.01, help="[m]")
+    parser.add_argument("--connection-map", type=int, metavar="N",
+                        help="instead of those seeds, an N x N grid of the plane phi = 0 between --gap and --wall off the "
+                             "plasma: also writes connection_length.png, the length [m] of each point's field line to "
+                             "the wall, both ways summed (as in arXiv:2607.27127; --max-length caps each way)")
     parser.add_argument("--max-length", type=float, metavar="L",
                         help="stop following a line after this length along the torus [m] (fewer --periods)")
     parser.add_argument("--coil-gap", type=float, default=0.03, help="a line ends this close to a coil [m]")
@@ -160,9 +164,17 @@ def main(argv=None):
 
     def to_plasma(r, z, plane):  # distance [m] to the plasma boundary
         xyz = np.stack((r * np.cos(planes[plane]), r * np.sin(planes[plane]), z), -1)
-        return np.asarray(pf.surface_distances(jnp.asarray(xyz), surface.gamma, nfp))
+        return np.concatenate([np.asarray(pf.surface_distances(jnp.asarray(part), surface.gamma, nfp))
+                               for part in np.array_split(xyz, len(xyz) // 2048 + 1)])  # in parts: memory
 
     seeds = seeds[to_plasma(seeds[:, 0], seeds[:, 1], 0) >= args.gap]  # the gap in space, not along a grazing ray
+    if args.connection_map:  # a grid symmetric in Z: the line followed backwards is the mirror point's, forwards
+        grid_axes = (np.linspace(low[0], high[0], args.connection_map),
+                     np.linspace(-1.0, 1.0, args.connection_map) * max(-low[1], high[1]))
+        grid = np.stack(np.meshgrid(*grid_axes), -1).reshape(-1, 2)
+        distance = to_plasma(grid[:, 0], grid[:, 1], 0)
+        cell = np.flatnonzero(~Polygon(edges[0]).contains_points(grid) & (distance >= args.gap) & (distance < args.wall))
+        seeds = grid[cell]
 
     print(f"[seeds] {len(seeds)}; box R {low[0]:.2f}..{high[0]:.2f} Z {low[1]:.2f}..{high[1]:.2f}", flush=True)
     if not args.replot:
@@ -173,13 +185,15 @@ def main(argv=None):
         strikes = {k: [] for k in range(args.planes)}    # with --wall: (R, Z, seed index) of the first point beyond it
         clock = time.monotonic()
         for start in range(0, args.periods, chunk):
-            # only the lines still followed are traced, in batches padded to a power of two (few compiled sizes)
-            active = np.flatnonzero(living)
-            size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
-            padded = np.r_[active, np.full(size - len(active), active[0])]
+            # only the lines still followed are traced, at most 1024 at a time (memory), in batches padded to a power
+            # of two (few compiled sizes)
             path_r, path_z = (np.tile(seeds[:, i], (chunk * args.planes + 1, 1)) for i in (0, 1))
-            traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
-            path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
+            followed = np.flatnonzero(living)
+            for active in np.array_split(followed, int(np.ceil(len(followed) / 1024))):
+                size = max(8, 1 << int(np.ceil(np.log2(len(active)))))
+                padded = np.r_[active, np.full(size - len(active), active[0])]
+                traced = [np.asarray(v) for v in advance(jnp.asarray(r[padded]), jnp.asarray(z[padded]))]
+                path_r[:, active], path_z[:, active] = traced[0][:, :len(active)], traced[1][:, :len(active)]
             for k in range(1, chunk * args.planes + 1):
                 plane = k % args.planes
                 before = living.copy()
@@ -319,6 +333,28 @@ def main(argv=None):
                     f"{args.periods})", shrink=0.7)
     figure.suptitle(args.title or str(args.run))
     figure.savefig(out / "poincare.png", dpi=170)
+    if args.connection_map:
+        n, step = args.connection_map, period * float(np.asarray(wout.rmnc)[0, 0])  # [m] along the torus per field period
+        length = np.full(n * n, np.nan)
+        length[cell] = np.maximum(life, 0.5 / args.planes) * step
+        length = length.reshape(n, n)
+        length = length + length[::-1]
+        figure, axis = plt.subplots(figsize=(6.4, 7.0), constrained_layout=True)
+        mesh = axis.pcolormesh(*grid_axes, length, norm=LogNorm(vmin=step / args.planes, vmax=2 * args.periods * step),
+                               cmap="viridis", shading="nearest")
+        axis.plot(*edges[0].T, color="tab:blue", lw=1.6)
+        for name, color in (("unstable", "w"), ("stable", "tab:red")):
+            for source, flip in (((manifolds[name][0], 1.0), (manifolds[other[name]][0], -1.0)) if name in manifolds else ()):
+                for branch in np.split(source, 2, axis=1):
+                    curve = branch.reshape(-1, 2)
+                    jump = np.linalg.norm(np.diff(curve, axis=0), axis=1)
+                    end = int(np.argmax(~(jump < 0.03))) if np.any(~(jump < 0.03)) else len(curve)
+                    axis.plot(curve[:end, 0], flip * curve[:end, 1], "-", lw=0.8, color=color)
+        if x_line is not None:
+            axis.plot([x_line[0, 0]] * 2, [x_line[0, 1], -x_line[0, 1]], "kx", ms=9, mew=2)
+        axis.set(xlabel="R [m]", ylabel="Z [m]", aspect="equal", title=(args.title or str(args.run)) + ", phi = 0")
+        figure.colorbar(mesh, ax=axis, label="connection length to the wall, both ways [m]", shrink=0.8)
+        figure.savefig(out / "connection_length.png", dpi=170)
     print(f"[done] {int(lost.sum())} of {len(seeds)} lines lost; {out / 'poincare.png'}", flush=True)
 
 

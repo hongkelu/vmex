@@ -320,6 +320,9 @@ terms = {
     "elongation": (opt.max_elongation, opt.at_most(ELONGATION_LIMIT), LIMIT_WEIGHT),
     "iota_ceiling": (opt.max_abs_iota, opt.at_most(IOTA_CEILING), IOTA_WEIGHT),
 }
+# Diagnostic: base terms left out of the objective, e.g. COMPACT_QA_DROP=qa,bootstrap.
+for dropped in filter(None, os.environ.get("COMPACT_QA_DROP", "").split(",")):
+    terms.pop(dropped)
 chi_reference = ql_reference = mercier_margin = None
 
 

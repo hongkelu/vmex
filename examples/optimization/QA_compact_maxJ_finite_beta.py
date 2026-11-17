@@ -95,6 +95,8 @@ STABILITY_WEIGHT = 30.0
 STABILITY_MIN_S = 0.2
 BALLOONING_WEIGHT = float(os.environ.get("COMPACT_QA_BALL_WEIGHT", 30.0))
 MAXJ_WEIGHT = float(os.environ.get("COMPACT_QA_MAXJ_WEIGHT", 100.0))
+# Residual/Jacobian device: "auto" is the upstream default (CPU on GPU hosts); "gpu" forces the accelerator.
+PROBLEM_DEVICE = os.environ.get("COMPACT_QA_DEVICE", "auto")
 CHI_WEIGHT = 30.0
 LGRADB_WEIGHT = 30.0
 QL_WEIGHT = 30.0
@@ -429,7 +431,8 @@ for number, token in enumerate(STAGES.split(","), start=1):
     # optimizer leaves the seed and needs no action; see examples/README.md.
     problem = opt.VmecProblem.from_tuples(
         inp, list(terms.values()), max_mode=max_mode, current_dofs=N_CURRENT_SPLINE - 1,
-        use_ess=True, restart_from=equilibrium, forward_max_iterations=STAGE_NITER, progress=True)
+        use_ess=True, restart_from=equilibrium, forward_max_iterations=STAGE_NITER, progress=True,
+        device=PROBLEM_DEVICE)
     step = PARAMETER_STEP * problem.scales
     step[-N_CURRENT_SPLINE:] = CURRENT_PARAMETER_STEP  # n-1 spline shapes plus CURTOR
     result = least_squares(

@@ -780,7 +780,8 @@ def parse_args(argv=None):
     parser.add_argument("--edge-leg-coils", type=float, metavar="MIN",
                         help="constrain the distance [m] from each outer leg to the coils and the circular pairs: "
                              "the closest of its field lines over --edge-outer-leg-maps return maps, from next to "
-                             "the line out to the --edge-wall's D")
+                             "the line out to the --edge-wall's D, sampled 128 times per map (16 missed the closest "
+                             "approach to a coil by centimetres)")
     parser.add_argument("--edge-trace", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="constrain the trace of the line's tangent map (|Tr M| > 2: X-point)")
     parser.add_argument("--edge-vc-grid", type=int, default=64, help="virtual-casing grid per field period of the "
@@ -1191,18 +1192,26 @@ def main(argv=None):
                 coils = jnp.concatenate(wires)
                 wall = np.inf if args.edge_wall is None else args.edge_wall[0]
 
+                def chunked(f, points, size=1024):  # f of (size, 3) points, a chunk at a time: bounded memory
+                    n = points.shape[0]
+                    padded = jnp.pad(points, ((0, -n % size), (0, 0)), mode="edge").reshape(-1, size, 3)
+                    return jax.lax.map(f, padded).ravel()[:n]
+
                 def to_coils_of(R, Z, phi):  # (angles, ...) traces -> distance of every point to the coils
-                    points = jnp.stack((R * jnp.cos(phi), R * jnp.sin(phi), Z), axis=-1).reshape(-1, 1, 3)
-                    return points[:, 0], jnp.sqrt(jnp.min(jnp.sum((points - coils[None]) ** 2, axis=-1), axis=1))
+                    points = jnp.stack((R * jnp.cos(phi), R * jnp.sin(phi), Z), axis=-1).reshape(-1, 3)
+                    near = lambda p: jnp.sqrt(jnp.min(jnp.sum((p[:, None] - coils[None]) ** 2, axis=-1), axis=1))
+                    return points, chunked(near, points)
 
                 for stable in (False, True):  # the closest point is found without gradients, then traced with them
-                    R, Z, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, **options)
+                    R, Z, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, per_map=128,
+                                                      **options)
                     points, distance = to_coils_of(R, Z, jnp.broadcast_to(phi[:, None], R.shape))
-                    inside = pf.surface_distances(points, data.gamma, int(inp.nfp)) <= wall
+                    inside = chunked(lambda p: pf.surface_distances(p, data.gamma, int(inp.nfp)), points) <= wall
                     angle, sample = jnp.divmod(jnp.argmin(jnp.where(inside, distance, jnp.inf)), R.shape[1])
                     R, Z, phi = pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=sample,
-                                                      path=True, **options)
-                    values = jnp.concatenate((values, to_coils_of(R[angle], Z[angle], phi[angle])[1]))
+                                                      path=True, per_map=128, **options)
+                    point = jnp.stack((R[angle] * jnp.cos(phi[angle]), R[angle] * jnp.sin(phi[angle]), Z[angle]))
+                    values = jnp.concatenate((values, jnp.sqrt(jnp.min(jnp.sum((point - coils) ** 2, axis=-1)))[None]))
             return jnp.where(found, values, jnp.nan), line
 
         def edge(state, runtime, x):

@@ -898,9 +898,15 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
     state, _, params, _ = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
+    # a fixed point of the Picard map: Redl's current on the model's state is the model's current
+    runtime = model._im.runtime_from_params(params, model.cfg)
+    target = np.asarray(bs.HalfMeshCurrent(inp, profiles, 0).target(state, runtime))
+    np.testing.assert_allclose(np.asarray(params.ac_aux_f)[1:-1], target, rtol=0, atol=2e-4 * np.max(np.abs(target)))
+    # The Picard loop's own solves reach another converged state of the same deck at this resolution (both at the
+    # force tolerance; started at the model's state the loop's solver stays on it), so its current agrees to a few %.
     picard = bs.self_consistent_bootstrap(inp, profiles, 0, n_iter=40, tol=1e-6, relax=0.5, profile="half_mesh")
     np.testing.assert_allclose(np.asarray(params.ac_aux_f), picard.input.ac_aux_f,
-                               rtol=0, atol=2e-4 * np.max(np.abs(picard.input.ac_aux_f)))
+                               rtol=0, atol=4e-2 * np.max(np.abs(picard.input.ac_aux_f)))
     J = model.linearize(out["x"], out["aux"], None)[0]
     k, h = 5, 1e-5 * model.x_scale[5]
     rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]

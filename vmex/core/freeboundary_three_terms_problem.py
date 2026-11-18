@@ -268,12 +268,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         evaluation, at most one fresh Jacobian), instead of a trust region with a Jacobian per iteration."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
         sol, gauge = self._cache[key], model._gauge
-        if "J" not in sol:  # the warm start below needs it; the gradient at x reuses the same linearization
-            self._fit_jacobian(x, sol)
-        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, None
+        J = sol.get("J")  # warm start: the fit's Jacobian, else the one its fit used (the last accepted fit's)
+        if J is None:
+            J = self._anchor["J_b"] if self._anchor else self._fit_jacobian(x, sol)
+        # radius 0: the steps start at 1/20 of the Gauss-Newton step, which without the gauge rows is long along the
+        # flat directions (from its full length the reused Jacobian's first steps all fail)
+        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, 0.0
         field = self.field(xj)  # after the weights are zeroed: the field carries the gauge it is wrapped with
-        J = sol.get("J")  # warm start: the accepted fit's Jacobian, its gauge rows zero like the weights
-        if J is not None:
+        if J is not None:  # its gauge rows zero like the weights
             J = np.array(J)[:, :model.x0.size]
             J[model._n_interface:model._n_interface + gauge[0].shape[0]] = 0.0
         try:

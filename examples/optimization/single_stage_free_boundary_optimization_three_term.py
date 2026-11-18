@@ -889,9 +889,9 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
     for a unit step of the group).  Printed and written to ``gradient_report.json``, with the rows' values and bounds
     and the gradient's entries on the circular pairs' coordinates.
 
-    Then the first-order test of a constrained minimum: least-squares multipliers of the rows within 1e-3 of a
-    bound (``coil_rows`` too), the part of the loss gradient they leave, and for each row the relative gain of the
-    loss if its bound were relaxed by 1% of the row's unit (negative: the row is leaving its bound)."""
+    Then the first-order test of a constrained minimum: nonnegative least-squares multipliers of the rows within
+    1e-3 of a bound (``coil_rows`` too), the part of the loss gradient they leave, and for each row the relative
+    gain of the loss if its bound were relaxed by 1% of the row's unit."""
     x = np.asarray(problem.accepted.parameters, dtype=float)
     scales = np.asarray(problem.scales, dtype=float)
     loss, grad = problem.value_and_grad(x)
@@ -913,6 +913,8 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
         record["rows"].append(dict(label=label, norms=norms, pairs={names[j]: float(row[j]) for j in pairs},
                                    **({} if i == 0 else dict(value=float(values[i - 1]), lower=float(lower[i - 1]),
                                                              upper=float(upper[i - 1]), unit=float(row_scales[i - 1])))))
+    from scipy.optimize import nnls
+
     slack = np.minimum(values - np.asarray(lower), np.asarray(upper) - values) / np.asarray(row_scales)
     tight = np.flatnonzero(slack < 1e-3)
     side = np.where(values[tight] - np.asarray(lower)[tight] < np.asarray(upper)[tight] - values[tight], 1.0, -1.0)
@@ -921,12 +923,12 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
         at = np.flatnonzero(np.asarray(coil_rows.fun(x)) < 1e-3)
         active = np.vstack((active, np.asarray(coil_rows.jac(x))[at] * scales))
         tags += [f"coil row {i}" for i in at]
-    multipliers = np.linalg.lstsq(active.T, rows[0], rcond=None)[0] if len(tags) else np.zeros(0)
+    multipliers = nnls(active.T, rows[0])[0] if len(tags) else np.zeros(0)  # a minimum needs them >= 0
     left = float(np.linalg.norm(rows[0] - multipliers @ active) / np.linalg.norm(rows[0]))
     print(f"[gradient report] {len(tags)} rows at a bound leave {left:.3f} of the loss gradient "
           f"(0: a constrained minimum to first order)", flush=True)
     record.update(gradient_left=left, multipliers=[])
-    for i in np.argsort(-np.abs(multipliers)):
+    for i in np.argsort(-multipliers)[:np.count_nonzero(multipliers)]:
         gain = 0.01 * float(multipliers[i]) / float(loss)
         print(f"[gradient report] {tags[i]}: relaxing by 1% of its unit gains {gain:+.2%} of the loss", flush=True)
         record["multipliers"].append(dict(row=tags[i], multiplier=float(multipliers[i]), gain_per_percent=gain))

@@ -164,6 +164,11 @@ def test_outer_legs_of_a_double_null_run_away_from_the_midplane_on_the_separatri
     one = pf.manifold_outer_leg(_double_null, 0.0, line, pf.tangent_map(_double_null, 0.0, line), nfp=NFP, iterations=2,
                                 samples=8, index=5)
     np.testing.assert_allclose(one, (R[0, 5], Z[0, 5]), rtol=1e-12)              # index: that one point
+    R_path, Z_path, phi = pf.manifold_outer_leg(_double_null, 0.0, line, pf.tangent_map(_double_null, 0.0, line),
+                                                nfp=NFP, iterations=2, samples=8, path=True)
+    assert R_path.shape == (phi.size, 9)
+    np.testing.assert_allclose((R_path[-1], Z_path[-1]), (R[0], Z[0]), rtol=1e-12)  # path: the traces to those points
+    np.testing.assert_allclose(0.25 * (R_path - RX) ** 2 + 0.15 * Z_path**2 - 0.15 * Z_path**4, 0.0375, atol=1e-7)
     eps, h = 0.01, 1e-5
     fd = (legs(eps + h) - legs(eps - h)) / (2.0 * h)
     np.testing.assert_allclose(jax.jacfwd(legs)(eps), fd, rtol=1e-5, atol=1e-6)

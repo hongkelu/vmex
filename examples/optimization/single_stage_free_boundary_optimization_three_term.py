@@ -777,6 +777,10 @@ def parse_args(argv=None):
                              "Z = 0 gets (vmex.core.periodic_fieldlines.manifold_outer_leg): above the --edge-wall's D, "
                              "both divertor legs reach the wall")
     parser.add_argument("--edge-outer-leg-maps", type=int, default=4, help="return maps the outer legs are followed")
+    parser.add_argument("--edge-leg-coils", type=float, metavar="MIN",
+                        help="constrain the distance [m] from each outer leg to the coils and the circular pairs: "
+                             "the closest of its field lines over --edge-outer-leg-maps return maps, from next to "
+                             "the line out to the --edge-wall's D")
     parser.add_argument("--edge-trace", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="constrain the trace of the line's tangent map (|Tr M| > 2: X-point)")
     parser.add_argument("--edge-vc-grid", type=int, default=64, help="virtual-casing grid per field period of the "
@@ -794,7 +798,7 @@ def parse_args(argv=None):
         args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
     if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace or args.edge_wall
             or args.edge_height_spread is not None or args.edge_legs is not None
-            or args.edge_outer_legs is not None) and args.edge_line is None:
+            or args.edge_outer_legs is not None or args.edge_leg_coils is not None) and args.edge_line is None:
         parser.error("the edge constraints need --edge-line")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
@@ -1127,15 +1131,17 @@ def main(argv=None):
     ext_rows, ext_terms = load_extension(args.extension)
 
     # A closed field line outside the plasma, in the coils' plus the plasma's virtual-casing field: (trace of its
-    # tangent map, gap to the boundary, distance to the coils, largest distance to the boundary, spread of its height[, the two legs' sines][, the two outer legs' reach]), NaN where Newton from the line's last accepted nodes
-    # does not converge.
+    # tangent map, gap to the boundary, distance to the coils, largest distance to the boundary, spread of its height
+    # [, the two legs' sines][, the two outer legs' reach][, the two outer legs' distance to the coils]), NaN where
+    # Newton from the line's last accepted nodes does not converge.
     edge_bounds = [] if args.edge_line is None else [
         tuple(args.edge_trace or (-np.inf, np.inf)) + (1.0,), tuple(args.edge_gap or (-np.inf, np.inf)) + (0.01,),
         (-np.inf if args.edge_coil_distance is None else args.edge_coil_distance, np.inf, 0.01),
         (-np.inf, np.inf if args.edge_wall is None else args.edge_wall[0] - args.edge_wall[1], 0.01),
         (-np.inf, np.inf if args.edge_height_spread is None else args.edge_height_spread, 0.01),
         *([(-args.edge_legs, args.edge_legs, 0.1)] * 2 if args.edge_legs is not None else []),
-        *([(args.edge_outer_legs, np.inf, 0.01)] * 2 if args.edge_outer_legs is not None else [])]
+        *([(args.edge_outer_legs, np.inf, 0.01)] * 2 if args.edge_outer_legs is not None else []),
+        *([(args.edge_leg_coils, np.inf, 0.01)] * 2 if args.edge_leg_coils is not None else [])]
     # with a wall, the coils stay outside it
     coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, args.edge_wall[0] + args.edge_wall[-1] if args.edge_wall else 0.0)
     edge_constrained = any(np.isfinite(b[:2]).any() for b in edge_bounds)
@@ -1168,10 +1174,10 @@ def main(argv=None):
                         for n, stable in zip(args.edge_leg_maps, (False, True))]
                 values = jnp.concatenate((values, jnp.stack([leg[1] for leg in legs])))
                 found = found & (jnp.max(jnp.stack([leg[2] for leg in legs])) < 1e-6)
+            frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, line, M))
+            options = dict(nfp=int(inp.nfp), periods=edge_guess["periods"], iterations=args.edge_outer_leg_maps)
             if args.edge_outer_legs is not None:  # the farthest each outer leg gets from the plasma
                 cos, sin = jnp.cos(line.phi[0]), jnp.sin(line.phi[0])
-                frozen = jax.tree.map(jax.lax.stop_gradient, (parameters, line, M))
-                options = dict(nfp=int(inp.nfp), periods=edge_guess["periods"], iterations=args.edge_outer_leg_maps)
 
                 def off_plasma(leg_r, leg_z):
                     points = jnp.stack((leg_r * cos, leg_r * sin, leg_z), axis=-1).reshape(-1, 3)
@@ -1181,6 +1187,22 @@ def main(argv=None):
                     far = jnp.argmax(off_plasma(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options)))
                     reach = off_plasma(*pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=far, **options))
                     values = jnp.concatenate((values, reach))
+            if args.edge_leg_coils is not None:  # the closest each outer leg gets to a coil, inside the wall
+                coils = jnp.concatenate(wires)
+                wall = np.inf if args.edge_wall is None else args.edge_wall[0]
+
+                def to_coils_of(R, Z, phi):  # (angles, ...) traces -> distance of every point to the coils
+                    points = jnp.stack((R * jnp.cos(phi), R * jnp.sin(phi), Z), axis=-1).reshape(-1, 1, 3)
+                    return points[:, 0], jnp.sqrt(jnp.min(jnp.sum((points - coils[None]) ** 2, axis=-1), axis=1))
+
+                for stable in (False, True):  # the closest point is found without gradients, then traced with them
+                    R, Z, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, **options)
+                    points, distance = to_coils_of(R, Z, jnp.broadcast_to(phi[:, None], R.shape))
+                    inside = pf.surface_distances(points, data.gamma, int(inp.nfp)) <= wall
+                    angle, sample = jnp.divmod(jnp.argmin(jnp.where(inside, distance, jnp.inf)), R.shape[1])
+                    R, Z, phi = pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=sample,
+                                                      path=True, **options)
+                    values = jnp.concatenate((values, to_coils_of(R[angle], Z[angle], phi[angle])[1]))
             return jnp.where(found, values, jnp.nan), line
 
         def edge(state, runtime, x):
@@ -1336,6 +1358,8 @@ def main(argv=None):
         state_x, params_x = problem.state(x)
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         edge_row = {}
+        outer = 5 + 2 * (args.edge_legs is not None)  # where the outer legs' values start
+        leg_coils = outer + 2 * (args.edge_outer_legs is not None)
         if edge_at is not None:  # the line follows the accepted designs: each solve starts from the last one's nodes
             values, line = edge_at(state_x, params_x, jnp.asarray(x), jnp.asarray(edge_guess["R"]),
                                    jnp.asarray(edge_guess["Z"]))
@@ -1345,7 +1369,10 @@ def main(argv=None):
             edge_row = dict(edge_trace=float(values[0]), edge_gap_m=float(values[1]), edge_coil_distance_m=float(values[2]),
                             edge_reach_m=float(values[3]), edge_height_spread_m=float(values[4]),
                             **({"edge_leg_sines": values[5:7].tolist()} if args.edge_legs is not None else {}),
-                            **({"edge_outer_legs_m": values[-2:].tolist()} if args.edge_outer_legs is not None else {}),
+                            **({"edge_outer_legs_m": values[outer:outer + 2].tolist()}
+                               if args.edge_outer_legs is not None else {}),
+                            **({"edge_leg_coils_m": values[leg_coils:leg_coils + 2].tolist()}
+                               if args.edge_leg_coils is not None else {}),
                             edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
             if np.all(np.isfinite(values)):
                 edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
@@ -1409,6 +1436,8 @@ def main(argv=None):
               + (f"edge: Tr M={row['edge_trace']:.3f} gap={row['edge_gap_m']:.4f} reach={row['edge_reach_m']:.4f} dZ={row['edge_height_spread_m']:.4f} "
                  + (f"legs={row['edge_leg_sines'][0]:+.4f},{row['edge_leg_sines'][1]:+.4f} " if "edge_leg_sines" in row else "")
                  + (f"outer={row['edge_outer_legs_m'][0]:.4f},{row['edge_outer_legs_m'][1]:.4f} " if "edge_outer_legs_m" in row else "")
+                 + (f"leg-coils={row['edge_leg_coils_m'][0]:.4f},{row['edge_leg_coils_m'][1]:.4f} "
+                    if "edge_leg_coils_m" in row else "")
                  + f"coils={row['edge_coil_distance_m']:.4f} "
                  f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if edge_row else "")
               + f"conductor={tape:.3f} "

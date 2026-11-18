@@ -1968,6 +1968,8 @@ def _block_bands(cfg: ImplicitConfig, params: ImplicitParams,
         return hit[2]
     _count(cfg, block_factorizations=1,
            block_bands_rejected=int(z is None and hit is not None))
+    _LAST_BANDS.pop(cfg, None)  # released before its replacement is built: two sets need not fit together
+    del hit
     bands = _refine_block_factor_core(*arguments, cfg, _probe_responses(cfg, arguments))
     _LAST_BANDS[cfg] = (key, zp, bands)
     return bands
@@ -3001,11 +3003,18 @@ def _colored_bands(operator, pack, unpack, project, ns, block_size, dtype, chunk
     return lower.at[0].set(0.0), diagonal, upper.at[-1].set(0.0)
 
 
+#: Largest cyclic-reduction tree kept on an accelerator.  The tree stores about five bands (per level the
+#: eliminated rows' LU factors, two transfers and two couplings), Thomas' normalized factors two; past this
+#: size (16 x 16 modes on 201 surfaces: 23 GiB against 9) the shorter dependency chain is not worth the memory.
+_CYCLIC_REDUCTION_MAX_BYTES = 12 * 2**30
+
+
 def _block_factor(lower, diagonal, upper, cfg):
     """Factor raw block bands using the implicit solve's placement."""
     device = cfg.device if cfg.device is not None else jax.config.jax_default_device
     platform = getattr(device, "platform", device) or jax.default_backend()
-    if str(platform) in ("gpu", "cuda", "rocm"):
+    tree_bytes = 5 * int(np.prod(lower.shape)) * np.dtype(lower.dtype).itemsize
+    if str(platform) in ("gpu", "cuda", "rocm") and tree_bytes <= _CYCLIC_REDUCTION_MAX_BYTES:
         return block_cyclic_reduction_factor(lower, diagonal, upper)
     return block_thomas_factor(lower, diagonal, upper, normalized=True)
 

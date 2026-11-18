@@ -728,6 +728,9 @@ def parse_args(argv=None):
     parser.add_argument("--mercier-smooth", type=float, metavar="D",
                         help="Mercier floor as the surfaces' DMerc averaged with weights exp(-DMerc / D) instead of "
                         "their smallest (reads at most about D above it; the log keeps the true smallest)")
+    parser.add_argument("--mercier-margin", type=float, default=MERCIER_MARGIN,
+                        help="margin of the Mercier floor: min DMerc is held at MERCIER_FLOOR plus this (the value "
+                             "near the floor changes with resolution, so a design held closer can lose it there)")
     parser.add_argument("--mercier-bands", type=int, default=1, metavar="N",
                         help="with --mercier-smooth: a row for each of N radial bands of the surfaces")
     parser.add_argument("--current-knots", type=int, default=CURRENT_KNOTS, metavar="N",
@@ -1071,7 +1074,7 @@ def main(argv=None):
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
         *([(-redl_row, redl_row, redl_row)] * nredl if args.redl_rows else [(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl),
-        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
+        *([(MERCIER_FLOOR + args.mercier_margin, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
         *extension_bounds,
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),

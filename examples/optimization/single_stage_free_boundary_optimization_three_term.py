@@ -675,6 +675,10 @@ def parse_args(argv=None):
                         help="trust box: a trial moving any scaled design coordinate more than U from the accepted "
                              "point is rejected unsolved, so SLSQP's line search shortens the step, a tenth at a time: "
                              "a cap below the usual step slows the run tenfold")
+    parser.add_argument("--loss-scale", type=float, default=1.0, metavar="S",
+                        help="the optimizer minimizes S times the loss: SLSQP starts each run, and each restart "
+                             "after a rejected trial, from an identity Hessian, so its first steps are the size of "
+                             "the scaled gradient; 1e3 tripled the progress per hour on a slow tail")
     parser.add_argument("--step-box", type=float, metavar="U",
                         help="bound every step to U in each scaled design coordinate inside SLSQP's subproblem "
                              "(SLSQP restarted at each accepted point, from an identity Hessian)")
@@ -1177,7 +1181,8 @@ def main(argv=None):
         residuals = qs.residuals_state(state, runtime)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
         tape = args.conductor_weight * conductor(x) if args.conductor_weight else 0.0
-        return 0.5 * jnp.vdot(residuals, residuals) + current + tape + extension_cost(state, runtime)
+        loss = 0.5 * jnp.vdot(residuals, residuals) + current + tape + extension_cost(state, runtime)
+        return args.loss_scale * loss
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -1334,8 +1339,8 @@ def main(argv=None):
         ext_values, ext_cost = extension_values(state_x, params_x)
         tape = float(conductor(jnp.asarray(x)))
         row = dict(step=problem.accepted_step,
-                   qa=2 * (problem.fun(x) - args.conductor_weight * tape) - CURRENT_IOTA_WEIGHT * iota_i**2
-                   - 2 * float(ext_cost), conductor_ma_m=tape,
+                   qa=2 * (problem.fun(x) / args.loss_scale - args.conductor_weight * tape)
+                   - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost), conductor_ma_m=tape,
                    **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),

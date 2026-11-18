@@ -691,12 +691,14 @@ class ThreeTermsModel:
         active = im._active_state_fields(cfg)
         edge = im._edge_mask(cfg)
 
-        def tangents(params, state, mask, batch):
-            """Projected state responses to the stacked parameter tangents: one block factorization, chunked."""
+        def tangents(params, state, mask, batch, bands):
+            """Projected state responses to the stacked parameter tangents, chunked, on the config's block
+            factorization at ``state`` (``bands``, as upstream's block Jacobian: the program builds no second one)."""
             return im._implicit_evolved_tangent_multi_rhs(
                 params, cfg, jax.lax.stop_gradient(state), mask, batch, active_fields=active,
                 probe_chunk_size=self.chunk, response_chunk_size=self.chunk,
-                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter))[0]
+                certify_rtol=float(cfg.jacobian_adjoint_tol), certify_maxiter=int(cfg.jacobian_adjoint_maxiter),
+                bands=bands)[0]
 
         def push(fun, state, mask, params, dz_batch, params_batch):
             """Columns of ``fun(state, params)`` along the stacked responses, ``chunk`` at a time.
@@ -934,12 +936,21 @@ class ThreeTermsModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups))
+        self._last_linearize = self._linearization = None  # released first: two sets of responses need not fit
+        bands = self._im._block_bands(self.cfg, params_x, state, mask)
+        dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), bands)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
         parts = [(jax.tree.map(lambda a: a[lo:hi], dz_all), batch)
                  for lo, hi, batch in zip(np.r_[0, ends[:-1]], ends, groups)]
         columns = np.hstack([np.asarray(self._push_rows(state, mask, params_x, dz, batch, field)).T
                              for dz, batch in parts])
+        del bands, dz_all
+        if self._im._large_bands(self.cfg.resolution.ns, len(self._im._active_state_fields(self.cfg))
+                                 * int(mask.R_cos.shape[1]), state.R_cos.dtype):
+            # a large system keeps its responses (the trials' first-order seeds) in host memory: the GPU then
+            # holds one block factorization at a time beside them (16 x 16 on 201 surfaces: 4.7 GiB)
+            parts = [(jax.tree.map(np.asarray, dz), batch) for dz, batch in parts]
+            join = lambda *a: np.concatenate(a)  # noqa: E731
         dz = jax.tree.map(join, *[dz for dz, _ in parts[:n_coordinates]])
         self._linearization = (np.asarray(x, dtype=float).copy(), state, mask, dz)
         if extra is not None:

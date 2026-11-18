@@ -1837,8 +1837,10 @@ def _refine_block_factor_core(z: SpectralState, params: ImplicitParams,
         responses = jnp.concatenate(responses)[:3 * len(fields) * int(dof_mask.R_cos.shape[1])]
     system = _raw_block_system(params, cfg, frozen, dof_mask, fields, probe, z_star=z,
                                responses=responses)
-    return (system.factors, system.row_scale, system.column_scale,
-            system.lower, system.diagonal, system.upper)
+    # Its consumers (Newton steps, Jacobian backsolves) need the factors alone: a large system keeps no raw bands.
+    raw = ((None, None, None) if _large_bands(cfg.resolution.ns, system.row_scale.shape[-1], system.row_scale.dtype)
+           else (system.lower, system.diagonal, system.upper))
+    return (system.factors, system.row_scale, system.column_scale, *raw)
 
 
 @functools.partial(jax.jit, static_argnames=("cfg",))
@@ -1968,8 +1970,12 @@ def _block_bands(cfg: ImplicitConfig, params: ImplicitParams,
         return hit[2]
     _count(cfg, block_factorizations=1,
            block_bands_rejected=int(z is None and hit is not None))
-    _LAST_BANDS.pop(cfg, None)  # released before its replacement is built: two sets need not fit together
     del hit
+    if _large_bands(cfg.resolution.ns, len(_active_state_fields(cfg)) * int(dof_mask.R_cos.shape[1]),
+                    frozen.R_cos.dtype):
+        _LAST_BANDS.clear()  # a large factorization alone at a time, whichever config (tight, trial) built the last
+    else:
+        _LAST_BANDS.pop(cfg, None)  # released before its replacement is built: two sets need not fit together
     bands = _refine_block_factor_core(*arguments, cfg, _probe_responses(cfg, arguments))
     _LAST_BANDS[cfg] = (key, zp, bands)
     return bands
@@ -2984,6 +2990,17 @@ def _colored_bands(operator, pack, unpack, project, ns, block_size, dtype, chunk
     ``3 * block_size`` probe responses when the caller ran the probes itself.
     """
     surfaces = jnp.arange(ns)
+    if responses is None and _large_bands(ns, block_size, dtype):
+        # One color's probes at a time: their responses are one band's size, where all three colors' are three.
+        rows, bands = np.arange(ns), [jnp.zeros((ns, block_size, block_size), dtype) for _ in range(3)]
+        for color in range(3):
+            colored = _colored_probes(operator, pack, unpack, project, ns, block_size, dtype,
+                                      jnp.arange(color * block_size, (color + 1) * block_size), chunk)
+            for k, offset in enumerate((-1, 0, 1)):  # row i reads its neighbor i + offset's response
+                picked = rows[np.clip(rows + offset, 0, ns - 1) % 3 == color]
+                bands[k] = bands[k].at[picked].set(jnp.transpose(colored[:, picked, :], (1, 2, 0)))
+        lower, diagonal, upper = bands
+        return lower.at[0].set(0.0), diagonal, upper.at[-1].set(0.0)
     if responses is None:
         responses = _colored_probes(operator, pack, unpack, project, ns, block_size, dtype,
                                     jnp.arange(3 * block_size), chunk)
@@ -3004,17 +3021,23 @@ def _colored_bands(operator, pack, unpack, project, ns, block_size, dtype, chunk
 
 
 #: Largest cyclic-reduction tree kept on an accelerator.  The tree stores about five bands (per level the
-#: eliminated rows' LU factors, two transfers and two couplings), Thomas' normalized factors two; past this
-#: size (16 x 16 modes on 201 surfaces: 23 GiB against 9) the shorter dependency chain is not worth the memory.
-_CYCLIC_REDUCTION_MAX_BYTES = 12 * 2**30
+#: eliminated rows' LU factors, two transfers and two couplings), Thomas' normalized factors two.  Up to 10 x 10
+#: modes on 51 surfaces (0.7 GiB) the shorter dependency chain stays; on 201 surfaces (12 x 12: 5.6 GiB against
+#: 2.2) the memory decides, so these checks fit a 32 GB GPU.
+_CYCLIC_REDUCTION_MAX_BYTES = 2 * 2**30
+
+
+def _large_bands(ns, block_size, dtype) -> bool:
+    """A block system past :data:`_CYCLIC_REDUCTION_MAX_BYTES`: built, factored and stored for memory, not speed."""
+    return 5 * int(ns) * int(block_size) ** 2 * np.dtype(dtype).itemsize > _CYCLIC_REDUCTION_MAX_BYTES
 
 
 def _block_factor(lower, diagonal, upper, cfg):
     """Factor raw block bands using the implicit solve's placement."""
     device = cfg.device if cfg.device is not None else jax.config.jax_default_device
     platform = getattr(device, "platform", device) or jax.default_backend()
-    tree_bytes = 5 * int(np.prod(lower.shape)) * np.dtype(lower.dtype).itemsize
-    if str(platform) in ("gpu", "cuda", "rocm") and tree_bytes <= _CYCLIC_REDUCTION_MAX_BYTES:
+    large = getattr(lower, "shape", None) is not None and _large_bands(*lower.shape[:2], lower.dtype)
+    if str(platform) in ("gpu", "cuda", "rocm") and not large:
         return block_cyclic_reduction_factor(lower, diagonal, upper)
     return block_thomas_factor(lower, diagonal, upper, normalized=True)
 
@@ -3217,9 +3240,12 @@ def _raw_block_system(
             lower, diagonal, upper, pack(project(tangent)))
         return project(unpack(response))
 
-    _, band_pullback = jax.vjp(
-        band_operator, jax.tree.map(jnp.zeros_like, frozen))
-    band_operator_t = lambda cotangent: band_pullback(cotangent)[0]  # noqa: E731
+    if lower is None:  # stored factors of a large system (_refine_block_factor_core): no banded operator
+        band_operator = band_operator_t = None
+    else:
+        _, band_pullback = jax.vjp(
+            band_operator, jax.tree.map(jnp.zeros_like, frozen))
+        band_operator_t = lambda cotangent: band_pullback(cotangent)[0]  # noqa: E731
     return _RawBlockSystem(
         factors, pack, unpack, project, operator, operator_t,
         band_operator, band_operator_t, lower, diagonal, upper,
@@ -3349,11 +3375,6 @@ def _implicit_evolved_tangent_multi_rhs(
             lambda prm: raw_residual(z_star, prm), (params,), (tangent,))[1]
         return jax.tree.map(jnp.negative, value)
 
-    # The right-hand sides in chunks too: one batch of every direction holds a
-    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
-    rhs_batch = chunk_map(raw_rhs, tangent_batch, chunk_size=max(1, int(response_chunk_size)))
-    initial, _ = _raw_block_solve(system, rhs_batch, cfg)
-
     # Supplied bands may be a nearby point's (see _BANDS_REUSE_TOL): their
     # direct solve is then only a preconditioned guess, so iterate to a
     # tighter tolerance than the certificate, a few matvecs.
@@ -3369,10 +3390,24 @@ def _implicit_evolved_tangent_multi_rhs(
         return solution, _linear_response_report(
             krylov, rhs, cfg, rtol=certify_rtol)
 
+    chunk = max(1, int(response_chunk_size))
+    if _large_bands(cfg.resolution.ns, len(active_fields) * int(dof_mask.R_cos.shape[1]), frozen.R_cos.dtype):
+        # A large system solves each column to its certificate in turn: no batch of every right-hand side and
+        # first solution is held next to the responses (16 x 16 on 201 surfaces: 9 GiB).
+        def column(tangent):
+            rhs = raw_rhs(tangent)
+            initial = _raw_block_solve(system, jax.tree.map(lambda a: a[None], rhs), cfg)[0]
+            return correct((rhs, jax.tree.map(lambda a: a[0], initial)))
+
+        return chunk_map(column, tangent_batch, chunk_size=chunk)
+    # The right-hand sides in chunks too: one batch of every direction holds a
+    # force linearization per direction at once (14.6 GiB for 255 at 8 x 8).
+    rhs_batch = chunk_map(raw_rhs, tangent_batch, chunk_size=chunk)
+    initial, _ = _raw_block_solve(system, rhs_batch, cfg)
+
     # The caller decides how to handle a missed certificate. Public optimizer
     # lanes never expose such a response as an exact derivative.
-    return chunk_map(correct, (rhs_batch, initial),
-                     chunk_size=max(1, int(response_chunk_size)))
+    return chunk_map(correct, (rhs_batch, initial), chunk_size=chunk)
 
 
 def implicit_state_tangent_multi_rhs(

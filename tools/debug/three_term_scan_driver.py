@@ -1030,6 +1030,12 @@ def main(argv=None):
         from vmex.core.input import VmecInput
         from vmex.core.wout import read_wout
 
+        def _deck(path):  # a WOUT's boundary at the model's resolution
+            deck, fixed = VmecInput.from_wout(read_wout(path)), model.fixed
+            if (int(deck.mpol), int(deck.ntor)) != (int(fixed.mpol), int(fixed.ntor)):
+                deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
+            return deck
+
         x = np.asarray(problem.x0, dtype=float)
         sol = problem._cache[x.tobytes()]
         params, field = problem._params_at(jnp.asarray(x)), problem.field(jnp.asarray(x))
@@ -1054,7 +1060,7 @@ def main(argv=None):
             return np.asarray(ravel_pytree(state)[0])
 
         if os.environ.get("SCAN_FIT"):  # the no-label fit from the start boundary: carried interior, then cold
-            b1 = np.asarray(model.coordinates(VmecInput.from_wout(read_wout(args.scan_to[0]))), dtype=float)[:b0.size]
+            b1 = np.asarray(model.coordinates(_deck(args.scan_to[0])), dtype=float)[:b0.size]
             if model._gauge is not None:  # as a gauge release does: the gauge rows kept, their weights zero
                 print(f"[fit] gauge rows {model._gauge[0].shape}, weights set to zero (a release's fit)", flush=True)
                 model._gauge = (jnp.zeros_like(model._gauge[0]), model._gauge[1])
@@ -1079,7 +1085,7 @@ def main(argv=None):
                       f"to target={np.linalg.norm(b - b1):.3e} (start to target {np.linalg.norm(b1 - b0):.3e})", flush=True)
             return
         for target in args.scan_to:  # 2 x 2: start or target boundary, carried or cold interior
-            b1 = np.asarray(model.coordinates(VmecInput.from_wout(read_wout(target))), dtype=float)[:b0.size]
+            b1 = np.asarray(model.coordinates(_deck(target)), dtype=float)[:b0.size]
             saved = model._linearization
             s00 = report("start boundary, carried interior", b0, sol["state"])
             s01 = report("start boundary, cold interior", b0, None)
@@ -1091,7 +1097,7 @@ def main(argv=None):
                 if u is not None and v is not None:
                     print(f"[branch] state difference, {name}: {np.linalg.norm(u - v) / np.linalg.norm(u):.3e}", flush=True)
         for target in args.scan_to:
-            b1 = np.asarray(model.coordinates(VmecInput.from_wout(read_wout(target))), dtype=float)[:b0.size]
+            b1 = np.asarray(model.coordinates(_deck(target)), dtype=float)[:b0.size]
             d = b1 - b0
             print(f"[scan] to {target}: |db|={np.linalg.norm(d):.3e} max|db|={np.abs(d).max():.3e} at {int(np.abs(d).argmax())}",
                   flush=True)

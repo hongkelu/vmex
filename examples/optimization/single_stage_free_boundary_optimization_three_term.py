@@ -738,6 +738,10 @@ def parse_args(argv=None):
                         help="the Redl surfaces start at this normalized flux (default: all half-grid surfaces)")
     parser.add_argument("--gauge-release", action="store_true",
                         help="flat_arc labelling: each gauge refresh first re-fits the accepted boundary without the gauge rows")
+    parser.add_argument("--gauge-release-rounds", type=int, default=6, metavar="N",
+                        help="a gauge release continues from at most N fresh Jacobians")
+    parser.add_argument("--gauge-release-gain", type=float, default=0.02, metavar="G",
+                        help="... while a round still lowers the fit's cost by more than this fraction")
     parser.add_argument("--gauge-max-share", type=float, metavar="S",
                         help="minimal and flat_arc labellings: set the gauge again at an accepted fit where its rows' "
                         "share of the fit's cost exceeds S")
@@ -1040,6 +1044,7 @@ def main(argv=None):
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
         boundary_start=None if args.restart is None else args.restart / "wout.nc",  # resume at the saved state
         gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share, gauge_release=args.gauge_release,
+        gauge_release_rounds=args.gauge_release_rounds, gauge_release_gain=args.gauge_release_gain,
         gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
         gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify,
         promote_trials=args.promote_trials)

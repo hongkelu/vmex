@@ -108,7 +108,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
-                  gauge_max_share=None, gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3,
+                  gauge_max_share=None, gauge_release=False, gauge_release_rounds=GAUGE_RELEASE_ROUNDS,
+                  gauge_release_gain=GAUGE_RELEASE_GAIN, gradient_rounds=0, gradient_rtol=1e-3,
                   gradient_fit_xtol=None, gradient_certify=None, promote_trials=False):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
@@ -129,7 +130,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         rows' share of the accepted fit's cost exceeds it, so it follows the design: its rows vanish there, so no value
         at the accepted point changes.  With ``gauge_release`` each of those refreshes first re-fits the accepted
         boundary without the gauge rows (the no-label fit), so the labelling does not accumulate: the accepted point's
-        values then become the no-label fit's.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
+        values then become the no-label fit's; that fit continues from at most ``gauge_release_rounds`` fresh Jacobians
+        while a round lowers its cost by more than the fraction ``gauge_release_gain``.  ``gradient_rounds`` (at most that many block Krylov rounds, to the relative
         residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
         ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
         their tolerances.  With ``promote_trials`` every trial is evaluated as :meth:`accept_x` would leave it (its
@@ -150,7 +152,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
                    boundary_start=boundary_start, gauge_refresh=gauge_refresh,
-                   gauge_max_share=gauge_max_share, gauge_release=gauge_release, gradient_rounds=gradient_rounds,
+                   gauge_max_share=gauge_max_share, gauge_release=gauge_release, gauge_release_rounds=gauge_release_rounds,
+                   gauge_release_gain=gauge_release_gain, gradient_rounds=gradient_rounds,
                    gradient_rtol=gradient_rtol,
                    gradient_fit_xtol=gradient_fit_xtol, gradient_certify=gradient_certify,
                    promote_trials=promote_trials)
@@ -158,11 +161,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
                  boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
-                 gauge_release=False, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None,
+                 gauge_release=False, gauge_release_rounds=GAUGE_RELEASE_ROUNDS,
+                  gauge_release_gain=GAUGE_RELEASE_GAIN, gradient_rounds=0, gradient_rtol=1e-3, gradient_fit_xtol=None, gradient_certify=None,
                  promote_trials=False):
         im = model._im
         self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
         self.gauge_release = bool(gauge_release)
+        self.gauge_release_rounds, self.gauge_release_gain = int(gauge_release_rounds), float(gauge_release_gain)
         self.gradient_rounds, self.gradient_rtol = int(gradient_rounds), float(gradient_rtol)
         self.gradient_fit_xtol = None if gradient_fit_xtol is None else float(gradient_fit_xtol)
         self.gradient_certify = None if gradient_certify is None else float(gradient_certify)
@@ -240,6 +245,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
                 wout = read_wout(boundary_start) if isinstance(boundary_start, (str, Path)) else boundary_start
                 deck, self._start_state = VmecInput.from_wout(wout), state_from_wout(wout, inp=model.fixed)
+            fixed = model.fixed
+            if (int(deck.mpol), int(deck.ntor)) != (int(fixed.mpol), int(fixed.ntor)):  # a start saved at another resolution
+                deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
             self._start = model.coordinates(deck)
         self._start_key = x0.tobytes()
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
@@ -271,11 +279,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         try:
             fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
-            for _ in range(GAUGE_RELEASE_ROUNDS if J is not None else 0):  # a fresh Jacobian where the reused one ended
+            for _ in range(self.gauge_release_rounds if J is not None else 0):  # a fresh Jacobian where the reused one ended
                 J = np.array(model.linearize(fit["x"], fit["aux"], field)[0])[:, :model.x0.size]
                 more = model.solve_boundary(self._params_at(xj), field, x0=fit["x"], jacobian=J, ftol=self.boundary_ftol,
                                             max_nfev=self.boundary_max_nfev)
-                gained = more["rows"] @ more["rows"] < (1.0 - GAUGE_RELEASE_GAIN) * (fit["rows"] @ fit["rows"])
+                gained = more["rows"] @ more["rows"] < (1.0 - self.gauge_release_gain) * (fit["rows"] @ fit["rows"])
                 fit = dict(more, nfev=fit["nfev"] + more["nfev"], njev=fit["njev"] + 1 + more["njev"])
                 if not gained:
                     break

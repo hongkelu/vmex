@@ -782,6 +782,15 @@ def parse_args(argv=None):
                              "the closest of its field lines over --edge-outer-leg-maps return maps, from next to "
                              "the line out to the --edge-wall's D, sampled 128 times per map (16 missed the closest "
                              "approach to a coil by centimetres)")
+    parser.add_argument("--vessel", type=Path, metavar="NPZ",
+                        help="a vacuum vessel: 'outline' (P, m, 2), its (R, Z) outlines on P planes over one field "
+                             "period (results/.../vessel.py); with it --edge-leg-coils counts the legs inside it")
+    parser.add_argument("--vessel-gap", type=float, metavar="MIN",
+                        help="constrain the plasma boundary and the edge line to at least MIN [m] inside the vessel")
+    parser.add_argument("--vessel-coils", type=float, metavar="MIN",
+                        help="constrain the coils and the circular pairs to at least MIN [m] outside the vessel")
+    parser.add_argument("--vessel-legs", type=float, metavar="MIN",
+                        help="constrain each outer leg to reach at least MIN [m] beyond the vessel (its targets)")
     parser.add_argument("--edge-trace", type=float, nargs=2, metavar=("LOW", "HIGH"),
                         help="constrain the trace of the line's tangent map (|Tr M| > 2: X-point)")
     parser.add_argument("--edge-vc-grid", type=int, default=64, help="virtual-casing grid per field period of the "
@@ -799,8 +808,11 @@ def parse_args(argv=None):
         args.edge_line = args.restart / "edge_line.json"  # the run's own line at its last save
     if (args.edge_gap or args.edge_coil_distance is not None or args.edge_trace or args.edge_wall
             or args.edge_height_spread is not None or args.edge_legs is not None
-            or args.edge_outer_legs is not None or args.edge_leg_coils is not None) and args.edge_line is None:
+            or args.edge_outer_legs is not None or args.edge_leg_coils is not None or args.vessel_gap is not None
+            or args.vessel_legs is not None) and args.edge_line is None:
         parser.error("the edge constraints need --edge-line")
+    if (args.vessel_gap, args.vessel_coils, args.vessel_legs) != (None,) * 3 and args.vessel is None:
+        parser.error("the vessel constraints need --vessel")
     if args.pf_coil_distance is not None and not args.pf_coils:
         parser.error("--pf-coil-distance needs --pf-coils")
     if (args.pf_geometry or args.pf_shape or args.pf_current_max is not None
@@ -1142,7 +1154,10 @@ def main(argv=None):
         (-np.inf, np.inf if args.edge_height_spread is None else args.edge_height_spread, 0.01),
         *([(-args.edge_legs, args.edge_legs, 0.1)] * 2 if args.edge_legs is not None else []),
         *([(args.edge_outer_legs, np.inf, 0.01)] * 2 if args.edge_outer_legs is not None else []),
-        *([(args.edge_leg_coils, np.inf, 0.01)] * 2 if args.edge_leg_coils is not None else [])]
+        *([(args.edge_leg_coils, np.inf, 0.01)] * 2 if args.edge_leg_coils is not None else []),
+        *([(args.vessel_gap, np.inf, 0.01)] if args.vessel_gap is not None else []),
+        *([(args.vessel_legs, np.inf, 0.01)] * 2 if args.vessel_legs is not None else [])]
+    vessel = None if args.vessel is None else np.asarray(np.load(args.vessel)["outline"], dtype=float)
     # with a wall, the coils stay outside it
     coil_clearance = max(COIL_SURFACE_DISTANCE_LIMIT, args.edge_wall[0] + args.edge_wall[-1] if args.edge_wall else 0.0)
     edge_constrained = any(np.isfinite(b[:2]).any() for b in edge_bounds)
@@ -1188,14 +1203,17 @@ def main(argv=None):
                     far = jnp.argmax(off_plasma(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options)))
                     reach = off_plasma(*pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=far, **options))
                     values = jnp.concatenate((values, reach))
+            def chunked(f, points, size=1024):  # f of (size, 3) points, a chunk at a time: bounded memory
+                n = points.shape[0]
+                padded = jnp.pad(points, ((0, -n % size), (0, 0)), mode="edge").reshape(-1, size, 3)
+                return jax.lax.map(f, padded).ravel()[:n]
+
+            def in_vessel(p):  # signed distance to the vessel, negative inside
+                return pf.vessel_distances(p, vessel, int(inp.nfp))
+
             if args.edge_leg_coils is not None:  # the closest each outer leg gets to a coil, inside the wall
                 coils = jnp.concatenate(wires)
                 wall = np.inf if args.edge_wall is None else args.edge_wall[0]
-
-                def chunked(f, points, size=1024):  # f of (size, 3) points, a chunk at a time: bounded memory
-                    n = points.shape[0]
-                    padded = jnp.pad(points, ((0, -n % size), (0, 0)), mode="edge").reshape(-1, size, 3)
-                    return jax.lax.map(f, padded).ravel()[:n]
 
                 def to_coils_of(R, Z, phi):  # (angles, ...) traces -> distance of every point to the coils
                     points = jnp.stack((R * jnp.cos(phi), R * jnp.sin(phi), Z), axis=-1).reshape(-1, 3)
@@ -1206,12 +1224,27 @@ def main(argv=None):
                     R, Z, phi = pf.manifold_outer_leg(field, *frozen, stable=stable, path=True, per_map=128,
                                                       **options)
                     points, distance = to_coils_of(R, Z, jnp.broadcast_to(phi[:, None], R.shape))
-                    inside = chunked(lambda p: pf.surface_distances(p, data.gamma, int(inp.nfp)), points) <= wall
+                    inside = (chunked(in_vessel, points) <= 0.0 if vessel is not None else
+                              chunked(lambda p: pf.surface_distances(p, data.gamma, int(inp.nfp)), points) <= wall)
                     angle, sample = jnp.divmod(jnp.argmin(jnp.where(inside, distance, jnp.inf)), R.shape[1])
                     R, Z, phi = pf.manifold_outer_leg(field, parameters, line, M, stable=stable, index=sample,
                                                       path=True, per_map=128, **options)
                     point = jnp.stack((R[angle] * jnp.cos(phi[angle]), R[angle] * jnp.sin(phi[angle]), Z[angle]))
                     values = jnp.concatenate((values, jnp.sqrt(jnp.min(jnp.sum((point - coils) ** 2, axis=-1)))[None]))
+            if args.vessel_gap is not None:  # how far inside the vessel the boundary and the line stay
+                boundary = jnp.moveaxis(data.gamma, 0, -1).reshape(-1, 3)
+                inside = -chunked(in_vessel, jnp.concatenate((boundary, line.xyz)))
+                values = jnp.concatenate((values, jnp.min(inside)[None]))
+            if args.vessel_legs is not None:  # how far beyond the vessel each outer leg gets
+                def beyond(leg_r, leg_z):
+                    phi0 = line.phi[0]
+                    points = jnp.stack((leg_r * jnp.cos(phi0), leg_r * jnp.sin(phi0), leg_z), axis=-1).reshape(-1, 3)
+                    return in_vessel(points)
+
+                for stable in (False, True):  # the farthest point is found without gradients, then traced with them
+                    far = jnp.argmax(beyond(*pf.manifold_outer_leg(field, *frozen, stable=stable, **options)))
+                    values = jnp.concatenate((values, beyond(*pf.manifold_outer_leg(
+                        field, parameters, line, M, stable=stable, index=far, **options))))
             return jnp.where(found, values, jnp.nan), line
 
         def edge(state, runtime, x):
@@ -1297,6 +1330,13 @@ def main(argv=None):
         pairs, others = (c.gamma.reshape(-1, 3) for c in (chart.poloidal_coils_from_x(x), chart.coils_from_x(x)))
         return jnp.sqrt(jnp.min(jnp.sum((pairs[:, None] - others[None]) ** 2, axis=-1)))
 
+    def coils_off_vessel(x):  # smallest distance [m] of the coils and the pairs outside the vessel
+        from vmex.core.periodic_fieldlines import vessel_distances
+
+        points = jnp.concatenate([chart.coils_from_x(x).gamma.reshape(-1, 3)] + (
+            [chart.poloidal_coils_from_x(x).gamma.reshape(-1, 3)] if args.pf_coils else []))
+        return jnp.min(vessel_distances(points, vessel, int(inp.nfp)))
+
     def all_coil_rows(x):
         rows = limits.rows(chart.coils_from_x(x), per_point=COIL_POINT_ROWS)
         more = []  # the pairs' own limits, each feasible at >= 0
@@ -1310,6 +1350,8 @@ def main(argv=None):
             more.append(1.0 - jnp.max(lengths) / args.pf_length_max)
         if args.pf_current_max is not None:
             more.append(1.0 - jnp.max(jnp.abs(chart.pairs_at(x)[2])) / args.pf_current_max)
+        if args.vessel_coils is not None:  # every coil point MIN or more outside the vessel
+            more.append(coils_off_vessel(x) / args.vessel_coils - 1.0)
         return jnp.concatenate((jnp.ravel(rows), jnp.stack(more))) if more else rows
 
     coil_rows = vj.coil_constraint(all_coil_rows, forward_chunk=32 if COIL_POINT_ROWS else None)
@@ -1369,6 +1411,8 @@ def main(argv=None):
         edge_row = {}
         outer = 5 + 2 * (args.edge_legs is not None)  # where the outer legs' values start
         leg_coils = outer + 2 * (args.edge_outer_legs is not None)
+        vessel_gap = leg_coils + 2 * (args.edge_leg_coils is not None)
+        vessel_legs = vessel_gap + (args.vessel_gap is not None)
         if edge_at is not None:  # the line follows the accepted designs: each solve starts from the last one's nodes
             values, line = edge_at(state_x, params_x, jnp.asarray(x), jnp.asarray(edge_guess["R"]),
                                    jnp.asarray(edge_guess["Z"]))
@@ -1382,6 +1426,9 @@ def main(argv=None):
                                if args.edge_outer_legs is not None else {}),
                             **({"edge_leg_coils_m": values[leg_coils:leg_coils + 2].tolist()}
                                if args.edge_leg_coils is not None else {}),
+                            **({"vessel_gap_m": float(values[vessel_gap])} if args.vessel_gap is not None else {}),
+                            **({"vessel_legs_m": values[vessel_legs:vessel_legs + 2].tolist()}
+                               if args.vessel_legs is not None else {}),
                             edge_R_m=float(line.R[0]), edge_Z_m=float(line.Z[0]), edge_newton_step_m=float(line.step))
             if np.all(np.isfinite(values)):
                 edge_latest.update(R=float(line.R[0]), Z=float(line.Z[0]), trace=float(values[0]),
@@ -1412,6 +1459,7 @@ def main(argv=None):
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
+                   **({"vessel_coils_m": float(coils_off_vessel(jnp.asarray(x)))} if vessel is not None else {}),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
@@ -1447,6 +1495,10 @@ def main(argv=None):
                  + (f"outer={row['edge_outer_legs_m'][0]:.4f},{row['edge_outer_legs_m'][1]:.4f} " if "edge_outer_legs_m" in row else "")
                  + (f"leg-coils={row['edge_leg_coils_m'][0]:.4f},{row['edge_leg_coils_m'][1]:.4f} "
                     if "edge_leg_coils_m" in row else "")
+                 + (f"vessel-gap={row['vessel_gap_m']:.4f} " if "vessel_gap_m" in row else "")
+                 + (f"vessel-coils={row['vessel_coils_m']:.4f} " if "vessel_coils_m" in row else "")
+                 + (f"vessel-legs={row['vessel_legs_m'][0]:.4f},{row['vessel_legs_m'][1]:.4f} "
+                    if "vessel_legs_m" in row else "")
                  + f"coils={row['edge_coil_distance_m']:.4f} "
                  f"(R, Z)=({row['edge_R_m']:.4f}, {row['edge_Z_m']:.4f}) " if edge_row else "")
               + f"conductor={tape:.3f} "

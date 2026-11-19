@@ -45,6 +45,7 @@ __all__ = [
     "surface_distance",
     "surface_distances",
     "tangent_map",
+    "vessel_distances",
     "trace_fieldline",
 ]
 
@@ -367,6 +368,31 @@ def surface_distances(xyz, gamma, nfp: int) -> jax.Array:
     rotated = jnp.stack((cos * x + sin * y, -sin * x + cos * y, jnp.broadcast_to(z, (nfp, z.size))), axis=-1)
     squared = jnp.sum((rotated[:, :, None] - surface[None, None]) ** 2, axis=-1)   # (nfp, n, surface points)
     return jnp.sqrt(jnp.min(squared, axis=(0, 2)))
+
+
+def vessel_distances(xyz, outlines, nfp: int) -> jax.Array:
+    """Signed distance [m] from each of the points ``xyz (n, 3)`` to a vessel in the point's poloidal plane,
+    positive outside.
+
+    ``outlines (P, m, 2)`` are the vessel's closed ``(R, Z)`` outlines on ``P`` planes equally spaced over one
+    field period from ``phi = 0``, the same number of points on each in matching order; between planes the outline
+    is interpolated linearly.  The in-plane distance stands for the 3-D one where the vessel varies slowly in
+    ``phi``.
+    """
+    outlines = jnp.asarray(outlines)
+    planes = outlines.shape[0]
+    u = jnp.mod(jnp.arctan2(xyz[:, 1], xyz[:, 0]), 2.0 * np.pi / nfp) * nfp * planes / (2.0 * np.pi)
+    k = jnp.floor(u).astype(int)
+    w = (u - k)[:, None, None]
+    a = (1.0 - w) * outlines[k % planes] + w * outlines[(k + 1) % planes]           # (n, m, 2)
+    b = jnp.roll(a, -1, axis=1)
+    p = jnp.stack((jnp.hypot(xyz[:, 0], xyz[:, 1]), xyz[:, 2]), axis=-1)[:, None]
+    t = jnp.clip(jnp.sum((p - a) * (b - a), -1) / jnp.sum((b - a) ** 2, -1), 0.0, 1.0)
+    distance = jnp.sqrt(jnp.min(jnp.sum((p - a - t[..., None] * (b - a)) ** 2, -1), axis=1))
+    above = (a[..., 1] > p[..., 1]) != (b[..., 1] > p[..., 1])  # even-odd rule along +R
+    dz = jnp.where(above, b[..., 1] - a[..., 1], 1.0)
+    crossing = above & (p[..., 0] < a[..., 0] + (p[..., 1] - a[..., 1]) * (b[..., 0] - a[..., 0]) / dz)
+    return jnp.where(jnp.sum(crossing, axis=1) % 2 == 1, -distance, distance)
 
 
 def surface_distance(xyz, gamma, nfp: int) -> jax.Array:

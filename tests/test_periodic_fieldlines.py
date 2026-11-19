@@ -175,3 +175,14 @@ def test_outer_legs_of_a_double_null_run_away_from_the_midplane_on_the_separatri
     np.testing.assert_allclose(jax.jit(jax.jacrev(legs))(eps), fd, rtol=1e-5, atol=1e-6)
 
 
+
+
+def test_vessel_distances_of_a_circular_vessel_are_signed_in_plane_distances():
+    theta = np.linspace(0.0, 2.0 * np.pi, 400, endpoint=False)
+    radius = np.array([0.2, 0.3])[:, None]  # two planes: the radius is interpolated between them
+    outlines = np.stack((1.0 + radius * np.cos(theta), radius * np.sin(theta)), axis=-1)
+    phi = np.array([0.0, 0.25 * np.pi, 0.5 * np.pi + 0.25 * np.pi])  # nfp = 2: period pi, the last on plane 1.5
+    R, Z = np.array([1.1, 1.5, 1.0]), np.array([0.0, 0.0, 0.05])
+    xyz = np.stack((R * np.cos(phi), R * np.sin(phi), Z), axis=-1)
+    expected = np.hypot(R - 1.0, Z) - np.array([0.2, 0.25, 0.25])
+    np.testing.assert_allclose(pf.vessel_distances(xyz, outlines, 2), expected, atol=1e-4)

@@ -973,6 +973,12 @@ def main(argv=None):
         inp, fixed = finite_beta_input(inp, args.beta, "gpu")
     if args.modes and (args.restart is not None or args.seed_run is not None):  # a saved run at another resolution
         inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
+    saved_ns = int(np.asarray(inp.ns_array)[-1])
+    regrid = args.restart is not None and args.ns is not None and args.ns != saved_ns
+    if regrid:  # a saved run on another radial grid: reached through the saved one, from a cold interior
+        inp = replace(inp, ns_array=np.array([saved_ns, args.ns]), ftol_array=np.full(2, np.asarray(inp.ftol_array)[-1]),
+                      niter_array=np.full(2, max(int(np.asarray(inp.niter_array)[-1]), 60000)))
+        print(f"[restart] radial grids {saved_ns} -> {args.ns}", flush=True)
     fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     if args.current_knots_at_ends:
         knots = np.sin(0.5 * np.pi * np.linspace(0.0, 1.0, args.current_knots)) ** 2
@@ -1045,7 +1051,7 @@ def main(argv=None):
                                    bootstrap_helicity=REDL_HELICITY,
                                    **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
         boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
-        boundary_start=None if args.restart is None else args.restart / "wout.nc",  # resume at the saved state
+        boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
         gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share, gauge_release=args.gauge_release,
         gauge_release_rounds=args.gauge_release_rounds, gauge_release_gain=args.gauge_release_gain,
         gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,

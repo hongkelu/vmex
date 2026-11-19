@@ -827,7 +827,14 @@ class _CurvatureMemory:
         directions and ``Y = E Q``; ``None`` while empty."""
         if self.D is None:
             return None
-        u, sv, vt = np.linalg.svd(self.D * norms[:, None], full_matrices=False)
+        M = self.D * norms[:, None]
+        if not np.all(np.isfinite(M)):  # a non-finite direction: drop the memory rather than fail
+            self.clear()
+            return None
+        try:
+            u, sv, vt = np.linalg.svd(M, full_matrices=False)
+        except np.linalg.LinAlgError:  # LAPACK's divide-and-conquer driver can fail to converge; gesvd does not
+            u, sv, vt = scipy.linalg.svd(M, full_matrices=False, lapack_driver="gesvd")
         keep = sv > 1e-3 * sv[0]
         Q, Y = u[:, keep], (self.ED / norms[:, None]) @ vt[keep].T / sv[keep]
         A = Q.T @ Y

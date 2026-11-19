@@ -987,7 +987,8 @@ class ThreeTermsModel:
             # One fresh Jacobian where the steps stalled, and the same steps again, before a full trust region.
             J1, _, _, aux1 = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux1, J1,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                         fresh=True)
             self._radius = again["radius"]
             again["nfev"] += out["nfev"]
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
@@ -1026,7 +1027,8 @@ class ThreeTermsModel:
         if refresh_on_stall and not out["converged"]:  # stalled on a stale Jacobian: one fresh one there
             J, _, _, aux = self.linearize(out["x"], out["aux"], field)
             again = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), out["x"], out["rows"], aux, J,
-                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
+                                         ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
+                                         fresh=True)
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
@@ -1036,7 +1038,7 @@ class ThreeTermsModel:
 
 
 
-def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None):
+def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, radius=None, fresh=False):
     """Trust-region Gauss-Newton steps with a fixed Jacobian ``J`` from ``x`` (``evaluate(x) -> (r, aux)`` or ``None``).
 
     Each step costs one evaluation.  In Marquardt-scaled coordinates the step is the Levenberg-Marquardt step
@@ -1047,6 +1049,11 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     Stops at a relative cost change of ``ftol`` that the linear model predicted, after three steps in a row
     that each gained under 5% (the Jacobian is stale there), or when the radius falls below 1e-4 of the
     Gauss-Newton step; ``reason`` is ``"ftol"``, ``"stalled"``, ``"radius"`` or ``"max_nfev"``.
+    ``fresh`` marks ``J`` as taken at ``x`` where the last steps stalled: until a step is accepted, one that
+    fails is the radius' fault, not the Jacobian's.  The carried radius is then kept as it is, failed steps only
+    shrink it down to a predicted relative gain of ``ftol`` (``"radius"``; the Gauss-Newton step of a nearly
+    singular ``J`` is long in directions the rows barely see, its length is no yardstick), and a short step that
+    gains what was predicted is not a slow one.  The radius returned is the last accepted step's.
     """
     J = np.asarray(J)
     if not np.all(np.isfinite(J)):
@@ -1057,7 +1064,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         U, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
     except np.linalg.LinAlgError as error:  # a rejected trial, not the end of the run
         raise RuntimeError(f"boundary Jacobian: {error}") from error
-    nfev, accepted, converged, slow, reason = 1, 0, False, 0, "max_nfev"
+    nfev, accepted, converged, slow, reason, last = 1, 0, False, 0, "max_nfev", None
     started = time.perf_counter()
 
     def step(g, lam):
@@ -1071,8 +1078,8 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             break
         full = np.linalg.norm(step(g, 0.0))
         if nfev == 1:  # a carried radius, but not far below this Jacobian's own step
-            radius = full if radius is None else max(radius, 0.05 * full)
-        if radius < 1e-4 * full:
+            radius = full if radius is None else radius if fresh else max(radius, 0.05 * full)
+        if not fresh and radius < 1e-4 * full:
             reason = "radius"
             break
         lam = 0.0
@@ -1085,6 +1092,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         z = step(g, lam)
         length = np.linalg.norm(z)
         predicted = cost - 0.5 * (r @ r - g @ g + np.sum((g + sv * z) ** 2))
+        if fresh and predicted <= ftol * cost:
+            reason = "radius"
+            break
         x_new = x + (Vt.T @ z) / norms
         got = evaluate(x_new)
         nfev += 1
@@ -1098,14 +1108,15 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             radius = 0.25 * length
         elif rho > 0.75 and length > 0.99 * radius:
             radius = 2.0 * radius
-        slow = slow + 1 if cost_new > 0.95 * cost else 0
+        at_x = fresh and not accepted  # J is still the Jacobian at x
+        slow = slow + 1 if cost_new > 0.95 * cost and not (at_x and cost_new >= cost or fresh and rho > 0.75) else 0
         if cost_new < cost:
-            x, (r, aux), accepted = x_new, got, accepted + 1
+            x, (r, aux), accepted, last = x_new, got, accepted + 1, length
             if cost - cost_new <= ftol * cost and rho > 0.25:  # a small gain the linear model foresaw
                 converged, reason = True, "ftol"
                 break
         if slow == 3:  # three steps in a row gained under 5%: the Jacobian no longer describes the rows here
             reason = "stalled"
             break
-    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged, radius=radius,
-                reason=reason)
+    return dict(x=x, rows=r, aux=aux, nfev=nfev, accepted=accepted, converged=converged,
+                radius=last if fresh and last is not None else radius, reason=reason)

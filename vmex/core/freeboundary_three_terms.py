@@ -876,9 +876,9 @@ class ThreeTermsModel:
         if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
-            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.vmap(
-                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1]
-            )(batch)).T
+            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.lax.map(
+                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1], batch, batch_size=32
+            )).T  # in batches, as _jacfwd
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)

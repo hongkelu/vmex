@@ -2286,9 +2286,16 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         return result
     if options.pop("restart_on_rejection", False):
         budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
+        result = None
         while True:
-            result = _minimize_problem(problem, x0=x0, method=method, bounds=bounds, constraints=constraints,
-                                       callback=callback, options=dict(options, maxiter=budget - steps), tol=tol)
+            try:
+                result = _minimize_problem(problem, x0=x0, method=method, bounds=bounds, constraints=constraints,
+                                           callback=callback, options=dict(options, maxiter=budget - steps), tol=tol)
+            except TrialRejected as error:  # a restart whose accepted start has no gradient ends the run there
+                if result is None:
+                    raise
+                result.stop_reason, result.message = "accepted_point_rejected", str(error)
+                break
             steps += result.accepted_steps
             for key in counts:
                 counts[key] += int(getattr(result, key, 0) or 0)

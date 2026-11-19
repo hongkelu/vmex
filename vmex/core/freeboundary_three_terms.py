@@ -189,6 +189,13 @@ def _equal_arc_rows(gamma):
     return arc, jnp.imag(c1) / jnp.abs(c1)
 
 
+def _jacfwd(fun, x, batch=32):
+    """``jax.jacfwd(fun)(x)``, ``batch`` directions at a time: one batch of every direction of a function on the
+    boundary grid holds directions x grid x modes numbers (16 x 16 modes: 18.6 GiB)."""
+    columns = jax.lax.map(lambda e: jax.jvp(fun, (x,), (e,))[1], jnp.eye(x.size, dtype=x.dtype), batch_size=batch)
+    return jax.tree.map(lambda a: jnp.moveaxis(a, 0, -1), columns)
+
+
 def _displacement_metrics(inp, xb, max_mode):
     """``(A, B)``: the quadratic forms of a change of the boundary coordinates ``xb``
     (``pack_boundary(..., vary_major_radius=True)``) in the surface's normal and total displacement, area weighted over
@@ -211,7 +218,7 @@ def _displacement_metrics(inp, xb, max_mode):
 
     xb = jnp.asarray(xb, dtype=float)
     R, Z, R_t, Z_t, R_p, Z_p = (np.asarray(a).ravel() for a in surface(xb))
-    D_R, D_Z = (np.asarray(a).reshape(-1, xb.size) for a in jax.jacfwd(lambda z: surface(z)[:2])(xb))
+    D_R, D_Z = (np.asarray(a).reshape(-1, xb.size) for a in _jacfwd(lambda z: surface(z)[:2], xb))
     # The normal e_theta x e_phi in (R, phi, Z): (-R Z_t, Z_t R_p - R_t Z_p, R R_t); dA ~ its length.
     area = np.sqrt((R * Z_t) ** 2 + (Z_t * R_p - R_t * Z_p) ** 2 + (R * R_t) ** 2)
     D_n = (-(R * Z_t)[:, None] * D_R + (R * R_t)[:, None] * D_Z) / area[:, None]
@@ -859,7 +866,7 @@ class ThreeTermsModel:
         tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in flat if tangential(u / norms)]
         if held:
-            L = jax.jacfwd(self._boundary_arc)(jnp.asarray(xb))
+            L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
             weights = self.label_weight * M.T
             weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
@@ -894,7 +901,7 @@ class ThreeTermsModel:
         xb = jnp.asarray(x, dtype=float)[:nb]
         g = M @ (self._arc_label(params.rbc, params.zbs) - reference)
         S = np.zeros((np.size(x), np.size(x)))
-        S[:nb, :nb] = np.asarray(jax.hessian(lambda z: g @ (M @ self._boundary_arc(z)))(xb))
+        S[:nb, :nb] = np.asarray(_jacfwd(jax.grad(lambda z: g @ (M @ self._boundary_arc(z))), xb))
         return S
 
     def linearize(self, x, aux, field, extra=None):

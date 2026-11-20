@@ -3499,6 +3499,14 @@ def _residual_roundoff(system: _RawBlockSystem, mu: SpectralState):
     can deliver; it is measured from the stored bands, so it costs one
     banded product.
     """
+    if system.diagonal is None:
+        # Stored factors of a large system keep no bands: the bound of the equilibrated blocks,
+        # |J_ij| <= 1 / (row_scale_i column_scale_j), over the three block rows that reach a column.
+        weight = jnp.sum(jnp.abs(system.pack(mu)) / system.row_scale, axis=-1)
+        near = weight.at[:-1].add(weight[1:]).at[1:].add(weight[:-1])
+        return (_ADJOINT_RESIDUAL_SLACK * jnp.finfo(weight.dtype).eps
+                * jnp.linalg.norm(near[:, None] / system.column_scale))
+
     def transpose(band):
         return jnp.swapaxes(jnp.abs(band), -1, -2)
 
@@ -3797,6 +3805,7 @@ def _block_state_pullback(
     active_fields: tuple[str, ...],
     probe_chunk_size: int,
     tol=None,
+    bands: tuple | None = None,
 ) -> Callable[[SpectralState], tuple[ImplicitParams, LinearResponseReport]]:
     """One raw block factorization shared by every state-cotangent row.
 
@@ -3806,7 +3815,9 @@ def _block_state_pullback(
     term, as in the scalar rule.  The linearization and factors are built
     here, before the caller maps rows: XLA does not hoist a factorization out
     of a mapped pullback, so mapping the scalar rule over rows pays one
-    factorization per chunk.
+    factorization per chunk.  ``bands`` (:func:`_block_bands` at ``x_star``)
+    replaces that build: a large system's does not fit beside its factors
+    (16 x 16 modes on 101 surfaces: 25 GiB).
     """
     frozen = jax.lax.stop_gradient(x_star)
     edge_mask = _edge_mask(cfg)
@@ -3814,7 +3825,7 @@ def _block_state_pullback(
     F = residual_fn(cfg, frozen, dof_mask, formulation="raw")
     z_star = P(x_star)
     system = _raw_block_system(
-        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size
+        params, cfg, frozen, dof_mask, active_fields, probe_chunk_size, bands=bands
     )
     if isinstance(system.diagonal, jax.core.Tracer):
         _mark_compiled_adjoint(cfg)

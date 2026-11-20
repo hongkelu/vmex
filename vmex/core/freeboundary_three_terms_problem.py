@@ -211,10 +211,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # The derivatives are those of the forward map, params_at(params0, x), at every x.
         self._plasma_directions = jax.jit(lambda params, x: jax.vmap(lambda e: jax.jvp(
             lambda z: params_at(base, z), (x,), (e,))[1])(eye))
-        def pullback(state, mask, params, x):
+        def pullback(state, mask, params, x, bands):
             """Every row's ``ImplicitParams`` gradient, each through its own function's reverse pass only."""
             sizes = [jax.eval_shape(f, state, params, x).size for f in parts]
-            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x)
+            return model.pullback(parts, state, mask, params, tuple(jnp.eye(k) for k in sizes), x, bands=bands)
 
         self._pullback = jax.jit(pullback)
 
@@ -515,7 +515,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         J = self._fit_jacobian(x, sol)
         J_b, J_p = J[:, :nb], J[:, nb:]
         state, params = sol["state"], sol["params"]
-        params_bar = self._pullback(state, sol["mask"], params, xj)
+        params_bar = self._pullback(state, sol["mask"], params, xj, model.stored_bands(params, state, sol["mask"]))
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         S = model.gauge_curvature(sol["x"], params)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x

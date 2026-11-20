@@ -737,17 +737,18 @@ class ThreeTermsModel:
         # the trial on the path the Jacobian was taken along, instead of a hot restart that may drift.
         self._predict = jax.jit(predict)
 
-        def pullback(fun, state, mask, params, cotangents, *args):
+        def pullback(fun, state, mask, params, cotangents, *args, bands=None):
             """``ImplicitParams`` gradient of ``cotangents[i] . fun(state, params, *args)`` through the equilibrium.
 
             Reverse mode with one block factorization shared by every row (upstream's implicit pullback): for a few
             scalar rows of an expensive function this costs a few reverse passes, not one forward pass per
             parameter direction.  ``fun`` may be a tuple of functions with ``cotangents`` a tuple of their rows'
             cotangents: each row then runs only its own function's reverse pass, and the rows come out in order.
+            ``bands`` (:meth:`stored_bands`) is that factorization where the program cannot build its own.
             """
             frozen = jax.lax.stop_gradient(state)
             back = im._block_state_pullback(params, cfg, frozen, mask, active_fields=active,
-                                            probe_chunk_size=self.chunk)
+                                            probe_chunk_size=self.chunk, bands=bands)
             funs, blocks = (fun, cotangents) if isinstance(fun, tuple) else ((fun,), (cotangents,))
             parts = []
             for f, c in zip(funs, blocks):
@@ -761,18 +762,28 @@ class ThreeTermsModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
-        self._rows_pullback = jax.jit(lambda state, mask, params, cotangent, field: jax.tree.map(
-            lambda a: a[0], pullback(rows, state, mask, params, cotangent[None], field)))
+        self._rows_pullback = jax.jit(lambda state, mask, params, cotangent, field, bands: jax.tree.map(
+            lambda a: a[0], pullback(rows, state, mask, params, cotangent[None], field, bands=bands)))
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
+
+    def stored_bands(self, params, state, mask):
+        """The config's block factorization at ``state`` for a pullback of a system too large to build one in its
+        own program (``implicit._large_bands``); ``None`` otherwise.  Factored at ``state`` itself: the adjoint's
+        one refinement pass does not absorb a reused factorization's distance."""
+        im, cfg = self._im, self.cfg
+        large = im._large_bands(cfg.resolution.ns, len(im._active_state_fields(cfg)) * int(mask.R_cos.shape[1]),
+                                state.R_cos.dtype)
+        return im._block_bands(cfg, params, state, mask, z=state) if large else None
 
     def rows_pullback(self, state, mask, params, field, cotangent):
         """``ImplicitParams`` gradient of ``cotangent . rows`` through the equilibrium of a solved (tight) state: one
         reverse pass, the casing rematerialized (:func:`~vmex.core.virtual_casing.rematerialized_scans`).  With the
         rows themselves as ``cotangent``, the gradient of the fit's cost: no Jacobian."""
         with vc.rematerialized_scans():
-            return self._rows_pullback(state, mask, params, jnp.asarray(cotangent), field)
+            return self._rows_pullback(state, mask, params, jnp.asarray(cotangent), field,
+                                       self.stored_bands(params, state, mask))
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.

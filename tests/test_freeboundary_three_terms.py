@@ -747,14 +747,18 @@ def test_promote_trials_evaluates_a_trial_as_accepting_it_leaves_it():
     at_x0 = np.r_[problem.fun(x0), problem.constraint_values(x0)]
     x1, x2 = x0 + 2e-3 * np.eye(2)[1], x0 + 1e-3 * np.eye(2)[1]
     first = np.r_[problem.fun(x1), problem.constraint_values(x1)]
-    assert problem.stats["gauge_releases"] == 1 and problem.model._gauge is not gauge
+    # x0's own release too (not kept): its change of the loss is taken out of x1's
+    assert problem.stats["gauge_releases"] == 2 and problem.model._gauge is not gauge
+    jump = problem._jump[1]
+    assert problem._jump[0] == 0 and first[0] == problem._cache[x1.tobytes()]["values"][0] - jump
     assert problem.accepted_step == 0 and np.array_equal(problem.accepted.parameters, x0)
     np.testing.assert_array_equal(np.r_[problem.fun(x0), problem.constraint_values(x0)], at_x0)  # x1 is not taken
     assert problem.model._gauge is gauge and problem.stats["trials"] == 2
     values = np.r_[problem.fun(x2), problem.constraint_values(x2)]
-    assert problem.stats["gauge_releases"] == 2
+    assert problem.stats["gauge_releases"] == 3
     problem.accept_x(x2)
-    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 2 and problem.gauge_share(x2) < 1e-8
+    assert problem.accepted_step == 1 and problem.stats["gauge_releases"] == 3 and problem.gauge_share(x2) < 1e-8
+    assert problem._shift == jump
     value, grad = problem.value_and_grad(x2)
     np.testing.assert_array_equal(np.r_[value, problem.constraint_values(x2)], values)
     assert problem.stats["linearizations"] and np.all(np.isfinite(grad))

@@ -635,6 +635,10 @@ def parse_args(argv=None):
     parser.add_argument("--gradient-report", action="store_true",
                         help="print the gradient of the loss and of every constraint row by group of design "
                              "coordinates (plasma, coils, circular pairs) at the start point, and stop")
+    parser.add_argument("--edge-smooth-reach", type=float, metavar="RHO",
+                        help="--edge-wall: the line's largest distance to the boundary as a smooth maximum over its "
+                             "nodes, max + log(mean(exp(RHO (d - max)))) / RHO [RHO in 1/m; below the largest by at "
+                             "most log(nodes) / RHO]: the hard maximum has a kink wherever the farthest node changes")
     parser.add_argument("--gradient-scan", type=float, nargs="+", default=(), metavar="U",
                         help="with --gradient-report: move the design against the gradient left by the rows at a "
                              "bound, the largest scaled coordinate by each U, and compare the loss with first order")
@@ -1211,7 +1215,11 @@ def main(argv=None):
                 [chart.poloidal_coils_from_x(x).gamma.reshape(-1, 3)] if args.pf_coils else [])
             to_coils = jnp.sqrt(jnp.min(jnp.sum((line.xyz[:, None] - jnp.concatenate(wires)[None]) ** 2, axis=-1)))
             to_plasma = pf.surface_distances(line.xyz, data.gamma, int(inp.nfp))
-            values = jnp.stack((trace, jnp.min(to_plasma), to_coils, jnp.max(to_plasma), jnp.std(line.Z)))
+            reach = jnp.max(to_plasma)
+            if args.edge_smooth_reach:  # nodes within ~1/RHO of the farthest all count: no kink where they swap
+                rho = args.edge_smooth_reach
+                reach = reach + jnp.log(jnp.mean(jnp.exp(rho * (to_plasma - reach)))) / rho
+            values = jnp.stack((trace, jnp.min(to_plasma), to_coils, reach, jnp.std(line.Z)))
             found = line.step < 1e-8
             if args.edge_legs is not None:
                 legs = [pf.manifold_crossing(field, parameters, line, M, nfp=int(inp.nfp), periods=edge_guess["periods"],

@@ -212,6 +212,26 @@ def _small_vacuum():
     return inp, _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
 
 
+def test_curvature_memory_survives_a_failed_svd(monkeypatch):
+    """The curvature memory's model: a non-finite direction drops the memory, and where LAPACK's divide-and-conquer
+    SVD does not converge the ``gesvd`` driver answers with the same model."""
+    from vmex.core import freeboundary_three_terms_problem as fbp
+
+    rng = np.random.default_rng(0)
+    D, ED, norms = rng.standard_normal((6, 3)), rng.standard_normal((6, 3)), np.linspace(1.0, 2.0, 6)
+    memory = fbp._CurvatureMemory(4)
+    memory.add(D, ED)
+    reference = memory.model(norms)
+
+    def failing(*args, **kwargs):
+        raise np.linalg.LinAlgError("SVD did not converge")
+
+    monkeypatch.setattr(np.linalg, "svd", failing)
+    np.testing.assert_allclose(memory.model(norms), reference, rtol=1e-10, atol=1e-12)
+    memory.add(np.full((6, 1), np.nan), np.zeros((6, 1)))
+    assert memory.model(norms) is None and memory.D is None and memory.ED is None
+
+
 @needs_vc
 def test_certify_rejects_an_unconverged_fit_or_newton_gradient():
     problem = ThreeTermsFreeBoundaryProblem.__new__(ThreeTermsFreeBoundaryProblem)

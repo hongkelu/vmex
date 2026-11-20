@@ -131,8 +131,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         residual ``gradient_rtol``) gives the exact Newton gradient instead of the Gauss-Newton one (0);
         ``gradient_certify`` (a factor, with both) rejects a trial whose fit or Newton rows end above that factor times
         their tolerances.  With ``promote_trials`` every trial is evaluated as :meth:`accept_x` would leave it (its
-        gauge refresh and converged gradient included, undone if another point is asked for next; a release changes the
-        loss by about what it does at the accepted point, which is taken out of the loss from there on), so the values
+        gauge refresh and converged gradient included, undone if another point is asked for next), so the values
         an optimizer compares are those it continues from.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
@@ -167,7 +166,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if self.gradient_certify is not None and (self.gradient_fit_xtol is None or not self.gradient_rounds):
             raise ValueError("gradient_certify needs gradient_fit_xtol and gradient_rounds")
         self.promote_trials, self._provisional = bool(promote_trials), None  # (key, the state before it)
-        self._shift, self._pending, self._jump = 0.0, 0.0, (None, 0.0)  # release jumps taken out of the loss
         self.model = model
         self.field = lambda x: model.gauged(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -275,19 +273,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count("gauge_releases")
         self._cache[key] = dict(fit, state=state, mask=mask, params=params, values=values)
-
-    def _release_jump(self):
-        """The loss's change at the accepted point when its own fit is released (found once per accepted step, the
-        point left as it was): a released trial's loss is compared with the accepted point's, which is not."""
-        if self._jump[0] != self.accepted_step:
-            model, x = self.model, self.accepted.parameters
-            sol, saved = self._cache[x.tobytes()], [getattr(model, name) for name in self._SAVED_MODEL]
-            self._release_gauge(x)
-            self._jump = (self.accepted_step, float(self._cache[x.tobytes()]["values"][0] - sol["values"][0]))
-            self._cache[x.tobytes()] = sol
-            for name, value in zip(self._SAVED_MODEL, saved):
-                setattr(model, name, value)
-        return self._jump[1]
 
     def _set_gauge(self, x):
         """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
@@ -398,7 +383,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if self._provisional is not None:
             return self._cache[key]
         curvature = self._curvature
-        self._pending = self._shift
         self._provisional = (key, [getattr(self, name) for name in self._SAVED],
                              [getattr(self.model, name) for name in self._SAVED_MODEL], (curvature.D, curvature.ED))
         try:
@@ -725,19 +709,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             terms[:, self._plasma] += lam.T @ J_p
         return terms
 
-    def _loss(self, x, sol):
-        """The loss less the release jumps of the accepted points so far (and of ``x``, a promoted trial)."""
-        key = np.asarray(self._x(x), dtype=float).tobytes()
-        promoted = self._provisional is not None and key == self._provisional[0]
-        return float(sol["values"][0]) - (self._pending if promoted else self._shift)
-
     def _value(self, x):
-        return self._loss(x, self._record(x))
+        return float(self._record(x)["values"][0])
 
     def _value_gradient(self, x):
         sol = self._record(x)
         gradients = self._linearize(x, sol)
-        return self._loss(x, sol), gradients[0].copy()
+        return float(sol["values"][0]), gradients[0].copy()
 
     def constraint_values(self, x):
         """The quantities' values, in their units."""
@@ -761,8 +739,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             if self._cache.get(key) is None:
                 raise ValueError("evaluate the candidate before accepting it")
             self._promote(x)
-        else:
-            self._shift = self._pending
         self._provisional = None
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
@@ -778,8 +754,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             reset = self.gauge_share(x) > self.gauge_max_share
         if reset:
             if self.gauge_release:
-                if self._provisional is not None:  # a trial: its loss stays comparable with the accepted point's
-                    self._pending = self._shift + self._release_jump()
                 self._release_gauge(x)
             self._set_gauge(x)
 

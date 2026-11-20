@@ -567,6 +567,14 @@ def restart_input(run):
                    **{name: getattr(final, name) for name in names})
 
 
+def radial_regrid(inp, ns, niter=60000):
+    """``inp`` on ``ns`` surfaces, reached through its own last grid from a cold interior (a restart with another
+    ``--ns``); both grids at the saved tolerance and at least ``niter`` iterations."""
+    saved = int(np.asarray(inp.ns_array)[-1])
+    return replace(inp, ns_array=np.array([saved, ns]), ftol_array=np.full(2, np.asarray(inp.ftol_array)[-1]),
+                   niter_array=np.full(2, max(int(np.asarray(inp.niter_array)[-1]), niter)))
+
+
 # ---- coils and their field -------------------------------------------------------------------------------------------
 def resize_coils(coils, order, n_segments):
     """Zero-pad higher Fourier modes (ESSOS ``Curves.order``) without changing the curves or currents."""
@@ -975,9 +983,8 @@ def main(argv=None):
         inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
     saved_ns = int(np.asarray(inp.ns_array)[-1])
     regrid = args.restart is not None and args.ns is not None and args.ns != saved_ns
-    if regrid:  # a saved run on another radial grid: reached through the saved one, from a cold interior
-        inp = replace(inp, ns_array=np.array([saved_ns, args.ns]), ftol_array=np.full(2, np.asarray(inp.ftol_array)[-1]),
-                      niter_array=np.full(2, max(int(np.asarray(inp.niter_array)[-1]), 60000)))
+    if regrid:
+        inp = radial_regrid(inp, args.ns)
         print(f"[restart] radial grids {saved_ns} -> {args.ns}", flush=True)
     fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     if args.current_knots_at_ends:

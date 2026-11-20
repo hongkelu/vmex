@@ -61,6 +61,25 @@ def _scaled(field, factor):
     return BiotSavart(Coils(coils.curves, coils.dofs_currents_raw * factor, currents_scale=coils.currents_scale))
 
 
+def test_restart_on_another_radial_grid_goes_through_the_saved_grid():
+    """The driver's ``--restart`` with another ``--ns``: the saved grid, then the new one, at the saved tolerance."""
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    spec = spec_from_file_location(
+        "three_term_driver", DATA.parent / "optimization" / "single_stage_free_boundary_optimization_three_term.py")
+    driver = module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), ns_array=np.array([5, 11]), ftol_array=np.array([1e-8, 1e-13]),
+                  niter_array=np.array([500, 2000]))
+    out = driver.radial_regrid(inp, 25)
+    np.testing.assert_array_equal(out.ns_array, [11, 25])
+    np.testing.assert_array_equal(out.ftol_array, [1e-13, 1e-13])
+    np.testing.assert_array_equal(out.niter_array, [60000, 60000])
+    np.testing.assert_array_equal(driver.radial_regrid(replace(inp, niter_array=np.array([500, 90000])), 25).niter_array,
+                                  [90000, 90000])
+    np.testing.assert_array_equal(out.rbc, inp.rbc)  # the saved boundary
+
+
 def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))

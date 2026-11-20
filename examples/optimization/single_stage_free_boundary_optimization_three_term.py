@@ -635,6 +635,9 @@ def parse_args(argv=None):
     parser.add_argument("--gradient-report", action="store_true",
                         help="print the gradient of the loss and of every constraint row by group of design "
                              "coordinates (plasma, coils, circular pairs) at the start point, and stop")
+    parser.add_argument("--gradient-scan", type=float, nargs="+", default=(), metavar="U",
+                        help="with --gradient-report: move the design against the gradient left by the rows at a "
+                             "bound, the largest scaled coordinate by each U, and compare the loss with first order")
     parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
                         help="compare the seed's design gradients with central differences along N random "
                         "directions (gradient_check.json), then stop")
@@ -900,7 +903,7 @@ def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None)
     (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
 
 
-def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=None):
+def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=None, scan=()):
     """Where the design gradient sits: the norm, over each group of design coordinates, of the gradient of the loss
     and of every constraint row (in the row's unit), in the optimizer's scaled coordinates (the first-order change
     for a unit step of the group).  Printed and written to ``gradient_report.json``, with the rows' values and bounds
@@ -908,7 +911,11 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
 
     Then the first-order test of a constrained minimum: nonnegative least-squares multipliers of the rows within
     1e-3 of a bound (``coil_rows`` too), the part of the loss gradient they leave, and for each row the relative
-    gain of the loss if its bound were relaxed by 1% of the row's unit."""
+    gain of the loss if its bound were relaxed by 1% of the row's unit.  With ``scan`` (sizes, the largest move of a
+    scaled coordinate) the design is then moved against the part of the gradient left, and the loss's change compared
+    with its first-order prediction, with the smallest slack of the rows and of ``coil_rows`` there."""
+    from vmex.core.errors import TrialRejected
+
     x = np.asarray(problem.accepted.parameters, dtype=float)
     scales = np.asarray(problem.scales, dtype=float)
     loss, grad = problem.value_and_grad(x)
@@ -949,6 +956,22 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
         gain = 0.01 * float(multipliers[i]) / float(loss)
         print(f"[gradient report] {tags[i]}: relaxing by 1% of its unit gains {gain:+.2%} of the loss", flush=True)
         record["multipliers"].append(dict(row=tags[i], multiplier=float(multipliers[i]), gain_per_percent=gain))
+    direction = -(rows[0] - multipliers @ active) if len(tags) else -rows[0]
+    direction, record["scan"] = direction / np.max(np.abs(direction)), []
+    for size in scan:
+        trial = x + size * direction * scales
+        try:
+            change = float(problem.fun(trial)) - float(loss)
+            at = np.asarray(problem.constraint_values(trial))
+            worst = float(np.min(np.minimum(at - np.asarray(lower), np.asarray(upper) - at) / np.asarray(row_scales)))
+            coil = float(np.min(coil_rows.fun(trial))) if coil_rows is not None else np.nan
+        except TrialRejected as error:
+            print(f"[gradient report] scan {size:g}: rejected ({error})", flush=True)
+            continue
+        predicted = size * float(rows[0] @ direction)
+        print(f"[gradient report] scan {size:g}: loss {change:+.3e} (first order {predicted:+.3e}), "
+              f"smallest slack rows {worst:+.2e} (was {float(np.min(slack)):+.2e}) coils {coil:+.2e}", flush=True)
+        record["scan"].append(dict(size=size, change=change, predicted=predicted, row_slack=worst, coil_slack=coil))
     (out / "gradient_report.json").write_text(json.dumps(record, indent=1) + "\n")
 
 
@@ -1510,7 +1533,7 @@ def main(argv=None):
             save(f".step{row['step']}")
 
     if args.gradient_report:
-        gradient_report(problem, chart.dof_names, lower, upper, row_scales, out, coil_rows)
+        gradient_report(problem, chart.dof_names, lower, upper, row_scales, out, coil_rows, scan=args.gradient_scan)
         return
     if args.check_gradient:
         check_gradient(problem, args.check_gradient, out, fit=args.check_gradient_fit)

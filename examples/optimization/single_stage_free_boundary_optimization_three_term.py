@@ -971,7 +971,13 @@ def gradient_report(problem, names, lower, upper, row_scales, out, coil_rows=Non
         predicted = size * float(rows[0] @ direction)
         print(f"[gradient report] scan {size:g}: loss {change:+.3e} (first order {predicted:+.3e}), "
               f"smallest slack rows {worst:+.2e} (was {float(np.min(slack)):+.2e}) coils {coil:+.2e}", flush=True)
-        record["scan"].append(dict(size=size, change=change, predicted=predicted, row_slack=worst, coil_slack=coil))
+        moved = (at - values) / np.asarray(row_scales)  # each row's change in its unit, against first order
+        first = size * (rows[1:] @ direction)
+        for i in np.argsort(-np.abs(moved - first))[:4]:
+            print(f"[gradient report] scan {size:g}: row {i} moved {moved[i]:+.2e} (first order {first[i]:+.2e}), "
+                  f"slack {slack[i]:+.2e}", flush=True)
+        record["scan"].append(dict(size=size, change=change, predicted=predicted, row_slack=worst, coil_slack=coil,
+                                   rows_moved=moved.tolist(), rows_first_order=first.tolist()))
     (out / "gradient_report.json").write_text(json.dumps(record, indent=1) + "\n")
 
 

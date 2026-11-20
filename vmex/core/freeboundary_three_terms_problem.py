@@ -237,7 +237,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 from .wout import read_wout
 
                 wout = read_wout(boundary_start) if isinstance(boundary_start, (str, Path)) else boundary_start
-                deck, self._start_state = VmecInput.from_wout(wout), state_from_wout(wout, inp=model.fixed)
+                deck, fixed = VmecInput.from_wout(wout), model.fixed
+                if (int(deck.mpol), int(deck.ntor)) == (int(fixed.mpol), int(fixed.ntor)):
+                    self._start_state = state_from_wout(wout, inp=fixed)
+                else:  # a run saved at another resolution: its boundary only
+                    deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
             self._start = model.coordinates(deck)
         self._start_key = x0.tobytes()
         self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})

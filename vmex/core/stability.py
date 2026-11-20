@@ -72,7 +72,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from solvax import tridiagonal_solve
 from .solver import SolverRuntime, SpectralState, _physical_coefficients
 from .statephysics import _field_chain, _iotas_half_from_fields
 from .transforms import physical_to_internal_scale
@@ -971,11 +970,24 @@ def _selected_tridiagonal_jvp(primals, tangents):
     def angle(u):
         return jnp.linalg.norm(rayleigh_residual(u)) / jnp.maximum(gap, epsilon)
 
+    # shift - |A| is positive definite when resolved, so its LDL^T factors (the
+    # pivots above) solve it stably without pivoting.  Batched accelerator
+    # tridiagonal solvers lose the eigenvector this close to singular (residual
+    # ~1e13 eps against ~1 eps here), which made every derivative NaN on a GPU.
+    diagonal = jnp.concatenate([shift - d[:1], pivots])
+    multipliers = -positive / diagonal[:-1]
+
+    def solve(b):
+        _, y = jax.lax.scan(lambda previous, row: (row[0] - row[1] * previous,) * 2,
+                            b[0], (b[1:], multipliers))
+        z = jnp.concatenate([b[:1], y]) / diagonal
+        _, x = jax.lax.scan(lambda following, row: (row[0] - row[1] * following,) * 2,
+                            z[-1], (z[:-1], multipliers), reverse=True)
+        return jnp.concatenate([x, z[-1:]])
+
     def step(carry):
         iteration, u = carry
-        # (sub, diag, super) of shift - |A|; the sign pattern is restored below.
-        u = tridiagonal_solve(jnp.pad(-positive, (1, 0)), shift - d, jnp.pad(-positive, (0, 1)),
-                              u[:, None])[:, 0]
+        u = solve(u)  # inverse iteration on |A|; the sign pattern is restored below
         return iteration + 1, u / jnp.linalg.norm(u)
     _, unsigned = jax.lax.while_loop(
         lambda c: resolved & (c[0] < 32) & (angle(c[1]) > angle_tolerance), step,

@@ -139,7 +139,8 @@ def resolve_device(device: Any = AUTO, resolution: Any = None):
     )
 
 
-def resolve_implicit_device(device: Any = AUTO, resolution: Any = None):
+def resolve_implicit_device(device: Any = AUTO, resolution: Any = None, *,
+                            block_jacobian: bool = False):
     """Device for the implicit-gradient Jacobian / adjoint GMRES (or ``None``).
 
     Unlike the forward solve, the ``jac="implicit"`` path builds a per-dof
@@ -156,10 +157,19 @@ def resolve_implicit_device(device: Any = AUTO, resolution: Any = None):
     - explicit devices are honored (delegated to :func:`resolve_device`);
     - ``None`` leaves placement to JAX;
     - ``"auto"`` stands down for an active JAX device/platform selection and
-      otherwise pins to CPU on an accelerator backend.
+      otherwise pins to CPU on an accelerator backend, except for the block
+      Jacobian described below.
 
-    ``resolution`` is accepted for signature parity with :func:`resolve_device`
-    (and in case a size-dependent rule is wanted later); it is unused today.
+    ``block_jacobian=True`` marks the vector-residual Jacobian of
+    :class:`~vmex.core.problem.VmecProblem`, built from one block-tridiagonal
+    factorization instead of one GMRES per dof.  That graph is a few large
+    batched kernels, so on an accelerator ``"auto"`` leaves it there whenever
+    :func:`recommended_device` picks the GPU for ``resolution``.  Measured on a
+    ``max_mode=4``, ``ns=101`` QA stage of 30 evaluations (40 GB A100): 5.2 min
+    on the GPU, compile included, against 54 min on the CPU with ballooning
+    rows, and 3.8 min against 33 min without; the rows agree to 1e-8.
+
+    Without ``block_jacobian``, ``resolution`` is unused.
     """
     if device is None:
         return None
@@ -168,6 +178,8 @@ def resolve_implicit_device(device: Any = AUTO, resolution: Any = None):
     if _user_selected_placement():
         return None
     if jax.default_backend() == "cpu":
+        return None
+    if block_jacobian and resolution is not None and recommended_device(resolution) == "gpu":
         return None
     try:
         return jax.devices("cpu")[0]

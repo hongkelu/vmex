@@ -987,6 +987,23 @@ def test_selected_tridiagonal_value_and_nonuniform_derivatives(n):
         np.testing.assert_allclose(fd,expected,rtol=1e-5,atol=1e-7)
 
 
+def test_selected_tridiagonal_batched_derivatives_are_certified():
+    """jit + vmap, as the Jacobian calls it; an accelerator returned NaN here."""
+    rng = np.random.default_rng(31)
+    n, batch = 97, 16
+    eta = np.linspace(-1, 1, n)
+    d = -2e3 * (1 + .3 * np.cos(3 * eta)) + rng.uniform(0, 80, (batch, 1)) * np.exp(-8 * eta**2)
+    e = 1e3 * (1 + .3 * np.cos(3 * (eta[:-1] + eta[1:]) / 2)) * np.ones((batch, 1))
+    dd, de = rng.normal(size=(batch, n)), rng.normal(size=(batch, n - 1))
+    fun = stab._selected_tridiagonal_value
+    tangent = jax.jit(jax.vmap(lambda *a: jax.jvp(fun, a[:2], a[2:])[1]))(*map(jnp.asarray, (d, e, dd, de)))
+    expected = []
+    for i in range(batch):
+        u = np.linalg.eigh(np.diag(d[i]) + np.diag(e[i], 1) + np.diag(e[i], -1))[1][:, -1]
+        expected.append(np.sum(u * u * dd[i]) + 2 * np.sum(u[:-1] * u[1:] * de[i]))
+    np.testing.assert_allclose(tangent, expected, rtol=1e-9, atol=1e-12)
+
+
 def test_selected_ballooning_stencil_batch_and_limits():
     """Exact constant-coefficient sine spectrum, batch and scaling contracts."""
     h = .125

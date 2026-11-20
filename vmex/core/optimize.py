@@ -61,6 +61,7 @@ import concurrent.futures
 import dataclasses
 import functools
 import inspect
+import os
 import warnings
 from dataclasses import dataclass
 from functools import cached_property
@@ -78,7 +79,7 @@ from solvax import (
 )
 
 from .device import AUTO
-from .errors import AdjointSolveError, VmecConvergenceError
+from .errors import AdjointSolveError, TrialRejected, VmecConvergenceError
 from .input import VmecInput
 from .multigrid import solve_multigrid
 from .solver import (
@@ -117,9 +118,14 @@ from .statephysics import (
     _lgradb_state_tables,
     _mode_matrix,
     aspect_ratio,
+    axis_field_strength,
+    abs_iota_profile,
+    axis_iota,
     edge_iota,
     elongation_profile,
+    geometric_iota,
     iota_edge,
+    major_radius,
     max_elongation,
     min_boundary_curvature_radius,
     mean_iota,
@@ -149,8 +155,10 @@ __all__ = [
     "solve_equilibrium",
     "QuasisymmetryRatioResidual",
     "aspect_ratio",
+    "major_radius",
     "mean_iota",
     "min_abs_iota",
+    "abs_iota_profile",
     "max_abs_iota",
     "edge_jacobian_ratio",
     "axis_excursion",
@@ -162,6 +170,10 @@ __all__ = [
     "soft_min_abs_iota",
     "edge_iota",
     "iota_edge",
+    "axis_iota",
+    "axis_field_strength",
+    "geometric_iota",
+    "vacuum_iota",
     "mirror_ratio",
     "volume",
     "volume_average_beta",
@@ -907,7 +919,8 @@ def report_targets(
     return not unmet
 
 
-def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1) -> Array:
+def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1,
+                 smooth: float | None = None) -> Array:
     """Mirror ratio ``(Bmax - Bmin) / (Bmax + Bmin)`` on one half-mesh surface.
 
     Note the convention: this is the ``|B|`` *modulation depth* on a surface, the
@@ -919,13 +932,22 @@ def mirror_ratio(state: SpectralState, rt: SolverRuntime, *, s_index: int = -1) 
     ``|B|`` is evaluated on the solver's internal angular grid from the
     half-mesh field state (``|B|^2 = 2 (bsq - p)``, ``bcovar.f``); ``s_index``
     selects the half-mesh surface (default: outermost).  Hard max/min — smooth
-    almost everywhere, adequate for finite-difference least squares.
+    almost everywhere, adequate for finite-difference least squares (the
+    legacy ``VMECMirrorRatio`` softmax knobs were an optimizer nicety only).
+
+    With ``smooth`` (a field strength [T]) ``Bmax`` and ``Bmin`` are the grid's ``|B|`` averaged with weights
+    ``exp(+-|B| / smooth)`` instead: a few ``smooth`` inside the extremes (the ratio reads that much low), and
+    differentiable where the extreme switches grid points, for a constraint row a gradient-based optimizer holds.
     """
     _, _, _, fields, _ = _field_chain(state, rt)
     bsq = jnp.asarray(fields.total_pressure) - jnp.asarray(fields.pressure)[:, None, None]
     bmag = jnp.sqrt(jnp.maximum(2.0 * bsq[s_index],
                                 jnp.asarray(jnp.finfo(bsq.dtype).tiny, dtype=bsq.dtype)))
-    bmax, bmin = jnp.max(bmag), jnp.min(bmag)
+    if smooth is None:
+        bmax, bmin = jnp.max(bmag), jnp.min(bmag)
+    else:
+        b = jnp.ravel(bmag)
+        bmax, bmin = jnp.vdot(jax.nn.softmax(b / smooth), b), jnp.vdot(jax.nn.softmax(-b / smooth), b)
     return (bmax - bmin) / (bmax + bmin)
 
 
@@ -1201,7 +1223,9 @@ _CURTOR_SCALE = 1.0e6
 
 
 def _current_uses_spline(inp: VmecInput) -> bool:
-    return "spline" in str(inp.pcurr_type).strip().lower()
+    """Whether the current profile is given by knot values (``AC_AUX_F``: splines and line segments)."""
+    kind = str(inp.pcurr_type).strip().lower()
+    return "spline" in kind or "line_segment" in kind
 
 
 def _current_values(inp: VmecInput, k: int) -> np.ndarray:
@@ -1209,13 +1233,49 @@ def _current_values(inp: VmecInput, k: int) -> np.ndarray:
     return np.asarray(source, dtype=float)[:k]
 
 
+def vacuum_iota(inp: VmecInput, *, device=None) -> Callable[[Array, Array], Array]:
+    """``(rbc, zbs) -> |iota|`` of the vacuum field inside the plasma boundary ``rbc``/``zbs``.
+
+    The fixed-boundary equilibrium of that boundary (INDATA arrays shaped as
+    ``inp.rbc``) without pressure or current (``inp`` otherwise,
+    hot-restarted), differentiable through its implicit adjoint: the shaping's
+    share of the transform, which a floor keeps from being carried by a
+    bootstrap current.  In a free-boundary optimization it is a row of the
+    fitted boundary (``boundary_quantities`` of
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`).
+    The values are the axis (:func:`axis_iota`), the half-mesh surfaces and the
+    edge (wout ``iotaf[-1]``).  ``device`` defaults to JAX's first device.
+    """
+    from . import implicit as imp
+
+    vacuum = dataclasses.replace(inp, pres_scale=0.0, curtor=0.0, ncurr=1, pcurr_type="power_series",
+                                 ac=np.zeros_like(np.asarray(inp.ac, dtype=float)), ac_aux_s=None, ac_aux_f=None,
+                                 lfreeb=False)
+    device = jax.devices()[0] if device is None else device
+    cfg = imp.make_config(vacuum, multigrid=True, hot_restart=True, device=device)
+    base = imp.params_from_input(vacuum, device=device)
+    imp.runtime_from_params(base, cfg)  # build its setup here: the setup cannot be traced inside a jit
+
+    def iota(rbc: Array, zbs: Array) -> Array:
+        params = dataclasses.replace(base, rbc=jax.device_put(jnp.asarray(rbc), device),
+                                     zbs=jax.device_put(jnp.asarray(zbs), device))
+        vstate = imp.solve_implicit(params, cfg)
+        vrt = imp.runtime_from_params(params, cfg)
+        return jnp.concatenate([jnp.abs(axis_iota(vstate, vrt))[None],
+                                abs_iota_profile(vstate, vrt, include_edge=True)])
+
+    iota(base.rbc, base.zbs)  # the deck's own boundary, concretely: a jit over the first solve of a GPU config is refused
+    return iota
+
+
 def resample_current_profile(
     inp: VmecInput,
     n_spline: int,
     *,
     kind: str = "cubic_spline_ip",
+    knots: Any = None,
 ) -> VmecInput:
-    """Represent the current shape on ``n_spline`` uniform spline knots.
+    """Represent the current shape on ``n_spline`` spline knots (default: uniform in ``s``; ``knots`` to choose them).
 
     The existing enclosed-current profile is differentiated and sampled at
     the new knots, so continuation preserves ``I(s)`` before the new knot
@@ -1232,11 +1292,16 @@ def resample_current_profile(
         raise ValueError("kind must be 'cubic_spline_ip' or 'akima_spline_ip'")
     from .profiles import current
 
-    knots = jnp.linspace(0.0, 1.0, n_spline)
-    # At exactly s=1, jnp.minimum's chosen generalized derivative averages
-    # the profile derivative with the clamp's zero derivative. Sample the
-    # physical one-sided edge derivative instead.
-    sample_knots = knots.at[-1].set(jnp.nextafter(knots[-1], knots[-2]))
+    knots = jnp.linspace(0.0, 1.0, n_spline) if knots is None else jnp.asarray(knots, dtype=float)
+    if knots.size != n_spline or float(knots[0]) != 0.0 or float(knots[-1]) != 1.0:
+        raise ValueError("knots must be n_spline values from 0 to 1")
+    # At exactly s=0 and s=1, the generalized derivative of the clamp
+    # x = min(|s*bloat|, 1) is not the profile's. Sample the physical
+    # one-sided derivatives instead, so resampling at the same knots
+    # leaves the profile unchanged.
+    # (the smallest normal float: XLA flushes subnormals to zero)
+    sample_knots = knots.at[0].set(jnp.finfo(knots.dtype).tiny)
+    sample_knots = sample_knots.at[-1].set(jnp.nextafter(knots[-1], knots[-2]))
     enclosed = lambda s: current(  # noqa: E731
         inp.pcurr_type, inp.ac, inp.ac_aux_s, inp.ac_aux_f, s,
         bloat=inp.bloat)
@@ -1269,11 +1334,6 @@ def _current_dof_setup(inp: VmecInput, current_dofs: int | None) -> tuple[int, f
         raise ValueError(f"current_dofs must be a positive int, got {current_dofs!r}")
     if int(inp.ncurr) != 1:
         raise ValueError("current_dofs requires ncurr = 1 (prescribed current)")
-    kind = str(inp.pcurr_type).strip().lower()
-    if "line_segment" in kind:
-        raise ValueError(
-            "current_dofs supports AC coefficients or spline knot values, "
-            f"not pcurr_type={inp.pcurr_type!r}")
     source = inp.ac_aux_f if _current_uses_spline(inp) else inp.ac
     size = int(np.asarray([] if source is None else source).size)
     if k > size:
@@ -2126,9 +2186,292 @@ def least_squares(
     return result
 
 
+#: Distance outside its bounds at which a constraint row is reported for a
+#: rejected SLSQP line-search probe, so the probe is refused without a
+#: fabricated Jacobian.
+_REJECTED_CONSTRAINT_OFFSET = 1e6
+
+
+def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
+                      constraints=(), callback=None, options=None, tol=None):
+    """Run SciPy SLSQP on a :class:`FunctionProblem` in scaled coordinates.
+
+    SciPy iterates on ``u = (x - x0) / problem.scales``; bounds, constraints,
+    callbacks and the returned ``x``/``jac`` stay in the problem's units. A
+    problem exposing ``accept_x`` (a stateful problem such as
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`)
+    must start at its accepted point, and each SLSQP major iterate is promoted
+    with ``accept_x`` when its Jacobian is requested.
+
+    Parameters
+    ----------
+    problem:
+        The problem; ``problem.bounds`` is used when ``bounds`` is ``None``.
+    x0:
+        Start point (default ``problem.x0``).
+    method:
+        Must be ``"SLSQP"``.
+    bounds, constraints, tol:
+        As for :func:`scipy.optimize.minimize`; constraints are
+        :class:`~scipy.optimize.LinearConstraint` or
+        :class:`~scipy.optimize.NonlinearConstraint` with an analytic
+        Jacobian. A constraint value that raises :class:`~vmex.core.errors.TrialRejected`
+        reports a point far outside its bounds.
+    callback:
+        Called after each accepted step with ``x``, or with an
+        :class:`~scipy.optimize.OptimizeResult` if its only parameter is
+        named ``intermediate_result``; ``StopIteration`` stops the run.
+    options:
+        SciPy SLSQP options; ``maxiter`` (default 100) is the budget of
+        accepted steps for a stateful problem.  ``restart_on_rejection``
+        (default ``False``) restarts SLSQP from the accepted point, with the
+        remaining budget, after a rejected equilibrium trial that followed at
+        least one accepted step: a rejection ends SciPy's run and its
+        quasi-Newton Hessian, not the optimization.  ``max_step`` (default
+        ``None``) rejects, unsolved, a trial whose scaled coordinates ``u``
+        move more than ``max_step`` from the accepted point in any one of them
+        (a trust box): SLSQP's line search shortens the step and keeps its
+        Hessian, as for a rejected equilibrium.  ``step_box`` (default
+        ``None``) instead bounds each step in SLSQP's own subproblem: SLSQP is
+        restarted at every accepted point for one step, ``u`` bounded to
+        ``step_box`` around it (within ``bounds``), so a step is the
+        subproblem's best one in the box; each restart begins from an identity
+        Hessian.
+
+    Returns
+    -------
+    scipy.optimize.OptimizeResult
+        With ``x``, ``fun`` and ``jac`` at the last accepted point for a
+        stateful problem (or on success), plus ``accepted_steps`` and
+        ``stop_reason``: ``None`` when SciPy stopped on its own,
+        ``"accepted_step_budget_reached"``, ``"callback_stopped"`` or
+        ``"equilibrium_trial_rejected"``. The last three set
+        ``success=False`` and ``status=99``.
+    """
+    from scipy.optimize import Bounds, LinearConstraint, NonlinearConstraint, OptimizeResult
+    from scipy.optimize import minimize as scipy_minimize
+    from scipy.sparse import issparse
+
+    if method != "SLSQP":
+        raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
+    options = dict(options or {})
+    step_box = options.pop("step_box", None)
+    if step_box is not None:
+        from scipy.optimize import Bounds
+
+        budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
+        x = np.asarray(problem.x0 if x0 is None else x0, dtype=float)
+        base = problem.bounds if bounds is None else bounds
+        if isinstance(base, tuple) and len(base) == 2:
+            base = Bounds(*base)
+        if base is not None and not isinstance(base, Bounds):
+            base = Bounds(*np.asarray([(-np.inf if lo is None else lo, np.inf if hi is None else hi)
+                                       for lo, hi in base], dtype=float).T)
+        lower, upper = (np.full(x.size, -np.inf), np.full(x.size, np.inf)) if base is None else np.broadcast_arrays(
+            np.asarray(base.lb, dtype=float), np.asarray(base.ub, dtype=float))
+        width = step_box * np.asarray(problem.scales, dtype=float)
+        while True:
+            box = Bounds(np.maximum(lower, x - width), np.minimum(upper, x + width))
+            result = _minimize_problem(problem, x0=x, method=method, bounds=box, constraints=constraints,
+                                       callback=callback, options=dict(options, maxiter=1), tol=tol)
+            steps += result.accepted_steps
+            for key in counts:
+                counts[key] += int(getattr(result, key, 0) or 0)
+            if not result.accepted_steps or steps >= budget:
+                break
+            x = result.x
+        if result.accepted_steps and steps >= budget:
+            result.stop_reason, result.message = "accepted_step_budget_reached", "accepted_step_budget_reached"
+        result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
+        return result
+    if options.pop("restart_on_rejection", False):
+        budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
+        result = None
+        while True:
+            try:
+                result = _minimize_problem(problem, x0=x0, method=method, bounds=bounds, constraints=constraints,
+                                           callback=callback, options=dict(options, maxiter=budget - steps), tol=tol)
+            except TrialRejected as error:  # a restart whose accepted start has no gradient ends the run there
+                if result is None:
+                    raise
+                result.stop_reason, result.message = "accepted_point_rejected", str(error)
+                break
+            steps += result.accepted_steps
+            for key in counts:
+                counts[key] += int(getattr(result, key, 0) or 0)
+            if (result.stop_reason != "equilibrium_trial_rejected" or not result.accepted_steps
+                    or steps >= budget):
+                break
+            x0 = result.x
+        result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
+        return result
+    start = np.asarray(problem.x0 if x0 is None else x0, dtype=float).copy()
+    scales = np.asarray(problem.scales, dtype=float)
+    if (start.shape != scales.shape or start.ndim != 1 or not np.all(np.isfinite(start))
+            or not np.all(np.isfinite(scales) & (scales > 0))):
+        raise ValueError("x0 must be finite and match finite positive problem scales")
+    promote = getattr(problem, "accept_x", None)
+    if promote is not None and not np.array_equal(start, problem.accepted.parameters):
+        raise ValueError("stateful minimization must start at the accepted equilibrium")
+    max_step = options.pop("max_step", None)
+    budget = int(options.get("maxiter", 100))
+    if budget < 0:
+        raise ValueError("maxiter must be nonnegative")
+    if promote is not None:
+        # The step budget is enforced by accept(); one spare SLSQP iteration
+        # lets the last accepted step request its Jacobian.
+        options["maxiter"] = budget + 1
+    if bounds is None:
+        bounds = problem.bounds
+        if isinstance(bounds, tuple) and len(bounds) == 2:
+            bounds = Bounds(*bounds)
+    if bounds is not None:
+        if not isinstance(bounds, Bounds):
+            pairs = [(float('-inf') if lo is None else lo,
+                      float('inf') if hi is None else hi) for lo, hi in bounds]
+            bounds = Bounds(*np.asarray(pairs).T)
+        bounds = Bounds((np.asarray(bounds.lb)-start)/scales, (np.asarray(bounds.ub)-start)/scales,
+                        keep_feasible=bounds.keep_feasible)
+    if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
+        constraints = (constraints,)
+    trace = bool(os.environ.get("VMEX_SLSQP_TRACE"))  # diagnostic: one line a trial value, constraint call and exit
+
+    def far(u):
+        return float(np.max(np.abs(start + scales*np.asarray(u) - accepted)/scales))
+
+    def too_far(u):
+        return max_step is not None and np.max(np.abs(start + scales*np.asarray(u) - accepted)/scales) > max_step
+
+    scaled_constraints = []
+    for constraint in tuple(constraints):
+        if isinstance(constraint, (LinearConstraint, NonlinearConstraint)) and (
+                np.all(np.isneginf(constraint.lb)) and np.all(np.isposinf(constraint.ub))):
+            continue
+        if isinstance(constraint, LinearConstraint):
+            matrix = constraint.A.multiply(scales) if issparse(constraint.A) else constraint.A * scales
+            scaled_constraints.append(LinearConstraint(
+                matrix, constraint.lb-constraint.A@start, constraint.ub-constraint.A@start))
+        elif isinstance(constraint, NonlinearConstraint):
+            if not callable(constraint.jac):
+                raise ValueError("constraints require an analytic Jacobian")
+            def values(u, c=constraint, size=[1]):
+                try:
+                    if too_far(u):
+                        raise TrialRejected("outside the step box")
+                    result = np.asarray(c.fun(start+scales*u))
+                    size[0] = result.size
+                    if trace:
+                        gap = np.maximum(np.maximum(c.lb - result, result - c.ub), 0.0)
+                        print(f"[trace] rows({result.size}) step={far(u):.2e} violation={gap.max():.3e} "
+                              f"row={int(gap.argmax())} near={int(np.sum(np.minimum(result - c.lb, c.ub - result) < 1e-3))}",
+                              flush=True)
+                    return result
+                except TrialRejected:
+                    # Values can reject a line-search probe; never fabricate its Jacobian.
+                    # Scalar bounds take the row size of the last solved evaluation.
+                    lo, hi = np.broadcast_arrays(c.lb, c.ub, np.empty(size[0]))[:2]
+                    offset = _REJECTED_CONSTRAINT_OFFSET
+                    return np.where(np.isfinite(lo), lo-offset, np.where(np.isfinite(hi), hi+offset, 0.))
+            scaled_constraints.append(NonlinearConstraint(
+                values, constraint.lb, constraint.ub,
+                jac=lambda u, c=constraint: np.asarray(c.jac(start+scales*u))*scales))
+        else:
+            raise TypeError("use scipy LinearConstraint or NonlinearConstraint")
+
+    accepted = start.copy()
+    value, gradient = problem.value_and_grad(accepted)
+    accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
+    accepted_steps, shift = 0, 0.0  # shift: what promotions (``accept_x`` returning true) moved the objective by
+    nfev, njev = 1, 1
+    if promote is not None and budget == 0:
+        return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
+            status=99, message="accepted_step_budget_reached", stop_reason="accepted_step_budget_reached",
+            accepted_steps=0, nit=0, nfev=1, njev=1)
+
+    class _Stop(Exception):
+        pass
+
+    def accept(u):
+        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps, shift
+        x = start + np.asarray(u)*scales
+        if np.array_equal(x, accepted):
+            return
+        if promote is not None:  # before the gradient: promotion may change what the problem linearizes
+            accepted_value = before = problem.fun(x)
+            moved = promote(x)
+            # the problem's point from here on, even if its gradient is rejected
+            accepted, accepted_gradient = x.copy(), np.full(x.size, np.nan)
+            accepted_steps += 1
+            accepted_value, current_gradient = problem.value_and_grad(x)
+            if moved:  # the promotion re-fitted the point: SLSQP's objective stays continuous across it
+                shift += accepted_value - before
+        else:
+            accepted_value, current_gradient = problem.value_and_grad(x)
+            accepted, accepted_steps = x.copy(), accepted_steps + 1
+        accepted_gradient = np.asarray(current_gradient).copy()
+        if callback is not None:
+            try:
+                if set(inspect.signature(callback).parameters) == {"intermediate_result"}:
+                    callback(intermediate_result=OptimizeResult(
+                        x=accepted.copy(), fun=accepted_value, nit=accepted_steps))
+                else:
+                    callback(accepted.copy())
+            except StopIteration as error:
+                raise _Stop("callback_stopped") from error
+        if promote is not None and accepted_steps >= budget:
+            raise _Stop("accepted_step_budget_reached")
+
+    def fun(u):
+        nonlocal nfev
+        nfev += 1
+        if too_far(u):
+            if trace:
+                print(f"[trace] fun step={far(u):.2e} outside the step box", flush=True)
+            return np.inf
+        try:
+            value = problem.fun(start+scales*u)
+            if trace:
+                print(f"[trace] fun step={far(u):.2e} change={value - accepted_value:+.3e}", flush=True)
+            return value - shift
+        except TrialRejected:
+            return np.inf
+
+    def jac(u):
+        nonlocal nfev, njev
+        nfev += 1
+        njev += 1
+        # SLSQP's major-iteration callback can precede backtracking. The next
+        # Jacobian request identifies its accepted line-search point instead.
+        accept(u)
+        if trace:
+            print(f"[trace] jac |g|={np.linalg.norm(accepted_gradient*scales):.3e} "
+                  f"max={np.max(np.abs(accepted_gradient*scales)):.3e} shift={shift:+.3e}", flush=True)
+        return accepted_gradient*scales
+
+    try:
+        result = scipy_minimize(fun, np.zeros_like(start), jac=jac, method="SLSQP",
+            bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
+        if result.success:
+            accept(result.x)
+        if trace:
+            print(f"[trace] SLSQP exit status={result.status} nit={result.nit}: {result.message}", flush=True)
+        result.x = start + np.asarray(result.x)*scales
+        if getattr(result, "jac", None) is not None:
+            result.jac = np.asarray(result.jac)/scales
+        result.stop_reason = None
+    except (_Stop, TrialRejected) as error:
+        reason = str(error) if isinstance(error, _Stop) else "equilibrium_trial_rejected"
+        result = OptimizeResult(success=False, status=99, message=str(error),
+            stop_reason=reason, nit=accepted_steps, nfev=nfev, njev=njev)
+    if result.success or promote is not None or getattr(result, "stop_reason", None):
+        result.x, result.fun, result.jac = accepted.copy(), accepted_value, accepted_gradient.copy()
+    result.accepted_steps = accepted_steps
+    return result
+
+
 def minimize(
-    objective_terms: Sequence[tuple[Callable, float, Any]],
-    inp: VmecInput,
+    objective_terms: Sequence[tuple[Callable, float, Any]] | FunctionProblem,
+    inp: VmecInput | None = None,
     *,
     max_mode: int | Sequence[int] = 1,
     vary_major_radius: bool = False,
@@ -2148,7 +2491,25 @@ def minimize(
     forward_max_iterations: int | None = None,
     **scipy_kwargs,
 ):
-    """Minimize the scalarized residual norm with one adjoint per gradient.
+    """Minimize a FunctionProblem, or a scalarized VMEC residual definition.
+
+    ``minimize(problem, method="SLSQP", x0=..., bounds=..., constraints=...,
+    callback=..., options=..., tol=...)`` runs SciPy SLSQP on a
+    :class:`~vmex.core.problem.FunctionProblem` through its public
+    value/gradient interface (see :func:`_minimize_problem`).  All coordinates,
+    bounds, constraints, callbacks and returned derivatives use the problem's
+    units; ``problem.scales`` conditions SciPy internally.  A problem exposing
+    ``accept_x``, such as
+    :class:`~vmex.core.freeboundary_three_terms_problem.ThreeTermsFreeBoundaryProblem`,
+    promotes only accepted iterates and ``options["maxiter"]`` counts accepted
+    steps.  Besides SciPy's fields the result carries ``accepted_steps`` and
+    ``stop_reason`` (``None``, ``"accepted_step_budget_reached"``,
+    ``"callback_stopped"`` or ``"equilibrium_trial_rejected"``; the last
+    three with ``success=False`` and ``status=99``).  The equilibrium and
+    adjoint keywords below belong to the problem and must stay at their
+    defaults.
+
+    The ``minimize(objective_terms, inp, ...)`` interface:
 
     The objective is exactly ``0.5 * sum(rows**2)``, with ``rows`` defined by
     :func:`least_squares`.  Unlike Gauss--Newton least squares, a reverse
@@ -2171,6 +2532,17 @@ def minimize(
     defaults are certified on the QI, QS, ``L_grad_B``, ``DMerc`` and ``D_R``
     objective lanes; an unconverged adjoint is never returned as a gradient.
     """
+    if isinstance(objective_terms, FunctionProblem):
+        if inp is not None:
+            raise TypeError("a FunctionProblem already owns its input")
+        if (not np.isscalar(max_mode) or max_mode != 1 or vary_major_radius or current_dofs is not None
+                or not hot_restart or device is not AUTO or solve_kwargs is not None or verbose != 0
+                or adjoint_tol != 1e-6 or adjoint_maxiter != 300 or max_fsq_ratio != 1e2
+                or refine_tol != 1e-10 or forward_ftol is not None or forward_max_iterations is not None):
+            raise TypeError("configure equilibrium, coordinates and adjoint controls when building the problem")
+        return _minimize_problem(objective_terms, x0=x0, method=method, **scipy_kwargs)
+    if inp is None:
+        raise TypeError("objective tuples require a VmecInput")
     inp = _with_forward_controls(inp, forward_ftol, forward_max_iterations)
     modes = _max_mode_schedule(max_mode)
     if len(modes) > 1:

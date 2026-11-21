@@ -351,12 +351,6 @@ class ImplicitConfig:
     #: every :mod:`vmex.core.optimize` entry point; the free-boundary config
     #: tightens it to ``1.0``.
     max_fsq_ratio: float = 1.0e2
-    #: A forward solve ends, and counts as converged, once its force residual has stalled: below
-    #: :data:`_STALL_BELOW`, the residual is above ``stall`` times its value 20 iterations per surface earlier (0: never).
-    #: Past that floor the residual measures the spectral-condensation constraint against the force, not the
-    #: force balance: the iteration can drift along a soft direction to a state of lower residual and larger
-    #: force-balance error (QI at 2.5 % beta, 16 x 16 modes: ``equif`` 3e-4 to 2.6e-3).
-    stall: float = 0.0
     #: seed repeated host solves from the last converged state of this config
     #: (optimization trials; the fixed point — hence the gradient — is
     #: unchanged, only the iteration count drops).  Makes the callback
@@ -1419,7 +1413,7 @@ _COUNTERS = ("solves", "iterations", "solve_seconds", "refinements",
              "adjoint_krylov_iterations", "adjoint_seconds",
              "adjoint_certificate_fallbacks", "anchors", "anchor_steps",
              "anchor_krylov_iterations", "anchor_factorizations",
-             "anchor_seconds", "abandoned_rungs", "stalled_solves", "block_factorizations",
+             "anchor_seconds", "abandoned_rungs", "block_factorizations",
              "block_bands_reused", "block_bands_rejected")
 # Nested-time accumulators of the open ``_timed`` sections.  Host callbacks run
 # while their caller waits, so one process-wide stack nests correctly.
@@ -1544,11 +1538,8 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
     limited = 0
     with _timed(cfg, "solve"):
         for k, init in enumerate(attempts):
-            probe = None if reference is None else _rung_probe(reference)
-            stall = getattr(cfg, "stall", 0.0)  # a duck-typed config of the solve alone has none
-            stalled = _stall_probe(stall, cfg.resolution.ns) if stall > 0.0 else None
-            hooks = [h for h in (probe, stalled) if h is not None]
-            token = STOP_HOOK.set((lambda carry: any(h(carry) for h in hooks)) if hooks else None)
+            token = STOP_HOOK.set(
+                None if reference is None else _rung_probe(reference))
             try:
                 trial = run(init)
             except VmecError:
@@ -1558,9 +1549,6 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
                 continue
             finally:
                 STOP_HOOK.reset(token)
-            if stalled is not None and stalled.fired and not bool(trial.converged):
-                trial = dataclasses.replace(trial, converged=True)  # at its floor: the state the solve has
-                _count(cfg, stalled_solves=1)
             if result is None or _fsq(trial) < _fsq(result):
                 result = trial
             if bool(result.converged):
@@ -1587,35 +1575,6 @@ def _host_solve(cfg: ImplicitConfig, params: ImplicitParams) -> SolveResult:
 #: rungs retraced it to 0.1 decade, and a rejected trial cost three budgets.
 _RUNG_PROBE_FRACTION = 0.2
 _RUNG_PROBE_GAIN = 10.0
-
-
-#: The stall rule (:attr:`ImplicitConfig.stall`): below ``_STALL_BELOW`` a solve ends once its force residual has
-#: not fallen to ``stall`` times its value ``_STALL_ITERATIONS`` iterations per radial surface earlier (each the
-#: least of ``_STALL_WINDOW`` iterations).  A converging solve takes iterations in proportion to its surfaces (a
-#: decade in 10 to 30 a surface); at a floor the residual stays for some 80 a surface before it drifts away (QI at
-#: 2.5 % beta, 16 x 16 modes on 51 surfaces: about 4000 iterations).
-_STALL_BELOW, _STALL_ITERATIONS, _STALL_WINDOW = 1.0e-8, 20, 100
-
-
-def _stall_probe(factor: float, ns: int):
-    """``STOP_HOOK`` predicate ending a solve on ``ns`` surfaces whose force residual has stalled; ``.fired`` says it
-    did."""
-    span = _STALL_ITERATIONS * int(ns)
-
-    def stop(carry) -> bool:
-        it = int(carry.iteration)
-        if it < span + _STALL_WINDOW:
-            return False
-        rows = lambda end: np.asarray(carry.trajectory[end - _STALL_WINDOW:end, 1:4]).sum(axis=1)  # noqa: E731
-        now, before = rows(it - 1), rows(it - 1 - span)
-        now, before = now[np.isfinite(now) & (now > 0)], before[np.isfinite(before) & (before > 0)]
-        if not now.size or not before.size:
-            return False
-        stop.fired = bool(before.min() < _STALL_BELOW and now.min() > factor * before.min())
-        return stop.fired
-
-    stop.fired = False
-    return stop
 
 
 def _rung_probe(reference: np.ndarray):

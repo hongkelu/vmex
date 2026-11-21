@@ -459,11 +459,10 @@ def test_interior_state_does_not_depend_on_its_start():
 
     results = []
     for seed in (None, near, perturbed):
-        for cfg in {model.cfg, model.cfg_trial}:  # a genuine cold or seeded solve: no memo, no hot restart
-            for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED, im._LAST_REFINED):
-                cache.pop(cfg, None)
+        for cache in (im._LAST_SOLVE, im._HOT_CACHE, im._PERTURB_SEED, im._LAST_REFINED):
+            cache.pop(model.cfg, None)  # a genuine cold or seeded solve: no memo, no hot restart
         model._linearization = None
-        rows, aux = model.evaluate(x, params, field, seed=seed, tight=True)
+        rows, aux = model.evaluate(x, params, field, seed=seed)
         J = model.linearize(x, aux, field)[0]
         results.append((np.asarray(rows), np.asarray(J), model.boundary_residual(aux[0], aux[2], field)))
         model._last_linearize = None
@@ -549,7 +548,7 @@ def test_vacuum_free_boundary_agrees_with_nestor():
     problem = opt.make_problem(model.fixed, objective_terms=[(lambda state, runtime: model.rows_at(
         state, runtime, field), 0.0, 1.0)], weight_semantics="residual", max_mode=model.max_mode,
         vary_major_radius=True, jacobian_batch_size=8, device=jax.devices()[0], restart_from=model.seed[0])
-    J = model.linearize(model.x0, (*model.seed, model.params0, True), field)[0]
+    J = model.linearize(model.x0, (*model.seed, model.params0), field)[0]
     J_upstream = np.asarray(problem.residual_jac(model.x0))
     assert np.linalg.norm(J - J_upstream) < 1e-9 * np.linalg.norm(J_upstream)
     again = fvc.solve_free_boundary_three_terms(inp, config, external_field=field, previous=fit)
@@ -578,12 +577,12 @@ def test_finite_beta_free_boundary_removes_the_sheet_current():
 @needs_vc
 @pytest.mark.full
 @pytest.mark.parametrize("labelling, label_weight", [
-    ("anchored", None), ("equal_arc", 1e-3), ("equal_arc", 1e-2), ("flat_arc", None)])
+    ("anchored", None), ("equal_arc", 1e-3), ("flat_arc", None)])
 def test_three_term_problem_gradients_match_resolved_differences(labelling, label_weight):
     """Design gradients by the implicit function theorem of the boundary fit, against re-solved central
     differences, along a plasma coordinate (PHIEDGE) and a field coordinate (the coil currents), for the start
-    labelling, for equal arc at its default weight and at 1e-2 (tight fits: at a small weight the labelling is
-    pinned only to the fit's tolerance), and for flat arc (the fit's flat directions held at the seed fit's arc
+    labelling, for equal arc at its default weight (tight fits: at a small weight the labelling is pinned only to
+    the fit's tolerance), and for flat arc (the fit's flat directions held at the seed fit's arc
     distribution, its rows zero there)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
@@ -688,30 +687,48 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
 
 @needs_vc
 @pytest.mark.full
-def test_flat_arc_gauge_refresh_on_its_share():
-    """``gauge_max_share``: the gauge is set again only at an accepted fit where its rows' share of the cost
-    exceeds the bound, and vanishes there."""
+def test_flat_arc_follow_over_accepted_steps():
+    """Flat arc with follow, as the single stage runs it (``gauge_refresh=1, gauge_release=True``), over three
+    accepted steps: a trial is its no-label fit, so accepting it changes none of its values; the gauge is set again
+    at every accepted fit (its rows vanish there); the interface residuals stay at the fit's floor; a trial's values
+    are those of the no-label problem at the same design; and the gradient after the last step matches re-solved
+    central differences along both coordinates."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
-    problem = ThreeTermsFreeBoundaryProblem.from_loss(
-        inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-        field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
-        plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
-        config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
-        boundary_ftol=1e-10, boundary_max_nfev=80, gauge_max_share=1.0)
-    x1 = problem.x0 + 2e-3 * np.eye(2)[1]
-    share = problem.gauge_share(x1)
-    assert 0.0 < share < 1.0
-    problem.accept_x(x1)  # below the bound: kept
-    assert problem.stats["gauge_sets"] == 1
-    problem.gauge_max_share = 0.5 * share
-    problem.accept_x(x1)  # above it: set again at x1's fit
-    assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
-    state, params = problem.state(x1)
-    x = jnp.asarray(x1)
-    rows = problem.model.rows(state, params, problem.field(x))
-    assert problem._field_jvp(state, params, x, jnp.ones(2), problem.model._gauge).shape == rows.shape
-    problem.value_and_grad(x1 + 1e-3 * np.eye(2)[0])
+
+    def build(labelling, **gauge):
+        return ThreeTermsFreeBoundaryProblem.from_loss(
+            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
+            field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+            plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
+            quantities=(opt.mean_iota,),
+            config=vj.ThreeTermsConfig(labelling=labelling, nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+            boundary_ftol=1e-10, boundary_max_nfev=80, **gauge)
+
+    problem = build("flat_arc", gauge_refresh=1, gauge_release=True)
+    values = lambda x: np.r_[problem.fun(x), problem.constraint_values(x)]  # noqa: E731
+    floor = problem.boundary_residual(problem.x0)
+    x = problem.x0
+    for step, dx in enumerate(([0.0, 2e-3], [2e-3, 1e-3], [-1e-3, 2e-3]), start=1):
+        problem.value_and_grad(x)  # as an optimizer: the accepted point's gradient before its next trial
+        x = x + np.asarray(dx)
+        before = values(x)
+        assert problem._cache[x.tobytes()]["released"]
+        assert not problem.accept_x(x)  # already its no-label fit: nothing re-fitted
+        np.testing.assert_allclose(values(x), before, rtol=1e-12, atol=0.0)
+        assert problem.stats["gauge_sets"] == step + 1 and problem.gauge_share(x) < 1e-8
+        residual = problem.boundary_residual(x)
+        for name in ("normal", "pressure", "sheet_current"):
+            assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
+    assert "gauge_release_failures" not in problem.stats
+    free = build("none")  # the same design without any labelling rows
+    np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
+    _, grad = problem.value_and_grad(x)
+    jac = problem.constraint_jac(x)
+    for k, h in ((0, 2e-3), (1, 2e-3)):
+        e = h * np.eye(2)[k]
+        fd = (values(x + e) - values(x - e)) / (2 * h)
+        np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(values(x)[0])))
 
 
 def _lp_beta0p5_profiles(inp):
@@ -767,7 +784,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     fit = fvc.solve_free_boundary_three_terms(
         inp, vj.ThreeTermsConfig(labelling="anchored", bootstrap=profiles, jacobian_ftol=None), external_field=field)
     model = fit.model
-    state, mask, params, _ = fit.aux
+    state, mask, params = fit.aux
     assert fit.x.size == model.n_boundary + 3 + 24
     assert model.bootstrap_residual(state, params) < 1e-2
     assert fit.boundary_residual.sheet_current < 2e-3
@@ -784,7 +801,7 @@ def test_bootstrap_current_solved_with_the_free_boundary():
     J = model.linearize(fit.x, fit.aux, field)[0]
     for k in (0, model.n_boundary + 3, model.n_boundary + 15):
         h = 1e-5 * model.x_scale[k]
-        rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field, tight=True)[0]
+        rows = [model.evaluate(fit.x + sign * h * np.eye(fit.x.size)[k], params, field)[0]
                 for sign in (1, -1)]
         fd = (rows[0] - rows[1]) / (2 * h)
         assert np.linalg.norm(J[:, k] - fd) < 1e-4 * np.linalg.norm(fd), k
@@ -800,7 +817,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
     model = fvc.ThreeTermsModel(inp, bootstrap=profiles, fixed_boundary=True)
     assert model.n_boundary == 0 and model.x0.size == 3 + 24  # three knots inside s_1, then the half mesh
     out = model.solve_boundary(model.params0, None, ftol=1e-10)
-    state, _, params, _ = out["aux"]
+    state, _, params = out["aux"]
     assert model.bootstrap_residual(state, params) < 1e-4
     # a fixed point of the Picard map: Redl's current on the model's state is the model's current
     runtime = model._im.runtime_from_params(params, model.cfg)
@@ -813,7 +830,7 @@ def test_fixed_boundary_bootstrap_model_matches_picard():
                                rtol=0, atol=4e-2 * np.max(np.abs(picard.input.ac_aux_f)))
     J = model.linearize(out["x"], out["aux"], None)[0]
     k, h = 5, 1e-5 * model.x_scale[5]
-    rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None, tight=True)[0]
+    rows = [model.evaluate(out["x"] + sign * h * np.eye(out["x"].size)[k], params, None)[0]
             for sign in (1, -1)]
     fd = (rows[0] - rows[1]) / (2 * h)
     assert np.linalg.norm(J[:, k] - fd) < 1e-5 * np.linalg.norm(fd)
@@ -909,53 +926,3 @@ def test_three_term_on_the_cth_like_deck(case):
               f"(VMEC2000 {1e3 * drift_ref:.2f} mm)")
         assert bn < 5e-4 and bn < bn_ref
         assert drift < 1e-3  # absolute: at 5 x 4 modes VMEC2000's boundary drifts a little less (see above)
-
-
-def test_a_trial_is_its_tight_solve_or_is_rejected():
-    """A trial's values are of its state at the deck's tolerance; where that solve leaves the trial-tolerance state
-    (an interface residual moved by more than its tolerance) the trial is no equilibrium."""
-    from vmex.core import freeboundary_three_terms_problem as problem_module
-
-    residuals = {"trial": (4e-5, 4e-5, 6e-5), "same": (4.1e-5, 4e-5, 6e-5), "left": (2.4e-3, 5e-4, 2.2e-3)}
-
-    class Model:
-        tight = "same"
-
-        def evaluate(self, x, params, field, seed=None, tight=False):
-            assert tight and seed == "trial"
-            return None if self.tight is None else ("rows", (self.tight, "mask", params, True))
-
-        def boundary_residual(self, state, params, field):
-            return fvc.BoundaryResidual(*residuals[state])
-
-    problem = object.__new__(problem_module.ThreeTermsFreeBoundaryProblem)
-    problem.model, problem.stats = Model(), dict(boundary_evaluations=0)
-    fit = dict(x=np.zeros(2), rows="trial rows", aux=("trial", "mask", "params", False))
-    assert problem._tightened(fit, "params", None) == ("rows", ("same", "mask", "params", True))
-    assert problem.stats["tight_shift"] == pytest.approx(1e-6 / 6e-5)
-    problem.model.tight = "left"
-    assert problem._tightened(fit, "params", None).startswith("the trial state is not its tight solve's")
-    problem.model.tight = None
-    assert problem._tightened(fit, "params", None) == "the trial state does not converge to the deck's tolerance"
-
-
-def test_a_forward_solve_ends_where_its_force_residual_stalls():
-    """The stall rule: below its limit, a residual that has not halved in 20 iterations a surface ends the solve; a
-    falling residual, a plateau above the limit and a short history do not."""
-    from vmex.core import implicit as im
-
-    ns = 10
-    span = im._STALL_ITERATIONS * ns
-
-    def carry(history):
-        trajectory = np.zeros((history.size + 50, 6))
-        trajectory[:history.size, 1] = history
-        return SimpleNamespace(iteration=history.size, trajectory=trajectory)
-
-    falling = 1e-9 * 0.5 ** (np.arange(span + 400) / 40.0)  # halves every 40 iterations
-    floor = np.r_[falling[:300], np.full(span + 200, falling[299])]
-    probe = im._stall_probe(0.5, ns)
-    assert not probe(carry(falling)) and not probe.fired
-    assert probe(carry(floor)) and probe.fired
-    assert not im._stall_probe(0.5, ns)(carry(np.full(span + 300, 1e-6)))
-    assert not im._stall_probe(0.5, ns)(carry(floor[:span]))

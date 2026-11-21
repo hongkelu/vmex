@@ -88,7 +88,7 @@ SAVE_EVERY = 1                     # accepted steps between saved coils, WOUT an
 MAX_ITERATIONS = None              # VMEC iteration cap of every solve (None: the deck's)
 VC_GRID = 48                       # virtual-casing grid points per field period, each angle
 # Virtual-casing singular quadrature (NT, NP); None: (4 nfp VC_GRID, 2 VC_GRID), 384 x 96 for nfp 2 (grid x grid
-# leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel).
+# leaves a ~3e-4 tangential plasma-field error; see ThreeTermsModel).
 QUADRATURE = None
 CHUNK = 8                          # Jacobian columns per batch (memory)
 TRIAL_FTOL = 1e-3                  # relative cost change at which a trial's boundary steps stop
@@ -114,7 +114,7 @@ BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, 
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
 CURRENT_KNOTS, CURRENT_STEP = 8, 0.05   # step relative to the largest knot value and to |CURTOR|
-# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermFreeBoundaryModel
+# Redl cases: the current is no design variable but solved with every equilibrium (ThreeTermsModel
 # bootstrap=, both arms), Redl-self-consistent on every half-grid surface, with I'(0) = 0 (a quasisymmetric bootstrap
 # current density vanishes on the axis with the trapped fraction, f_t ~ eps^(1/2)).
 BOOTSTRAP_IN_SOLVE = False
@@ -146,8 +146,7 @@ MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
 CLEARANCE_SMOOTH = MIRROR_SMOOTH = None
 # flat_arc labelling: the gauge is set again at every accepted fit, and where its rows' share of a fit's cost
 # exceeds 1%, after a re-fit without the gauge rows from the reused Jacobian alone.
-FLAT_ARC_GAUGE = dict(gauge_release=True, gauge_refresh=1, gauge_release_rounds=0, gauge_max_share=0.01)
-TRIAL_FORWARD_FTOL = 1e-11        # force residual of the trials' equilibria (an accepted point is re-solved tight)
+FLAT_ARC_GAUGE = dict(gauge_release=True, gauge_refresh=1)
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -431,7 +430,7 @@ def bootstrap_input(inp, beta, device):
     if BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl":
         model = ThreeTermsModel(inp, bootstrap=profiles, bootstrap_helicity=REDL_HELICITY, fixed_boundary=True)
         current = model.solve_boundary(model.params0, None, ftol=1e-10, max_nfev=30)
-        state, _, params, _ = current["aux"]
+        state, _, params = current["aux"]
         print(f"Redl current on its {current['x'].size} knots: max relative mismatch "
               f"{model.bootstrap_residual(state, params):.1e}", flush=True)
         inp = model.bootstrap.deck_with(model.fixed, current["x"])
@@ -927,7 +926,7 @@ def main(argv=None):
         parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
         config=vj.ThreeTermsConfig(labelling=args.labelling, nphi=VC_GRID, ntheta=VC_GRID, chunk=CHUNK,
                                    quadrature=QUADRATURE or (4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID),
-                                   trial_ftol=TRIAL_FORWARD_FTOL, bootstrap=profiles,
+                                   bootstrap=profiles,
                                    bootstrap_helicity=REDL_HELICITY),
         boundary_ftol=TRIAL_FTOL, boundary_max_residual=MAX_BOUNDARY_RESIDUAL,
         boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
@@ -1049,7 +1048,6 @@ def main(argv=None):
                                            fsqr=0.0, fsqz=0.0, fsql=0.0).equif)
         s_full = np.linspace(0.0, 1.0, equif.size)
         core = np.abs(equif[(s_full > 0.1) & (s_full < 0.9)])
-        stalled = (im._SOLVE_STATS.get(model.cfg) or {}).get("stalled_solves", 0)
         row = dict(step=problem.accepted_step,
                    qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2,
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
@@ -1066,7 +1064,7 @@ def main(argv=None):
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
                    bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
                    force_balance_rms=float(np.sqrt(np.mean(core**2))), force_balance_max=float(core.max()),
-                   force_balance=equif.tolist(), stalled_solves=int(stalled),
+                   force_balance=equif.tolist(),
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
@@ -1094,7 +1092,6 @@ def main(argv=None):
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
               + f"B.n={res.normal:.1e} (max {res.normal_max:.1e}) pressure={res.pressure:.1e} K={res.sheet_current:.1e} "
               f"force={row['force_balance_rms']:.1e}/{row['force_balance_max']:.1e} "
-              + (f"stalled={row['stalled_solves']} " if row["stalled_solves"] else "")
               + f"label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
               + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")

@@ -251,9 +251,6 @@ def _arc_label(inp):
     return label
 
 
-#: The model's forward solves end where their force residual stalls (:attr:`~vmex.core.implicit.ImplicitConfig.stall`).
-FORWARD_STALL = 0.5
-
 
 #: The flat-arc gauge (``labelling="flat_arc"``): the boundary directions it holds are those of the fit's Jacobian, in
 #: column-scaled coordinates, with a singular value below :data:`GAUGE_TAU` times the largest and a normal share (RMS
@@ -312,8 +309,7 @@ class ThreeTermsConfig:
     (use ``(4 nfp nphi, 2 ntheta)``); ``net_current_weight`` scales the net-poloidal-current row.  The boundary
     Fourier coefficients up to ``max_mode`` (default: all) and ``RBC(0,0)`` are the unknowns.  A trust region
     with exact implicit Jacobians runs to a relative cost change of ``jacobian_ftol``, then Levenberg-Marquardt
-    steps with its last Jacobian go on to ``ftol`` (``max_nfev`` evaluations at most); ``trial_ftol`` solves the
-    trial equilibria to a looser force residual (each is re-solved to the deck's before it is differentiated)
+    steps with its last Jacobian go on to ``ftol`` (``max_nfev`` evaluations at most)
     and ``chunk`` bounds the Jacobian columns per batch.  ``success`` also requires every RMS interface residual
     at or below ``max_residual``.  ``bootstrap`` (:class:`~vmex.core.bootstrap.KineticProfiles`, with
     ``bootstrap_helicity`` and ``bootstrap_weight``) solves a Redl-self-consistent current profile together with
@@ -337,7 +333,6 @@ class ThreeTermsConfig:
     ftol: float = 1e-4
     jacobian_ftol: float | None = 1e-2
     max_nfev: int = 60
-    trial_ftol: float | None = None
     chunk: int = 8
     max_residual: float = ACCEPTED_RESIDUAL
     bootstrap: Any = field(default=None, repr=False)
@@ -373,7 +368,7 @@ class ThreeTermsConfig:
                     weights=tuple(self.weights), net_current_weight=self.net_current_weight,
                     label_weight=self.resolved_label_weight,
                     labelling=self.labelling if self.resolved_label_weight else "none",
-                    quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
+                    quadrature=self.quadrature, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
                     bootstrap_weight=self.bootstrap_weight)
 
@@ -470,7 +465,7 @@ def solve_free_boundary_three_terms(
     out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=config.ftol,
                                jacobian_ftol=config.ftol if config.jacobian_ftol is None else config.jacobian_ftol,
                                max_nfev=config.max_nfev, refresh_on_stall=True, verbose=verbose)
-    state, _, params, _ = out["aux"]
+    state, _, params = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
     converged = bool(out["converged"])
@@ -516,9 +511,7 @@ class ThreeTermsModel:
     :meth:`solve`; ``rows(state, params, field)`` and ``rows_at(state,
     runtime, field)`` are the traceable rows themselves.
 
-    ``trial_ftol`` solves the trial equilibria of the boundary steps to a looser
-    force residual (each is re-solved to the deck's before it is
-    differentiated); ``quadrature = (quad_nt, quad_np)`` fixes the singular
+    ``quadrature = (quad_nt, quad_np)`` fixes the singular
     quadrature instead of planning it to ``digits`` (``quad_nt`` a multiple of
     ``nfp * nphi``), whose error estimate alone can exhaust a GPU on a strongly
     shaped boundary.  Use ``(4 nfp nphi, 2 ntheta)``: with ``quad_np = ntheta``
@@ -548,7 +541,7 @@ class ThreeTermsModel:
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
-                 trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
+                 quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
                  fixed_boundary=False, labelling="equal_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
@@ -579,16 +572,7 @@ class ThreeTermsModel:
 
         def configure(deck):
             cfg = im.make_config(deck, multigrid=True, hot_restart=True)
-            self.cfg = cfg = im._canonical_config(replace(cfg, device=device, stall=FORWARD_STALL))
-            # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
-            # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
-            self.cfg_trial = cfg
-            if trial_ftol is not None:
-                ftols = np.array(deck.ftol_array, dtype=float)
-                ftols[-1] = max(float(trial_ftol), ftols[-1])
-                loose = im.make_config(replace(deck, ftol_array=ftols), multigrid=True, hot_restart=True)
-                self.cfg_trial = im._canonical_config(replace(loose, device=device, stall=FORWARD_STALL))
-                im._template_runtime(self.cfg_trial)
+            self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
             self.params0 = im.params_from_input(deck, device=device)
             im._template_runtime(cfg)
 
@@ -622,8 +606,7 @@ class ThreeTermsModel:
             self.fixed = replace(self.fixed, ns_array=last(fixed.ns_array), ftol_array=last(fixed.ftol_array),
                                  niter_array=last(fixed.niter_array))
             configure(self.fixed)
-            for cfg in (self.cfg, self.cfg_trial):
-                im._HOT_CACHE[cfg] = state
+            im._HOT_CACHE[self.cfg] = state
         self.seed = (state, mask)
         if not self.fixed_boundary:
             self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
@@ -793,30 +776,15 @@ class ThreeTermsModel:
                                 state.R_cos.dtype)
         return im._block_bands(cfg, params, state, mask, z=state) if large else None
 
-    def solve(self, params, seed=None, tight=True):
-        """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
-
-        ``tight=False`` solves to the trial tolerance, without the Newton refinement that certifies a state for
-        differentiation (:meth:`linearize` re-solves tight first).
-        """
-        im, cfg = self._im, (self.cfg if tight else self.cfg_trial)
+    def solve(self, params, seed=None):
+        """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified."""
+        im, cfg = self._im, self.cfg
         if seed is not None:
             im._PERTURB_SEED[cfg] = seed
         params_np = jax.tree.map(lambda a: np.asarray(a, dtype=np.float64), params)
-        if tight:
-            state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
-            if int(status) != 0:
-                return None
-        else:  # a trial point is not differentiated: the forward solve alone, without the Newton refinement
-            with im._device_context(cfg):
-                try:
-                    state, mask = im._host_solve_and_mask_impl(cfg, params_np, refine=False)
-                except (VmecError, RuntimeError):  # RuntimeError: the relayed sentinel of a VmecError
-                    return None
-            result = im._LAST_SOLVE[cfg][1]
-            fsq = float(result.fsqr) + float(result.fsqz) + float(result.fsql)
-            if not (bool(result.converged) or fsq / cfg.ftol <= cfg.max_fsq_ratio):
-                return None
+        state, mask, status, _, _ = im._host_solve_and_mask_status(cfg, params_np)
+        if int(status) != 0:
+            return None
         place = lambda tree: jax.device_put(jax.tree.map(jnp.asarray, tree), cfg.device)  # noqa: E731
         return place(state), place(mask)
 
@@ -830,19 +798,17 @@ class ThreeTermsModel:
             state, self._im.runtime_from_params(params, self.cfg), params))
         return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
 
-    def evaluate(self, x, params, field, seed=None, tight=False):
-        """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
-        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
+    def evaluate(self, x, params, field, seed=None):
+        """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x))``, or ``None`` if the solve failed."""
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
             seed = self._predict(state_ref, mask_ref, dz, jnp.asarray(np.asarray(x) - x_ref), params_x)
-        tight = tight or self.cfg_trial is self.cfg
-        solved = self.solve(params_x, seed, tight)
+        solved = self.solve(params_x, seed)
         if solved is None:
             return None
         state, mask = solved
-        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x, tight)
+        return np.asarray(self._rows(state, params_x, field)), (state, mask, params_x)
 
     def boundary_directions(self, params, x):
         """``ImplicitParams`` tangents of the boundary coordinates, stacked."""
@@ -922,13 +888,12 @@ class ThreeTermsModel:
     def linearize(self, x, aux, field, extra=None):
         """Columns of the interface rows along the boundary coordinates (and the ``extra`` parameter tangents).
 
-        A trial state is first solved to the deck's tolerance (from itself). Returns ``(J, dz, params_batch, aux)``:
-        the Jacobian, the projected state responses and parameter tangents of its columns, and the (tight) state
-        they belong to.  The responses also seed the next trials (first-order predicted states).  A call at the
-        boundary, plasma parameters and field of the latest one returns its result (without ``extra``'s columns
-        when not asked for): a polish that stalls asks again for the Jacobian it was given.
+        Returns ``(J, dz, params_batch, aux)``: the Jacobian, the projected state responses and parameter tangents of
+        its columns, and the state they belong to.  The responses also seed the next trials (first-order predicted
+        states).  A call at the boundary, plasma parameters and field of the latest one returns its result (without
+        ``extra``'s columns when not asked for).
         """
-        state, mask, params_x, tight = aux
+        state, mask, params_x = aux
         key = _fingerprint(x, params_x, _external_field(field))
         extra_key = None if extra is None else _fingerprint(extra)
         last = self._last_linearize
@@ -940,12 +905,6 @@ class ThreeTermsModel:
                 J = J[:, :n]
                 dz, batch = jax.tree.map(lambda a: a[:n], dz), jax.tree.map(lambda a: a[:n], batch)
             return J, dz, batch, aux
-        if not tight:
-            solved = self.solve(params_x, seed=state)
-            if solved is None:
-                raise RuntimeError("the trial state does not converge to the deck's tolerance")
-            state, mask = solved
-            aux = (state, mask, params_x, True)
         directions = self.boundary_directions(params_x, x)
         nb = self.n_boundary
         # Boundary, bootstrap-current and extra directions each in a program of its own: one batch of every
@@ -989,7 +948,7 @@ class ThreeTermsModel:
         step reduces the cost, or they end above ``target_cost``, a trust region with fresh Jacobians runs to
         ``jacobian_ftol`` and the reuse steps finish to ``ftol`` (see :func:`solve_free_boundary_three_terms`);
         with ``refresh_on_stall`` a finish that stalled on a stale Jacobian retries once with a fresh one there.
-        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params, tight), ``nfev``,
+        Returns a dict with ``x``, ``rows``, ``jacobian``, ``aux`` (state, mask, params), ``nfev``,
         ``njev``, ``accepted`` and ``converged``.
         """
         import scipy.optimize

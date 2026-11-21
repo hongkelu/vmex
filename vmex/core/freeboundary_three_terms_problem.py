@@ -1,10 +1,9 @@
 """Single-stage optimization at the three-term free boundary: a loss and constraint rows of coils and plasma
-parameters, with exact design gradients (:class:`ThreeTermsFreeBoundaryProblem`).
+parameters, with their design gradients (:class:`ThreeTermsFreeBoundaryProblem`).
 
 A trial is the boundary fit of its design, warm-started from the first-order prediction of the latest linearized
-point and accepted when every interface residual is within ``boundary_max_residual``; its gradient re-solves it to
-the deck's tolerance, polishes it once with its own Jacobian and differentiates it (the implicit function theorem
-of the boundary fit).
+point and accepted when every interface residual is within ``boundary_max_residual``; its gradient polishes the fit
+once with its own Jacobian and differentiates it (the implicit function theorem of the boundary fit).
 """
 
 from __future__ import annotations
@@ -25,12 +24,6 @@ from .problem import FunctionProblem
 #: The gradient's polish of a trial: its own Jacobian, to this relative cost change in at most this many evaluations,
 #: kept when it cuts the cost below this fraction.
 GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP = 1e-4, 20, 0.9
-#: A trial is its state solved to the deck's tolerance: where that solve moves an interface residual of the trial
-#: tolerance's state by more than the largest of them and by more than the floor (in units of ``|B|``), the
-#: trial-tolerance state was no equilibrium and the trial is rejected.  The floor is what the two tolerances differ
-#: by on one equilibrium: the deck-tolerance solve of a fit of 1e-5 has a normal field of 8e-5 (QI, 16 x 16 modes),
-#: which the accepted fit's polish removes; a state of another branch moves by eight times the floor.
-TRIAL_DEPARTURE, TRIAL_DEPARTURE_FLOOR = 1.0, 1e-4
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -45,13 +38,6 @@ def _nonlinear_constraint(values, jacobian, lower, upper, scales):
                                jac=lambda x: np.asarray(jacobian(x)) / scale[..., None])
 
 
-#: A gauge release continues from a fresh Jacobian at most this many times, while each round still lowers the fit's
-#: cost by more than GAUGE_RELEASE_GAIN: the reused Jacobian is only good near the accepted fit, and the flat
-#: directions it releases curve away from it.
-GAUGE_RELEASE_ROUNDS = 6
-GAUGE_RELEASE_GAIN = 0.02
-
-
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
 
@@ -64,8 +50,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     the trial's fitted boundary itself (INDATA arrays, the model's boundary coordinates), such as a
     coil-plasma clearance.  Every trial is the K = 0 boundary
     of the field and plasma parameters of ``x`` (:class:`ThreeTermsModel`), warm-started from the
-    first-order prediction of the latest linearized solution, and is its state solved to the deck's tolerance: a trial without a
-    solution, or whose trial-tolerance state that solve leaves, raises :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
+    first-order prediction of the latest linearized solution: a trial without a solution raises
+    :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
     implicit function theorem of the boundary least squares,
 
         dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db,
@@ -83,7 +69,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def from_loss(cls, inp, loss, x0, *, field_from_parameters, plasma_from_parameters=None, scales=None, names=None,
                   quantities=(), parameter_quantities=(), boundary_quantities=(), config=None, boundary_ftol=1e-3,
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
-                  gauge_max_share=None, gauge_release=False, gauge_release_rounds=GAUGE_RELEASE_ROUNDS):
+                  gauge_release=False):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
         ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
@@ -93,18 +79,15 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         labelling's reference and the quadrature plan's boundary) and resumes at its final WOUT.
 
         ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
-        quadrature, trial tolerance and bootstrap current of the model; its fit tolerances, ``start`` and
+        quadrature and bootstrap current of the model; its fit tolerances, ``start`` and
         ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's
-        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations; each gradient first re-solves its trial to
-        the deck's tolerance and polishes it with its own Jacobian.  With ``boundary_max_residual`` a fit that
+        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations;
+        each gradient first polishes its trial's fit with its own Jacobian.  With ``boundary_max_residual`` a fit that
         ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
         is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, ``gauge_refresh=K`` sets it again
-        at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), and ``gauge_max_share`` whenever the gauge
-        rows' share of the accepted fit's cost exceeds it, so it follows the design: its rows vanish there, so no value
-        at the accepted point changes.  With ``gauge_release`` each of those refreshes first re-fits the accepted
-        boundary without the gauge rows (the no-label fit), so the labelling does not accumulate: the accepted point's
-        values then become the no-label fit's; that fit continues from at most ``gauge_release_rounds`` fresh Jacobians
-        while a round lowers its cost by more than the fraction :data:`GAUGE_RELEASE_GAIN`.
+        at the accepted fit every ``K`` accepted steps (:meth:`accept_x`), so it follows the design: its rows vanish
+        there, so no value at the accepted point changes.  With ``gauge_release`` every trial is its fit without the
+        gauge rows (the no-label fit, continued from its fit under the gauge), so the labelling does not accumulate.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -119,16 +102,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                    boundary_quantities=tuple(boundary_quantities), boundary_ftol=boundary_ftol,
                    boundary_max_nfev=boundary_max_nfev, boundary_max_residual=boundary_max_residual,
                    boundary_start=boundary_start, gauge_refresh=gauge_refresh,
-                   gauge_max_share=gauge_max_share, gauge_release=gauge_release, gauge_release_rounds=gauge_release_rounds)
+                   gauge_release=gauge_release)
 
     def __init__(self, model, loss, x0, *, field_from_parameters, plasma_from_parameters, scales, names, quantities,
                  parameter_quantities, boundary_quantities=(), boundary_ftol, boundary_max_nfev,
-                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0, gauge_max_share=None,
-                 gauge_release=False, gauge_release_rounds=GAUGE_RELEASE_ROUNDS):
+                 boundary_max_residual=None, boundary_start=None, gauge_refresh=0,
+                 gauge_release=False):
         im = model._im
-        self.gauge_refresh, self.gauge_max_share = int(gauge_refresh), gauge_max_share
-        self.gauge_release = bool(gauge_release)
-        self.gauge_release_rounds = int(gauge_release_rounds)
+        self.gauge_refresh, self.gauge_release = int(gauge_refresh), bool(gauge_release)
         self.model = model
         self.field = lambda x: model.gauged(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
@@ -216,10 +197,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats[name] = self.stats.get(name, 0) + amount
 
     def _released(self, x, sol):
-        """The no-label fit from ``sol``, ``x``'s fit under the gauge: its record, or ``None`` where that fit fails
-        or its state does not tighten.  It reuses the Jacobian ``sol`` has, else the one its fit used (the last
-        accepted fit's): steps of one evaluation, then at most ``gauge_release_rounds`` fresh Jacobians.  The model
-        is left as it was."""
+        """The no-label fit from ``sol``, ``x``'s fit under the gauge: its record, or ``None`` where that fit fails.  Its
+        steps reuse the Jacobian ``sol`` has, else the one its fit used (the last accepted fit's).  The model is left
+        as it was."""
         model, xj = self.model, jnp.asarray(x)
         gauge, saved = model._gauge, [getattr(model, name) for name in self._SAVED_MODEL]
         J = sol.get("J")
@@ -235,21 +215,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         try:
             fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
-            for _ in range(self.gauge_release_rounds if J is not None else 0):  # a fresh Jacobian where the reused one ended
-                J = np.array(model.linearize(fit["x"], fit["aux"], field)[0])[:, :model.x0.size]
-                more = model.solve_boundary(self._params_at(xj), field, x0=fit["x"], jacobian=J, ftol=self.boundary_ftol,
-                                            max_nfev=self.boundary_max_nfev)
-                gained = more["rows"] @ more["rows"] < (1.0 - GAUGE_RELEASE_GAIN) * (fit["rows"] @ fit["rows"])
-                fit = dict(more, nfev=fit["nfev"] + more["nfev"], njev=fit["njev"] + 1 + more["njev"])
-                if not gained:
-                    break
             fitted = self._fits(fit, field)
-            if fitted and not fit["aux"][3]:  # as a trial: the released fit's state at the deck's tolerance
-                tight = self._tightened(fit, self._params_at(xj), field)
-                fitted = not isinstance(tight, str)
-                if fitted:
-                    fit = dict(fit, rows=tight[0], aux=tight[1])
-            state, mask, params, _ = fit["aux"]
+            state, mask, params = fit["aux"]
             values = np.asarray(self._rows(state, params, xj)) if fitted else None
         except (VmecError, RuntimeError):
             fitted = False
@@ -261,9 +228,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return None
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count("gauge_releases")
-        self._count("gauge_release_warm", int(J is not None))  # how the releases went: evaluations and Jacobians
-        self._count("gauge_release_nfev", int(fit["nfev"]))
-        self._count("gauge_release_njev", int(fit["njev"]))
         return dict(fit, state=state, mask=mask, params=params, values=values, released=True)
 
     def _set_gauge(self, x):
@@ -302,7 +266,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
             for memo in (self.model._im._LAST_SOLVE, self.model._im._LAST_REFINED):
                 memo.pop(self.model.cfg, None)
-            evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state, tight=True)
+            evaluated = self.model.evaluate(self._start, params, field, seed=self._start_state)
             if evaluated is not None:
                 fit = dict(x=self._start, rows=evaluated[0], aux=evaluated[1], nfev=1)
                 if not self._fits(fit, field):
@@ -329,12 +293,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             if released is not None:
                 self._cache[key] = released
                 return released
-        if not fit["aux"][3]:  # the fit's state at the deck's tolerance: the state its values and gradient are of
-            tight = self._tightened(fit, params, field)
-            if isinstance(tight, str):
-                return self._reject(key, tight)
-            fit = dict(fit, rows=tight[0], aux=tight[1])
-        state, mask, params_b, _ = fit["aux"]
+        state, mask, params_b = fit["aux"]
         try:  # rows with solves of their own (a vacuum iota, say) can fail where the boundary fit did not
             values = np.asarray(self._rows(state, params_b, jnp.asarray(x)))
         except (VmecError, RuntimeError) as error:
@@ -342,34 +301,11 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self._cache[key] = dict(fit, state=state, mask=mask, params=params_b, values=values)
         return self._cache[key]
 
-    def _tightened(self, fit, params, field):
-        """``fit``'s rows and state solved to the deck's tolerance from its trial-tolerance state, or the reason it
-        is no trial: no such solution, or one whose interface residuals are not the trial state's
-        (:data:`TRIAL_DEPARTURE`)."""
-        model = self.model
-        state, _, params_b, _ = fit["aux"]
-        try:
-            evaluated = model.evaluate(fit["x"], params, field, seed=state, tight=True)
-        except (VmecError, RuntimeError):
-            evaluated = None
-        if evaluated is None:
-            return "the trial state does not converge to the deck's tolerance"
-        self.stats["boundary_evaluations"] += 1
-        terms = lambda r: np.array([r.normal, r.pressure, r.sheet_current])  # noqa: E731
-        before = terms(model.boundary_residual(state, params_b, field))
-        after = terms(model.boundary_residual(evaluated[1][0], evaluated[1][2], field))
-        moved = float(np.max(np.abs(after - before)))
-        self.stats["tight_shift"] = moved / float(np.max(before))
-        if moved > max(TRIAL_DEPARTURE * float(np.max(before)), TRIAL_DEPARTURE_FLOOR):
-            return (f"the trial state is not its tight solve's: interface residual {np.max(before):.1e} -> "
-                    f"{np.max(after):.1e}")
-        return evaluated
-
     def _fits(self, fit, field):
         """Every interface residual of ``fit`` within ``boundary_max_residual`` (when set)."""
         if self.boundary_max_residual is None:
             return True
-        state, _, params_b, _ = fit["aux"]
+        state, _, params_b = fit["aux"]
         residual = self.model.boundary_residual(state, params_b, field)
         return max(residual.normal, residual.pressure, residual.sheet_current) <= self.boundary_max_residual
 
@@ -391,45 +327,45 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     _SAVED_MODEL = ("_gauge", "_last_linearize", "_linearization", "_radius")
 
     def _fit_jacobian(self, x, sol):
-        """``sol``'s Jacobian (cached until its gradients are) once it is re-solved tight and its fit polished.
+        """``sol``'s Jacobian (cached until its gradients are) once its fit is polished.
 
-        The record's values become those of the tight (or polished) state, so a value asked for after its gradient is
-        that state's."""
+        The record's values become those of the polished state, so a value asked for after its gradient is that
+        state's."""
         if "J" in sol:
             return sol["J"]
         model, xj = self.model, jnp.asarray(x)
         field, nb = self.field(xj), model.x0.size
 
-        def tight():
+        def linearized():
             extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
             try:
                 J, _, _, aux = model.linearize(sol["x"], sol["aux"], field, extra=extra)
-            except RuntimeError as error:  # the trial's state does not tighten to the deck's tolerance
+            except RuntimeError as error:  # no linearization at this state
                 raise TrialRejected(str(error)) from error
-            state, mask, params, _ = aux
+            state, mask, params = aux
             sol.update(aux=aux, state=state, mask=mask, params=params,
                        rows=np.asarray(model._rows(state, params, field)),
                        values=np.asarray(self._rows(state, params, xj)))
             self.stats["linearizations"] += 1
             return J
 
-        J = tight()
+        J = linearized()
         try:
             polished = model.solve_boundary(
                 self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=GRADIENT_POLISH_FTOL,
                 max_nfev=GRADIENT_POLISH_NFEV)
-        except (VmecError, RuntimeError):  # no polish: the tightened fit's own Jacobian stands
+        except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
             polished = None
         if polished is not None:
             self.stats["boundary_evaluations"] += polished["nfev"]
             if polished["rows"] @ polished["rows"] < GRADIENT_POLISH_KEEP * sol["rows"] @ sol["rows"]:
                 sol.update(x=polished["x"], aux=polished["aux"])
-                J = tight()
+                J = linearized()
         sol["J"] = J
         return J
 
     def _linearize(self, x, sol):
-        """Every row's design gradient at ``sol`` (cached), at its tight, polished fit (``_fit_jacobian``)."""
+        """Every row's design gradient at ``sol`` (cached), at its polished fit (``_fit_jacobian``)."""
         if "gradients" in sol:
             return sol["gradients"]
         model, xj = self.model, jnp.asarray(x)
@@ -489,17 +425,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return self.stats.get("gauge_releases", 0) > releases
 
     def _promote(self, x):
-        """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one or the gauge rows'
-        share of its cost is above ``gauge_max_share``."""
+        """Refresh the gauge at ``x``'s fit (cached) where the next accepted step is due one."""
         sol = self._cache[x.tobytes()]
-        reset = self.model._gauge is not None and bool(
-            self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0)
-        if self.model._gauge is not None and not reset and self.gauge_max_share is not None:
-            if "gradients" not in sol:  # the share is the converged fit's; the gradient follows the gauge decision
-                self._fit_jacobian(x, sol)
-            reset = self.gauge_share(x) > self.gauge_max_share
-            self._count("gauge_share_refreshes", int(reset))
-        if reset:
+        if self.model._gauge is not None and self.gauge_refresh and (self.accepted_step + 1) % self.gauge_refresh == 0:
             if self.gauge_release and not sol.get("released"):  # a trial is released when it is solved
                 released = self._released(x, sol)
                 if released is not None:

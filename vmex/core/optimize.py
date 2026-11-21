@@ -2226,16 +2226,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         (default ``False``) restarts SLSQP from the accepted point, with the
         remaining budget, after a rejected equilibrium trial that followed at
         least one accepted step: a rejection ends SciPy's run and its
-        quasi-Newton Hessian, not the optimization.  ``max_step`` (default
-        ``None``) rejects, unsolved, a trial whose scaled coordinates ``u``
-        move more than ``max_step`` from the accepted point in any one of them
-        (a trust box): SLSQP's line search shortens the step and keeps its
-        Hessian, as for a rejected equilibrium.  ``step_box`` (default
-        ``None``) instead bounds each step in SLSQP's own subproblem: SLSQP is
-        restarted at every accepted point for one step, ``u`` bounded to
-        ``step_box`` around it (within ``bounds``), so a step is the
-        subproblem's best one in the box; each restart begins from an identity
-        Hessian.
+        quasi-Newton Hessian, not the optimization.
 
     Returns
     -------
@@ -2254,35 +2245,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     if method != "SLSQP":
         raise ValueError("minimize(FunctionProblem) supports only method='SLSQP'")
     options = dict(options or {})
-    step_box = options.pop("step_box", None)
-    if step_box is not None:
-        from scipy.optimize import Bounds
-
-        budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
-        x = np.asarray(problem.x0 if x0 is None else x0, dtype=float)
-        base = problem.bounds if bounds is None else bounds
-        if isinstance(base, tuple) and len(base) == 2:
-            base = Bounds(*base)
-        if base is not None and not isinstance(base, Bounds):
-            base = Bounds(*np.asarray([(-np.inf if lo is None else lo, np.inf if hi is None else hi)
-                                       for lo, hi in base], dtype=float).T)
-        lower, upper = (np.full(x.size, -np.inf), np.full(x.size, np.inf)) if base is None else np.broadcast_arrays(
-            np.asarray(base.lb, dtype=float), np.asarray(base.ub, dtype=float))
-        width = step_box * np.asarray(problem.scales, dtype=float)
-        while True:
-            box = Bounds(np.maximum(lower, x - width), np.minimum(upper, x + width))
-            result = _minimize_problem(problem, x0=x, method=method, bounds=box, constraints=constraints,
-                                       callback=callback, options=dict(options, maxiter=1), tol=tol)
-            steps += result.accepted_steps
-            for key in counts:
-                counts[key] += int(getattr(result, key, 0) or 0)
-            if not result.accepted_steps or steps >= budget:
-                break
-            x = result.x
-        if result.accepted_steps and steps >= budget:
-            result.stop_reason, result.message = "accepted_step_budget_reached", "accepted_step_budget_reached"
-        result.accepted_steps, result.nfev, result.njev = steps, counts["nfev"], counts["njev"]
-        return result
     if options.pop("restart_on_rejection", False):
         budget, steps, counts = int(options.get("maxiter", 100)), 0, dict(nfev=0, njev=0)
         result = None
@@ -2312,7 +2274,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     promote = getattr(problem, "accept_x", None)
     if promote is not None and not np.array_equal(start, problem.accepted.parameters):
         raise ValueError("stateful minimization must start at the accepted equilibrium")
-    max_step = options.pop("max_step", None)
     budget = int(options.get("maxiter", 100))
     if budget < 0:
         raise ValueError("maxiter must be nonnegative")
@@ -2334,9 +2295,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
         constraints = (constraints,)
 
-    def too_far(u):
-        return max_step is not None and np.max(np.abs(start + scales*np.asarray(u) - accepted)/scales) > max_step
-
     scaled_constraints = []
     for constraint in tuple(constraints):
         if isinstance(constraint, (LinearConstraint, NonlinearConstraint)) and (
@@ -2351,8 +2309,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                 raise ValueError("constraints require an analytic Jacobian")
             def values(u, c=constraint, size=[1]):
                 try:
-                    if too_far(u):
-                        raise TrialRejected("outside the step box")
                     result = np.asarray(c.fun(start+scales*u))
                     size[0] = result.size
                     return result
@@ -2414,8 +2370,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     def fun(u):
         nonlocal nfev
         nfev += 1
-        if too_far(u):
-            return np.inf
         try:
             value = problem.fun(start+scales*u)
             return value - shift

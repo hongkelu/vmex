@@ -93,9 +93,6 @@ QUADRATURE = None
 CHUNK = 8                          # Jacobian columns per batch (memory)
 TRIAL_FTOL = 1e-3                  # relative cost change at which a trial's boundary steps stop
 MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
-# Trust box: a trial moving any scaled design coordinate more than this from the accepted point is rejected
-# unsolved, so SLSQP's line search shortens the step (None: no box).
-MAX_STEP = None
 
 # BOOTSTRAP: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -238,7 +235,7 @@ if COIL_LIMIT_FACTORS is not None:
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
 # The recipe cases: 2.5% beta with the bootstrap current, a coil-limit row per sample point.
-if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8"):
+if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8", "qi6-beta-A8-merc"):
     BETA, BOOTSTRAP, COIL_POINT_ROWS, SAVE_EVERY = 0.025, True, True, 5
     if COIL_CASE == "qa4-beta-merc":
         VACUUM_IOTA_FLOOR, IOTA_CEILING, CURRENT_CONSTRAINT = 0.31, 0.495, True
@@ -246,6 +243,8 @@ if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8"):
         DESIGN_STEP_SCALE, MAX_ITERATIONS, CURRENT_CONSTRAINT, MERCIER_MARGIN = 1.0, 20000, True, 0.1
     else:
         DESIGN_STEP_SCALE, MAX_ITERATIONS, FIXED_CURRENT = 1.0, 60000, True
+        if VARIANT == "-merc":
+            MERCIER_MARGIN = 0.1
 if BOOTSTRAP and not BETA > 0:
     raise ValueError("BOOTSTRAP needs BETA > 0")
 if FIXED_CURRENT and not BOOTSTRAP:
@@ -761,7 +760,7 @@ def fit_coils_to_plasma(coils, wout, inp):
 RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT)
     "COIL_CASE", "RESOLUTION", "BETA", "BOOTSTRAP", "CURRENT_CONSTRAINT", "FIXED_CURRENT", "BOOTSTRAP_IN_SOLVE",
     "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "QUADRATURE", "CHUNK", "TRIAL_FTOL",
-    "MAX_BOUNDARY_RESIDUAL", "MAX_STEP", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING", "VACUUM_IOTA_FLOOR",
+    "MAX_BOUNDARY_RESIDUAL", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING", "VACUUM_IOTA_FLOOR",
     "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS", "COILS_FILE",
     "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
 
@@ -1107,7 +1106,7 @@ def main(argv=None):
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                           callback=lambda x: log_step(),
                           options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
-                                       restart_on_rejection=True, max_step=MAX_STEP))
+                                       restart_on_rejection=True))
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),

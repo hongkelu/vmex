@@ -540,7 +540,7 @@ class ThreeTermsModel:
     """
 
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
-                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
+                 weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8,
                  quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
                  fixed_boundary=False, labelling="equal_arc"):
         from . import implicit as im
@@ -568,7 +568,7 @@ class ThreeTermsModel:
         if self.bootstrap is not None:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
-        device = jax.devices()[0] if device is None else device
+        device = jax.devices()[0]
 
         def configure(deck):
             cfg = im.make_config(deck, multigrid=True, hot_restart=True)
@@ -731,7 +731,6 @@ class ThreeTermsModel:
             return im._assemble(z, im.runtime_from_params(params, cfg), frozen, P, edge)
 
         self._tangents = jax.jit(tangents)
-        self.push = push
         self._push_rows = jax.jit(lambda state, mask, params, dz, pb, field: push(
             lambda s, p: rows(s, p, field), state, mask, params, dz, pb))
         # First-order trial state from the last linearization (upstream's perturbation warm start): it keeps

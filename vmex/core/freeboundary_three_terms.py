@@ -72,12 +72,13 @@ class BoundaryResidual:
 
     ``normal`` is ``B_out . n / |B_in|``, ``pressure`` is
     ``(|B_out|^2 - |B_in|^2 - 2 mu0 p) / (2 |B_in|^2)`` and ``sheet_current``
-    is ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.
+    is ``|n x (B_out - B_in)| / |B_in| = mu0 |K| / |B_in|``.  ``normal_max`` is the largest ``|normal|`` on the grid.
     """
 
     normal: float
     pressure: float
     sheet_current: float
+    normal_max: float = 0.0
 
 
 def _fingerprint(*trees) -> str:
@@ -128,7 +129,8 @@ def summarize_boundary_residual(rows, weights) -> BoundaryResidual:
         return float(np.sqrt(np.sum(weights * value**2)))
 
     return BoundaryResidual(normal=rms(rows[0]), pressure=rms(rows[1]),
-                            sheet_current=rms(np.linalg.norm(rows[2:], axis=0)))
+                            sheet_current=rms(np.linalg.norm(rows[2:], axis=0)),
+                            normal_max=float(np.max(np.abs(rows[0]))))
 
 
 def _edge_pressure(inp: VmecInput) -> tuple[float, float]:
@@ -249,8 +251,12 @@ def _arc_label(inp):
     return label
 
 
+#: The model's forward solves end where their force residual stalls (:attr:`~vmex.core.implicit.ImplicitConfig.stall`).
+FORWARD_STALL = 0.5
+
+
 #: The flat-arc gauge (``labelling="flat_arc"``): the boundary directions it holds are those of the fit's Jacobian, in
-#: column-scaled coordinates, with a singular value below ``gauge_tau`` times the largest and a normal share (RMS
+#: column-scaled coordinates, with a singular value below :data:`GAUGE_TAU` times the largest and a normal share (RMS
 #: normal over RMS displacement of the surface) below :data:`GAUGE_NORMAL_SHARE`.  The default holds every tangential
 #: direction (its rows are soft and zero at the reference fit, so a direction the interface rows determine is theirs
 #: anyway; the weight decides, no cutoff).
@@ -294,7 +300,7 @@ class ThreeTermsConfig:
     asks for equal arc length on every toroidal cut of the current surface (and a zero phase of its ``m = 1``
     part), ``"flat_arc"`` holds the arc-length distribution of a reference fit along the fit's flat, tangential
     directions on the current surface (:meth:`ThreeTermsModel.set_flat_arc_gauge`: the no-label fit, made well
-    determined; ``gauge_tau`` selects the directions), and ``"none"`` adds no labelling rows (any labelling at
+    determined), and ``"none"`` adds no labelling rows (any labelling at
     ``label_weight=0`` is the same model).  ``label_weight`` scales those rows against the interface rows
     (default :data:`LABEL_WEIGHTS`).  ``start`` is the initial boundary: ``"deck"``, ``"nestor"`` (this ladder's
     NESTOR free boundary) or ``"best"`` (both, keeping the lower cost: the interface least squares has several
@@ -337,7 +343,6 @@ class ThreeTermsConfig:
     bootstrap: Any = field(default=None, repr=False)
     bootstrap_helicity: int = 0
     bootstrap_weight: float = 100.0
-    gauge_tau: float = GAUGE_TAU
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
@@ -370,7 +375,7 @@ class ThreeTermsConfig:
                     labelling=self.labelling if self.resolved_label_weight else "none",
                     quadrature=self.quadrature, trial_ftol=self.trial_ftol, chunk=self.chunk,
                     bootstrap=self.bootstrap, bootstrap_helicity=self.bootstrap_helicity,
-                    bootstrap_weight=self.bootstrap_weight, gauge_tau=self.gauge_tau)
+                    bootstrap_weight=self.bootstrap_weight)
 
 
 def resolve_three_terms(requested: Any, inp: Any) -> "ThreeTermsConfig | None":
@@ -544,7 +549,7 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8, device=None,
                  trial_ftol=None, quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc", gauge_tau=GAUGE_TAU):
+                 fixed_boundary=False, labelling="equal_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
@@ -562,7 +567,7 @@ class ThreeTermsModel:
         self.bootstrap = None if bootstrap is None else HalfMeshCurrent(fixed, bootstrap, bootstrap_helicity,
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
-        self.labelling, self.label_weight, self.gauge_tau = labelling, float(label_weight), float(gauge_tau)
+        self.labelling, self.label_weight = labelling, float(label_weight)
         self._gauge = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
         self._arc_label = _arc_label(fixed)
         if self.fixed_boundary and self.bootstrap is None:
@@ -571,19 +576,23 @@ class ThreeTermsModel:
             self.fixed = fixed = self.bootstrap.deck
         self.max_mode = int(max(fixed.mpol - 1, fixed.ntor) if max_mode is None else max_mode)
         device = jax.devices()[0] if device is None else device
-        cfg = im.make_config(fixed, multigrid=True, hot_restart=True)
-        self.cfg = cfg = im._canonical_config(replace(cfg, device=device))
-        # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
-        # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
-        self.cfg_trial = cfg
-        if trial_ftol is not None:
-            ftols = np.array(fixed.ftol_array, dtype=float)
-            ftols[-1] = max(float(trial_ftol), ftols[-1])
-            loose = im.make_config(replace(fixed, ftol_array=ftols), multigrid=True, hot_restart=True)
-            self.cfg_trial = im._canonical_config(replace(loose, device=device))
-            im._template_runtime(self.cfg_trial)
-        self.params0 = im.params_from_input(fixed, device=device)
-        im._template_runtime(cfg)
+
+        def configure(deck):
+            cfg = im.make_config(deck, multigrid=True, hot_restart=True)
+            self.cfg = cfg = im._canonical_config(replace(cfg, device=device, stall=FORWARD_STALL))
+            # Trial points (the boundary steps) may converge to a looser force residual: their rows move by far less
+            # than the interface floor, and a state is solved to the deck's tolerance before it is differentiated.
+            self.cfg_trial = cfg
+            if trial_ftol is not None:
+                ftols = np.array(deck.ftol_array, dtype=float)
+                ftols[-1] = max(float(trial_ftol), ftols[-1])
+                loose = im.make_config(replace(deck, ftol_array=ftols), multigrid=True, hot_restart=True)
+                self.cfg_trial = im._canonical_config(replace(loose, device=device, stall=FORWARD_STALL))
+                im._template_runtime(self.cfg_trial)
+            self.params0 = im.params_from_input(deck, device=device)
+            im._template_runtime(cfg)
+
+        configure(fixed)
         self.x0 = pack_boundary(fixed, self.max_mode, vary_major_radius=True)
         self.x_scale = _ess_scale(fixed, self.max_mode, 1.2, vary_major_radius=True)
         if self.fixed_boundary:
@@ -606,6 +615,15 @@ class ThreeTermsModel:
             from .errors import VmecConvergenceError
             raise VmecConvergenceError("the initial boundary has no converged fixed-boundary equilibrium")
         state, mask = seed[:2]
+        if np.size(fixed.ns_array) > 1:
+            # A radial ladder is the cold start's: every later solve starts from a state on the final grid, which a
+            # ladder would first interpolate down to its coarsest grid.
+            last = lambda a: np.atleast_1d(np.asarray(a))[-1:]  # noqa: E731
+            self.fixed = replace(self.fixed, ns_array=last(fixed.ns_array), ftol_array=last(fixed.ftol_array),
+                                 niter_array=last(fixed.niter_array))
+            configure(self.fixed)
+            for cfg in (self.cfg, self.cfg_trial):
+                im._HOT_CACHE[cfg] = state
         self.seed = (state, mask)
         if not self.fixed_boundary:
             self._interface_setup(state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
@@ -762,8 +780,6 @@ class ThreeTermsModel:
             return jax.tree.map(lambda *a: jnp.concatenate(a), *parts)
 
         self.pullback = pullback
-        self._rows_pullback = jax.jit(lambda state, mask, params, cotangent, field, bands: jax.tree.map(
-            lambda a: a[0], pullback(rows, state, mask, params, cotangent[None], field, bands=bands)))
         self._linearization = None
         self._last_linearize = None  # (key, extra key, result, _linearization) of the latest linearize
         self._radius = None  # the boundary steps' trust radius, carried from one solve to the next
@@ -776,14 +792,6 @@ class ThreeTermsModel:
         large = im._large_bands(cfg.resolution.ns, len(im._active_state_fields(cfg)) * int(mask.R_cos.shape[1]),
                                 state.R_cos.dtype)
         return im._block_bands(cfg, params, state, mask, z=state) if large else None
-
-    def rows_pullback(self, state, mask, params, field, cotangent):
-        """``ImplicitParams`` gradient of ``cotangent . rows`` through the equilibrium of a solved (tight) state: one
-        reverse pass, the casing rematerialized (:func:`~vmex.core.virtual_casing.rematerialized_scans`).  With the
-        rows themselves as ``cotangent``, the gradient of the fit's cost: no Jacobian."""
-        with vc.rematerialized_scans():
-            return self._rows_pullback(state, mask, params, jnp.asarray(cotangent), field,
-                                       self.stored_bands(params, state, mask))
 
     def solve(self, params, seed=None, tight=True):
         """Hot-restarted fixed-boundary equilibrium at ``params``: ``(state, mask)``, or ``None`` if not certified.
@@ -822,16 +830,12 @@ class ThreeTermsModel:
             state, self._im.runtime_from_params(params, self.cfg), params))
         return float(np.max(np.abs(difference)) / np.max(np.abs(target)))
 
-    def evaluate(self, x, params, field, seed=None, tight=False, near=None):
+    def evaluate(self, x, params, field, seed=None, tight=False):
         """Interface rows at boundary ``x``: ``(rows, (state, mask, params_x, tight))``, or ``None`` if the solve
-        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one.  ``near``
-        ``(x_near, state, mask)``, a solved state close to ``x``, replaces the last linearization's as the anchor of
-        the first-order seed (its responses kept)."""
+        failed; ``tight`` marks a state solved to the deck's tolerance rather than the trial one."""
         params_x = self.with_boundary(params, jnp.asarray(x))
         if seed is None and self._linearization is not None:
             x_ref, state_ref, mask_ref, dz = self._linearization
-            if near is not None:
-                x_ref, state_ref, mask_ref = near
             seed = self._predict(state_ref, mask_ref, dz, jnp.asarray(np.asarray(x) - x_ref), params_x)
         tight = tight or self.cfg_trial is self.cfg
         solved = self.solve(params_x, seed, tight)
@@ -851,7 +855,7 @@ class ThreeTermsModel:
         The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
         nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
         ``x`` (:meth:`linearize`), the held directions are the right singular vectors of its boundary columns
-        (scaled to unit norm) with a singular value below ``gauge_tau`` times the largest and a surface displacement
+        (scaled to unit norm) with a singular value below :data:`GAUGE_TAU` times the largest and a surface displacement
         of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
         ``label_weight * M^T (L - L_x)``, ``L`` the arc-length distribution of the current boundary
         (:func:`_arc_label`), ``L_x`` that of the fit at ``x`` and ``M`` an orthonormal basis of its change along the
@@ -873,7 +877,7 @@ class ThreeTermsModel:
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
         A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
-        flat = [u for s, u in zip(sv, Vt) if s < self.gauge_tau * sv[0]]
+        flat = [u for s, u in zip(sv, Vt) if s < GAUGE_TAU * sv[0]]
         tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in flat if tangential(u / norms)]
         if held:

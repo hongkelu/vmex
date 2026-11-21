@@ -61,7 +61,6 @@ import concurrent.futures
 import dataclasses
 import functools
 import inspect
-import os
 import warnings
 from dataclasses import dataclass
 from functools import cached_property
@@ -2334,10 +2333,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                         keep_feasible=bounds.keep_feasible)
     if isinstance(constraints, (LinearConstraint, NonlinearConstraint, dict)):
         constraints = (constraints,)
-    trace = bool(os.environ.get("VMEX_SLSQP_TRACE"))  # diagnostic: one line a trial value, constraint call and exit
-
-    def far(u):
-        return float(np.max(np.abs(start + scales*np.asarray(u) - accepted)/scales))
 
     def too_far(u):
         return max_step is not None and np.max(np.abs(start + scales*np.asarray(u) - accepted)/scales) > max_step
@@ -2360,11 +2355,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
                         raise TrialRejected("outside the step box")
                     result = np.asarray(c.fun(start+scales*u))
                     size[0] = result.size
-                    if trace:
-                        gap = np.maximum(np.maximum(c.lb - result, result - c.ub), 0.0)
-                        print(f"[trace] rows({result.size}) step={far(u):.2e} violation={gap.max():.3e} "
-                              f"row={int(gap.argmax())} near={int(np.sum(np.minimum(result - c.lb, c.ub - result) < 1e-3))}",
-                              flush=True)
                     return result
                 except TrialRejected:
                     # Values can reject a line-search probe; never fabricate its Jacobian.
@@ -2425,13 +2415,9 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev
         nfev += 1
         if too_far(u):
-            if trace:
-                print(f"[trace] fun step={far(u):.2e} outside the step box", flush=True)
             return np.inf
         try:
             value = problem.fun(start+scales*u)
-            if trace:
-                print(f"[trace] fun step={far(u):.2e} change={value - accepted_value:+.3e}", flush=True)
             return value - shift
         except TrialRejected:
             return np.inf
@@ -2443,9 +2429,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         # SLSQP's major-iteration callback can precede backtracking. The next
         # Jacobian request identifies its accepted line-search point instead.
         accept(u)
-        if trace:
-            print(f"[trace] jac |g|={np.linalg.norm(accepted_gradient*scales):.3e} "
-                  f"max={np.max(np.abs(accepted_gradient*scales)):.3e} shift={shift:+.3e}", flush=True)
         return accepted_gradient*scales
 
     try:
@@ -2453,8 +2436,6 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
             bounds=bounds, constraints=scaled_constraints, options=options, tol=tol)
         if result.success:
             accept(result.x)
-        if trace:
-            print(f"[trace] SLSQP exit status={result.status} nit={result.nit}: {result.message}", flush=True)
         result.x = start + np.asarray(result.x)*scales
         if getattr(result, "jac", None) is not None:
             result.jac = np.asarray(result.jac)/scales

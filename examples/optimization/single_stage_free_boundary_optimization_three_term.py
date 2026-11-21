@@ -1,38 +1,41 @@
 #!/usr/bin/env python
-r"""Free-boundary single-stage coil optimization on sheet-current-free equilibria.
+r"""Free-boundary single-stage coil optimization on sheet-current-free equilibria: the campaign driver.
 
-The free arm of ``single_stage_free_boundary_optimization_coil_constraints.py``
-with its equilibrium replaced: every trial is the free boundary that satisfies
-all three plasma-vacuum interface conditions (B.n = 0, pressure balance and no
-sheet current), not a VMEC + NESTOR solve, which balances only |B| and leaves
-the tangential field jump free. The cases (``COIL_CASE``; the case table is in
-that script's docstring), the design variables (coil shapes, PHIEDGE and, with
-``--bootstrap``, the current spline values and CURTOR), the loss, the
-constraint rows and their bounds, and the run directory are that script's --
+Every trial is the free boundary that satisfies all three plasma-vacuum
+interface conditions (B.n = 0, pressure balance and no sheet current), not a
+VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
+jump free.  ``COIL_CASE`` selects the case, and the case and its settings are
+parameters at the top of this file (the table below: seed, coils, limits,
+targets and run settings); the design variables are the coil shapes and currents,
+PHIEDGE and, with ``BOOTSTRAP``, the current spline values and CURTOR --
 except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
 boundary, Redl's on every half-grid surface, and neither its values nor the
-bootstrap-mismatch row enter the optimization. The coil currents are design
-variables too (``FREE_COIL_CURRENTS``, no bounds), with a row holding the axis
-|B| at ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the
-vacuum |iota| of the plasma boundary (``opt.vacuum_iota``).
+bootstrap-mismatch row enter the optimization.  A row holds the axis |B| at
+``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the vacuum
+|iota| of the plasma boundary (``opt.vacuum_iota``).
 
-The problem is :class:`vmex.ThreeTermsFreeBoundaryProblem` (``from_loss(..., config=vj.ThreeTermsConfig(...))``,
-the PR's three-term core; this campaign driver stays off main): warm-started
-trial boundaries and design gradients by the implicit function theorem of the
+The problem is :class:`vmex.ThreeTermsFreeBoundaryProblem`
+(``from_loss(..., config=vj.ThreeTermsConfig(...))``): warm-started trial
+boundaries and design gradients by the implicit function theorem of the
 boundary fit, without recompiling when the coils or plasma parameters change.
+``single_stage_free_boundary_optimization_three_terms.py`` is the short
+example of the same problem.
 
-    COIL_CASE=qa4-beta python single_stage_free_boundary_optimization_three_term.py --beta 0.025 --bootstrap \
-        --modes 8 8 --ns 51 --output runs/three-term-qa4
+    COIL_CASE=qa4-beta-merc python single_stage_free_boundary_optimization_three_term.py --modes 8 8 --ns 51 \
+        --output runs/three-term-qa4
 
-``--seed-run <run>`` starts from another run's calibrated deck and fitted coils.
-``metrics.jsonl`` adds the three interface residuals (``bn``,
+The flags are what differs from one launch to the next: ``--output``, ``--steps``, ``--modes``, ``--ns``,
+``--labelling``, ``--restart`` and ``--seed-run``.
+
+The boundary's labelling is ``flat_arc`` with its gauge recipe (``FLAT_ARC_GAUGE``) and smooth Mercier, clearance
+and mirror rows (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``); ``--labelling equal_arc`` is the
+control, with the rows' hard extremes.
+
+``--seed-run <run>`` starts from another run's calibrated deck and fitted
+coils; ``--restart <run>`` continues a saved run, on another ``--ns`` too.
+``run.json`` records the parameters of the run; ``metrics.jsonl`` holds the three interface residuals (``bn``,
 ``pressure_balance``, ``sheet_current``), each step's trial and boundary-fit
-counts and the peak GPU memory. After a run, ``benchmarks/three_term_highres.py``
-re-solves the final coils at another resolution and exports them,
-``benchmarks/three_term_postprocess.py`` re-solves the final boundary densely
-for the WOUT figures and alpha losses, and
-``benchmarks/coil_constraints_evolution_gifs.py`` draws the coils and LCFS of
-the saved steps.
+counts and the peak GPU memory.
 """
 
 import argparse
@@ -51,7 +54,7 @@ import numpy as np
 # ---- cases -----------------------------------------------------------------------------------------------------------
 # COIL_CASE selects the case. The values are ellipse5's; the blocks after them override them per case.
 DATA = Path(__file__).resolve().parents[1] / "data"
-CASE = os.environ.get("COIL_CASE", "ellipse5")
+COIL_CASE = CASE = os.environ.get("COIL_CASE", "ellipse5")  # COIL_CASE: the full name, CASE: without its suffixes
 # A "-merc" or "-jbs" suffix runs the case with a Mercier floor or a bootstrap-current term (MERCIER_FLOOR,
 # CURRENT_IOTA_WEIGHT below), e.g. qa4-beta-merc.
 VARIANT = next((v for v in ("-merc", "-jbs") if CASE.endswith(v)), "")
@@ -66,25 +69,47 @@ EQUILIBRIUM_FTOL = 1e-15
 QA_SURFACES = tuple(i / 10 for i in range(1, 11))
 INPUT_FILE = DATA / "input.rotating_ellipse_nfp2"
 COILS_FILE = DATA / "ESSOS_coils_ellipse5.json"
-BETA_DEFINITION = "volume"         # --beta is <beta>; "axis": WOUT betaxis
+BETA_DEFINITION = "volume"         # BETA is <beta>; "axis": WOUT betaxis
 B0 = 1.0                           # T: |B| on the magnetic axis (opt.axis_field_strength), the seed's and a row
 FREE_PHIEDGE = True                # free arm: PHIEDGE is a design variable (False: fixed PHIEDGE)
 FREE_COIL_CURRENTS = True          # every base-coil current is a design variable, with no bounds
 COIL_CURRENT_STEP = 0.06           # coordinate scale of the relative coil-current change
 
-# --bootstrap: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
+# Run settings; the recipe cases set theirs after the case table.
+BETA = 0.0                         # plasma beta (BETA_DEFINITION), a fraction
+BOOTSTRAP = False                  # kinetic profiles and a self-consistent bootstrap current (needs BETA > 0)
+# The current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design variables), held self-consistent
+# by a constraint row, instead of solved with every equilibrium (BOOTSTRAP_IN_SOLVE).
+CURRENT_CONSTRAINT = False
+FIXED_CURRENT = False              # hold the current (the restart's) fixed: no design variable, no bootstrap row
+COIL_FIT = True                    # refit the coils to the finite-beta seed (False: COILS_FILE as given)
+COIL_POINT_ROWS = False            # a coil-limit row per sample point instead of each coil's extreme
+SAVE_EVERY = 1                     # accepted steps between saved coils, WOUT and deck
+MAX_ITERATIONS = None              # VMEC iteration cap of every solve (None: the deck's)
+VC_GRID = 48                       # virtual-casing grid points per field period, each angle
+# Virtual-casing singular quadrature (NT, NP); None: (4 nfp VC_GRID, 2 VC_GRID), 384 x 96 for nfp 2 (grid x grid
+# leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel).
+QUADRATURE = None
+CHUNK = 8                          # Jacobian columns per batch (memory)
+TRIAL_FTOL = 1e-3                  # relative cost change at which a trial's boundary steps stop
+MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
+# Trust box: a trial moving any scaled design coordinate more than this from the accepted point is rejected
+# unsolved, so SLSQP's line search shortens the step (None: no box).
+MAX_STEP = None
+
+# BOOTSTRAP: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
 # self-consistent bootstrap current: CURRENT_KNOTS spline values (the last one fixed) and CURTOR
 # are design variables, and the mismatch sum_j R_j^2 against the BOOTSTRAP_MODEL current (Redl
 # or DKX, in Redl's normalized form) is held under REDL_TOLERANCE. The seed's Picard loop is Redl's.
 # DKX: the current is a line segment through a value on every half-mesh surface (those values,
 # the axis one and CURTOR are design variables), its seed DKX's on the same surfaces. With
-# --fixed-current it is no design variable and no row: the restart's current is held fixed.
+# FIXED_CURRENT it is no design variable and no row: the restart's current is held fixed.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
-BOOTSTRAP_BETA_STEP = 0.01        # a larger --beta is ramped in with its bootstrap current, in steps of at most this
+BOOTSTRAP_BETA_STEP = 0.01        # a larger BETA is ramped in with its bootstrap current, in steps of at most this
 BOOTSTRAP_BETA_START = None       # set: the ramp first doubles beta from this, so a seed with little vacuum
                                   # iota stays under its eps iota^2 limit while the bootstrap current grows
 OHMIC_CURRENT = None              # set (A): the seed ramp's prescribed current, blended into the bootstrap one
@@ -110,7 +135,19 @@ VACUUM_IOTA_FLOOR = None           # set: floor on the vacuum |iota| (no pressur
 MERCIER_FLOOR = None               # set: floor on min DMerc of the surfaces s >= MERCIER_S_MIN (edge excluded)
 # DMerc is inaccurate near the magnetic axis; Landreman et al. (2026, arXiv:2606.19523) take its minimum over s > 0.2.
 MERCIER_S_MIN = 0.2
-MERCIER_MARGIN = 0.02             # SLSQP holds a row only to its tolerance: DMerc stays strictly positive
+# Margin of the Mercier floor. SLSQP holds a row only to its tolerance: DMerc stays strictly positive (and its
+# value near the floor changes with resolution, so a design held closer can lose it there).
+MERCIER_MARGIN = 0.02
+# flat_arc labelling (equal_arc, the control, keeps the hard extremes): the Mercier floor on MERCIER_BANDS radial
+# bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), and where a case sets
+# them the coil-plasma clearance as the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] and the mirror
+# ratio's Bmax, Bmin as |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
+MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
+CLEARANCE_SMOOTH = MIRROR_SMOOTH = None
+# flat_arc labelling: the gauge is set again at every accepted fit, and where its rows' share of a fit's cost
+# exceeds 1%, after a re-fit without the gauge rows from the reused Jacobian alone.
+FLAT_ARC_GAUGE = dict(gauge_release=True, gauge_refresh=1, gauge_release_rounds=0, gauge_max_share=0.01)
+TRIAL_FORWARD_FTOL = 1e-11        # force residual of the trials' equilibria (an accepted point is re-solved tight)
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -132,7 +169,7 @@ COIL_SURFACE_DISTANCE_LIMIT = 0.20 # m, to the current plasma boundary
 CURVATURE_MARGIN, MSC_MARGIN, LENGTH_MARGIN, DISTANCE_MARGIN = 0.10, 0.02, 1e-5, 0.001
 
 if CASE == "ellipse5-beta7":
-    # Helios-like: a low iota floor, --beta on axis, the bootstrap current supplying the rest of the transform.
+    # Helios-like: a low iota floor, BETA on axis, the bootstrap current supplying the rest of the transform.
     BETA_DEFINITION = "axis"
     IOTA_FLOOR = 0.16
     PICARD_ITERATIONS, PICARD_RELAX = 30, 0.5  # damped: the current dominates iota (bootstrap.self_consistent_bootstrap)
@@ -175,6 +212,7 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
+        CLEARANCE_SMOOTH = MIRROR_SMOOTH = 5e-4
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
@@ -200,6 +238,21 @@ if COIL_LIMIT_FACTORS is not None:
     _radius = RADIUS_TARGET / ASPECT_RANGE[0] + COIL_SURFACE_DISTANCE_LIMIT
     LENGTH_LIMIT = COIL_LIMIT_FACTORS[0] * 2 * math.pi * _radius
     CURVATURE_LIMIT, MSC_LIMIT = COIL_LIMIT_FACTORS[1] / _radius, COIL_LIMIT_FACTORS[2] / _radius**2
+# The recipe cases: 2.5% beta with the bootstrap current, a coil-limit row per sample point.
+if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8"):
+    BETA, BOOTSTRAP, COIL_POINT_ROWS, SAVE_EVERY = 0.025, True, True, 5
+    if COIL_CASE == "qa4-beta-merc":
+        VACUUM_IOTA_FLOOR, IOTA_CEILING, CURRENT_CONSTRAINT = 0.31, 0.495, True
+    elif COIL_CASE == "qh4-beta-A8-merc":
+        DESIGN_STEP_SCALE, MAX_ITERATIONS, CURRENT_CONSTRAINT, MERCIER_MARGIN = 1.0, 20000, True, 0.1
+    else:
+        DESIGN_STEP_SCALE, MAX_ITERATIONS, FIXED_CURRENT = 1.0, 60000, True
+if BOOTSTRAP and not BETA > 0:
+    raise ValueError("BOOTSTRAP needs BETA > 0")
+if FIXED_CURRENT and not BOOTSTRAP:
+    raise ValueError("FIXED_CURRENT needs BOOTSTRAP")
+if CURRENT_CONSTRAINT or FIXED_CURRENT:
+    BOOTSTRAP_IN_SOLVE = False
 
 OPTIMIZER_FTOL = 1e-10
 KKT_ACTIVE = 1e-3                 # step log: a scaled constraint row this close to its bound counts as active
@@ -425,7 +478,7 @@ def min_d_merc(state, runtime):
 
 
 def d_merc_rows(state, runtime):
-    """Mercier floor rows (``--mercier-rows``): ``DMerc`` on each surface ``min_d_merc`` takes the smallest of."""
+    """``DMerc`` on each surface ``min_d_merc`` takes the smallest of."""
     from vmex import optimize as opt
 
     d_merc = opt.d_merc_state(state, runtime)
@@ -434,7 +487,7 @@ def d_merc_rows(state, runtime):
 
 
 def smooth_d_merc(state, runtime, smooth, bands=1):
-    """Mercier floor rows (``--mercier-smooth``): in each of ``bands`` radial bands of ``d_merc_rows``' surfaces, their
+    """Mercier floor rows (``MERCIER_SMOOTH``): in each of ``bands`` radial bands of ``d_merc_rows``' surfaces, their
     ``DMerc`` averaged with weights ``exp(-DMerc / smooth)``.  It reads at most about ``smooth`` above the band's
     smallest value, and its gradient covers every surface within a few ``smooth`` of it, where the smallest value's
     is one surface's alone.  The step log keeps the true smallest ``DMerc`` (``min_d_merc``)."""
@@ -554,14 +607,15 @@ def restart_input(run):
 
     These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  An older
     run has only the WOUT, which stores the computed current, not exactly the deck's: a run that held its current
-    fixed (``--fixed-current`` in its ``run.json``) then keeps the current of its ``input.run``.
+    fixed (``FIXED_CURRENT`` in its ``run.json`` parameters, ``--fixed-current`` in an older one's command) then keeps
+    the current of its ``input.run``.
     """
     import vmex as vj
 
     saved, record = run / "input.final", run / "run.json"
     final = vj.VmecInput.from_file(saved) if saved.exists() else vj.VmecInput.from_wout(run / "wout.nc")
-    held = (not saved.exists() and record.exists()
-            and "--fixed-current" in json.loads(record.read_text())["argv"])
+    record = json.loads(record.read_text()) if record.exists() and not saved.exists() else {}
+    held = bool(record.get("parameters", {}).get("FIXED_CURRENT")) or "--fixed-current" in record.get("argv", ())
     names = ("rbc", "zbs", "phiedge") + (() if held else ("pcurr_type", "ac", "ac_aux_s", "ac_aux_f", "curtor"))
     return replace(vj.VmecInput.from_file(run / "input.run"), lfreeb=False,
                    **{name: getattr(final, name) for name in names})
@@ -631,7 +685,6 @@ def total_normal_field(interface, field):
 
 # ---- coil limits ----------------------------------------------------------------------------------------------------
 CURVATURE_POINTS = max(512, 64*COIL_ORDER)
-COIL_POINT_ROWS = False  # --coil-point-rows
 DISTANCE_POINTS = max(128, 16*COIL_ORDER)
 SURFACE_GRID = (61, 64)
 
@@ -651,130 +704,19 @@ def coil_limits():
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, help="new run directory")
-    parser.add_argument("--current-iota-weight", type=float, help="w of the loss term w/2 iota_I^2 "
-                        "(default: CURRENT_IOTA_WEIGHT, 1e-2 for the -jbs cases)")
-    parser.add_argument("--vacuum-iota-floor", type=float, help="floor on the boundary's vacuum |iota| "
-                        "(default: VACUUM_IOTA_FLOOR, 0.23 for qa4-beta)")
-    parser.add_argument("--iota-ceiling", type=float, help="ceiling on max |iota| (default: IOTA_CEILING)")
-    parser.add_argument("--check-gradient-fit", type=float, nargs=2, metavar=("FTOL", "NFEV"),
-                        help="with --check-gradient: converge the differenced trials' boundary fits to FTOL")
-    parser.add_argument("--check-gradient", type=int, default=0, metavar="N",
-                        help="compare the seed's design gradients with central differences along N random "
-                        "directions (gradient_check.json), then stop")
-    parser.add_argument("--coil-point-rows", action="store_true", help="one coil-limit row per sample point "
-                        "(curvature, coil-coil and self distance) instead of each coil's extreme")
-    parser.add_argument("--extension", type=Path, help="Python file of extra constraint ROWS and objective TERMS "
-                        "on the equilibrium (see load_extension)")
-    parser.add_argument("--aspect-range", type=float, nargs=2, metavar=("LOW", "HIGH"),
-                        help="aspect-ratio bounds (default: ASPECT_RANGE); the coil limits keep the case's")
     parser.add_argument("--steps", type=int, default=100, help="accepted SLSQP steps")
-    parser.add_argument("--coils", type=Path, default=COILS_FILE)
-    parser.add_argument("--coil-limits", type=float, nargs=3, metavar=("LENGTH", "CURVATURE", "MSC"),
-                        help="per-coil limits (m, 1/m, 1/m^2) in place of the case's (e.g. Gil et al.'s)")
-    parser.add_argument("--no-coil-fit", action="store_true", help="use --coils as given, without the seed refit")
-    parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--ns", type=int, help="radial resolution (default: RESOLUTION)")
     parser.add_argument("--modes", type=int, nargs=2, metavar=("MPOL", "NTOR"), help="default: RESOLUTION")
-    parser.add_argument("--beta", type=float, default=0.0)
-    parser.add_argument("--bootstrap", action="store_true")
-    parser.add_argument("--current-constraint", action="store_true",
-                        help="the current is an input, as in VMEC (CURRENT_KNOTS values and CURTOR are design "
-                        "variables) held Redl-self-consistent by a constraint row, instead of solved with every "
-                        "equilibrium (BOOTSTRAP_IN_SOLVE, the qa4-beta and qh4-beta default)")
-    parser.add_argument("--fixed-current", action="store_true",
-                        help="hold the current (the restart's) fixed: no design variable and no bootstrap row")
     parser.add_argument("--restart", type=Path, help="continue a run from its input.run, coils.json, wout.nc (the "
                         "boundary and state it resumes at) and input.final")
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
-    parser.add_argument("--vc-grid", type=int, default=48, help="virtual-casing grid per field period")
-    parser.add_argument("--chunk", type=int, default=8, help="Jacobian columns per batch (memory)")
-    parser.add_argument("--quadrature", type=int, nargs=2, metavar=("NT", "NP"),
-                        help="virtual-casing singular quadrature (default 4 nfp grid x 2 grid: 384 x 96 for nfp 2; "
-                        "grid x grid leaves a ~3e-4 tangential plasma-field error; see ThreeTermFreeBoundaryModel)")
-    parser.add_argument("--max-iterations", type=int, help="VMEC iteration cap of every solve (default: the deck's)")
-    parser.add_argument("--design-step-scale", type=float, default=DESIGN_STEP_SCALE,
-                        help="factor on the design-coordinate scales (default: DESIGN_STEP_SCALE)")
-    parser.add_argument("--max-step", type=float, metavar="U",
-                        help="trust box: a trial moving any scaled design coordinate more than U from the accepted "
-                             "point is rejected unsolved, so SLSQP's line search shortens the step")
-    parser.add_argument("--step-box", type=float, metavar="U",
-                        help="bound every step to U in each scaled design coordinate inside SLSQP's subproblem "
-                             "(SLSQP restarted at each accepted point, from an identity Hessian)")
-    parser.add_argument("--trial-ftol", type=float, default=1e-3,
-                        help="relative cost change at which a trial's boundary steps stop")
-    parser.add_argument("--max-boundary-residual", type=float, default=0.05,
-                        help="largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial")
-    parser.add_argument("--trial-forward-ftol", type=float, default=1e-11,
-                        help="force residual of the trials' equilibria (each accepted point is re-solved to the "
-                        "deck's tolerance before its gradient)")
-    parser.add_argument("--labelling", choices=("anchored", "equal_arc", "minimal", "flat_arc", "none"), default="anchored",
-                        help="the boundary's poloidal labelling rows: anchored to the start boundary (anchored), "
-                        "equal arc length of the current surface (equal_arc), the seed fit's flat tangential "
-                        "directions pinned (minimal) or held by equal arc (flat_arc), or none; see vmex.ThreeTermsConfig")
-    parser.add_argument("--label-weight", type=float,
-                        help="weight of the labelling rows (default: the labelling's, 1e-2 anchored, 1e-3 equal arc; "
-                        "0 is the no-label model)")
-    parser.add_argument("--gauge-tau", type=float,
-                        help="minimal and flat_arc labellings: pin the flat tangential directions with singular values below this "
-                        "fraction of the largest (default: vmex.ThreeTermsConfig's)")
-    parser.add_argument("--gauge-refresh", type=int, default=0, metavar="K",
-                        help="minimal and flat_arc labellings: set the gauge again at the accepted fit every K accepted "
-                        "steps (default 0: once, at the start)")
-    parser.add_argument("--redl-rows", action="store_true",
-                        help="--current-constraint with a row per Redl surface, |R_j| <= sqrt(REDL_TOLERANCE / n), "
-                        "instead of the one row sum_j R_j^2 <= REDL_TOLERANCE (which the rows imply)")
-    parser.add_argument("--clearance-smooth", type=float, metavar="L",
-                        help="coil-plasma clearance row: the distances' mean weighted by exp(-d / L) [m] instead of "
-                        "their smallest, whose gradient is the nearest pair of points' alone")
-    parser.add_argument("--mirror-smooth", type=float, metavar="B",
-                        help="mirror-ratio row: Bmax and Bmin as |B| averaged with weights exp(+-|B| / B) [T] instead "
-                        "of the grid's extremes, whose gradients are one grid point's each")
-    parser.add_argument("--mercier-rows", action="store_true",
-                        help="Mercier floor with a row per surface instead of the one row of their smallest DMerc, "
-                        "whose gradient is the smallest surface's alone: a step that holds it can sink another")
-    parser.add_argument("--mercier-smooth", type=float, metavar="D",
-                        help="Mercier floor as the surfaces' DMerc averaged with weights exp(-DMerc / D) instead of "
-                        "their smallest (reads at most about D above it; the log keeps the true smallest)")
-    parser.add_argument("--mercier-margin", type=float, default=MERCIER_MARGIN,
-                        help="margin of the Mercier floor: min DMerc is held at MERCIER_FLOOR plus this (the value "
-                             "near the floor changes with resolution, so a design held closer can lose it there)")
-    parser.add_argument("--mercier-bands", type=int, default=1, metavar="N",
-                        help="with --mercier-smooth: a row for each of N radial bands of the surfaces")
-    parser.add_argument("--current-knots", type=int, default=CURRENT_KNOTS, metavar="N",
-                        help="number of spline knots of the current with --current-knots-at-ends")
-    parser.add_argument("--current-knots-at-ends", action="store_true",
-                        help="the current's CURRENT_KNOTS spline knots at s = sin(pi t / 2)^2, t uniform (closer at the axis and edge)")
-    parser.add_argument("--redl-s-min", type=float, default=0.0, metavar="S",
-                        help="the Redl surfaces start at this normalized flux (default: all half-grid surfaces)")
-    parser.add_argument("--gauge-release", action="store_true",
-                        help="flat_arc labelling: each gauge refresh first re-fits the accepted boundary without the gauge rows")
-    parser.add_argument("--gauge-release-rounds", type=int, default=6, metavar="N",
-                        help="a gauge release continues from at most N fresh Jacobians")
-    parser.add_argument("--gauge-release-gain", type=float, default=0.02, metavar="G",
-                        help="... while a round still lowers the fit's cost by more than this fraction")
-    parser.add_argument("--gauge-max-share", type=float, metavar="S",
-                        help="minimal and flat_arc labellings: set the gauge again at an accepted fit where its rows' "
-                        "share of the fit's cost exceeds S")
-    parser.add_argument("--gradient-rounds", type=int, default=0, metavar="N",
-                        help="the exact (Newton) design gradient: at most N block Krylov rounds, a direction per row "
-                        "each (default 0: the Gauss-Newton gradient)")
-    parser.add_argument("--gradient-rtol", type=float, default=1e-3, metavar="TOL",
-                        help="--gradient-rounds: stop at this relative residual of the rows' adjoint equations")
-    parser.add_argument("--gradient-fit-xtol", type=float, metavar="TOL",
-                        help="converge each gradient's fit (Gauss-Newton steps) until a step is below TOL")
-    parser.add_argument("--certify", type=float, metavar="F",
-                        help="reject a trial whose fit step or Newton row residual ends above F times "
-                             "--gradient-fit-xtol / --gradient-rtol (needs both and --gradient-rounds)")
-    parser.add_argument("--promote-trials", action="store_true",
-                        help="evaluate every trial as its acceptance leaves it (gauge refresh, converged gradient)")
+    parser.add_argument("--labelling", choices=("flat_arc", "equal_arc"), default="flat_arc",
+                        help="the boundary's poloidal labelling rows: the seed fit's flat tangential directions "
+                        "held by equal arc, with the gauge recipe and the smooth rows (flat_arc), or equal arc length "
+                        "of the current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
     args = parser.parse_args(argv)
-    if args.restart is not None:
-        args.coils = args.restart / "coils.json"
-    if args.bootstrap and not args.beta > 0:
-        parser.error("--bootstrap needs --beta > 0")
-    if args.fixed_current and not args.bootstrap:
-        parser.error("--fixed-current needs --bootstrap")
+    args.coils = COILS_FILE if args.restart is None else args.restart / "coils.json"
     return args
 
 
@@ -817,54 +759,12 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-def check_gradient(problem, directions, out, steps=(1e-2, 1e-3, 1e-4), fit=None):
-    """Implicit design gradients of the loss and every quantity at the seed against central differences of
-    re-solved trials, along ``directions`` random unit directions in the optimizer's coordinates, at each step in
-    ``steps``; the relative difference ``|implicit - difference| / |difference|`` is written to
-    ``gradient_check.json`` (the loss on its own, the quantities as one vector).  With ``fit = (ftol, max_nfev)``
-    the differenced trials' boundary fits run to that tolerance, so each lands on its design's free boundary
-    rather than near the first-order prediction it starts from."""
-    x = np.asarray(problem.accepted.parameters, dtype=float)
-    _, grad = problem.value_and_grad(x)
-    jac = problem.constraint_jac(x)
-    if fit is not None:
-        problem.boundary_ftol, problem.boundary_max_nfev = float(fit[0]), int(fit[1])
-    rng = np.random.default_rng(0)
-    records = []
-    for k in range(directions):
-        d = rng.standard_normal(x.size)
-        d /= np.linalg.norm(d)
-        implicit = np.r_[grad @ d, jac @ d]
-        for h in steps:
-            values = [np.r_[problem.fun(x + s * h * d), problem.constraint_values(x + s * h * d)] for s in (1, -1)]
-            fd = (values[0] - values[1]) / (2 * h)
-            loss = abs(implicit[0] - fd[0]) / max(abs(fd[0]), 1e-300)
-            rows = np.linalg.norm(implicit[1:] - fd[1:]) / max(np.linalg.norm(fd[1:]), 1e-300)
-            records.append(dict(direction=k, h=h, loss_implicit=float(implicit[0]), loss_difference=float(fd[0]),
-                                loss_relative=float(loss), rows_relative=float(rows),
-                                rows_implicit=implicit[1:].tolist(), rows_difference=fd[1:].tolist()))
-            print(f"[gradient check] direction {k} h={h:.0e}: loss {implicit[0]:.6e} vs {fd[0]:.6e} "
-                  f"(relative {loss:.1e}), quantities relative {rows:.1e}", flush=True)
-    (out / "gradient_check.json").write_text(json.dumps(records, indent=1) + "\n")
-
-
-def load_extension(path):
-    """``ROWS`` and ``TERMS`` of an ``--extension`` file, empty without one.
-
-    ``ROWS = {name: (f, lower, upper, scale)}``: hard constraint rows ``lower <= f(state, runtime) <= upper`` (a
-    scalar or an array, every element a row; ``scale`` is the row's unit).  ``TERMS = {name: (f, weight)}``: the
-    objective adds ``weight / 2 |f(state, runtime)|^2``.  ``f`` is a JAX function of the equilibrium state and
-    its runtime, like ``vmex.optimize.aspect_ratio``; its gradient comes from the same implicit adjoint as the
-    built-in rows.  Their values are logged as ``extension_<name>``.
-    """
-    if path is None:
-        return {}, {}
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("single_stage_extension", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return dict(getattr(module, "ROWS", {})), dict(getattr(module, "TERMS", {}))
+RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT)
+    "COIL_CASE", "RESOLUTION", "BETA", "BOOTSTRAP", "CURRENT_CONSTRAINT", "FIXED_CURRENT", "BOOTSTRAP_IN_SOLVE",
+    "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "QUADRATURE", "CHUNK", "TRIAL_FTOL",
+    "MAX_BOUNDARY_RESIDUAL", "MAX_STEP", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING", "VACUUM_IOTA_FLOOR",
+    "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS", "COILS_FILE",
+    "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
 
 
 def write_run_record(out, args):
@@ -919,33 +819,15 @@ def write_run_record(out, args):
         python=platform.python_version(), gpus=gpus(),
         packages={n: version(n) for n in ("jax", "jaxlib", "jax-cuda12-plugin", "numpy", "scipy", "essos", "dkx",
                                           "solvax", "booz_xform_jax", "virtual-casing-jax", "neo-jax")},
+        parameters={name: str(value) if isinstance(value, Path) else value for name, value in globals().items()
+                    if name in RECORDED_PARAMETERS},
         inputs=inputs)
     (out / "run.json").write_text(json.dumps(record, indent=1) + "\n")
 
 
 def main(argv=None):
-    global RESOLUTION, CURRENT_IOTA_WEIGHT, VACUUM_IOTA_FLOOR, IOTA_CEILING, ASPECT_RANGE, COIL_POINT_ROWS
-    global BOOTSTRAP_IN_SOLVE, LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT
+    global RESOLUTION
     args = parse_args(argv)
-    if args.coil_limits is not None:
-        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = args.coil_limits
-    if args.redl_rows and BOOTSTRAP_MODEL != "redl":
-        raise SystemExit("--redl-rows needs BOOTSTRAP_MODEL = 'redl'")
-    args.current_constraint = args.current_constraint or args.redl_rows
-    if args.redl_s_min:
-        global REDL_SURFACES
-        REDL_SURFACES = [float(s) for s in redl_surfaces() if s >= args.redl_s_min]
-    if args.current_constraint or args.fixed_current:
-        BOOTSTRAP_IN_SOLVE = False
-    if args.current_iota_weight is not None:
-        CURRENT_IOTA_WEIGHT = args.current_iota_weight
-    if args.vacuum_iota_floor is not None:
-        VACUUM_IOTA_FLOOR = args.vacuum_iota_floor
-    if args.iota_ceiling is not None:
-        IOTA_CEILING = args.iota_ceiling
-    if args.aspect_range is not None:
-        ASPECT_RANGE = tuple(args.aspect_range)
-    COIL_POINT_ROWS = bool(args.coil_point_rows)
     RESOLUTION = (*(args.modes or RESOLUTION[:2]), args.ns or RESOLUTION[2])
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -963,22 +845,23 @@ def main(argv=None):
     import vmex as vj
     from vmex import optimize as opt
     from vmex.core import implicit as im
+    from vmex.core.wout import wout_from_state
 
     started = time.monotonic()
     inp, redl = seed_input(), None
-    if args.max_iterations:  # before the seed is built: its beta ramp and current blend solve with the same cap
-        inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
+    if MAX_ITERATIONS:  # before the seed is built: its beta ramp and current blend solve with the same cap
+        inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), MAX_ITERATIONS))
     if args.restart is not None:
         inp = restart_input(args.restart)
-        redl = redl_profiles(inp)[1] if args.bootstrap else None
+        redl = redl_profiles(inp)[1] if BOOTSTRAP else None
     elif args.seed_run is not None:
         inp = replace(vj.VmecInput.from_file(str(args.seed_run / "input.run")), lfreeb=False)
-        redl = redl_profiles(inp)[1] if args.bootstrap else None
+        redl = redl_profiles(inp)[1] if BOOTSTRAP else None
         args.coils = args.seed_run / "coils.initial.json"
-    elif args.bootstrap:
-        inp, fixed, redl = bootstrap_input(inp, args.beta, "gpu")
+    elif BOOTSTRAP:
+        inp, fixed, redl = bootstrap_input(inp, BETA, "gpu")
     else:
-        inp, fixed = finite_beta_input(inp, args.beta, "gpu")
+        inp, fixed = finite_beta_input(inp, BETA, "gpu")
     if args.modes and (args.restart is not None or args.seed_run is not None):  # a saved run at another resolution
         inp = inp.change_resolution(mpol=args.modes[0], ntor=args.modes[1])
     saved_ns = int(np.asarray(inp.ns_array)[-1])
@@ -986,27 +869,23 @@ def main(argv=None):
     if regrid:
         inp = radial_regrid(inp, args.ns)
         print(f"[restart] radial grids {saved_ns} -> {args.ns}", flush=True)
-    fold = args.bootstrap and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
-    if args.current_knots_at_ends:
-        knots = np.sin(0.5 * np.pi * np.linspace(0.0, 1.0, args.current_knots)) ** 2
-        knots[0], knots[-1] = 0.0, 1.0
-        inp = opt.resample_current_profile(inp, args.current_knots, knots=knots)
+    fold = BOOTSTRAP and BOOTSTRAP_IN_SOLVE and BOOTSTRAP_MODEL == "redl"
     profiles = redl_profiles(inp)[0] if fold else None
-    redl = None if fold or args.fixed_current else redl
-    if args.max_iterations:
-        inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), args.max_iterations))
+    redl = None if fold or FIXED_CURRENT else redl
+    if MAX_ITERATIONS:
+        inp = replace(inp, niter_array=np.full(np.size(inp.niter_array), MAX_ITERATIONS))
     inp.to_indata(out / "input.run")
 
     coils = resize_coils(Coils.from_json(str(args.coils)), COIL_ORDER, N_SEGMENTS)
     if args.restart is None and args.seed_run is None:
         coils = scale_coil_currents(coils, abs(float(fixed.wout.rbtor)))
-        if args.beta > 0 and not args.no_coil_fit:
+        if BETA > 0 and COIL_FIT:
             coils = fit_coils_to_plasma(coils, fixed.wout, inp)
     coils.to_json(str(out / "coils.initial.json"))
     coils0 = Coils.from_json(str(out / "coils.initial.json"))
-    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if args.bootstrap and not fold and not args.fixed_current else None
+    current = np.r_[np.asarray(inp.ac_aux_f)[:-1], inp.curtor] if BOOTSTRAP and not fold and not FIXED_CURRENT else None
     current_dofs = tuple(np.flatnonzero(np.asarray(coils0.dofs_currents_raw))) if FREE_COIL_CURRENTS else ()
-    scales = args.design_step_scale * np.r_[
+    scales = DESIGN_STEP_SCALE * np.r_[
         [PHIEDGE_STEP] * FREE_PHIEDGE, [CURRENT_STEP] * (0 if current is None else current.size),
         [COIL_CURRENT_STEP] * len(current_dofs),
         COIL_STEP / np.broadcast_to(np.asarray(coils0.curves.scaling), coils0.dofs_curves.shape).ravel()]
@@ -1014,9 +893,11 @@ def main(argv=None):
                       phiedge=float(inp.phiedge) if FREE_PHIEDGE else None,
                       plasma_current=current, plasma_current_spline=True)
     qs = target_residual()
-    mercier_row = (min_d_merc if not args.mercier_smooth else
-                   lambda state, runtime: smooth_d_merc(state, runtime, args.mercier_smooth, args.mercier_bands))
-    mirror = ((lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=args.mirror_smooth)),
+    flat_arc = args.labelling == "flat_arc"
+    clearance_smooth, mirror_smooth = (CLEARANCE_SMOOTH, MIRROR_SMOOTH) if flat_arc else (None, None)
+    mercier_row = (min_d_merc if not flat_arc else
+                   lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS))
+    mirror = ((lambda state, runtime: opt.mirror_ratio(state, runtime, smooth=mirror_smooth)),
               ) if MIRROR_LIMIT else ()
     ceiling = (max_abs_iota,) if IOTA_CEILING else ()
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
@@ -1026,17 +907,12 @@ def main(argv=None):
 
     def clearance(rbc, zbs, x):
         surface = surfacerzfourier_from_boundary(rbc, zbs, inp.nfp, nphi=SURFACE_GRID[0], ntheta=SURFACE_GRID[1])
-        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=args.clearance_smooth)
-
-    ext_rows, ext_terms = load_extension(args.extension)
-
-    def extension_cost(state, runtime):
-        return sum((0.5 * w * jnp.sum(jnp.ravel(f(state, runtime)) ** 2) for f, w in ext_terms.values()), 0.0)
+        return limits.surface_clearance(chart.coils_from_x(x), surface, smooth=clearance_smooth)
 
     def loss(state, runtime, x):
         residuals = qs.residuals_state(state, runtime)
         current = 0.5 * CURRENT_IOTA_WEIGHT * current_iota(state, runtime) ** 2 if CURRENT_IOTA_WEIGHT else 0.0
-        return 0.5 * jnp.vdot(residuals, residuals) + current + extension_cost(state, runtime)
+        return 0.5 * jnp.vdot(residuals, residuals) + current
 
     def aspect(state, runtime, x):
         return opt.aspect_ratio(state, runtime)
@@ -1045,51 +921,35 @@ def main(argv=None):
         inp, loss, chart.x0, field_from_parameters=chart, plasma_from_parameters=chart.plasma_params_at,
         scales=chart.scales, names=chart.dof_names,
         quantities=(min_abs_iota, opt.major_radius, opt.axis_field_strength, *mirror, *ceiling,
-                    *([redl.residuals_state if args.redl_rows else bootstrap_mismatch(inp, redl, "gpu")]
-                      if redl is not None else []),
-                    *([d_merc_rows if args.mercier_rows else mercier_row] if MERCIER_FLOOR is not None else []),
-                    *([current_iota] if CURRENT_IOTA_WEIGHT else []),
-                    *(f for f, *_ in ext_rows.values())),
+                    *([bootstrap_mismatch(inp, redl, "gpu")] if redl is not None else []),
+                    *([mercier_row] if MERCIER_FLOOR is not None else []),
+                    *([current_iota] if CURRENT_IOTA_WEIGHT else [])),
         parameter_quantities=(aspect,), boundary_quantities=(*vacuum_floor, clearance),
-        config=vj.ThreeTermsConfig(labelling=args.labelling, label_weight=args.label_weight, nphi=args.vc_grid,
-                                   ntheta=args.vc_grid, chunk=args.chunk,
-                                   quadrature=args.quadrature or (4 * int(inp.nfp) * args.vc_grid, 2 * args.vc_grid),
-                                   trial_ftol=args.trial_forward_ftol, bootstrap=profiles,
-                                   bootstrap_helicity=REDL_HELICITY,
-                                   **({} if args.gauge_tau is None else {"gauge_tau": args.gauge_tau})),
-        boundary_ftol=args.trial_ftol, boundary_max_residual=args.max_boundary_residual,
+        config=vj.ThreeTermsConfig(labelling=args.labelling, nphi=VC_GRID, ntheta=VC_GRID, chunk=CHUNK,
+                                   quadrature=QUADRATURE or (4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID),
+                                   trial_ftol=TRIAL_FORWARD_FTOL, bootstrap=profiles,
+                                   bootstrap_helicity=REDL_HELICITY),
+        boundary_ftol=TRIAL_FTOL, boundary_max_residual=MAX_BOUNDARY_RESIDUAL,
         boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
-        gauge_refresh=args.gauge_refresh, gauge_max_share=args.gauge_max_share, gauge_release=args.gauge_release,
-        gauge_release_rounds=args.gauge_release_rounds, gauge_release_gain=args.gauge_release_gain,
-        gradient_rounds=args.gradient_rounds, gradient_rtol=args.gradient_rtol,
-        gradient_fit_xtol=args.gradient_fit_xtol, gradient_certify=args.certify,
-        promote_trials=args.promote_trials)
+        **(FLAT_ARC_GAUGE if flat_arc else {}))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
-          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if args.labelling in ("minimal", "flat_arc")
-             else ""), flush=True)
+          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if flat_arc else ""), flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
-    nredl = 0 if redl is None else redl_surfaces().size if args.redl_rows else 1
-    redl_row = np.sqrt(REDL_TOLERANCE / nredl) if args.redl_rows else None  # all rows met: f_boot <= REDL_TOLERANCE
-    state0, params0 = problem.state(problem.x0)
-    runtime0 = im.runtime_from_params(params0, model.cfg)
-    nmerc = (int(np.size(d_merc_rows(state0, runtime0))) if args.mercier_rows
-             else args.mercier_bands if args.mercier_smooth else 1)
-    extension_bounds = [(lo, hi, scale) for f, lo, hi, scale in ext_rows.values()
-                        for _ in range(int(np.size(f(state0, runtime0))))]
+    nredl = 0 if redl is None else 1
+    nmerc = MERCIER_BANDS if flat_arc else 1
     lower, upper, row_scales = zip(
         (IOTA_FLOOR + IOTA_MARGIN, np.inf, IOTA_FLOOR),
         (RADIUS_TARGET - width, RADIUS_TARGET + width, RADIUS_TOLERANCE),
         (B0 - b_width, B0 + b_width, B_AXIS_TOLERANCE),
         *([(-np.inf, MIRROR_LIMIT - MIRROR_MARGIN, MIRROR_LIMIT)] if mirror else []),
         *([(-np.inf, IOTA_CEILING - IOTA_MARGIN, IOTA_FLOOR)] if ceiling else []),
-        *([(-redl_row, redl_row, redl_row)] * nredl if args.redl_rows else [(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl),
-        *([(MERCIER_FLOOR + args.mercier_margin, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
+        *([(-np.inf, REDL_TOLERANCE, REDL_TOLERANCE)] * nredl),
+        *([(MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0)] * nmerc if MERCIER_FLOOR is not None else []),
         *([(-np.inf, np.inf, 1.0)] if CURRENT_IOTA_WEIGHT else []),  # logged; the loss carries it
-        *extension_bounds,
         (aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)),
         *([(VACUUM_IOTA_FLOOR + IOTA_MARGIN, np.inf, VACUUM_IOTA_FLOOR)] if vacuum_floor else []),
         (COIL_SURFACE_DISTANCE_LIMIT + DISTANCE_MARGIN, np.inf, COIL_SURFACE_DISTANCE_LIMIT))
@@ -1135,15 +995,14 @@ def main(argv=None):
     def save(tag):
         x = problem.accepted.parameters
         chart.coils_from_x(jnp.asarray(x)).to_json(str(out / f"coils{tag}.json"))
-        vj.write_wout(str(out / f"wout{tag}.nc"), problem.equilibrium_from_x(x).wout)
-        im.input_with_params(model.fixed, problem.state(x)[1]).to_indata(out / f"input.final{tag}")  # that solve's deck
+        state_x, params_x = problem.state(x)  # the optimizer's own state: a re-solve can end elsewhere
+        deck = im.input_with_params(model.fixed, params_x)
+        vj.write_wout(str(out / f"wout{tag}.nc"), wout_from_state(inp=deck, state=state_x, fsqr=0.0, fsqz=0.0, fsql=0.0))
+        deck.to_indata(out / f"input.final{tag}")
 
     last = dict(time=time.monotonic(), x=None)
     diagnostics = jax.jit(lambda state, params: (current_iota(state, im.runtime_from_params(params, model.cfg)),
                                                  min_d_merc(state, im.runtime_from_params(params, model.cfg))))
-    extension_values = jax.jit(lambda state, params: (
-        {name: f(state, im.runtime_from_params(params, model.cfg)) for name, (f, *_) in {**ext_rows, **ext_terms}.items()},
-        extension_cost(state, im.runtime_from_params(params, model.cfg))))
 
     def label_speed_ratio(params):
         """Largest over smallest |d(R, Z)/d theta| on the LCFS, worst of 9 toroidal cuts (1: equal arc length)."""
@@ -1184,31 +1043,37 @@ def main(argv=None):
             print(f"[step {problem.accepted_step}] vacuum iota not available: {str(error).splitlines()[0][:200]}",
                   flush=True)
         iota_i, d_merc = map(float, diagnostics(state_x, params_x))
-        ext_values, ext_cost = extension_values(state_x, params_x)
+        # The equilibrium's own accuracy: the radial force balance error of each surface (WOUT's equif), over the
+        # core 0.1 < s < 0.9 (the end surfaces carry the one-sided differences of the measure itself).
+        equif = np.asarray(wout_from_state(inp=im.input_with_params(model.fixed, params_x), state=state_x,
+                                           fsqr=0.0, fsqz=0.0, fsql=0.0).equif)
+        s_full = np.linspace(0.0, 1.0, equif.size)
+        core = np.abs(equif[(s_full > 0.1) & (s_full < 0.9)])
+        stalled = (im._SOLVE_STATS.get(model.cfg) or {}).get("stalled_solves", 0)
         row = dict(step=problem.accepted_step,
-                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2 - 2 * float(ext_cost),
-                   **{f"extension_{name}": np.asarray(v).tolist() for name, v in ext_values.items()},
+                   qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2,
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
                    geometric_axis_iota=float(abs(opt.axis_iota(state_x, runtime_x))),
                    vacuum_iota_axis=float(vac[0]), vacuum_iota_min=float(vac.min()), vacuum_iota_edge=float(vac[-1]),
                    major_radius_m=float(h[1]), b_axis_t=float(h[2]),
                    beta=float(opt.volume_average_beta(state_x, runtime_x)),
                    coil_currents_a=np.asarray(chart.base_currents_at(jnp.asarray(x))).tolist(),
-                   **({"redl_mismatch": float(np.sum(redl_h**2) if args.redl_rows else redl_h[0]),  # f_boot either way
+                   **({"redl_mismatch": float(redl_h[0]),
                        "redl_max_row": float(np.max(np.abs(redl_h)))} if nredl else {}),
                    **({"redl_max_relative": model.bootstrap_residual(state_x, params_x)} if fold else {}),
                    coil_surface_distance_m=float(h[-1]), aspect=float(h[-2 - len(vacuum_floor)]),
                    coil_minimum_scaled_slack=float(np.min(coil_rows.fun(x))),
                    phiedge_factor=float(chart.phiedge_at(jnp.asarray(x)) / chart.phiedge) if FREE_PHIEDGE else 1.0,
-                   bn=res.normal, pressure_balance=res.pressure, sheet_current=res.sheet_current,
+                   bn=res.normal, bn_max=res.normal_max, pressure_balance=res.pressure, sheet_current=res.sheet_current,
+                   force_balance_rms=float(np.sqrt(np.mean(core**2))), force_balance_max=float(core.max()),
+                   force_balance=equif.tolist(), stalled_solves=int(stalled),
                    label_speed_ratio=label_speed_ratio(params_x), boundary_jacobian_cond=boundary_jacobian_condition(),
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
         if model._gauge is not None:  # the gauge rows' share of the accepted fit's cost (0 where it was set)
             M, reference = model._gauge
-            g = np.asarray(M @ ((model._arc_label(params_x.rbc, params_x.zbs) if model.labelling == "flat_arc"
-                                 else model._boundary_of(params_x)) - reference))
+            g = np.asarray(M @ (model._arc_label(params_x.rbc, params_x.zbs) - reference))
             r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
             row["gauge_share"] = float(g @ g / (r @ r))
         if args.steps > problem.accepted_step or problem.accepted_step:  # an optimization, not a re-solve alone
@@ -1227,29 +1092,25 @@ def main(argv=None):
               f"coil_slack={row['coil_minimum_scaled_slack']:.4f} "
               + (f"redl={row['redl_mismatch']:.2e} " if nredl else "")
               + (f"redl(max rel)={row['redl_max_relative']:.1e} " if fold else "")
-              + f"B.n={res.normal:.1e} pressure={res.pressure:.1e} K={res.sheet_current:.1e} "
-              f"label_ratio={row['label_speed_ratio']:.2f} "
+              + f"B.n={res.normal:.1e} (max {res.normal_max:.1e}) pressure={res.pressure:.1e} K={res.sheet_current:.1e} "
+              f"force={row['force_balance_rms']:.1e}/{row['force_balance_max']:.1e} "
+              + (f"stalled={row['stalled_solves']} " if row["stalled_solves"] else "")
+              + f"label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
               + (f"gauge={row['gauge_share']:.1e}/{row['gauge_directions']} " if "gauge_share" in row else "")
-              + (f"newton={row['newton_products']}/{row['newton_residual']:.0e} " if "newton_residual" in row else "")
-              + (f"fit={row['fit_steps']}/{row['fit_step']:.0e} " if "fit_step" in row else "")
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
               + (f"kkt={row['kkt_residual']:.2f}/{row['kkt_rows']} " if "kkt_residual" in row else "")
               + f"{row['step_seconds']:.1f}s "
               f"(trials {row['trials']}, boundary evaluations {row['boundary_evaluations']}, "
               f"peak {row['peak_gpu_gib']:.1f} GiB)", flush=True)
-        if row["step"] % args.save_every == 0:
+        if row["step"] % SAVE_EVERY == 0:
             save(f".step{row['step']}")
 
-    if args.check_gradient:
-        check_gradient(problem, args.check_gradient, out, fit=args.check_gradient_fit)
-        return
     log_step()
     result = opt.minimize(problem, x0=problem.accepted.parameters, method="SLSQP", constraints=constraints,
                           callback=lambda x: log_step(),
                           options=dict(maxiter=args.steps - problem.accepted_step, ftol=OPTIMIZER_FTOL,
-                                       restart_on_rejection=True, max_step=args.max_step,
-                                       step_box=args.step_box))
+                                       restart_on_rejection=True, max_step=MAX_STEP))
     save("")
     summary = dict(accepted_steps=problem.accepted_step, success=bool(result.success), message=str(result.message),
                    stop_reason=getattr(result, "stop_reason", None),

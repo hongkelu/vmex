@@ -155,6 +155,9 @@ Free boundary
 .. automodule:: vmex.core.freeboundary_three_terms_problem
    :members: ThreeTermsFreeBoundaryProblem
 
+.. automodule:: vmex.core.coil_design
+   :members: CoilDesign
+
 .. automodule:: vmex.core.extender
    :members:
 

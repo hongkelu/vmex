@@ -125,6 +125,7 @@ def test_coil_examples_need_only_the_pinned_essos_release() -> None:
 UNTESTED_EXAMPLES = {
     "examples/near_axis_initial_guess.py": "requires optional qsc or qicna; checked separately with both packages",
     "examples/drift_surfaces.py": "drives drift_surfaces_from_boozer, which has its own unit tests",
+    "examples/optimization/single_stage_free_boundary_optimization_three_term.py": "a full three-term single-stage run on a GPU; its problem class is covered by tests/test_freeboundary_three_terms.py",
     "examples/optimization/single_stage_optimization_pwO.py": "requires the full vacuum optimization; joint numerical/physics validation is separate",
     "examples/mirror/pleiades_mirror_reference.py": "needs an external Pleiades checkout",
     "examples/mirror/stellarator_mirror_hybrid.py": "mirror hybrid, covered by tests/mirror",

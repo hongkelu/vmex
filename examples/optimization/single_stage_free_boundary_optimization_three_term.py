@@ -28,8 +28,8 @@ The flags are what differs from one launch to the next: ``--output``, ``--steps`
 ``--labelling``, ``--restart`` and ``--seed-run``.
 
 The boundary's labelling is ``flat_arc`` with follow: the label rows are set again at every accepted step, and a
-trial is its fit under them.  Its Mercier, clearance and mirror rows are smooth (``MERCIER_SMOOTH``,
-``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``).  ``--labelling equal_arc`` is the control, with the rows' hard extremes.
+trial is its fit under them.  ``--labelling equal_arc`` is the control.  The Mercier, clearance and mirror rows are
+smooth for both (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``).
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted
 coils; ``--restart <run>`` continues a saved run, on another ``--ns`` too.
@@ -166,7 +166,9 @@ MERCIER_S_MIN = 0.2
 # Margin of the Mercier floor. SLSQP holds a row only to its tolerance: DMerc stays strictly positive (and its
 # value near the floor changes with resolution, so a design held closer can lose it there).
 MERCIER_MARGIN = 0.02
-# flat_arc labelling (equal_arc, the control, keeps the hard extremes): the Mercier floor on MERCIER_BANDS radial
+# Smooth rows.  A hard extreme changes the surface or point it reads within a short step, and its gradient sees
+# only the one it reads now: with the hard Mercier minimum the QH run at 8x8 modes crawled from step 180 (a row
+# predicted to rise by 0.1 fell by 5.4 at a step of 2e-3).  The Mercier floor is held on MERCIER_BANDS radial
 # bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), and where a case sets
 # them the coil-plasma clearance as the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] and the mirror
 # ratio's Bmax, Bmin as |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
@@ -744,8 +746,8 @@ def parse_args(argv=None):
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--labelling", choices=("flat_arc", "equal_arc"), default="flat_arc",
                         help="the boundary's poloidal labelling rows: label rows on the fit's flat tangential "
-                        "directions, set again at every accepted step, with the smooth rows (flat_arc), or equal arc "
-                        "length of the current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
+                        "directions, set again at every accepted step (flat_arc), or equal arc length of the "
+                        "current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
     args = parser.parse_args(argv)
     args.coils = COILS_FILE if args.restart is None else args.restart / "coils.json"
     return args
@@ -961,7 +963,7 @@ class ConstraintRow:
     count: int = 1
 
 
-def constraint_rows(inp, chart, redl, flat_arc):
+def constraint_rows(inp, chart, redl):
     """The case's constraints, as the one ordered list of ``ConstraintRow`` that everything else reads.
 
     The functions handed to ``from_loss`` (``row_functions``), the bounds and scales (``row_bounds``) and the step
@@ -972,9 +974,8 @@ def constraint_rows(inp, chart, redl, flat_arc):
     from essos.surfaces import surfacerzfourier_from_boundary
     from vmex import optimize as opt
 
-    clearance_smooth, mirror_smooth = (CLEARANCE_SMOOTH, MIRROR_SMOOTH) if flat_arc else (None, None)
-    mercier_row = (min_d_merc if not flat_arc else
-                   lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS))
+    clearance_smooth, mirror_smooth = CLEARANCE_SMOOTH, MIRROR_SMOOTH
+    mercier_row = lambda state, runtime: smooth_d_merc(state, runtime, MERCIER_SMOOTH, MERCIER_BANDS)  # noqa: E731
     # rows of the trial's fitted boundary (rbc, zbs), differentiated through the boundary fit
     vacuum = opt.vacuum_iota(inp)
     limits = coil_limits()
@@ -1006,7 +1007,7 @@ def constraint_rows(inp, chart, redl, flat_arc):
                         -np.inf, REDL_TOLERANCE, REDL_TOLERANCE))
     if MERCIER_FLOOR is not None:
         rows.append(Row("mercier", "state", mercier_row, MERCIER_FLOOR + MERCIER_MARGIN, np.inf, 1.0,
-                        count=MERCIER_BANDS if flat_arc else 1))
+                        count=MERCIER_BANDS))
     if CURRENT_IOTA_WEIGHT:  # logged; the loss carries it
         rows.append(Row("current_iota", "state", current_iota, -np.inf, np.inf, 1.0))
     rows.append(Row("aspect", "parameter", aspect, aspect_lower, aspect_upper, 0.5 * (aspect_upper - aspect_lower)))
@@ -1296,7 +1297,7 @@ def main(argv=None):
 
     target = target_residual()
     flat_arc = args.labelling == "flat_arc"
-    rows, vacuum, limits = constraint_rows(inp, chart, redl, flat_arc)
+    rows, vacuum, limits = constraint_rows(inp, chart, redl)
     problem = build_problem(args, inp, chart, target, rows, profiles, regrid)
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "

@@ -264,10 +264,11 @@ ACCEPTED_RESIDUAL = 1e-2
 
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
-#: on the benchmark designs; for flat arc that of its arc-distribution rows (zero at the reference fit, so they need
-#: not be weak).  These are the accepted labellings.  A labelling at weight 0 has no labelling rows: the model
-#: names it ``"none"``.
-LABEL_WEIGHTS = {"flat_arc": 1e-1, "equal_arc": 1e-3, "anchored": 1e-2}
+#: on the benchmark designs; for flat arc the same weak weight: its rows must pin the labelling only, since the
+#: directions they hold are nearly flat, not free (at 1e-1 a single-stage fit that follows them ends 20 times
+#: further from the free boundary in B.n).  These are the accepted labellings.  A labelling at weight 0 has no
+#: labelling rows: the model names it ``"none"``.
+LABEL_WEIGHTS = {"flat_arc": 1e-3, "equal_arc": 1e-3, "anchored": 1e-2}
 
 
 class _LabelledField(NamedTuple):

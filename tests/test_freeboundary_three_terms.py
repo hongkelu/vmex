@@ -96,7 +96,7 @@ def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
     assert vj.ThreeTermsConfig().labelling == "flat_arc"
     weights = {name: vj.ThreeTermsConfig(labelling=name).resolved_label_weight
                for name in ("anchored", "equal_arc", "flat_arc")}
-    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1}
+    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-3}
     options = vj.ThreeTermsConfig(labelling="equal_arc", label_weight=0.0).model_options()
     assert options["labelling"] == "none" and options["label_weight"] == 0.0
     # at weight 0 every labelling is the no-label model

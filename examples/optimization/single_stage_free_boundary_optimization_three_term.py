@@ -7,8 +7,8 @@ VMEC + NESTOR solve, which balances only |B| and leaves the tangential field
 jump free.  ``COIL_CASE`` selects the case, and the case and its settings are
 parameters at the top of this file (the table below: seed, coils, limits,
 targets and run settings); the design variables are the coil shapes and currents,
-PHIEDGE and, with ``BOOTSTRAP``, the current spline values and CURTOR --
-except with ``BOOTSTRAP_IN_SOLVE`` (Redl): then the current is solved with the
+PHIEDGE and, with ``BOOTSTRAP``, the current spline values and CURTOR.
+With ``BOOTSTRAP_IN_SOLVE`` (Redl) the current is instead solved with the
 boundary, Redl's on every half-grid surface, and neither its values nor the
 bootstrap-mismatch row enter the optimization.  A row holds the axis |B| at
 ``B0``, and where the case sets ``VACUUM_IOTA_FLOOR`` a row floors the vacuum
@@ -27,10 +27,9 @@ example of the same problem.
 The flags are what differs from one launch to the next: ``--output``, ``--steps``, ``--modes``, ``--ns``,
 ``--labelling``, ``--restart`` and ``--seed-run``.
 
-The boundary's labelling is ``flat_arc`` (with follow: every trial is its no-label fit, and the held directions are
-set again at every accepted step) with smooth Mercier, clearance
-and mirror rows (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``); ``--labelling equal_arc`` is the
-control, with the rows' hard extremes.
+The boundary's labelling is ``flat_arc`` with follow: every trial is its released fit (no gauge rows), and the gauge
+rows are set again at every accepted step.  Its Mercier, clearance and mirror rows are smooth (``MERCIER_SMOOTH``,
+``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``).  ``--labelling equal_arc`` is the control, with the rows' hard extremes.
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted
 coils; ``--restart <run>`` continues a saved run, on another ``--ns`` too.
@@ -54,6 +53,20 @@ import numpy as np
 
 # ---- cases -----------------------------------------------------------------------------------------------------------
 # COIL_CASE selects the case. The values are ellipse5's; the blocks after them override them per case.
+# The settings are decided in this order, a later stage overriding an earlier one:
+#   1. the defaults (ellipse5's);
+#   2. the case (the CASE blocks);
+#   3. "-tok": the near-axisymmetric seed and its Ohmic current;
+#   4. the variant, "-merc" or "-jbs";
+#   5. the aspect, "-A<aspect>": seed and aspect band;
+#   6. COIL_LIMIT_FACTORS: the coil limits that follow the aspect band and the clearance;
+#   7. the recipe case (the full COIL_CASE): beta, bootstrap, the current's treatment and run settings.
+# The current's treatment, from its four flags. CURRENT_CONSTRAINT or FIXED_CURRENT switch BOOTSTRAP_IN_SOLVE off.
+#   BOOTSTRAP off                         the deck's current is an input: no design variable, no mismatch row
+#   BOOTSTRAP, BOOTSTRAP_IN_SOLVE (Redl)  solved with every boundary fit: no design variable, no mismatch row
+#   BOOTSTRAP, CURRENT_CONSTRAINT         design variables (knot values and CURTOR), held by the mismatch row
+#   BOOTSTRAP, FIXED_CURRENT              held at the seed's or the restart's: no design variable, no mismatch row
+# BOOTSTRAP with none of the other three, or BOOTSTRAP_IN_SOLVE with the DKX model, runs as CURRENT_CONSTRAINT.
 DATA = Path(__file__).resolve().parents[1] / "data"
 COIL_CASE = CASE = os.environ.get("COIL_CASE", "ellipse5")  # COIL_CASE: the full name, CASE: without its suffixes
 # A "-merc" or "-jbs" suffix runs the case with a Mercier floor or a bootstrap-current term (MERCIER_FLOOR,
@@ -92,8 +105,8 @@ VC_GRID = 48                       # virtual-casing grid points per field period
 # leaves a ~3e-4 tangential plasma-field error; see ThreeTermsModel).
 QUADRATURE = None
 CHUNK = 8                          # Jacobian columns per batch (memory)
-TRIAL_FTOL = 1e-3                  # relative cost change at which a trial's boundary steps stop
-MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
+BOUNDARY_FTOL = 1e-3               # relative cost change at which a trial's boundary steps stop
+BOUNDARY_MAX_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balance or K, over |B|) of a solved trial
 
 # BOOTSTRAP: Landreman-Buller-Drevlak kinetic profiles ne ~ 1 - s^5, Te = Ti ~ 1 - s, at the
 # beta and collisionality of a Helios-like reactor (n T ~ B^2 and nu* ~ n R / T^2 held), and a
@@ -104,6 +117,7 @@ MAX_BOUNDARY_RESIDUAL = 0.05       # largest interface RMS (B.n, pressure balanc
 # the axis one and CURTOR are design variables), its seed DKX's on the same surfaces. With
 # FIXED_CURRENT it is no design variable and no row: the restart's current is held fixed.
 REACTOR_R0, REACTOR_B0, REACTOR_N0, REACTOR_T0 = 8.0, 6.0, 1.5e20, 15.0e3   # m, T, 1/m^3, eV
+PRESSURE_SHAPE = (1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0)   # (1 - s)(1 - s^5), the power series in s of ne Te
 REDL_SURFACES = None              # None: every VMEC half-grid surface, as simsopt's RedlGeomVmec
 REDL_N_LAMBDA, REDL_TOLERANCE = 32, 1e-3
 PICARD_ITERATIONS, PICARD_TOLERANCE, PICARD_RELAX = 10, 1e-3, 1.0
@@ -239,8 +253,12 @@ if COIL_CASE in ("qa4-beta-merc", "qh4-beta-A8-merc", "qi6-beta-A8", "qi6-beta-A
         VACUUM_IOTA_FLOOR, IOTA_CEILING, CURRENT_CONSTRAINT = 0.31, 0.495, True
     elif COIL_CASE == "qh4-beta-A8-merc":
         DESIGN_STEP_SCALE, MAX_ITERATIONS, CURRENT_CONSTRAINT, MERCIER_MARGIN = 1.0, 20000, True, 0.1
+        # Gil et al. (2026) Table III scaled to R0 = 1 m, its length per half period over the three coils
+        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.81, 10.0, 13.5
     else:
         DESIGN_STEP_SCALE, MAX_ITERATIONS, FIXED_CURRENT = 1.0, 60000, True
+        # Gil et al. (2026) Table IV scaled to R0 = 1 m, its length per half period over the four coils
+        LENGTH_LIMIT, CURVATURE_LIMIT, MSC_LIMIT = 2.56, 19.9, 48.4
         if VARIANT == "-merc":
             MERCIER_MARGIN = 0.1
 if BOOTSTRAP and not BETA > 0:
@@ -402,7 +420,7 @@ def bootstrap_input(inp, beta, device):
         ohmic[:2] = 2.0 * OHMIC_CURRENT * np.array([1.0, -1.0])
         inp = replace(inp, ac=ohmic, curtor=OHMIC_CURRENT)
         for stage_beta in betas:
-            inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+            inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         for weight in (0.25, 0.5, 0.75):
             boot = picard_at(inp, 1).input  # one Picard step: the Redl current of the current equilibrium
             ac_boot = np.zeros(max(boot.ac.size, ohmic.size))
@@ -415,7 +433,7 @@ def bootstrap_input(inp, beta, device):
         profiles, redl = redl_profiles(inp)
         inp = picard.input
     for stage, stage_beta in enumerate(betas, 1):
-        inp, _ = finite_beta_input(inp, stage_beta, device, am=(1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0))
+        inp, _ = finite_beta_input(inp, stage_beta, device, am=PRESSURE_SHAPE)
         profiles, redl = redl_profiles(inp)
         picard = picard_at(inp, PICARD_ITERATIONS)
         inp = picard.input
@@ -497,7 +515,7 @@ def smooth_d_merc(state, runtime, smooth, bands=1):
 
 def current_iota(state, runtime):
     """``mu0 |I| R0 / (2 pi a^2 B_axis)``: the edge iota the net toroidal current ``I`` gives a cylinder of the
-    plasma's major radius, minor radius ``R0 / aspect`` and axis field -- the current's share of iota."""
+    plasma's major radius, minor radius ``R0 / aspect`` and axis field.  This is the current's share of iota."""
     import jax.numpy as jnp
     from vmex import optimize as opt
     from vmex.core.fields import surface_currents
@@ -601,10 +619,10 @@ def dkx_current(inp, fixed, device):
 def restart_input(run):
     """A finished run's ``input.run`` with its final boundary, PHIEDGE and current profile (``--restart``).
 
-    These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  An older
-    run has only the WOUT, which stores the computed current, not exactly the deck's: a run that held its current
-    fixed (``FIXED_CURRENT`` in its ``run.json`` parameters, ``--fixed-current`` in an older one's command) then keeps
-    the current of its ``input.run``.
+    These are the saved deck's (``input.final``, the deck of ``wout.nc``'s solve) where the run wrote one.  Without
+    it they are the WOUT's, which stores the computed current, not exactly the deck's.  A run that held its current
+    fixed (``FIXED_CURRENT`` in its ``run.json`` parameters, or ``--fixed-current`` in its command) then keeps the
+    current of its ``input.run``.
     """
     import vmex as vj
 
@@ -641,8 +659,7 @@ def scale_coil_currents(coils, rbtor):
     """Coils with every current scaled so the linked mu0 I / 2 pi is ``rbtor``.
 
     mu0 I / 2 pi is the mean of R B_phi on the loop R = R0, Z = 0, with R0 the
-    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)). The loop used to sit at a
-    hard-coded R = 1 m, which is R0 for every case.
+    case's ``RADIUS_TARGET`` (the seed's RBC(0,0)).
     """
     import jax
     import jax.numpy as jnp
@@ -708,9 +725,9 @@ def parse_args(argv=None):
     parser.add_argument("--seed-run", type=Path, help="start from another run's input.run and coils.initial.json "
                         "(its calibrated deck and fitted coils), skipping the bootstrap ramp and the coil fit")
     parser.add_argument("--labelling", choices=("flat_arc", "equal_arc"), default="flat_arc",
-                        help="the boundary's poloidal labelling rows: the seed fit's flat tangential directions "
-                        "held by equal arc, with the gauge recipe and the smooth rows (flat_arc), or equal arc length "
-                        "of the current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
+                        help="the boundary's poloidal labelling rows: gauge rows on the fit's flat tangential "
+                        "directions, set again at every accepted step, with the smooth rows (flat_arc), or equal arc "
+                        "length of the current surface, the control (equal_arc); see vmex.ThreeTermsConfig")
     args = parser.parse_args(argv)
     args.coils = COILS_FILE if args.restart is None else args.restart / "coils.json"
     return args
@@ -755,12 +772,12 @@ def fit_coils_to_plasma(coils, wout, inp):
     return fitted
 
 
-RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT)
+RECORDED_PARAMETERS = (  # run.json: the settings of the run (restart_input reads FIXED_CURRENT alone)
     "COIL_CASE", "RESOLUTION", "BETA", "BOOTSTRAP", "CURRENT_CONSTRAINT", "FIXED_CURRENT", "BOOTSTRAP_IN_SOLVE",
-    "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "QUADRATURE", "CHUNK", "TRIAL_FTOL",
-    "MAX_BOUNDARY_RESIDUAL", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING", "VACUUM_IOTA_FLOOR",
-    "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS", "COILS_FILE",
-    "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
+    "COIL_FIT", "COIL_POINT_ROWS", "SAVE_EVERY", "MAX_ITERATIONS", "VC_GRID", "QUADRATURE", "CHUNK",
+    "BOUNDARY_FTOL", "BOUNDARY_MAX_RESIDUAL", "DESIGN_STEP_SCALE", "IOTA_FLOOR", "IOTA_CEILING",
+    "VACUUM_IOTA_FLOOR", "ASPECT_RANGE", "CURRENT_IOTA_WEIGHT", "MERCIER_FLOOR", "MERCIER_MARGIN", "CURRENT_KNOTS",
+    "COILS_FILE", "LENGTH_LIMIT", "CURVATURE_LIMIT", "MSC_LIMIT")
 
 
 def write_run_record(out, args):
@@ -925,13 +942,14 @@ def main(argv=None):
                                    quadrature=QUADRATURE or (4 * int(inp.nfp) * VC_GRID, 2 * VC_GRID),
                                    bootstrap=profiles,
                                    bootstrap_helicity=REDL_HELICITY),
-        boundary_ftol=TRIAL_FTOL, boundary_max_residual=MAX_BOUNDARY_RESIDUAL,
-        boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
-        )
+        boundary_ftol=BOUNDARY_FTOL, boundary_max_residual=BOUNDARY_MAX_RESIDUAL,
+        # a restart resumes at its saved state, or on another radial grid at its saved deck
+        boundary_start=(None if args.restart is None else restart_input(args.restart) if regrid
+                        else args.restart / "wout.nc"))
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"
-          + (f"; minimal gauge on {problem.stats['gauge_directions']} directions" if flat_arc else ""), flush=True)
+          + (f"; gauge rows on {problem.stats['gauge_directions']} directions" if flat_arc else ""), flush=True)
 
     aspect_lower, aspect_upper = ASPECT_RANGE
     width, b_width = RADIUS_TOLERANCE - RADIUS_MARGIN, B_AXIS_TOLERANCE - B_AXIS_MARGIN
@@ -1045,6 +1063,7 @@ def main(argv=None):
                                            fsqr=0.0, fsqz=0.0, fsql=0.0).equif)
         s_full = np.linspace(0.0, 1.0, equif.size)
         core = np.abs(equif[(s_full > 0.1) & (s_full < 0.9)])
+        # "qa" holds the case's target (QA, QH or QI residual, squared): twice the loss, less its current_iota term
         row = dict(step=problem.accepted_step,
                    qa=2 * problem.fun(x) - CURRENT_IOTA_WEIGHT * iota_i**2,
                    current_iota=iota_i, min_d_merc=d_merc, min_abs_iota=float(h[0]),
@@ -1071,7 +1090,8 @@ def main(argv=None):
             g = np.asarray(M @ (model._arc_label(params_x.rbc, params_x.zbs) - reference))
             r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
             row["gauge_share"] = float(g @ g / (r @ r))
-        if args.steps > problem.accepted_step or problem.accepted_step:  # an optimization, not a re-solve alone
+        optimizing = args.steps > problem.accepted_step or problem.accepted_step  # not a re-solve alone
+        if optimizing:
             try:  # a diagnostic
                 row["kkt_residual"], row["kkt_rows"] = stationarity(x)
             except Exception as error:

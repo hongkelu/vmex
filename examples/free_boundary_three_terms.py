@@ -44,7 +44,7 @@ NZETA = 16
 
 # The interface grid over one field period and its fixed singular quadrature, (4 nfp N, 2 N):
 N_INTERFACE = 24
-# Labellings and the weights of their rows (None: the default, 1e-1 for flat arc, 1e-3 for equal arc and 1e-2
+# Labellings and the weights of their rows (None: the default, 1e-3 for flat arc and for equal arc and 1e-2
 # for anchored):
 LABELLINGS = {"flat_arc": None, "equal_arc": None, "anchored": None}
 

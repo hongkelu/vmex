@@ -22,7 +22,7 @@ res = result.three_terms.boundary_residual   # RMS B.n, pressure balance and she
 The interface conditions leave the boundary's poloidal labelling free;
 `labelling` fixes it: `"flat_arc"` (the default: the arc-length distribution of
 the fit without label rows, held along the fit's flat, tangential directions,
-weight `1e-1`), `"equal_arc"` (equal arc length on every toroidal cut of the
+weight `1e-3`), `"equal_arc"` (equal arc length on every toroidal cut of the
 current surface, weight `1e-3`) or `"anchored"` (the tangential offset from the
 initial boundary, weight `1e-2`). Use a fixed singular quadrature
 `(4 nfp N, 2 N)` for an `N x N` interface grid. The edge pressure must vanish.

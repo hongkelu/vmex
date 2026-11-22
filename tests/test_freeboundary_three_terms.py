@@ -657,7 +657,7 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
     n, rows = problem.model._n_interface, problem._record(x1)["rows"]
     problem.accept_x(x1)
     assert problem.stats["gauge_sets"] == 2 and problem.stats["gauge_releases"] == 1
-    assert "gauge_release_failures" not in problem.stats and problem.gauge_share(x1) < 1e-8
+    assert problem.stats["gauge_release_failures"] == 0 and problem.gauge_share(x1) < 1e-8
     after = problem._record(x1)["rows"]
     assert after[:n] @ after[:n] <= (1 + 1e-6) * rows[:n] @ rows[:n]
     np.testing.assert_allclose(problem.fun(x1), before, rtol=1e-3)
@@ -701,7 +701,7 @@ def test_flat_arc_follow_over_accepted_steps():
         residual = problem.boundary_residual(x)
         for name in ("normal", "pressure", "sheet_current"):
             assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
-    assert "gauge_release_failures" not in problem.stats
+    assert problem.stats["gauge_release_failures"] == 0
     free = build("none")  # the same design without any labelling rows
     np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
     _, grad = problem.value_and_grad(x)

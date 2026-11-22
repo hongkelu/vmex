@@ -1,9 +1,31 @@
-"""Single-stage optimization at the three-term free boundary: a loss and constraint rows of coils and plasma
-parameters, with their design gradients (:class:`ThreeTermsFreeBoundaryProblem`).
+"""Single-stage optimization at the three-term free boundary (:class:`ThreeTermsFreeBoundaryProblem`).
 
-A trial is the boundary fit of its design, warm-started from the first-order prediction of the latest linearized
-point and accepted when every interface residual is within ``boundary_max_residual``; its gradient polishes the fit
-once with its own Jacobian and differentiates it (the implicit function theorem of the boundary fit).
+The problem gives a loss and constraint rows of coils and plasma parameters, with their design gradients.  A trial is
+the boundary fit of its design.  It is a solution when every interface residual is within ``boundary_max_residual``.
+
+Terms:
+
+- Gauge rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
+  Only the labelling ``flat_arc`` has them.
+- Released fit: the trial's fit without the gauge rows.
+- Follow: every trial is its released fit, and the gauge rows are set again at each accepted step.
+- Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
+- Polish: fresh-Jacobian rounds on a fit before its gradient, up to ``GRADIENT_POLISH_ROUNDS`` of them.
+
+One optimization step with gauge rows:
+
+1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the gauge rows with the
+   anchor's Jacobian.  Continue from there to the released fit (``_released``), which is the trial.  Where the
+   released fit fails, the trial is the fit under the gauge rows.
+2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``, up to three rounds).  The trial's values become
+   those of the polished fit.  Linearize it, differentiate every row by the implicit function theorem of the boundary
+   fit, and make the point the anchor.
+3. Accept (``accept_x``).  Release the trial if it is not released yet.  Set the gauge rows again at the accepted
+   fit (``_set_gauge``), where they vanish, and clear the anchor.  The next trial first linearizes the accepted point
+   under the new gauge rows, which sets the anchor again.
+
+Without gauge rows a trial is its fit from the anchor, and accepting it changes nothing but the cache.  Without an
+anchor a fit starts from ``boundary_start``, or from the deck's boundary.
 """
 
 from __future__ import annotations
@@ -43,28 +65,49 @@ def _nonlinear_constraint(values, jacobian, lower, upper, scales):
 class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     """A scalar loss and constraint rows of a design ``x`` at its three-term free boundary, for SLSQP.
 
-    Build with :meth:`from_loss` and pass it to :func:`vmex.core.optimize.minimize` (SLSQP).  A design ``x``
-    sets the external field through ``field_from_parameters(x)`` (coils, currents or any differentiable field;
-    coil charts live with the caller, for example in ESSOS) and, optionally, plasma parameters through
-    ``plasma_from_parameters(params, x)`` (an :class:`~vmex.core.implicit.ImplicitParams` map: PHIEDGE, the
-    current profile, ...).  Row 0 is ``loss(state, runtime, x)``, then the ``quantities(state, runtime)``,
-    the ``parameter_quantities(state, runtime, x)`` and the ``boundary_quantities(rbc, zbs, x)``: functions of
-    the trial's fitted boundary itself (INDATA arrays, the model's boundary coordinates), such as a
-    coil-plasma clearance.  Every trial is the K = 0 boundary
-    of the field and plasma parameters of ``x`` (:class:`ThreeTermsModel`), warm-started from the
-    first-order prediction of the latest linearized solution: a trial without a solution raises
-    :class:`~vmex.core.errors.TrialRejected`.  A row ``h`` (loss or quantity) has the design gradient of the
-    implicit function theorem of the boundary least squares,
+    Build with :meth:`from_loss` and pass it to :func:`vmex.core.optimize.minimize` (SLSQP).
 
-        dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db,
+    A design ``x`` sets:
 
-    with ``r`` the interface rows, ``J_b`` their Jacobian in the model's coordinates ``b`` (boundary, and the
-    bootstrap current with ``bootstrap``) and ``dr/dx`` through the plasma parameters and the field; every
-    row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  This Gauss-Newton form
-    leaves out the rows' curvature times the fit's residual.  Nothing recompiles when ``x`` changes.  ``model`` is the
-    :class:`ThreeTermsModel`; :meth:`boundary_residual` and
-    ``stats`` (counts of trials, failures and their reasons, boundary evaluations and linearizations) report
-    progress.
+    - the external field, through ``field_from_parameters(x)``.  It can be coils, currents or any differentiable
+      field.  Coil charts live with the caller, for example in ESSOS.
+    - optionally plasma parameters such as PHIEDGE or the current profile, through
+      ``plasma_from_parameters(params, x)``, an :class:`~vmex.core.implicit.ImplicitParams` map.
+
+    The rows, in order:
+
+    - row 0, ``loss(state, runtime, x)``;
+    - the ``quantities(state, runtime)``;
+    - the ``parameter_quantities(state, runtime, x)``;
+    - the ``boundary_quantities(rbc, zbs, x)``.  These are functions of the trial's fitted boundary itself, given as
+      INDATA arrays (the model's boundary coordinates), such as a coil-plasma clearance.
+
+    Every trial is the K = 0 boundary of the field and plasma parameters of ``x`` (:class:`ThreeTermsModel`).  Its fit
+    is warm-started from the first-order prediction of the latest linearized solution.  A trial without a solution
+    raises :class:`~vmex.core.errors.TrialRejected`.
+
+    A row ``h`` (loss or quantity) has the design gradient of the implicit function theorem of the boundary least
+    squares,
+
+        dh/dx = dh/dx|_b - lambda^T dr/dx,   lambda = J_b (J_b^T J_b)^-1 dh/db.
+
+    Here ``r`` are the interface rows and ``J_b`` is their Jacobian in the model's coordinates ``b``: the boundary,
+    and with ``bootstrap`` the bootstrap current.  ``dr/dx`` goes through the plasma parameters and the field.  Every
+    row's ``dh/db`` and plasma term come from one reverse pass through the equilibrium.  This Gauss-Newton form leaves
+    out the rows' curvature times the fit's residual.  Nothing recompiles when ``x`` changes.
+
+    ``model`` is the :class:`ThreeTermsModel`.  :meth:`boundary_residual` and ``stats`` report progress.  The keys of
+    ``stats``:
+
+    - ``trials``: designs tried.  ``failed``: those without a solution.  ``rejection_reasons``: their
+      reasons without the numbers, each with its count.
+    - ``boundary_evaluations``: equilibrium evaluations of the boundary fits.
+    - ``linearizations``: Jacobians taken for the gradients, their polish rounds included.
+    - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended, before any
+      release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
+    - ``gauge_directions``: directions the gauge rows hold since they were last set.  ``gauge_sets``: times they were
+      set.  ``gauge_releases`` and ``gauge_release_failures``: released fits that solved and that failed.
+    - ``polish_rounds``: polish rounds kept.  ``polish_gain``: the last polish round's relative cost reduction.
     """
 
     @classmethod
@@ -73,22 +116,29 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                   boundary_max_nfev=40, boundary_max_residual=None, boundary_start=None):
         """Solve the seed design's free boundary (that of ``x0`` on the deck ``inp``).
 
-        ``boundary_start`` (a run's final WOUT, or a deck: its fitted boundary and, with ``bootstrap``, current) is
-        the seed design's boundary as it is, re-fitted only if it misses ``boundary_max_residual``, and the start of
-        the fits before the first gradient; a WOUT's equilibrium also seeds the seed design's solve (the interior
-        state is not unique to the force tolerance).  A restart keeps its first run's deck ``inp`` (the anchored
-        labelling's reference and the quadrature plan's boundary) and resumes at its final WOUT.
+        ``config``
+            A :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`.  It sets the labelling, grid, quadrature
+            and bootstrap current of the model.  The problem ignores the config's ``ftol``, ``jacobian_ftol``,
+            ``max_nfev``, ``max_residual`` and ``start``.  Those are the solver's.
+        ``boundary_ftol``, ``boundary_max_nfev``
+            A trial's boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev``
+            evaluations.  Each gradient first polishes its trial's fit with its own Jacobian.
+        ``boundary_max_residual``
+            Caps the trials.  When set, a fit that ends with any :class:`BoundaryResidual` term above it is no
+            solution: the trial tries its next start, or is rejected.
+        ``boundary_start``
+            A run's final WOUT, or a deck.  It gives a fitted boundary and, with ``bootstrap``, its current.  This is
+            the seed design's boundary as it is, re-fitted only if it misses ``boundary_max_residual``.  It is also
+            the start of the fits before the first gradient.  A WOUT's equilibrium also seeds the seed design's solve,
+            because the interior state is not unique to the force tolerance.
 
-        ``config`` (a :class:`~vmex.core.freeboundary_three_terms.ThreeTermsConfig`) sets the labelling, grid,
-        quadrature and bootstrap current of the model; its fit tolerances, ``start`` and
-        ``max_residual`` are the solver's, not the problem's (``boundary_max_residual`` caps the trials).  A trial's
-        boundary fit stops at a relative cost change of ``boundary_ftol`` or after ``boundary_max_nfev`` evaluations;
-        each gradient first polishes its trial's fit with its own Jacobian.  With ``boundary_max_residual`` a fit that
-        ends with any :class:`BoundaryResidual` term above it is no solution: the trial tries its next start, or
-        is rejected.  With a gauge (labelling ``"flat_arc"``), set at the seed's fit, the fit follows the design: every
-        trial is its fit without the gauge rows (the no-label fit, continued from its fit under the gauge), so the
-        labelling does not accumulate and accepting a trial changes none of its values, and the gauge is set again at
-        every accepted fit (:meth:`accept_x`), where its rows vanish.
+        A restart keeps its first run's deck ``inp`` and resumes at its final WOUT.  The deck holds the anchored
+        labelling's reference and the quadrature plan's boundary.
+
+        With the labelling ``"flat_arc"`` the gauge rows are set at the seed's fit and the fit follows the design.
+        Every trial is its released fit (no gauge rows), continued from its fit under the gauge rows.  So the labelling
+        does not accumulate, and accepting a trial changes none of its values.  The gauge rows are set again at every
+        accepted fit (:meth:`accept_x`), where they vanish.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -178,11 +228,16 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 wout = read_wout(boundary_start) if isinstance(boundary_start, (str, Path)) else boundary_start
                 deck, self._start_state = VmecInput.from_wout(wout), state_from_wout(wout, inp=model.fixed)
             fixed = model.fixed
-            if (int(deck.mpol), int(deck.ntor)) != (int(fixed.mpol), int(fixed.ntor)):  # a start saved at another resolution
+            if (int(deck.mpol), int(deck.ntor)) != (int(fixed.mpol), int(fixed.ntor)):  # saved at another resolution
                 deck = deck.change_resolution(mpol=int(fixed.mpol), ntor=int(fixed.ntor))
             self._start = model.coordinates(deck)
         self._start_key = x0.tobytes()
-        self.stats = dict(trials=0, failed=0, boundary_evaluations=0, linearizations=0, rejection_reasons={})
+        # Every key the class writes (the class docstring describes them).
+        self.stats = dict(trials=0, failed=0, rejection_reasons={}, boundary_evaluations=0, linearizations=0,
+                          fit_ftol=0, fit_stalled=0, fit_radius=0, fit_max_nfev=0, fit_as_saved=0,
+                          gauge_directions=0, gauge_sets=0, gauge_releases=0, gauge_release_failures=0,
+                          polish_rounds=0, polish_gain=0.0)
+        self.accepted = None  # no accepted point during the seed solve
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
         if model.labelling == "flat_arc" and model._gauge is None:  # the seed fit's flat directions
@@ -192,12 +247,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                          metadata={"holder": {"failed_trials": 0}})
 
     def _count(self, name, amount=1):
-        self.stats[name] = self.stats.get(name, 0) + amount
+        self.stats[name] += amount
 
     def _released(self, x, sol):
-        """The no-label fit from ``sol``, ``x``'s fit under the gauge: its record, or ``None`` where that fit fails.  Its
-        steps reuse the Jacobian ``sol`` has, else the one its fit used (the last accepted fit's).  The model is left
-        as it was."""
+        """The released fit from ``sol``, ``x``'s fit under the gauge rows: its record, or ``None`` where it fails.
+
+        Its steps reuse the Jacobian ``sol`` has, else the anchor's, else ``sol``'s own after its polish.  The model is
+        left as it was."""
         model, xj = self.model, jnp.asarray(x)
         gauge, saved = model._gauge, [getattr(model, name) for name in self._SAVED_MODEL]
         J = sol.get("J")
@@ -252,8 +308,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        if self.model._gauge is not None and not self._anchor and getattr(self, "accepted", None) is not None:
-            # follow: the accepted point's Jacobian starts every trial's no-label fit, whatever the caller asked first
+        if self.model._gauge is not None and not self._anchor and self.accepted is not None:
+            # follow: the accepted point's Jacobian starts every trial's released fit, whatever the caller asked first
             at = self.accepted.parameters
             self._linearize(at, self._cache[at.tobytes()])
         anchor, starts, J = self._anchor, [self._start], None
@@ -274,24 +330,25 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += 1
                     fit = None
-        for start in [] if fit else starts:
-            try:
-                fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
-                                                max_nfev=self.boundary_max_nfev,
-                                                target_cost=4 * anchor["cost"] if anchor else None)
-            except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
-                continue
-            if not self._fits(fit, field):
-                self.stats["boundary_evaluations"] += fit["nfev"]
-                fit = None  # the fit stalled away from the free boundary: try the next start
-                continue
-            break
+        if fit is None:
+            for start in starts:
+                try:
+                    fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
+                                                    max_nfev=self.boundary_max_nfev,
+                                                    target_cost=4 * anchor["cost"] if anchor else None)
+                except (VmecError, RuntimeError):  # no equilibrium on the way: try the next start
+                    continue
+                if not self._fits(fit, field):
+                    self.stats["boundary_evaluations"] += fit["nfev"]
+                    fit = None  # the fit stalled away from the free boundary: try the next start
+                    continue
+                break
         if fit is None:
             return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
-        self._count(f"fit_{fit.get('reason', 'trust_region')}")  # how the trial's fit ended
+        self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
         if self.model._gauge is not None and anchor:
-            # a trial is the fit it has once accepted: the no-label fit from its fit under the gauge
+            # a trial is the fit it has once accepted: the released fit from its fit under the gauge rows
             released = self._released(x, dict(fit))
             if released is not None:
                 self._cache[key] = released
@@ -419,27 +476,29 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return _nonlinear_constraint(self.constraint_values, self.constraint_jac, lower, upper, scales)
 
     def accept_x(self, x):
-        """Promote an evaluated point after the optimizer accepts it; drop the other trials.  Returns whether the
-        promotion re-fitted the point (a gauge release), so that its values moved."""
+        """Promote an evaluated point after the optimizer accepts it and drop the other trials.
+
+        With gauge rows the point is released first if it is not released yet, and the gauge rows are set
+        again at its fit.  Returns whether the point was released here, so that its values moved."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
         if self._cache.get(key) is None:
             raise ValueError("evaluate the candidate before accepting it")
-        releases = self.stats.get("gauge_releases", 0)
-        self._promote(x)
+        released = self._promote(x)
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
-        return self.stats.get("gauge_releases", 0) > releases
+        return released
 
     def _promote(self, x):
-        """Set the gauge again at ``x``'s fit (cached)."""
-        sol = self._cache[x.tobytes()]
+        """Set the gauge rows again at ``x``'s fit (cached).  Returns whether ``x`` was released here."""
+        sol, released = self._cache[x.tobytes()], None
         if self.model._gauge is not None:
             if not sol.get("released"):  # a trial is released when it is solved; one whose release failed, here
                 released = self._released(x, sol)
                 if released is not None:
                     self._cache[x.tobytes()] = released
             self._set_gauge(x)
+        return released is not None
 
     def gauge_share(self, x):
         """The gauge rows' share of ``x``'s boundary-fit cost (0 without a gauge, and where it was set)."""

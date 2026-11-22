@@ -28,7 +28,7 @@ The flags are what differs from one launch to the next: ``--output``, ``--steps`
 ``--labelling``, ``--restart`` and ``--seed-run``.
 
 The boundary's labelling is ``flat_arc`` with follow: the label rows are set again at every accepted step, and a
-trial is its fit without them where that lowers the interface cost for real.  Its Mercier, clearance and mirror rows are smooth (``MERCIER_SMOOTH``,
+trial is its fit under them.  Its Mercier, clearance and mirror rows are smooth (``MERCIER_SMOOTH``,
 ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``).  ``--labelling equal_arc`` is the control, with the rows' hard extremes.
 
 ``--seed-run <run>`` starts from another run's calibrated deck and fitted

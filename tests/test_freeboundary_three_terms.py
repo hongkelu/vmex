@@ -75,23 +75,26 @@ def test_asymmetric_boundary_is_rejected():
 
 
 def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
-    """The configuration's choices and default weights, ``"none"`` as the anchored labelling without rows, and the
-    deck keys: ``None`` follows ``LTHREE_TERMS``, ``True`` is the defaults, ``False`` disables; the keys round-trip
-    through an INDATA file."""
+    """The configuration's choices, default labelling and default weights, a labelling at weight 0 as the model
+    without labelling rows, and the deck keys: ``None`` follows ``LTHREE_TERMS``, ``True`` is the defaults,
+    ``False`` disables; the keys round-trip through an INDATA file."""
     for bad, match in ((dict(labelling="condensed"), "labelling"), (dict(start="coils"), "start"),
-                       (dict(labelling="none", label_weight=1e-2), "none")):
+                       (dict(labelling="none"), "flat_arc.*equal_arc.*anchored"),
+                       (dict(labelling="none", label_weight=0.0), "none")):
         with pytest.raises(ValueError, match=match):
             vj.ThreeTermsConfig(**bad)
+    assert vj.ThreeTermsConfig().labelling == "flat_arc"
     weights = {name: vj.ThreeTermsConfig(labelling=name).resolved_label_weight
-               for name in ("anchored", "equal_arc", "none")}
-    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "none": 0.0}
-    options = vj.ThreeTermsConfig(labelling="none").model_options()
+               for name in ("anchored", "equal_arc", "flat_arc")}
+    assert weights == {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1}
+    options = vj.ThreeTermsConfig(labelling="equal_arc", label_weight=0.0).model_options()
     assert options["labelling"] == "none" and options["label_weight"] == 0.0
     # at weight 0 every labelling is the no-label model
     assert all(vj.ThreeTermsConfig(labelling=name, label_weight=0.0).model_options() == options
-               for name in ("anchored", "equal_arc"))
+               for name in ("anchored", "flat_arc"))
     inp = _deck("input.LandremanPaul2021_QA_lowres", 3, 11)
     assert fvc.resolve_three_terms(None, inp) is None and fvc.resolve_three_terms(True, inp) == vj.ThreeTermsConfig()
+    assert inp.three_terms_labelling == "flat_arc"
     deck = replace(inp, lthree_terms=True, three_terms_labelling="ANCHORED", three_terms_label_weight=-1.0)
     config = fvc.resolve_three_terms(None, deck)
     assert config.labelling == "anchored" and config.label_weight is None
@@ -99,8 +102,10 @@ def test_three_terms_config_validates_and_follows_the_deck(tmp_path):
     read = vj.VmecInput.from_file(replace(deck, three_terms_label_weight=0.05).to_indata(tmp_path / "input.three"))
     assert (read.lthree_terms, read.three_terms_labelling, read.three_terms_label_weight) == (True, "anchored", 0.05)
     assert not vj.VmecInput.from_file(inp.to_indata(tmp_path / "input.nestor")).lthree_terms
-    with pytest.raises(ValueError, match="THREE_TERMS_LABELLING"):
-        replace(inp, three_terms_labelling="gauge")
+    for bad in ("gauge", "none"):
+        with pytest.raises(ValueError, match="THREE_TERMS_LABELLING"):
+            replace(inp, three_terms_labelling=bad)
+    assert replace(inp, three_terms_labelling="FLAT_ARC").three_terms_labelling == "flat_arc"
 
 
 @needs_vc
@@ -677,13 +682,14 @@ def test_flat_arc_follow_over_accepted_steps():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
 
-    def build(labelling):
+    def build(labelling, label_weight=None):
         return ThreeTermsFreeBoundaryProblem.from_loss(
             inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
             field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
             plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
             quantities=(opt.mean_iota,),
-            config=vj.ThreeTermsConfig(labelling=labelling, nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
+            config=vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, nphi=24, ntheta=24,
+                                       quadrature=(4 * 2 * 24, 48)),
             boundary_ftol=1e-10, boundary_max_nfev=80)
 
     problem = build("flat_arc")
@@ -702,7 +708,7 @@ def test_flat_arc_follow_over_accepted_steps():
         for name in ("normal", "pressure", "sheet_current"):
             assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
     assert problem.stats["gauge_release_failures"] == 0
-    free = build("none")  # the same design without any labelling rows
+    free = build("equal_arc", label_weight=0.0)  # the same design without any labelling rows
     np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)

@@ -349,15 +349,17 @@ Multigrid ladder and stepping
        explicit ``three_terms=`` argument overrides it.  See
        :doc:`/howto/free-boundary`.
    * - ``THREE_TERMS_LABELLING``
-     - ``'equal_arc'``
+     - ``'flat_arc'``
      - VMEX extension
-     - The boundary's poloidal labelling: ``'anchored'`` (offset from the initial
-       boundary), ``'equal_arc'`` or ``'none'``.
+     - The boundary's poloidal labelling: ``'flat_arc'`` (the arc-length
+       distribution of the fit, held along its flat directions), ``'equal_arc'``
+       or ``'anchored'`` (offset from the initial boundary).
    * - ``THREE_TERMS_LABEL_WEIGHT``
      - ``-1``
      - VMEX extension
      - Weight of the labelling rows; a negative value is the labelling's default
-       (``1e-2`` for ``'anchored'``, ``1e-3`` for ``'equal_arc'``).
+       (``1e-1`` for ``'flat_arc'``, ``1e-3`` for ``'equal_arc'``, ``1e-2`` for
+       ``'anchored'``).
    * - ``PRE_NITER``
      - —
      - rejected when active with 2-D GMRES

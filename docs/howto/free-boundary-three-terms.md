@@ -15,14 +15,16 @@ import vmex as vj
 
 result = vj.solve_free_boundary_multigrid(
     inp, external_field=field,
-    three_terms=vj.ThreeTermsConfig(labelling="equal_arc", quadrature=(4 * inp.nfp * 48, 96)))
+    three_terms=vj.ThreeTermsConfig(quadrature=(4 * inp.nfp * 48, 96)))
 res = result.three_terms.boundary_residual   # RMS B.n, pressure balance and sheet current, relative to |B|
 ```
 
 The interface conditions leave the boundary's poloidal labelling free;
-`labelling` fixes it: `"equal_arc"` (equal arc length on every toroidal cut of
-the current surface, weight `1e-3`), `"anchored"` (the tangential offset from the
-initial boundary, weight `1e-2`) or `"none"`. Use a fixed singular quadrature
+`labelling` fixes it: `"flat_arc"` (the default: the arc-length distribution of
+the fit without label rows, held along the fit's flat, tangential directions,
+weight `1e-1`), `"equal_arc"` (equal arc length on every toroidal cut of the
+current surface, weight `1e-3`) or `"anchored"` (the tangential offset from the
+initial boundary, weight `1e-2`). Use a fixed singular quadrature
 `(4 nfp N, 2 N)` for an `N x N` interface grid. The edge pressure must vanish.
 `vj.solve_free_boundary_three_terms` is one solve, with `previous=` to continue
 after a coil change, and `vj.ThreeTermsFreeBoundaryProblem` is the

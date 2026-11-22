@@ -136,10 +136,10 @@ NS = 11
 FTOL = 1.0e-10
 NITER = 4000
 
-# The three-term free boundary of every trial: the labelling ("equal_arc", "anchored" or
-# "none") and the weight of its rows (None: the labelling's default, 1e-3 for equal
-# arc and 1e-2 for anchored), the interface grid over one field period, and its fixed
-# singular quadrature (4 nfp N, 2 N).
+# The three-term free boundary of every trial: the labelling ("flat_arc", "equal_arc" or
+# "anchored") and the weight of its rows (None: the labelling's default, 1e-1 for flat
+# arc, 1e-3 for equal arc and 1e-2 for anchored), the interface grid over one field
+# period, and its fixed singular quadrature (4 nfp N, 2 N).
 LABELLING = "equal_arc"
 LABEL_WEIGHT = None
 N_INTERFACE = 24

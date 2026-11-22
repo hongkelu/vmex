@@ -26,8 +26,8 @@ principle; numerically a row ``(G_plasma - G_coil) / G_coil`` closes it directly
 (``net_current_weight``).  With ``p = 0`` on the boundary a solution satisfies
 all three exactly; a nonzero edge pressure needs a sheet current and is
 rejected.  The interface conditions leave the boundary's poloidal labelling
-free: ``ThreeTermsConfig.labelling`` fixes it (``"anchored"``, ``"equal_arc"``,
-``"flat_arc"`` or ``"none"``).
+free: ``ThreeTermsConfig.labelling`` fixes it (``"flat_arc"``, the default,
+``"equal_arc"`` or ``"anchored"``).
 
 This is an opt-in alternative to NESTOR (a VMEX extension, like position
 control); nothing changes unless it is requested.  Entry points, from the most
@@ -251,14 +251,11 @@ def _arc_label(inp):
     return label
 
 
-#: The flat-arc gauge (``labelling="flat_arc"``) holds singular directions of the fit's Jacobian, taken in
-#: column-scaled coordinates.  A direction is held when its singular value is below :data:`GAUGE_TAU` times the largest
-#: and its normal share is below :data:`GAUGE_NORMAL_SHARE`.  The normal share is the RMS normal displacement of the
-#: surface over its RMS displacement.  At ``GAUGE_TAU = 1.0`` every direction but the largest passes the singular-value
-#: test, so the normal share alone selects: every tangential direction is held.  The gauge rows are soft and zero at
-#: the reference fit, so the interface rows still set any direction they determine.  The label weight decides.
-GAUGE_TAU = 1.0
-GAUGE_NORMAL_SHARE = 0.2
+#: The flat-arc label rows (``labelling="flat_arc"``) hold the tangential singular directions of the fit's Jacobian,
+#: taken in column-scaled coordinates: those whose normal share is below :data:`LABEL_NORMAL_SHARE`.  The normal share
+#: is the RMS normal displacement of the surface over its RMS displacement.  The label rows are soft and zero at the
+#: reference fit, so the interface rows still set any direction they determine.  The label weight decides.
+LABEL_NORMAL_SHARE = 0.2
 
 
 #: Largest RMS interface residual (relative to ``|B|``) of a three-term free boundary that counts as solved: a guard
@@ -268,13 +265,13 @@ ACCEPTED_RESIDUAL = 1e-2
 #: Default labelling-row weight of each labelling: the smallest that keeps the fit well posed for the anchored
 #: labelling, and for equal arc the weight that biases the interface rows least while it still pins the labelling
 #: on the benchmark designs; for flat arc that of its arc-distribution rows (zero at the reference fit, so they need
-#: not be weak);
-#: ``"none"`` has no labelling rows, as any labelling at weight 0 (the same model).
-LABEL_WEIGHTS = {"anchored": 1e-2, "equal_arc": 1e-3, "flat_arc": 1e-1, "none": 0.0}
+#: not be weak).  These are the accepted labellings.  A labelling at weight 0 has no labelling rows: the model
+#: names it ``"none"``.
+LABEL_WEIGHTS = {"flat_arc": 1e-1, "equal_arc": 1e-3, "anchored": 1e-2}
 
 
-class _GaugedField(NamedTuple):
-    """An external field with the flat-arc gauge rows' arrays: arguments of the compiled rows, so a new gauge of the
+class _LabelledField(NamedTuple):
+    """An external field with the flat-arc label rows' arrays: arguments of the compiled rows, so new label rows of the
     same shape does not recompile them."""
 
     field: Any
@@ -283,8 +280,8 @@ class _GaugedField(NamedTuple):
 
 
 def _external_field(field):
-    """The external field of ``field``, gauged or not."""
-    return field.field if isinstance(field, _GaugedField) else field
+    """The external field of ``field``, with label rows or not."""
+    return field.field if isinstance(field, _LabelledField) else field
 
 
 @dataclass(frozen=True)
@@ -294,16 +291,17 @@ class ThreeTermsConfig:
     ``labelling``
         Fixes the boundary's poloidal labelling, which the interface conditions leave free.
 
-        - ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary, the
-          initial one.  Each labelled point is held near its position there, and the surface is free to move.
+        - ``"flat_arc"`` (the default) holds the arc-length distribution of a reference fit along the fit's flat,
+          tangential directions on the current surface (:meth:`ThreeTermsModel.set_label_rows`).  This is the
+          released fit (no label rows), made well determined.  :func:`solve_free_boundary_three_terms` sets the rows
+          at its fit without them.  The single-stage problem sets them at every accepted step.
         - ``"equal_arc"`` asks for equal arc length on every toroidal cut of the current surface, and a zero phase of
           its ``m = 1`` part.
-        - ``"flat_arc"`` holds the arc-length distribution of a reference fit along the fit's flat, tangential
-          directions on the current surface (:meth:`ThreeTermsModel.set_flat_arc_gauge`).  This is the released fit
-          (no gauge rows), made well determined.
-        - ``"none"`` adds no labelling rows.  Any labelling at ``label_weight=0`` is the same model.
+        - ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary, the
+          initial one.  Each labelled point is held near its position there, and the surface is free to move.
     ``label_weight``
-        Scales the labelling rows against the interface rows (default :data:`LABEL_WEIGHTS`).
+        Scales the labelling rows against the interface rows (default :data:`LABEL_WEIGHTS`).  At weight 0 a
+        labelling has no rows.
     ``start``
         The initial boundary: ``"deck"``, ``"nestor"`` (this ladder's NESTOR free boundary) or ``"best"``.  ``"best"``
         tries both and keeps the lower cost, because the interface least squares has several minima.
@@ -340,7 +338,7 @@ class ThreeTermsConfig:
     ``boundary_max_nfev`` and ``boundary_max_residual``.
     """
 
-    labelling: str = "equal_arc"
+    labelling: str = "flat_arc"
     label_weight: float | None = None
     start: str = "best"
     max_mode: int | None = None
@@ -361,11 +359,9 @@ class ThreeTermsConfig:
 
     def __post_init__(self) -> None:
         if self.labelling not in LABEL_WEIGHTS:
-            raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {self.labelling!r}")
+            raise ValueError(f"labelling must be one of {list(LABEL_WEIGHTS)}, got {self.labelling!r}")
         if self.start not in ("best", "deck", "nestor"):
             raise ValueError(f"start must be 'best', 'deck' or 'nestor', got {self.start!r}")
-        if self.labelling == "none" and self.label_weight:
-            raise ValueError("labelling='none' has no labelling rows to weight")
 
     @classmethod
     def from_input(cls, inp: Any) -> "ThreeTermsConfig | None":
@@ -458,6 +454,10 @@ def solve_free_boundary_three_terms(
     :func:`~vmex.core.multigrid.solve_free_boundary_multigrid`'s).  ``previous``, an earlier result for the same
     deck (typically before a coil change), starts from its boundary, Jacobian and model: neither new coils nor a
     repeat solve compile anything.
+
+    With the labelling ``"flat_arc"`` the boundary is first fitted without label rows.  The rows are then set at
+    that fit (:meth:`ThreeTermsModel.set_label_rows`), where they vanish, and the fit goes on from there under
+    them.  A ``previous`` result keeps its rows.
     """
     from .freeboundary import _resolve_mgrid
     from .mgrid import MgridField
@@ -482,9 +482,21 @@ def solve_free_boundary_three_terms(
     seed_state = model.seed[0] if previous is None else previous.aux[0]
     seed_params = model.params0 if previous is None else previous.aux[2]
     initial = model.boundary_residual(seed_state, seed_params, external_field)
-    out = model.solve_boundary(model.params0, external_field, x0=x0, jacobian=jacobian, ftol=config.ftol,
+    fit = dict(ftol=config.ftol, max_nfev=config.max_nfev, verbose=verbose)
+    out = model.solve_boundary(model.params0, model.labelled(external_field), x0=x0, jacobian=jacobian,
                                jacobian_ftol=config.ftol if config.jacobian_ftol is None else config.jacobian_ftol,
-                               max_nfev=config.max_nfev, refresh_on_stall=True, verbose=verbose)
+                               refresh_on_stall=True, **fit)
+    if model.labelling == "flat_arc" and model._labels is None:  # flat arc's rows, set at the fit without them
+        J = model.linearize(out["x"], out["aux"], external_field)[0]
+        fresh = J is not out["jacobian"]
+        if model.set_label_rows(out["x"], J):
+            field = model.labelled(external_field)
+            J = model.linearize(out["x"], out["aux"], field)[0]  # the same linearization, with the new rows
+            # The rows vanish at the fit, so its cost and gradient are unchanged: the steps start where it ended.
+            held = model.solve_boundary(model.params0, field, x0=out["x"], jacobian=J, **fit)
+            out = dict(held, nfev=out["nfev"] + held["nfev"], njev=out["njev"] + int(fresh),
+                       accepted=out["accepted"] + held["accepted"],
+                       converged=held["converged"] or held["reason"] == "stalled")  # as refresh_on_stall counts
     state, _, params = out["aux"]
     boundary = model._im.input_with_params(model.fixed, params)
     residual = model.boundary_residual(state, params, external_field)
@@ -520,7 +532,8 @@ class ThreeTermsModel:
 
     The rows are those of :func:`solve_free_boundary_three_terms`, with the quadrature plan and the labelling
     reference fixed on the deck's boundary.  ``seed`` is that boundary's ``(state, mask)``.  ``labelling`` and
-    ``label_weight`` are those of :class:`ThreeTermsConfig` (default equal arc at :data:`LABEL_WEIGHTS`).
+    ``label_weight`` are those of :class:`ThreeTermsConfig` (default flat arc at :data:`LABEL_WEIGHTS`).  Flat arc
+    has no rows until :meth:`set_label_rows` sets them.
 
     Methods:
 
@@ -559,14 +572,14 @@ class ThreeTermsModel:
     def __init__(self, inp: VmecInput, *, max_mode=None, nphi=48, ntheta=48, digits=4,
                  weights=(1.0, 1.0, 1.0), net_current_weight=1.0, label_weight=None, chunk=8,
                  quadrature=None, bootstrap=None, bootstrap_helicity=0, bootstrap_weight=100.0,
-                 fixed_boundary=False, labelling="equal_arc"):
+                 fixed_boundary=False, labelling="flat_arc"):
         from . import implicit as im
         from .bootstrap import HalfMeshCurrent
         from .optimize import _ess_scale, boundary_arrays_from_x, pack_boundary
 
         self._im = im
-        if labelling not in LABEL_WEIGHTS:
-            raise ValueError(f"labelling must be one of {sorted(LABEL_WEIGHTS)}, got {labelling!r}")
+        if labelling not in LABEL_WEIGHTS and (labelling, label_weight) != ("none", 0.0):  # "none": at weight 0
+            raise ValueError(f"labelling must be one of {list(LABEL_WEIGHTS)}, got {labelling!r}")
         if label_weight is None:
             label_weight = LABEL_WEIGHTS[labelling]
         if not label_weight:  # no labelling rows: the same problem whichever labelling was named
@@ -578,7 +591,7 @@ class ThreeTermsModel:
                                                                        bootstrap_weight)
         self.fixed_boundary = bool(fixed_boundary)
         self.labelling, self.label_weight = labelling, float(label_weight)
-        self._gauge = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
+        self._labels = None  # flat arc's rows, once set: (label_weight * M^T, reference arc distribution)
         self._arc_label = _arc_label(fixed)
         if self.fixed_boundary and self.bootstrap is None:
             raise ValueError("fixed_boundary=True solves only the bootstrap current: pass bootstrap=")
@@ -647,7 +660,7 @@ class ThreeTermsModel:
         return np.r_[x, HalfMeshCurrent(inp, b.profiles, b.helicity_n, b.weight).x0]
 
     def _interface_setup(self, state, nphi, ntheta, digits, quadrature, weights, label_weight, net_current_weight,
-                         labelling="equal_arc"):
+                         labelling="flat_arc"):
         """The interface rows, with the quadrature plan and labelling reference of the seed ``state``."""
         from .freeboundary import _vacuum_scalars
         from .optimize import solve_equilibrium
@@ -687,14 +700,14 @@ class ThreeTermsModel:
             fixed, state, field, runtime=im.runtime_from_params(params, cfg), nphi=nphi, ntheta=ntheta, digits=digits,
             precision=precision, p_edge=0.0)[:2])
 
-    def _gauge_rows(self, params, weights, reference):
-        """The gauge's rows at ``params`` (they depend on the boundary alone)."""
+    def _label_rows(self, params, weights, reference):
+        """The label rows at ``params`` (they depend on the boundary alone)."""
         return weights @ (self._arc_label(params.rbc, params.zbs) - reference)
 
-    def gauged(self, field, gauge=None):
-        """``field`` with the ``gauge`` (default: the model's current one) as the rows expect it."""
-        gauge = self._gauge if gauge is None else gauge
-        return field if gauge is None else _GaugedField(field, *gauge)
+    def labelled(self, field, labels=None):
+        """``field`` with the label rows' arrays ``labels`` (default: the model's current ones)."""
+        labels = self._labels if labels is None else labels
+        return field if labels is None else _LabelledField(field, *labels)
 
     def _implicit_setup(self):
         """The rows (interface, then bootstrap) and their implicit tangents, pushes and pullbacks."""
@@ -702,11 +715,11 @@ class ThreeTermsModel:
 
         def rows(state, params, field):
             runtime = im.runtime_from_params(params, cfg)
-            gauge = field if isinstance(field, _GaugedField) else None
+            labels = field if isinstance(field, _LabelledField) else None
             parts = [] if self.fixed_boundary else [self.rows_at(state, runtime, _external_field(field))]
-            self._n_interface = sum(part.shape[0] for part in parts)  # static: where the gauge rows start
-            if gauge is not None:
-                parts.append(self._gauge_rows(params, gauge.weights, gauge.reference))
+            self._n_interface = sum(part.shape[0] for part in parts)  # static: where the label rows start
+            if labels is not None:
+                parts.append(self._label_rows(params, labels.weights, labels.reference))
             if self.bootstrap is not None:
                 parts.append(self.bootstrap.rows(state, runtime, params))
             return jnp.concatenate(parts)
@@ -831,14 +844,14 @@ class ThreeTermsModel:
         eye = jnp.eye(np.size(x))
         return jax.vmap(lambda e: jax.jvp(lambda xx: self.with_boundary(params, xx), (jnp.asarray(x),), (e,))[1])(eye)
 
-    def set_flat_arc_gauge(self, x, jacobian):
+    def set_label_rows(self, x, jacobian):
         """Hold the fit's flat, tangential directions at boundary ``x``; returns their number.
 
         The interface rows leave the boundary's labelling free: a few directions of the boundary coordinates are
         nearly flat for them, and a fit stops anywhere along those.  With ``jacobian`` the fit's rows' Jacobian at
         ``x`` (:meth:`linearize`), the held directions are the right singular vectors of its boundary columns
-        (scaled to unit norm) with a singular value below :data:`GAUGE_TAU` times the largest and a surface displacement
-        of normal share below :data:`GAUGE_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
+        (scaled to unit norm), the largest left out, with a surface displacement of normal share below
+        :data:`LABEL_NORMAL_SHARE` (a relabelling, not a shape change).  The rows are
         ``label_weight * M^T (L - L_x)``, ``L`` the arc-length distribution of the current boundary
         (:func:`_arc_label`), ``L_x`` that of the fit at ``x`` and ``M`` an orthonormal basis of its change along the
         held directions: the labelling's arc distribution held at ``x``'s, as far as those directions reach.  No
@@ -847,35 +860,35 @@ class ThreeTermsModel:
         The rows keep their number when fewer directions are held (zero rows), so a refresh recompiles nothing.
         """
         if self.labelling != "flat_arc":
-            raise ValueError("set_flat_arc_gauge needs labelling='flat_arc'")
+            raise ValueError("set_label_rows needs labelling='flat_arc'")
         nb, last = self.n_boundary, self._last_linearize
         self._radius = None  # the next fit is of a new problem
-        old = 0 if self._gauge is None else self._gauge[0].shape[0]
+        old = 0 if self._labels is None else self._labels[0].shape[0]
         xb = np.asarray(x, dtype=float)[:nb]
         J = np.asarray(jacobian)[:, :nb]
-        if self._gauge is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian, without the old gauge's
-            J = np.delete(J, np.s_[self._n_interface:self._n_interface + self._gauge[0].shape[0]], axis=0)
+        if self._labels is not None:  # a refresh: the interface (and bootstrap) rows' Jacobian alone
+            J = np.delete(J, np.s_[self._n_interface:self._n_interface + self._labels[0].shape[0]], axis=0)
         norms = np.linalg.norm(J, axis=0)
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
         A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
-        flat = [u for s, u in zip(sv, Vt) if s < GAUGE_TAU * sv[0]]
-        tangential = lambda u: u @ A @ u < GAUGE_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
+        flat = [u for s, u in zip(sv, Vt) if s < sv[0]]
+        tangential = lambda u: u @ A @ u < LABEL_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
         held = [u for u in flat if tangential(u / norms)]
         if held:
             L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
             weights = self.label_weight * M.T
             weights = np.vstack([weights, np.zeros((max(old - weights.shape[0], 0), weights.shape[1]))])
-            self._gauge = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
-        elif self._gauge is not None:
-            self._gauge = (jnp.zeros_like(self._gauge[0]), self._boundary_arc(jnp.asarray(xb)))
-        if last is not None and last[2][0] is jacobian:  # keep that linearization, its gauge rows swapped: they
+            self._labels = (jnp.asarray(weights), self._boundary_arc(jnp.asarray(xb)))
+        elif self._labels is not None:
+            self._labels = (jnp.zeros_like(self._labels[0]), self._boundary_arc(jnp.asarray(xb)))
+        if last is not None and last[2][0] is jacobian:  # keep that linearization, its label rows swapped: they
             # depend on the boundary alone, so their columns are the new rows' derivatives along its tangents
             key, extra_key, (columns, dz, batch, aux), linearization = last
-            new = np.zeros((0, columns.shape[1])) if self._gauge is None else np.asarray(jax.lax.map(
-                lambda t: jax.jvp(lambda p: self._gauge_rows(p, *self._gauge), (aux[2],), (t,))[1], batch, batch_size=32
-            )).T  # in batches, as _jacfwd
+            new = np.zeros((0, columns.shape[1])) if self._labels is None else np.asarray(jax.lax.map(
+                lambda t: jax.jvp(lambda p: self._label_rows(p, *self._labels), (aux[2],), (t,))[1], batch,
+                batch_size=32)).T  # in batches, as _jacfwd
             i = self._n_interface
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
@@ -888,13 +901,13 @@ class ThreeTermsModel:
 
         return self._arc_label(*boundary_arrays_from_x(self.fixed, z, self.max_mode, vary_major_radius=True)[:2])
 
-    def gauge_curvature(self, x, params):
-        """``sum_i g_i(x) Hess g_i(x)`` of the flat-arc gauge rows ``g`` (nonlinear in the boundary) at the fit
+    def label_rows_curvature(self, x, params):
+        """``sum_i g_i(x) Hess g_i(x)`` of the flat-arc label rows ``g`` (nonlinear in the boundary) at the fit
         ``x`` with parameters ``params``, over all fit coordinates: the second-order term of the fit's stationarity
-        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` without a gauge."""
-        if self._gauge is None:
+        (Gauss-Newton's ``J^T J`` misses it while ``g`` is not zero).  ``None`` without label rows."""
+        if self._labels is None:
             return None
-        (M, reference), nb = self._gauge, self.n_boundary
+        (M, reference), nb = self._labels, self.n_boundary
         xb = jnp.asarray(x, dtype=float)[:nb]
         g = M @ (self._arc_label(params.rbc, params.zbs) - reference)
         S = np.zeros((np.size(x), np.size(x)))
@@ -995,10 +1008,10 @@ class ThreeTermsModel:
                                          ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius,
                                          fresh=True)
             self._radius = again["radius"]
-            again["nfev"] += out["nfev"]
+            again["nfev"] += out["nfev"] - 1  # its first evaluation is the last of ``out``
             if target_cost is None or 0.5 * again["rows"] @ again["rows"] <= target_cost:
                 return dict(again, jacobian=J1, njev=1)
-            x, nfev = again["x"], again["nfev"]
+            x, nfev, njev = again["x"], again["nfev"], 1
         memo = {}
 
         def fun(z):
@@ -1025,6 +1038,7 @@ class ThreeTermsModel:
         nfev += int(fit.nfev)
         if memo.get("key") != fit.x.tobytes():
             fun(fit.x)
+            nfev += 1
         J = jac(fit.x) if memo.get("jacobian") is None or memo.get("jkey") != fit.x.tobytes() else memo["jacobian"]
         out = _levenberg_marquardt(lambda z: self.evaluate(z, params, field), fit.x, memo["rows"], memo["aux"], J,
                                    ftol=ftol, max_nfev=max_nfev, verbose=verbose, radius=self._radius)
@@ -1037,9 +1051,9 @@ class ThreeTermsModel:
             self._radius, njev = again["radius"], njev + 1
             # still stalled on a fresh Jacobian: the steps gain nothing the rows can resolve, the point is
             # stationary (DESC's least squares counts relative gains below its ftol, 1e-2, as converged)
-            out = dict(again, nfev=out["nfev"] + again["nfev"],
+            out = dict(again, nfev=out["nfev"] + again["nfev"] - 1,
                        converged=again["converged"] or again["reason"] == "stalled")
-        return dict(out, jacobian=J, nfev=nfev + out["nfev"], njev=njev)
+        return dict(out, jacobian=J, nfev=nfev + out["nfev"] - 1, njev=njev)  # the steps start at an evaluated point
 
 
 #: Constants of :func:`_levenberg_marquardt`.

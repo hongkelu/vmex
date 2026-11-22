@@ -2342,8 +2342,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
-        if promote is not None:  # before the gradient: promotion may change what the problem linearizes
-            accepted_value = problem.fun(x)
+        if promote is not None:  # before the gradient: promotion sets what the problem linearizes
             promote(x)
             # the problem's point from here on, even if its gradient is rejected
             accepted, accepted_gradient = x.copy(), np.full(x.size, np.nan)

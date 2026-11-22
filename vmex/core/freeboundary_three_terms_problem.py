@@ -8,21 +8,19 @@ Terms:
 - Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
   Only the labelling ``flat_arc`` has them.
 - Follow: the label rows are set again at each accepted step, where they vanish.  A trial is its fit under them.
-- Released fit: a trial's fit continued without the label rows.  It is the trial only where the fit under the label
-  rows is not a free boundary (far from the accepted fit the rows can hold the boundary off it).
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
-- Polish: fresh-Jacobian rounds on a fit before its gradient, up to ``GRADIENT_POLISH_ROUNDS`` of them.
+- Polish: fresh-Jacobian rounds on a fit before its gradient, until one takes no step (``GRADIENT_POLISH_ROUNDS``
+  at most).
 
 One optimization step with label rows:
 
 1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
    anchor's Jacobian: that fit is the trial, a smooth function of the design that returns the accepted fit at the
    accepted design.  (A fit without label rows creeps along its flat directions, which moves sensitive rows, a
-   Mercier row by 10 %, at no design step: a line search cannot work across such a jump.)  Where that fit is not a
-   free boundary, the trial is its released fit (``_released``).
-2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``, up to three rounds).  The trial's values become
-   those of the polished fit.  Linearize it, differentiate every row by the implicit function theorem of the boundary
-   fit, and make the point the anchor.
+   Mercier row by 10 %, at no design step: a line search cannot work across such a jump.)
+2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``): fresh-Jacobian rounds until one takes no step.
+   The trial's values become those of the polished fit.  Linearize it, differentiate every row by the implicit
+   function theorem of the boundary fit, and make the point the anchor.
 3. Accept (``accept_x``).  Set the label rows again at the accepted fit (``_set_label_rows``), where they vanish
    (no value changes), and clear the anchor.  The next trial first linearizes the accepted
    point under the new label rows, which sets the anchor again.
@@ -46,12 +44,12 @@ from .errors import TrialRejected, VmecError
 from .freeboundary_three_terms import BoundaryResidual, ThreeTermsConfig, ThreeTermsModel
 from .problem import FunctionProblem
 
-#: The gradient's polish of a trial: rounds of its own (fresh) Jacobian and a trial's fit from it.  Every round is
-#: kept, so that a trial at the accepted design returns the accepted fit (a round that is dropped is a step the next
-#: trial takes: a jump at no design step).  A round is followed by another, three at most, when it cuts the cost
-#: below this fraction.  A trial's fit reuses an older Jacobian and can stop in a shallow valley 10-20 % above its
-#: minimum (QI at 12 x 12 modes: rounds of 9, 9, 3 and 2 %).
-GRADIENT_POLISH_KEEP, GRADIENT_POLISH_ROUNDS = 0.95, 3
+#: The gradient's polish of a trial: rounds of a fresh Jacobian at the fit and a trial's fit from it, until a round
+#: takes no step (at most this many).  Then the Jacobian is the one at the fit, as the gradient needs, and a trial
+#: at the accepted design, which starts there with that Jacobian, returns the accepted fit: no jump at no design
+#: step.  A trial's fit reuses an older Jacobian and can stop in a shallow valley above its minimum (QI at 12 x 12
+#: modes: rounds of 9, 9, 3 and 2 %); a fit only takes steps that gain 5 % or more, which ends the rounds.
+GRADIENT_POLISH_ROUNDS = 4
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -107,11 +105,12 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
       reasons without the numbers, each with its count.
     - ``boundary_evaluations``: equilibrium evaluations of the boundary fits.
     - ``linearizations``: Jacobians taken for the gradients, their polish rounds included.
-    - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended, before any
-      release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
+    - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended (the
+      ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
     - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
-      set.  ``releases`` and ``release_failures``: released fits that solved and that failed.
-    - ``polish_rounds``: polish rounds that were followed by another.  ``polish_gain``: the last polish round's relative cost reduction.
+      set.
+    - ``polish_rounds``: polish rounds that moved the fit (each one more Jacobian).  ``polish_capped``: polishes
+      still moving after ``GRADIENT_POLISH_ROUNDS``.  ``polish_gain``: the last moving round's relative cost reduction.
     """
 
     @classmethod
@@ -142,7 +141,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         With the labelling ``"flat_arc"`` the label rows are set at the seed's fit and the fit follows the design.
         The label rows are set again at every accepted fit (:meth:`accept_x`), where they vanish, so the labelling
         does not accumulate and accepting a trial changes none of its values.  A trial is its fit under the label
-        rows, and its fit without them only where the first is not a free boundary.
+        rows.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -239,8 +238,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # Every key the class writes (the class docstring describes them).
         self.stats = dict(trials=0, failed=0, rejection_reasons={}, boundary_evaluations=0, linearizations=0,
                           fit_ftol=0, fit_stalled=0, fit_radius=0, fit_max_nfev=0, fit_as_saved=0,
-                          label_directions=0, label_sets=0, releases=0, release_failures=0,
-                          polish_rounds=0, polish_gain=0.0)
+                          label_directions=0, label_sets=0,
+                          polish_rounds=0, polish_capped=0, polish_gain=0.0)
         self.accepted = None  # no accepted point during the seed solve
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
@@ -253,42 +252,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def _count(self, name, amount=1):
         self.stats[name] += amount
 
-    def _released(self, x, sol):
-        """The released fit from ``sol``, ``x``'s fit under the label rows: its record, or ``None`` where it fails.
-
-        Its steps reuse the Jacobian ``sol`` has, else the anchor's, else ``sol``'s own after its polish.  The model is
-        left as it was."""
-        model, xj = self.model, jnp.asarray(x)
-        labels, saved = model._labels, [getattr(model, name) for name in self._SAVED_MODEL]
-        J = sol.get("J")
-        if J is None:
-            J = self._anchor["J_b"] if self._anchor else self._fit_jacobian(x, sol)
-        # radius 0: the steps start at 1/20 of the Gauss-Newton step, which without the label rows is long along the
-        # flat directions (from its full length the reused Jacobian's first steps all fail)
-        model._labels, model._last_linearize, model._radius = (jnp.zeros_like(labels[0]), labels[1]), None, 0.0
-        field = self.field(xj)  # after the weights are zeroed: the field carries the label rows it is wrapped with
-        if J is not None:  # its label rows zero like the weights
-            J = np.array(J)[:, :model.x0.size]
-            J[model._n_interface:model._n_interface + labels[0].shape[0]] = 0.0
-        fit = None
-        try:
-            fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
-                                       max_nfev=self.boundary_max_nfev)
-            self.stats["boundary_evaluations"] += fit["nfev"]
-            fitted = self._fits(fit, field)
-            state, mask, params = fit["aux"]
-            values = np.asarray(self._rows(state, params, xj)) if fitted else None
-        except (VmecError, RuntimeError):
-            fitted = False
-        finally:
-            for name, value in zip(self._SAVED_MODEL, saved):
-                setattr(model, name, value)
-        if not fitted:
-            self._count("release_failures")
-            return None
-        self._count("releases")
-        return dict(fit, state=state, mask=mask, params=params, values=values, released=True)
-
     def _set_label_rows(self, x):
         """Set the model's label rows at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
@@ -296,6 +259,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # with the plasma columns: the gradient at x reuses this linearization, its label rows swapped
         extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
         J = model.linearize(sol["x"], sol["aux"], self.field(xj), extra=extra)[0]
+        self.stats["linearizations"] += 1
         self.stats["label_directions"] = model.set_label_rows(sol["x"], J)
         self._count("label_sets")
         # x's fit as it is (flat arc's rows vanish there), under the new rows
@@ -322,8 +286,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
                 anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._labels))
-            starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
-        fit = unfit = None
+            starts, J = [anchor["b"] - anchor["response"] @ dr, anchor["b"]], anchor["J_b"]
+        fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
             # the model's own cold solve of this boundary must not answer for the saved state (a converged
             # fixed-boundary state keeps the m=1 angle its path left it with, so the two differ at finite resolution)
@@ -337,6 +301,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     fit = None
         if fit is None:
             for start in starts:
+                if anchor:  # the radius the anchor's last polish started with: a trial at the anchor's design
+                    self.model._radius = anchor["radius"]  # takes that round's steps again, and stays at its fit
                 try:
                     fit = self.model.solve_boundary(params, field, x0=start, jacobian=J, ftol=self.boundary_ftol,
                                                     max_nfev=self.boundary_max_nfev,
@@ -345,15 +311,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                     continue
                 if not self._fits(fit, field):
                     self.stats["boundary_evaluations"] += fit["nfev"]
-                    unfit, fit = fit, None  # the fit stalled away from the free boundary: try the next start
+                    fit = None  # the fit stalled away from the free boundary: try the next start
                     continue
                 break
-        if fit is None and unfit is not None and self.model._labels is not None and anchor:
-            # far from the accepted fit its label rows can hold the boundary off the free boundary: the released fit
-            released = self._released(x, dict(unfit))
-            if released is not None:
-                self._cache[key] = released
-                return released
         if fit is None:
             return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
@@ -389,8 +349,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise TrialRejected(self._rejections[x.tobytes()])
         return sol
 
-    _SAVED_MODEL = ("_labels", "_last_linearize", "_linearization", "_radius")
-
     def _fit_jacobian(self, x, sol):
         """``sol``'s Jacobian (cached until its gradients are) once its fit is polished.
 
@@ -416,22 +374,22 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         J = linearized()
         for _ in range(GRADIENT_POLISH_ROUNDS):
-            try:  # a trial's own fit, from this Jacobian: what a trial at this design would return
+            sol["radius"] = model._radius  # the radius this round starts with: the trials near x start with it too
+            try:  # a trial's own fit, from the Jacobian at the fit: what a trial at this design would return
                 polished = model.solve_boundary(
                     self._params_at(xj), field, x0=sol["x"], jacobian=J[:, :nb], ftol=self.boundary_ftol,
                     max_nfev=self.boundary_max_nfev)
             except (VmecError, RuntimeError):  # no polish: the fit's own Jacobian stands
                 break
             self.stats["boundary_evaluations"] += polished["nfev"]
-            gain = 1.0 - (polished["rows"] @ polished["rows"]) / (sol["rows"] @ sol["rows"])
-            self.stats["polish_gain"] = float(gain)  # the last round's relative cost reduction
-            state, mask, params = polished["aux"]
-            sol.update(x=polished["x"], aux=polished["aux"], state=state, mask=mask, params=params,
-                       rows=polished["rows"], values=np.asarray(self._rows(state, params, xj)))
-            if gain <= 1.0 - GRADIENT_POLISH_KEEP:  # kept, on this Jacobian: the next trials start from it
+            if np.array_equal(polished["x"], sol["x"]):  # no step on its own Jacobian: J is the fit's, and stays
                 break
-            J = linearized()
+            self.stats["polish_gain"] = float(1.0 - (polished["rows"] @ polished["rows"]) / (sol["rows"] @ sol["rows"]))
+            sol.update(x=polished["x"], aux=polished["aux"])
+            J = linearized()  # the gradient needs the Jacobian at the point it is taken at
             self._count("polish_rounds")
+        else:
+            self._count("polish_capped")  # still moving after the last round: a trial here may move a little
         sol["J"] = J
         return J
 
@@ -448,16 +406,22 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
         S = model.label_rows_curvature(sol["x"], params)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
+        # The fit's response db = -response @ dr to a change dr of its rows (implicit function theorem).  The trials
+        # near this point predict their boundary with the same matrix, so a trial's first-order change is the
+        # gradient's (a different solve, as a minimum-norm least squares, moves the boundary differently along the
+        # nearly flat directions, and rows that see them, as the coil-plasma clearance, then disagree with it).
         if S is None:
             Q, R = np.linalg.qr(J_b)
-            lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
+            response = np.linalg.solve(R, Q.T)
         else:  # nonlinear label rows: J^T J + sum g Hess g (their curvature; not the interface rows')
-            lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
+            response = np.linalg.solve(J_b.T @ J_b + S, J_b.T)
+        lam = response.T @ G_b.T  # residual-space multipliers, a column per row
         gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._labels))
                                for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
-        self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
-                            params=params, cost=0.5 * sol["rows"] @ sol["rows"])
+        self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, response=response,
+                            state=state,
+                            params=params, cost=0.5 * sol["rows"] @ sol["rows"], radius=sol.get("radius"))
         sol["gradients"] = gradients
         sol.pop("J", None)
         return gradients
@@ -485,8 +449,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def accept_x(self, x):
         """Promote an evaluated point after the optimizer accepts it and drop the other trials.
 
-        With label rows they are set again at its fit, where they vanish: no value of the point changes.  Returns
-        ``False`` (the point was not re-fitted)."""
+        With label rows they are set again at its fit, where they vanish: no value of the point changes."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
         if self._cache.get(key) is None:
@@ -495,7 +458,6 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             self._set_label_rows(x)
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
-        return False
 
     def label_share(self, x):
         """The label rows' share of ``x``'s boundary-fit cost (0 without label rows, and where they were set)."""

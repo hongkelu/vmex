@@ -2327,7 +2327,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
     accepted = start.copy()
     value, gradient = problem.value_and_grad(accepted)
     accepted_value, accepted_gradient = value, np.asarray(gradient).copy()
-    accepted_steps, shift = 0, 0.0  # shift: what promotions (``accept_x`` returning true) moved the objective by
+    accepted_steps = 0
     nfev, njev = 1, 1
     if promote is not None and budget == 0:
         return OptimizeResult(x=start, fun=value, jac=gradient, success=False,
@@ -2338,19 +2338,17 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         pass
 
     def accept(u):
-        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps, shift
+        nonlocal accepted, accepted_value, accepted_gradient, accepted_steps
         x = start + np.asarray(u)*scales
         if np.array_equal(x, accepted):
             return
         if promote is not None:  # before the gradient: promotion may change what the problem linearizes
-            accepted_value = before = problem.fun(x)
-            moved = promote(x)
+            accepted_value = problem.fun(x)
+            promote(x)
             # the problem's point from here on, even if its gradient is rejected
             accepted, accepted_gradient = x.copy(), np.full(x.size, np.nan)
             accepted_steps += 1
             accepted_value, current_gradient = problem.value_and_grad(x)
-            if moved:  # the promotion re-fitted the point: SLSQP's objective stays continuous across it
-                shift += accepted_value - before
         else:
             accepted_value, current_gradient = problem.value_and_grad(x)
             accepted, accepted_steps = x.copy(), accepted_steps + 1
@@ -2371,8 +2369,7 @@ def _minimize_problem(problem, *, x0=None, method="SLSQP", bounds=None,
         nonlocal nfev
         nfev += 1
         try:
-            value = problem.fun(start+scales*u)
-            return value - shift
+            return problem.fun(start+scales*u)
         except TrialRejected:
             return np.inf
 

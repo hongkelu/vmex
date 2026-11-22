@@ -1165,6 +1165,7 @@ def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, start
     import jax.numpy as jnp
     from vmex import optimize as opt
     from vmex.core import implicit as im
+    from vmex.core.errors import VmecError
     from vmex.core.wout import wout_from_state
 
     model, coil_rows, fold = problem.model, constraints[1], current_in_solve()
@@ -1185,7 +1186,7 @@ def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, start
         runtime_x = im.runtime_from_params(params_x, model.cfg)
         try:  # a diagnostic: its own fixed-boundary solve may fail where the accepted point is fine
             vac = np.asarray(vacuum(params_x.rbc, params_x.zbs))
-        except RuntimeError as error:
+        except (RuntimeError, VmecError) as error:
             vac = np.full(3, np.nan)
             print(f"[step {problem.accepted_step}] vacuum iota not available: {str(error).splitlines()[0][:200]}",
                   flush=True)

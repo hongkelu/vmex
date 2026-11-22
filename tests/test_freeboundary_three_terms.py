@@ -655,9 +655,10 @@ def test_flat_arc_labels_refresh_keeps_the_accepted_point():
 
 @needs_vc
 @pytest.mark.full
-def test_flat_arc_labels_release_refits_without_the_labels():
-    """Follow: a trial is its fit without the label rows: the interface cost does
-    not rise, the label rows are set there (they vanish), and the gradient after it matches re-solved differences."""
+def test_flat_arc_accept_sets_the_label_rows_and_keeps_the_values():
+    """Follow: accepting a trial sets the label rows again at its fit, where they vanish, and changes none of its
+    values; the gradient there matches re-solved differences; and a trial a vanishing design step away returns the
+    accepted point's values (a line search has no jump to cross)."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -668,24 +669,24 @@ def test_flat_arc_labels_release_refits_without_the_labels():
         config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80)
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
-    before = problem.fun(x1)
-    n, rows = problem.model._n_interface, problem._record(x1)["rows"]
-    problem.accept_x(x1)
-    assert problem.stats["label_sets"] == 2 and problem.stats["releases"] == 1
-    assert problem.stats["release_failures"] == 0 and problem.label_share(x1) < 1e-8
-    after = problem._record(x1)["rows"]
-    assert after[:n] @ after[:n] <= (1 + 1e-6) * rows[:n] @ rows[:n]
-    np.testing.assert_allclose(problem.fun(x1), before, rtol=1e-3)
-    _, grad = problem.value_and_grad(x1)
+    before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
+    assert not problem.accept_x(x1)
+    assert problem.stats["label_sets"] == 2 and problem.stats["release_failures"] == 0
+    assert problem.label_share(x1) < 1e-8
+    np.testing.assert_allclose(np.r_[problem.fun(x1), problem.constraint_values(x1)], before, rtol=1e-12)
+    value, grad = problem.value_and_grad(x1)
     h = 2e-3 * np.eye(2)[1]
     np.testing.assert_allclose(grad[1], (problem.fun(x1 + h) - problem.fun(x1 - h)) / (2 * h[1]), rtol=2e-2, atol=1e-8)
+    near = x1 + 1e-9 * np.eye(2)[1]
+    np.testing.assert_allclose(np.r_[problem.fun(near), problem.constraint_values(near)],
+                               np.r_[value, problem.constraint_values(x1)], rtol=1e-5)  # 2e-6 here
 
 
 @needs_vc
 @pytest.mark.full
 def test_flat_arc_follow_over_accepted_steps():
     """Flat arc with follow, as the single stage runs it, over three accepted steps of the toroidal flux, the coil
-    currents and a coil shape mode: a trial is its no-label fit, so accepting it changes none of its values; the label
+    currents and a coil shape mode: accepting a trial changes none of its values; the label
     rows are set again at every accepted fit (they vanish there); the interface residuals stay at the fit's floor; a
     trial's values are those of the no-label problem at the same design; the gradient after the last step matches
     re-solved central differences along the three coordinates; and a restart from the last step's saved equilibrium
@@ -711,8 +712,7 @@ def test_flat_arc_follow_over_accepted_steps():
         problem.value_and_grad(x)  # as an optimizer: the accepted point's gradient before its next trial
         x = x + np.asarray(dx)
         before = values(x)
-        assert problem._cache[x.tobytes()]["released"]
-        assert not problem.accept_x(x)  # already its no-label fit: nothing re-fitted
+        assert not problem.accept_x(x)  # nothing re-fitted
         np.testing.assert_allclose(values(x), before, rtol=1e-12, atol=0.0)
         assert problem.stats["label_sets"] == step + 1 and problem.label_share(x) < 1e-8
         residual = problem.boundary_residual(x)

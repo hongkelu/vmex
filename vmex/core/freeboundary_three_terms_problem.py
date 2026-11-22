@@ -7,21 +7,24 @@ Terms:
 
 - Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
   Only the labelling ``flat_arc`` has them.
-- Released fit: the trial's fit without the label rows.
-- Follow: every trial is its released fit, and the label rows are set again at each accepted step.
+- Released fit: the trial's fit continued without the label rows.
+- Follow: the label rows are set again at each accepted step, where they vanish, and a trial is its released fit
+  where that lowers the interface cost for real (below ``RELEASE_KEEP`` of the cost under the label rows).
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
 - Polish: fresh-Jacobian rounds on a fit before its gradient, up to ``GRADIENT_POLISH_ROUNDS`` of them.
 
 One optimization step with label rows:
 
 1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
-   anchor's Jacobian.  Continue from there to the released fit (``_released``), which is the trial.  Where the
-   released fit fails, the trial is the fit under the label rows.
+   anchor's Jacobian.  Continue from there to the released fit (``_released``).  It is the trial where it lowers
+   the interface cost below ``RELEASE_KEEP`` of the fit's.  Otherwise the trial is the fit under the label rows: a
+   smaller gain is the creep of a fit without label rows along its flat directions, which moves sensitive rows (a
+   Mercier row by 10 %) at no design step, and a line search cannot work across such a jump.
 2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``, up to three rounds).  The trial's values become
    those of the polished fit.  Linearize it, differentiate every row by the implicit function theorem of the boundary
    fit, and make the point the anchor.
-3. Accept (``accept_x``).  Release the trial if it is not released yet.  Set the label rows again at the accepted
-   fit (``_set_label_rows``), where they vanish, and clear the anchor.  The next trial first linearizes the accepted
+3. Accept (``accept_x``).  Set the label rows again at the accepted fit (``_set_label_rows``), where they vanish
+   (no value changes), and clear the anchor.  The next trial first linearizes the accepted
    point under the new label rows, which sets the anchor again.
 
 Without label rows a trial is its fit from the anchor, and accepting it changes nothing but the cache.  Without an
@@ -48,6 +51,8 @@ from .problem import FunctionProblem
 #: this fraction.  A trial's fit reuses an older Jacobian and can stop in a shallow valley 10-20 % above its minimum
 #: (QI at 12 x 12 modes: rounds of 9, 9, 3 and 2 %).
 GRADIENT_POLISH_FTOL, GRADIENT_POLISH_NFEV, GRADIENT_POLISH_KEEP, GRADIENT_POLISH_ROUNDS = 1e-4, 20, 0.95, 3
+#: A trial's released fit is kept when its interface cost is below this share of the cost under the label rows.
+RELEASE_KEEP = GRADIENT_POLISH_KEEP
 
 
 def _nonlinear_constraint(values, jacobian, lower, upper, scales):
@@ -106,7 +111,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended, before any
       release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
     - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
-      set.  ``releases`` and ``release_failures``: released fits that solved and that failed.
+      set.  ``releases`` and ``release_failures``: released fits that solved (kept or not) and that failed.
     - ``polish_rounds``: polish rounds kept.  ``polish_gain``: the last polish round's relative cost reduction.
     """
 
@@ -136,9 +141,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         labelling's reference and the quadrature plan's boundary.
 
         With the labelling ``"flat_arc"`` the label rows are set at the seed's fit and the fit follows the design.
-        Every trial is its released fit (no label rows), continued from its fit under the label rows.  So the labelling
-        does not accumulate, and accepting a trial changes none of its values.  The label rows are set again at every
-        accepted fit (:meth:`accept_x`), where they vanish.
+        The label rows are set again at every accepted fit (:meth:`accept_x`), where they vanish, so the labelling
+        does not accumulate and accepting a trial changes none of its values.  A trial is its released fit (no label
+        rows) where that lowers the interface cost for real, else its fit under the label rows.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
         if not all(callable(f) for f in functions) or not (plasma_from_parameters is None
@@ -349,9 +354,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
         if self.model._labels is not None and anchor:
-            # a trial is the fit it has once accepted: the released fit from its fit under the label rows
+            # the released fit from the fit under the label rows, where it lowers the interface cost for real: a
+            # smaller gain is the creep of a fit without label rows along its flat directions, which moves sensitive
+            # rows more than a short design step does (a trial at the accepted design must return the accepted fit)
             released = self._released(x, dict(fit))
-            if released is not None:
+            n, k = self.model._n_interface, self.model._labels[0].shape[0]
+            interface = np.delete(fit["rows"], np.s_[n:n + k])
+            if released is not None and released["rows"] @ released["rows"] < RELEASE_KEEP * (interface @ interface):
                 self._cache[key] = released
                 return released
         state, mask, params_b = fit["aux"]
@@ -479,27 +488,17 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def accept_x(self, x):
         """Promote an evaluated point after the optimizer accepts it and drop the other trials.
 
-        With label rows the point is released first if it is not released yet, and the label rows are set
-        again at its fit.  Returns whether the point was released here, so that its values moved."""
+        With label rows they are set again at its fit, where they vanish: no value of the point changes.  Returns
+        ``False`` (the point was not re-fitted)."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
         if self._cache.get(key) is None:
             raise ValueError("evaluate the candidate before accepting it")
-        released = self._promote(x)
+        if self.model._labels is not None:
+            self._set_label_rows(x)
         self.accepted, self.accepted_step = _AcceptedPoint(x.copy()), self.accepted_step + 1
         self._cache = {key: self._cache[key]}
-        return released
-
-    def _promote(self, x):
-        """Set the label rows again at ``x``'s fit (cached).  Returns whether ``x`` was released here."""
-        sol, released = self._cache[x.tobytes()], None
-        if self.model._labels is not None:
-            if not sol.get("released"):  # a trial is released when it is solved; one whose release failed, here
-                released = self._released(x, sol)
-                if released is not None:
-                    self._cache[x.tobytes()] = released
-            self._set_label_rows(x)
-        return released is not None
+        return False
 
     def label_share(self, x):
         """The label rows' share of ``x``'s boundary-fit cost (0 without label rows, and where they were set)."""

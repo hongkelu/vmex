@@ -27,7 +27,8 @@ example of the same problem.
 The flags are what differs from one launch to the next: ``--output``, ``--steps``, ``--modes``, ``--ns``,
 ``--labelling``, ``--restart`` and ``--seed-run``.
 
-The boundary's labelling is ``flat_arc`` with its gauge recipe (``FLAT_ARC_GAUGE``) and smooth Mercier, clearance
+The boundary's labelling is ``flat_arc`` (with follow: every trial is its no-label fit, and the held directions are
+set again at every accepted step) with smooth Mercier, clearance
 and mirror rows (``MERCIER_SMOOTH``, ``CLEARANCE_SMOOTH``, ``MIRROR_SMOOTH``); ``--labelling equal_arc`` is the
 control, with the rows' hard extremes.
 
@@ -141,9 +142,6 @@ MERCIER_MARGIN = 0.02
 # ratio's Bmax, Bmin as |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
 MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
 CLEARANCE_SMOOTH = MIRROR_SMOOTH = None
-# flat_arc labelling: the gauge is set again at every accepted fit, and where its rows' share of a fit's cost
-# exceeds 1%, after a re-fit without the gauge rows from the reused Jacobian alone.
-FLAT_ARC_GAUGE = dict(gauge_release=True, gauge_refresh=1)
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -929,7 +927,7 @@ def main(argv=None):
                                    bootstrap_helicity=REDL_HELICITY),
         boundary_ftol=TRIAL_FTOL, boundary_max_residual=MAX_BOUNDARY_RESIDUAL,
         boundary_start=None if args.restart is None else restart_input(args.restart) if regrid else args.restart / "wout.nc",  # resume at the saved state
-        **(FLAT_ARC_GAUGE if flat_arc else {}))
+        )
     model = problem.model
     print(f"[model] {model.n_boundary} boundary and {model.x0.size - model.n_boundary} bootstrap-current coordinates, "
           f"{chart.size} design coordinates; built in {time.monotonic() - started:.0f} s"

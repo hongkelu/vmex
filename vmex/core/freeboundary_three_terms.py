@@ -273,7 +273,7 @@ LABEL_WEIGHTS = {"flat_arc": 1e-3, "equal_arc": 1e-3, "anchored": 1e-2}
 
 class _LabelledField(NamedTuple):
     """An external field with the flat-arc label rows' arrays: arguments of the compiled rows, so new label rows of the
-    same shape does not recompile them."""
+    same shape do not recompile them."""
 
     field: Any
     weights: Any
@@ -293,9 +293,10 @@ class ThreeTermsConfig:
         Fixes the boundary's poloidal labelling, which the interface conditions leave free.
 
         - ``"flat_arc"`` (the default) holds the arc-length distribution of a reference fit along the fit's flat,
-          tangential directions on the current surface (:meth:`ThreeTermsModel.set_label_rows`).  This is the
-          released fit (no label rows), made well determined.  :func:`solve_free_boundary_three_terms` sets the rows
-          at its fit without them.  The single-stage problem sets them at every accepted step.
+          tangential directions on the current surface (:meth:`ThreeTermsModel.set_label_rows`): the labelling of the
+          fit without label rows, held along the directions that fit leaves nearly free.
+          :func:`solve_free_boundary_three_terms` sets the rows at its fit without them.  The single-stage problem
+          sets them at every accepted step.
         - ``"equal_arc"`` asks for equal arc length on every toroidal cut of the current surface, and a zero phase of
           its ``m = 1`` part.
         - ``"anchored"`` penalizes the tangential offset of the boundary points from a reference boundary, the
@@ -406,10 +407,10 @@ class ThreeTermsResult:
     ``boundary_residual`` and ``initial_boundary_residual`` are the :class:`BoundaryResidual` of the solution and
     of the initial boundary, ``start`` the initial boundary kept (``"deck"`` or ``"nestor"``).  As DESC's least
     squares, the fit stops where it cannot improve any more: ``converged`` is True when the Levenberg-Marquardt
-    finish met its relative cost-change test, or its steps still gained under 5% each after a fresh Jacobian;
-    False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not be the free
-    boundary, and the interface rows cannot reach zero at a finite resolution, so ``success`` also requires every
-    RMS interface residual at or below the configuration's ``max_residual``.  ``x`` are the boundary
+    finish met its relative cost-change test, or its steps still gained under ``1 - LM_SLOW_COST`` each after a
+    fresh Jacobian; False when it ran out of evaluations or its trust radius collapsed.  A stationary point need not
+    be the free boundary, and the interface rows cannot reach zero at a finite resolution, so ``success`` also
+    requires every RMS interface residual at or below the configuration's ``max_residual``.  ``x`` are the boundary
     coordinates (then any bootstrap-current values) and ``cost`` the fit's; ``input`` is the free boundary (and
     current) as a fixed-boundary deck, ``equilibrium`` its equilibrium; ``jacobian``, ``model`` and ``aux``
     continue the solve after a coil change (``previous=``).
@@ -873,9 +874,9 @@ class ThreeTermsModel:
         norms[norms == 0.0] = 1.0
         _, sv, Vt = np.linalg.svd(J / norms, full_matrices=False)
         A, B = _displacement_metrics(self.fixed, xb, self.max_mode)
-        flat = [u for s, u in zip(sv, Vt) if s < sv[0]]
+        candidates = Vt[1:]  # every direction but the stiffest; the normal share picks the tangential ones
         tangential = lambda u: u @ A @ u < LABEL_NORMAL_SHARE ** 2 * (u @ B @ u)  # noqa: E731
-        held = [u for u in flat if tangential(u / norms)]
+        held = [u for u in candidates if tangential(u / norms)]
         if held:
             L = _jacfwd(self._boundary_arc, jnp.asarray(xb, dtype=float))
             M = np.linalg.qr(np.asarray(L) @ (np.array(held).reshape(-1, nb) / norms).T)[0]
@@ -894,6 +895,8 @@ class ThreeTermsModel:
             columns = np.vstack([columns[:i], new, columns[i + old:]])
             self._last_linearize = (key, extra_key, (columns, dz, batch, aux), linearization)
             self._linearization = linearization
+        else:  # a cached linearization of other label rows must not answer for the new ones
+            self._last_linearize = None
         return len(held)
 
     def _boundary_arc(self, z):
@@ -947,7 +950,7 @@ class ThreeTermsModel:
             groups.append(extra)
         join = lambda *a: jnp.concatenate(a)  # noqa: E731
         # One tangent solve (one block factorization) for every group; the pushes stay per group.
-        self._last_linearize = self._linearization = None  # released first: two sets of responses need not fit
+        self._last_linearize = self._linearization = None  # dropped first: two sets of responses need not fit
         bands = self._im._block_bands(self.cfg, params_x, state, mask)
         dz_all = self._tangents(params_x, state, mask, jax.tree.map(join, *groups), bands)
         ends = np.cumsum([jax.tree.leaves(batch)[0].shape[0] for batch in groups])
@@ -1065,7 +1068,8 @@ LM_SHRINK = 0.25         # the shrunk radius, as a fraction of the poor step's l
 LM_GOOD_GAIN = 0.75      # a step that gained more than this fraction of its predicted reduction may grow the radius
 LM_AT_RADIUS = 0.99      # a step longer than this fraction of the radius counts as a step at the radius
 LM_GROW = 2.0            # the radius' growth factor after a good step at the radius
-LM_SLOW_COST = 0.95      # a step that leaves the cost above this fraction of it is slow (it gained under 5%)
+LM_SLOW_COST = 0.98      # a step that leaves the cost above this fraction of it is slow (it gained under 2%)
+#                          (5 % left QH's interface residuals 15 % higher, 1 % cost 70-85 % more solves)
 LM_SLOW_STEPS = 3        # this many slow steps in a row stop the fit as stalled: the Jacobian is stale there
 LM_BISECTIONS = 60       # bisections of log(damping) for the step of the radius' length: 2^-60 of the bracket
 
@@ -1080,19 +1084,19 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
     The step.  In Marquardt-scaled coordinates it is the Levenberg-Marquardt step whose length is the trust radius,
     or the Gauss-Newton step if that is shorter.  Both come from one SVD of ``J``.
 
-    The radius.  It shrinks to a quarter of the length of a step that gained less than a quarter of its predicted
-    reduction, or that failed to solve.  It doubles after a step at the radius that gained three quarters of its
-    predicted reduction.  ``radius`` carries the last solve's radius over, raised to at least 1/20 of the first
-    Gauss-Newton step.  The default is that step's length.
+    The radius.  It shrinks to ``LM_SHRINK`` of the length of a step that gained less than ``LM_POOR_GAIN`` of its
+    predicted reduction, or that failed to solve.  It grows by ``LM_GROW`` after a step at the radius that gained
+    more than ``LM_GOOD_GAIN`` of its predicted reduction.  ``radius`` carries a radius over, raised to at least
+    ``LM_RADIUS_FLOOR`` of the first Gauss-Newton step.  The default is that step's length.
 
     The stop.  ``reason`` is one of:
 
     - ``"ftol"``: a relative cost change of ``ftol`` that the linear model predicted;
-    - ``"stalled"``: three steps in a row each gained under 5% (the Jacobian is stale there).  Such steps are not
-      taken, so the fit ends where its last real gain left it and a fit started there again returns the same point
-      (taken, they made every fit creep three steps along the nearly flat directions, and a single-stage trial at
-      the accepted design moved a Mercier row by 5 %);
-    - ``"radius"``: the radius fell below 1e-4 of the Gauss-Newton step;
+    - ``"stalled"``: ``LM_SLOW_STEPS`` steps in a row each gained under ``1 - LM_SLOW_COST`` of the cost (the
+      Jacobian is stale there), or a slow step left the radius as it was (the next step would be the same one).
+      Slow steps are not taken, so the fit ends where its last real gain left it and a fit started there with the
+      same Jacobian and radius returns the same point;
+    - ``"radius"``: the radius fell below ``LM_RADIUS_STOP`` of the Gauss-Newton step;
     - ``"max_nfev"``: the evaluations ran out.
 
     ``fresh`` marks ``J`` as taken at ``x`` where the last steps stalled.  Until a step is accepted, a step that
@@ -1150,6 +1154,7 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
             print(f"Levenberg-Marquardt step {nfev - 1}: |step| {length:.2e} (radius {radius:.2e}), cost "
                   f"{cost:.6e} -> {cost_new:.6e}, gain ratio {rho:.2f} ({time.perf_counter() - started:.1f} s)",
                   flush=True)
+        radius_before = radius
         if rho < LM_POOR_GAIN:
             radius = LM_SHRINK * length
         elif rho > LM_GOOD_GAIN and length > LM_AT_RADIUS * radius:
@@ -1159,6 +1164,9 @@ def _levenberg_marquardt(evaluate, x, r, aux, J, *, ftol, max_nfev, verbose, rad
         # not the Jacobian's fault: a failed step at x itself, or a step on a fresh J that gained what was predicted
         excused = (at_x and cost_new >= cost) or (fresh and rho > LM_GOOD_GAIN)
         slow = slow + 1 if small_gain and not excused else 0
+        if slow and radius == radius_before:  # not taken, and the next step would be this one again
+            reason = "stalled"
+            break
         if cost_new < cost and not slow:  # a slow step is not taken: a fit started where this one ends, ends there
             x, (r, aux), accepted, last = x_new, got, accepted + 1, length
             if cost - cost_new <= ftol * cost and rho > LM_POOR_GAIN:  # a small gain the linear model foresaw

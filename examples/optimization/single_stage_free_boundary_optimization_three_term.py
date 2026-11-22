@@ -169,11 +169,12 @@ MERCIER_MARGIN = 0.02
 # Smooth rows.  A hard extreme changes the surface or point it reads within a short step, and its gradient sees
 # only the one it reads now: with the hard Mercier minimum the QH run at 8x8 modes crawled from step 180 (a row
 # predicted to rise by 0.1 fell by 5.4 at a step of 2e-3).  The Mercier floor is held on MERCIER_BANDS radial
-# bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc), and where a case sets
-# them the coil-plasma clearance as the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] and the mirror
-# ratio's Bmax, Bmin as |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
+# bands, in each DMerc averaged with weights exp(-DMerc / MERCIER_SMOOTH) (smooth_d_merc); the coil-plasma
+# clearance is the distances' mean weighted by exp(-d / CLEARANCE_SMOOTH) [m] (with the hard nearest pair the QH run
+# at 8x8 took 3.4 trials a step: at its bound several pairs tie, and a step makes another the nearest), and the
+# mirror ratio's Bmax, Bmin are |B| averaged with weights exp(+-|B| / MIRROR_SMOOTH) [T].
 MERCIER_SMOOTH, MERCIER_BANDS = 0.01, 4
-CLEARANCE_SMOOTH = MIRROR_SMOOTH = None
+CLEARANCE_SMOOTH = MIRROR_SMOOTH = 5e-4
 CURRENT_IOTA_WEIGHT = 0.0          # > 0: the loss adds w/2 iota_I^2 (current_iota), shrinking the bootstrap current
 ASPECT_RANGE = (4.9, 5.1)
 RADIUS_TARGET, RADIUS_TOLERANCE, RADIUS_MARGIN = 1.0, 0.01, 0.001
@@ -247,7 +248,6 @@ elif CASE.removesuffix("-tok") in ("qa4-beta", "qi6-beta", "qh4-beta"):
         SEED, HELICITY, TARGET_NAME, ASPECT_RANGE, MIRROR_LIMIT = (4, 6.0, 0.7), None, "QI", (5.9, 6.1), 0.21
         # Stellaris (Lion et al. 2025): iota 0.86 on axis to 0.98 at the edge, below the 4/4 islands
         IOTA_FLOOR, IOTA_CEILING, BOOTSTRAP_MODEL = 0.86, 0.98, "dkx"
-        CLEARANCE_SMOOTH = MIRROR_SMOOTH = 5e-4
         COIL_DISTANCE_LIMIT, COIL_SURFACE_DISTANCE_LIMIT = 0.08, 0.15
 elif CASE != "ellipse5":
     raise ValueError(f"unknown COIL_CASE {CASE!r}")
@@ -1221,14 +1221,6 @@ def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, start
                    step_box=None if last["x"] is None else float(np.max(np.abs(x - last["x"]) / problem.scales)),
                    step_seconds=now - last["time"], elapsed_seconds=now - started, **problem.stats,
                    peak_gpu_gib=(jax.devices()[0].memory_stats() or {}).get("peak_bytes_in_use", 0) / 2**30)
-        if model._labels is not None:  # the label rows' share of the accepted fit's cost (0 where it was set)
-            # problem.label_share(x) reports the same share from the label-row entries of the fit's row vector.  Here
-            # the label rows are evaluated from their definition, which can differ from it in the last digits, so
-            # the logged value keeps this formula.
-            M, reference = model._labels
-            g = np.asarray(M @ (model._arc_label(params_x.rbc, params_x.zbs) - reference))
-            r = np.asarray(model._rows(state_x, params_x, problem.field(jnp.asarray(x))))
-            row["label_share"] = float(g @ g / (r @ r))
         optimizing = args.steps > problem.accepted_step or problem.accepted_step  # not a re-solve alone
         if optimizing:
             try:  # a diagnostic
@@ -1251,7 +1243,7 @@ def step_logger(args, out, inp, chart, problem, rows, vacuum, constraints, start
               f"force={row['force_balance_rms']:.1e}/{row['force_balance_max']:.1e} "
               + f"label_ratio={row['label_speed_ratio']:.2f} "
               + (f"cond={row['boundary_jacobian_cond']:.0f} " if row["boundary_jacobian_cond"] else "")
-              + (f"labels={row['label_share']:.1e}/{row['label_directions']} " if "label_share" in row else "")
+              + (f"labels={row['label_directions']} " if model._labels is not None else "")
               + (f"step={row['step_box']:.2f} " if row["step_box"] is not None else "")
               + (f"kkt={row['kkt_residual']:.2f}/{row['kkt_rows']} " if "kkt_residual" in row else "")
               + f"{row['step_seconds']:.1f}s "

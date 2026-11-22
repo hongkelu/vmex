@@ -61,6 +61,16 @@ def _scaled(field, factor):
     return BiotSavart(Coils(coils.curves, coils.dofs_currents_raw * factor, currents_scale=coils.currents_scale))
 
 
+def _shifted(field, amount):
+    """``field`` with one Fourier mode of the first base coil (x, cos phi) moved by ``amount`` metres."""
+    from essos.coils import Coils, Curves
+    from essos.fields import BiotSavart
+
+    coils, curves = field.coils, field.coils.curves
+    moved = Curves(curves.dofs.at[0, 0, 2].add(amount), curves.n_segments, curves.nfp, curves.stellsym)
+    return BiotSavart(Coils(moved, coils.dofs_currents_raw, currents_scale=coils.currents_scale))
+
+
 def test_nonzero_edge_pressure_is_rejected():
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 11), pmass_type="power_series",
                   am=np.array([1.0e3, -0.5e3] + [0.0] * 19))
@@ -584,11 +594,11 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
     assert isinstance(problem, ThreeTermsFreeBoundaryProblem)
     x0 = problem.x0
     if labelling == "flat_arc":
-        assert problem.stats["gauge_directions"] >= 0
-        if problem.model._gauge is not None:  # the gauge rows vanish at the seed's fit
+        assert problem.stats["label_directions"] >= 0
+        if problem.model._labels is not None:  # the label rows vanish at the seed's fit
             sol = problem._cache[x0.tobytes()]
             current = problem.model._arc_label(sol["params"].rbc, sol["params"].zbs)
-            assert np.max(np.abs(np.asarray(current) - np.asarray(problem.model._gauge[1]))) < 1e-10
+            assert np.max(np.abs(np.asarray(current) - np.asarray(problem.model._labels[1]))) < 1e-10
     value, grad = problem.value_and_grad(x0)
     jac = problem.constraint_jac(x0)
     assert problem.boundary_residual(x0).sheet_current < 1e-2
@@ -606,9 +616,9 @@ def test_three_term_problem_gradients_match_resolved_differences(labelling, labe
 
 @needs_vc
 @pytest.mark.full
-def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
-    """Follow: the flat-arc gauge is set again at every accepted fit -- no value there changes (its rows
-    vanish at the fit they are set at), the interface rows' Jacobian picks the directions (the old gauge's rows
+def test_flat_arc_labels_refresh_keeps_the_accepted_point():
+    """Follow: the flat-arc label rows are set again at every accepted fit -- no value there changes (they
+    vanish at the fit they are set at), the interface rows' Jacobian picks the directions (the old label rows
     left out), and the gradient after the refresh still matches re-solved central differences."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
@@ -619,20 +629,20 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
         quantities=(opt.mean_iota,),
         config=vj.ThreeTermsConfig(labelling="flat_arc", nphi=24, ntheta=24, quadrature=(4 * 2 * 24, 48)),
         boundary_ftol=1e-10, boundary_max_nfev=80)
-    assert problem.stats["gauge_sets"] == 1
+    assert problem.stats["label_sets"] == 1
     x1 = problem.x0 + 2e-3 * np.eye(2)[1]
     before = np.r_[problem.fun(x1), problem.constraint_values(x1)]
-    reference = np.asarray(problem.model._gauge[1])
+    reference = np.asarray(problem.model._labels[1])
     problem.accept_x(x1)
-    assert problem.stats["gauge_sets"] == 2 and problem.gauge_share(x1) < 1e-8
-    # the refresh keeps x1's linearization with its gauge rows swapped: a fresh one is the same
+    assert problem.stats["label_sets"] == 2 and problem.label_share(x1) < 1e-8
+    # the refresh keeps x1's linearization with its label rows swapped: a fresh one is the same
     model, sol, xj = problem.model, problem._cache[x1.tobytes()], jnp.asarray(x1)
     extra = problem._plasma_directions(sol["params"], xj)
     kept = model.linearize(sol["x"], sol["aux"], problem.field(xj), extra=extra)[0]
     model._last_linearize = None
     fresh = model.linearize(sol["x"], sol["aux"], problem.field(xj), extra=extra)[0]
     np.testing.assert_allclose(kept, fresh, rtol=1e-8, atol=1e-10 * np.abs(fresh).max())
-    assert not np.allclose(np.asarray(problem.model._gauge[1]), reference)  # set again, at x1's fit
+    assert not np.allclose(np.asarray(problem.model._labels[1]), reference)  # set again, at x1's fit
     np.testing.assert_allclose(np.r_[problem.fun(x1), problem.constraint_values(x1)], before, rtol=1e-8, atol=1e-12)
     _, grad = problem.value_and_grad(x1)
     jac = problem.constraint_jac(x1)
@@ -645,9 +655,9 @@ def test_flat_arc_gauge_refresh_keeps_the_accepted_point():
 
 @needs_vc
 @pytest.mark.full
-def test_flat_arc_gauge_release_refits_without_the_gauge():
-    """Follow: a trial is its fit without the gauge rows: the interface cost does
-    not rise, the gauge is set there (its rows vanish), and the gradient after it matches re-solved differences."""
+def test_flat_arc_labels_release_refits_without_the_labels():
+    """Follow: a trial is its fit without the label rows: the interface cost does
+    not rise, the label rows are set there (they vanish), and the gradient after it matches re-solved differences."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
     problem = ThreeTermsFreeBoundaryProblem.from_loss(
@@ -661,8 +671,8 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
     before = problem.fun(x1)
     n, rows = problem.model._n_interface, problem._record(x1)["rows"]
     problem.accept_x(x1)
-    assert problem.stats["gauge_sets"] == 2 and problem.stats["gauge_releases"] == 1
-    assert problem.stats["gauge_release_failures"] == 0 and problem.gauge_share(x1) < 1e-8
+    assert problem.stats["label_sets"] == 2 and problem.stats["releases"] == 1
+    assert problem.stats["release_failures"] == 0 and problem.label_share(x1) < 1e-8
     after = problem._record(x1)["rows"]
     assert after[:n] @ after[:n] <= (1 + 1e-6) * rows[:n] @ rows[:n]
     np.testing.assert_allclose(problem.fun(x1), before, rtol=1e-3)
@@ -674,48 +684,55 @@ def test_flat_arc_gauge_release_refits_without_the_gauge():
 @needs_vc
 @pytest.mark.full
 def test_flat_arc_follow_over_accepted_steps():
-    """Flat arc with follow, as the single stage runs it, over three
-    accepted steps: a trial is its no-label fit, so accepting it changes none of its values; the gauge is set again
-    at every accepted fit (its rows vanish there); the interface residuals stay at the fit's floor; a trial's values
-    are those of the no-label problem at the same design; and the gradient after the last step matches re-solved
-    central differences along both coordinates."""
+    """Flat arc with follow, as the single stage runs it, over three accepted steps of the toroidal flux, the coil
+    currents and a coil shape mode: a trial is its no-label fit, so accepting it changes none of its values; the label
+    rows are set again at every accepted fit (they vanish there); the interface residuals stay at the fit's floor; a
+    trial's values are those of the no-label problem at the same design; the gradient after the last step matches
+    re-solved central differences along the three coordinates; and a restart from the last step's saved equilibrium
+    keeps its values, with the label rows set there."""
     inp = replace(_deck("input.LandremanPaul2021_QA_lowres", 3, 13), phiedge=-0.025, curtor=0.0, am=np.zeros(21))
     coils = _coil_field("ESSOS_biot_savart_LandremanPaulQA.json")
 
-    def build(labelling, label_weight=None):
+    def build(labelling, label_weight=None, deck=inp, x0=np.zeros(3), **options):
         return ThreeTermsFreeBoundaryProblem.from_loss(
-            inp, lambda state, runtime, x: opt.aspect_ratio(state, runtime), np.zeros(2),
-            field_from_parameters=lambda x: _scaled(coils, 1 + x[1]),
+            deck, lambda state, runtime, x: opt.aspect_ratio(state, runtime), x0,
+            field_from_parameters=lambda x: _shifted(_scaled(coils, 1 + x[1]), x[2]),
             plasma_from_parameters=lambda params, x: replace(params, phiedge=params.phiedge * (1 + x[0])),
             quantities=(opt.mean_iota,),
             config=vj.ThreeTermsConfig(labelling=labelling, label_weight=label_weight, nphi=24, ntheta=24,
                                        quadrature=(4 * 2 * 24, 48)),
-            boundary_ftol=1e-10, boundary_max_nfev=80)
+            boundary_ftol=1e-10, boundary_max_nfev=80, **options)
 
     problem = build("flat_arc")
     values = lambda x: np.r_[problem.fun(x), problem.constraint_values(x)]  # noqa: E731
     floor = problem.boundary_residual(problem.x0)
     x = problem.x0
-    for step, dx in enumerate(([0.0, 2e-3], [2e-3, 1e-3], [-1e-3, 2e-3]), start=1):
+    for step, dx in enumerate(([0.0, 2e-3, 1e-3], [2e-3, 1e-3, -2e-3], [-1e-3, 2e-3, 2e-3]), start=1):
         problem.value_and_grad(x)  # as an optimizer: the accepted point's gradient before its next trial
         x = x + np.asarray(dx)
         before = values(x)
         assert problem._cache[x.tobytes()]["released"]
         assert not problem.accept_x(x)  # already its no-label fit: nothing re-fitted
         np.testing.assert_allclose(values(x), before, rtol=1e-12, atol=0.0)
-        assert problem.stats["gauge_sets"] == step + 1 and problem.gauge_share(x) < 1e-8
+        assert problem.stats["label_sets"] == step + 1 and problem.label_share(x) < 1e-8
         residual = problem.boundary_residual(x)
         for name in ("normal", "pressure", "sheet_current"):
             assert getattr(residual, name) < 1.5 * max(getattr(floor, name), 1e-4)
-    assert problem.stats["gauge_release_failures"] == 0
+    assert problem.stats["release_failures"] == 0
     free = build("equal_arc", label_weight=0.0)  # the same design without any labelling rows
     np.testing.assert_allclose(values(x), np.r_[free.fun(x), free.constraint_values(x)], rtol=1e-3)
     _, grad = problem.value_and_grad(x)
     jac = problem.constraint_jac(x)
-    for k, h in ((0, 2e-3), (1, 2e-3)):
-        e = h * np.eye(2)[k]
+    for k, h in ((0, 2e-3), (1, 2e-3), (2, 2e-3)):
+        e = h * np.eye(3)[k]
         fd = (values(x + e) - values(x - e)) / (2 * h)
         np.testing.assert_allclose(np.r_[grad[k], jac[:, k]], fd, rtol=2e-2, atol=1e-8 * max(1.0, abs(values(x)[0])))
+    kept = values(x)
+    wout = problem.equilibrium_from_x(x).wout
+    final = vj.VmecInput.from_wout(wout)
+    problem = build("flat_arc", deck=replace(inp, rbc=final.rbc, zbs=final.zbs), x0=x, boundary_start=wout)
+    np.testing.assert_allclose(values(x), kept, rtol=1e-3)
+    assert problem.stats["label_sets"] == 1 and problem.label_share(x) < 1e-8
 
 
 def _lp_beta0p5_profiles(inp):

@@ -5,26 +5,26 @@ the boundary fit of its design.  It is a solution when every interface residual 
 
 Terms:
 
-- Gauge rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
+- Label rows: rows that hold the boundary's poloidal labelling along the fit's nearly flat tangential directions.
   Only the labelling ``flat_arc`` has them.
-- Released fit: the trial's fit without the gauge rows.
-- Follow: every trial is its released fit, and the gauge rows are set again at each accepted step.
+- Released fit: the trial's fit without the label rows.
+- Follow: every trial is its released fit, and the label rows are set again at each accepted step.
 - Anchor: the last linearized point, normally the last accepted one.  Its Jacobian starts the next trials' fits.
 - Polish: fresh-Jacobian rounds on a fit before its gradient, up to ``GRADIENT_POLISH_ROUNDS`` of them.
 
-One optimization step with gauge rows:
+One optimization step with label rows:
 
-1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the gauge rows with the
+1. Trial (``_solve``).  Predict the boundary to first order from the anchor.  Fit it under the label rows with the
    anchor's Jacobian.  Continue from there to the released fit (``_released``), which is the trial.  Where the
-   released fit fails, the trial is the fit under the gauge rows.
+   released fit fails, the trial is the fit under the label rows.
 2. Gradient (``_linearize``).  Polish the fit (``_fit_jacobian``, up to three rounds).  The trial's values become
    those of the polished fit.  Linearize it, differentiate every row by the implicit function theorem of the boundary
    fit, and make the point the anchor.
-3. Accept (``accept_x``).  Release the trial if it is not released yet.  Set the gauge rows again at the accepted
-   fit (``_set_gauge``), where they vanish, and clear the anchor.  The next trial first linearizes the accepted point
-   under the new gauge rows, which sets the anchor again.
+3. Accept (``accept_x``).  Release the trial if it is not released yet.  Set the label rows again at the accepted
+   fit (``_set_label_rows``), where they vanish, and clear the anchor.  The next trial first linearizes the accepted
+   point under the new label rows, which sets the anchor again.
 
-Without gauge rows a trial is its fit from the anchor, and accepting it changes nothing but the cache.  Without an
+Without label rows a trial is its fit from the anchor, and accepting it changes nothing but the cache.  Without an
 anchor a fit starts from ``boundary_start``, or from the deck's boundary.
 """
 
@@ -105,8 +105,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     - ``linearizations``: Jacobians taken for the gradients, their polish rounds included.
     - ``fit_ftol``, ``fit_stalled``, ``fit_radius``, ``fit_max_nfev``: how the solved trials' fits ended, before any
       release (the ``reason`` of the model's fit).  ``fit_as_saved``: a restart's saved boundary taken as it is.
-    - ``gauge_directions``: directions the gauge rows hold since they were last set.  ``gauge_sets``: times they were
-      set.  ``gauge_releases`` and ``gauge_release_failures``: released fits that solved and that failed.
+    - ``label_directions``: directions the label rows hold since they were last set.  ``label_sets``: times they were
+      set.  ``releases`` and ``release_failures``: released fits that solved and that failed.
     - ``polish_rounds``: polish rounds kept.  ``polish_gain``: the last polish round's relative cost reduction.
     """
 
@@ -135,9 +135,9 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         A restart keeps its first run's deck ``inp`` and resumes at its final WOUT.  The deck holds the anchored
         labelling's reference and the quadrature plan's boundary.
 
-        With the labelling ``"flat_arc"`` the gauge rows are set at the seed's fit and the fit follows the design.
-        Every trial is its released fit (no gauge rows), continued from its fit under the gauge rows.  So the labelling
-        does not accumulate, and accepting a trial changes none of its values.  The gauge rows are set again at every
+        With the labelling ``"flat_arc"`` the label rows are set at the seed's fit and the fit follows the design.
+        Every trial is its released fit (no label rows), continued from its fit under the label rows.  So the labelling
+        does not accumulate, and accepting a trial changes none of its values.  The label rows are set again at every
         accepted fit (:meth:`accept_x`), where they vanish.
         """
         functions = (loss, field_from_parameters, *quantities, *parameter_quantities, *boundary_quantities)
@@ -159,7 +159,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
                  boundary_max_residual=None, boundary_start=None):
         im = model._im
         self.model = model
-        self.field = lambda x: model.gauged(field_from_parameters(x))
+        self.field = lambda x: model.labelled(field_from_parameters(x))
         self.boundary_ftol, self.boundary_max_nfev = float(boundary_ftol), int(boundary_max_nfev)
         self.boundary_max_residual = None if boundary_max_residual is None else float(boundary_max_residual)
         x0 = np.asarray(x0, dtype=float)
@@ -211,10 +211,10 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
 
         self._coordinates = coordinates
         self._direct = jax.jit(jax.jacrev(rows, argnums=2))
-        self._field_vjp = jax.jit(lambda state, params, x, lam, gauge: jax.vjp(
-            lambda z: model.rows(state, params, model.gauged(field_from_parameters(z), gauge)), x)[1](lam)[0])
-        self._field_jvp = jax.jit(lambda state, params, x, dx, gauge: jax.jvp(
-            lambda z: model.rows(state, params, model.gauged(field_from_parameters(z), gauge)), (x,), (dx,))[1])
+        self._field_vjp = jax.jit(lambda state, params, x, lam, labels: jax.vjp(
+            lambda z: model.rows(state, params, model.labelled(field_from_parameters(z), labels)), x)[1](lam)[0])
+        self._field_jvp = jax.jit(lambda state, params, x, dx, labels: jax.jvp(
+            lambda z: model.rows(state, params, model.labelled(field_from_parameters(z), labels)), (x,), (dx,))[1])
         self._cache, self._rejections, self._anchor = {}, {}, {}
         self._start, self._start_state = None, None
         if boundary_start is not None:
@@ -235,13 +235,13 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         # Every key the class writes (the class docstring describes them).
         self.stats = dict(trials=0, failed=0, rejection_reasons={}, boundary_evaluations=0, linearizations=0,
                           fit_ftol=0, fit_stalled=0, fit_radius=0, fit_max_nfev=0, fit_as_saved=0,
-                          gauge_directions=0, gauge_sets=0, gauge_releases=0, gauge_release_failures=0,
+                          label_directions=0, label_sets=0, releases=0, release_failures=0,
                           polish_rounds=0, polish_gain=0.0)
         self.accepted = None  # no accepted point during the seed solve
         if self._solve(x0) is None:
             raise VmecError(f"the seed design has no three-term free boundary: {self._rejections[x0.tobytes()]}")
-        if model.labelling == "flat_arc" and model._gauge is None:  # the seed fit's flat directions
-            self._set_gauge(x0)
+        if model.labelling == "flat_arc" and model._labels is None:  # the seed fit's flat directions
+            self._set_label_rows(x0)
         self.accepted, self.accepted_step = _AcceptedPoint(x0.copy()), 0
         super().__init__(x0, names=names, scales=scales, fun=self._value, value_and_grad=self._value_gradient,
                          metadata={"holder": {"failed_trials": 0}})
@@ -250,25 +250,27 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats[name] += amount
 
     def _released(self, x, sol):
-        """The released fit from ``sol``, ``x``'s fit under the gauge rows: its record, or ``None`` where it fails.
+        """The released fit from ``sol``, ``x``'s fit under the label rows: its record, or ``None`` where it fails.
 
         Its steps reuse the Jacobian ``sol`` has, else the anchor's, else ``sol``'s own after its polish.  The model is
         left as it was."""
         model, xj = self.model, jnp.asarray(x)
-        gauge, saved = model._gauge, [getattr(model, name) for name in self._SAVED_MODEL]
+        labels, saved = model._labels, [getattr(model, name) for name in self._SAVED_MODEL]
         J = sol.get("J")
         if J is None:
             J = self._anchor["J_b"] if self._anchor else self._fit_jacobian(x, sol)
-        # radius 0: the steps start at 1/20 of the Gauss-Newton step, which without the gauge rows is long along the
+        # radius 0: the steps start at 1/20 of the Gauss-Newton step, which without the label rows is long along the
         # flat directions (from its full length the reused Jacobian's first steps all fail)
-        model._gauge, model._last_linearize, model._radius = (jnp.zeros_like(gauge[0]), gauge[1]), None, 0.0
-        field = self.field(xj)  # after the weights are zeroed: the field carries the gauge it is wrapped with
-        if J is not None:  # its gauge rows zero like the weights
+        model._labels, model._last_linearize, model._radius = (jnp.zeros_like(labels[0]), labels[1]), None, 0.0
+        field = self.field(xj)  # after the weights are zeroed: the field carries the label rows it is wrapped with
+        if J is not None:  # its label rows zero like the weights
             J = np.array(J)[:, :model.x0.size]
-            J[model._n_interface:model._n_interface + gauge[0].shape[0]] = 0.0
+            J[model._n_interface:model._n_interface + labels[0].shape[0]] = 0.0
+        fit = None
         try:
             fit = model.solve_boundary(self._params_at(xj), field, x0=sol["x"], jacobian=J, ftol=self.boundary_ftol,
                                        max_nfev=self.boundary_max_nfev)
+            self.stats["boundary_evaluations"] += fit["nfev"]
             fitted = self._fits(fit, field)
             state, mask, params = fit["aux"]
             values = np.asarray(self._rows(state, params, xj)) if fitted else None
@@ -278,21 +280,20 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             for name, value in zip(self._SAVED_MODEL, saved):
                 setattr(model, name, value)
         if not fitted:
-            self._count("gauge_release_failures")
+            self._count("release_failures")
             return None
-        self.stats["boundary_evaluations"] += fit["nfev"]
-        self._count("gauge_releases")
+        self._count("releases")
         return dict(fit, state=state, mask=mask, params=params, values=values, released=True)
 
-    def _set_gauge(self, x):
-        """Set the model's gauge at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
+    def _set_label_rows(self, x):
+        """Set the model's label rows at ``x``'s fit (cached) and re-solve ``x`` from that fit under it."""
         model, key, xj = self.model, np.asarray(x, dtype=float).tobytes(), jnp.asarray(x)
         sol = self._cache[key]
-        # with the plasma columns: the gradient at x reuses this linearization, its gauge rows swapped
+        # with the plasma columns: the gradient at x reuses this linearization, its label rows swapped
         extra = self._plasma_directions(sol["params"], xj) if self._plasma.size else None
         J = model.linearize(sol["x"], sol["aux"], self.field(xj), extra=extra)[0]
-        self.stats["gauge_directions"] = model.set_flat_arc_gauge(sol["x"], J)
-        self._count("gauge_sets")
+        self.stats["label_directions"] = model.set_label_rows(sol["x"], J)
+        self._count("label_sets")
         # x's fit as it is (flat arc's rows vanish there), under the new rows
         sol.pop("gradients", None)
         sol.pop("J", None)
@@ -308,7 +309,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         self.stats["trials"] += 1
         x = np.asarray(x, dtype=float)
         params, field = self._params_at(jnp.asarray(x)), self.field(jnp.asarray(x))
-        if self.model._gauge is not None and not self._anchor and self.accepted is not None:
+        if self.model._labels is not None and not self._anchor and self.accepted is not None:
             # follow: the accepted point's Jacobian starts every trial's released fit, whatever the caller asked first
             at = self.accepted.parameters
             self._linearize(at, self._cache[at.tobytes()])
@@ -316,7 +317,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         if anchor:  # the anchor's first-order boundary prediction, then the anchor's own boundary
             dx = x - anchor["x"]
             dr = anchor["J_p"] @ dx[self._plasma] + np.asarray(self._field_jvp(
-                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._gauge))
+                anchor["state"], anchor["params"], jnp.asarray(anchor["x"]), jnp.asarray(dx), self.model._labels))
             starts, J = [anchor["b"] - np.linalg.lstsq(anchor["J_b"], dr, rcond=None)[0], anchor["b"]], anchor["J_b"]
         fit = None
         if self._start is not None and key == self._start_key:  # a restart: the saved boundary as it is
@@ -347,8 +348,8 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             return self._reject(key, "no three-term free boundary at this design point")
         self.stats["boundary_evaluations"] += fit["nfev"]
         self._count(f"fit_{fit.get('reason', 'as_saved')}")  # how the fit ended; the saved boundary has no reason
-        if self.model._gauge is not None and anchor:
-            # a trial is the fit it has once accepted: the released fit from its fit under the gauge rows
+        if self.model._labels is not None and anchor:
+            # a trial is the fit it has once accepted: the released fit from its fit under the label rows
             released = self._released(x, dict(fit))
             if released is not None:
                 self._cache[key] = released
@@ -384,7 +385,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
             raise TrialRejected(self._rejections[x.tobytes()])
         return sol
 
-    _SAVED_MODEL = ("_gauge", "_last_linearize", "_linearization", "_radius")
+    _SAVED_MODEL = ("_labels", "_last_linearize", "_linearization", "_radius")
 
     def _fit_jacobian(self, x, sol):
         """``sol``'s Jacobian (cached until its gradients are) once its fit is polished.
@@ -439,14 +440,14 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         state, params = sol["state"], sol["params"]
         params_bar = self._pullback(state, sol["mask"], params, xj, model.stored_bands(params, state, sol["mask"]))
         G_b, G_x = map(np.asarray, self._coordinates(params, jnp.asarray(sol["x"]), xj, params_bar))
-        S = model.gauge_curvature(sol["x"], params)
+        S = model.label_rows_curvature(sol["x"], params)
         gradients = np.asarray(self._direct(state, params, xj)) + G_x
         if S is None:
             Q, R = np.linalg.qr(J_b)
             lam = Q @ np.linalg.solve(R.T, G_b.T)  # residual-space multipliers, a column per row
-        else:  # nonlinear gauge rows: J^T J + sum g Hess g (their curvature; not the interface rows')
+        else:  # nonlinear label rows: J^T J + sum g Hess g (their curvature; not the interface rows')
             lam = J_b @ np.linalg.solve(J_b.T @ J_b + S, G_b.T)
-        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._gauge))
+        gradients -= np.stack([np.asarray(self._field_vjp(state, params, xj, jnp.asarray(column), model._labels))
                                for column in lam.T])
         gradients[:, self._plasma] -= lam.T @ J_p
         self._anchor = dict(x=np.asarray(x, dtype=float).copy(), b=sol["x"], J_b=J_b, J_p=J_p, state=state,
@@ -478,7 +479,7 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
     def accept_x(self, x):
         """Promote an evaluated point after the optimizer accepts it and drop the other trials.
 
-        With gauge rows the point is released first if it is not released yet, and the gauge rows are set
+        With label rows the point is released first if it is not released yet, and the label rows are set
         again at its fit.  Returns whether the point was released here, so that its values moved."""
         x = np.asarray(self._x(x), dtype=float)
         key = x.tobytes()
@@ -490,24 +491,24 @@ class ThreeTermsFreeBoundaryProblem(FunctionProblem):
         return released
 
     def _promote(self, x):
-        """Set the gauge rows again at ``x``'s fit (cached).  Returns whether ``x`` was released here."""
+        """Set the label rows again at ``x``'s fit (cached).  Returns whether ``x`` was released here."""
         sol, released = self._cache[x.tobytes()], None
-        if self.model._gauge is not None:
+        if self.model._labels is not None:
             if not sol.get("released"):  # a trial is released when it is solved; one whose release failed, here
                 released = self._released(x, sol)
                 if released is not None:
                     self._cache[x.tobytes()] = released
-            self._set_gauge(x)
+            self._set_label_rows(x)
         return released is not None
 
-    def gauge_share(self, x):
-        """The gauge rows' share of ``x``'s boundary-fit cost (0 without a gauge, and where it was set)."""
+    def label_share(self, x):
+        """The label rows' share of ``x``'s boundary-fit cost (0 without label rows, and where they were set)."""
         model = self.model
-        if model._gauge is None:
+        if model._labels is None:
             return 0.0
         sol = self._record(x)
         r = np.asarray(model._rows(sol["state"], sol["params"], self.field(jnp.asarray(self._x(x)))))
-        g = r[model._n_interface:model._n_interface + model._gauge[0].shape[0]]
+        g = r[model._n_interface:model._n_interface + model._labels[0].shape[0]]
         return float(g @ g / (r @ r))
 
     def state(self, x):
